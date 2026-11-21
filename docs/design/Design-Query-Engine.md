@@ -318,6 +318,19 @@ gather. A lightweight-record gather that declares no permission requires
 the rows of a gather the viewer may run. The plugin author's view is in
 [Gathers that require a permission](../plugin-development.md#gathers-that-require-a-permission).
 
+### Plugin Queries
+
+A plugin runs a definition through the `query` host interface
+(`GatherService::execute_for_plugin`): the same pipeline, for the request's
+viewer, read stages and language, which the plugin cannot set. A definition
+over `item` cannot set `stage_aware = false`; one over the plugin's own table
+reads it with no viewer semantics. Includes and `semantic_similarity` are
+refused, and the bounds are 100 rows, 32 filters, 8 sorts and 3 relationships
+under a 5 second statement timeout. A filter on the pseudo-field `url`
+(`equals` or `in`) is resolved to `id in (...)` against `url_alias` for the
+read's stages and language, for any gather. The design and its reasons are
+[plugin-query-surface.md](plugin-query-surface.md).
+
 ### Stage-Aware Gather Queries
 
 When executing a Gather query in a stage context, the query must:

@@ -180,7 +180,7 @@ item, delegated administration (BL-41), still stands.
 | BL-61 (G-QUERY-RAW-FIRST-KEYWORD) | The `query-raw` read-only guard checks only that the first keyword is `SELECT` or `WITH`, so a data-modifying CTE writes through it. Argus depends on that for its two atomic claims. Not privilege escalation, since `raw_sql` already grants `execute-raw`, but the SDK documents the function as SELECT-only. | `crates/kernel/src/host/db.rs:40-68,169`; `crates/plugin-sdk/src/host.rs:208-210`; `plugins/argus/src/notify_ports.rs:285,385` in [argus](https://github.com/jeremyandrews/argus) | fixed (#125, `323e873`): each statement is parsed as a tree and `query-raw` runs in `BEGIN READ ONLY`, so a writing CTE is refused; `crates/kernel/tests/raw_sql_read_gate_test.rs` shows the server refusing one with SQLSTATE 25006 (B80.1) | closed | frozen if tightened (and it breaks Argus); documenting it, or a strict variant, is additive |
 | BL-62 (G-QUEUE-NO-INTROSPECTION) | No host function reads queue state, so a plugin asks about its own backlog by reading `plugin_queue` through `raw_sql`. | `crates/wit/kernel.wit:177-190` | open | post | additive |
 | BL-63 (G-NO-PLUGIN-TIMER) | Nothing tells a plugin author there is no sleep and the queue's `delay` is the only timer. `docs/plugin-development.md` has no epoch note to put it beside. | `docs/plugin-development.md`; `docs/plugin-queue.md:35,88` | open | 1.0.x | additive (documentation) |
-| BL-64 (G-ITEM-QUERY-NO-ORDER) | `query-items` does order, by `changed DESC`, but documents no order, and `changed` is whole seconds with no tiebreaker, so paging is unstable within a second and across any update. | `crates/kernel/src/models/item.rs:45,512-516`; `crates/wit/kernel.wit:17-18` | open | 1.0.x | additive (a tiebreaker, documentation, an opt-in `order_by`); frozen if the default order changes |
+| BL-64 (G-ITEM-QUERY-NO-ORDER) | `query-items` does order, by `changed DESC`, but documents no order, and `changed` is whole seconds with no tiebreaker, so paging is unstable within a second and across any update. | `crates/kernel/src/models/item.rs:45,512-516`; `crates/wit/kernel.wit:17-18` | fixed (B80.2): `changed DESC, id DESC`, documented in the WIT; listings move to `query.run` | 1.0.x | additive (a tiebreaker, documentation, an opt-in `order_by`); frozen if the default order changes |
 | BL-65 (M4 migration list, generalised) | Nothing compares a plugin's `[migrations] files` list with the files in its `migrations/` directory, so an unlisted migration is silently never run. Argus shipped a milestone that way. | `crates/kernel/src/plugin/info_parser.rs:521-545`; `crates/kernel/src/plugin/migration.rs:41-80` | open | 1.0.x | additive as a warning; frozen as an error |
 
 ## Already in ROADMAP.md and KNOWN-ISSUES.md
@@ -483,7 +483,7 @@ B80 part marks this row when it lands.
 
 | ID | Finding | Where | Status | Class | Surface |
 |---|---|---|---|---|---|
-| BL-128 (G-NO-PLUGIN-QUERY-SEAM) | A plugin cannot list content across types sorted and paged with each row's URL, build a sitemap, look an item up by alias, or read and write translations without `raw_sql`: Gather compiles all of it for a viewer but no host interface reaches it, `query-items` is one type with a fixed order and no stage, the structured `db` calls take equality maps only, and no host function writes `item_translation`. trovato.rs declares `raw_sql` for exactly these six statements. | `crates/wit/kernel.wit:366-380`; `crates/kernel/src/host/item.rs:449-529`; `crates/kernel/src/host/db.rs:320-530`; `plugins/trovato_site/src/lib.rs:250,475,727-750,779,886` in [trovato-site](https://github.com/jeremyandrews/trovato-site) | open: design D-60 (B80.1) | 1.0.x | additive |
+| BL-128 (G-NO-PLUGIN-QUERY-SEAM) | A plugin cannot list content across types sorted and paged with each row's URL, build a sitemap, look an item up by alias, or read and write translations without `raw_sql`: Gather compiles all of it for a viewer but no host interface reaches it, `query-items` is one type with a fixed order and no stage, the structured `db` calls take equality maps only, and no host function writes `item_translation`. trovato.rs declares `raw_sql` for exactly these six statements. | `crates/wit/kernel.wit:366-380`; `crates/kernel/src/host/item.rs:449-529`; `crates/kernel/src/host/db.rs:320-530`; `plugins/trovato_site/src/lib.rs:250,475,727-750,779,886` in [trovato-site](https://github.com/jeremyandrews/trovato-site) | open: design D-60 (B80.1, #193); read seam `query.run` (B80.2); `query-items` reads the request's stage only (B80.2) | 1.0.x | additive |
 
 ## The fix series against this page
 
@@ -843,7 +843,7 @@ post:
   rest arrive as null.
 - BL-55: the queue documentation should say concurrency is per plugin.
 - BL-61: the SDK should stop calling `query-raw` SELECT-only.
-- BL-64: `query-items` should document its order.
+- BL-64: `query-items` should document its order (done in B80.2).
 
 One frozen row has a case for changing code before the tag instead: **BL-59**. The
 WIT already documents `save-item` as insert or update by whether the id exists, and

@@ -80,6 +80,7 @@ use tower_sessions::Session;
 
 use crate::menu::MenuDefinition;
 use crate::middleware::api_token::ApiTokenAuth;
+use crate::middleware::language::ResolvedLanguage;
 use crate::state::AppState;
 use crate::tap::RequestState;
 use trovato_sdk::types::{ApiRequest, ApiResponse};
@@ -162,6 +163,7 @@ pub fn build_plugin_api_router(menus: &[MenuDefinition]) -> Router<AppState> {
             move |state: State<AppState>,
                   session: Session,
                   bearer: Option<Extension<ApiTokenAuth>>,
+                  language: Option<Extension<ResolvedLanguage>>,
                   headers: HeaderMap,
                   uri: OriginalUri,
                   method: Method,
@@ -171,7 +173,8 @@ pub fn build_plugin_api_router(menus: &[MenuDefinition]) -> Router<AppState> {
                 let config = Arc::clone(&config);
                 async move {
                     serve(
-                        config, state, session, bearer, headers, uri, method, params, query, body,
+                        config, state, session, bearer, language, headers, uri, method, params,
+                        query, body,
                     )
                     .await
                 }
@@ -280,6 +283,7 @@ async fn serve(
     State(state): State<AppState>,
     session: Session,
     bearer: Option<Extension<ApiTokenAuth>>,
+    language: Option<Extension<ResolvedLanguage>>,
     headers: HeaderMap,
     OriginalUri(uri): OriginalUri,
     method: Method,
@@ -374,7 +378,21 @@ async fn serve(
 
     // Dispatch with services attached — this is the whole point. A tap with no
     // DB handle could not write the table this exists to let it write.
-    let tap_state = RequestState::new(user, state.tap_services().clone());
+    //
+    // The stages and language a `query` read is made in are this request's:
+    // the one stage resolver's answer for this viewer, and the negotiated
+    // language (none for the site default, which needs no overlay).
+    let stages = crate::routes::helpers::read_stages(
+        &state,
+        &user,
+        crate::routes::helpers::session_stage(&session).await,
+    )
+    .await;
+    let language = language.and_then(|Extension(lang)| {
+        crate::routes::gather::query_language(&lang.0, state.default_language())
+    });
+    let tap_state =
+        RequestState::new(user, state.tap_services().clone()).with_read_context(stages, language);
     let result = state
         .tap_dispatcher()
         .dispatch_to_plugin("tap_api", &payload, &menu.plugin, tap_state)

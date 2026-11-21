@@ -105,6 +105,60 @@ struct RecordContext {
     field_targets: HashMap<String, String>,
 }
 
+/// The statement timeout a plugin's definition runs under: the raw path's
+/// (`host::db`), not the 10 seconds a site's gather gets.
+const PLUGIN_STATEMENT_TIMEOUT: &str = "5s";
+
+/// The pseudo-field a lookup by address filters on: the key every item row
+/// comes back with (see `resolve_url_filters`).
+const URL_FIELD: &str = "url";
+
+/// What a plugin-submitted definition may reach, decided by the `query` host
+/// from the plugin's allowlist before the definition gets here.
+#[derive(Debug, Clone, Default)]
+pub struct PluginScope {
+    /// The base is one of the plugin's own tables: no viewer, stage, language
+    /// or URL.
+    pub own_base: bool,
+    /// The plugin's own tables the definition joins, allowed as relationship
+    /// targets beside the kernel's join tables.
+    pub own_tables: Vec<String>,
+}
+
+/// How one execution runs: a site's gather, or a plugin's definition.
+struct RunScope<'a> {
+    timeout: &'static str,
+    own_base: bool,
+    own_tables: &'a [String],
+}
+
+impl RunScope<'static> {
+    /// A site's gather: the 10 second timeout it has always had, content base,
+    /// the kernel's join tables only.
+    const SITE: Self = Self {
+        timeout: "10s",
+        own_base: false,
+        own_tables: &[],
+    };
+}
+
+/// The paths a `url` filter names: one for `equals`, each string of `in`.
+fn url_filter_paths(filter: &QueryFilter) -> Result<Vec<String>> {
+    match (&filter.operator, &filter.value) {
+        (FilterOperator::Equals, value) => Ok(value.as_string().into_iter().collect()),
+        (FilterOperator::In, FilterValue::List(values)) => {
+            Ok(values.iter().filter_map(FilterValue::as_string).collect())
+        }
+        _ => anyhow::bail!("Query validation failed: a url filter takes equals or in"),
+    }
+}
+
+/// The item a `/item/{uuid}` path names, if it is one.
+fn item_path_id(path: &str) -> Option<Uuid> {
+    path.strip_prefix("/item/")
+        .and_then(|id| Uuid::parse_str(id).ok())
+}
+
 /// The settings [`GatherService`] runs with.
 ///
 /// Grouped rather than passed as three more positional arguments: collaborators
@@ -710,12 +764,76 @@ impl GatherService {
         stage_ids: &[Uuid],
         context: &QueryContext,
     ) -> Result<GatherResult> {
+        self.run_definition(
+            definition,
+            display,
+            page,
+            exposed_filters,
+            stage_ids,
+            context,
+            &RunScope::SITE,
+        )
+        .await
+    }
+
+    /// Run a definition a plugin submitted through the `query` host interface
+    /// (`docs/design/plugin-query-surface.md`).
+    ///
+    /// The host has already applied the plugin rules (its table allowlist, the
+    /// bounds, what may join what) and chosen the viewer, stages and language
+    /// in `context` and `stage_ids`; this runs the definition through the same
+    /// pipeline every gather uses, under the plugin statement timeout. `scope`
+    /// says whether the base is one of the plugin's own tables, which carries no
+    /// viewer semantics, and which of its tables a relationship may join.
+    pub async fn execute_for_plugin(
+        &self,
+        definition: &QueryDefinition,
+        page: u32,
+        per_page: u32,
+        stage_ids: &[Uuid],
+        context: &QueryContext,
+        scope: &PluginScope,
+    ) -> Result<GatherResult> {
+        let display = QueryDisplay {
+            items_per_page: per_page,
+            ..QueryDisplay::default()
+        };
+        let run = RunScope {
+            timeout: PLUGIN_STATEMENT_TIMEOUT,
+            own_base: scope.own_base,
+            own_tables: &scope.own_tables,
+        };
+        self.run_definition(
+            definition,
+            &display,
+            page,
+            HashMap::new(),
+            stage_ids,
+            context,
+            &run,
+        )
+        .await
+    }
+
+    /// The one execution path, for a site's gathers and a plugin's.
+    async fn run_definition(
+        &self,
+        definition: &QueryDefinition,
+        display: &QueryDisplay,
+        page: u32,
+        exposed_filters: HashMap<String, FilterValue>,
+        stage_ids: &[Uuid],
+        context: &QueryContext,
+        scope: &RunScope<'_>,
+    ) -> Result<GatherResult> {
         // Performance guardrails: validate definition before execution
-        let validation_errors = Self::validate_definition(definition);
+        let validation_errors = Self::validate_definition_with(definition, scope.own_tables);
         if !validation_errors.is_empty() {
             anyhow::bail!("Query validation failed: {}", validation_errors.join("; "));
         }
-        self.check_base_table(definition)?;
+        if !scope.own_base {
+            self.check_base_table(definition)?;
+        }
 
         // Cap items_per_page to the configured maximum (GATHER_MAX_PAGE_SIZE).
         let max_page = self.max_page_size;
@@ -740,7 +858,16 @@ impl GatherService {
             .await?;
 
         // Resolve contextual values (CurrentUser, CurrentTime, UrlArg)
-        let mut resolved_definition = Self::resolve_contextual_values(resolved_definition, context);
+        let resolved_definition = Self::resolve_contextual_values(resolved_definition, context);
+
+        // Resolve `url` filters to the items they name, for the stages and
+        // language this read is made in. A plugin's own table has no URLs.
+        let mut resolved_definition = if scope.own_base {
+            resolved_definition
+        } else {
+            self.resolve_url_filters(resolved_definition, stage_ids, context)
+                .await?
+        };
 
         // Resolve a lightweight-record gather (P11g / D-54): rewrite the
         // definition to target the record's table with translated field
@@ -804,26 +931,32 @@ impl GatherService {
             .await
             .context("failed to begin transaction")?;
 
-        // Set statement timeout (10 seconds) within this transaction
-        sqlx::query("SET LOCAL statement_timeout = '10s'")
-            .execute(&mut *tx)
-            .await
-            .context("failed to set statement timeout")?;
+        // Set the statement timeout within this transaction: 10 seconds for a
+        // site's gather, the raw path's 5 for a plugin's.
+        sqlx::query(AssertSqlSafe(format!(
+            "SET LOCAL statement_timeout = '{}'",
+            scope.timeout
+        )))
+        .execute(&mut *tx)
+        .await
+        .context("failed to set statement timeout")?;
 
         // An Item gather counts what this viewer can see (`fetch_access_filtered`
         // returns the count with the page). A record gather's published filter is
         // an exact SQL predicate, so its SQL count is already that; so is an
-        // unwired harness's, which enforces nothing.
-        let sql_total = if record_ctx.is_some() || self.item_access.get().is_none() {
-            let count_sql = builder.build_count();
-            let total: i64 = sqlx::query_scalar(AssertSqlSafe(count_sql))
-                .fetch_one(&mut *tx)
-                .await
-                .context("failed to execute count query")?;
-            Some(total.max(0) as u64)
-        } else {
-            None
-        };
+        // unwired harness's, which enforces nothing, and so is a plugin's own
+        // table's, which has no viewer semantics.
+        let sql_total =
+            if record_ctx.is_some() || self.item_access.get().is_none() || scope.own_base {
+                let count_sql = builder.build_count();
+                let total: i64 = sqlx::query_scalar(AssertSqlSafe(count_sql))
+                    .fetch_one(&mut *tx)
+                    .await
+                    .context("failed to execute count query")?;
+                Some(total.max(0) as u64)
+            } else {
+                None
+            };
 
         // Item-access + over-fetch/backfill (Story 3.4, §4 / D-26) then
         // field-level filtering across the page.
@@ -831,7 +964,15 @@ impl GatherService {
             .viewer
             .clone()
             .unwrap_or_else(UserContext::anonymous);
-        let (mut rows, access_capped, visible_total) = if let Some(rc) = &record_ctx {
+        let (mut rows, access_capped, visible_total) = if scope.own_base {
+            // A plugin's own table: no access pass, no field tier. The allowlist
+            // that let the plugin name it is the whole grant.
+            (
+                Self::fetch_window(&builder, page, per_page, &mut tx).await?,
+                false,
+                None,
+            )
+        } else if let Some(rc) = &record_ctx {
             // Lightweight-record page (P11g / D-54, D-55): the record-level
             // (published) filter is already an exact SQL predicate, so there is no
             // per-item over-fetch loop — fetch the page and refine fields through
@@ -868,8 +1009,9 @@ impl GatherService {
         }
 
         // Give every row the address it is actually read at. Records have no
-        // `/item/` address, so this is for Item gathers only.
-        if record_ctx.is_none() {
+        // `/item/` address, and neither does a plugin's own table, so this is for
+        // Item gathers only.
+        if record_ctx.is_none() && !scope.own_base {
             self.resolve_row_urls(&mut rows, stage_ids, context).await;
         }
 
@@ -936,6 +1078,81 @@ impl GatherService {
         }
     }
 
+    /// One page of rows with no access pass: an unwired test harness, and a
+    /// plugin's own table.
+    async fn fetch_window(
+        builder: &GatherQueryBuilder,
+        page: u32,
+        per_page: u32,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ) -> Result<Vec<serde_json::Value>> {
+        let main_sql = builder.build(page, per_page);
+        sqlx::query_scalar(AssertSqlSafe(format!(
+            "SELECT row_to_json(t) FROM ({main_sql}) t"
+        )))
+        .fetch_all(&mut **tx)
+        .await
+        .context("failed to execute main query")
+    }
+
+    /// Replace each `url` filter with the items its paths name
+    /// (`docs/design/plugin-query-surface.md` section 4).
+    ///
+    /// `url` is the key every item row comes back with, so it is also the key a
+    /// lookup by address is written against. Each path is resolved against
+    /// `url_alias` for this read's stages and language, in one query for the
+    /// whole definition; `/item/{uuid}` names its item directly. The filter
+    /// becomes `id in (...)`, and a path that names nothing contributes the nil
+    /// id, which no item has, so it matches nothing rather than everything.
+    async fn resolve_url_filters(
+        &self,
+        mut definition: QueryDefinition,
+        stage_ids: &[Uuid],
+        context: &QueryContext,
+    ) -> Result<QueryDefinition> {
+        if definition.base_table != "item"
+            || definition.record_type.is_some()
+            || !definition.filters.iter().any(|f| f.field == URL_FIELD)
+        {
+            return Ok(definition);
+        }
+
+        let mut paths: Vec<String> = Vec::new();
+        for filter in definition.filters.iter().filter(|f| f.field == URL_FIELD) {
+            paths.extend(url_filter_paths(filter)?);
+        }
+        let aliases: Vec<String> = paths
+            .iter()
+            .filter(|p| item_path_id(p).is_none())
+            .cloned()
+            .collect();
+        let language = context.language.as_deref().unwrap_or("en");
+        let sources = UrlAlias::sources_for_aliases(&self.pool, &aliases, stage_ids, language)
+            .await
+            .context("failed to resolve url filters")?;
+
+        for filter in definition
+            .filters
+            .iter_mut()
+            .filter(|f| f.field == URL_FIELD)
+        {
+            let mut ids: Vec<FilterValue> = url_filter_paths(filter)?
+                .iter()
+                .filter_map(|p| {
+                    item_path_id(p).or_else(|| sources.get(p).and_then(|s| item_path_id(s)))
+                })
+                .map(FilterValue::Uuid)
+                .collect();
+            if ids.is_empty() {
+                ids.push(FilterValue::Uuid(Uuid::nil()));
+            }
+            filter.field = "id".to_string();
+            filter.operator = FilterOperator::In;
+            filter.value = FilterValue::List(ids);
+        }
+        Ok(definition)
+    }
+
     /// Item-access enforcement with the D-26 over-fetch/geometric-backfill loop.
     ///
     /// Fetches candidate rows in rank order starting at the page's raw offset and
@@ -960,14 +1177,11 @@ impl GatherService {
     ) -> Result<(Vec<serde_json::Value>, bool, Option<u64>)> {
         let Some(items) = self.item_access.get() else {
             // Unwired test harness: no enforcement, single window.
-            let main_sql = builder.build(page, per_page);
-            let rows = sqlx::query_scalar(AssertSqlSafe(format!(
-                "SELECT row_to_json(t) FROM ({main_sql}) t"
-            )))
-            .fetch_all(&mut **tx)
-            .await
-            .context("failed to execute main query")?;
-            return Ok((rows, false, None));
+            return Ok((
+                Self::fetch_window(builder, page, per_page, tx).await?,
+                false,
+                None,
+            ));
         };
 
         let page_size = per_page.max(1) as usize;
@@ -2035,6 +2249,16 @@ impl GatherService {
     ///
     /// Returns a list of validation errors. Empty list means valid.
     pub fn validate_definition(definition: &QueryDefinition) -> Vec<String> {
+        Self::validate_definition_with(definition, &[])
+    }
+
+    /// [`Self::validate_definition`], with `own_tables` also allowed as a
+    /// relationship target: the tables of the plugin that submitted the
+    /// definition, already checked against its allowlist by the `query` host.
+    pub fn validate_definition_with(
+        definition: &QueryDefinition,
+        own_tables: &[String],
+    ) -> Vec<String> {
         let mut errors = Vec::new();
 
         // Max join depth
@@ -2079,7 +2303,8 @@ impl GatherService {
                     rel.target_table
                 ));
             } else if is_denied_gather_table(&rel.target_table)
-                || !GATHER_JOIN_TABLES.contains(&rel.target_table.as_str())
+                || !(GATHER_JOIN_TABLES.contains(&rel.target_table.as_str())
+                    || own_tables.contains(&rel.target_table))
             {
                 errors.push(format!(
                     "Relationship target table '{}' may not be joined by a gather",

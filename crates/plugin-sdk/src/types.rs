@@ -105,6 +105,33 @@ impl Item {
     }
 }
 
+/// One page of a `query::run` result ([`crate::host::query`]): the rows the
+/// viewer may see, in the definition's order, and where the page sits.
+///
+/// An item row carries `url`, its alias or `/item/{id}`. `access_capped` is
+/// true when the kernel stopped scanning for visible rows at the site's scan
+/// cap before the page filled, so `total` counts what was scanned.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QueryResult {
+    /// The rows, as JSON objects.
+    pub items: Vec<serde_json::Value>,
+    /// Rows the viewer may see in the whole result.
+    pub total: u64,
+    /// This page, from 1.
+    pub page: u32,
+    /// Rows per page.
+    pub per_page: u32,
+    /// Pages in the whole result.
+    pub total_pages: u32,
+    /// Whether a later page exists.
+    pub has_next: bool,
+    /// Whether an earlier page exists.
+    pub has_prev: bool,
+    /// Whether the access scan stopped at its cap.
+    pub access_capped: bool,
+}
+
 /// A text field value with its format (e.g., "filtered_html", "plain_text").
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TextValue {

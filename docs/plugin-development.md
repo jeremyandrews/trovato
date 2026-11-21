@@ -747,9 +747,12 @@ let moved = host::save_item(&json!({ "id": id, "stage": "curated" }))?;
 // Delete: `Err(ERR_ITEM_NOT_FOUND)` when no item has that id.
 host::delete_item(&id)?;
 
-// List what the user may view.
+// Load what the user may view, in full, on the request's stage.
 let pages = host::query_items(&json!({ "type": "page", "limit": 20 }))?;
 ```
+
+For a listing, use a query (below): `query_items` takes one type, one order and
+no joins, and returns whole items rather than the columns a list shows.
 
 A write is the same write a person makes on the edit form. It goes through the
 kernel's item service, so the other plugins' `tap_item_presave`,
@@ -763,6 +766,57 @@ around it, so a plugin never sees its own write come back into the handler that
 made it, and a write nested four write taps deep is refused with
 `ERR_ITEM_WRITE_DEPTH`. Every error code is listed in
 [plugin-error-codes.md](plugin-error-codes.md#item-api-errors).
+
+### Queries
+
+Declare `query` in `host_interfaces`. `host::query` runs a Gather definition,
+the JSON a site's gather is stored as, through the same pipeline as a gather
+page, for the user the plugin is acting for:
+
+```rust
+use trovato_sdk::host;
+use serde_json::json;
+
+// The newest blog and news posts, each with the URL it is served at.
+let page = host::query(
+    &json!({
+        "base_table": "item",
+        "filters": [
+            {"field": "type", "operator": "in", "value": ["blog", "news"]},
+            {"field": "status", "operator": "equals", "value": 1}
+        ],
+        "fields": [{"field_name": "id"}, {"field_name": "title"}, {"field_name": "created"}],
+        "sorts": [{"field": "created", "direction": "desc"}]
+    }),
+    &json!({"per_page": 10}),
+)?;
+for row in &page.items {
+    let (title, url) = (&row["title"], &row["url"]); // url: the alias, or /item/{id}
+}
+
+// One field of one item, found by the address it is served at.
+let doc = host::query(
+    &json!({
+        "base_table": "item",
+        "item_type": "docs",
+        "filters": [{"field": "url", "operator": "equals", "value": "/learn/install"}],
+        "fields": [{"field_name": "fields.markdown", "label": "markdown"}]
+    }),
+    &json!({"per_page": 1}),
+)?;
+```
+
+The kernel decides what the query sees, and the plugin cannot change it: an
+item query reads only what the viewer may view, on the request's stages, in its
+language, with the fields they may not see removed, and `stage_aware = false`
+is refused. A query over one of the plugin's own tables (migration-owned or in
+`db_tables`) reads it as it is. An item query may join the kernel's join tables
+and the plugin's own tables; a query over the plugin's own table may not join
+`item`. A page holds at most 100 rows (`has_next` says whether there is more),
+and a definition carries at most 32 filters, 8 sorts and 3 relationships.
+From cron or a queue worker an item query needs `item_background`. Every error
+code is in [plugin-error-codes.md](plugin-error-codes.md#query-errors), and
+the design is [plugin-query-surface.md](design/plugin-query-surface.md).
 
 ### Text Formats
 

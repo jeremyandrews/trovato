@@ -496,16 +496,22 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                         .min(100);
                     let offset = query.get("offset").and_then(|v| v.as_i64()).unwrap_or(0);
 
-                    let fetched =
-                        match Item::list_filtered(&pool, item_type, status, None, limit, offset)
-                            .await
-                        {
-                            Ok(found) => found,
-                            Err(e) => {
-                                warn!(error = %e, "query-items host function failed");
-                                return host_errors::ERR_SQL_FAILED;
-                            }
-                        };
+                    // The request's read stages only: Live, unless the dispatch
+                    // site resolved another for a viewer allowed to read it.
+                    // Every stage was listed before, so a live request saw
+                    // published items on stages that are never listed.
+                    let stages = caller.data().request.read_stages().to_vec();
+                    let fetched = match Item::list_filtered_on_stages(
+                        &pool, item_type, status, &stages, limit, offset,
+                    )
+                    .await
+                    {
+                        Ok(found) => found,
+                        Err(e) => {
+                            warn!(error = %e, "query-items host function failed");
+                            return host_errors::ERR_SQL_FAILED;
+                        }
+                    };
 
                     // What the user may view, with the fields they may see.
                     // The page can come back shorter than `limit`; that is the

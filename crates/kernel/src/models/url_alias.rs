@@ -279,10 +279,10 @@ impl UrlAlias {
     pub async fn sources_for_aliases(
         pool: &PgPool,
         aliases: &[String],
-        stage_id: Uuid,
+        stage_ids: &[Uuid],
         language: &str,
     ) -> Result<std::collections::HashMap<String, String>> {
-        if aliases.is_empty() {
+        if aliases.is_empty() || stage_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }
 
@@ -290,12 +290,12 @@ impl UrlAlias {
             r#"
             SELECT DISTINCT ON (alias) alias, source
             FROM url_alias
-            WHERE alias = ANY($1) AND stage_id = $2 AND language = $3
+            WHERE alias = ANY($1) AND stage_id = ANY($2) AND language = $3
             ORDER BY alias, created DESC, id DESC
             "#,
         )
         .bind(aliases)
-        .bind(stage_id)
+        .bind(stage_ids)
         .bind(language)
         .fetch_all(pool)
         .await

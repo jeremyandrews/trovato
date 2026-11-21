@@ -681,6 +681,8 @@ async fn every_known_host_interface_except_pending_is_registered() {
         (func (param i32 i32) (result i32)))
       (import "trovato:kernel/text-format" "filter-text"
         (func (param i32 i32 i32 i32 i32 i32) (result i32)))
+      (import "trovato:kernel/query" "run"
+        (func (param i32 i32 i32 i32 i32 i32) (result i32)))
       (memory (export "memory") 1))
     "#;
 
@@ -709,6 +711,7 @@ async fn every_known_host_interface_except_pending_is_registered() {
         "plugin-api",
         "mail",
         "text-format",
+        "query",
     ]
     .into_iter()
     .collect();
