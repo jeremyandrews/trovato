@@ -1,0 +1,98 @@
+# Two kernels behind a round robin load balancer.
+#
+#   docker compose -f docker-compose.cluster.yml up -d --build
+#   TROVATO_CLUSTER_URL=http://localhost:8095 \
+#   TROVATO_CLUSTER_DATABASE_URL=postgres://trovato:trovato@localhost:56432/trovato \
+#     cargo test -p trovato-kernel --test cluster_test
+#   docker compose -f docker-compose.cluster.yml down -v
+#
+# This is the test harness for multi-server deployments (docs/deployment/
+# multi-server.md), not a production template. Both kernels run the same image
+# against one Postgres, one Redis and one shared volume; HAProxy spreads
+# requests across them with no stickiness. A request carrying
+# `X-Trovato-Node: a` or `b` is pinned to that node (docker/cluster/haproxy.cfg)
+# so a test can write on one node and read on the other.
+#
+# Ports are chosen so the harness can run beside the development compose file.
+
+name: trovato-cluster
+
+x-kernel: &kernel
+  image: trovato-cluster:local
+  build: .
+  restart: unless-stopped
+  environment: &kernel-env
+    DATABASE_URL: postgres://trovato:trovato@postgres:5432/trovato
+    REDIS_URL: redis://redis:6379
+    DATABASE_MAX_CONNECTIONS: "10"
+    RUST_LOG: info,tower_http=warn,sqlx=warn
+    PORT: "3000"
+    SITE_URL: http://localhost:${CLUSTER_PROXY_PORT:-8095}
+    CRON_KEY: cluster-cron-key
+    # The shared volume: uploads (and their image derivatives) live here, so a
+    # file written by one node is served by the other.
+    UPLOADS_DIR: /shared/uploads
+    # The harness adds one template (a 404 page with a translated string).
+    TEMPLATES_DIR: ./templates:/cluster/templates
+    # Every test request reaches the kernels from the proxy's one address, so
+    # the per-address buckets are raised well above what the scenarios spend.
+    TROVATO_RATE_LIMIT_LOGIN: "10000"
+    TROVATO_RATE_LIMIT_FORMS: "10000"
+    TROVATO_RATE_LIMIT_API: "10000"
+    TROVATO_RATE_LIMIT_UPLOADS: "10000"
+    TROVATO_RATE_LIMIT_SEARCH: "10000"
+    TROVATO_RATE_LIMIT_REGISTER: "10000"
+    TROVATO_RATE_LIMIT_COMMENT: "10000"
+    TROVATO_RATE_LIMIT_STATIC: "10000"
+  volumes:
+    - shared:/shared
+    - ./docker/cluster/templates:/cluster/templates:ro
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: trovato
+      POSTGRES_PASSWORD: trovato
+      POSTGRES_DB: trovato
+    ports:
+      - "${CLUSTER_PG_PORT:-56432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trovato"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  node-a:
+    <<: *kernel
+    hostname: node-a
+
+  node-b:
+    <<: *kernel
+    hostname: node-b
+
+  proxy:
+    image: haproxy:2.9-alpine
+    volumes:
+      - ./docker/cluster/haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    ports:
+      - "${CLUSTER_PROXY_PORT:-8095}:80"
+    depends_on:
+      - node-a
+      - node-b
+
+volumes:
+  shared:
