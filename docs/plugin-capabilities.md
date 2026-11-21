@@ -79,7 +79,11 @@ count per group do not: `plugins/test_site_queries` does all of them with no
 - the admin plugin listing (`/admin/plugins`), which marks each holder
   **raw SQL** and says above the table how many hold it;
 - the boot log, one warning naming every loaded holder:
-  `plugins holding raw_sql: SQL the kernel does not compile, with no viewer, stage or language applied plugins=...`.
+  `plugins holding raw_sql: SQL the kernel does not compile, with no viewer, stage or language applied plugins=trovato_search`.
+  It names the loaded (enabled) holders; the listing marks every holder on
+  disk, enabled or not.
+
+![The admin plugin listing: a note above the table counts the plugins holding raw_sql, and each holder carries a raw SQL mark](images/plugin-listing-raw-sql.png)
 
 The design, and why `raw_sql` stays one flag rather than a read and a write
 grant, is [plugin-query-surface.md](design/plugin-query-surface.md) (D-60).
