@@ -10,11 +10,12 @@ use super::access::ACCESS_COLUMNS;
 use super::extension::{FilterContext, GatherExtensionRegistry};
 use super::handlers::is_safe_identifier;
 use super::types::{
-    FilterOperator, FilterValue, JoinType, NullsOrder, QueryDefinition, QueryFilter, SortDirection,
+    AggregateFunction, Conjunction, FilterGroup, FilterOperator, FilterValue, JoinType, NullsOrder,
+    QueryAggregate, QueryDefinition, QueryFilter, SortDirection,
 };
 use crate::tap::UserContext;
 use sea_query::{
-    Alias, Asterisk, Cond, Expr, ExprTrait, Iden, Order, PostgresQueryBuilder, Query,
+    Alias, Asterisk, Cond, Expr, ExprTrait, Func, Iden, Order, PostgresQueryBuilder, Query,
     SelectStatement, SimpleExpr, extension::postgres::PgExpr,
 };
 use std::sync::Arc;
@@ -135,6 +136,29 @@ impl GatherQueryBuilder {
     /// The over-fetch/backfill loop (Story 3.4) calls this directly with growing
     /// windows over the same rank order, rather than page-at-a-time.
     pub fn build_window(&self, offset: u64, limit: u64) -> String {
+        let mut query = self.build_select();
+
+        // ORDER BY
+        self.add_sorts(&mut query);
+
+        // LIMIT/OFFSET for the requested window
+        query.limit(limit);
+        query.offset(offset);
+
+        let mut sql = query.to_string(PostgresQueryBuilder);
+
+        // Post-process: replace placeholders with COALESCE expressions for
+        // translated title and fields when a translation JOIN is active.
+        if self.language.is_some() && self.is_item_table() {
+            sql = self.apply_translation_coalesce(sql);
+        }
+
+        sql
+    }
+
+    /// The SELECT every window is cut from: projection, joins, every
+    /// predicate, and any grouping. No order, no limit.
+    fn build_select(&self) -> SelectStatement {
         let mut query = Query::select();
 
         // SELECT fields
@@ -177,26 +201,21 @@ impl GatherQueryBuilder {
             );
         }
 
-        // ORDER BY
-        self.add_sorts(&mut query);
+        // GROUP BY / HAVING / DISTINCT
+        self.add_aggregation(&mut query);
 
-        // LIMIT/OFFSET for the requested window
-        query.limit(limit);
-        query.offset(offset);
-
-        let mut sql = query.to_string(PostgresQueryBuilder);
-
-        // Post-process: replace placeholders with COALESCE expressions for
-        // translated title and fields when a translation JOIN is active.
-        if self.language.is_some() && self.is_item_table() {
-            sql = self.apply_translation_coalesce(sql);
-        }
-
-        sql
+        query
     }
 
     /// Build a COUNT query for total results.
+    ///
+    /// A grouped or distinct definition counts its result rows, the groups,
+    /// by counting the SELECT they come from.
     pub fn build_count(&self) -> String {
+        if self.definition.aggregation.is_set() {
+            let inner = self.build_select().to_string(PostgresQueryBuilder);
+            return format!("SELECT COUNT(*) FROM ({inner}) AS \"_g\"");
+        }
         let mut query = Query::select();
 
         // SELECT COUNT(*)
@@ -410,6 +429,16 @@ impl GatherQueryBuilder {
     /// candidate — the gather layer strips any it did not originally request
     /// before returning rows.
     fn add_select_fields(&self, query: &mut SelectStatement) {
+        let agg = &self.definition.aggregation;
+        if agg.is_grouped() {
+            for column in &agg.group_by {
+                query.column((Alias::new(&self.definition.base_table), Alias::new(column)));
+            }
+            for aggregate in &agg.aggregates {
+                query.expr_as(self.aggregate_expr(aggregate), Alias::new(&aggregate.label));
+            }
+            return;
+        }
         if self.definition.fields.is_empty() {
             // Select all from base table
             query.column((Alias::new(&self.definition.base_table), Asterisk));
@@ -487,6 +516,95 @@ impl GatherQueryBuilder {
                 query.and_where(condition);
             }
         }
+        for group in &self.definition.filter_groups {
+            if let Some(condition) = self.build_group_condition(group) {
+                query.cond_where(condition);
+            }
+        }
+    }
+
+    /// A filter group's condition, or `None` when it places no constraint: it
+    /// is empty, or it is an `or` with a member that places none.
+    fn build_group_condition(&self, group: &FilterGroup) -> Option<Cond> {
+        let mut cond = match group.conjunction {
+            Conjunction::And => Cond::all(),
+            Conjunction::Or => Cond::any(),
+        };
+        let members = group
+            .filters
+            .iter()
+            .map(|f| self.build_filter_condition(f).map(|e| Cond::all().add(e)))
+            .chain(group.groups.iter().map(|g| self.build_group_condition(g)));
+        let mut any = false;
+        for member in members {
+            match member {
+                Some(member) => {
+                    cond = cond.add(member);
+                    any = true;
+                }
+                None if group.conjunction == Conjunction::Or => return None,
+                None => {}
+            }
+        }
+        any.then_some(cond)
+    }
+
+    /// `function(base.field) AS label`'s expression; `COUNT(*)` with no field.
+    fn aggregate_expr(&self, aggregate: &QueryAggregate) -> SimpleExpr {
+        let Some(field) = aggregate.field.as_deref() else {
+            return Expr::col(Asterisk).count();
+        };
+        let col = Expr::col((Alias::new(&self.definition.base_table), Alias::new(field)));
+        match aggregate.function {
+            AggregateFunction::Count => col.count(),
+            AggregateFunction::Sum => col.sum(),
+            AggregateFunction::Min => col.min(),
+            AggregateFunction::Max => col.max(),
+            AggregateFunction::Avg => Func::avg(col).into(),
+        }
+    }
+
+    /// GROUP BY, HAVING and DISTINCT. `having` compares the aggregate itself,
+    /// since PostgreSQL does not read a select alias there.
+    fn add_aggregation(&self, query: &mut SelectStatement) {
+        let agg = &self.definition.aggregation;
+        if agg.distinct {
+            query.distinct();
+        }
+        for column in &agg.group_by {
+            query.add_group_by([Expr::col((
+                Alias::new(&self.definition.base_table),
+                Alias::new(column),
+            ))
+            .into()]);
+        }
+        for condition in &agg.having {
+            // The validator refuses any other shape; one reaching here
+            // restricts rather than widens.
+            let compared = self
+                .having_condition(condition)
+                .unwrap_or_else(|| Expr::val(false).into());
+            query.and_having(compared);
+        }
+    }
+
+    fn having_condition(&self, condition: &QueryFilter) -> Option<SimpleExpr> {
+        let aggregate = self.definition.aggregation.aggregate(&condition.field)?;
+        let expr = self.aggregate_expr(aggregate);
+        let value: SimpleExpr = match condition.value {
+            FilterValue::Integer(v) => v.into(),
+            FilterValue::Float(v) => v.into(),
+            _ => return None,
+        };
+        Some(match condition.operator {
+            FilterOperator::Equals => expr.eq(value),
+            FilterOperator::NotEquals => expr.ne(value),
+            FilterOperator::GreaterThan => expr.gt(value),
+            FilterOperator::LessThan => expr.lt(value),
+            FilterOperator::GreaterOrEqual => expr.gte(value),
+            FilterOperator::LessOrEqual => expr.lte(value),
+            _ => return None,
+        })
     }
 
     /// Build a single filter condition.
@@ -965,7 +1083,15 @@ impl GatherQueryBuilder {
                 NullsOrder::Last => sea_query::NullOrdering::Last,
             });
 
-            if sort.field.starts_with("fields.") {
+            if self.definition.aggregation.aggregate(&sort.field).is_some() {
+                // An aggregate label is a select alias, which ORDER BY reads.
+                let label = Expr::col(Alias::new(&sort.field));
+                if let Some(nulls) = null_order {
+                    query.order_by_expr_with_nulls(label.into(), order, nulls);
+                } else {
+                    query.order_by_expr(label.into(), order);
+                }
+            } else if sort.field.starts_with("fields.") {
                 let jsonb_path = &sort.field[7..];
                 let expr = self.jsonb_sort_expr(&self.definition.base_table, jsonb_path);
                 if let Some(nulls) = null_order {

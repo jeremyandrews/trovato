@@ -40,8 +40,8 @@ use super::trace::TracedLinker;
 use super::{read_string_from_memory, write_string_to_memory};
 use crate::content::reentry;
 use crate::gather::{
-    FilterOperator, GATHER_JOIN_TABLES, MAX_ITEMS_PER_PAGE, PluginScope, QueryContext,
-    QueryDefinition,
+    FilterOperator, GATHER_JOIN_TABLES, MAX_GROUP_DEPTH, MAX_ITEMS_PER_PAGE, PluginScope,
+    QueryContext, QueryDefinition,
 };
 use crate::plugin::{DbPolicy, PluginState, WasmtimeExt};
 use crate::tap::UserContext;
@@ -57,6 +57,9 @@ pub const MAX_SORTS: usize = 8;
 
 /// Relationships a plugin definition may carry: the validator's join cap.
 pub const MAX_RELATIONSHIPS: usize = 3;
+
+/// `group_by` columns, and aggregates, a plugin definition may carry.
+pub const MAX_AGGREGATES: usize = 8;
 
 /// Tables that hold content: never joinable from a plugin's own base.
 const CONTENT_TABLES: &[&str] = &["item", "item_translation"];
@@ -107,8 +110,18 @@ pub fn plan(
     if per_page > MAX_ITEMS_PER_PAGE {
         return Err(bound("per_page"));
     }
-    if definition.filters.len() > MAX_FILTERS {
+    // Every filter counts: grouped ones and `having` too.
+    let filters = definition.all_filters().len() + definition.aggregation.having.len();
+    if filters > MAX_FILTERS {
         return Err(bound("filters"));
+    }
+    if definition.group_depth() > MAX_GROUP_DEPTH {
+        return Err(bound("filter group nesting"));
+    }
+    if definition.aggregation.group_by.len() > MAX_AGGREGATES
+        || definition.aggregation.aggregates.len() > MAX_AGGREGATES
+    {
+        return Err(bound("group_by or aggregates"));
     }
     if definition.sorts.len() > MAX_SORTS {
         return Err(bound("sorts"));
@@ -120,7 +133,7 @@ pub fn plan(
         return Err(invalid("includes are not accepted from a plugin"));
     }
     if definition
-        .filters
+        .all_filters()
         .iter()
         .any(|f| f.operator == FilterOperator::SemanticSimilarity)
     {

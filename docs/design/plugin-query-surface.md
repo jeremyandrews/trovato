@@ -220,12 +220,22 @@ Part 3 adds, inside Gather so a site owner's builder and config get them too:
   "filters": [...], "groups": [...]}`, ANDed with `filters`, nested at most 3
   deep;
 - **aggregates**: `group_by`, `aggregates` (`count`, `sum`, `min`, `max`,
-  `avg`, each with a label), `having`, and `distinct`, **on a plugin-table or
-  record-type base only**. On `item` they are refused: the per-row access pass
-  (`tap_item_access`, the role tier) cannot decide an aggregate, so a count
-  would include rows the viewer may not see. Counting content per group is
-  recorded as a follow-up (BL-30), to be computed from the viewer's visible
-  scan rather than in SQL.
+  `avg`, each with a label), `having`, and `distinct`, **only on a base that is
+  not content**, which in practice is a plugin's own table. On `item` they
+  are refused: the per-row access pass (`tap_item_access`, the role tier)
+  cannot decide an aggregate, so a count would include rows the viewer may not
+  see. Record types are refused too (amended in B80.3): their field visibility
+  is decided per row after the query, so a `sum` over a hidden field would show
+  it. Counting content per group is recorded as a follow-up (BL-30), to be
+  computed from the viewer's visible scan rather than in SQL. Columns are plain
+  base-table columns; a grouped definition projects its `group_by` columns and
+  labels, sorts by them, and its total counts groups.
+
+A grouped member that places no constraint (an empty `in`, an absent URL
+argument) is true, as at the top level. Exposed and `semantic_similarity`
+filters stay top-level; `url` works in a group. The admin builder has no
+control for either shape, so it refuses to save a gather carrying one rather
+than drop it.
 
 Rejected: compound join conditions. The case that needed one was the alias join
 on source, stage and language, and that is section 4's job now; no second
@@ -244,6 +254,7 @@ the whole one:
 | filters, counting every nested group | 32 | new |
 | sorts | 8 | new |
 | group nesting | 3 | new (Part 3) |
+| `group_by` columns; aggregates | 8 each | new (Part 3); `having` counts as filters |
 | includes | 0 | section 3 |
 | statement timeout | 5 s | the raw path's `PLUGIN_QUERY_TIMEOUT_MS` (`host/db.rs:28`), not gather's 10 s (`gather_service.rs:808`); a cancelled statement is `ERR_SQL_FAILED` (-12), as on the raw path |
 | access scan | the site's `GATHER_ACCESS_MAX_SCAN` (1000 by default, `gather/access.rs:73`) | not an error: `access_capped` is true in the result, as for every gather |

@@ -40,6 +40,19 @@ pub struct QueryDefinition {
     #[serde(default)]
     pub filters: Vec<QueryFilter>,
 
+    /// Boolean groups of filters, each ANDed with [`Self::filters`].
+    ///
+    /// A group joins its filters and its own groups with `and` or `or`, nested
+    /// at most [`MAX_GROUP_DEPTH`] deep. Empty for every definition written
+    /// before groups existed, and then the emitted SQL is unchanged.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub filter_groups: Vec<FilterGroup>,
+
+    /// `group_by`, `aggregates`, `having` and `distinct`: a summary of the base
+    /// rows rather than the rows. Refused on content (see [`Aggregation`]).
+    #[serde(flatten)]
+    pub aggregation: Aggregation,
+
     /// Sort order.
     #[serde(default)]
     pub sorts: Vec<QuerySort>,
@@ -105,6 +118,186 @@ pub struct GatherAccess {
     pub permission: Option<String>,
 }
 
+/// How deep [`FilterGroup`]s may nest: a group inside a group inside a group.
+pub const MAX_GROUP_DEPTH: usize = 3;
+
+/// How a [`FilterGroup`] joins its members.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Conjunction {
+    /// Every member holds.
+    #[default]
+    And,
+    /// At least one member holds.
+    Or,
+}
+
+/// A parenthesised set of filters, ANDed with the definition's other filters.
+///
+/// ```json
+/// {"conjunction": "or", "filters": [...], "groups": [...]}
+/// ```
+///
+/// A member that places no constraint (an empty `in` list, an absent URL
+/// argument) is true, as it is at the top level: it drops out of an `and`
+/// group, and makes an `or` group true. An empty group is true.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FilterGroup {
+    /// `and` (the default) or `or`.
+    #[serde(default)]
+    pub conjunction: Conjunction,
+    /// The group's filters.
+    #[serde(default)]
+    pub filters: Vec<QueryFilter>,
+    /// Groups nested in this one.
+    #[serde(default)]
+    pub groups: Vec<FilterGroup>,
+}
+
+/// An aggregate function.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AggregateFunction {
+    /// `COUNT(field)`, or `COUNT(*)` with no field.
+    Count,
+    /// `SUM(field)`.
+    Sum,
+    /// `MIN(field)`.
+    Min,
+    /// `MAX(field)`.
+    Max,
+    /// `AVG(field)`.
+    Avg,
+}
+
+/// One aggregate column: `function(field) AS label`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueryAggregate {
+    /// The function.
+    pub function: AggregateFunction,
+    /// A base-table column; absent only for `count`, meaning `COUNT(*)`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    /// The key the value takes in a result row; a sort or `having` names it.
+    pub label: String,
+}
+
+/// A definition's summary clauses.
+///
+/// Set any of them and the result rows are groups, not base rows: each row
+/// holds the `group_by` columns and one key per aggregate label. `having`
+/// filters name an aggregate label and compare it with a number; sorts name a
+/// `group_by` column or a label. `distinct` alone returns the distinct
+/// projected rows.
+///
+/// Refused on `item` and on record types: their rows are decided one at a
+/// time after the query (`tap_item_access`, the role tier, field visibility),
+/// and an aggregate would count or sum rows and fields the viewer may not see.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Aggregation {
+    /// Base-table columns to group by.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub group_by: Vec<String>,
+    /// The aggregate columns.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aggregates: Vec<QueryAggregate>,
+    /// Conditions on aggregate labels, ANDed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub having: Vec<QueryFilter>,
+    /// `SELECT DISTINCT`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub distinct: bool,
+}
+
+impl Aggregation {
+    /// Whether any summary clause is set.
+    pub fn is_set(&self) -> bool {
+        self.distinct
+            || !self.group_by.is_empty()
+            || !self.aggregates.is_empty()
+            || !self.having.is_empty()
+    }
+
+    /// Whether the rows are groups (any clause but `distinct` alone).
+    pub fn is_grouped(&self) -> bool {
+        !self.group_by.is_empty() || !self.aggregates.is_empty() || !self.having.is_empty()
+    }
+
+    /// The aggregate a label names.
+    pub fn aggregate(&self, label: &str) -> Option<&QueryAggregate> {
+        self.aggregates.iter().find(|a| a.label == label)
+    }
+}
+
+impl FilterGroup {
+    /// How deep this group nests: 1 for a group with no groups in it.
+    pub fn depth(&self) -> usize {
+        1 + self.groups.iter().map(Self::depth).max().unwrap_or(0)
+    }
+
+    fn collect<'a>(&'a self, out: &mut Vec<&'a QueryFilter>) {
+        out.extend(&self.filters);
+        for group in &self.groups {
+            group.collect(out);
+        }
+    }
+
+    fn collect_mut<'a>(&'a mut self, out: &mut Vec<&'a mut QueryFilter>) {
+        out.extend(self.filters.iter_mut());
+        for group in &mut self.groups {
+            group.collect_mut(out);
+        }
+    }
+}
+
+impl QueryDefinition {
+    /// The filters inside [`Self::filter_groups`], at every depth.
+    pub fn group_filters(&self) -> Vec<&QueryFilter> {
+        let mut out = Vec::new();
+        for group in &self.filter_groups {
+            group.collect(&mut out);
+        }
+        out
+    }
+
+    /// The filters inside [`Self::filter_groups`], at every depth, to rewrite
+    /// in place: a resolution pass that runs on `filters` runs on these too.
+    pub fn group_filters_mut(&mut self) -> Vec<&mut QueryFilter> {
+        let mut out = Vec::new();
+        for group in &mut self.filter_groups {
+            group.collect_mut(&mut out);
+        }
+        out
+    }
+
+    /// Every filter, top level and grouped.
+    pub fn all_filters(&self) -> Vec<&QueryFilter> {
+        let mut out: Vec<&QueryFilter> = self.filters.iter().collect();
+        out.extend(self.group_filters());
+        out
+    }
+
+    /// Every filter, top level and grouped, to rewrite in place.
+    pub fn all_filters_mut(&mut self) -> Vec<&mut QueryFilter> {
+        let mut out: Vec<&mut QueryFilter> = self.filters.iter_mut().collect();
+        for group in &mut self.filter_groups {
+            group.collect_mut(&mut out);
+        }
+        out
+    }
+
+    /// How deep the filter groups nest; 0 with none.
+    pub fn group_depth(&self) -> usize {
+        self.filter_groups
+            .iter()
+            .map(FilterGroup::depth)
+            .max()
+            .unwrap_or(0)
+    }
+}
+
 fn default_base_table() -> String {
     "item".to_string()
 }
@@ -117,6 +310,8 @@ impl Default for QueryDefinition {
             item_type: None,
             fields: Vec::new(),
             filters: Vec::new(),
+            filter_groups: Vec::new(),
+            aggregation: Aggregation::default(),
             sorts: Vec::new(),
             relationships: Vec::new(),
             includes: HashMap::new(),
@@ -1119,6 +1314,8 @@ mod tests {
             includes: HashMap::new(),
             stage_aware: true,
             relevance_order: None,
+            filter_groups: Vec::new(),
+            aggregation: Default::default(),
         };
 
         let json = serde_json::to_string(&def).unwrap();

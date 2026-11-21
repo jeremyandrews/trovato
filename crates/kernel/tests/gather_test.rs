@@ -110,6 +110,8 @@ fn query_definition_serialization() {
         relationships: vec![],
         includes: std::collections::HashMap::new(),
         relevance_order: None,
+        filter_groups: Vec::new(),
+        aggregation: Default::default(),
     };
 
     let json = serde_json::to_string(&def).unwrap();
@@ -530,6 +532,8 @@ fn gate_test_recent_articles_query_definition() {
             relationships: vec![],
             includes: std::collections::HashMap::new(),
             relevance_order: None,
+            filter_groups: Vec::new(),
+            aggregation: Default::default(),
         },
         display: QueryDisplay {
             format: DisplayFormat::List,

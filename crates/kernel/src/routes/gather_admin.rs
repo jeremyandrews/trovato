@@ -19,6 +19,23 @@ use super::helpers::{
 };
 
 // =============================================================================
+// What the builder can show
+// =============================================================================
+
+/// Why the builder will not save a definition it cannot show.
+const BUILDER_CANNOT_SHOW: &str = "This gather uses filter groups or a summary \
+    (group_by, aggregates, having, distinct), which this builder cannot show. Saving \
+    it here would lose them, so it is not saved. Change it where it is defined: its \
+    config file or the plugin that installs it.";
+
+/// Whether a definition uses a shape the builder has no control for. The
+/// builder rebuilds the definition from its controls on save, so it would
+/// drop such a shape; it refuses instead.
+fn builder_cannot_show(definition: &QueryDefinition) -> bool {
+    !definition.filter_groups.is_empty() || definition.aggregation.is_set()
+}
+
+// =============================================================================
 // Form data
 // =============================================================================
 
@@ -178,6 +195,9 @@ async fn create_submit(
     // Validate definition
     let definition_errors = GatherService::validate_definition(&definition);
     errors.extend(definition_errors);
+    if builder_cannot_show(&definition) {
+        errors.push(BUILDER_CANNOT_SHOW.to_string());
+    }
 
     // Cap items_per_page
     let mut display = display;
@@ -270,6 +290,10 @@ async fn edit_form(
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &true);
+    context.insert(
+        "builder_cannot_show",
+        &builder_cannot_show(&query.definition),
+    );
     context.insert("definition", &query.definition);
     context.insert("definition_json", &definition_json);
     context.insert("display_json", &display_json);
@@ -345,6 +369,11 @@ async fn save_submit(
     // Validate definition
     let definition_errors = GatherService::validate_definition(&definition);
     errors.extend(definition_errors);
+    // The stored definition counts too: the builder dropped what it could not
+    // show before posting, so the submitted one alone would look fine.
+    if builder_cannot_show(&existing.definition) || builder_cannot_show(&definition) {
+        errors.push(BUILDER_CANNOT_SHOW.to_string());
+    }
 
     // Cap items_per_page
     let mut display = display;
@@ -361,6 +390,10 @@ async fn save_submit(
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &true);
+        context.insert(
+            "builder_cannot_show",
+            &(builder_cannot_show(&existing.definition) || builder_cannot_show(&definition)),
+        );
         context.insert("errors", &errors);
         context.insert("definition", &definition);
         context.insert("definition_json", &form.definition_json);

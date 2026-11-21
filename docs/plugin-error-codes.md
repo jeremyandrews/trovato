@@ -101,7 +101,7 @@ read from cron or the queue without `item_background`.
 | Code | Constant | Meaning | Recovery |
 |------|----------|---------|----------|
 | -80 | `ERR_QUERY_INVALID` | The definition is refused: `stage_aware = false` on content, an include, `semantic_similarity`, a plugin-table base joining content, a `url` filter other than `equals` or `in`, or anything the gather validator rejects | The host log names the reason; see `docs/design/plugin-query-surface.md` |
-| -81 | `ERR_QUERY_BOUND` | More than 100 rows per call, 32 filters, 8 sorts or 3 relationships | Page with `page`, or split the query |
+| -81 | `ERR_QUERY_BOUND` | More than 100 rows per call, 32 filters (grouped ones and `having` included), 8 sorts, 3 relationships, filter groups nested past 3, or more than 8 `group_by` columns or aggregates | Page with `page`, or split the query |
 
 ## User Directory Errors
 
