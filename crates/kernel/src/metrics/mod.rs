@@ -191,12 +191,17 @@ pub struct Metrics {
 
 impl Metrics {
     /// Create a new metrics registry.
+    ///
+    /// Counters are registered without their `_total` suffix: the encoder
+    /// appends it, so `cache_hits` is exposed as `cache_hits_total`. They used
+    /// to be registered with it, and every counter was exposed with the suffix
+    /// twice (`cache_hits_total_total`), under a name no documentation gave.
     pub fn new() -> Self {
         let mut registry = Registry::default();
 
         let http_requests = Family::<HttpLabels, Counter>::default();
         registry.register(
-            "http_requests_total",
+            "http_requests",
             "Total HTTP requests",
             http_requests.clone(),
         );
@@ -228,14 +233,14 @@ impl Metrics {
 
         let cache_hits = Family::<CacheLabels, Counter>::default();
         registry.register(
-            "cache_hits_total",
+            "cache_hits",
             "Cache hit count, by cache",
             cache_hits.clone(),
         );
 
         let cache_misses = Family::<CacheLabels, Counter>::default();
         registry.register(
-            "cache_misses_total",
+            "cache_misses",
             "Cache miss count, by cache",
             cache_misses.clone(),
         );
@@ -288,29 +293,25 @@ impl Metrics {
         );
 
         let file_uploads = Counter::default();
-        registry.register(
-            "file_uploads_total",
-            "Total file uploads",
-            file_uploads.clone(),
-        );
+        registry.register("file_uploads", "Total file uploads", file_uploads.clone());
 
         let file_upload_bytes = Counter::default();
         registry.register(
-            "file_upload_bytes_total",
+            "file_upload_bytes",
             "Total bytes uploaded",
             file_upload_bytes.clone(),
         );
 
         let rate_limit_rejections = Counter::default();
         registry.register(
-            "rate_limit_rejections_total",
+            "rate_limit_rejections",
             "Rate limit rejections",
             rate_limit_rejections.clone(),
         );
 
         let permission_load_failures = Counter::default();
         registry.register(
-            "trovato_permission_load_failures_total",
+            "trovato_permission_load_failures",
             "Permission loads that failed and degraded a request to the deny-all permission set",
             permission_load_failures.clone(),
         );
@@ -474,8 +475,30 @@ mod tests {
     fn test_metrics_new() {
         let metrics = Metrics::new();
         let output = metrics.encode();
-        assert!(output.contains("http_requests_total"));
+        // An empty family has no samples yet, only its declaration.
+        assert!(output.contains("# TYPE http_requests counter"));
         assert!(output.contains("cache_hits_total"));
+    }
+
+    /// Every counter is exposed under its documented name, with `_total`
+    /// once.
+    #[test]
+    fn counters_carry_the_total_suffix_once() {
+        let metrics = Metrics::new();
+        metrics.record_request("GET", "/", 200, 0.01);
+        let output = metrics.encode();
+        assert!(!output.contains("_total_total"), "{output}");
+        for name in [
+            "http_requests_total",
+            "cache_hits_total",
+            "cache_misses_total",
+            "file_uploads_total",
+            "file_upload_bytes_total",
+            "rate_limit_rejections_total",
+            "trovato_permission_load_failures_total",
+        ] {
+            assert!(output.contains(name), "{name} is missing from {output}");
+        }
     }
 
     #[test]

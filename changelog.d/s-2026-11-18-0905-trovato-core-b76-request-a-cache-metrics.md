@@ -17,3 +17,10 @@ zero on a busy site. Each cache-owning service now takes the one `Metrics` from
 `Metrics::cache_lookup`; the request series are recorded by the timing middleware
 that already measured the request. The upload, rate-limit and active-connection
 series are still registered and never recorded.
+
+Every counter on `/metrics` was also exposed with its `_total` suffix twice
+(`cache_hits_total_total`, `trovato_permission_load_failures_total_total`),
+because the registry appends `_total` to a counter's name and the kernel
+registered names that already ended in it. Counters are now registered without
+the suffix, so each is exposed under the name the documentation gives it; a
+dashboard or alert written against the doubled name needs the single one.
