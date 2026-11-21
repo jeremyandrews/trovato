@@ -1447,7 +1447,7 @@ pub fn delete_translation(_item_id: &str, _language: &str) -> Result<bool, i32> 
 /// migrations create and its `db_tables`), under the kernel's protected floor;
 /// a table outside it is [`crate::host_errors::ERR_TABLE_NOT_DECLARED`]. No
 /// `raw_sql` is needed. Content is not written here: `item_translation` and the
-/// item tables belong to [`super::save_item`] and [`super::save_translation`],
+/// item tables belong to [`crate::host::save_item`] and [`crate::host::save_translation`],
 /// which decide access, fire the item taps and keep the cache right.
 ///
 /// A `where` is a map (each key equal to its value) or an array of
