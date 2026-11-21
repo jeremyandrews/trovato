@@ -236,11 +236,11 @@ fn register_start_requires_an_authenticated_session() {
                     .unwrap(),
             )
             .await;
-        // `require_login` redirects rather than 401s; the point is that an
-        // anonymous caller never reaches the ceremony.
+        // A JSON endpoint: nobody signed in is a 401, and never reaches the
+        // ceremony.
         assert_eq!(
             response.status(),
-            StatusCode::SEE_OTHER,
+            StatusCode::UNAUTHORIZED,
             "an anonymous caller must not be able to start a registration"
         );
     });

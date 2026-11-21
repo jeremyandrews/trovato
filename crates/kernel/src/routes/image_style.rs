@@ -68,7 +68,11 @@ async fn serve_derivative(
     }
 
     let Some(image_service) = state.image_styles() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "Image styles not enabled").into_response();
+        return crate::error::AppError::with_status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Image styles not enabled",
+        )
+        .into_response();
     };
 
     let original_uri = format!("local://{file_path}");
@@ -116,12 +120,20 @@ async fn serve_derivative(
             if let Some(auto) = synthesize_width_style(&style_name) {
                 auto
             } else {
-                return (StatusCode::NOT_FOUND, "Image style not found").into_response();
+                return crate::error::AppError::with_status(
+                    StatusCode::NOT_FOUND,
+                    "Image style not found",
+                )
+                .into_response();
             }
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to load image style");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to load style").into_response();
+            return crate::error::AppError::with_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to load style",
+            )
+            .into_response();
         }
     };
 
@@ -130,21 +142,29 @@ async fn serve_derivative(
     let original = match original {
         Ok(Some(data)) => data,
         Ok(None) => {
-            return (StatusCode::NOT_FOUND, "Original file not found").into_response();
+            return crate::error::AppError::with_status(
+                StatusCode::NOT_FOUND,
+                "Original file not found",
+            )
+            .into_response();
         }
         Err(e) => {
             tracing::warn!(error = %e, path = %file_path, "failed to load original file");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to load file").into_response();
+            return crate::error::AppError::with_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to load file",
+            )
+            .into_response();
         }
     };
 
     // Acquire processing permit to limit concurrent CPU-intensive operations
     let Ok(_permit) = image_service.acquire_processing_permit().await else {
-        return (
+        return crate::error::AppError::with_status(
             StatusCode::SERVICE_UNAVAILABLE,
             "Image processing unavailable",
         )
-            .into_response();
+        .into_response();
     };
 
     // Process through style effects on a blocking thread to avoid starving
@@ -166,11 +186,19 @@ async fn serve_derivative(
         Ok(Ok(data)) => data,
         Ok(Err(e)) => {
             tracing::warn!(error = %e, "failed to process image");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to process image").into_response();
+            return crate::error::AppError::with_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to process image",
+            )
+            .into_response();
         }
         Err(e) => {
             tracing::warn!(error = %e, "image processing task panicked");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to process image").into_response();
+            return crate::error::AppError::with_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to process image",
+            )
+            .into_response();
         }
     };
 

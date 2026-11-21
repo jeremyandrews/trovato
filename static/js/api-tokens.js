@@ -28,7 +28,7 @@
 
   function failure(response) {
     return response.json().then(
-      function (body) { throw new Error(body.error || "That did not work."); },
+      function (body) { throw new Error(body.message || "That did not work."); },
       function () { throw new Error("That did not work."); }
     );
   }

@@ -69,7 +69,7 @@
                         if (response.success && response.file) {
                             onUploadSuccess(response.file);
                         } else {
-                            onUploadError(response.error || 'Upload failed');
+                            onUploadError(response.message || 'Upload failed');
                         }
                     } catch (e) {
                         onUploadError('Invalid server response');
@@ -77,7 +77,7 @@
                 } else {
                     try {
                         var response = JSON.parse(xhr.responseText);
-                        onUploadError(response.error || 'Upload failed (' + xhr.status + ')');
+                        onUploadError(response.message || 'Upload failed (' + xhr.status + ')');
                     } catch (e) {
                         onUploadError('Upload failed (' + xhr.status + ')');
                     }

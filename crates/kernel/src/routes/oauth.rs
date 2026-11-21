@@ -95,7 +95,11 @@ async fn authorize(
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     let Some(oauth) = state.oauth() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "OAuth not enabled").into_response();
+        return crate::error::AppError::with_status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "OAuth not enabled",
+        )
+        .into_response();
     };
 
     // Validate response_type (RFC 6749 §4.1.1 — REQUIRED, MUST be "code")
@@ -104,7 +108,11 @@ async fn authorize(
         .map(|s| s.as_str())
         .unwrap_or("");
     if response_type != "code" {
-        return (StatusCode::BAD_REQUEST, "response_type must be 'code'").into_response();
+        return crate::error::AppError::with_status(
+            StatusCode::BAD_REQUEST,
+            "response_type must be 'code'",
+        )
+        .into_response();
     }
 
     let user_id = match super::helpers::require_login(&state, &session).await {
@@ -119,7 +127,11 @@ async fn authorize(
 
     // Validate scope characters (RFC 6749 §3.3)
     if !validate_scope(scope) {
-        return (StatusCode::BAD_REQUEST, "Invalid scope characters").into_response();
+        return crate::error::AppError::with_status(
+            StatusCode::BAD_REQUEST,
+            "Invalid scope characters",
+        )
+        .into_response();
     }
 
     // PKCE parameters (RFC 7636)
@@ -130,29 +142,36 @@ async fn authorize(
     if let Some(method) = code_challenge_method
         && method != "S256"
     {
-        return (
+        return crate::error::AppError::with_status(
             StatusCode::BAD_REQUEST,
             "code_challenge_method must be 'S256'",
         )
-            .into_response();
+        .into_response();
     }
 
     // If code_challenge_method is provided, code_challenge must be too
     if code_challenge_method.is_some() && code_challenge.is_none() {
-        return (
+        return crate::error::AppError::with_status(
             StatusCode::BAD_REQUEST,
             "code_challenge required when code_challenge_method is provided",
         )
-            .into_response();
+        .into_response();
     }
 
     // Validate client
     let client = match oauth.find_client(client_id).await {
         Ok(Some(c)) => c,
-        Ok(None) => return (StatusCode::BAD_REQUEST, "Unknown client").into_response(),
+        Ok(None) => {
+            return crate::error::AppError::with_status(StatusCode::BAD_REQUEST, "Unknown client")
+                .into_response();
+        }
         Err(e) => {
             tracing::warn!(error = %e, "failed to find OAuth client");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response();
+            return crate::error::AppError::with_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal error",
+            )
+            .into_response();
         }
     };
 
@@ -163,20 +182,28 @@ async fn authorize(
     // RFC 6749 §3.1.2.3: If multiple redirect URIs are registered, the client
     // MUST include the redirect_uri parameter in the authorization request.
     if redirect_uri.is_empty() && redirect_uris.len() > 1 {
-        return (
+        return crate::error::AppError::with_status(
             StatusCode::BAD_REQUEST,
             "redirect_uri required when client has multiple registered URIs",
         )
-            .into_response();
+        .into_response();
     }
 
     if !redirect_uris.contains(&redirect_uri.to_string()) {
-        return (StatusCode::BAD_REQUEST, "Invalid redirect_uri").into_response();
+        return crate::error::AppError::with_status(
+            StatusCode::BAD_REQUEST,
+            "Invalid redirect_uri",
+        )
+        .into_response();
     }
 
     // Public clients MUST use PKCE
     if !client.is_confidential() && code_challenge.is_none() {
-        return (StatusCode::BAD_REQUEST, "PKCE required for public clients").into_response();
+        return crate::error::AppError::with_status(
+            StatusCode::BAD_REQUEST,
+            "PKCE required for public clients",
+        )
+        .into_response();
     }
 
     // Filter the requested scope to only scopes this client is authorized for.
@@ -200,7 +227,11 @@ async fn authorize(
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(error = %e, "failed to create auth code");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to generate code").into_response();
+            return crate::error::AppError::with_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to generate code",
+            )
+            .into_response();
         }
     };
 
@@ -235,12 +266,20 @@ async fn token(
     axum::Form(payload): axum::Form<TokenRequest>,
 ) -> impl IntoResponse {
     let Some(oauth) = state.oauth() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "OAuth not enabled").into_response();
+        return crate::error::AppError::with_status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "OAuth not enabled",
+        )
+        .into_response();
     };
 
     // Validate scope characters (RFC 6749 §3.3)
     if !validate_scope(&payload.scope) {
-        return (StatusCode::BAD_REQUEST, "Invalid scope characters").into_response();
+        return crate::error::AppError::with_status(
+            StatusCode::BAD_REQUEST,
+            "Invalid scope characters",
+        )
+        .into_response();
     }
 
     let headers = token_response_headers();
@@ -254,22 +293,29 @@ async fn token(
             {
                 Ok(Some(c)) => c,
                 Ok(None) => {
-                    return (StatusCode::UNAUTHORIZED, "Invalid client credentials")
-                        .into_response();
+                    return crate::error::AppError::with_status(
+                        StatusCode::UNAUTHORIZED,
+                        "Invalid client credentials",
+                    )
+                    .into_response();
                 }
                 Err(e) => {
                     tracing::warn!(error = %e, "client validation failed");
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response();
+                    return crate::error::AppError::with_status(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Internal error",
+                    )
+                    .into_response();
                 }
             };
 
             // Validate grant_type is allowed
             if !client.supports_grant_type("client_credentials") {
-                return (
+                return crate::error::AppError::with_status(
                     StatusCode::BAD_REQUEST,
                     "Grant type not allowed for this client",
                 )
-                    .into_response();
+                .into_response();
             }
 
             // Filter scope to only scopes the client is authorized for
@@ -286,8 +332,11 @@ async fn token(
                 Ok(r) => r,
                 Err(e) => {
                     tracing::warn!(error = %e, "token creation failed");
-                    return (StatusCode::INTERNAL_SERVER_ERROR, "Token creation failed")
-                        .into_response();
+                    return crate::error::AppError::with_status(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "Token creation failed",
+                    )
+                    .into_response();
                 }
             };
 
@@ -296,7 +345,11 @@ async fn token(
         "authorization_code" => {
             // Validate code_verifier length (RFC 7636 §4.1: 43-128 ASCII chars)
             if payload.code_verifier.len() > MAX_CODE_VERIFIER_LENGTH {
-                return (StatusCode::BAD_REQUEST, "code_verifier too long").into_response();
+                return crate::error::AppError::with_status(
+                    StatusCode::BAD_REQUEST,
+                    "code_verifier too long",
+                )
+                .into_response();
             }
 
             // Exchange the opaque authorization code
@@ -315,7 +368,11 @@ async fn token(
                 Ok(r) => r,
                 Err(e) => {
                     tracing::debug!(error = %e, "authorization code exchange failed");
-                    return (StatusCode::BAD_REQUEST, "Invalid authorization code").into_response();
+                    return crate::error::AppError::with_status(
+                        StatusCode::BAD_REQUEST,
+                        "Invalid authorization code",
+                    )
+                    .into_response();
                 }
             };
 
@@ -324,7 +381,11 @@ async fn token(
         "refresh_token" => {
             // Verify the refresh token (must be token_type=refresh)
             let Ok(claims) = oauth.verify_refresh_token(&payload.refresh_token) else {
-                return (StatusCode::BAD_REQUEST, "Invalid refresh token").into_response();
+                return crate::error::AppError::with_status(
+                    StatusCode::BAD_REQUEST,
+                    "Invalid refresh token",
+                )
+                .into_response();
             };
 
             // Authenticate client (must match the client that got the token)
@@ -332,46 +393,57 @@ async fn token(
                 .authenticate_client(&payload.client_id, &payload.client_secret)
                 .await
             else {
-                return (StatusCode::UNAUTHORIZED, "Client authentication failed").into_response();
+                return crate::error::AppError::with_status(
+                    StatusCode::UNAUTHORIZED,
+                    "Client authentication failed",
+                )
+                .into_response();
             };
 
             // Verify token was issued to this client
             if claims.client_id != client.client_id {
-                return (
+                return crate::error::AppError::with_status(
                     StatusCode::BAD_REQUEST,
                     "Token was not issued to this client",
                 )
-                    .into_response();
+                .into_response();
             }
 
             // Validate grant_type is allowed
             if !client.supports_grant_type("refresh_token") {
-                return (
+                return crate::error::AppError::with_status(
                     StatusCode::BAD_REQUEST,
                     "Grant type not allowed for this client",
                 )
-                    .into_response();
+                .into_response();
             }
 
             // Check revocation
             match oauth.is_revoked(&claims.jti, state.redis()).await {
                 Ok(true) => {
-                    return (StatusCode::BAD_REQUEST, "Refresh token has been revoked")
-                        .into_response();
+                    return crate::error::AppError::with_status(
+                        StatusCode::BAD_REQUEST,
+                        "Refresh token has been revoked",
+                    )
+                    .into_response();
                 }
                 Ok(false) => {}
                 Err(e) => {
                     tracing::warn!(error = %e, "failed to check refresh token revocation");
-                    return (
+                    return crate::error::AppError::with_status(
                         StatusCode::SERVICE_UNAVAILABLE,
                         "Unable to verify token status",
                     )
-                        .into_response();
+                    .into_response();
                 }
             }
 
             let Ok(user_id) = claims.sub.parse::<Uuid>() else {
-                return (StatusCode::BAD_REQUEST, "Invalid token subject").into_response();
+                return crate::error::AppError::with_status(
+                    StatusCode::BAD_REQUEST,
+                    "Invalid token subject",
+                )
+                .into_response();
             };
 
             // Re-filter scope against current client restrictions.
@@ -384,8 +456,11 @@ async fn token(
                     Ok(r) => r,
                     Err(e) => {
                         tracing::warn!(error = %e, "token creation failed");
-                        return (StatusCode::INTERNAL_SERVER_ERROR, "Token creation failed")
-                            .into_response();
+                        return crate::error::AppError::with_status(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "Token creation failed",
+                        )
+                        .into_response();
                     }
                 };
 
@@ -400,16 +475,17 @@ async fn token(
                 .await
             {
                 tracing::warn!(error = %e, "failed to revoke old refresh token; denying request");
-                return (
+                return crate::error::AppError::with_status(
                     StatusCode::SERVICE_UNAVAILABLE,
                     "Unable to complete token rotation",
                 )
-                    .into_response();
+                .into_response();
             }
 
             (headers, axum::Json(response)).into_response()
         }
-        _ => (StatusCode::BAD_REQUEST, "Unsupported grant_type").into_response(),
+        _ => crate::error::AppError::with_status(StatusCode::BAD_REQUEST, "Unsupported grant_type")
+            .into_response(),
     }
 }
 
@@ -421,7 +497,11 @@ async fn revoke(
     axum::Form(payload): axum::Form<RevokeRequest>,
 ) -> impl IntoResponse {
     let Some(oauth) = state.oauth() else {
-        return (StatusCode::SERVICE_UNAVAILABLE, "OAuth not enabled").into_response();
+        return crate::error::AppError::with_status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "OAuth not enabled",
+        )
+        .into_response();
     };
 
     // Decode the token to get JTI and verify ownership
@@ -447,7 +527,11 @@ async fn revoke(
                 .ok()
                 .flatten();
             if valid.is_none() {
-                return (StatusCode::UNAUTHORIZED, "Client authentication failed").into_response();
+                return crate::error::AppError::with_status(
+                    StatusCode::UNAUTHORIZED,
+                    "Client authentication failed",
+                )
+                .into_response();
             }
         }
         Ok(Some(_)) => {} // Public client — no secret validation needed
@@ -457,7 +541,11 @@ async fn revoke(
         }
         Err(e) => {
             tracing::warn!(error = %e, "failed to look up client for revocation");
-            return (StatusCode::INTERNAL_SERVER_ERROR, "Internal error").into_response();
+            return crate::error::AppError::with_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Internal error",
+            )
+            .into_response();
         }
     }
 
@@ -470,7 +558,11 @@ async fn revoke(
         .await
     {
         tracing::warn!(error = %e, "failed to revoke token");
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Revocation failed").into_response();
+        return crate::error::AppError::with_status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Revocation failed",
+        )
+        .into_response();
     }
 
     StatusCode::OK.into_response()

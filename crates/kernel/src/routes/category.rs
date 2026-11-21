@@ -3,10 +3,9 @@
 //! REST endpoints for managing categories and tags, plus an HTML browse page
 //! for the "topics" category that renders tags as a link grid.
 
+use crate::error::AppError;
 use crate::models::{CreateCategory, CreateTag, UpdateCategory, UpdateTag};
-use crate::routes::helpers::{
-    JsonError, inject_site_context, require_csrf_header, require_permission_json,
-};
+use crate::routes::helpers::{inject_site_context, require_csrf_header, require_permission_json};
 use crate::state::AppState;
 use axum::{
     Router,
@@ -35,18 +34,9 @@ async fn authorize_category_mutation(
     state: &AppState,
     session: &Session,
     headers: &HeaderMap,
-) -> Result<(), (StatusCode, Json<JsonError>)> {
+) -> Result<(), AppError> {
     require_permission_json(state, session, ADMINISTER_CATEGORIES).await?;
-    // Map the header-CSRF helper's `serde_json::Value` error body onto this
-    // module's `JsonError` shape so the response is uniform.
-    require_csrf_header(session, headers).await.map_err(|_| {
-        (
-            StatusCode::FORBIDDEN,
-            Json(JsonError {
-                error: "Invalid or missing CSRF token. Include X-CSRF-Token header.".to_string(),
-            }),
-        )
-    })?;
+    require_csrf_header(session, headers).await?;
     Ok(())
 }
 
@@ -121,15 +111,12 @@ struct SetParentsRequest {
 
 async fn list_categories(
     State(state): State<AppState>,
-) -> Result<Json<Vec<CategoryResponse>>, (StatusCode, Json<JsonError>)> {
-    let categories = state.categories().list_categories().await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: e.to_string(),
-            }),
-        )
-    })?;
+) -> Result<Json<Vec<CategoryResponse>>, AppError> {
+    let categories = state
+        .categories()
+        .list_categories()
+        .await
+        .map_err(AppError::internal)?;
 
     Ok(Json(
         categories
@@ -148,27 +135,13 @@ async fn list_categories(
 async fn get_category(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<Json<CategoryResponse>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<CategoryResponse>, AppError> {
     let category = state
         .categories()
         .get_category(&id)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: e.to_string(),
-                }),
-            )
-        })?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(JsonError {
-                    error: "category not found".to_string(),
-                }),
-            )
-        })?;
+        .map_err(AppError::internal)?
+        .ok_or_else(|| AppError::with_status(StatusCode::NOT_FOUND, "category not found"))?;
 
     Ok(Json(CategoryResponse {
         id: category.id,
@@ -184,21 +157,14 @@ async fn create_category(
     session: Session,
     headers: HeaderMap,
     Json(input): Json<CreateCategory>,
-) -> Result<(StatusCode, Json<CategoryResponse>), (StatusCode, Json<JsonError>)> {
+) -> Result<(StatusCode, Json<CategoryResponse>), AppError> {
     authorize_category_mutation(&state, &session, &headers).await?;
 
     let category = state
         .categories()
         .create_category(input)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::BAD_REQUEST,
-                Json(JsonError {
-                    error: e.to_string(),
-                }),
-            )
-        })?;
+        .map_err(|e| AppError::with_status(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     Ok((
         StatusCode::CREATED,
@@ -218,29 +184,15 @@ async fn update_category(
     headers: HeaderMap,
     Path(id): Path<String>,
     Json(input): Json<UpdateCategory>,
-) -> Result<Json<CategoryResponse>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<CategoryResponse>, AppError> {
     authorize_category_mutation(&state, &session, &headers).await?;
 
     let category = state
         .categories()
         .update_category(&id, input)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: e.to_string(),
-                }),
-            )
-        })?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(JsonError {
-                    error: "category not found".to_string(),
-                }),
-            )
-        })?;
+        .map_err(AppError::internal)?
+        .ok_or_else(|| AppError::with_status(StatusCode::NOT_FOUND, "category not found"))?;
 
     Ok(Json(CategoryResponse {
         id: category.id,
@@ -256,26 +208,21 @@ async fn delete_category(
     session: Session,
     headers: HeaderMap,
     Path(id): Path<String>,
-) -> Result<StatusCode, (StatusCode, Json<JsonError>)> {
+) -> Result<StatusCode, AppError> {
     authorize_category_mutation(&state, &session, &headers).await?;
 
-    let deleted = state.categories().delete_category(&id).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: e.to_string(),
-            }),
-        )
-    })?;
+    let deleted = state
+        .categories()
+        .delete_category(&id)
+        .await
+        .map_err(AppError::internal)?;
 
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err((
+        Err(AppError::with_status(
             StatusCode::NOT_FOUND,
-            Json(JsonError {
-                error: "category not found".to_string(),
-            }),
+            "category not found",
         ))
     }
 }
@@ -287,19 +234,12 @@ async fn delete_category(
 async fn list_tags(
     State(state): State<AppState>,
     Path(category_id): Path<String>,
-) -> Result<Json<Vec<TagResponse>>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<Vec<TagResponse>>, AppError> {
     let tags = state
         .categories()
         .list_tags(&category_id)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: e.to_string(),
-                }),
-            )
-        })?;
+        .map_err(AppError::internal)?;
 
     Ok(Json(
         tags.into_iter()
@@ -319,19 +259,12 @@ async fn list_tags(
 async fn get_root_tags(
     State(state): State<AppState>,
     Path(category_id): Path<String>,
-) -> Result<Json<Vec<TagResponse>>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<Vec<TagResponse>>, AppError> {
     let tags = state
         .categories()
         .get_root_tags(&category_id)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: e.to_string(),
-                }),
-            )
-        })?;
+        .map_err(AppError::internal)?;
 
     Ok(Json(
         tags.into_iter()
@@ -351,27 +284,13 @@ async fn get_root_tags(
 async fn get_tag(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<TagResponse>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<TagResponse>, AppError> {
     let tag = state
         .categories()
         .get_tag(id)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: e.to_string(),
-                }),
-            )
-        })?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(JsonError {
-                    error: "tag not found".to_string(),
-                }),
-            )
-        })?;
+        .map_err(AppError::internal)?
+        .ok_or_else(|| AppError::with_status(StatusCode::NOT_FOUND, "tag not found"))?;
 
     Ok(Json(TagResponse {
         id: tag.id,
@@ -389,17 +308,14 @@ async fn create_tag(
     session: Session,
     headers: HeaderMap,
     Json(input): Json<CreateTag>,
-) -> Result<(StatusCode, Json<TagResponse>), (StatusCode, Json<JsonError>)> {
+) -> Result<(StatusCode, Json<TagResponse>), AppError> {
     authorize_category_mutation(&state, &session, &headers).await?;
 
-    let tag = state.categories().create_tag(input).await.map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            Json(JsonError {
-                error: e.to_string(),
-            }),
-        )
-    })?;
+    let tag = state
+        .categories()
+        .create_tag(input)
+        .await
+        .map_err(|e| AppError::with_status(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     Ok((
         StatusCode::CREATED,
@@ -421,29 +337,15 @@ async fn update_tag(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(input): Json<UpdateTag>,
-) -> Result<Json<TagResponse>, (StatusCode, Json<JsonError>)> {
+) -> Result<Json<TagResponse>, AppError> {
     authorize_category_mutation(&state, &session, &headers).await?;
 
     let tag = state
         .categories()
         .update_tag(id, input)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: e.to_string(),
-                }),
-            )
-        })?
-        .ok_or_else(|| {
-            (
-                StatusCode::NOT_FOUND,
-                Json(JsonError {
-                    error: "tag not found".to_string(),
-                }),
-            )
-        })?;
+        .map_err(AppError::internal)?
+        .ok_or_else(|| AppError::with_status(StatusCode::NOT_FOUND, "tag not found"))?;
 
     Ok(Json(TagResponse {
         id: tag.id,
@@ -461,26 +363,21 @@ async fn delete_tag(
     session: Session,
     headers: HeaderMap,
     Path(id): Path<Uuid>,
-) -> Result<StatusCode, (StatusCode, Json<JsonError>)> {
+) -> Result<StatusCode, AppError> {
     authorize_category_mutation(&state, &session, &headers).await?;
 
-    let deleted = state.categories().delete_tag(id).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: e.to_string(),
-            }),
-        )
-    })?;
+    let deleted = state
+        .categories()
+        .delete_tag(id)
+        .await
+        .map_err(AppError::internal)?;
 
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
-        Err((
+        Err(AppError::with_status(
             StatusCode::NOT_FOUND,
-            Json(JsonError {
-                error: "tag not found".to_string(),
-            }),
+            "tag not found",
         ))
     }
 }
@@ -492,15 +389,12 @@ async fn delete_tag(
 async fn get_parents(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<TagResponse>>, (StatusCode, Json<JsonError>)> {
-    let parents = state.categories().get_parents(id).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: e.to_string(),
-            }),
-        )
-    })?;
+) -> Result<Json<Vec<TagResponse>>, AppError> {
+    let parents = state
+        .categories()
+        .get_parents(id)
+        .await
+        .map_err(AppError::internal)?;
 
     Ok(Json(
         parents
@@ -524,21 +418,14 @@ async fn set_parents(
     headers: HeaderMap,
     Path(id): Path<Uuid>,
     Json(input): Json<SetParentsRequest>,
-) -> Result<StatusCode, (StatusCode, Json<JsonError>)> {
+) -> Result<StatusCode, AppError> {
     authorize_category_mutation(&state, &session, &headers).await?;
 
     state
         .categories()
         .set_parents(id, &input.parent_ids)
         .await
-        .map_err(|e| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: e.to_string(),
-                }),
-            )
-        })?;
+        .map_err(AppError::internal)?;
 
     Ok(StatusCode::NO_CONTENT)
 }
@@ -546,15 +433,12 @@ async fn set_parents(
 async fn get_children(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<TagResponse>>, (StatusCode, Json<JsonError>)> {
-    let children = state.categories().get_children(id).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: e.to_string(),
-            }),
-        )
-    })?;
+) -> Result<Json<Vec<TagResponse>>, AppError> {
+    let children = state
+        .categories()
+        .get_children(id)
+        .await
+        .map_err(AppError::internal)?;
 
     Ok(Json(
         children
@@ -575,15 +459,12 @@ async fn get_children(
 async fn get_ancestors(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<TagWithDepthResponse>>, (StatusCode, Json<JsonError>)> {
-    let ancestors = state.categories().get_ancestors(id).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: e.to_string(),
-            }),
-        )
-    })?;
+) -> Result<Json<Vec<TagWithDepthResponse>>, AppError> {
+    let ancestors = state
+        .categories()
+        .get_ancestors(id)
+        .await
+        .map_err(AppError::internal)?;
 
     Ok(Json(
         ancestors
@@ -607,15 +488,12 @@ async fn get_ancestors(
 async fn get_descendants(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<TagWithDepthResponse>>, (StatusCode, Json<JsonError>)> {
-    let descendants = state.categories().get_descendants(id).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: e.to_string(),
-            }),
-        )
-    })?;
+) -> Result<Json<Vec<TagWithDepthResponse>>, AppError> {
+    let descendants = state
+        .categories()
+        .get_descendants(id)
+        .await
+        .map_err(AppError::internal)?;
 
     Ok(Json(
         descendants
@@ -639,15 +517,12 @@ async fn get_descendants(
 async fn get_breadcrumb(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<TagResponse>>, (StatusCode, Json<JsonError>)> {
-    let breadcrumb = state.categories().get_breadcrumb(id).await.map_err(|e| {
-        (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(JsonError {
-                error: e.to_string(),
-            }),
-        )
-    })?;
+) -> Result<Json<Vec<TagResponse>>, AppError> {
+    let breadcrumb = state
+        .categories()
+        .get_breadcrumb(id)
+        .await
+        .map_err(AppError::internal)?;
 
     Ok(Json(
         breadcrumb

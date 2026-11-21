@@ -373,7 +373,7 @@ fn expansion_switched_off_is_refused_before_any_provider_call() {
         );
         let json: serde_json::Value =
             serde_json::from_str(&body).expect("the refusal is a short JSON error");
-        assert!(json["error"].is_string(), "{body}");
+        assert!(json["message"].is_string(), "{body}");
 
         // The browser is told too.
         let config = rendered_scolta_config(app).await;

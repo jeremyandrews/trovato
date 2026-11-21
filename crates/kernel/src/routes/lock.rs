@@ -11,6 +11,7 @@ use axum::{
 };
 use serde::Deserialize;
 
+use crate::error::AppError;
 use crate::state::AppState;
 
 /// Lock request payload.
@@ -44,10 +45,12 @@ async fn heartbeat(
     axum::Json(payload): axum::Json<LockRequest>,
 ) -> impl IntoResponse {
     if !ALLOWED_ENTITY_TYPES.contains(&payload.entity_type.as_str()) {
-        return (StatusCode::BAD_REQUEST, "Invalid entity type").into_response();
+        return AppError::with_status(StatusCode::BAD_REQUEST, "Invalid entity type")
+            .into_response();
     }
     if payload.entity_id.len() > MAX_ENTITY_ID_LENGTH {
-        return (StatusCode::BAD_REQUEST, "entity_id too long").into_response();
+        return AppError::with_status(StatusCode::BAD_REQUEST, "entity_id too long")
+            .into_response();
     }
 
     let user_id = match crate::routes::helpers::require_login_json(&state, &session).await {
@@ -56,18 +59,16 @@ async fn heartbeat(
     };
 
     // Verify CSRF token from header
-    if let Err((status, json)) =
-        crate::routes::helpers::require_csrf_header(&session, &headers).await
-    {
-        return (status, json).into_response();
+    if let Err(refusal) = crate::routes::helpers::require_csrf_header(&session, &headers).await {
+        return refusal.into_response();
     }
 
     let Some(lock_service) = state.content_lock() else {
-        return (
+        return AppError::with_status(
             StatusCode::SERVICE_UNAVAILABLE,
             "Content locking not enabled",
         )
-            .into_response();
+        .into_response();
     };
 
     match lock_service
@@ -75,10 +76,13 @@ async fn heartbeat(
         .await
     {
         Ok(true) => (StatusCode::OK, "Lock extended").into_response(),
-        Ok(false) => (StatusCode::CONFLICT, "Lock not held by you").into_response(),
+        Ok(false) => {
+            AppError::with_status(StatusCode::CONFLICT, "Lock not held by you").into_response()
+        }
         Err(e) => {
             tracing::warn!(error = %e, "lock heartbeat failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Lock heartbeat failed").into_response()
+            AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, "Lock heartbeat failed")
+                .into_response()
         }
     }
 }
@@ -91,10 +95,12 @@ async fn break_lock(
     axum::Json(payload): axum::Json<LockRequest>,
 ) -> impl IntoResponse {
     if !ALLOWED_ENTITY_TYPES.contains(&payload.entity_type.as_str()) {
-        return (StatusCode::BAD_REQUEST, "Invalid entity type").into_response();
+        return AppError::with_status(StatusCode::BAD_REQUEST, "Invalid entity type")
+            .into_response();
     }
     if payload.entity_id.len() > MAX_ENTITY_ID_LENGTH {
-        return (StatusCode::BAD_REQUEST, "entity_id too long").into_response();
+        return AppError::with_status(StatusCode::BAD_REQUEST, "entity_id too long")
+            .into_response();
     }
 
     if let Err(refusal) =
@@ -105,18 +111,16 @@ async fn break_lock(
     }
 
     // Verify CSRF token from header
-    if let Err((status, json)) =
-        crate::routes::helpers::require_csrf_header(&session, &headers).await
-    {
-        return (status, json).into_response();
+    if let Err(refusal) = crate::routes::helpers::require_csrf_header(&session, &headers).await {
+        return refusal.into_response();
     }
 
     let Some(lock_service) = state.content_lock() else {
-        return (
+        return AppError::with_status(
             StatusCode::SERVICE_UNAVAILABLE,
             "Content locking not enabled",
         )
-            .into_response();
+        .into_response();
     };
 
     match lock_service
@@ -124,10 +128,11 @@ async fn break_lock(
         .await
     {
         Ok(true) => (StatusCode::OK, "Lock broken").into_response(),
-        Ok(false) => (StatusCode::NOT_FOUND, "No lock found").into_response(),
+        Ok(false) => AppError::with_status(StatusCode::NOT_FOUND, "No lock found").into_response(),
         Err(e) => {
             tracing::warn!(error = %e, "break lock failed");
-            (StatusCode::INTERNAL_SERVER_ERROR, "Break lock failed").into_response()
+            AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, "Break lock failed")
+                .into_response()
         }
     }
 }

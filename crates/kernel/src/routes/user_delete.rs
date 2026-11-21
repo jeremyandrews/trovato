@@ -249,7 +249,11 @@ async fn passkey_start(
         Err(refusal) => return refusal.into_response(),
     };
     if require_csrf_header(&session, &headers).await.is_err() {
-        return json_error(StatusCode::FORBIDDEN, "Invalid or missing CSRF token.");
+        return crate::error::AppError::with_status(
+            StatusCode::FORBIDDEN,
+            "Invalid or missing CSRF token.",
+        )
+        .into_response();
     }
 
     let credentials =
@@ -257,10 +261,11 @@ async fn passkey_start(
             Ok(credentials) => credentials,
             Err(e) => {
                 tracing::error!(error = %e, "failed to load credentials for a deletion step-up");
-                return json_error(
+                return crate::error::AppError::with_status(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "Could not start passkey verification.",
-                );
+                )
+                .into_response();
             }
         };
     let passkeys: Vec<_> = credentials
@@ -268,17 +273,22 @@ async fn passkey_start(
         .filter_map(|c| c.passkey().ok())
         .collect();
     if passkeys.is_empty() {
-        return json_error(StatusCode::BAD_REQUEST, "This account has no passkey.");
+        return crate::error::AppError::with_status(
+            StatusCode::BAD_REQUEST,
+            "This account has no passkey.",
+        )
+        .into_response();
     }
 
     let (challenge, auth_state) = match state.webauthn().start_passkey_authentication(&passkeys) {
         Ok(v) => v,
         Err(e) => {
             warn!(error = %e, user_id = %user.id, "failed to start a deletion step-up");
-            return json_error(
+            return crate::error::AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "Could not start passkey verification.",
-            );
+            )
+            .into_response();
         }
     };
 
@@ -292,10 +302,11 @@ async fn passkey_start(
         .await
         .is_err()
     {
-        return json_error(
+        return crate::error::AppError::with_status(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Could not start passkey verification.",
-        );
+        )
+        .into_response();
     }
 
     Json(challenge).into_response()
@@ -313,14 +324,22 @@ async fn passkey_finish(
         Err(refusal) => return refusal.into_response(),
     };
     if require_csrf_header(&session, &headers).await.is_err() {
-        return json_error(StatusCode::FORBIDDEN, "Invalid or missing CSRF token.");
+        return crate::error::AppError::with_status(
+            StatusCode::FORBIDDEN,
+            "Invalid or missing CSRF token.",
+        )
+        .into_response();
     }
 
     // Single use: taken before verifying, so a replay has nothing to verify.
     let pending: Option<PendingAuthentication> =
         session.remove(SESSION_DELETE_CEREMONY).await.ok().flatten();
     let Some(pending) = pending else {
-        return json_error(StatusCode::BAD_REQUEST, "No verification in progress.");
+        return crate::error::AppError::with_status(
+            StatusCode::BAD_REQUEST,
+            "No verification in progress.",
+        )
+        .into_response();
     };
 
     // The ceremony belongs to the session's account, always. Without this a
@@ -331,11 +350,19 @@ async fn passkey_finish(
             ceremony_user = %pending.user_id,
             "deletion step-up ceremony belongs to a different account"
         );
-        return json_error(StatusCode::BAD_REQUEST, "No verification in progress.");
+        return crate::error::AppError::with_status(
+            StatusCode::BAD_REQUEST,
+            "No verification in progress.",
+        )
+        .into_response();
     }
 
     if !ceremony_is_live(pending.expires_at, chrono::Utc::now().timestamp()) {
-        return json_error(StatusCode::BAD_REQUEST, "Verification expired. Try again.");
+        return crate::error::AppError::with_status(
+            StatusCode::BAD_REQUEST,
+            "Verification expired. Try again.",
+        )
+        .into_response();
     }
 
     match state
@@ -357,7 +384,11 @@ async fn passkey_finish(
                         .detail("purpose", "account_deletion_step_up"),
                 )
                 .await;
-            json_error(StatusCode::UNAUTHORIZED, "That passkey was not accepted.")
+            crate::error::AppError::with_status(
+                StatusCode::UNAUTHORIZED,
+                "That passkey was not accepted.",
+            )
+            .into_response()
         }
     }
 }
@@ -578,10 +609,6 @@ fn client_ip(headers: &HeaderMap) -> String {
         .map(str::trim)
         .unwrap_or("0.0.0.0")
         .to_string()
-}
-
-fn json_error(status: StatusCode, message: &str) -> Response {
-    (status, Json(serde_json::json!({ "error": message }))).into_response()
 }
 
 fn too_many(retry_after: u64) -> Response {

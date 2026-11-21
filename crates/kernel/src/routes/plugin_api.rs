@@ -533,8 +533,18 @@ fn status_or_500(status: u16) -> StatusCode {
 }
 
 /// A kernel-authored JSON error, distinct in shape from a plugin's own body.
+///
+/// The `AppError` body every kernel route answers with (`code`, `message`,
+/// `request_id`), plus `error` carrying the same string as `message`. Plugin
+/// clients written before the shapes were unified read `error`; the key stays
+/// beside `message` until 2.0 so they keep working.
 fn error_response(status: StatusCode, message: &str) -> Response {
-    (status, axum::Json(serde_json::json!({ "error": message }))).into_response()
+    let error = crate::error::AppError::with_status(status, message);
+    let mut body = serde_json::to_value(error.body()).unwrap_or_default();
+    if let Some(object) = body.as_object_mut() {
+        object.insert("error".to_string(), serde_json::Value::from(message));
+    }
+    (status, axum::Json(body)).into_response()
 }
 
 #[cfg(test)]

@@ -21,7 +21,7 @@ use crate::models::{CreateItem, UpdateItem, UrlAlias};
 use crate::state::AppState;
 use crate::tap::UserContext;
 
-use super::helpers::{CsrfOnlyForm, JsonError, html_escape};
+use super::helpers::{CsrfOnlyForm, html_escape};
 
 /// Response for successful item operations.
 #[derive(Debug, Serialize)]
@@ -367,27 +367,23 @@ async fn view_item(
     session: Session,
     Path(id): Path<Uuid>,
     Query(query): Query<ViewItemQuery>,
-) -> Result<Html<String>, (StatusCode, Json<JsonError>)> {
+) -> Result<Html<String>, AppError> {
     let user = get_user_context(&session, &state).await;
 
     // Load item with view tap invocation
     let (mut item, render_outputs) = match state.items().load_for_view(id, &user).await {
         Ok(Some(data)) => data,
         Ok(None) => {
-            return Err((
+            return Err(AppError::with_status(
                 StatusCode::NOT_FOUND,
-                Json(JsonError {
-                    error: "Item not found".to_string(),
-                }),
+                "Item not found",
             ));
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to load item");
-            return Err((
+            return Err(AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(JsonError {
-                    error: "Internal server error".to_string(),
-                }),
+                "Internal server error",
             ));
         }
     };

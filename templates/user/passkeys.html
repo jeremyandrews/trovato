@@ -134,7 +134,7 @@
 
   function handle(response) {
     return response.json().then(function (body) {
-      if (!response.ok) { throw new Error(body.error || "That did not work."); }
+      if (!response.ok) { throw new Error(body.message || "That did not work."); }
       return body;
     });
   }

@@ -362,6 +362,6 @@ fn a_token_for_a_blocked_user_is_refused() {
             StatusCode::UNAUTHORIZED,
             "a blocked user's token must be refused: {body}"
         );
-        assert_eq!(body["error"], "Invalid or expired API token");
+        assert_eq!(body["message"], "Invalid or expired API token");
     });
 }

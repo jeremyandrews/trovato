@@ -8,7 +8,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{ConnectInfo, State};
-use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use redis::AsyncCommands;
 use redis::Client as RedisClient;
@@ -820,16 +819,15 @@ pub async fn resolve_client_ip(
 }
 
 /// Rate limit exceeded response.
+///
+/// An [`AppError::RateLimited`](crate::error::AppError::RateLimited): `429`,
+/// the `Retry-After` header, and the `AppError` body every other refusal has.
 pub fn rate_limit_response(retry_after: u64) -> Response {
-    (
-        StatusCode::TOO_MANY_REQUESTS,
-        [
-            ("retry-after", retry_after.to_string()),
-            ("content-type", "application/json".to_string()),
-        ],
-        format!(r#"{{"error":"Rate limit exceeded","retry_after":{retry_after}}}"#),
-    )
-        .into_response()
+    crate::error::AppError::RateLimited {
+        retry_after_secs: retry_after,
+        category: "requests".to_string(),
+    }
+    .into_response()
 }
 
 /// Per-IP rate limiting middleware layer, ahead of authentication.

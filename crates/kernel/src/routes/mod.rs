@@ -78,11 +78,11 @@ macro_rules! plugin_gate {
             if state.is_plugin_enabled($plugin) {
                 next.run(req).await
             } else {
-                (
+                crate::error::AppError::with_status(
                     axum::http::StatusCode::NOT_FOUND,
                     format!("Plugin '{}' is not enabled.", $plugin),
                 )
-                    .into_response()
+                .into_response()
             }
         }
     };

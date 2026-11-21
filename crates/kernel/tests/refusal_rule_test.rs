@@ -2,8 +2,9 @@
 //! One refusal rule, on every route.
 //!
 //! A JSON caller who is nobody gets `401`; a signed-in JSON caller who may not
-//! do the thing gets `403`; both bodies are JSON. An HTML caller who is
-//! nobody is sent to the login form with a `303`, and a signed-in one who may not gets `403`. Before this, the answer
+//! do the thing gets `403`; both bodies are `AppError` (`code`, `message`,
+//! `request_id`). An HTML caller who is nobody is sent to the login form with
+//! a `303`, and a signed-in one who may not gets `403`. Before this, the answer
 //! depended on which handler was asked: the JSON helpers said `403` to the
 //! anonymous, hand-rolled session reads said `401`, the translation screens said
 //! `400`, and the lock routes answered in plain text.
@@ -26,7 +27,7 @@ use uuid::Uuid;
 /// What kind of caller a route serves, and so which half of the rule applies.
 #[derive(Clone, Copy, Debug)]
 enum Kind {
-    /// A script: `401` for nobody, `403` for the unpermitted, a JSON body.
+    /// A script: `401` for nobody, `403` for the unpermitted, `AppError` body.
     Json,
     /// A browser: `303` to `/user/login` for nobody, `403` for the unpermitted.
     Html,
@@ -175,10 +176,14 @@ async fn send(
 }
 
 fn assert_app_error(body: &str, what: &str) {
-    // The refusal is JSON for a JSON caller. Which JSON is the error-shape
-    // work's to pin; this file pins who gets which status.
-    serde_json::from_str::<serde_json::Value>(body)
-        .unwrap_or_else(|_| panic!("{what}: body is not JSON: {body}"));
+    let value: serde_json::Value =
+        serde_json::from_str(body).unwrap_or_else(|_| panic!("{what}: body is not JSON: {body}"));
+    for key in ["code", "message", "request_id"] {
+        assert!(
+            value.get(key).and_then(|v| v.as_str()).is_some(),
+            "{what}: AppError body has no `{key}`: {body}"
+        );
+    }
 }
 
 #[test]

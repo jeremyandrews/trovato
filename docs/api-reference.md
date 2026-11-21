@@ -93,14 +93,30 @@ the response embeds related objects instead of just IDs.
 
 ### Error Responses
 
-All errors return JSON:
+Every error from a kernel route is one JSON shape:
 
 ```json
-{"error": "Description of the problem"}
+{
+  "code": "not_found",
+  "message": "Comment not found",
+  "request_id": "01a1fe41-419c-7007-8397-218151015cdd"
+}
 ```
 
-Standard HTTP status codes: 400 Bad Request, 401 Unauthorized, 403 Forbidden,
-404 Not Found, 409 Conflict, 500 Internal Server Error.
+`code` is machine-readable (`bad_request`, `unauthorized`, `forbidden`,
+`not_found`, `conflict`, `validation_failed`, `rate_limited`,
+`internal_error`, ...), `message` is safe to show a person, and `request_id`
+appears in the server log beside the failure. A validation failure adds
+`details`, one `{field, code, message}` per field. A `429` carries
+`Retry-After`.
+
+`401` means nobody is signed in (no session, or the account is blocked or
+gone); `403` means a signed-in caller may not do this.
+
+Errors from a plugin's own API routes add `error`, the same string as
+`message`, for clients written before the shapes were unified; it goes away in
+2.0. The block editor's image upload keeps the Editor.js protocol's
+`{"success": 0}`, which the editor reads.
 
 ### Timestamps
 

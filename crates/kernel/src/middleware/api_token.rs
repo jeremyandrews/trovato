@@ -21,6 +21,7 @@
 //! `Set-Cookie` or a Redis record: the manager's session is never touched, and
 //! the ephemeral one is never saved by anyone.
 
+use crate::error::AppError;
 use axum::{
     body::Body,
     extract::State,
@@ -28,7 +29,6 @@ use axum::{
     middleware::Next,
     response::{IntoResponse, Response},
 };
-use serde_json::json;
 use std::sync::Arc;
 use tower_sessions::{MemoryStore, Session};
 use uuid::Uuid;
@@ -82,11 +82,11 @@ pub async fn authenticate_api_token(
         Ok(None) => return invalid_token(),
         Err(e) => {
             tracing::error!(error = %e, "failed to look up API token");
-            return (
+            return AppError::with_status(
                 StatusCode::INTERNAL_SERVER_ERROR,
-                axum::Json(json!({"error": "Internal server error"})),
+                "Internal server error",
             )
-                .into_response();
+            .into_response();
         }
     };
 
@@ -97,10 +97,7 @@ pub async fn authenticate_api_token(
     let ephemeral = Session::new(None, Arc::new(MemoryStore::default()), None);
     if let Err(e) = ephemeral.insert(SESSION_USER_ID, token.user_id).await {
         tracing::error!(error = %e, "failed to build the request session for an API token");
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            axum::Json(json!({"error": "Internal server error"})),
-        )
+        return AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
             .into_response();
     }
 
@@ -136,11 +133,7 @@ pub async fn authenticate_api_token(
 /// The 401 for a token that does not authenticate anyone: unknown, expired,
 /// revoked, or belonging to a blocked account.
 fn invalid_token() -> Response {
-    (
-        StatusCode::UNAUTHORIZED,
-        axum::Json(json!({"error": "Invalid or expired API token"})),
-    )
-        .into_response()
+    AppError::unauthorized("Invalid or expired API token").into_response()
 }
 
 tokio::task_local! {

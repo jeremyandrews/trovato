@@ -452,7 +452,11 @@ async fn logout(
 
     if let Err(e) = session.delete().await {
         tracing::error!(error = %e, "failed to delete session");
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error").into_response();
+        return crate::error::AppError::with_status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error",
+        )
+        .into_response();
     }
 
     Redirect::to("/user/login").into_response()
@@ -509,7 +513,11 @@ async fn register_form(State(state): State<AppState>, session: Session) -> Respo
     }
 
     if !is_registration_enabled(&state).await {
-        return (StatusCode::NOT_FOUND, "Registration is not enabled.").into_response();
+        return crate::error::AppError::with_status(
+            StatusCode::NOT_FOUND,
+            "Registration is not enabled.",
+        )
+        .into_response();
     }
 
     let csrf_token = generate_csrf_token(&session).await;
@@ -560,7 +568,11 @@ async fn register_form_submit(
     Form(form): Form<RegisterFormRequest>,
 ) -> Response {
     if !is_registration_enabled(&state).await {
-        return (StatusCode::NOT_FOUND, "Registration is not enabled.").into_response();
+        return crate::error::AppError::with_status(
+            StatusCode::NOT_FOUND,
+            "Registration is not enabled.",
+        )
+        .into_response();
     }
 
     // The `register` bucket is counted once, per client IP, by the rate-limit
@@ -891,8 +903,11 @@ async fn verify_email(
             }
             Err(e) => {
                 tracing::error!(error = %e, "database error during email verification");
-                return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
-                    .into_response();
+                return crate::error::AppError::with_status(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error",
+                )
+                .into_response();
             }
         };
 
@@ -925,11 +940,11 @@ async fn verify_email(
         .await
     {
         tracing::error!(error = %e, user_id = %verification.user_id, "failed to activate user");
-        return (
+        return crate::error::AppError::with_status(
             StatusCode::INTERNAL_SERVER_ERROR,
             "Failed to activate account",
         )
-            .into_response();
+        .into_response();
     }
 
     info!(user_id = %verification.user_id, "email verified, account activated");
@@ -966,8 +981,11 @@ async fn verify_email_change(
             }
             Err(e) => {
                 tracing::error!(error = %e, "database error during email change verification");
-                return (StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
-                    .into_response();
+                return crate::error::AppError::with_status(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error",
+                )
+                .into_response();
             }
         };
 
@@ -979,7 +997,8 @@ async fn verify_email_change(
         .ok()
         .flatten()
     else {
-        return (StatusCode::NOT_FOUND, "User not found").into_response();
+        return crate::error::AppError::with_status(StatusCode::NOT_FOUND, "User not found")
+            .into_response();
     };
 
     let pending_email = user
@@ -1062,7 +1081,11 @@ async fn verify_email_change(
     let user_ctx = super::helpers::user_context_for(&state, &user).await;
     if let Err(e) = state.users().update(user.id, update, &user_ctx).await {
         tracing::error!(error = %e, user_id = %user.id, "failed to update email");
-        return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to update email").into_response();
+        return crate::error::AppError::with_status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to update email",
+        )
+        .into_response();
     }
 
     info!(user_id = %user.id, "email address updated via verification");

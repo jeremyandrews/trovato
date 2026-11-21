@@ -301,6 +301,14 @@ fn an_anonymous_caller_is_refused_and_writes_nothing() {
             StatusCode::UNAUTHORIZED,
             "an anonymous caller lacking the permission must be refused"
         );
+        // The AppError body every kernel route answers with, plus the `error`
+        // key plugin clients read before the shapes were unified, carrying the
+        // same string as `message` until 2.0.
+        let body = json_body(response).await;
+        assert_eq!(body["code"], "unauthorized", "{body}");
+        assert!(body["request_id"].is_string(), "{body}");
+        assert!(body["message"].is_string(), "{body}");
+        assert_eq!(body["error"], body["message"], "{body}");
 
         assert_eq!(
             note_count(app, "anon-forged").await,

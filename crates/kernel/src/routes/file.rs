@@ -48,8 +48,6 @@ pub struct UploadResponse {
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub file: Option<UploadResult>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
 }
 
 /// Upload a file.
@@ -72,50 +70,26 @@ async fn upload_file(
     };
 
     // Verify CSRF token from header
-    if let Err((status, json)) =
-        crate::routes::helpers::require_csrf_header(&session, &headers).await
-    {
-        return (status, json).into_response();
+    if let Err(refusal) = crate::routes::helpers::require_csrf_header(&session, &headers).await {
+        return refusal.into_response();
     }
 
     // Read the first `file` part.
     let (filename, content_type, data) = match read_upload_part(&mut multipart, &["file"]).await {
         Ok(part) => part,
         Err((status, message)) => {
-            return (
-                status,
-                Json(UploadResponse {
-                    success: false,
-                    file: None,
-                    error: Some(message),
-                }),
-            )
-                .into_response();
+            return crate::error::AppError::with_status(status, message).into_response();
         }
     };
 
     // Validate we got a file
     let Some(filename) = filename else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(UploadResponse {
-                success: false,
-                file: None,
-                error: Some("No file provided".to_string()),
-            }),
-        )
+        return crate::error::AppError::with_status(StatusCode::BAD_REQUEST, "No file provided")
             .into_response();
     };
 
     let Some(data) = data else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(UploadResponse {
-                success: false,
-                file: None,
-                error: Some("Empty file".to_string()),
-            }),
-        )
+        return crate::error::AppError::with_status(StatusCode::BAD_REQUEST, "Empty file")
             .into_response();
     };
 
@@ -137,7 +111,6 @@ async fn upload_file(
             Json(UploadResponse {
                 success: true,
                 file: Some(result),
-                error: None,
             }),
         )
             .into_response(),
@@ -146,15 +119,7 @@ async fn upload_file(
             if status == StatusCode::INTERNAL_SERVER_ERROR {
                 warn!(error = %e, "file upload failed");
             }
-            (
-                status,
-                Json(UploadResponse {
-                    success: false,
-                    file: None,
-                    error: Some(e.to_string()),
-                }),
-            )
-                .into_response()
+            crate::error::AppError::with_status(status, e.to_string()).into_response()
         }
     }
 }
@@ -358,10 +323,8 @@ async fn block_editor_upload(
     };
 
     // Verify CSRF token from header
-    if let Err((status, json)) =
-        crate::routes::helpers::require_csrf_header(&session, &headers).await
-    {
-        return (status, json).into_response();
+    if let Err(refusal) = crate::routes::helpers::require_csrf_header(&session, &headers).await {
+        return refusal.into_response();
     }
 
     let (filename, content_type, data) =
@@ -447,10 +410,8 @@ async fn block_editor_preview(
     }
 
     // Verify CSRF token from header
-    if let Err((status, json)) =
-        crate::routes::helpers::require_csrf_header(&session, &headers).await
-    {
-        return (status, json).into_response();
+    if let Err(refusal) = crate::routes::helpers::require_csrf_header(&session, &headers).await {
+        return refusal.into_response();
     }
 
     let blocks = body

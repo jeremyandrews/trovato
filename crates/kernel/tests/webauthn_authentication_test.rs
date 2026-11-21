@@ -371,9 +371,13 @@ fn login_start_is_generic_for_an_unknown_account() {
             StatusCode::UNAUTHORIZED,
             "a known account with no passkey must look exactly like an unknown one"
         );
-        let a = json_body(unknown).await;
-        let b = json_body(no_passkey).await;
-        assert_eq!(a, b, "the two responses must be byte-identical");
+        // Identical but for `request_id`, which is fresh on every response and
+        // so says nothing about the account.
+        let mut a = json_body(unknown).await;
+        let mut b = json_body(no_passkey).await;
+        a.as_object_mut().unwrap().remove("request_id");
+        b.as_object_mut().unwrap().remove("request_id");
+        assert_eq!(a, b, "the two responses must be identical");
     });
 }
 

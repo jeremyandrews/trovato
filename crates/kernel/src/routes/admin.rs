@@ -499,8 +499,8 @@ async fn ajax_callback(
     {
         return refusal.into_response();
     }
-    if let Err((status, json)) = super::helpers::require_csrf_header(&session, &headers).await {
-        return (status, json).into_response();
+    if let Err(refusal) = super::helpers::require_csrf_header(&session, &headers).await {
+        return refusal.into_response();
     }
 
     let mut response = if request.trigger == "add_field" {

@@ -104,6 +104,11 @@ pub enum AppError {
     /// Plugin execution error.
     #[error("plugin error: {plugin}")]
     Plugin { plugin: String, message: String },
+
+    /// Any other refusal or failure a route answers with its own status and a
+    /// message safe to show the caller. The code is the status's name.
+    #[error("{status}: {message}")]
+    Status { status: StatusCode, message: String },
 }
 
 // =========================================================================
@@ -178,6 +183,17 @@ impl AppError {
         Self::Internal {
             source: source.into(),
             context: Some(context.into()),
+        }
+    }
+
+    /// A route's own status with a message safe to show the caller.
+    ///
+    /// For the statuses the named constructors above do not cover, or a
+    /// message they would reword; the `code` is derived from the status.
+    pub fn with_status(status: StatusCode, message: impl Into<String>) -> Self {
+        Self::Status {
+            status,
+            message: message.into(),
         }
     }
 
@@ -326,13 +342,56 @@ impl AppError {
                 format!("Plugin '{plugin}' encountered an error"),
                 None,
             ),
+            AppError::Status { status, message } => {
+                (*status, status_code_name(*status), message.clone(), None)
+            }
         }
+    }
+
+    /// The JSON body this error answers with, under a fresh request id.
+    ///
+    /// For a caller that must add to the canonical body rather than replace it
+    /// (the plugin route compatibility `error` key); everything else returns
+    /// the error and lets [`IntoResponse`] build it.
+    pub fn body(&self) -> ErrorResponse {
+        let (_, code, message, details) = self.describe();
+        ErrorResponse {
+            code,
+            message,
+            request_id: uuid::Uuid::now_v7().to_string(),
+            details,
+        }
+    }
+}
+
+/// The `code` for an [`AppError::Status`]: the status's name in snake case.
+fn status_code_name(status: StatusCode) -> &'static str {
+    match status.as_u16() {
+        400 => "bad_request",
+        401 => "unauthorized",
+        403 => "forbidden",
+        404 => "not_found",
+        405 => "method_not_allowed",
+        409 => "conflict",
+        410 => "gone",
+        413 => "payload_too_large",
+        415 => "unsupported_media_type",
+        422 => "validation_failed",
+        429 => "rate_limited",
+        500 => "internal_error",
+        502 => "bad_gateway",
+        503 => "service_unavailable",
+        504 => "gateway_timeout",
+        s if s >= 500 => "server_error",
+        _ => "client_error",
     }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let request_id = uuid::Uuid::now_v7().to_string();
+        let body = self.body();
+        let status = self.status();
+        let request_id = &body.request_id;
 
         match &self {
             AppError::Database { source, operation } => tracing::error!(
@@ -355,15 +414,6 @@ impl IntoResponse for AppError {
             }
             _ => {}
         }
-
-        let (status, code, message, details) = self.describe();
-
-        let body = ErrorResponse {
-            code,
-            message,
-            request_id,
-            details,
-        };
 
         let mut response = (status, Json(body)).into_response();
 
@@ -572,6 +622,48 @@ mod tests {
         };
         let response = err.into_response();
         assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
+    /// No route or middleware writes a JSON error body of its own.
+    ///
+    /// Every JSON error is an `AppError`; the shapes it replaced were a
+    /// `{"error": ...}` literal or the `JsonError` struct.
+    #[test]
+    fn no_route_writes_its_own_json_error_shape() {
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut offenders = Vec::new();
+        for dir in ["routes", "middleware"] {
+            for entry in std::fs::read_dir(src.join(dir)).unwrap() {
+                let path = entry.unwrap().path();
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                let text = std::fs::read_to_string(&path).unwrap();
+                for (n, line) in text.lines().enumerate() {
+                    let code = line.trim_start();
+                    if code.starts_with("//") {
+                        continue;
+                    }
+                    if code.contains("JsonError")
+                        || code.contains(r#"json!({ "error""#)
+                        || code.contains(r#"json!({"error""#)
+                    {
+                        offenders.push(format!("{dir}/{name}:{}", n + 1));
+                    }
+                }
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "JSON error bodies that are not AppError: {offenders:?}"
+        );
+    }
+
+    #[test]
+    fn with_status_keeps_the_status_and_names_the_code() {
+        let err = AppError::with_status(StatusCode::GONE, "it went");
+        assert_eq!(err.status(), StatusCode::GONE);
+        assert_eq!(err.code(), "gone");
+        assert_eq!(err.public_message(), "it went");
+        assert_eq!(err.into_response().status(), StatusCode::GONE);
     }
 
     #[test]

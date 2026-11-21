@@ -157,7 +157,7 @@
       .then(function (resp) {
         if (!resp.ok) {
           return resp.json().then(function (err) {
-            throw new Error(err.error || 'Request failed');
+            throw new Error(err.message || 'Request failed');
           });
         }
         return resp.json();

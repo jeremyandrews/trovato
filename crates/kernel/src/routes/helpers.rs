@@ -15,16 +15,6 @@ use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
 use crate::tap::UserContext;
 
-/// Standard JSON error response for API endpoints.
-///
-/// **Deprecated:** New code should use [`crate::error::AppError`] instead.
-/// Remaining usages will be migrated incrementally.
-#[derive(Debug, Serialize)]
-pub struct JsonError {
-    /// Human-readable error message.
-    pub error: String,
-}
-
 /// Standard JSON success response for API endpoints.
 #[derive(Debug, Serialize)]
 pub struct JsonSuccess {
@@ -179,20 +169,6 @@ pub fn refusal_for(viewer: &UserContext, reason: impl Into<String>) -> crate::er
         crate::error::AppError::forbidden(reason)
     } else {
         json_login()
-    }
-}
-
-/// Bridge for the handlers still answering in [`JsonError`]: a guard's
-/// [`AppError`](crate::error::AppError) keeps its status and message.
-impl From<crate::error::AppError> for (StatusCode, axum::Json<JsonError>) {
-    fn from(e: crate::error::AppError) -> Self {
-        let status = e.status();
-        (
-            status,
-            axum::Json(JsonError {
-                error: e.public_message(),
-            }),
-        )
     }
 }
 
@@ -504,7 +480,7 @@ pub async fn require_csrf(session: &Session, token: &str) -> Result<(), Response
 pub async fn require_csrf_header(
     session: &Session,
     headers: &axum::http::HeaderMap,
-) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
+) -> Result<(), crate::error::AppError> {
     if crate::middleware::api_token::is_token_authenticated() {
         return Ok(());
     }
@@ -516,11 +492,8 @@ pub async fn require_csrf_header(
         .await
         .unwrap_or(false);
     if !valid {
-        Err((
-            StatusCode::FORBIDDEN,
-            axum::Json(serde_json::json!({
-                "error": "Invalid or missing CSRF token. Include X-CSRF-Token header."
-            })),
+        Err(crate::error::AppError::forbidden(
+            "Invalid or missing CSRF token. Include X-CSRF-Token header.",
         ))
     } else {
         Ok(())
@@ -561,7 +534,7 @@ pub async fn require_csrf_header_or_field(
     session: &Session,
     headers: &axum::http::HeaderMap,
     body: &str,
-) -> Result<(), (StatusCode, axum::Json<serde_json::Value>)> {
+) -> Result<(), crate::error::AppError> {
     if require_csrf_header(session, headers).await.is_ok() {
         return Ok(());
     }
@@ -575,15 +548,10 @@ pub async fn require_csrf_header_or_field(
         return Ok(());
     }
 
-    Err((
-        StatusCode::FORBIDDEN,
-        axum::Json(serde_json::json!({
-            "error": format!(
-                "Invalid or missing CSRF token. Include an X-CSRF-Token header, \
-                 or a {CSRF_FORM_FIELD} field in a form-urlencoded body."
-            )
-        })),
-    ))
+    Err(crate::error::AppError::forbidden(format!(
+        "Invalid or missing CSRF token. Include an X-CSRF-Token header, \
+         or a {CSRF_FORM_FIELD} field in a form-urlencoded body."
+    )))
 }
 
 /// Whether the request body is a URL-encoded form.

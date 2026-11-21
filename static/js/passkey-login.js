@@ -91,7 +91,7 @@
       })
       .then(function (response) {
         return response.json().then(function (body) {
-          if (!response.ok) { throw new Error(body.error || "Sign-in failed."); }
+          if (!response.ok) { throw new Error(body.message || "Sign-in failed."); }
           return body;
         });
       })
