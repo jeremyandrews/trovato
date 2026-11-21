@@ -23,6 +23,7 @@ use crate::services::ai_provider::{AiProviderService, EMBEDDING_INPUT_MAX_CHARS}
 use crate::services::embed_index::{self, EmbedPolicy};
 use crate::services::vector_store::{PgVectorStore, VectorStore};
 use crate::tap::{RequestServices, RequestState, TapDispatcher, TapResult, UserContext};
+use tracing::Instrument;
 use trovato_sdk::types::{AccessResult, FieldAccessResult};
 
 /// Synthetic `item_embeddings.field_name` under which the kernel stores an
@@ -1485,6 +1486,18 @@ impl ItemService {
     /// publicly visible." If a plugin needs to restrict specific Live items,
     /// it should use item status (unpublish) rather than access denial.
     pub async fn check_access(
+        &self,
+        item: &Item,
+        operation: &str,
+        user: &UserContext,
+    ) -> Result<bool> {
+        self.access_decision(item, operation, user)
+            .instrument(crate::profiler::phase("item_access", operation))
+            .await
+    }
+
+    /// [`Self::check_access`], outside its profiler span.
+    async fn access_decision(
         &self,
         item: &Item,
         operation: &str,

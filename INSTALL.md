@@ -80,6 +80,10 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 | `UPDATE_CHECK` | `1` | Whether the kernel may check for Trovato releases. Set to `0` (or `false`/`off`/`no`) for a deployment that must make no outbound requests at all. See "Update checks" below. |
 | `UPDATE_CHECK_INTERVAL_SECS` | `86400` | Minimum seconds between update checks |
 | `UPDATE_CHECK_ENDPOINT` | GitHub's latest-release API | The endpoint the check asks. Configurable so a test can point it at a local server. |
+| `QUERY_SLOW_THRESHOLD_MS` | `100` | A request slower than this is logged at WARN, and slower than five times this at ERROR |
+| `PROFILER_ENABLED` | `0` | Turn on the request profiler: per-request timings shown to holders of `view request profiles` at `/admin/reports/requests`. A diagnostic tool; leave it off in production unless you need it. See [docs/profiler.md](docs/profiler.md). |
+| `PROFILER_CAPTURE` | `100` | How many recent requests the profiler keeps in memory, per process (1 to 10000) |
+| `PROFILER_SHOW_SQL_VALUES` | `0` | Keep SQL literal values in profiles instead of replacing them with `?`. They can hold personal data; logged at WARN at startup when set. |
 
 `.env.example` is the fuller reference, including the `POSTGRES_*` and
 `REDIS_PORT` settings that only `docker compose` reads.

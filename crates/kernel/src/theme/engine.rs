@@ -759,6 +759,7 @@ impl ThemeEngine {
         element: &RenderElement,
         context: &mut tera::Context,
     ) -> Result<String> {
+        let _span = crate::profiler::phase("render", "element").entered();
         self.render_consumer.render(&self.tera, element, context)
     }
 
@@ -770,6 +771,7 @@ impl ThemeEngine {
         let template = self
             .resolve_template(&suggestion_refs)
             .unwrap_or_else(|| "elements/item.html".to_string());
+        let _span = crate::profiler::phase("render", &template).entered();
 
         let mut context = tera::Context::new();
         context.insert("item", item);
@@ -989,6 +991,7 @@ impl ThemeEngine {
         let template = self
             .resolve_template(&suggestion_refs)
             .unwrap_or_else(|| "page.html".to_string());
+        let _span = crate::profiler::phase("render", &template).entered();
 
         context.insert("title", title);
         context.insert("content", content);

@@ -46,6 +46,17 @@ struct Args {
     /// Workload mix: percentage of search requests (0-100).
     #[arg(long, default_value = "20")]
     search_pct: u8,
+
+    /// Seed for the request mix. Given, every run with the same seed and the
+    /// same number of users makes the same sequence of requests; absent, the
+    /// seed is the clock, as before.
+    #[arg(long)]
+    seed: Option<u64>,
+
+    /// Comma-separated paths the read requests choose from, instead of the
+    /// built-in list (e.g. `/item/<id>,/conferences`).
+    #[arg(long, value_delimiter = ',')]
+    paths: Vec<String>,
 }
 
 /// Load test statistics.
@@ -55,12 +66,12 @@ struct Stats {
     successful_requests: u64,
     failed_requests: u64,
     total_duration_ms: u64,
-    min_latency_ms: u64,
-    max_latency_ms: u64,
+    min_latency_ms: f64,
+    max_latency_ms: f64,
     avg_latency_ms: f64,
-    p50_latency_ms: u64,
-    p95_latency_ms: u64,
-    p99_latency_ms: u64,
+    p50_latency_ms: f64,
+    p95_latency_ms: f64,
+    p99_latency_ms: f64,
     requests_per_second: f64,
 }
 
@@ -82,14 +93,16 @@ impl AtomicStats {
         }
     }
 
-    fn record_request(&self, success: bool, latency_ms: u64) {
+    /// Record one request; latencies are kept in microseconds, so a fast
+    /// server's percentiles are not all rounded to the same millisecond.
+    fn record_request(&self, success: bool, latency_us: u64) {
         self.total_requests.fetch_add(1, Ordering::Relaxed);
         if success {
             self.successful_requests.fetch_add(1, Ordering::Relaxed);
         } else {
             self.failed_requests.fetch_add(1, Ordering::Relaxed);
         }
-        self.latencies.lock().push(latency_ms);
+        self.latencies.lock().push(latency_us);
     }
 
     fn compute_stats(&self, duration_secs: u64) -> Stats {
@@ -100,20 +113,21 @@ impl AtomicStats {
         let mut latencies = self.latencies.lock().clone();
         latencies.sort();
 
-        let min = *latencies.first().unwrap_or(&0);
-        let max = *latencies.last().unwrap_or(&0);
+        let ms = |us: u64| us as f64 / 1000.0;
+        let min = ms(*latencies.first().unwrap_or(&0));
+        let max = ms(*latencies.last().unwrap_or(&0));
         let avg = if !latencies.is_empty() {
-            latencies.iter().sum::<u64>() as f64 / latencies.len() as f64
+            ms(latencies.iter().sum::<u64>()) / latencies.len() as f64
         } else {
             0.0
         };
 
-        let percentile = |p: f64| -> u64 {
+        let percentile = |p: f64| -> f64 {
             if latencies.is_empty() {
-                return 0;
+                return 0.0;
             }
             let idx = ((latencies.len() as f64 * p) as usize).min(latencies.len() - 1);
-            latencies[idx]
+            ms(latencies[idx])
         };
 
         Stats {
@@ -191,17 +205,26 @@ async fn main() {
         let read_pct = args.read_pct;
         let search_pct = args.search_pct;
         let think_time = args.think_time;
+        let seed = args
+            .seed
+            .unwrap_or_else(|| chrono::Utc::now().timestamp_millis() as u64)
+            .wrapping_add(user_id as u64);
+        let paths = if args.paths.is_empty() {
+            READ_ENDPOINTS.iter().map(|p| (*p).to_string()).collect()
+        } else {
+            args.paths.clone()
+        };
 
         handles.push(tokio::spawn(async move {
             run_user(
-                user_id,
+                seed,
+                &paths,
                 client,
                 base_url,
                 stats,
                 test_duration,
                 think_time,
-                read_pct,
-                search_pct,
+                (read_pct, search_pct),
             )
             .await;
         }));
@@ -232,16 +255,16 @@ async fn main() {
     println!("Requests/second:     {:.2}", results.requests_per_second);
     println!();
     println!("Latency (ms):");
-    println!("  Min:  {}", results.min_latency_ms);
-    println!("  Avg:  {:.2}", results.avg_latency_ms);
-    println!("  P50:  {}", results.p50_latency_ms);
-    println!("  P95:  {}", results.p95_latency_ms);
-    println!("  P99:  {}", results.p99_latency_ms);
-    println!("  Max:  {}", results.max_latency_ms);
+    println!("  Min:  {:.3}", results.min_latency_ms);
+    println!("  Avg:  {:.3}", results.avg_latency_ms);
+    println!("  P50:  {:.3}", results.p50_latency_ms);
+    println!("  P95:  {:.3}", results.p95_latency_ms);
+    println!("  P99:  {:.3}", results.p99_latency_ms);
+    println!("  Max:  {:.3}", results.max_latency_ms);
 
     // Check gate criterion
     println!();
-    if results.p95_latency_ms <= 100 {
+    if results.p95_latency_ms <= 100.0 {
         println!(
             "✅ PASS: P95 latency ({} ms) <= 100 ms",
             results.p95_latency_ms
@@ -260,20 +283,20 @@ async fn main() {
     }
 }
 
-/// Simulate a single user making requests.
+/// Simulate a single user making requests. `mix` is the read and search
+/// percentages.
 async fn run_user(
-    user_id: usize,
+    seed: u64,
+    paths: &[String],
     client: reqwest::Client,
     base_url: String,
     stats: Arc<AtomicStats>,
     duration: Duration,
     think_time: u64,
-    read_pct: u8,
-    search_pct: u8,
+    (read_pct, search_pct): (u8, u8),
 ) {
     // Use a seeded RNG that is Send-safe
-    let mut rng =
-        StdRng::seed_from_u64(user_id as u64 + chrono::Utc::now().timestamp_millis() as u64);
+    let mut rng = StdRng::seed_from_u64(seed);
     let start = Instant::now();
 
     while start.elapsed() < duration {
@@ -281,7 +304,7 @@ async fn run_user(
         let roll: u8 = rng.gen_range(0..100);
         let url = if roll < read_pct {
             // Read request
-            let endpoint = READ_ENDPOINTS.choose(&mut rng).unwrap();
+            let endpoint = paths.choose(&mut rng).unwrap();
             format!("{base_url}{endpoint}")
         } else if roll < read_pct + search_pct {
             // Search request
@@ -295,14 +318,14 @@ async fn run_user(
         // Make request and record latency
         let req_start = Instant::now();
         let result = client.get(&url).send().await;
-        let latency_ms = req_start.elapsed().as_millis() as u64;
+        let latency_us = req_start.elapsed().as_micros() as u64;
 
         let success = match result {
             Ok(resp) => resp.status().is_success() || resp.status().as_u16() == 404,
             Err(_) => false,
         };
 
-        stats.record_request(success, latency_ms);
+        stats.record_request(success, latency_us);
 
         // Think time
         if think_time > 0 {

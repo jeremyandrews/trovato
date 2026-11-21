@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use tracing::{debug, error, warn};
+use tracing::{Instrument, debug, error, warn};
 use wasmtime::{Instance, Store, TypedFunc, UpdateDeadline};
 
 use super::{RequestState, TapHandler, TapRegistry};
@@ -210,8 +210,23 @@ impl TapDispatcher {
         }
     }
 
-    /// Invoke a single handler.
+    /// Invoke a single handler, inside a profiler span naming the plugin and
+    /// the tap (never the payload).
     async fn invoke_handler(
+        &self,
+        tap_name: &str,
+        input_json: &str,
+        handler: &TapHandler,
+        state: RequestState,
+    ) -> std::result::Result<String, ExportCallError> {
+        let span = crate::profiler::tap_span(&handler.plugin.info.name, tap_name);
+        self.call_handler(tap_name, input_json, handler, state)
+            .instrument(span)
+            .await
+    }
+
+    /// Call a single handler with the request or background limits.
+    async fn call_handler(
         &self,
         tap_name: &str,
         input_json: &str,

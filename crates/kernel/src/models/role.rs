@@ -78,6 +78,12 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     "use ai image generation",
     "configure ai",
     "view ai usage",
+    // The request profiler's pages: per-request timings, SQL statements (with
+    // their literals redacted), tap calls and cache counts. Diagnostic data
+    // about the site's internals, so granted to no role by any migration; an
+    // administrator holds it implicitly. The pages exist only while
+    // `PROFILER_ENABLED` is on.
+    "view request profiles",
 ];
 
 /// The permissions to add and to remove to make `current` equal `desired`.

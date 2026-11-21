@@ -30,6 +30,7 @@ mod models;
 mod net_policy;
 mod permissions;
 mod plugin;
+mod profiler;
 mod recovery;
 mod routes;
 mod search;
@@ -55,7 +56,7 @@ use tower_http::trace::TraceLayer;
 use tower_sessions::Session;
 use tower_sessions::cookie::SameSite;
 use tracing::{info, warn};
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{EnvFilter, Layer, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::config::Config;
 use crate::state::AppState;
@@ -178,16 +179,22 @@ async fn main() -> Result<()> {
     // Load .env file if present
     dotenvy::dotenv().ok();
 
-    // Initialize tracing
-    init_tracing();
-
     let cli = Cli::parse();
 
     match cli.command {
         None | Some(Commands::Serve) => run_server().await,
-        Some(Commands::Plugin { action }) => run_plugin_command(action).await,
-        Some(Commands::Config { action }) => run_config_command(action).await,
-        Some(Commands::User { action }) => run_user_command(action).await,
+        Some(Commands::Plugin { action }) => {
+            init_tracing(None);
+            run_plugin_command(action).await
+        }
+        Some(Commands::Config { action }) => {
+            init_tracing(None);
+            run_config_command(action).await
+        }
+        Some(Commands::User { action }) => {
+            init_tracing(None);
+            run_user_command(action).await
+        }
     }
 }
 
@@ -195,14 +202,35 @@ async fn main() -> Result<()> {
 
 /// Run the HTTP server (original startup path).
 async fn run_server() -> Result<()> {
-    info!("Starting Trovato kernel");
-
-    // Load configuration from environment
+    // Load configuration from environment. First, because whether the request
+    // profiler's layer is installed is part of it, and the tracing subscriber
+    // is built once.
     let config = Config::from_env().context("failed to load configuration")?;
+
+    // The metrics registry and the profile store exist before tracing does, so
+    // the profiler layer can hold them; `AppState` is built around the same two.
+    let metrics = Arc::new(crate::metrics::Metrics::new());
+    let profiles = crate::profiler::ProfileStore::for_config(&config.runtime.profiler);
+    init_tracing(profiles.clone().map(|store| (store, metrics.clone())));
+
+    info!("Starting Trovato kernel");
     info!(port = config.port, "Configuration loaded");
+    if let Some(store) = &profiles {
+        info!(
+            capture = store.capacity(),
+            "request profiler enabled: recent requests are kept in memory and shown at {}",
+            crate::profiler::PAGES
+        );
+        if store.show_sql_values() {
+            warn!(
+                "PROFILER_SHOW_SQL_VALUES is set: request profiles keep SQL literal values, \
+                 which can include personal data; unset it unless you need them"
+            );
+        }
+    }
 
     // Initialize application state (database connections, etc.)
-    let state = AppState::new(&config)
+    let state = AppState::with_observability(&config, metrics, profiles)
         .await
         .context("failed to initialize application state")?;
 
@@ -367,18 +395,27 @@ async fn run_server() -> Result<()> {
     // URI rewriting in middleware cannot affect which route is matched.
     // The fallback receives all unmatched requests and forwards them to the
     // inner router after resolving any URL alias.
-    let app = inner_router
-        .fallback({
-            let router = shared_router.clone();
-            let app_state = state.clone();
-            move |session: Session, request: axum::extract::Request| {
-                let router = router.clone();
-                let app_state = app_state.clone();
-                async move {
-                    crate::middleware::path_alias_fallback(app_state, session, router, request).await
-                }
+    let app = inner_router.fallback({
+        let router = shared_router.clone();
+        let app_state = state.clone();
+        move |session: Session, request: axum::extract::Request| {
+            let router = router.clone();
+            let app_state = app_state.clone();
+            async move {
+                crate::middleware::path_alias_fallback(app_state, session, router, request).await
             }
-        })
+        }
+    });
+    // The request profiler's `handler` phase, innermost so it wraps the
+    // handler and nothing else, and in the stack only when the profiler is on.
+    let app = if state.profiler().is_some() {
+        app.layer(axum::middleware::from_fn(
+            crate::middleware::profile_handler,
+        ))
+    } else {
+        app
+    };
+    let app = app
         // Middleware layers (last added = first executed in request flow):
         // TraceLayer → track_request_timing → security_headers → CORS → session → rate_limit(per-IP) →
         // bearer_auth → api_token → rate_limit(per-user) → install_check →
@@ -805,12 +842,25 @@ fn build_cors_layer(config: &Config) -> CorsLayer {
     }
 }
 
-fn init_tracing() {
-    let filter = EnvFilter::try_from_default_env()
+/// Install the process's tracing subscriber: the console log, and the request
+/// profiler's layer when `profiler` is given.
+///
+/// Each layer carries its own filter. The console's is the `RUST_LOG` filter
+/// it always had, so what the console prints does not depend on whether the
+/// profiler is on; the profiler's admits only its own spans and sqlx's
+/// statement events. Off, the profiler layer is absent and its spans are
+/// disabled at their callsites.
+fn init_tracing(
+    profiler: Option<(
+        Arc<crate::profiler::ProfileStore>,
+        Arc<crate::metrics::Metrics>,
+    )>,
+) {
+    let console = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,tower_http=debug,sqlx=warn"));
 
     tracing_subscriber::registry()
-        .with(filter)
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().with_filter(console))
+        .with(profiler.map(|(store, metrics)| crate::profiler::layer(store, metrics)))
         .init();
 }

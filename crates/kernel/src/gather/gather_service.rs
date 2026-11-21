@@ -27,6 +27,7 @@ use sqlx::{AssertSqlSafe, PgPool};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
+use tracing::Instrument;
 use uuid::Uuid;
 
 /// Maximum nesting depth for Gather relationship includes.
@@ -701,7 +702,37 @@ impl GatherService {
     }
 
     /// Execute a query definition with stage overlay.
+    ///
+    /// Every gather runs through here, so this is where the profiler's
+    /// `gather` phase is, named for what it lists.
     pub async fn execute_definition_with_stages(
+        &self,
+        definition: &QueryDefinition,
+        display: &QueryDisplay,
+        page: u32,
+        exposed_filters: HashMap<String, FilterValue>,
+        stage_ids: &[Uuid],
+        context: &QueryContext,
+    ) -> Result<GatherResult> {
+        let lists = definition
+            .item_type
+            .as_deref()
+            .or(definition.record_type.as_deref())
+            .unwrap_or(&definition.base_table);
+        self.run_definition(
+            definition,
+            display,
+            page,
+            exposed_filters,
+            stage_ids,
+            context,
+        )
+        .instrument(crate::profiler::phase("gather", lists))
+        .await
+    }
+
+    /// [`Self::execute_definition_with_stages`], outside its profiler span.
+    async fn run_definition(
         &self,
         definition: &QueryDefinition,
         display: &QueryDisplay,

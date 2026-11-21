@@ -339,6 +339,12 @@ pub struct RuntimeConfig {
     /// times which it is logged as an error.
     pub slow_request_threshold_ms: u128,
 
+    /// The request profiler: whether it runs, how many requests it keeps, and
+    /// whether it keeps SQL literals. `PROFILER_ENABLED` (default off),
+    /// `PROFILER_CAPTURE` (default 100) and `PROFILER_SHOW_SQL_VALUES`
+    /// (default off). See `docs/profiler.md`.
+    pub profiler: crate::profiler::ProfilerConfig,
+
     /// Retention window for the kernel security audit stream, in days.
     pub security_audit_retention_days: i64,
 
@@ -681,6 +687,12 @@ impl Config {
             security_headers: crate::middleware::SecurityHeaders::from_lookup(get),
             tenant_resolution: crate::middleware::TenantResolution::from_lookup(get),
             slow_request_threshold_ms: parse_or(get, "QUERY_SLOW_THRESHOLD_MS", 100),
+            profiler: crate::profiler::ProfilerConfig {
+                enabled: parse_bool_or(get, "PROFILER_ENABLED", false),
+                capture: parse_or(get, "PROFILER_CAPTURE", crate::profiler::DEFAULT_CAPTURE)
+                    .clamp(1, crate::profiler::MAX_CAPTURE),
+                show_sql_values: parse_bool_or(get, "PROFILER_SHOW_SQL_VALUES", false),
+            },
             security_audit_retention_days: crate::audit::retention_days_from(
                 get("SECURITY_AUDIT_RETENTION_DAYS").as_deref(),
             ),
@@ -952,6 +964,29 @@ mod config_tests {
             config.language_negotiation_methods,
             vec!["cookie", "url_prefix"]
         );
+    }
+
+    /// The request profiler is off unless asked for, keeps 100 requests, and
+    /// redacts SQL literals; each setting is read under its documented name,
+    /// and the ring size is bounded.
+    #[test]
+    fn profiler_settings_default_off_and_are_read_by_name() {
+        let off = with_db(&[]);
+        assert!(!off.runtime.profiler.enabled);
+        assert_eq!(off.runtime.profiler.capture, 100);
+        assert!(!off.runtime.profiler.show_sql_values);
+
+        let on = with_db(&[
+            ("PROFILER_ENABLED", "true"),
+            ("PROFILER_CAPTURE", "7"),
+            ("PROFILER_SHOW_SQL_VALUES", "1"),
+        ]);
+        assert!(on.runtime.profiler.enabled);
+        assert_eq!(on.runtime.profiler.capture, 7);
+        assert!(on.runtime.profiler.show_sql_values);
+
+        let huge = with_db(&[("PROFILER_CAPTURE", "99999999")]);
+        assert_eq!(huge.runtime.profiler.capture, crate::profiler::MAX_CAPTURE);
     }
 
     /// Each setting the runtime used to re-read is now resolved here, under its
