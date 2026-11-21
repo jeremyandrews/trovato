@@ -730,6 +730,8 @@ impl StageService {
         self.cache.invalidate_stage(stage_id).await;
         // The publish moved aliases and menu links onto Live.
         crate::menu::invalidate_config_menus();
+        // ... and items: every server's item cache holds them on the old stage.
+        crate::cache::generation::bump(crate::cache::generation::CacheKind::Items);
 
         let mut result = PublishResult::success_with_conflicts(
             stage_id,

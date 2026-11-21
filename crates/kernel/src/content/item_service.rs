@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use super::file_refs::{self, FileReferences};
 use super::reentry::{self, MAX_ITEM_WRITE_DEPTH, WriteTooDeep};
+use crate::cache::generation::{CacheKind, bump};
 use crate::metrics::{CacheName, Metrics};
 use crate::models::stage::{LIVE_STAGE_ID, Stage, StageVisibility};
 use crate::models::workflow::{WORKFLOW_KEY, Workflow};
@@ -121,20 +122,11 @@ pub(crate) fn strip_html(s: &str) -> String {
 /// Maximum entries in the item cache.
 const MAX_CAPACITY: u64 = 50_000;
 
-/// Maximum entries in the stage cache (stages are few and rarely change).
-const STAGE_CACHE_CAPACITY: u64 = 16;
-
-/// TTL for stage cache entries. Short because stage visibility changes are
-/// security-relevant — a stage changed from Public to Internal should take
-/// effect quickly. 30 seconds is a balance between avoiding per-item DB
-/// queries and limiting the window of stale visibility data.
-const STAGE_CACHE_TTL: Duration = Duration::from_secs(30);
-
 /// Every stage, and the workflow resolved against them.
 ///
-/// What a stage move is decided against, loaded in one go (two queries) and
-/// cached by [`ItemService`] with the stage cache's TTL, so deciding a move, or
-/// listing the moves a form may offer, costs no query per item.
+/// What a stage move is decided against, loaded in one go (two queries) by
+/// [`ItemService::stage_view`], so deciding a move, or listing the moves a form
+/// may offer, costs no query per item.
 #[derive(Debug)]
 pub struct StageView {
     stages: Vec<Stage>,
@@ -183,11 +175,6 @@ struct ItemServiceInner {
     /// Services template for tap dispatch — cloned per invocation.
     tap_services: RequestServices,
     cache: Cache<Uuid, Item>,
-    /// Cached stage lookups — stages rarely change and there are typically only 3.
-    stage_cache: Cache<Uuid, Stage>,
-    /// Every stage and the resolved workflow, loaded together and cached with
-    /// the stage cache's TTL: what a stage move is decided against. One entry.
-    stage_view: Cache<(), Arc<StageView>>,
     /// Cached field access decisions keyed by "perm_hash:item_type:field_name:operation".
     /// Deny-wins aggregation result, 5-minute TTL. **Shared** (`Arc`) with the
     /// `tap_services` `RequestServices` so a plugin config write flushes the same
@@ -536,14 +523,6 @@ impl ItemService {
                 cache: Cache::builder()
                     .max_capacity(MAX_CAPACITY)
                     .time_to_live(ttl)
-                    .build(),
-                stage_cache: Cache::builder()
-                    .max_capacity(STAGE_CACHE_CAPACITY)
-                    .time_to_live(STAGE_CACHE_TTL)
-                    .build(),
-                stage_view: Cache::builder()
-                    .max_capacity(1)
-                    .time_to_live(STAGE_CACHE_TTL)
                     .build(),
                 field_access_cache,
                 metrics,
@@ -1675,26 +1654,16 @@ impl ItemService {
             return Ok(true);
         }
 
-        // 2. Resolve stage visibility. Use cached lookups — stages are few
-        //    and rarely change, but check_access runs on every item view.
+        // 2. Resolve stage visibility, read from Postgres: a stage change on
+        //    any server must hold on every server at once.
         let (is_internal, stage_machine_name) = if item.stage_id == LIVE_STAGE_ID {
             // Live stage is always public — no DB lookup needed.
             (false, Some("live".to_string()))
-        } else if let Some(stage) = self.inner.metrics.cache_lookup(
-            CacheName::ItemStage,
-            self.inner.stage_cache.get(&item.stage_id),
-        ) {
-            (
-                stage.visibility == StageVisibility::Internal,
-                Some(stage.machine_name.clone()),
-            )
         } else {
             match Stage::find_by_id(&self.inner.pool, item.stage_id).await {
                 Ok(Some(stage)) => {
                     let internal = stage.visibility == StageVisibility::Internal;
-                    let name = stage.machine_name.clone();
-                    self.inner.stage_cache.insert(item.stage_id, stage);
-                    (internal, Some(name))
+                    (internal, Some(stage.machine_name))
                 }
                 Ok(None) => {
                     // A stage that cannot be found must not make an item public:
@@ -2151,14 +2120,12 @@ impl ItemService {
         }
     }
 
-    /// Flush the entire field-access decision cache (design amendment α).
+    /// Flush this server's field-access decision cache (design amendment α).
     ///
-    /// Called when a plugin config value is written (the `variables::set` host
-    /// path) so a field-rule change an admin makes takes effect on the **next**
-    /// request rather than riding the ≤5-minute TTL. Blunt whole-cache
-    /// invalidation is acceptable: config writes are rare admin actions and moka
-    /// coalesces the refill. Because the cache is shared (`Arc`) with
-    /// `RequestServices`, this is reachable from the host function.
+    /// What another server's `FieldAccess` bump does here. The writing server
+    /// flushes the same shared (`Arc`) cache from the `variables::set` host path
+    /// and bumps. Blunt whole-cache invalidation is acceptable: config writes
+    /// are rare admin actions and moka coalesces the refill.
     pub fn flush_field_access_cache(&self) {
         self.inner.field_access_cache.invalidate_all();
     }
@@ -2484,44 +2451,35 @@ impl ItemService {
         Ok(updated)
     }
 
-    /// Invalidate cached item.
+    /// Invalidate a cached item, here and on every other server (which clear
+    /// their whole item cache). Call it after the write commits.
     pub fn invalidate(&self, id: Uuid) {
         self.inner.cache.invalidate(&id);
+        bump(CacheKind::Items);
     }
 
-    /// Clear all cached items and stages.
+    /// Clear all cached items, here and on every other server.
     pub fn clear_cache(&self) {
+        self.clear_local();
+        bump(CacheKind::Items);
+    }
+
+    /// Clear this server's item cache only: what another server's bump does
+    /// here.
+    pub fn clear_local(&self) {
         self.inner.cache.invalidate_all();
-        self.inner.stage_cache.invalidate_all();
-        self.inner.stage_view.invalidate_all();
     }
 
-    /// Clear cached stage data. Call when stage config changes (visibility,
-    /// machine name, etc.) so access checks use fresh data.
-    pub fn clear_stage_cache(&self) {
-        self.inner.stage_cache.invalidate_all();
-        self.inner.stage_view.invalidate_all();
-    }
-
-    /// Every stage and the resolved workflow, from the cache.
+    /// Every stage and the resolved workflow, read from Postgres.
     ///
-    /// Loaded together on a miss (`Stage::list_all` and the
-    /// [`WORKFLOW_KEY`] variable) and kept for the stage cache's TTL, so a
-    /// change to either is seen within it; `clear_stage_cache` drops it at once.
+    /// Two queries (`Stage::list_all` and the [`WORKFLOW_KEY`] variable), not
+    /// cached: stages are few, and a stage change made on one server must hold
+    /// on every server at once.
     pub async fn stage_view(&self) -> Result<Arc<StageView>> {
-        if let Some(view) = self
-            .inner
-            .metrics
-            .cache_lookup(CacheName::StageView, self.inner.stage_view.get(&()))
-        {
-            return Ok(view);
-        }
         let stages = Stage::list_all(&self.inner.pool).await?;
         let value = SiteConfig::get(&self.inner.pool, WORKFLOW_KEY).await?;
         let workflow = Workflow::resolve(value.as_ref(), &stages);
-        let view = Arc::new(StageView { stages, workflow });
-        self.inner.stage_view.insert((), Arc::clone(&view));
-        Ok(view)
+        Ok(Arc::new(StageView { stages, workflow }))
     }
 
     /// Whether `user` may move an item from stage `from` to stage `to`: the one

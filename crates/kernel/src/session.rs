@@ -21,7 +21,17 @@ pub async fn create_session_layer(
 ) -> Result<SessionManagerLayer<RedisStore<Pool>>> {
     let config = Config::from_url(redis_url).context("failed to parse Redis URL")?;
 
-    let pool = Builder::from_config(config)
+    // Reconnect after Redis restarts, forever, every half second, and give
+    // up on a command after five seconds rather than wait on a connection
+    // that is gone. Without a policy the pool never reconnects, and every
+    // request that touches its session hangs from the restart on.
+    let mut builder = Builder::from_config(config);
+    builder
+        .set_policy(ReconnectPolicy::new_constant(0, 500))
+        .with_performance_config(|performance| {
+            performance.default_command_timeout = std::time::Duration::from_secs(5);
+        });
+    let pool = builder
         .build_pool(1)
         .context("failed to create Redis pool")?;
 

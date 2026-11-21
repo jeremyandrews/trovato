@@ -7,23 +7,24 @@ This is the capstone. By the end, Ritrovo is not a demo — it is a production-g
 **Start state:** A fully featured bilingual conference site with 5,000+ conferences, five plugins, threaded comments, subscriptions, and a REST API.
 **End state:** Two-tier caching with tag-based invalidation, batch operations for bulk content management, S3-compatible file storage, Prometheus metrics, cron with distributed locking, comprehensive test coverage, and load testing.
 
-> **Implementation note:** All infrastructure described in this part is fully implemented. The two-tier cache (`cache/mod.rs`, 330 lines), batch service (`batch/`, 349 lines), S3 storage (`file/storage.rs`, 403 lines), cron system (`cron/`, 1,379 lines), metrics endpoint (`metrics/`, 300 lines), and rate limiting (`middleware/rate_limit.rs`, 247 lines) are operational. The test suite has 727 unit tests and 325 integration tests across 15 test files. A load testing tool (`benchmarks/load-test/`, 327 lines) exists alongside the `goose` plugin for runtime performance monitoring.
+> **Implementation note:** All infrastructure described in this part is fully implemented. The cache layer (`cache/`), batch service (`batch/`, 349 lines), S3 storage (`file/storage.rs`, 403 lines), cron system (`cron/`, 1,379 lines), metrics endpoint (`metrics/`, 300 lines), and rate limiting (`middleware/rate_limit.rs`, 247 lines) are operational. The test suite has 727 unit tests and 325 integration tests across 15 test files. A load testing tool (`benchmarks/load-test/`, 327 lines) exists alongside the `goose` plugin for runtime performance monitoring.
 
 ---
 
-## Step 1: Two-Tier Caching
+## Step 1: Caching
 
-Every database query Ritrovo makes costs time. With 5,000+ conferences and multiple Gather queries per page, uncached queries would make the site sluggish. Trovato uses a **two-tier cache** to keep response times low.
+Every database query Ritrovo makes costs time. With 5,000+ conferences and multiple Gather queries per page, uncached queries would make the site sluggish. Trovato caches at two levels to keep response times low.
 
 ### The Architecture
 
 ```
-Request → L1 (Moka, in-process) → L2 (Redis, shared) → Database
+Request → service caches (Moka, in-process) → Database
+Request → cache layer (Redis, shared)        → Database
 ```
 
-**L1 (Moka):** An in-process Rust cache with a 60-second TTL and 10,000-entry capacity. Hits are sub-microsecond — no network round-trip, no serialization. Each server instance has its own L1 cache.
+**Service caches (Moka):** Items, users, permissions, content types, categories and gather queries are each cached in-process by their service, with the TTLs below. Hits are sub-microsecond. When one server writes, it clears its own copy and bumps a generation counter in Redis; every server polls the counters every 250 ms and clears a cache whose counter moved, so a change is current everywhere within about a second (see `docs/deployment/multi-server.md`).
 
-**L2 (Redis):** A shared cache with a 5-minute TTL. All server instances share the same Redis, so a cache fill from one instance benefits all others. Slightly slower than L1 (network round-trip) but still faster than a database query.
+**Cache layer (Redis):** A shared cache with a 5-minute TTL for computed values. All server instances read the same Redis, so a value filled or invalidated by one instance is the same for all of them. It has no in-process tier.
 
 **Tag-based invalidation:** When content changes, the kernel invalidates cache entries by tag rather than by key. Publishing a conference invalidates the `item:{id}` tag, which clears all cache entries tagged with that item — the detail page, every Gather listing that includes it, and the search results. This is implemented via Redis Lua scripts for atomicity.
 
@@ -65,14 +66,14 @@ an item page twice and the item cache shows the miss, then the hit:
 ```
 cache_hits_total{cache="item"} 1
 cache_misses_total{cache="item"} 1
-cache_hits_total{cache="layer_l1"} 0
-cache_misses_total{cache="layer_l1"} 0
+cache_hits_total{cache="layer_l2"} 0
+cache_misses_total{cache="layer_l2"} 0
 ```
 
-The names are `item`, `item_stage`, `stage_view`, `field_access`, `user`,
-`permissions`, `content_type`, `gather_query`, `gather_distinct`, `category`,
-`category_tags`, `menu`, `locale`, `template_suggestion`, and `layer_l1` and
-`layer_l2` for the two tiers of the cache layer described above.
+The names are `item`, `field_access`, `user`, `permissions`, `content_type`,
+`gather_query`, `gather_distinct`, `category`, `category_tags`, `menu`, `locale`,
+`template_suggestion`, and `layer_l2` for the shared cache layer described above
+(named for when it was the second of two tiers).
 
 ---
 

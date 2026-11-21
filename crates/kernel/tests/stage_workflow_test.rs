@@ -43,6 +43,17 @@ const WITNESS: &str = "test_item_writer";
 /// Serializes this file's tests: the workflow and the default stage are global.
 static SITE_WIDE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// Hold [`SITE_WIDE`] until this test's deferred cleanups have run.
+///
+/// The cleanups put the workflow and the default stage back, so they are part
+/// of the critical section: released any earlier, one test's restore could
+/// land on top of the workflow the next test had just set. Registered first,
+/// this cleanup runs last.
+async fn site_wide() {
+    let guard = SITE_WIDE.lock().await;
+    common::defer_cleanup(move || async move { drop(guard) });
+}
+
 static APP: std::sync::OnceLock<TestApp> = std::sync::OnceLock::new();
 
 fn app() -> &'static TestApp {
@@ -137,7 +148,6 @@ async fn stage(app: &TestApp, prefix: &str) -> Stage {
             .execute(&pool)
             .await;
     });
-    app.state.items().clear_stage_cache();
     Stage::find_by_id(&app.db, id)
         .await
         .expect("read stage")
@@ -151,7 +161,6 @@ async fn set_workflow(app: &TestApp, transitions: serde_json::Value) {
     SiteConfig::set(&app.db, WORKFLOW_KEY, json!({ "transitions": transitions }))
         .await
         .expect("store the workflow");
-    app.state.items().clear_stage_cache();
 }
 
 /// Remove the workflow, putting it back when the test ends.
@@ -160,7 +169,6 @@ async fn clear_workflow(app: &TestApp) {
     SiteConfig::delete(&app.db, WORKFLOW_KEY)
         .await
         .expect("remove the workflow");
-    app.state.items().clear_stage_cache();
 }
 
 async fn remember_workflow(app: &TestApp) {
@@ -168,13 +176,11 @@ async fn remember_workflow(app: &TestApp) {
         .await
         .expect("read the workflow");
     let pool = app.db.clone();
-    let items = Arc::clone(app.state.items());
     common::defer_cleanup(move || async move {
         let _ = match previous {
             Some(value) => SiteConfig::set(&pool, WORKFLOW_KEY, value).await,
             None => SiteConfig::delete(&pool, WORKFLOW_KEY).await.map(|_| ()),
         };
-        items.clear_stage_cache();
     });
 }
 
@@ -398,7 +404,7 @@ fn context_of(user_id: Uuid, permissions: &[&str]) -> UserContext {
 fn a_create_with_no_stage_lands_on_the_stage_marked_default() {
     run_test(async {
         let app = app();
-        let _guard = SITE_WIDE.lock().await;
+        site_wide().await;
         let draft = stage(app, "b69default").await;
 
         // Put Live back as the default when the test ends, whatever happens.
@@ -482,7 +488,7 @@ fn a_create_with_no_stage_lands_on_the_stage_marked_default() {
 fn a_user_holding_the_transition_permission_moves_an_item() {
     run_test(async {
         let app = app();
-        let _guard = SITE_WIDE.lock().await;
+        site_wide().await;
         let (from, to) = (stage(app, "b69from").await, stage(app, "b69to").await);
         let permission = format!("b69 move {}", unique());
         set_workflow(app, json!([transition(&from, &to, &permission)])).await;
@@ -543,7 +549,7 @@ fn a_user_holding_the_transition_permission_moves_an_item() {
 fn the_stage_selector_lists_only_the_reachable_stages() {
     run_test(async {
         let app = app();
-        let _guard = SITE_WIDE.lock().await;
+        site_wide().await;
         let a = stage(app, "b69sela").await;
         let b = stage(app, "b69selb").await;
         let c = stage(app, "b69selc").await;
@@ -594,7 +600,7 @@ fn the_stage_selector_lists_only_the_reachable_stages() {
 fn a_user_without_the_permission_is_refused_through_the_form() {
     run_test(async {
         let app = app();
-        let _guard = SITE_WIDE.lock().await;
+        site_wide().await;
         let (from, to) = (stage(app, "b69rf").await, stage(app, "b69rt").await);
         set_workflow(
             app,
@@ -620,7 +626,7 @@ fn a_user_without_the_permission_is_refused_through_the_form() {
 fn no_transition_is_implied_by_another() {
     run_test(async {
         let app = app();
-        let _guard = SITE_WIDE.lock().await;
+        site_wide().await;
         let a = stage(app, "b69ia").await;
         let b = stage(app, "b69ib").await;
         let c = stage(app, "b69ic").await;
@@ -654,7 +660,7 @@ fn no_transition_is_implied_by_another() {
 fn the_bulk_action_moves_only_what_the_user_may_move() {
     run_test(async {
         let app = app();
-        let _guard = SITE_WIDE.lock().await;
+        site_wide().await;
         let (from, to) = (stage(app, "b69bf").await, stage(app, "b69bt").await);
         let permission = format!("b69 move {}", unique());
         set_workflow(app, json!([transition(&from, &to, &permission)])).await;
@@ -685,7 +691,7 @@ fn the_bulk_action_moves_only_what_the_user_may_move() {
 fn save_item_moves_by_the_same_rule() {
     run_test(async {
         let app = app();
-        let _guard = SITE_WIDE.lock().await;
+        site_wide().await;
         let (from, to) = (stage(app, "b69sf").await, stage(app, "b69sv").await);
         let permission = format!("b69 move {}", unique());
         set_workflow(app, json!([transition(&from, &to, &permission)])).await;
@@ -725,7 +731,7 @@ fn save_item_moves_by_the_same_rule() {
 fn with_no_workflow_only_an_administrator_moves_items() {
     run_test(async {
         let app = app();
-        let _guard = SITE_WIDE.lock().await;
+        site_wide().await;
         let (from, to) = (stage(app, "b69nf").await, stage(app, "b69nt").await);
         clear_workflow(app).await;
 
@@ -757,7 +763,7 @@ fn with_no_workflow_only_an_administrator_moves_items() {
 fn the_items_alias_and_menu_link_move_with_it() {
     run_test(async {
         let app = app();
-        let _guard = SITE_WIDE.lock().await;
+        site_wide().await;
         let (from, to) = (stage(app, "b69af").await, stage(app, "b69at").await);
         let permission = format!("b69 move {}", unique());
         set_workflow(app, json!([transition(&from, &to, &permission)])).await;
@@ -819,7 +825,7 @@ fn the_items_alias_and_menu_link_move_with_it() {
 fn an_item_whose_stage_row_is_gone_is_denied() {
     run_test(async {
         let app = app();
-        let _guard = SITE_WIDE.lock().await;
+        site_wide().await;
         let orphaned = stage(app, "b69gone").await;
         let (viewer_id, _) = editor(app, &[]).await;
         let item = item_on(app, orphaned.id, viewer_id).await;
@@ -831,7 +837,6 @@ fn an_item_whose_stage_row_is_gone_is_denied() {
             .execute(&app.db)
             .await
             .expect("remove the stage row");
-        app.state.items().clear_stage_cache();
 
         let viewer = context_of(viewer_id, &["access content", "edit any content"]);
         let allowed = app
@@ -857,7 +862,7 @@ fn an_item_whose_stage_row_is_gone_is_denied() {
 fn an_author_on_an_internal_default_stage_can_open_and_edit_their_item() {
     run_test(async {
         let app = app();
-        let _guard = SITE_WIDE.lock().await;
+        site_wide().await;
         let internal = stage(app, "b69author").await;
         {
             let pool = app.db.clone();

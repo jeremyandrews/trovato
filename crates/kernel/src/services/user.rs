@@ -13,6 +13,7 @@ use sqlx::PgPool;
 use tracing::info;
 use uuid::Uuid;
 
+use crate::cache::generation::{CacheKind, bump};
 use crate::metrics::{CacheName, Metrics};
 use crate::models::{CreateUser, UpdateUser, User};
 use crate::tap::{RequestServices, RequestState, TapDispatcher, UserContext};
@@ -207,6 +208,8 @@ impl UserService {
         let deleted = User::delete(&self.inner.pool, id).await?;
         if deleted {
             self.invalidate(id);
+            // The delete gave the account's items to the anonymous author.
+            bump(CacheKind::Items);
             info!(user_id = %id, "user deleted");
         }
 
@@ -273,13 +276,21 @@ impl UserService {
         user.verify_password(password)
     }
 
-    /// Invalidate cached user.
+    /// Invalidate a cached user, here and on every other server (which clear
+    /// their whole user cache). Call it after the write commits.
     pub fn invalidate(&self, id: Uuid) {
         self.inner.cache.invalidate(&id);
+        bump(CacheKind::Users);
     }
 
-    /// Clear all cached users.
+    /// Clear all cached users, here and on every other server.
     pub fn clear_cache(&self) {
+        self.clear_local();
+        bump(CacheKind::Users);
+    }
+
+    /// Clear this server's cache only: what another server's bump does here.
+    pub fn clear_local(&self) {
         self.inner.cache.invalidate_all();
     }
 

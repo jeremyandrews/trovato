@@ -8,5 +8,5 @@
 pub mod navigation;
 mod registry;
 
-pub use navigation::{MenuTreeLink, SiteMenus, invalidate_config_menus};
+pub use navigation::{MenuTreeLink, SiteMenus, clear_local_config_menus, invalidate_config_menus};
 pub use registry::{MenuDefinition, MenuRegistry, RouteMatch, nav_entry_for};

@@ -35,6 +35,13 @@ struct ContentTypeRegistryInner {
     pool: PgPool,
     types: Cache<String, ContentTypeDefinition>,
 
+    /// Serializes this server's writes with its reloads. A write holds it from
+    /// its database write until its definition is cached; a reload holds it
+    /// from reading the rows until it has applied them. Without it a reload
+    /// could read the rows just before a write, then put the old definition
+    /// back over the new one, or drop a type created meanwhile.
+    writes: tokio::sync::Mutex<()>,
+
     /// Counts `types` hits and misses.
     metrics: Arc<Metrics>,
 }
@@ -224,6 +231,7 @@ impl ContentTypeRegistry {
                     .max_capacity(MAX_CAPACITY)
                     .time_to_live(ttl)
                     .build(),
+                writes: tokio::sync::Mutex::new(()),
                 metrics,
             }),
         }
@@ -374,9 +382,19 @@ impl ContentTypeRegistry {
     /// Called periodically by the background reload task to keep the
     /// cache fresh so that external database changes become visible.
     pub async fn reload_from_db(&self) -> Result<()> {
+        let _reload = self.inner.writes.lock().await;
         let db_types = ItemType::list(&self.inner.pool).await?;
+        let stored: std::collections::HashSet<String> =
+            db_types.iter().map(|t| t.type_name.clone()).collect();
         for db_type in db_types {
             self.cache_row(&db_type);
+        }
+        // A type deleted elsewhere (an import) leaves this server too. Every type,
+        // a plugin's included, is a row, so the rows are the whole list.
+        for name in self.type_names() {
+            if !stored.contains(&name) {
+                self.inner.types.invalidate(&name);
+            }
         }
         Ok(())
     }
@@ -438,6 +456,13 @@ impl ContentTypeRegistry {
             .insert(row.type_name.clone(), self.definition_from_row(row));
     }
 
+    /// Cache the definition a write just returned, and tell every other
+    /// server to read the types again. Call it after the write commits.
+    fn cache_written(&self, row: &ItemType) {
+        self.cache_row(row);
+        crate::cache::generation::bump(crate::cache::generation::CacheKind::ContentTypes);
+    }
+
     /// The row input `create` and `replace` both write.
     fn core_type_input(
         machine_name: &str,
@@ -475,13 +500,15 @@ impl ContentTypeRegistry {
     ) -> Result<(), CreateContentTypeError> {
         let input = Self::core_type_input(machine_name, label, description, settings);
 
+        // Held from the write to the cache update; see `writes`.
+        let _write = self.inner.writes.lock().await;
         let Some(row) = ItemType::insert_if_absent(&self.inner.pool, input).await? else {
             return Err(CreateContentTypeError::AlreadyExists {
                 machine_name: machine_name.to_string(),
             });
         };
 
-        self.cache_row(&row);
+        self.cache_written(&row);
         info!(type_name = %machine_name, "content type created");
         Ok(())
     }
@@ -502,9 +529,11 @@ impl ContentTypeRegistry {
         settings: serde_json::Value,
     ) -> Result<()> {
         let input = Self::core_type_input(machine_name, label, description, settings);
+        // Held from the write to the cache update; see `writes`.
+        let _write = self.inner.writes.lock().await;
         let row = ItemType::upsert(&self.inner.pool, input).await?;
 
-        self.cache_row(&row);
+        self.cache_written(&row);
         info!(type_name = %machine_name, "content type replaced");
         Ok(())
     }
@@ -552,6 +581,8 @@ impl ContentTypeRegistry {
              {RETURNING_ITEM_TYPE}",
             merge = merge_settings_sql("$5"),
         );
+        // Held from the write to the cache update; see `writes`.
+        let _write = self.inner.writes.lock().await;
         let row = sqlx::query_as::<_, ItemType>(AssertSqlSafe(sql))
             .bind(machine_name)
             .bind(label)
@@ -563,7 +594,7 @@ impl ContentTypeRegistry {
             .context("failed to update item_type")?
             .with_context(|| format!("content type '{machine_name}' not found"))?;
 
-        self.cache_row(&row);
+        self.cache_written(&row);
         info!(type_name = %machine_name, "content type updated");
         Ok(())
     }
@@ -638,6 +669,8 @@ impl ContentTypeRegistry {
             "UPDATE item_type SET settings = {merge} WHERE type = $1 {RETURNING_ITEM_TYPE}",
             merge = merge_settings_sql("$2"),
         );
+        // Held from the write to the cache update; see `writes`.
+        let _write = self.inner.writes.lock().await;
         let row = sqlx::query_as::<_, ItemType>(AssertSqlSafe(sql))
             .bind(type_name)
             .bind(&patch)
@@ -646,7 +679,7 @@ impl ContentTypeRegistry {
             .context("failed to update item_type")?
             .with_context(|| format!("content type '{type_name}' not found"))?;
 
-        self.cache_row(&row);
+        self.cache_written(&row);
         Ok(())
     }
 
@@ -726,7 +759,8 @@ impl ContentTypeRegistry {
         self.inner.types.invalidate(type_name);
     }
 
-    /// Clear all cached content types.
+    /// Clear all cached content types. `get` answers `None` until the next
+    /// [`Self::reload_from_db`], which is what a bump from another server runs.
     pub fn clear(&self) {
         self.inner.types.invalidate_all();
     }

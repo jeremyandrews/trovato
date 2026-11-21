@@ -57,6 +57,7 @@ use tower_sessions::cookie::SameSite;
 use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
+use crate::cache::generation::CacheKind;
 use crate::config::Config;
 use crate::state::AppState;
 
@@ -545,6 +546,7 @@ async fn run_plugin_command(action: PluginAction) -> Result<()> {
         PluginAction::New { .. } => unreachable!("handled above"),
         PluginAction::List => {
             plugin::cli::cmd_plugin_list(&pool, &config.plugins_dirs).await?;
+            return Ok(());
         }
         PluginAction::Install { name } => {
             plugin::cli::cmd_plugin_install(&pool, &config.plugins_dirs, &name).await?;
@@ -559,6 +561,10 @@ async fn run_plugin_command(action: PluginAction) -> Result<()> {
             plugin::cli::cmd_plugin_disable(&pool, &name).await?;
         }
     }
+
+    // Install and migrate may write any table a plugin's migrations touch.
+    // Which plugins run still waits for a restart.
+    println!("{}", bump_from_cli(&config, &CacheKind::ALL).await);
 
     Ok(())
 }
@@ -602,9 +608,11 @@ async fn run_config_command(action: ConfigAction) -> Result<()> {
             let verb = if dry_run { "Would import" } else { "Imported" };
             print_config_summary(verb, &dir, &result.counts, &result.warnings);
             if !dry_run {
-                // This process cannot reach a running server's in-memory
-                // caches, and the server reads plugin status only at boot.
-                println!("{CLI_CONFIG_RESTART_NOTE}");
+                // Any cached kind may have changed, so every kind is bumped.
+                println!("{}", bump_from_cli(&config, &CacheKind::ALL).await);
+                if result.counts.contains_key("plugin_status") {
+                    println!("{CLI_PLUGIN_RESTART_NOTE}");
+                }
             }
         }
     }
@@ -688,6 +696,7 @@ async fn run_user_command(action: UserAction) -> Result<()> {
             // password is already changed either way, so a Redis that cannot
             // be reached is reported rather than turned into a failure.
             println!("{}", end_sessions_from_cli(&config, user.id).await);
+            println!("{}", bump_from_cli(&config, &[CacheKind::Users]).await);
         }
         UserAction::RoleAdd { username, role } => {
             let (user, role) = find_user_and_role(&pool, &username, &role).await?;
@@ -702,14 +711,20 @@ async fn run_user_command(action: UserAction) -> Result<()> {
                 println!("User '{username}' already had role '{}'.", role.name);
             } else {
                 println!("User '{username}' now has role '{}'.", role.name);
-                println!("{CLI_ROLE_CACHE_NOTE}");
+                println!(
+                    "{}",
+                    bump_from_cli(&config, &[CacheKind::Permissions]).await
+                );
             }
         }
         UserAction::RoleRemove { username, role } => {
             let (user, role) = find_user_and_role(&pool, &username, &role).await?;
             models::Role::remove_from_user(&pool, user.id, role.id).await?;
             println!("User '{username}' no longer has role '{}'.", role.name);
-            println!("{CLI_ROLE_CACHE_NOTE}");
+            println!(
+                "{}",
+                bump_from_cli(&config, &[CacheKind::Permissions]).await
+            );
         }
         UserAction::Roles { username } => {
             let user = models::User::find_by_name(&pool, &username)
@@ -749,16 +764,28 @@ async fn find_user_and_role(
     Ok((user, role))
 }
 
-/// A running server caches permissions, so a CLI role change is not instant.
-///
-/// The same limitation `config import` has had since it could grant a role's
-/// permissions: both run in their own process with no `AppState` to invalidate.
-/// Said once, here, rather than in each arm.
-const CLI_CONFIG_RESTART_NOTE: &str = "Restart the server if it is running: it keeps cached \
-     configuration and its plugin set from before this import.";
+/// Which plugins run is read at boot, on every server, so an imported plugin
+/// status waits for a restart; everything else an import writes does not.
+const CLI_PLUGIN_RESTART_NOTE: &str = "Plugin enable and disable take effect when the servers restart (all of them, if more than one).";
 
-const CLI_ROLE_CACHE_NOTE: &str =
-    "A running server may take up to its permission cache TTL to see this change.";
+/// Tell every running server to drop its caches of `kinds` (`cache::generation`),
+/// and say what happened in a line fit for the terminal.
+///
+/// A command runs in its own process, with no server cache of its own to
+/// clear; the bump is how the servers hear about the write.
+async fn bump_from_cli(config: &Config, kinds: &[CacheKind]) -> String {
+    let bumped = match redis::Client::open(config.redis_url.as_str()) {
+        Ok(client) => cache::generation::bump_now(&client, kinds).await,
+        Err(e) => Err(e.into()),
+    };
+    match bumped {
+        Ok(()) => "Running servers drop their cached copies within a second.".to_string(),
+        Err(e) => format!(
+            "Running servers were NOT told: Redis could not be reached ({e:#}). \
+             They see this change when their caches expire."
+        ),
+    }
+}
 
 fn print_config_summary(
     verb: &str,

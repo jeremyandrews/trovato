@@ -15,6 +15,7 @@ use super::types::{
     AggregateFunction, ContextualValue, FilterOperator, FilterValue, GatherQuery, GatherResult,
     MAX_GROUP_DEPTH, QueryContext, QueryDefinition, QueryDisplay, QueryFilter,
 };
+use crate::cache::generation::{CacheKind, bump};
 use crate::content::{ItemService, RecordTypeRegistry};
 use crate::metrics::{CacheName, Metrics};
 use crate::models::UrlAlias;
@@ -91,6 +92,12 @@ pub struct GatherService {
     /// [`Self::item_access`]. When unset or a gather names no `record_type`, every
     /// gather is an Item gather and this is never consulted.
     record_types: OnceLock<Arc<RecordTypeRegistry>>,
+    /// Serializes this server's query writes with its reloads. A write holds it
+    /// from its database write until `queries` is updated; a reload holds it
+    /// from reading the rows until it has applied them. Without it a reload
+    /// could read the rows just before a write, then put the old query back
+    /// over the new one, or drop a query registered meanwhile.
+    writes: tokio::sync::Mutex<()>,
     /// Counts hits and misses in `queries` and `distinct_values_cache`.
     metrics: Arc<Metrics>,
 }
@@ -208,6 +215,7 @@ impl GatherService {
             ai_providers,
             vector_store,
             item_access: OnceLock::new(),
+            writes: tokio::sync::Mutex::new(()),
             record_types: OnceLock::new(),
             metrics,
         })
@@ -241,6 +249,8 @@ impl GatherService {
             );
         }
 
+        // Held from the write to the cache update; see `writes`.
+        let _write = self.writes.lock().await;
         // Persist to database
         let now = chrono::Utc::now().timestamp();
         let definition_json = serde_json::to_value(&query.definition)?;
@@ -270,8 +280,14 @@ impl GatherService {
         .await
         .context("failed to register query")?;
 
-        // Cache in memory
+        // A canonical URL saved here redirects at once, not at the next reload.
+        if self.sync_canonical_redirect(&query).await {
+            bump(CacheKind::Redirects);
+        }
+
+        // Cache in memory, and tell every other server to read the queries again.
         self.queries.insert(query_id, query);
+        bump(CacheKind::Gather);
 
         Ok(())
     }
@@ -611,6 +627,7 @@ impl GatherService {
             changed: i64,
         }
 
+        let _reload = self.writes.lock().await;
         let rows = sqlx::query_as::<_, QueryRow>(
             "SELECT query_id, label, description, definition, display, plugin, created, changed FROM gather_query",
         )
@@ -618,6 +635,7 @@ impl GatherService {
         .await
         .context("failed to load queries")?;
 
+        let rows_ids: Vec<String> = rows.iter().map(|r| r.query_id.clone()).collect();
         for row in rows {
             let definition: QueryDefinition = serde_json::from_value(row.definition).context(
                 format!("failed to parse query definition for '{}'", row.query_id),
@@ -641,6 +659,18 @@ impl GatherService {
             self.queries.insert(row.query_id, query);
         }
 
+        // A query deleted on another server, or by an import, leaves this one.
+        let stored: std::collections::HashSet<String> = rows_ids.into_iter().collect();
+        let gone: Vec<String> = self
+            .queries
+            .iter()
+            .map(|(k, _)| (*k).clone())
+            .filter(|k| !stored.contains(k))
+            .collect();
+        for query_id in gone {
+            self.queries.invalidate(&query_id);
+        }
+
         Ok(())
     }
 
@@ -656,6 +686,13 @@ impl GatherService {
         Ok(())
     }
 
+    /// Read this server's queries again and drop its distinct values: what
+    /// another server's `Gather` bump does here.
+    pub async fn refresh_local(&self) -> Result<()> {
+        self.distinct_values_cache.invalidate_all();
+        self.reload_from_db().await
+    }
+
     /// Ensure 301 redirects exist from `/gather/{query_id}` to `canonical_url`
     /// for every query that has one set.
     ///
@@ -663,24 +700,37 @@ impl GatherService {
     /// edited redirects are preserved. Silently skips if the `redirect`
     /// table does not exist (plugin not installed).
     async fn sync_canonical_redirects(&self) {
+        let mut added = false;
         for (_key, query) in &self.queries {
-            let Some(ref canonical) = query.display.canonical_url else {
-                continue;
-            };
-            let source = format!("/gather/{}", query.query_id);
-            let result = sqlx::query(
-                "INSERT INTO redirect (id, source, destination, status_code, language, created) \
+            added |= self.sync_canonical_redirect(&query).await;
+        }
+        if added {
+            bump(CacheKind::Redirects);
+        }
+    }
+
+    /// The redirect for one query's `canonical_url`, as above. True if a row
+    /// was added, so the caller can tell the servers' redirect caches.
+    async fn sync_canonical_redirect(&self, query: &GatherQuery) -> bool {
+        let Some(ref canonical) = query.display.canonical_url else {
+            return false;
+        };
+        let source = format!("/gather/{}", query.query_id);
+        let result = sqlx::query(
+            "INSERT INTO redirect (id, source, destination, status_code, language, created) \
                  SELECT gen_random_uuid(), $1, $2, 301, 'en', EXTRACT(EPOCH FROM NOW())::bigint \
                  WHERE NOT EXISTS ( \
                      SELECT 1 FROM redirect WHERE source = $1 AND language = 'en' \
                  )",
-            )
-            .bind(&source)
-            .bind(canonical)
-            .execute(&self.pool)
-            .await;
+        )
+        .bind(&source)
+        .bind(canonical)
+        .execute(&self.pool)
+        .await;
 
-            if let Err(e) = result {
+        match result {
+            Ok(done) => done.rows_affected() > 0,
+            Err(e) => {
                 let msg = e.to_string();
                 // Ignore "relation does not exist" — redirects plugin not installed
                 if !msg.contains("redirect") || !msg.contains("does not exist") {
@@ -690,6 +740,7 @@ impl GatherService {
                         "failed to sync canonical redirect"
                     );
                 }
+                false
             }
         }
     }
@@ -1992,6 +2043,8 @@ impl GatherService {
 
     /// Delete a query.
     pub async fn delete_query(&self, query_id: &str) -> Result<bool> {
+        // Held from the write to the cache update; see `writes`.
+        let _write = self.writes.lock().await;
         let result = sqlx::query("DELETE FROM gather_query WHERE query_id = $1")
             .bind(query_id)
             .execute(&self.pool)
@@ -1999,6 +2052,7 @@ impl GatherService {
             .context("failed to delete query")?;
 
         self.queries.invalidate(query_id);
+        bump(CacheKind::Gather);
 
         Ok(result.rows_affected() > 0)
     }

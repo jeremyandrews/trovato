@@ -853,8 +853,6 @@ fn record_autocomplete_works_from_the_item_form_and_only_offers_viewable_targets
         )
         .await;
         let stage = common::create_test_stage(app, "b71ref").await;
-        // The service caches the stage list; a stage made here is not in it.
-        app.state.items().clear_stage_cache();
         let staged = seed_titled(
             app,
             REF_TARGET,

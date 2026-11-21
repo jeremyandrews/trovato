@@ -588,7 +588,6 @@ async fn assert_item_edit_reaches_b(c: &Cluster) {
 
 /// 1. Revoke a role on A; the next request on B is 403.
 #[tokio::test]
-#[ignore = "fixed in part 2"]
 async fn s01_role_revoked_on_a_refuses_on_b() {
     let _serial = SERIAL.lock().await;
     let Some(c) = cluster().await else { return };
@@ -782,7 +781,6 @@ async fn s03_session_form_and_passkey_cross_nodes() {
 /// 4. Edit an item, add a field to a type, rename a term, edit a gather query,
 /// add a redirect and import a locale string on A; each is current on B.
 #[tokio::test]
-#[ignore = "fixed in part 2"]
 async fn s04_content_writes_on_a_are_current_on_b() {
     let _serial = SERIAL.lock().await;
     let Some(c) = cluster().await else { return };
@@ -978,7 +976,6 @@ async fn s04_content_writes_on_a_are_current_on_b() {
 /// kernel's own user of the same cache layer: the search settings, cached
 /// under one key and invalidated when the settings form is saved.
 #[tokio::test]
-#[ignore = "fixed in part 2"]
 async fn s05_cache_invalidated_on_a_misses_on_b() {
     let _serial = SERIAL.lock().await;
     let Some(c) = cluster().await else { return };
@@ -1258,7 +1255,6 @@ async fn s09_chat_limit_is_shared() {
 /// 10. Config import run from a third container; both nodes current, no
 /// restart.
 #[tokio::test]
-#[ignore = "fixed in part 2"]
 async fn s10_config_import_from_a_third_container() {
     let _serial = SERIAL.lock().await;
     let Some(c) = cluster().await else { return };
@@ -1294,7 +1290,6 @@ async fn s10_config_import_from_a_third_container() {
 
 /// 11. Restart Redis mid test; a write on A still reaches B after reconnect.
 #[tokio::test]
-#[ignore = "fixed in part 2"]
 async fn s11_redis_restart() {
     let _serial = SERIAL.lock().await;
     let Some(c) = cluster().await else { return };

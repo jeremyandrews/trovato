@@ -3,6 +3,7 @@
 //! Provides high-level operations on categories and tags with TTL-based
 //! Moka caching for fast lookups.
 
+use crate::cache::generation::{CacheKind, bump};
 use crate::metrics::{CacheName, Metrics};
 use crate::models::{
     Category, CreateCategory, CreateTag, Tag, TagWithDepth, UpdateCategory, UpdateTag,
@@ -80,6 +81,7 @@ impl CategoryService {
         let category = Category::create(&self.pool, input).await?;
         self.category_cache
             .insert(category.id.clone(), category.clone());
+        bump(CacheKind::Categories);
         Ok(category)
     }
 
@@ -92,6 +94,7 @@ impl CategoryService {
         let category = Category::update(&self.pool, id, input).await?;
         if let Some(ref c) = category {
             self.category_cache.insert(id.to_string(), c.clone());
+            bump(CacheKind::Categories);
         }
         Ok(category)
     }
@@ -102,6 +105,7 @@ impl CategoryService {
         if deleted {
             self.category_cache.invalidate(id);
             self.tag_cache.invalidate(id);
+            bump(CacheKind::Categories);
         }
         Ok(deleted)
     }
@@ -259,13 +263,21 @@ impl CategoryService {
     // Cache management
     // -------------------------------------------------------------------------
 
-    /// Invalidate cache for a category.
+    /// Invalidate a category's tag list, here and on every other server (which
+    /// clear all their category caches). Call it after the write commits.
     pub fn invalidate_cache(&self, category_id: &str) {
         self.tag_cache.invalidate(category_id);
+        bump(CacheKind::Categories);
     }
 
-    /// Clear all caches.
+    /// Clear all caches, here and on every other server.
     pub fn clear_cache(&self) {
+        self.clear_local();
+        bump(CacheKind::Categories);
+    }
+
+    /// Clear this server's caches only: what another server's bump does here.
+    pub fn clear_local(&self) {
         self.tag_cache.invalidate_all();
         self.category_cache.invalidate_all();
     }
