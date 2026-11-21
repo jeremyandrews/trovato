@@ -84,6 +84,7 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ),
     // Files have the media screen: list, upload, alt text and delete.
     ("file", Screen("/admin/content/files", None)),
+    ("plugin_status", Screen("/admin/plugins", None)),
     ("tile", Screen("/admin/structure/tiles", None)),
     ("menu_link", Screen("/admin/structure/menus", None)),
 ];

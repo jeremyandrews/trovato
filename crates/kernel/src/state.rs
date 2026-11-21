@@ -17,7 +17,7 @@ use crate::assistant::AssistantRegistry;
 use crate::batch::BatchService;
 use crate::cache::CacheLayer;
 use crate::config::{CacheConfig, Config};
-use crate::config_storage::{ConfigStorage, DirectConfigStorage, StageAwareConfigStorage};
+use crate::config_storage::{ConfigStorage, DirectConfigStorage};
 use crate::content::{ContentTypeRegistry, ItemService, RecordTypeRegistry};
 use crate::cron::CronService;
 use crate::db;
@@ -377,8 +377,6 @@ impl AppState {
             .context("Redis PING failed")?;
 
         // Create config storage
-        // This is the central interface for all config entity access.
-        // Post-MVP, we can swap this with StageAwareConfigStorage for stage awareness.
         // File service with local storage. Created here because config storage
         // stores the bytes of `file` config entities through it.
         let file_storage = Arc::new(LocalFileStorage::new(
@@ -1380,33 +1378,10 @@ impl AppState {
 
     /// Get the config storage.
     ///
-    /// All config entity access MUST go through this interface.
-    /// This is critical for future stage-aware config support.
+    /// The storage config export and import use, for tests that drive them
+    /// against the running site's database.
     pub fn config_storage(&self) -> &Arc<dyn ConfigStorage> {
         &self.inner.config_storage
-    }
-
-    /// Get stage-aware config storage for a specific stage.
-    ///
-    /// This creates a StageAwareConfigStorage that reads/writes to the given stage,
-    /// falling back to live for reads. Use this when you need to operate within
-    /// a stage context.
-    pub fn config_storage_for_stage(&self, stage_id: uuid::Uuid) -> Arc<dyn ConfigStorage> {
-        if stage_id == crate::models::stage::LIVE_STAGE_ID {
-            // Live stage uses direct storage
-            self.inner.config_storage.clone()
-        } else {
-            // Non-live stages use stage-aware storage
-            let direct = Arc::new(
-                DirectConfigStorage::new(self.inner.db.clone())
-                    .with_files(self.inner.files.clone()),
-            );
-            Arc::new(StageAwareConfigStorage::new(
-                direct,
-                self.inner.db.clone(),
-                stage_id,
-            ))
-        }
     }
 
     /// Get the search service.

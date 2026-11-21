@@ -72,6 +72,32 @@ pub struct PluginInfo {
     /// derived allowlist is known.
     #[serde(default)]
     pub record_types: Vec<RecordTypeDecl>,
+
+    /// What `config export` and `config import` carry for this plugin
+    /// (added by B92, after 0.105.0). See [`PluginConfigDecl`].
+    #[serde(default)]
+    pub config: PluginConfigDecl,
+}
+
+/// The `[config]` table of a manifest: which of the plugin's own tables hold
+/// site configuration, as opposed to content or runtime state.
+///
+/// ```toml
+/// [config]
+/// tables = ["redirect"]
+/// ```
+///
+/// `config export` writes every row of each named table as
+/// `<table>.<primary key>.yml`, after the kernel's own config entities, and
+/// `config import` upserts them by primary key in the order declared. A table
+/// must be one the plugin's own migrations create; a table holding a log, a
+/// queue or anything else that changes while the site runs must not be named.
+/// Additive: a manifest without `[config]` declares no tables, as before.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
+pub struct PluginConfigDecl {
+    /// The plugin's configuration tables, in import order.
+    #[serde(default)]
+    pub tables: Vec<String>,
 }
 
 /// A lightweight-record type declaration (P11g / D-53) — the manifest surface
@@ -699,6 +725,30 @@ impl PluginInfo {
             }
         }
 
+        // Config tables (B92). Structural only, like record types: the check
+        // that each one is a table this plugin's migrations create, and that no
+        // two plugins name the same one, happens where every manifest and the
+        // migrations are at hand (`config_storage::plugin_config`).
+        let mut seen_tables: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for table in &self.config.tables {
+            if !is_valid_sql_identifier(table) || table.chars().any(|c| c.is_ascii_uppercase()) {
+                anyhow::bail!(
+                    "plugin '{}': config table '{}' is not a valid table name \
+                     (lowercase letter or underscore first, then lowercase letters, digits, \
+                     underscores; ≤63 bytes)",
+                    self.name,
+                    table
+                );
+            }
+            if !seen_tables.insert(table.as_str()) {
+                anyhow::bail!(
+                    "plugin '{}': config table '{}' is declared more than once",
+                    self.name,
+                    table
+                );
+            }
+        }
+
         Ok(())
     }
 
@@ -799,6 +849,43 @@ version = "0.1.0"
         assert!(info.dependencies.is_empty());
         assert!(info.taps.implements.is_empty());
         assert_eq!(info.taps.weight, 0);
+    }
+
+    #[test]
+    fn parse_config_tables() {
+        let toml = r#"
+name = "redirects"
+description = "Redirects"
+version = "1.0.0"
+
+[config]
+tables = ["redirect", "redirect_group"]
+"#;
+        let info = PluginInfo::parse_str(toml, Path::new("test.toml")).unwrap();
+        assert_eq!(info.config.tables, vec!["redirect", "redirect_group"]);
+
+        let minimal = PluginInfo::parse_str(
+            "name = \"m\"\ndescription = \"m\"\nversion = \"0.1.0\"\n",
+            Path::new("test.toml"),
+        )
+        .unwrap();
+        assert!(
+            minimal.config.tables.is_empty(),
+            "absent [config] declares nothing"
+        );
+    }
+
+    #[test]
+    fn reject_bad_config_table_names() {
+        for bad in ["\"Redirect\"", "\"redirect; drop\"", "\"\"", "\"a\", \"a\""] {
+            let toml = format!(
+                "name = \"m\"\ndescription = \"m\"\nversion = \"0.1.0\"\n[config]\ntables = [{bad}]\n"
+            );
+            assert!(
+                PluginInfo::parse_str(&toml, Path::new("test.toml")).is_err(),
+                "tables = [{bad}] must be refused"
+            );
+        }
     }
 
     #[test]
@@ -1235,6 +1322,7 @@ api_version = "1.2.3"
             migrations: super::MigrationConfig::default(),
             capabilities: None,
             record_types: vec![],
+            config: Default::default(),
         }
     }
 

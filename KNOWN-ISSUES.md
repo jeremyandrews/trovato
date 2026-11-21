@@ -1,7 +1,7 @@
 # Known issues
 
 <!-- version:begin -->
-What is outstanding in 0.105.0.
+What is outstanding in 0.106.0.
 <!-- version:end -->
 This is the list that would otherwise be a surprise, so it is written down
 rather than discovered.
@@ -177,8 +177,10 @@ which it is.
 
 ### What is configuration import only, in full
 
-**Fourteen of the fifteen config entity types have an admin screen** (files have
-the media screen at `/admin/content/files`), and the fifteenth (`language`) is import-only by the decision above. That leaves the
+**Fifteen of the sixteen kernel config entity types have an admin screen** (files have
+the media screen at `/admin/content/files`, plugin status `/admin/plugins`), and the sixteenth (`language`) is import-only by the decision above.
+A plugin's config tables (`[config] tables` in its manifest) are entity types too,
+managed on that plugin's own screens. That leaves the
 `variable` type, which is a key/value store rather than one thing, and so is
 partly covered:
 

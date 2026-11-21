@@ -9,6 +9,51 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### Config export carries plugin configuration and leaves runtime state out; plugin API 0.106
+
+**Who is affected:** anyone who moves a site with `trovato config export` and
+`config import`; a plugin that stores site configuration in its own tables;
+anyone pinning the plugin API version.
+
+**What changed.**
+
+- A manifest may name its configuration tables:
+
+  ```toml
+  [config]
+  tables = ["redirect"]
+  ```
+
+  Export writes each row as `<table>.<primary key>.yml` after the kernel's
+  types, and import upserts them by primary key. The in-tree plugins declare
+  `image_style`, `redirect`, `webhook`, `oauth_client`, `config_translation`
+  and `locale_string`. A new `plugin_status.<name>.yml` entity records whether
+  each plugin is enabled; import applies it first and runs the enabled
+  plugins' migrations before writing their rows. The key is additive: a
+  manifest without it declares nothing. The project version moves to 0.106.0,
+  so `KERNEL_API_VERSION` is `(0, 106)` and the bundled manifests declare
+  `api_version = "0.106"`.
+- `installed`, `update_status`, `update_check` and `queue_runner` are runtime
+  state of one deployment. Export no longer writes them, and import ignores
+  them with a warning.
+- Import now prints that the server must be restarted: a running server keeps
+  its cached configuration and its plugin set until then.
+- A role, URL alias or plugin row whose name (or other unique key) is held by
+  another id on the target, as plugin migrations seed them, takes over that row
+  under the id the file names, so an export imports into another install. Role,
+  stage and URL alias files' timestamps are now applied on update.
+- Export skips, with a warning, a gather query no import would accept (the
+  `oauth_client` and `webhook` admin lists and `scheduled_items`, which the
+  plugins seed).
+- `trovato_oauth2` now runs `004_add_scopes_column.sql`, which its manifest
+  never listed; without the column every OAuth client lookup found nothing.
+- `StageAwareConfigStorage` and `AppState::config_storage_for_stage` are gone.
+  Nothing called them; configuration is not staged.
+
+**How to find out.** An export directory from before this release still
+imports. Re-export once to pick up plugin configuration; the `webhook` files
+carry each webhook's signing secret, so treat the directory as a secret.
+
 ### Errors on HTML pages: a themed page for browsers, `AppError` for scripts
 
 Every error a page answers with is decided in one place from the request's

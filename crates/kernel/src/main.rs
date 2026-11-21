@@ -583,7 +583,11 @@ async fn run_config_command(action: ConfigAction) -> Result<()> {
             &config.files_url,
         )),
     ));
-    let storage = config_storage::DirectConfigStorage::new(pool.clone()).with_files(files);
+    // Plugin config tables are named in the manifests on disk.
+    let plugins = config_storage::PluginConfigSet::discover(&config.plugins_dirs).await;
+    let storage = config_storage::DirectConfigStorage::new(pool.clone())
+        .with_files(files)
+        .with_plugins(plugins);
 
     match action {
         ConfigAction::Export { dir, clean } => {
@@ -597,6 +601,11 @@ async fn run_config_command(action: ConfigAction) -> Result<()> {
                 config_storage::yaml::import_config(&storage, &pool, &dir, dry_run).await?;
             let verb = if dry_run { "Would import" } else { "Imported" };
             print_config_summary(verb, &dir, &result.counts, &result.warnings);
+            if !dry_run {
+                // This process cannot reach a running server's in-memory
+                // caches, and the server reads plugin status only at boot.
+                println!("{CLI_CONFIG_RESTART_NOTE}");
+            }
         }
     }
 
@@ -745,6 +754,9 @@ async fn find_user_and_role(
 /// The same limitation `config import` has had since it could grant a role's
 /// permissions: both run in their own process with no `AppState` to invalidate.
 /// Said once, here, rather than in each arm.
+const CLI_CONFIG_RESTART_NOTE: &str = "Restart the server if it is running: it keeps cached \
+     configuration and its plugin set from before this import.";
+
 const CLI_ROLE_CACHE_NOTE: &str =
     "A running server may take up to its permission cache TTL to see this change.";
 

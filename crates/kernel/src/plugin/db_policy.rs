@@ -435,6 +435,7 @@ mod tests {
                 public_functions: vec![],
             }),
             record_types: vec![],
+            config: Default::default(),
         };
 
         let policy = DbPolicy::derive(&info, &dir);
@@ -569,6 +570,7 @@ mod tests {
                 public_functions: vec![],
             }),
             record_types: vec![],
+            config: Default::default(),
         };
 
         let policy = DbPolicy::derive(&info, &dir);
@@ -600,6 +602,7 @@ mod tests {
             migrations: MigrationConfig::default(),
             capabilities: None,
             record_types: vec![],
+            config: Default::default(),
         };
         let policy = DbPolicy::derive(&info, Path::new("/nonexistent"));
         assert!(policy.check_table("anything").is_err());
