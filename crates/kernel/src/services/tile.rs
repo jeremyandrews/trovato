@@ -9,7 +9,7 @@ use sqlx::PgPool;
 
 use crate::gather::{GatherDenied, GatherQuery};
 use crate::menu::MenuTreeLink;
-use crate::models::tile::{Tile, gather_tile_items};
+use crate::models::tile::{CreateTile, Tile, UpdateTile, gather_tile_items};
 use crate::routes::gather::{ExecuteParams, execute_query_only, query_language};
 use crate::routes::helpers::html_escape;
 use crate::state::AppState;
@@ -43,6 +43,26 @@ impl TileService {
     /// Create a new tile service.
     pub fn new(db: PgPool) -> Self {
         Self { db }
+    }
+
+    /// Create a tile.
+    ///
+    /// Tile writes go through here rather than the model so that what a tile
+    /// write must also do has one place to live. Today there is nothing more:
+    /// tiles are read per render, not cached, and the kernel defines no tile
+    /// taps.
+    pub async fn create(&self, input: CreateTile) -> Result<Tile> {
+        Tile::create(&self.db, input).await
+    }
+
+    /// Update a tile. `None` when there is no such tile.
+    pub async fn update(&self, id: uuid::Uuid, input: UpdateTile) -> Result<Option<Tile>> {
+        Tile::update(&self.db, id, input).await
+    }
+
+    /// Delete a tile. `false` when there is no such tile.
+    pub async fn delete(&self, id: uuid::Uuid) -> Result<bool> {
+        Tile::delete(&self.db, id).await
     }
 
     /// Get visible tiles for a region, filtered by path and role visibility rules.

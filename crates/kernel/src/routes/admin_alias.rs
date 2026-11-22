@@ -150,27 +150,14 @@ async fn add_alias_submit(
         return resp;
     }
 
-    // Normalize paths
-    let source = if form.source.starts_with('/') {
-        form.source.clone()
-    } else {
-        format!("/{}", form.source)
-    };
-
-    let alias = if form.alias.starts_with('/') {
-        form.alias.clone()
-    } else {
-        format!("/{}", form.alias)
-    };
-
     let input = CreateUrlAlias {
-        source,
-        alias,
+        source: form.source,
+        alias: form.alias,
         language: form.language,
         stage_id: Some(crate::models::stage::LIVE_STAGE_ID),
     };
 
-    match UrlAlias::create(state.db(), input).await {
+    match state.aliases().create(input).await {
         Ok(_) => Redirect::to("/admin/structure/aliases").into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to create url alias");
@@ -246,27 +233,14 @@ async fn edit_alias_submit(
         return resp;
     }
 
-    // Normalize paths
-    let source = if form.source.starts_with('/') {
-        form.source.clone()
-    } else {
-        format!("/{}", form.source)
-    };
-
-    let alias = if form.alias.starts_with('/') {
-        form.alias.clone()
-    } else {
-        format!("/{}", form.alias)
-    };
-
     let input = UpdateUrlAlias {
-        source: Some(source),
-        alias: Some(alias),
+        source: Some(form.source),
+        alias: Some(form.alias),
         language: form.language,
         stage_id: None,
     };
 
-    match UrlAlias::update(state.db(), alias_id, input).await {
+    match state.aliases().update(alias_id, input).await {
         Ok(Some(_)) => Redirect::to("/admin/structure/aliases").into_response(),
         Ok(None) => render_not_found(),
         Err(e) => {
@@ -293,7 +267,7 @@ async fn delete_alias(
         return resp;
     }
 
-    match UrlAlias::delete(state.db(), alias_id).await {
+    match state.aliases().delete(alias_id).await {
         Ok(true) => {
             tracing::info!(alias_id = %alias_id, "url alias deleted");
             Redirect::to("/admin/structure/aliases").into_response()

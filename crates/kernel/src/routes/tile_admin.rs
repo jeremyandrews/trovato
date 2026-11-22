@@ -171,7 +171,7 @@ async fn add_tile_submit(
         stage_id: None,
     };
 
-    match Tile::create(state.db(), input).await {
+    match state.tiles().create(input).await {
         Ok(_) => Redirect::to("/admin/structure/tiles").into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to create tile");
@@ -263,7 +263,7 @@ async fn edit_tile_submit(
         stage_id: None,
     };
 
-    match Tile::update(state.db(), tile_id, input).await {
+    match state.tiles().update(tile_id, input).await {
         Ok(_) => Redirect::to("/admin/structure/tiles").into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to update tile");
@@ -296,7 +296,7 @@ async fn delete_tile(
         return resp;
     }
 
-    match Tile::delete(state.db(), tile_id).await {
+    match state.tiles().delete(tile_id).await {
         Ok(true) => Redirect::to("/admin/structure/tiles").into_response(),
         Ok(false) => render_not_found(),
         Err(e) => {

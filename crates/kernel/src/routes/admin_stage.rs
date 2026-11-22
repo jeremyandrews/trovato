@@ -311,13 +311,10 @@ async fn add_stage_submit(
     // A new default has to displace the old one, and only `Stage::update` knows
     // how to do that atomically, so create first and then set the flag.
     let wants_default = form.is_default.is_some();
-    let created = match Stage::create(
-        state.db(),
-        CreateStage {
-            is_default: Some(false),
-            ..input
-        },
-    )
+    let created = match state.stage().create_stage(CreateStage {
+        is_default: Some(false),
+        ..input
+    })
     .await
     {
         Ok(stage) => stage,
@@ -335,15 +332,16 @@ async fn add_stage_submit(
     };
 
     if wants_default
-        && let Err(e) = Stage::update(
-            state.db(),
-            created.id,
-            UpdateStage {
-                is_default: Some(true),
-                ..UpdateStage::default()
-            },
-        )
-        .await
+        && let Err(e) = state
+            .stage()
+            .update_stage(
+                created.id,
+                UpdateStage {
+                    is_default: Some(true),
+                    ..UpdateStage::default()
+                },
+            )
+            .await
     {
         tracing::error!(error = %e, "failed to make the new stage default");
         return render_form(
@@ -469,7 +467,7 @@ async fn edit_stage_submit(
         weight: Some(form.weight.unwrap_or(existing.weight)),
     };
 
-    match Stage::update(state.db(), stage_id, input).await {
+    match state.stage().update_stage(stage_id, input).await {
         Ok(Some(_)) => {
             tracing::info!(stage_id = %stage_id, "stage updated");
             Redirect::to("/admin/structure/stages").into_response()
@@ -508,7 +506,7 @@ async fn delete_stage(
         return resp;
     }
 
-    match Stage::delete(state.db(), stage_id).await {
+    match state.stage().delete_stage(stage_id).await {
         Ok(true) => {
             tracing::info!(stage_id = %stage_id, "stage deleted");
             Redirect::to("/admin/structure/stages").into_response()

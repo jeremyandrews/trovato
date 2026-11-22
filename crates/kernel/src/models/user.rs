@@ -276,6 +276,20 @@ impl User {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Clear the user's password, leaving their passkeys as the way in.
+    ///
+    /// Whether they may go without one is the caller's to decide
+    /// (`AccountAccess::can_remove_password`).
+    pub async fn clear_password(pool: &PgPool, id: Uuid) -> Result<bool> {
+        let result = sqlx::query("UPDATE users SET pass = '' WHERE id = $1")
+            .bind(id)
+            .execute(pool)
+            .await
+            .context("failed to remove password")?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
     /// Update the user's last access time.
     pub async fn touch_access(pool: &PgPool, id: Uuid) -> Result<()> {
         sqlx::query("UPDATE users SET access = NOW() WHERE id = $1")
