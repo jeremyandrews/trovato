@@ -1,0 +1,41 @@
+# Logo row: a row of logos, each optionally a link.
+type = "LogoRow"
+label = "Logo Row"
+category = "media"
+description = "A titled row of logos."
+
+[[fields]]
+name = "title"
+type = "text"
+
+[[fields]]
+name = "headingLevel"
+type = "heading_level"
+label = "Heading Level (2-6)"
+default = 3
+
+[[fields]]
+name = "logos"
+type = "list"
+default = []
+default_item = { alt = "Logo" }
+
+  [[fields.fields]]
+  name = "image_url"
+  type = "url"
+  label = "Image URL"
+
+  [[fields.fields]]
+  name = "alt"
+  type = "text"
+  label = "Alt Text (required)"
+
+  [[fields.fields]]
+  name = "link_url"
+  type = "url"
+  label = "Link URL"
+
+[[fields]]
+name = "lang"
+type = "text"
+label = "Language Override"

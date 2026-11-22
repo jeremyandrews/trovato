@@ -9,6 +9,46 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### Page builder: no inline styles, server-side validation, plugin components
+
+**Who is affected:** sites with `trovato_page_builder` enabled and pages built
+with it; anyone building the Docker image from a fork that added plugins.
+
+**What changed.**
+
+- The page builder's sanitizer no longer keeps a `style` attribute, and no
+  standard component writes one. Three props that did are no longer rendered:
+  `backgroundColor` on Hero, Call to Action and Section, `gap` on Columns, and
+  the standard Hero's `backgroundImage` as a CSS background (it is now an
+  `<img>` behind the content, so the picture still shows). The first two are
+  replaced by declared variants: a `background` select (none, light, dark,
+  brand, the classes `pb-bg--light`, `pb-bg--dark`, `pb-bg--brand`) and
+  `gapSize` (default, none, small, large, the classes `pb-columns--gap-*`).
+  Stored values are kept and still validate; they are hidden in the editor and
+  ignored by the renderer. **Check before upgrading:** find pages that use them
+  (`SELECT id, title FROM item WHERE fields::text ~ '"(backgroundColor|gap)"\s*:\s*"[^"]'`)
+  and, after the upgrade, pick the nearest `background` or `gapSize` for each,
+  or restyle `.pb-bg--*` in your theme.
+- `/static/css/page-builder.css` is now linked on every page with page builder
+  content. It was not linked before, so a theme that styled the `pb-*`
+  classes itself will now get both; check those pages after upgrading.
+- A page builder field is now validated on the server whenever a create or
+  update changes it: every prop against its component's declared field type.
+  A page whose stored layout breaks a rule (a select value that is not one of
+  its options, a `javascript:` URL, a component type no enabled plugin
+  declares) still renders as before, but saving a change to its layout is
+  refused, naming the component and field, until the value is fixed or the
+  component removed. Saves that do not touch the layout are not affected.
+- Plugins can ship components. A plugin's `components/`, `templates/` and
+  `static/` are read at boot; a component file that does not parse, or a
+  component type two enabled plugins both declare, stops the server with an
+  error naming them. Plugin changes were already restart bound; so are their
+  components.
+- The Docker image assembles a plugin directory only for each plugin it built
+  (BL-122), and copies its `components/`, `templates/` and `static/`. A plugin
+  you add to `plugins/` must also be added to the Dockerfile's build list, as
+  before, or it is no longer shipped as a manifest with nothing behind it.
+
 ### Several servers can share one site; plugin changes on the admin page wait for a restart
 
 **Who is affected:** everyone, in four small ways; anyone running, or planning

@@ -187,6 +187,17 @@ pub(crate) async fn process(
                     posted,
                     &formats,
                 );
+                // A page builder field's page is checked against the
+                // registry here, so the form shows each refused value at its
+                // field; ItemService checks it again on every other path.
+                if let Ok(fields) = &built {
+                    errors.extend(page_builder_errors(
+                        state.page_builder_components(),
+                        content_type,
+                        fields,
+                        item.map(|i| &i.fields),
+                    ));
+                }
                 match built {
                     Ok(fields) if errors.is_empty() => Ok(fields),
                     Ok(_) => Err(errors),
@@ -198,6 +209,36 @@ pub(crate) async fn process(
             },
         )
         .await
+}
+
+/// Every registry error in the page builder fields `fields` changes, each as
+/// a form error on its item field naming the component and component field.
+fn page_builder_errors(
+    registry: &crate::content::page_builder_components::ComponentRegistry,
+    content_type: &ContentTypeDefinition,
+    fields: &Map<String, Value>,
+    stored: Option<&Value>,
+) -> Vec<ValidationError> {
+    let mut errors = Vec::new();
+    for def in content_type
+        .fields
+        .iter()
+        .filter(|f| matches!(f.field_type, trovato_sdk::types::FieldType::PageBuilder))
+    {
+        let Some(value) = fields.get(&def.field_name).filter(|v| !v.is_null()) else {
+            continue;
+        };
+        if stored.and_then(|s| s.get(&def.field_name)) == Some(value) {
+            continue;
+        }
+        for error in registry.validate_page(value) {
+            errors.push(ValidationError::field(
+                def.field_name.clone(),
+                format!("{}: {error}", def.label),
+            ));
+        }
+    }
+    errors
 }
 
 /// The form rebuilt for a submission that failed, showing what was posted.

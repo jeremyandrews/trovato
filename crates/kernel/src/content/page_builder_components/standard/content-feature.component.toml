@@ -1,0 +1,59 @@
+# Content feature: an image beside a heading, text and link.
+type = "ContentFeature"
+label = "Content Feature"
+category = "content"
+description = "An image on one side, a heading, text and a link on the other."
+
+[[fields]]
+name = "title"
+type = "text"
+
+[[fields]]
+name = "body"
+type = "text"
+multiline = true
+
+[[fields]]
+name = "imageUrl"
+type = "url"
+label = "Image URL"
+
+[[fields]]
+name = "imageAlt"
+type = "text"
+label = "Image Alt Text (required)"
+
+[[fields]]
+name = "imagePosition"
+type = "select"
+default = "left"
+options = [
+  { value = "left", label = "Left" },
+  { value = "right", label = "Right" },
+]
+
+[[fields]]
+name = "linkUrl"
+type = "url"
+label = "Link URL"
+
+[[fields]]
+name = "linkText"
+type = "text"
+label = "Link Text"
+
+[[fields]]
+name = "headingLevel"
+type = "heading_level"
+label = "Heading Level (2-6)"
+default = 2
+
+[[fields]]
+name = "lang"
+type = "text"
+label = "Language Override"
+
+[[fields]]
+name = "isDecorative"
+type = "boolean"
+hidden = true

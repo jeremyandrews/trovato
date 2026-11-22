@@ -1,0 +1,36 @@
+# Accordion: questions that open to their answers.
+type = "Accordion"
+label = "Accordion"
+category = "data"
+description = "A list of titled sections that open and close."
+
+[[fields]]
+name = "allowMultiple"
+type = "boolean"
+default = false
+
+[[fields]]
+name = "items"
+type = "list"
+default = []
+default_item = { title = "Section Title", content = "Section content." }
+
+  [[fields.fields]]
+  name = "title"
+  type = "text"
+
+  [[fields.fields]]
+  name = "content"
+  type = "text"
+  multiline = true
+
+[[fields]]
+name = "lang"
+type = "text"
+label = "Language Override"
+
+[[fields]]
+name = "headingLevel"
+type = "heading_level"
+hidden = true
+default = 3

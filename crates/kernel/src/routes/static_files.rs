@@ -29,13 +29,19 @@ async fn serve_static(State(state): State<AppState>, Path(path): Path<String>) -
     let path = path.trim_start_matches('/');
 
     let runtime = state.runtime();
-    let found = match pagefind_path(path) {
+    let found = if let Some(rest) = pagefind_path(path) {
         // The Pagefind index is served from wherever it is built, and only
         // from there, so a server never mixes its files with a stale copy.
-        Some(rest) => {
-            resolve_static_file(std::slice::from_ref(&runtime.pagefind_output_dir), rest).await
+        resolve_static_file(std::slice::from_ref(&runtime.pagefind_output_dir), rest).await
+    } else if let Some((plugin, rest)) = plugin_path(path) {
+        // A plugin's own files (a page builder component's stylesheet, for
+        // one), from its `static/` directory, while it is enabled.
+        match state.plugin_static_dir(plugin) {
+            Some(dir) => resolve_static_file(std::slice::from_ref(dir), rest).await,
+            None => None,
         }
-        None => resolve_static_file(&runtime.static_dirs, path).await,
+    } else {
+        resolve_static_file(&runtime.static_dirs, path).await
     };
     let Some((file_path, content)) = found else {
         return not_found();
@@ -57,6 +63,14 @@ async fn serve_static(State(state): State<AppState>, Path(path): Path<String>) -
 /// The part of a `/static/` path inside the Pagefind index, if it is one.
 fn pagefind_path(path: &str) -> Option<&str> {
     path.strip_prefix("pagefind/")
+}
+
+/// The plugin name and the path inside its `static/` directory, if `path` is
+/// under `plugins/<name>/`.
+fn plugin_path(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("plugins/")?;
+    let (plugin, file) = rest.split_once('/')?;
+    (!plugin.is_empty() && !file.is_empty()).then_some((plugin, file))
 }
 
 /// Find the highest-precedence readable file for `path` across the search path.
@@ -461,4 +475,15 @@ mod tests {
     // wiring lives in `config::config_tests` and is asserted from an explicit
     // settings map with nothing global involved. What is left here takes its
     // directories as arguments and needs no environment at all.
+
+    #[test]
+    fn plugin_paths_split_into_plugin_and_file() {
+        assert_eq!(
+            plugin_path("plugins/site/css/promo.css"),
+            Some(("site", "css/promo.css"))
+        );
+        assert_eq!(plugin_path("plugins/site/"), None);
+        assert_eq!(plugin_path("plugins/"), None);
+        assert_eq!(plugin_path("css/theme.css"), None);
+    }
 }

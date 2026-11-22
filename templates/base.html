@@ -333,6 +333,10 @@
         }
     </style>
     <link rel="stylesheet" href="/static/css/theme.css">
+    {# The stylesheets the page builder components on this page declared: the
+       standard set's, then each plugin component's, each once. #}
+    {% if page_stylesheets is defined %}{% for href in page_stylesheets %}
+    <link rel="stylesheet" href="{{ href }}">{% endfor %}{% endif %}
     {% block head %}{% endblock %}
 </head>
 <body>

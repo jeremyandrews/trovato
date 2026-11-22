@@ -227,7 +227,7 @@ async fn render_front_page_item(
     }
 
     // Render item fields and plugin outputs
-    let mut children_html = render_item_fields(&item, state);
+    let (mut children_html, page_stylesheets) = render_item_fields(&item, state, &user).await;
     for output in render_outputs {
         children_html.push_str(&output);
     }
@@ -247,6 +247,7 @@ async fn render_front_page_item(
     let mut context = tera::Context::new();
     context.insert("item", &item);
     context.insert("children", &children_html);
+    context.insert("page_stylesheets", &page_stylesheets);
     insert_language_context(&mut context, active_language);
 
     let item_html = state.theme().tera().render(&template, &context).ok()?;
@@ -365,21 +366,32 @@ async fn render_promoted_listing(state: &AppState) -> String {
     html
 }
 
-/// Render item fields to HTML.
-fn render_item_fields(item: &Item, state: &AppState) -> String {
+/// Render item fields to HTML, and the stylesheets the page builder
+/// components in them declared, for the page head.
+async fn render_item_fields(
+    item: &Item,
+    state: &AppState,
+    viewer: &crate::tap::UserContext,
+) -> (String, Vec<String>) {
     let mut html = String::new();
+    let mut stylesheets: Vec<String> = Vec::new();
 
     if let Some(fields) = item.fields.as_object() {
         for (name, value) in fields {
             // PageBuilder field: Puck JSON with root + content keys
             if value.get("root").is_some() && value.get("content").is_some() {
-                match state.theme().render_page_builder_content(value) {
+                match super::helpers::render_page_builder_field(state, viewer, value).await {
                     Ok(rendered) => {
                         html.push_str(&format!(
                             "<div class=\"field field--page-builder field-{}\">{}</div>",
                             html_escape(name),
-                            rendered
+                            rendered.html
                         ));
+                        for sheet in rendered.stylesheets {
+                            if !stylesheets.contains(&sheet) {
+                                stylesheets.push(sheet);
+                            }
+                        }
                     }
                     Err(e) => {
                         tracing::warn!(field = %name, error = %e, "failed to render page builder field on front page");
@@ -403,7 +415,7 @@ fn render_item_fields(item: &Item, state: &AppState) -> String {
         }
     }
 
-    html
+    (html, stylesheets)
 }
 
 #[cfg(test)]

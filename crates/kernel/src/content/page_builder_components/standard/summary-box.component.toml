@@ -1,0 +1,36 @@
+# Summary box: an aside for the key points, a warning or a success.
+type = "SummaryBox"
+label = "Summary Box"
+category = "data"
+description = "An aside with a title and text, or other components in its zone."
+zones = ["content"]
+
+[[fields]]
+name = "title"
+type = "text"
+
+[[fields]]
+name = "content"
+type = "text"
+multiline = true
+
+[[fields]]
+name = "variant"
+type = "select"
+default = "info"
+options = [
+  { value = "info", label = "Info" },
+  { value = "warning", label = "Warning" },
+  { value = "success", label = "Success" },
+]
+
+[[fields]]
+name = "headingLevel"
+type = "heading_level"
+label = "Heading Level (2-6)"
+default = 3
+
+[[fields]]
+name = "lang"
+type = "text"
+label = "Language Override"

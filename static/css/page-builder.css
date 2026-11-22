@@ -153,6 +153,32 @@ details[open] > .pb-accordion__title::before { transform: rotate(45deg); }
 .pb-toc__item a:hover { text-decoration: underline; }
 
 /* ==========================================================================
+   Variants: declared classes, never inline style
+   A component's background, gap and similar choices are select fields whose
+   options add a class from the component's declared list (see
+   "Page builder components" in docs/plugin-development.md). These are the standard ones.
+   ========================================================================== */
+.pb-bg--light { background: #f8f9fa; color: #1a1a2e; }
+.pb-bg--dark { background: #1a1a2e; color: #fff; }
+.pb-bg--brand { background: #2563eb; color: #fff; }
+.pb-columns--gap-none { gap: 0; }
+.pb-columns--gap-small { gap: 1rem; }
+.pb-columns--gap-large { gap: 3rem; }
+/* The standard hero's background image, an <img> behind the content. */
+.pb-hero--standard { position: relative; overflow: hidden; }
+.pb-hero__background { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 0; }
+.pb-hero--standard .pb-hero__content { position: relative; z-index: 1; }
+/* A theme colours its headings and body text (theme.css: `h2`,
+   `.item__content p`). Text on a component's own background takes that
+   component's colour instead, or it vanishes on dark. Two classes, so it
+   outranks the theme whichever stylesheet comes first. */
+.pb-hero .pb-hero__title, .pb-hero .pb-hero__subtitle,
+.pb-cta .pb-cta__heading, .pb-cta .pb-cta__body,
+.pb-bg--light:is(.pb-hero, .pb-cta, .pb-section) :is(h2, h3, h4, h5, h6, p, li),
+.pb-bg--dark:is(.pb-hero, .pb-cta, .pb-section) :is(h2, h3, h4, h5, h6, p, li),
+.pb-bg--brand:is(.pb-hero, .pb-cta, .pb-section) :is(h2, h3, h4, h5, h6, p, li) { color: inherit; }
+
+/* ==========================================================================
    Responsive
    ========================================================================== */
 @media (max-width: 768px) {

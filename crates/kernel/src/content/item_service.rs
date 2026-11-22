@@ -190,6 +190,10 @@ struct ItemServiceInner {
     /// object-safe (see its `async_fn_in_trait` allow); the trait stays the
     /// swap seam.
     vector_store: Option<Arc<PgVectorStore>>,
+    /// The page builder registry saved pages are validated against: the
+    /// standard set until `AppState` sets the merged one at startup.
+    page_builder_components:
+        std::sync::OnceLock<Arc<crate::content::page_builder_components::ComponentRegistry>>,
 }
 
 /// A translation record for an item in a specific language.
@@ -403,6 +407,32 @@ impl std::fmt::Display for WriteDenied {
 
 impl std::error::Error for WriteDenied {}
 
+/// A write refused because a page builder field holds a page the component
+/// registry does not accept: an unknown component, a value outside its
+/// field's type or limits, an image without alt text.
+///
+/// Returned inside `anyhow::Error`, found with `downcast_ref`, and answered
+/// with 422 and every error, each naming the item field, the component's
+/// place in the page and the component field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PageBuilderInvalid(
+    /// `(item field name, error)` pairs, in page order.
+    pub Vec<(String, crate::content::page_builder_components::FieldError)>,
+);
+
+impl std::fmt::Display for PageBuilderInvalid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let parts: Vec<String> = self
+            .0
+            .iter()
+            .map(|(field, error)| format!("{field}: {error}"))
+            .collect();
+        write!(f, "the page is not valid: {}", parts.join("; "))
+    }
+}
+
+impl std::error::Error for PageBuilderInvalid {}
+
 /// Why [`ItemService::translate`] or [`ItemService::withdraw_translation`]
 /// refused, as an error a caller can map without reading a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -528,7 +558,71 @@ impl ItemService {
                 metrics,
                 ai_providers,
                 vector_store,
+                page_builder_components: std::sync::OnceLock::new(),
             }),
+        }
+    }
+
+    /// Validate saved pages against `components` (the standard set plus the
+    /// enabled plugins') rather than the standard set. Set once, at startup;
+    /// a second call is ignored.
+    pub fn set_page_builder_components(
+        &self,
+        components: Arc<crate::content::page_builder_components::ComponentRegistry>,
+    ) {
+        if self.inner.page_builder_components.set(components).is_err() {
+            warn!("page builder components were already set; keeping the first registry");
+        }
+    }
+
+    /// The registry saved pages are validated against.
+    fn page_builder_components(
+        &self,
+    ) -> Arc<crate::content::page_builder_components::ComponentRegistry> {
+        self.inner
+            .page_builder_components
+            .get_or_init(|| Arc::new(Default::default()))
+            .clone()
+    }
+
+    /// Refuse a write whose page builder fields hold a page the registry does
+    /// not accept, with every error at once.
+    ///
+    /// Only a value the write changes is checked: a page stored before a
+    /// rule existed does not make an unrelated edit to its item unsaveable,
+    /// and the next edit of the page itself is checked in full.
+    async fn validate_page_builder_fields(
+        &self,
+        item_type: &str,
+        fields: Option<&serde_json::Value>,
+        existing: Option<&serde_json::Value>,
+    ) -> Result<()> {
+        let Some(fields) = fields.and_then(|f| f.as_object()) else {
+            return Ok(());
+        };
+        let mut conn = self.inner.pool.acquire().await?;
+        let definitions = file_refs::load_field_definitions(&mut conn, item_type).await?;
+        drop(conn);
+        let registry = self.page_builder_components();
+        let mut refused = Vec::new();
+        for def in definitions
+            .iter()
+            .filter(|d| matches!(d.field_type, trovato_sdk::types::FieldType::PageBuilder))
+        {
+            let Some(value) = fields.get(&def.field_name) else {
+                continue;
+            };
+            if value.is_null() || existing.and_then(|e| e.get(&def.field_name)) == Some(value) {
+                continue;
+            }
+            for error in registry.validate_page(value) {
+                refused.push((def.field_name.clone(), error));
+            }
+        }
+        if refused.is_empty() {
+            Ok(())
+        } else {
+            Err(PageBuilderInvalid(refused).into())
         }
     }
 
@@ -632,6 +726,10 @@ impl ItemService {
                 }
             }
         }
+
+        // Pages are checked after presave, so what is stored is what passed.
+        self.validate_page_builder_fields(&input.item_type, input.fields.as_ref(), None)
+            .await?;
 
         // The files the item will reference: any it may not attach refuse the
         // write, and the rest are indexed and promoted in the item's own
@@ -1157,6 +1255,13 @@ impl ItemService {
                 }
             }
         }
+
+        self.validate_page_builder_fields(
+            &existing.item_type,
+            input.fields.as_ref(),
+            Some(&existing.fields),
+        )
+        .await?;
 
         // A write that replaces `fields` replaces the item's file references,
         // in the same transaction; one that leaves `fields` alone leaves them.

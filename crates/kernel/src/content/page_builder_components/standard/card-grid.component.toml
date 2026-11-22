@@ -1,0 +1,70 @@
+# Card grid: two to four columns of cards.
+type = "CardGrid"
+label = "Card Grid"
+category = "data"
+description = "A grid of cards, each with an image, a heading, text and a link."
+
+[[fields]]
+name = "columns"
+type = "number"
+label = "Columns (2-4)"
+integer = true
+min = 2
+max = 4
+default = 3
+
+[[fields]]
+name = "variant"
+type = "select"
+default = "standard"
+options = [
+  { value = "standard", label = "Standard" },
+  { value = "feature", label = "Feature" },
+  { value = "compact", label = "Compact" },
+]
+
+[[fields]]
+name = "cardHeadingLevel"
+type = "heading_level"
+label = "Card Heading Level (2-6)"
+default = 3
+
+[[fields]]
+name = "cards"
+type = "list"
+default = []
+default_item = { title = "Card Title", body = "Card description." }
+
+  [[fields.fields]]
+  name = "title"
+  type = "text"
+
+  [[fields.fields]]
+  name = "body"
+  type = "text"
+  multiline = true
+
+  [[fields.fields]]
+  name = "image_url"
+  type = "url"
+  label = "Image URL"
+
+  [[fields.fields]]
+  name = "image_alt"
+  type = "text"
+  label = "Image Alt"
+
+  [[fields.fields]]
+  name = "link_url"
+  type = "url"
+  label = "Link URL"
+
+  [[fields.fields]]
+  name = "link_text"
+  type = "text"
+  label = "Link Text"
+
+[[fields]]
+name = "lang"
+type = "text"
+label = "Language Override"

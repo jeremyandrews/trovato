@@ -1,0 +1,18 @@
+{#- PromoCards: test_page_builder_components. Receives the declared fields
+    only, normalized by the kernel; variant_classes holds the chosen
+    "columns" option's class. -#}
+{% set hlevel = headingLevel | default(value=2) %}
+<section class="promo-cards {{ variant_classes }}">
+  {% if heading %}<h{{ hlevel }} class="promo-cards__heading">{{ heading }}</h{{ hlevel }}>{% endif %}
+  <div class="promo-cards__list">
+    {% for card in cards | default(value=[]) %}
+    <article class="promo-cards__card">
+      {% if card.eyebrow %}<p class="promo-cards__eyebrow">{{ card.eyebrow }}</p>{% endif %}
+      <h{{ hlevel + 1 }} class="promo-cards__title">{{ card.title | default(value="") }}</h{{ hlevel + 1 }}>
+      {# SAFE: text_html is the kernel's sanitized Markdown rendering of a rich_text field. #}
+      {% if card.text_html %}<div class="promo-cards__text">{{ card.text_html | safe }}</div>{% endif %}
+      {% if card.link %}<a class="promo-cards__link" href="{{ card.link.url }}"{% if card.link.new_tab %} target="_blank"{% endif %}>{{ card.link.label }}</a>{% endif %}
+    </article>
+    {% endfor %}
+  </div>
+</section>

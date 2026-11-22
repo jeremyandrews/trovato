@@ -92,7 +92,7 @@ if [[ "$MODE" == "full" ]]; then
     echo "=== WASM plugin build ==="
     if cargo build -p trovato_blog -p trovato_search \
         -p test_e2e_caller -p test_e2e_callee -p test_e2e_bystander -p test_e2e_nocaps \
-        -p test_ai_background -p test_queue_worker -p test_item_writer -p test_site_queries -p test_item_deny -p test_members -p test_menu_entries \
+        -p test_ai_background -p test_queue_worker -p test_item_writer -p test_site_queries -p test_item_deny -p test_members -p test_menu_entries -p test_page_builder_components \
         -p trovato_field_access_ref \
         -p trovato_recovery_ref -p test_recovery_bystander \
         -p trovato_record_ref \

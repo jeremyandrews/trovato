@@ -1,0 +1,66 @@
+# Call to action: a heading, a sentence and a button.
+type = "Cta"
+label = "Call to Action"
+category = "content"
+description = "A heading, a short text and one button."
+classes = ["pb-bg--light", "pb-bg--dark", "pb-bg--brand"]
+
+[[fields]]
+name = "heading"
+type = "text"
+default = "Call to Action"
+
+[[fields]]
+name = "body"
+type = "text"
+multiline = true
+
+[[fields]]
+name = "buttonText"
+type = "text"
+label = "Button Text"
+
+[[fields]]
+name = "buttonUrl"
+type = "url"
+label = "Button URL"
+
+[[fields]]
+name = "variant"
+type = "select"
+default = "inline"
+options = [
+  { value = "inline", label = "Inline" },
+  { value = "fullWidth", label = "Full Width" },
+  { value = "callout", label = "Callout" },
+]
+
+[[fields]]
+name = "background"
+type = "select"
+label = "Background"
+default = ""
+options = [
+  { value = "", label = "None" },
+  { value = "light", label = "Light", class = "pb-bg--light" },
+  { value = "dark", label = "Dark", class = "pb-bg--dark" },
+  { value = "brand", label = "Brand", class = "pb-bg--brand" },
+]
+
+[[fields]]
+name = "headingLevel"
+type = "heading_level"
+label = "Heading Level (2-6)"
+default = 2
+
+[[fields]]
+name = "lang"
+type = "text"
+label = "Language Override"
+
+# Before 0.107 a free CSS colour written into a style attribute.
+[[fields]]
+name = "backgroundColor"
+type = "text"
+hidden = true
+deprecated = "Replaced by background; the value is no longer written into the page."

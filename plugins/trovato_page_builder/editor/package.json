@@ -1,0 +1,25 @@
+{
+  "name": "trovato-page-builder-editor",
+  "private": true,
+  "version": "0.106.0",
+  "description": "The Puck editor for Trovato's page builder field, built from the kernel's component registry",
+  "license": "MIT OR Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@measured/puck": "0.20.2",
+    "react": "19.2.0",
+    "react-dom": "19.2.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.2",
+    "@types/react-dom": "19.2.2",
+    "esbuild": "0.28.2",
+    "typescript": "5.9.3",
+    "vitest": "5.1.1"
+  }
+}

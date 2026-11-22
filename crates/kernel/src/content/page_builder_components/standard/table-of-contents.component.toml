@@ -1,0 +1,12 @@
+# Table of contents. Not offered in the editor: it needs the page's headings,
+# which a two-pass renderer would supply and none does yet, so it renders a
+# placeholder. Declared so pages that hold one still validate.
+type = "TableOfContents"
+label = "Table of Contents"
+category = "content"
+in_editor = false
+
+[[fields]]
+name = "maxDepth"
+type = "heading_level"
+default = 3

@@ -16,9 +16,10 @@ This guide covers everything you need to know to develop plugins for Trovato CMS
 10. [Caching](#caching)
 11. [Inter-Plugin Communication](#inter-plugin-communication)
 12. [Letting an assistant configure your plugin](#letting-an-assistant-configure-your-plugin)
-13. [Testing](#testing)
-14. [Deployment](#deployment)
-15. [Best Practices](#best-practices)
+13. [Page builder components](#page-builder-components)
+14. [Testing](#testing)
+15. [Deployment](#deployment)
+16. [Best Practices](#best-practices)
 
 ---
 
@@ -1306,6 +1307,207 @@ the log, so one broken tool does not end a conversation.
   literal scope from your own template:
   `{% include "assistant/launcher.html" %}` with `scope` (and `scope_id`) set.
   It renders nothing when the assistant is off.
+
+---
+
+## Page builder components
+
+A plugin can add components to the page builder (the `trovato_page_builder`
+editor and the `PageBuilder` field type) without touching the kernel. A
+component is three files in the plugin directory: a declaration, a Tera
+template, and optionally a stylesheet. No WebAssembly is involved; the kernel
+reads the files at boot.
+
+```
+plugins/my_site/
+├── my_site.info.toml
+├── my_site.wasm
+├── components/
+│   └── promo-cards.component.toml   # the declaration
+├── templates/
+│   └── pb/
+│       └── promo-cards.html         # the template
+└── static/
+    └── promo-cards.css              # the stylesheet
+```
+
+The kernel's own components (Hero, Columns, Card Grid and the rest) are
+declared the same way, in
+`crates/kernel/src/content/page_builder_components/standard/`. They are the
+best set of examples there is.
+
+### How the registry is built
+
+At boot the kernel builds one component registry: the standard set, then every
+`components/*.component.toml` of every **enabled** plugin, plugins in name
+order and files in name order. Everything reads from it:
+
+- the editor, which builds its component list and every field form from
+  `GET /api/v1/page-builder/components`;
+- validation, which checks a page builder field on every create and update
+  that goes through the item service (the item forms, the JSON API, plugins);
+- rendering, which hands each component's template the fields it declares.
+
+A file that does not parse, a field type the kernel does not know, a key a
+field type does not take, a missing template or stylesheet, or a type name two
+plugins both declare stops the server at boot, with an error naming the file
+(and, for a duplicate, both plugins). A plugin may not replace a standard
+component either: declare a new type instead.
+
+Like the rest of a plugin, components are restart bound: enabling, disabling or
+editing a plugin's components takes effect when the server restarts.
+
+### Why TOML
+
+The declaration is TOML, the format of `.info.toml`, rather than JSON or a
+Rust tap: a plugin author already writes it, it allows comments (a component
+file explains its choices), the kernel already parses it, and it is read with
+unknown keys refused, so a misspelt `max_lenght` is an error at boot instead of
+a limit that silently never applies. A declaration rather than a tap also means
+the registry needs no plugin code to run before the first request, and the
+editor gets the same schema the server validates with.
+
+### The declaration
+
+```toml
+# components/promo-cards.component.toml
+type = "PromoCards"            # unique across the site; PascalCase
+label = "Promo cards"          # what the editor's component list shows
+category = "marketing"         # the list's group; new names make new groups
+description = "A heading over two to six cards."
+template = "pb/promo-cards.html"     # optional; default pb/<kebab-case type>.html
+stylesheets = ["promo-cards.css"]    # optional; paths under the plugin's static/
+classes = ["promo-cards--two", "promo-cards--three"]  # every class a select may add
+# zones = ["main"]             # optional: named areas other components drop into
+# in_editor = false            # optional: validate and render it, but do not offer it
+
+[[fields]]
+name = "heading"
+type = "text"
+label = "Heading"
+max_length = 80
+default = "Why teams choose us"
+```
+
+Every field takes `name` (letters, digits and underscores, starting with a
+letter; `id` is reserved), `type`, and optionally `label`, `help` (a line under
+the field in the editor), `required`, `default` (what a newly dropped component
+starts with; it is not applied at render time), `hidden` (kept and validated,
+not shown in the editor) and `deprecated` (a sentence saying what replaced it;
+implies the field is on its way out).
+
+### Field types
+
+Every rule below is checked on the server when the page is saved. A page that
+breaks one is refused with an error naming the component and the field, for
+example `field_layout.content[2].cards[1].title: is required`; the item form
+shows it above the editor, and the JSON API returns it in a 422.
+
+| Type | Stored as | Keys | Checked on save | The template receives |
+|------|-----------|------|-----------------|-----------------------|
+| `text` | string | `max_length`, `min_length`, `multiline` (a textarea in the editor) | length in characters | the string, autoescaped by Tera |
+| `rich_text` | Markdown string | `max_length`, `min_heading` (default 2) | length of the Markdown | the string, and `<name>_html`: the kernel's sanitized rendering, headings shifted to start at `min_heading` |
+| `number` | number | `min`, `max`, `integer` | range, whole number | the number |
+| `heading_level` | 2 to 6 | none | 2 to 6 (the page title is the level 1 heading) | the number |
+| `url` | string | none | relative, or `http`, `https`, `mailto`, `tel`; no whitespace | the URL, or nothing if unsafe |
+| `image` | `{ src, alt, decorative }` | `alt_max_length` (default 250) | `src` is a safe URL; `alt` is required unless `decorative` is true (WCAG 1.1.1) | `{ src, alt, decorative }`, with `alt` empty when decorative |
+| `link` | `{ url, label, new_tab }` | `label_max_length` (default 120) | `url` is safe; a link has a label a screen reader can announce | `{ url, label, new_tab }` |
+| `select` | string | `options = [{ value, label, class }]` | the value is one of the options | the value; its `class`, if any, goes into `variant_classes` |
+| `boolean` | `true` / `false` | none | is a boolean | the boolean |
+| `list` | array of objects | `fields` (the entry's own fields, any type but `list`), `min_items`, `max_items`, `default_item` | count, and every entry's fields by their own rules | an array of entries, each normalized the same way |
+| `reference` | string id | `target = "item"` or `"gather"`; `item_type` (item); `limit` (gather, default 10, at most 50) | an item UUID, or a gather query id | item: `{ id, title, type, url }`; gather: `{ id, label, url, total, rows }` |
+
+A reference is resolved when the page is viewed, as the viewer: an item the
+viewer may not see, an item of another type than `item_type`, a gather the
+viewer may not run, or one that no longer exists is simply absent, and the
+template renders without it.
+
+### Templates
+
+A component's template is found on the kernel's template search path, the
+same one every page template uses. An enabled plugin's `templates/` directory
+is on it at the lowest precedence, below the kernel's `templates/` and any
+`TEMPLATES_DIR`, so a theme can restyle a plugin's component by shipping a
+template of the same name, and a plugin cannot replace a kernel template. Name
+yours after the component (`pb/promo-cards.html`), not after something generic.
+
+The template's context holds:
+
+- the component's **declared fields only**, each normalized to its type: a
+  select value outside its options, an unsafe URL or a value of the wrong type
+  is left out, so the template's `default(...)` applies. Keys the page carries
+  that the declaration does not name never reach the template.
+- `variant_classes`: the classes the chosen select options add, space
+  separated. The kernel takes them from the option's `class`, and an option's
+  `class` must be listed in the component's `classes`, or the server will not
+  start.
+- `zones`, for a component that declares any: each zone's children, already
+  rendered.
+
+Everything a template outputs goes through the page builder's HTML sanitizer.
+It has **no `style` attribute**: a component expresses a colour, a spacing or a
+layout as a declared class, never as inline CSS from a prop. `class`,
+`aria-label`, `role` and `lang` survive on any element, along with ammonia's
+default structural tags and attributes (`href`, `src`, `alt` and the like) and
+`section`, `article`, `aside`, `nav`, `figure`, `details` and `summary`;
+scripts, event handlers and `javascript:` URLs do not. `target="_blank"` is
+the one `target` kept, and such a link gets `rel="noopener noreferrer"`.
+
+```html+jinja
+{#- templates/pb/promo-cards.html -#}
+{% set hlevel = headingLevel | default(value=2) %}
+<section class="promo-cards {{ variant_classes }}">
+  {% if heading %}<h{{ hlevel }} class="promo-cards__heading">{{ heading }}</h{{ hlevel }}>{% endif %}
+  {% for card in cards | default(value=[]) %}
+  <article class="promo-cards__card">
+    <h{{ hlevel + 1 }}>{{ card.title | default(value="") }}</h{{ hlevel + 1 }}>
+    {# SAFE: text_html is the kernel's sanitized Markdown rendering of a rich_text field. #}
+    {% if card.text_html %}{{ card.text_html | safe }}{% endif %}
+    {% if card.link %}<a href="{{ card.link.url }}">{{ card.link.label }}</a>{% endif %}
+  </article>
+  {% endfor %}
+</section>
+```
+
+The kernel's accessibility checks apply to plugin components too: an `image`
+field without alt text that is not marked decorative is refused on save, and
+the component renders as an accessibility error rather than as an unlabelled
+image. A page whose headings skip a level is logged as a warning.
+
+### Stylesheets
+
+`stylesheets` lists CSS files under the plugin's `static/` directory. The
+kernel serves an enabled plugin's `static/` at `/static/plugins/<plugin>/`,
+and a page links each stylesheet in its `<head>` once, and only if a component
+that declares it is on the page. The standard components' styles,
+`/static/css/page-builder.css`, are linked the same way. The editor loads a
+component's stylesheets into the canvas too, so the preview matches the page.
+
+Write the CSS against your own classes, and set colours on the component's
+own elements: the theme colours headings and paragraphs, and a heading on a
+dark background will take the theme's dark colour unless your rule is at least
+as specific (`.promo-cards .promo-cards__title`).
+
+### In the editor
+
+The editor needs no change for a new component. Each field type has its
+editor control (a textarea for `rich_text` with a server-rendered preview, a
+media library picker with an alt text box and a decorative checkbox for
+`image`, a search box for `reference`, a sortable list for `list`), and the
+canvas shows a plugin component by asking the kernel to render it
+(`POST /api/v1/page-builder/preview`) with the same template, sanitizer and
+checks as the page, so what the editor shows is what the page will show.
+
+### A complete example
+
+`plugins/test_page_builder_components` is a working plugin with two
+components: `PromoCards` (a heading over a list of cards, each with an
+eyebrow, a title, rich text and a link, and a select of how many cards to a
+row) and `FeatureBanner` (a select of tone and image position, an image, a
+title, rich text and a call to action). Its integration test,
+`crates/kernel/tests/page_builder_components_test.rs`, shows the registry
+listing them, a valid page saving and rendering, and an invalid one refused
+with an error at each field.
 
 ---
 

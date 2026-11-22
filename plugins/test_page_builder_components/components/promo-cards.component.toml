@@ -1,0 +1,66 @@
+# A heading over a row of cards, each with an eyebrow, a title, a short text
+# and a link.
+type = "PromoCards"
+label = "Promo cards"
+category = "marketing"
+description = "A heading over two to six cards, each with an eyebrow, a title, text and a link."
+stylesheets = ["promo-cards.css"]
+classes = ["promo-cards--two", "promo-cards--three"]
+
+[[fields]]
+name = "heading"
+type = "text"
+label = "Heading"
+max_length = 80
+default = "Why teams choose us"
+
+[[fields]]
+name = "headingLevel"
+type = "heading_level"
+label = "Heading level"
+default = 2
+
+[[fields]]
+name = "columns"
+type = "select"
+label = "Cards per row"
+default = "three"
+options = [
+  { value = "two", label = "Two", class = "promo-cards--two" },
+  { value = "three", label = "Three", class = "promo-cards--three" },
+]
+
+[[fields]]
+name = "cards"
+type = "list"
+label = "Cards"
+max_items = 6
+default = [
+  { eyebrow = "Fast", title = "Ships in days", text = "From brief to live page without a developer." },
+  { eyebrow = "Safe", title = "Checked on save", text = "Every field is validated on the server." },
+]
+default_item = { eyebrow = "New", title = "Card title", text = "A sentence about it." }
+
+  [[fields.fields]]
+  name = "eyebrow"
+  type = "text"
+  label = "Eyebrow"
+  max_length = 30
+
+  [[fields.fields]]
+  name = "title"
+  type = "text"
+  label = "Title"
+  required = true
+  max_length = 60
+
+  [[fields.fields]]
+  name = "text"
+  type = "rich_text"
+  label = "Text"
+  max_length = 300
+
+  [[fields.fields]]
+  name = "link"
+  type = "link"
+  label = "Link"

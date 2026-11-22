@@ -1,0 +1,34 @@
+# YouTube video, embedded from youtube-nocookie.com.
+type = "YouTubeEmbed"
+label = "YouTube Video"
+category = "media"
+description = "A YouTube video with a title for screen readers and an optional transcript."
+
+[[fields]]
+name = "videoId"
+type = "text"
+label = "YouTube Video ID"
+
+[[fields]]
+name = "title"
+type = "text"
+label = "Video Title (required for accessibility)"
+
+[[fields]]
+name = "aspectRatio"
+type = "select"
+default = "16:9"
+options = [
+  { value = "16:9", label = "16:9" },
+  { value = "4:3", label = "4:3" },
+]
+
+[[fields]]
+name = "transcriptUrl"
+type = "url"
+label = "Transcript URL"
+
+[[fields]]
+name = "lang"
+type = "text"
+label = "Language Override"

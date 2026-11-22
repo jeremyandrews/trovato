@@ -1,0 +1,1468 @@
+{
+  "data": [
+    {
+      "category": "layout",
+      "classes": [
+        "pb-columns--gap-none",
+        "pb-columns--gap-small",
+        "pb-columns--gap-large"
+      ],
+      "description": "Two to four columns, each a drop zone for other components.",
+      "fields": [
+        {
+          "default": "1/2+1/2",
+          "hidden": false,
+          "name": "layout",
+          "options": [
+            {
+              "label": "50/50",
+              "value": "1/2+1/2"
+            },
+            {
+              "label": "2/3 + 1/3",
+              "value": "2/3+1/3"
+            },
+            {
+              "label": "1/3 + 2/3",
+              "value": "1/3+2/3"
+            },
+            {
+              "label": "Thirds",
+              "value": "1/3+1/3+1/3"
+            },
+            {
+              "label": "Quarters",
+              "value": "1/4+1/4+1/4+1/4"
+            }
+          ],
+          "required": false,
+          "type": "select"
+        },
+        {
+          "default": "default",
+          "hidden": false,
+          "label": "Gap",
+          "name": "gapSize",
+          "options": [
+            {
+              "label": "Default",
+              "value": "default"
+            },
+            {
+              "class": "pb-columns--gap-none",
+              "label": "None",
+              "value": "none"
+            },
+            {
+              "class": "pb-columns--gap-small",
+              "label": "Small",
+              "value": "small"
+            },
+            {
+              "class": "pb-columns--gap-large",
+              "label": "Large",
+              "value": "large"
+            }
+          ],
+          "required": false,
+          "type": "select"
+        },
+        {
+          "deprecated": "Replaced by gapSize; the value is no longer written into the page.",
+          "hidden": true,
+          "multiline": false,
+          "name": "gap",
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "has_zones": true,
+      "in_editor": true,
+      "label": "Columns",
+      "props": {
+        "gap": {
+          "type": "string"
+        },
+        "gapSize": {
+          "default": "default",
+          "enum": [
+            "default",
+            "none",
+            "small",
+            "large"
+          ],
+          "type": "string"
+        },
+        "layout": {
+          "default": "1/2+1/2",
+          "enum": [
+            "1/2+1/2",
+            "2/3+1/3",
+            "1/3+2/3",
+            "1/3+1/3+1/3",
+            "1/4+1/4+1/4+1/4"
+          ],
+          "type": "string"
+        }
+      },
+      "source": {
+        "kind": "kernel"
+      },
+      "stylesheets": [],
+      "template": "pb/columns.html",
+      "type_name": "Columns",
+      "zone_names": [
+        "zone-0",
+        "zone-1",
+        "zone-2",
+        "zone-3"
+      ]
+    },
+    {
+      "category": "layout",
+      "classes": [
+        "pb-bg--light",
+        "pb-bg--dark",
+        "pb-bg--brand"
+      ],
+      "description": "A band of the page with its own background, padding and width.",
+      "fields": [
+        {
+          "default": "",
+          "hidden": false,
+          "label": "Background",
+          "name": "background",
+          "options": [
+            {
+              "label": "None",
+              "value": ""
+            },
+            {
+              "class": "pb-bg--light",
+              "label": "Light",
+              "value": "light"
+            },
+            {
+              "class": "pb-bg--dark",
+              "label": "Dark",
+              "value": "dark"
+            },
+            {
+              "class": "pb-bg--brand",
+              "label": "Brand",
+              "value": "brand"
+            }
+          ],
+          "required": false,
+          "type": "select"
+        },
+        {
+          "default": "default",
+          "hidden": false,
+          "name": "padding",
+          "options": [
+            {
+              "label": "Default",
+              "value": "default"
+            },
+            {
+              "label": "Large",
+              "value": "large"
+            },
+            {
+              "label": "None",
+              "value": "none"
+            }
+          ],
+          "required": false,
+          "type": "select"
+        },
+        {
+          "default": "default",
+          "hidden": false,
+          "name": "maxWidth",
+          "options": [
+            {
+              "label": "Default",
+              "value": "default"
+            },
+            {
+              "label": "Wide",
+              "value": "wide"
+            },
+            {
+              "label": "Full",
+              "value": "full"
+            }
+          ],
+          "required": false,
+          "type": "select"
+        },
+        {
+          "hidden": false,
+          "label": "Section Label (accessibility)",
+          "multiline": false,
+          "name": "ariaLabel",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "hidden": false,
+          "label": "Language Override",
+          "multiline": false,
+          "name": "lang",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "deprecated": "Replaced by background; the value is no longer written into the page.",
+          "hidden": true,
+          "multiline": false,
+          "name": "backgroundColor",
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "has_zones": true,
+      "in_editor": true,
+      "label": "Section",
+      "props": {
+        "ariaLabel": {
+          "type": "string"
+        },
+        "background": {
+          "default": "",
+          "enum": [
+            "",
+            "light",
+            "dark",
+            "brand"
+          ],
+          "type": "string"
+        },
+        "backgroundColor": {
+          "type": "string"
+        },
+        "lang": {
+          "type": "string"
+        },
+        "maxWidth": {
+          "default": "default",
+          "enum": [
+            "default",
+            "wide",
+            "full"
+          ],
+          "type": "string"
+        },
+        "padding": {
+          "default": "default",
+          "enum": [
+            "default",
+            "large",
+            "none"
+          ],
+          "type": "string"
+        }
+      },
+      "source": {
+        "kind": "kernel"
+      },
+      "stylesheets": [],
+      "template": "pb/section-wrapper.html",
+      "type_name": "SectionWrapper",
+      "zone_names": [
+        "content"
+      ]
+    },
+    {
+      "category": "content",
+      "classes": [
+        "pb-bg--light",
+        "pb-bg--dark",
+        "pb-bg--brand"
+      ],
+      "description": "A large heading with an optional subtitle, image and call to action.",
+      "fields": [
+        {
+          "default": "Hero Title",
+          "hidden": false,
+          "multiline": false,
+          "name": "title",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "hidden": false,
+          "multiline": false,
+          "name": "subtitle",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "hidden": false,
+          "label": "Background Image URL",
+          "name": "backgroundImage",
+          "required": false,
+          "type": "url"
+        },
+        {
+          "hidden": false,
+          "label": "Image Alt Text",
+          "multiline": false,
+          "name": "imageAlt",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "hidden": false,
+          "label": "CTA Button Text",
+          "multiline": false,
+          "name": "ctaText",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "hidden": false,
+          "label": "CTA Button URL",
+          "name": "ctaUrl",
+          "required": false,
+          "type": "url"
+        },
+        {
+          "default": "standard",
+          "hidden": false,
+          "name": "variant",
+          "options": [
+            {
+              "label": "Standard",
+              "value": "standard"
+            },
+            {
+              "label": "Split (50/50)",
+              "value": "split"
+            },
+            {
+              "label": "Minimal",
+              "value": "minimal"
+            }
+          ],
+          "required": false,
+          "type": "select"
+        },
+        {
+          "default": "",
+          "hidden": false,
+          "label": "Background",
+          "name": "background",
+          "options": [
+            {
+              "label": "None",
+              "value": ""
+            },
+            {
+              "class": "pb-bg--light",
+              "label": "Light",
+              "value": "light"
+            },
+            {
+              "class": "pb-bg--dark",
+              "label": "Dark",
+              "value": "dark"
+            },
+            {
+              "class": "pb-bg--brand",
+              "label": "Brand",
+              "value": "brand"
+            }
+          ],
+          "required": false,
+          "type": "select"
+        },
+        {
+          "default": 2,
+          "hidden": false,
+          "label": "Heading Level (2-6)",
+          "name": "headingLevel",
+          "required": false,
+          "type": "heading_level"
+        },
+        {
+          "hidden": false,
+          "label": "Language Override",
+          "multiline": false,
+          "name": "lang",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "hidden": true,
+          "name": "isDecorative",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "deprecated": "Replaced by background; the value is no longer written into the page.",
+          "hidden": true,
+          "multiline": false,
+          "name": "backgroundColor",
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "has_zones": false,
+      "in_editor": true,
+      "label": "Hero Section",
+      "props": {
+        "background": {
+          "default": "",
+          "enum": [
+            "",
+            "light",
+            "dark",
+            "brand"
+          ],
+          "type": "string"
+        },
+        "backgroundColor": {
+          "type": "string"
+        },
+        "backgroundImage": {
+          "format": "uri-reference",
+          "type": "string"
+        },
+        "ctaText": {
+          "type": "string"
+        },
+        "ctaUrl": {
+          "format": "uri-reference",
+          "type": "string"
+        },
+        "headingLevel": {
+          "default": 2,
+          "maximum": 6,
+          "minimum": 2,
+          "type": "integer"
+        },
+        "imageAlt": {
+          "type": "string"
+        },
+        "isDecorative": {
+          "type": "boolean"
+        },
+        "lang": {
+          "type": "string"
+        },
+        "subtitle": {
+          "type": "string"
+        },
+        "title": {
+          "default": "Hero Title",
+          "type": "string"
+        },
+        "variant": {
+          "default": "standard",
+          "enum": [
+            "standard",
+            "split",
+            "minimal"
+          ],
+          "type": "string"
+        }
+      },
+      "source": {
+        "kind": "kernel"
+      },
+      "stylesheets": [],
+      "template": "pb/hero.html",
+      "type_name": "Hero",
+      "zone_names": []
+    },
+    {
+      "category": "content",
+      "classes": [],
+      "description": "Markdown text. A level one heading is rendered as level two.",
+      "fields": [
+        {
+          "default": "Write **Markdown** here.",
+          "hidden": false,
+          "min_heading": 2,
+          "name": "content",
+          "required": false,
+          "type": "rich_text"
+        },
+        {
+          "hidden": false,
+          "label": "Language Override",
+          "multiline": false,
+          "name": "lang",
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "has_zones": false,
+      "in_editor": true,
+      "label": "Text",
+      "props": {
+        "content": {
+          "default": "Write **Markdown** here.",
+          "type": "string"
+        },
+        "lang": {
+          "type": "string"
+        }
+      },
+      "source": {
+        "kind": "kernel"
+      },
+      "stylesheets": [],
+      "template": "pb/text-block.html",
+      "type_name": "TextBlock",
+      "zone_names": []
+    },
+    {
+      "category": "content",
+      "classes": [
+        "pb-bg--light",
+        "pb-bg--dark",
+        "pb-bg--brand"
+      ],
+      "description": "A heading, a short text and one button.",
+      "fields": [
+        {
+          "default": "Call to Action",
+          "hidden": false,
+          "multiline": false,
+          "name": "heading",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "hidden": false,
+          "multiline": true,
+          "name": "body",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "hidden": false,
+          "label": "Button Text",
+          "multiline": false,
+          "name": "buttonText",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "hidden": false,
+          "label": "Button URL",
+          "name": "buttonUrl",
+          "required": false,
+          "type": "url"
+        },
+        {
+          "default": "inline",
+          "hidden": false,
+          "name": "variant",
+          "options": [
+            {
+              "label": "Inline",
+              "value": "inline"
+            },
+            {
+              "label": "Full Width",
+              "value": "fullWidth"
+            },
+            {
+              "label": "Callout",
+              "value": "callout"
+            }
+          ],
+          "required": false,
+          "type": "select"
+        },
+        {
+          "default": "",
+          "hidden": false,
+          "label": "Background",
+          "name": "background",
+          "options": [
+            {
+              "label": "None",
+              "value": ""
+            },
+            {
+              "class": "pb-bg--light",
+              "label": "Light",
+              "value": "light"
+            },
+            {
+              "class": "pb-bg--dark",
+              "label": "Dark",
+              "value": "dark"
+            },
+            {
+              "class": "pb-bg--brand",
+              "label": "Brand",
+              "value": "brand"
+            }
+          ],
+          "required": false,
+          "type": "select"
+        },
+        {
+          "default": 2,
+          "hidden": false,
+          "label": "Heading Level (2-6)",
+          "name": "headingLevel",
+          "required": false,
+          "type": "heading_level"
+        },
+        {
+          "hidden": false,
+          "label": "Language Override",
+          "multiline": false,
+          "name": "lang",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "deprecated": "Replaced by background; the value is no longer written into the page.",
+          "hidden": true,
+          "multiline": false,
+          "name": "backgroundColor",
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "has_zones": false,
+      "in_editor": true,
+      "label": "Call to Action",
+      "props": {
+        "background": {
+          "default": "",
+          "enum": [
+            "",
+            "light",
+            "dark",
+            "brand"
+          ],
+          "type": "string"
+        },
+        "backgroundColor": {
+          "type": "string"
+        },
+        "body": {
+          "type": "string"
+        },
+        "buttonText": {
+          "type": "string"
+        },
+        "buttonUrl": {
+          "format": "uri-reference",
+          "type": "string"
+        },
+        "heading": {
+          "default": "Call to Action",
+          "type": "string"
+        },
+        "headingLevel": {
+          "default": 2,
+          "maximum": 6,
+          "minimum": 2,
+          "type": "integer"
+        },
+        "lang": {
+          "type": "string"
+        },
+        "variant": {
+          "default": "inline",
+          "enum": [
+            "inline",
+            "fullWidth",
+            "callout"
+          ],
+          "type": "string"
+        }
+      },
+      "source": {
+        "kind": "kernel"
+      },
+      "stylesheets": [],
+      "template": "pb/cta.html",
+      "type_name": "Cta",
+      "zone_names": []
+    },
+    {
+      "category": "content",
+      "classes": [],
+      "description": "An image on one side, a heading, text and a link on the other.",
+      "fields": [
+        {
+          "hidden": false,
+          "multiline": false,
+          "name": "title",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "hidden": false,
+          "multiline": true,
+          "name": "body",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "hidden": false,
+          "label": "Image URL",
+          "name": "imageUrl",
+          "required": false,
+          "type": "url"
+        },
+        {
+          "hidden": false,
+          "label": "Image Alt Text (required)",
+          "multiline": false,
+          "name": "imageAlt",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "default": "left",
+          "hidden": false,
+          "name": "imagePosition",
+          "options": [
+            {
+              "label": "Left",
+              "value": "left"
+            },
+            {
+              "label": "Right",
+              "value": "right"
+            }
+          ],
+          "required": false,
+          "type": "select"
+        },
+        {
+          "hidden": false,
+          "label": "Link URL",
+          "name": "linkUrl",
+          "required": false,
+          "type": "url"
+        },
+        {
+          "hidden": false,
+          "label": "Link Text",
+          "multiline": false,
+          "name": "linkText",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "default": 2,
+          "hidden": false,
+          "label": "Heading Level (2-6)",
+          "name": "headingLevel",
+          "required": false,
+          "type": "heading_level"
+        },
+        {
+          "hidden": false,
+          "label": "Language Override",
+          "multiline": false,
+          "name": "lang",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "hidden": true,
+          "name": "isDecorative",
+          "required": false,
+          "type": "boolean"
+        }
+      ],
+      "has_zones": false,
+      "in_editor": true,
+      "label": "Content Feature",
+      "props": {
+        "body": {
+          "type": "string"
+        },
+        "headingLevel": {
+          "default": 2,
+          "maximum": 6,
+          "minimum": 2,
+          "type": "integer"
+        },
+        "imageAlt": {
+          "type": "string"
+        },
+        "imagePosition": {
+          "default": "left",
+          "enum": [
+            "left",
+            "right"
+          ],
+          "type": "string"
+        },
+        "imageUrl": {
+          "format": "uri-reference",
+          "type": "string"
+        },
+        "isDecorative": {
+          "type": "boolean"
+        },
+        "lang": {
+          "type": "string"
+        },
+        "linkText": {
+          "type": "string"
+        },
+        "linkUrl": {
+          "format": "uri-reference",
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "source": {
+        "kind": "kernel"
+      },
+      "stylesheets": [],
+      "template": "pb/content-feature.html",
+      "type_name": "ContentFeature",
+      "zone_names": []
+    },
+    {
+      "category": "content",
+      "classes": [],
+      "description": "A quotation with the speaker's name, role and photo.",
+      "fields": [
+        {
+          "default": "Quote text here.",
+          "hidden": false,
+          "multiline": true,
+          "name": "text",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "hidden": false,
+          "multiline": false,
+          "name": "attribution",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "hidden": false,
+          "label": "Role / Title",
+          "multiline": false,
+          "name": "role",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "hidden": false,
+          "label": "Avatar Image URL",
+          "name": "imageUrl",
+          "required": false,
+          "type": "url"
+        },
+        {
+          "hidden": true,
+          "label": "Source URL",
+          "name": "sourceUrl",
+          "required": false,
+          "type": "url"
+        },
+        {
+          "hidden": true,
+          "label": "Language Override",
+          "multiline": false,
+          "name": "lang",
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "has_zones": false,
+      "in_editor": true,
+      "label": "Quote",
+      "props": {
+        "attribution": {
+          "type": "string"
+        },
+        "imageUrl": {
+          "format": "uri-reference",
+          "type": "string"
+        },
+        "lang": {
+          "type": "string"
+        },
+        "role": {
+          "type": "string"
+        },
+        "sourceUrl": {
+          "format": "uri-reference",
+          "type": "string"
+        },
+        "text": {
+          "default": "Quote text here.",
+          "type": "string"
+        }
+      },
+      "source": {
+        "kind": "kernel"
+      },
+      "stylesheets": [],
+      "template": "pb/blockquote-extended.html",
+      "type_name": "BlockquoteExtended",
+      "zone_names": []
+    },
+    {
+      "category": "media",
+      "classes": [],
+      "description": "A YouTube video with a title for screen readers and an optional transcript.",
+      "fields": [
+        {
+          "hidden": false,
+          "label": "YouTube Video ID",
+          "multiline": false,
+          "name": "videoId",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "hidden": false,
+          "label": "Video Title (required for accessibility)",
+          "multiline": false,
+          "name": "title",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "default": "16:9",
+          "hidden": false,
+          "name": "aspectRatio",
+          "options": [
+            {
+              "label": "16:9",
+              "value": "16:9"
+            },
+            {
+              "label": "4:3",
+              "value": "4:3"
+            }
+          ],
+          "required": false,
+          "type": "select"
+        },
+        {
+          "hidden": false,
+          "label": "Transcript URL",
+          "name": "transcriptUrl",
+          "required": false,
+          "type": "url"
+        },
+        {
+          "hidden": false,
+          "label": "Language Override",
+          "multiline": false,
+          "name": "lang",
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "has_zones": false,
+      "in_editor": true,
+      "label": "YouTube Video",
+      "props": {
+        "aspectRatio": {
+          "default": "16:9",
+          "enum": [
+            "16:9",
+            "4:3"
+          ],
+          "type": "string"
+        },
+        "lang": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "transcriptUrl": {
+          "format": "uri-reference",
+          "type": "string"
+        },
+        "videoId": {
+          "type": "string"
+        }
+      },
+      "source": {
+        "kind": "kernel"
+      },
+      "stylesheets": [],
+      "template": "pb/you-tube-embed.html",
+      "type_name": "YouTubeEmbed",
+      "zone_names": []
+    },
+    {
+      "category": "media",
+      "classes": [],
+      "description": "A titled row of logos.",
+      "fields": [
+        {
+          "hidden": false,
+          "multiline": false,
+          "name": "title",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "default": 3,
+          "hidden": false,
+          "label": "Heading Level (2-6)",
+          "name": "headingLevel",
+          "required": false,
+          "type": "heading_level"
+        },
+        {
+          "default": [],
+          "default_item": {
+            "alt": "Logo"
+          },
+          "fields": [
+            {
+              "hidden": false,
+              "label": "Image URL",
+              "name": "image_url",
+              "required": false,
+              "type": "url"
+            },
+            {
+              "hidden": false,
+              "label": "Alt Text (required)",
+              "multiline": false,
+              "name": "alt",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "hidden": false,
+              "label": "Link URL",
+              "name": "link_url",
+              "required": false,
+              "type": "url"
+            }
+          ],
+          "hidden": false,
+          "name": "logos",
+          "required": false,
+          "type": "list"
+        },
+        {
+          "hidden": false,
+          "label": "Language Override",
+          "multiline": false,
+          "name": "lang",
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "has_zones": false,
+      "in_editor": true,
+      "label": "Logo Row",
+      "props": {
+        "headingLevel": {
+          "default": 3,
+          "maximum": 6,
+          "minimum": 2,
+          "type": "integer"
+        },
+        "lang": {
+          "type": "string"
+        },
+        "logos": {
+          "default": [],
+          "type": "array"
+        },
+        "title": {
+          "type": "string"
+        }
+      },
+      "source": {
+        "kind": "kernel"
+      },
+      "stylesheets": [],
+      "template": "pb/logo-row.html",
+      "type_name": "LogoRow",
+      "zone_names": []
+    },
+    {
+      "category": "data",
+      "classes": [],
+      "description": "A grid of cards, each with an image, a heading, text and a link.",
+      "fields": [
+        {
+          "default": 3,
+          "hidden": false,
+          "integer": true,
+          "label": "Columns (2-4)",
+          "max": 4.0,
+          "min": 2.0,
+          "name": "columns",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "default": "standard",
+          "hidden": false,
+          "name": "variant",
+          "options": [
+            {
+              "label": "Standard",
+              "value": "standard"
+            },
+            {
+              "label": "Feature",
+              "value": "feature"
+            },
+            {
+              "label": "Compact",
+              "value": "compact"
+            }
+          ],
+          "required": false,
+          "type": "select"
+        },
+        {
+          "default": 3,
+          "hidden": false,
+          "label": "Card Heading Level (2-6)",
+          "name": "cardHeadingLevel",
+          "required": false,
+          "type": "heading_level"
+        },
+        {
+          "default": [],
+          "default_item": {
+            "body": "Card description.",
+            "title": "Card Title"
+          },
+          "fields": [
+            {
+              "hidden": false,
+              "multiline": false,
+              "name": "title",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "hidden": false,
+              "multiline": true,
+              "name": "body",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "hidden": false,
+              "label": "Image URL",
+              "name": "image_url",
+              "required": false,
+              "type": "url"
+            },
+            {
+              "hidden": false,
+              "label": "Image Alt",
+              "multiline": false,
+              "name": "image_alt",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "hidden": false,
+              "label": "Link URL",
+              "name": "link_url",
+              "required": false,
+              "type": "url"
+            },
+            {
+              "hidden": false,
+              "label": "Link Text",
+              "multiline": false,
+              "name": "link_text",
+              "required": false,
+              "type": "text"
+            }
+          ],
+          "hidden": false,
+          "name": "cards",
+          "required": false,
+          "type": "list"
+        },
+        {
+          "hidden": false,
+          "label": "Language Override",
+          "multiline": false,
+          "name": "lang",
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "has_zones": false,
+      "in_editor": true,
+      "label": "Card Grid",
+      "props": {
+        "cardHeadingLevel": {
+          "default": 3,
+          "maximum": 6,
+          "minimum": 2,
+          "type": "integer"
+        },
+        "cards": {
+          "default": [],
+          "type": "array"
+        },
+        "columns": {
+          "default": 3,
+          "maximum": 4.0,
+          "minimum": 2.0,
+          "type": "integer"
+        },
+        "lang": {
+          "type": "string"
+        },
+        "variant": {
+          "default": "standard",
+          "enum": [
+            "standard",
+            "feature",
+            "compact"
+          ],
+          "type": "string"
+        }
+      },
+      "source": {
+        "kind": "kernel"
+      },
+      "stylesheets": [],
+      "template": "pb/card-grid.html",
+      "type_name": "CardGrid",
+      "zone_names": []
+    },
+    {
+      "category": "data",
+      "classes": [],
+      "description": "A list of titled sections that open and close.",
+      "fields": [
+        {
+          "default": false,
+          "hidden": false,
+          "name": "allowMultiple",
+          "required": false,
+          "type": "boolean"
+        },
+        {
+          "default": [],
+          "default_item": {
+            "content": "Section content.",
+            "title": "Section Title"
+          },
+          "fields": [
+            {
+              "hidden": false,
+              "multiline": false,
+              "name": "title",
+              "required": false,
+              "type": "text"
+            },
+            {
+              "hidden": false,
+              "multiline": true,
+              "name": "content",
+              "required": false,
+              "type": "text"
+            }
+          ],
+          "hidden": false,
+          "name": "items",
+          "required": false,
+          "type": "list"
+        },
+        {
+          "hidden": false,
+          "label": "Language Override",
+          "multiline": false,
+          "name": "lang",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "default": 3,
+          "hidden": true,
+          "name": "headingLevel",
+          "required": false,
+          "type": "heading_level"
+        }
+      ],
+      "has_zones": false,
+      "in_editor": true,
+      "label": "Accordion",
+      "props": {
+        "allowMultiple": {
+          "default": false,
+          "type": "boolean"
+        },
+        "headingLevel": {
+          "default": 3,
+          "maximum": 6,
+          "minimum": 2,
+          "type": "integer"
+        },
+        "items": {
+          "default": [],
+          "type": "array"
+        },
+        "lang": {
+          "type": "string"
+        }
+      },
+      "source": {
+        "kind": "kernel"
+      },
+      "stylesheets": [],
+      "template": "pb/accordion.html",
+      "type_name": "Accordion",
+      "zone_names": []
+    },
+    {
+      "category": "data",
+      "classes": [],
+      "description": "An aside with a title and text, or other components in its zone.",
+      "fields": [
+        {
+          "hidden": false,
+          "multiline": false,
+          "name": "title",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "hidden": false,
+          "multiline": true,
+          "name": "content",
+          "required": false,
+          "type": "text"
+        },
+        {
+          "default": "info",
+          "hidden": false,
+          "name": "variant",
+          "options": [
+            {
+              "label": "Info",
+              "value": "info"
+            },
+            {
+              "label": "Warning",
+              "value": "warning"
+            },
+            {
+              "label": "Success",
+              "value": "success"
+            }
+          ],
+          "required": false,
+          "type": "select"
+        },
+        {
+          "default": 3,
+          "hidden": false,
+          "label": "Heading Level (2-6)",
+          "name": "headingLevel",
+          "required": false,
+          "type": "heading_level"
+        },
+        {
+          "hidden": false,
+          "label": "Language Override",
+          "multiline": false,
+          "name": "lang",
+          "required": false,
+          "type": "text"
+        }
+      ],
+      "has_zones": true,
+      "in_editor": true,
+      "label": "Summary Box",
+      "props": {
+        "content": {
+          "type": "string"
+        },
+        "headingLevel": {
+          "default": 3,
+          "maximum": 6,
+          "minimum": 2,
+          "type": "integer"
+        },
+        "lang": {
+          "type": "string"
+        },
+        "title": {
+          "type": "string"
+        },
+        "variant": {
+          "default": "info",
+          "enum": [
+            "info",
+            "warning",
+            "success"
+          ],
+          "type": "string"
+        }
+      },
+      "source": {
+        "kind": "kernel"
+      },
+      "stylesheets": [],
+      "template": "pb/summary-box.html",
+      "type_name": "SummaryBox",
+      "zone_names": [
+        "content"
+      ]
+    },
+    {
+      "category": "content",
+      "classes": [],
+      "description": "",
+      "fields": [
+        {
+          "default": 3,
+          "hidden": false,
+          "name": "maxDepth",
+          "required": false,
+          "type": "heading_level"
+        }
+      ],
+      "has_zones": false,
+      "in_editor": false,
+      "label": "Table of Contents",
+      "props": {
+        "maxDepth": {
+          "default": 3,
+          "maximum": 6,
+          "minimum": 2,
+          "type": "integer"
+        }
+      },
+      "source": {
+        "kind": "kernel"
+      },
+      "stylesheets": [],
+      "template": "pb/table-of-contents.html",
+      "type_name": "TableOfContents",
+      "zone_names": []
+    }
+  ]
+}

@@ -69,6 +69,10 @@ pub fn router() -> Router<AppState> {
             "/api/v1/page-builder/components",
             get(list_page_builder_components),
         )
+        .route(
+            "/api/v1/page-builder/preview",
+            axum::routing::post(preview_page_builder_component),
+        )
         .layer(axum::middleware::from_fn(inject_api_version))
 }
 
@@ -587,10 +591,57 @@ async fn get_personal_fields(pool: &sqlx::PgPool, item_type: &str) -> Vec<String
 
 /// GET /api/v1/page-builder/components — list available page builder components.
 ///
-/// Returns the component registry for the Puck editor to initialize with.
-async fn list_page_builder_components() -> impl IntoResponse {
-    let registry = crate::content::page_builder_components::ComponentRegistry::new();
+/// Returns the component registry for the Puck editor to initialize with: the
+/// standard components and those of the plugins enabled at startup, in the
+/// editor's order, each with its fields (type, label, limits, options,
+/// defaults), zones, variant classes and stylesheets.
+async fn list_page_builder_components(State(state): State<AppState>) -> impl IntoResponse {
     Json(serde_json::json!({
-        "data": registry.all(),
+        "data": state.page_builder_components().all(),
     }))
+}
+
+/// Body of `POST /api/v1/page-builder/preview`.
+#[derive(Debug, serde::Deserialize)]
+struct PreviewRequest {
+    /// One component as a page stores it: `{ type, props, zones? }`.
+    component: serde_json::Value,
+}
+
+/// POST /api/v1/page-builder/preview — render one component as a page would.
+///
+/// The editor shows a component it has no React preview for (any plugin's)
+/// with this HTML, so the canvas is what the page will be: the same template,
+/// the same normalization, the same sanitizer, the references resolved as the
+/// signed-in editor sees them. The answer also carries the component's
+/// validation errors, so the editor can show them before a save refuses them.
+///
+/// Requires `use page builder`. It takes no CSRF token: it changes nothing,
+/// and CSRF tokens are single use, so checking one would spend the token the
+/// item form it sits in is about to post (the editor reads the page's token).
+/// A cross-site page cannot use it either: the body must be
+/// `application/json`, which a plain form cannot send, and the answer is not
+/// readable across origins.
+async fn preview_page_builder_component(
+    State(state): State<AppState>,
+    session: Session,
+    Json(request): Json<PreviewRequest>,
+) -> axum::response::Response {
+    if let Err(refusal) =
+        crate::routes::helpers::require_permission_json(&state, &session, "use page builder").await
+    {
+        return refusal.into_response();
+    }
+    let viewer = crate::routes::item::get_user_context(&session, &state).await;
+    let page = serde_json::json!({ "root": {}, "content": [request.component] });
+    let errors = state.page_builder_components().validate_page(&page);
+    match crate::routes::helpers::render_page_builder_field(&state, &viewer, &page).await {
+        Ok(rendered) => Json(serde_json::json!({
+            "html": rendered.html,
+            "stylesheets": rendered.stylesheets,
+            "errors": errors,
+        }))
+        .into_response(),
+        Err(e) => crate::error::AppError::bad_request(format!("{e:#}")).into_response(),
+    }
 }

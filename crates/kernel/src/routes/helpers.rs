@@ -1179,6 +1179,125 @@ pub async fn apply_translation_overlay(
     }
 }
 
+/// The most references one page resolves; any beyond are left unresolved,
+/// so a page cannot turn one view into an unbounded number of queries.
+const MAX_PAGE_REFERENCES: usize = 20;
+
+/// Render a page builder field's value for `viewer`, with its reference
+/// fields resolved as that viewer sees them.
+///
+/// An item reference resolves to `{ id, title, type, url }` if the item exists
+/// and `viewer` may view it; a gather reference to `{ id, label, url, total,
+/// rows }` (the first page, at most the field's `limit` rows, each with its
+/// `url`) if the gather exists and `viewer` may run it. Anything else is left
+/// out, and the template renders without it. The item page, the front page and
+/// the revision preview all render through here.
+pub async fn render_page_builder_field(
+    state: &AppState,
+    viewer: &UserContext,
+    value: &serde_json::Value,
+) -> anyhow::Result<crate::content::page_builder::RenderedPage> {
+    use crate::content::page_builder::{PuckPage, ResolvedReferences, collect_references};
+    use crate::content::page_builder_components::ReferenceTarget;
+    use anyhow::Context as _;
+
+    let page: PuckPage =
+        serde_json::from_value(value.clone()).context("failed to parse page builder JSON")?;
+    let mut resolved = ResolvedReferences::default();
+    for key in collect_references(&page, state.theme().components())
+        .iter()
+        .take(MAX_PAGE_REFERENCES)
+    {
+        match key.target {
+            ReferenceTarget::Item => {
+                let Ok(id) = Uuid::parse_str(&key.id) else {
+                    continue;
+                };
+                let Ok(Some(item)) = state.items().load(id).await else {
+                    continue;
+                };
+                if !state
+                    .items()
+                    .check_access(&item, "view", viewer)
+                    .await
+                    .unwrap_or(false)
+                {
+                    continue;
+                }
+                let source = format!("/item/{id}");
+                let url = crate::models::UrlAlias::find_by_source(state.db(), &source)
+                    .await
+                    .ok()
+                    .and_then(|aliases| aliases.into_iter().next())
+                    .map(|a| a.alias)
+                    .unwrap_or(source);
+                resolved.insert(
+                    key,
+                    serde_json::json!({
+                        "id": item.id,
+                        "title": item.title,
+                        "type": item.item_type,
+                        "url": url,
+                    }),
+                );
+            }
+            ReferenceTarget::Gather => {
+                let Some(query) = state.gather().get_query(&key.id) else {
+                    continue;
+                };
+                if crate::gather::authorize_gather(viewer, &query).is_err() {
+                    continue;
+                }
+                let context = crate::gather::QueryContext {
+                    current_user_id: viewer.authenticated.then_some(viewer.id),
+                    viewer: Some(viewer.clone()),
+                    url_args: std::collections::HashMap::new(),
+                    language: None,
+                };
+                let Ok(result) = state
+                    .gather()
+                    .execute(
+                        &key.id,
+                        1,
+                        std::collections::HashMap::new(),
+                        LIVE_STAGE_ID,
+                        &context,
+                    )
+                    .await
+                else {
+                    continue;
+                };
+                let rows: Vec<serde_json::Value> = result
+                    .items
+                    .into_iter()
+                    .take(key.limit as usize)
+                    .map(|mut row| {
+                        if let Some(id) = row.get("id").and_then(|v| v.as_str()).map(String::from)
+                            && let Some(obj) = row.as_object_mut()
+                        {
+                            obj.entry("url").or_insert_with(|| {
+                                serde_json::Value::String(format!("/item/{id}"))
+                            });
+                        }
+                        row
+                    })
+                    .collect();
+                resolved.insert(
+                    key,
+                    serde_json::json!({
+                        "id": query.query_id,
+                        "label": query.label,
+                        "url": format!("/gather/{}", query.query_id),
+                        "total": result.total,
+                        "rows": rows,
+                    }),
+                );
+            }
+        }
+    }
+    state.theme().render_page_builder_content(value, &resolved)
+}
+
 #[cfg(test)]
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]

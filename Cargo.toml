@@ -73,6 +73,10 @@ members = [
     # B74 navigation fixture: account menu entries with a parent, one gated,
     # one per viewer, one unfollowable; built with --target wasm32-wasip1.
     "plugins/test_menu_entries",
+    # A13 page builder fixture: ships two page builder components (files, no
+    # code) and a landing page type to compose them on; built with
+    # --target wasm32-wasip1.
+    "plugins/test_page_builder_components",
     # FR-8 (Story 3.8) reference plugin: the canonical tap_field_access
     # implementation (Cairn tier + Ritrovo role patterns). Real, enableable
     # plugin; built with --target wasm32-wasip1 like the other plugin cdylibs.

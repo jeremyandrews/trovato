@@ -1,0 +1,14 @@
+/* PromoCards (test_page_builder_components). Variants are the classes the
+   component declares; nothing here is set inline. */
+.promo-cards { max-width: 64rem; margin: 2.5rem auto; padding: 0 1.5rem; }
+.promo-cards__heading { font-size: 1.75rem; margin: 0 0 1.25rem; }
+.promo-cards__list { display: grid; gap: 1.25rem; grid-template-columns: repeat(3, 1fr); }
+.promo-cards--two .promo-cards__list { grid-template-columns: repeat(2, 1fr); }
+.promo-cards__card { border: 1px solid #e2e8f0; border-radius: 0.75rem; padding: 1.25rem; background: #fff; }
+.promo-cards__eyebrow { margin: 0 0 0.25rem; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #7c3aed; }
+.promo-cards__title { margin: 0 0 0.5rem; font-size: 1.125rem; }
+.promo-cards__text p { margin: 0 0 0.75rem; color: #475569; }
+.promo-cards__link { font-weight: 600; color: #7c3aed; }
+@media (max-width: 720px) {
+  .promo-cards__list, .promo-cards--two .promo-cards__list { grid-template-columns: 1fr; }
+}
