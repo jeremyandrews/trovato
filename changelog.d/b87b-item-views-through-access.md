@@ -4,4 +4,4 @@ The teaser cut the filtered HTML of the body at 200 characters, which could end 
 
 An item set as the front page rendered its fields with a renderer of its own, which knew nothing of Blocks fields, compound sections or a text field's `_format` key. It now uses the item page's (`routes::item::render_item_fields`), so the item reads the same at `/` as at its own address.
 
-The front-end edit form (`GET /item/{id}/edit`) checked `edit` only, so a user who may not see an item got a 403 that confirmed it exists, where the item page and the revision pages answer 404. It now checks `view` first (404), then `edit` (403).
+The front-end edit form (`GET /item/{id}/edit`) checked `edit` only, so a user who may not see an item got a 403 that confirmed it exists, where the item page and the revision pages answer 404. A user it refuses now gets 404 when they may not view the item and 403 when they may; a user who may edit still gets the form without a view grant, as an author with `edit own content` does on their own unpublished item.

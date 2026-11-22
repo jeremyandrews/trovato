@@ -1277,23 +1277,24 @@ async fn edit_item_form(
         .map_err(|e| AppError::internal_ctx(e, "load item"))?
         .ok_or_else(|| AppError::not_found("Item"))?;
 
-    // An item the viewer may not see is not there for them, as on the item
-    // page and the revision pages: `view` first (404), then `edit` (403), so a
-    // 403 does not confirm that an unseen item exists.
-    if !state
-        .items()
-        .check_access(&item, "view", &user)
-        .await
-        .unwrap_or(false)
-    {
-        return Err(AppError::not_found("Item"));
-    }
-    if !state
-        .items()
+    // A user who may not edit the item is refused as the item page and the
+    // revision pages refuse: 404 when they may not see it either, so a 403
+    // never confirms that an unseen item exists, and 403 when they may. One
+    // who may edit gets the form even without a view grant, as an author
+    // with `edit own content` on their own unpublished item does.
+    let items = state.items();
+    if !items
         .check_access(&item, "edit", &user)
         .await
         .unwrap_or(false)
     {
+        if !items
+            .check_access(&item, "view", &user)
+            .await
+            .unwrap_or(false)
+        {
+            return Err(AppError::not_found("Item"));
+        }
         return Err(super::helpers::refusal_for(&user, "Access denied"));
     }
 
