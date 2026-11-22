@@ -5504,14 +5504,16 @@ fn profile_update_changes_display_name() {
         let csrf_token = extract_csrf_token(&body).expect("Should have CSRF token");
         let build_id = extract_form_build_id(&body).expect("Should have a form build id");
 
-        // Update display name (keep same email, no password needed)
-        let new_name = format!("Updated {username}");
+        // Change the username (keep the same email). A username change asks
+        // for the current password, and a username takes no spaces.
+        let new_name = format!("{username}_new");
         let form_body = format!(
-            "_token={}&_form_build_id={}&name={}&mail={}&timezone=&current_password=",
+            "_token={}&_form_build_id={}&name={}&mail={}&timezone=&current_password={}",
             urlencoding::encode(&csrf_token),
             urlencoding::encode(&build_id),
             urlencoding::encode(&new_name),
             urlencoding::encode(&email),
+            urlencoding::encode(password),
         );
 
         let response = app
@@ -5526,11 +5528,20 @@ fn profile_update_changes_display_name() {
 
         assert_eq!(response.status(), StatusCode::OK);
 
+        // The message itself, not any word in it: the page used to carry
+        // `.message--success` in an inline stylesheet, so a check for
+        // "success" anywhere passed on a refused update.
         let body = response_text(response).await;
         assert!(
-            body.contains("updated") || body.contains("saved") || body.contains("success"),
+            body.contains("Profile updated successfully."),
             "Should show success message after profile update"
         );
+        let stored: String = sqlx::query_scalar("SELECT name FROM users WHERE mail = $1")
+            .bind(&email)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(stored, new_name);
     });
 }
 

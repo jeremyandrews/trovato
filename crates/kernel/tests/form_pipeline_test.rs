@@ -527,16 +527,16 @@ fn the_item_form_renders_inside_the_site_theme() {
             );
             assert!(html.contains(r#"<nav class="site-nav""#), "{path}");
             assert!(html.contains("/static/css/forms.css"), "{path}");
-            // The form brings no style of its own; the one `<style>` on the
-            // page is the theme's `:root` palette in `base.html`.
+            // The form brings no style of its own, and neither does the
+            // theme: `base.html` links its palette from `static/css/base.css`.
             assert!(
                 !form_markup(&html).contains("<style"),
                 "{path}: inline style in the form"
             );
             assert_eq!(
                 html.matches("<style").count(),
-                1,
-                "{path}: a style block beyond the theme's own"
+                0,
+                "{path}: an inline style block"
             );
         }
     });

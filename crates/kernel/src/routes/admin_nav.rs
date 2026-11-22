@@ -59,6 +59,16 @@ const fn link(section: &'static str, label: &'static str, href: &'static str, ga
 
 use Gate::{Administrator, Permission};
 
+/// The comments plugin, by the name `AppState::enabled_plugins` holds it under.
+///
+/// The sidebar once tested `"comments"` and `"categories"`, names no plugin
+/// has, so Comments and Categories were hidden from everyone; its own tests
+/// passed the same wrong names and passed. A test below holds every plugin
+/// named here to the list the route gate is registered from.
+const COMMENTS: &str = "trovato_comments";
+/// The categories plugin, as [`COMMENTS`].
+const CATEGORIES: &str = "trovato_categories";
+
 /// The sidebar, in display order.
 pub const LINKS: &[Link] = &[
     Link {
@@ -82,7 +92,7 @@ pub const LINKS: &[Link] = &[
         Permission("create content"),
     ),
     Link {
-        plugin: Some("comments"),
+        plugin: Some(COMMENTS),
         ..link(
             "Content",
             "Comments",
@@ -109,7 +119,7 @@ pub const LINKS: &[Link] = &[
         Permission("administer site"),
     ),
     Link {
-        plugin: Some("categories"),
+        plugin: Some(CATEGORIES),
         also: &["/admin/structure/tags"],
         ..link(
             "Structure",
@@ -211,6 +221,153 @@ pub const LINKS: &[Link] = &[
     ),
 ];
 
+/// One dashboard card: an administration area and the screens it links to.
+#[derive(Debug, Clone, Copy)]
+pub struct Card {
+    /// The card heading.
+    pub title: &'static str,
+    /// One line on what the area is for.
+    pub description: &'static str,
+    /// `(label, href)` for each screen; every `href` is a [`LINKS`] entry, and
+    /// is shown under the same gate and plugin check the sidebar applies.
+    pub links: &'static [(&'static str, &'static str)],
+}
+
+/// The dashboard, in display order: one card per administration area.
+pub const CARDS: &[Card] = &[
+    Card {
+        title: "Content",
+        description: "Find, edit and publish items.",
+        links: &[
+            ("Content", "/admin/content"),
+            ("Add content", "/admin/content/add"),
+            ("Files", "/admin/content/files"),
+            ("Media", "/admin/media"),
+        ],
+    },
+    Card {
+        title: "Comments",
+        description: "Moderate comments and set how new ones are published.",
+        links: &[("Comments", "/admin/content/comments")],
+    },
+    Card {
+        title: "People",
+        description: "User accounts.",
+        links: &[("Users", "/admin/people")],
+    },
+    Card {
+        title: "Roles and permissions",
+        description: "What each role may do.",
+        links: &[
+            ("Roles", "/admin/people/roles"),
+            ("Permissions", "/admin/people/permissions"),
+        ],
+    },
+    Card {
+        title: "Structure",
+        description: "Content types, their fields, and stages.",
+        links: &[
+            ("Content types", "/admin/structure/types"),
+            ("Stages", "/admin/structure/stages"),
+        ],
+    },
+    Card {
+        title: "Categories",
+        description: "Vocabularies and their tags.",
+        links: &[("Categories", "/admin/structure/categories")],
+    },
+    Card {
+        title: "Menus",
+        description: "Navigation menus and their links.",
+        links: &[("Menus", "/admin/structure/menus")],
+    },
+    Card {
+        title: "URL aliases",
+        description: "Readable addresses for items and pages.",
+        links: &[("URL aliases", "/admin/structure/aliases")],
+    },
+    Card {
+        title: "Gathers",
+        description: "Listings, feeds and their filters and sorts.",
+        links: &[("Gather queries", "/admin/gather")],
+    },
+    Card {
+        title: "Tiles",
+        description: "What appears in each page region.",
+        links: &[("Tiles", "/admin/structure/tiles")],
+    },
+    Card {
+        title: "Plugins",
+        description: "Enable and disable plugins.",
+        links: &[("Plugins", "/admin/plugins")],
+    },
+    Card {
+        title: "Site settings",
+        description: "Site name, front page, search and AI providers.",
+        links: &[
+            ("Site settings", "/admin/config/site"),
+            ("Search settings", "/admin/config/search"),
+            ("AI Providers", "/admin/system/ai-providers"),
+        ],
+    },
+    Card {
+        title: "Reports",
+        description: "What the site has been doing.",
+        links: &[
+            ("Search report", "/admin/reports/search"),
+            ("AI Budgets", "/admin/system/ai-budgets"),
+        ],
+    },
+];
+
+/// A card as the template draws it.
+#[derive(Debug, Clone, Serialize)]
+pub struct DashboardCard {
+    pub title: &'static str,
+    pub description: &'static str,
+    pub links: Vec<NavLink>,
+}
+
+/// Whether `link`'s screen exists on this site and `viewer` may open it: the
+/// one test both the sidebar and the dashboard apply.
+fn offered(link: &Link, viewer: &UserContext, enabled_plugins: &[String]) -> bool {
+    link.gate.admits(viewer)
+        && link
+            .plugin
+            .is_none_or(|p| enabled_plugins.iter().any(|e| e == p))
+}
+
+/// The dashboard cards `viewer` may use: each card's links filtered exactly as
+/// the sidebar filters them, and a card with none left dropped, so the
+/// dashboard never offers a screen that answers 403 or 404.
+pub fn dashboard(viewer: &UserContext, enabled_plugins: &[String]) -> Vec<DashboardCard> {
+    CARDS
+        .iter()
+        .filter_map(|card| {
+            let links: Vec<NavLink> = card
+                .links
+                .iter()
+                .filter(|(_, href)| {
+                    LINKS
+                        .iter()
+                        .find(|l| l.href == *href)
+                        .is_some_and(|l| offered(l, viewer, enabled_plugins))
+                })
+                .map(|(label, href)| NavLink {
+                    label,
+                    href,
+                    active: false,
+                })
+                .collect();
+            (!links.is_empty()).then_some(DashboardCard {
+                title: card.title,
+                description: card.description,
+                links,
+            })
+        })
+        .collect()
+}
+
 /// A link as the template draws it.
 #[derive(Debug, Clone, Serialize)]
 pub struct NavLink {
@@ -242,11 +399,7 @@ fn under(path: &str, prefix: &str) -> bool {
 pub fn sidebar(viewer: &UserContext, enabled_plugins: &[String], path: &str) -> Vec<NavSection> {
     let visible: Vec<&Link> = LINKS
         .iter()
-        .filter(|l| l.gate.admits(viewer))
-        .filter(|l| {
-            l.plugin
-                .is_none_or(|p| enabled_plugins.iter().any(|e| e == p))
-        })
+        .filter(|l| offered(l, viewer, enabled_plugins))
         .collect();
 
     let active = visible
@@ -324,7 +477,7 @@ mod tests {
         let v = viewer(&["access administration pages", "administer comments"]);
         assert!(!hrefs(&sidebar(&v, &[], "/admin")).contains(&"/admin/content/comments"));
         assert!(
-            hrefs(&sidebar(&v, &["comments".to_string()], "/admin"))
+            hrefs(&sidebar(&v, &[COMMENTS.to_string()], "/admin"))
                 .contains(&"/admin/content/comments")
         );
     }
@@ -333,7 +486,7 @@ mod tests {
     fn the_longest_matching_link_is_active() {
         let admin = UserContext::administrator(Uuid::now_v7(), vec![]);
         let active = |path: &str| -> Vec<&'static str> {
-            sidebar(&admin, &["categories".to_string()], path)
+            sidebar(&admin, &[CATEGORIES.to_string()], path)
                 .iter()
                 .flat_map(|s| s.links.iter().filter(|l| l.active).map(|l| l.href))
                 .collect()
@@ -359,5 +512,85 @@ mod tests {
     fn plugins_is_for_the_site_administrator_only() {
         let holder = viewer(&["administer site", "access administration pages"]);
         assert!(!hrefs(&sidebar(&holder, &[], "/admin")).contains(&"/admin/plugins"));
+    }
+    /// Every plugin a link waits for is one the route gate knows, by the name
+    /// `AppState::enabled_plugins` holds. `"comments"` and `"categories"` were
+    /// not, and hid both screens from everyone.
+    #[test]
+    fn every_link_plugin_is_a_real_gated_plugin_name() {
+        for l in LINKS {
+            if let Some(p) = l.plugin {
+                assert!(
+                    crate::plugin::gate::GATED_ROUTE_PLUGINS
+                        .iter()
+                        .any(|g| g.name == p),
+                    "{} waits for {p:?}, which no gated plugin is called",
+                    l.href
+                );
+            }
+        }
+    }
+
+    /// The names come from the gate's own registry, not from literals here.
+    fn gated(name_suffix: &str) -> String {
+        crate::plugin::gate::GATED_ROUTE_PLUGINS
+            .iter()
+            .find(|g| g.name.ends_with(name_suffix))
+            .map(|g| g.name.to_string())
+            .expect("a gated plugin with that name")
+    }
+
+    #[test]
+    fn comments_and_categories_show_when_their_plugins_are_enabled() {
+        let admin = UserContext::administrator(Uuid::now_v7(), vec![]);
+        let enabled = vec![gated("_comments"), gated("_categories")];
+        let links = hrefs(&sidebar(&admin, &enabled, "/admin"));
+        assert!(links.contains(&"/admin/content/comments"), "{links:?}");
+        assert!(links.contains(&"/admin/structure/categories"), "{links:?}");
+        let none = hrefs(&sidebar(&admin, &[], "/admin"));
+        assert!(!none.contains(&"/admin/content/comments"));
+        assert!(!none.contains(&"/admin/structure/categories"));
+    }
+
+    #[test]
+    fn every_card_link_is_a_sidebar_link() {
+        for card in CARDS {
+            for (_, href) in card.links {
+                assert!(
+                    LINKS.iter().any(|l| l.href == *href),
+                    "card {} links to {href}, which the sidebar does not gate",
+                    card.title
+                );
+            }
+        }
+    }
+
+    fn card_hrefs(cards: &[DashboardCard]) -> Vec<&'static str> {
+        cards
+            .iter()
+            .flat_map(|c| c.links.iter().map(|l| l.href))
+            .collect()
+    }
+
+    #[test]
+    fn the_dashboard_offers_only_what_the_viewer_may_open() {
+        let editor = viewer(&["access administration pages", "edit any content"]);
+        let cards = dashboard(&editor, &[gated("_comments")]);
+        assert_eq!(
+            cards.iter().map(|c| c.title).collect::<Vec<_>>(),
+            vec!["Content"]
+        );
+        assert_eq!(card_hrefs(&cards), vec!["/admin/content"]);
+
+        let moderator = viewer(&["access administration pages", "administer comments"]);
+        assert!(dashboard(&moderator, &[]).is_empty());
+        assert_eq!(
+            card_hrefs(&dashboard(&moderator, &[gated("_comments")])),
+            vec!["/admin/content/comments"]
+        );
+
+        let admin = UserContext::administrator(Uuid::now_v7(), vec![]);
+        let all = dashboard(&admin, &[gated("_comments"), gated("_categories")]);
+        assert_eq!(all.len(), CARDS.len(), "the administrator sees every card");
     }
 }

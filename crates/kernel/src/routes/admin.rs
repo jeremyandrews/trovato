@@ -165,10 +165,14 @@ async fn dashboard(State(state): State<AppState>, session: Session) -> Response 
 
     let mut context = tera::Context::new();
     context.insert("content_types", &creatable);
-    // The structure card links to `/admin/structure/types`, which takes
-    // `administer site`. A viewer without it is shown no card rather than a
-    // link to a 403.
-    context.insert("can_administer_site", &viewer.can("administer site"));
+    // One card per administration area, each link under the gate and plugin
+    // check the sidebar uses, so a viewer is offered no screen that answers
+    // 403 or 404.
+    let enabled: Vec<String> = state.enabled_plugins().into_iter().collect();
+    context.insert(
+        "dashboard_cards",
+        &super::admin_nav::dashboard(&viewer, &enabled),
+    );
     context.insert("path", "/admin");
     context.insert("user", &user);
     context.insert("csrf_token", &csrf_token);
@@ -521,7 +525,7 @@ async fn ajax_callback(
 // =============================================================================
 
 /// Query params for comment list.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 struct CommentListQuery {
     status: Option<i16>,
     page: Option<i64>,
@@ -948,6 +952,22 @@ async fn mark_comment_spam(
 /// consequences are: turning the queue on fills the list below it.
 ///
 /// POST /admin/content/comments/settings
+/// The comment settings form.
+///
+/// GET /admin/content/comments/settings
+///
+/// The form is part of the moderation screen, so this serves that screen, with
+/// its permission check; it used to be a POST-only route, and a bookmarked or
+/// typed settings address answered 405.
+async fn comment_settings_page(State(state): State<AppState>, session: Session) -> Response {
+    list_comments(
+        State(state),
+        session,
+        axum::extract::Query(CommentListQuery::default()),
+    )
+    .await
+}
+
 async fn save_comment_settings(
     State(state): State<AppState>,
     session: Session,
@@ -1095,7 +1115,7 @@ pub fn comment_admin_router() -> Router<AppState> {
         .route("/admin/content/comments/{id}/spam", post(mark_comment_spam))
         .route(
             "/admin/content/comments/settings",
-            post(save_comment_settings),
+            get(comment_settings_page).post(save_comment_settings),
         )
         .route(
             "/admin/content/comments/{id}/delete",

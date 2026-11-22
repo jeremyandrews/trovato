@@ -34,7 +34,10 @@ use uuid::Uuid;
 enum Coverage {
     /// An admin path that must serve. The second element says which plugin gates it,
     /// if any: a gated route 404s until the plugin is enabled, which is correct
-    /// behaviour and would otherwise look like a missing screen.
+    /// behaviour and would otherwise look like a missing screen. It is the name
+    /// `enabled_plugins()` holds (`trovato_categories`); a bare `categories`
+    /// enabled nothing, and the screen served only when another test had
+    /// already enabled the real plugin.
     Screen(&'static str, Option<&'static str>),
     /// Deliberately import-only. The string must appear in `KNOWN-ISSUES.md`, so the
     /// decision is written down where an operator will find it.
@@ -54,14 +57,14 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("item_type", Screen("/admin/structure/types", None)),
     (
         "category",
-        Screen("/admin/structure/categories", Some("categories")),
+        Screen("/admin/structure/categories", Some("trovato_categories")),
     ),
     // Tags are managed per category, so the path carries one; the test seeds it.
     (
         "tag",
         Screen(
             "/admin/structure/categories/cfgaudit_topics/tags",
-            Some("categories"),
+            Some("trovato_categories"),
         ),
     ),
     // Per content type, so the path carries one: the tutorial's `conference`.
