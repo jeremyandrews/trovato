@@ -4,6 +4,10 @@
 {% block content %}
 {{ list::header(title="Users", add_url="/admin/people/add", add_label="Add user") }}
 
+{% if warning %}
+<div class="messages"><div class="message message--warning" role="status">{{ warning }}</div></div>
+{% endif %}
+
 <div class="admin-card">
     {% if users %}
     <table class="table">

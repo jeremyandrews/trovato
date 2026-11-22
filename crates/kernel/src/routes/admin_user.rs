@@ -193,6 +193,10 @@ async fn may_lose_a_superuser(state: &AppState) -> bool {
 // User Management
 // =============================================================================
 
+/// Session key for the warning the user list shows after an administrator
+/// creates an account an access rule blocks.
+const ACCESS_RULE_WARNING_KEY: &str = "admin_user_access_rule_warning";
+
 /// List all users.
 ///
 /// GET /admin/people
@@ -210,8 +214,10 @@ async fn list_users(State(state): State<AppState>, session: Session) -> Response
     };
 
     let csrf_token = generate_csrf_token(&session).await;
+    let warning: Option<String> = session.remove(ACCESS_RULE_WARNING_KEY).await.ok().flatten();
 
     let mut context = tera::Context::new();
+    context.insert("warning", &warning);
     context.insert("users", &users);
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/people");
@@ -350,6 +356,32 @@ async fn add_user_submit(
         Ok(user) => {
             apply_role_membership(&state, &current_user, user.id, &form.roles).await;
             tracing::info!(name = %form.name, "user created");
+            // Access rules (B108) warn here rather than refuse: an
+            // administrator may knowingly create an account the public
+            // registration form would turn away.
+            let blocked = crate::services::access_rule::blocked_types(
+                state.db(),
+                Some(form.name.trim()),
+                Some(form.mail.trim()),
+                None,
+            )
+            .await;
+            if !blocked.is_empty() {
+                let types: Vec<&str> = blocked
+                    .iter()
+                    .map(|t| match t {
+                        crate::services::access_rule::RuleType::Username => "username",
+                        crate::services::access_rule::RuleType::Email => "email address",
+                        crate::services::access_rule::RuleType::Host => "address",
+                    })
+                    .collect();
+                let message = format!(
+                    "User {} was created, but an access rule blocks its {}: it could not have registered itself, and cannot sign in until the rule is changed.",
+                    form.name.trim(),
+                    types.join(" and "),
+                );
+                let _ = session.insert(ACCESS_RULE_WARNING_KEY, message).await;
+            }
             Redirect::to("/admin/people").into_response()
         }
         Err(e) => {

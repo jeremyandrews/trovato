@@ -316,3 +316,20 @@
 .log-context__pair {
     white-space: nowrap;
 }
+
+/* Access rules (B108) */
+.access-rule-status {
+    display: inline-block;
+    padding: 0.125rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+}
+.access-rule-status--deny {
+    background: #f8d7da;
+    color: #721c24;
+}
+.access-rule-status--allow {
+    background: #d4edda;
+    color: #155724;
+}

@@ -177,6 +177,12 @@ pub const LINKS: &[Link] = &[
         Permission("administer users"),
     ),
     link(
+        "People",
+        "Access rules",
+        "/admin/people/rules",
+        Permission("administer access rules"),
+    ),
+    link(
         "System",
         "Site settings",
         "/admin/config/site",
@@ -265,7 +271,10 @@ pub const CARDS: &[Card] = &[
     Card {
         title: "People",
         description: "User accounts.",
-        links: &[("Users", "/admin/people")],
+        links: &[
+            ("Users", "/admin/people"),
+            ("Access rules", "/admin/people/rules"),
+        ],
     },
     Card {
         title: "Roles and permissions",

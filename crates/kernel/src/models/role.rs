@@ -74,6 +74,10 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     "use stages",
     "access user profiles",
     "administer users",
+    // `/admin/people/rules`: the username, email and address rules that
+    // registration and sign in check (B108). Granted by no migration; an
+    // administrator holds it implicitly.
+    "administer access rules",
     "administer categories",
     "access files",
     "administer files",
