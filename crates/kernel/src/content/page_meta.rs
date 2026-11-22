@@ -240,11 +240,22 @@ fn rfc3339(timestamp: i64) -> Option<String> {
 /// (title, fields, comments) with this same function rather than a second
 /// sanitizer of its own.
 pub(crate) fn plain_text(raw: &str) -> String {
-    let stripped = crate::content::item_service::strip_html(raw);
-    decode_basic_entities(&stripped)
+    text_of(raw)
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// The text of a piece of markup, whitespace kept: tags stripped (with the
+/// content of `<script>` and `<style>`), every character reference decoded.
+/// The result is text, not HTML: whoever puts it in a page escapes it once.
+///
+/// `pub(crate)` for the search snippet ([`crate::search::snippet`]), which
+/// decodes each highlighted piece with it and must keep the spaces at the
+/// piece's edges.
+pub(crate) fn text_of(raw: &str) -> String {
+    let stripped = crate::content::item_service::strip_html(raw);
+    decode_basic_entities(&stripped)
 }
 
 /// Decode the entities an HTML serializer emits in a text node.

@@ -607,6 +607,24 @@ impl ThemeEngine {
             },
         );
 
+        // The text of stored markup, for a teaser or summary: tags stripped,
+        // character references decoded, whitespace collapsed. The result is
+        // plain text, so autoescape escapes it exactly once; printing a stored
+        // HTML body through `truncate` alone showed its tags, and a stored
+        // `&amp;` as `&amp;` (B123).
+        // Usage: {{ body.value | plain_text | truncate(length=200) }}
+        tera.register_filter(
+            "plain_text",
+            |value: &tera::Value, _args: &std::collections::HashMap<String, tera::Value>| {
+                Ok(tera::Value::String(
+                    value
+                        .as_str()
+                        .map(crate::content::page_meta::plain_text)
+                        .unwrap_or_default(),
+                ))
+            },
+        );
+
         // Filter for safe HTML output (already filtered)
         tera.register_filter(
             "safe_html",
@@ -1796,6 +1814,25 @@ mod tests {
     #[test]
     fn empty_search_path_is_rejected() {
         assert!(ThemeEngine::new(&[], None, Default::default()).is_err());
+    }
+
+    /// B123: a stored HTML body through `plain_text` is its text, escaped
+    /// once by autoescape: no tag, no script content, no `&amp;amp;`.
+    #[test]
+    fn plain_text_filter_gives_text_escaped_once() {
+        let mut tera = Tera::default();
+        ThemeEngine::register_filters(&mut tera, None);
+        tera.add_raw_template("t.html", "{{ v | plain_text | truncate(length=200) }}")
+            .unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert(
+            "v",
+            "<p>Tom &amp; Jerry <script>alert(1)</script>said \"hi\"</p>\n<p>&lt;mark&gt;</p>",
+        );
+        assert_eq!(
+            tera.render("t.html", &ctx).unwrap(),
+            "Tom &amp; Jerry said &quot;hi&quot; &lt;mark&gt;"
+        );
     }
 
     /// Render `{{ v | render_blocks | safe }}` with `v` bound to `value`.

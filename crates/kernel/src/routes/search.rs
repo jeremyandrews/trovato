@@ -13,25 +13,8 @@ use uuid::Uuid;
 
 use tower_sessions::Session;
 
-use crate::routes::helpers::html_escape;
 use crate::routes::helpers::{read_stages, session_stage};
 use crate::state::AppState;
-
-/// Sanitize a search snippet from PostgreSQL `ts_headline`.
-///
-/// `ts_headline` HTML-escapes content and inserts highlight tags (configured as
-/// `<mark>`/`</mark>` in our query). This function provides defense-in-depth by
-/// escaping the entire snippet and then restoring only the expected highlight
-/// tags, ensuring no other HTML can pass through.
-///
-/// Note: if indexed content literally contains `<mark>`, it will be restored as
-/// an HTML `<mark>` tag. This is acceptable because `<mark>` is a purely
-/// presentational highlight tag with no script-execution capability.
-fn sanitize_snippet(snippet: &str) -> String {
-    html_escape(snippet)
-        .replace("&lt;mark&gt;", "<mark>")
-        .replace("&lt;/mark&gt;", "</mark>")
-}
 
 /// Create the search router.
 pub fn router() -> Router<AppState> {
@@ -172,20 +155,12 @@ async fn search_html(
     // Calculate pagination
     let total_pages = (results.total + limit - 1) / limit;
 
-    // Sanitize snippets — defense-in-depth for ts_headline output
-    let sanitized_results: Vec<_> = results
-        .results
-        .into_iter()
-        .map(|mut r| {
-            r.snippet = r.snippet.map(|s| sanitize_snippet(&s));
-            r
-        })
-        .collect();
-
     // Build template context
     let mut context = Context::new();
     context.insert("query", &query);
-    context.insert("results", &sanitized_results);
+    // Each snippet is already HTML, escaped exactly once by
+    // `crate::search::snippet::render`; the template prints it `| safe`.
+    context.insert("results", &results.results);
     let total = results.total;
     context.insert("total", &total);
     context.insert("page", &page);
@@ -265,7 +240,8 @@ async fn search_json(
     // Calculate pagination
     let total_pages = (results.total + limit - 1) / limit;
 
-    // Build response (sanitize snippets for consumers that render as HTML)
+    // Build response. A snippet is HTML (text escaped once, `<mark>` around
+    // the matches), built by `crate::search::snippet::render`.
     let response = SearchJsonResponse {
         query,
         results: results
@@ -277,7 +253,7 @@ async fn search_json(
                 item_type: r.item_type,
                 title: r.title,
                 rank: r.rank,
-                snippet: r.snippet.map(|s| sanitize_snippet(&s)),
+                snippet: r.snippet,
             })
             .collect(),
         total: results.total,
@@ -287,52 +263,4 @@ async fn search_json(
     };
 
     Json(response).into_response()
-}
-
-#[cfg(test)]
-// Tests are allowed to use unwrap/expect freely.
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests {
-    //! All tests in this module are security regression tests for Story 27.1
-    //! (XSS) Finding A: search snippet sanitization. Do not remove without
-    //! security review.
-
-    use super::*;
-
-    // SECURITY REGRESSION TEST — Story 27.1 Finding A: <mark> tags preserved
-    #[test]
-    fn sanitize_snippet_preserves_mark_tags() {
-        let input = "This is a <mark>search</mark> result";
-        let result = sanitize_snippet(input);
-        assert_eq!(result, "This is a <mark>search</mark> result");
-    }
-
-    // SECURITY REGRESSION TEST — Story 27.1 Finding A: <script> tags escaped
-    #[test]
-    fn sanitize_snippet_escapes_script_tags() {
-        let input = "<script>alert('xss')</script><mark>word</mark>";
-        let result = sanitize_snippet(input);
-        assert!(result.contains("&lt;script&gt;"));
-        assert!(result.contains("<mark>word</mark>"));
-        assert!(!result.contains("<script>"));
-    }
-
-    // SECURITY REGRESSION TEST — Story 27.1 Finding A: all non-<mark> HTML escaped
-    #[test]
-    fn sanitize_snippet_escapes_all_non_mark_html() {
-        let input = "<b>bold</b> and <mark>highlighted</mark>";
-        let result = sanitize_snippet(input);
-        assert_eq!(
-            result,
-            "&lt;b&gt;bold&lt;/b&gt; and <mark>highlighted</mark>"
-        );
-    }
-
-    // SECURITY REGRESSION TEST — Story 27.1 Finding A: plain text unmodified
-    #[test]
-    fn sanitize_snippet_handles_plain_text() {
-        let input = "just plain text";
-        let result = sanitize_snippet(input);
-        assert_eq!(result, "just plain text");
-    }
 }

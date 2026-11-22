@@ -295,6 +295,12 @@ fn render_shipped(relative: &str, context: tera::Context) -> String {
         "format_date",
         |value: &tera::Value, _: &HashMap<String, tera::Value>| Ok(value.clone()),
     );
+    // The kernel's `plain_text` (tested in `theme::engine`); identity is
+    // enough for the links these tests check.
+    tera.register_filter(
+        "plain_text",
+        |value: &tera::Value, _: &HashMap<String, tera::Value>| Ok(value.clone()),
+    );
     tera.add_raw_template("shipped", &source)
         .expect("the shipped template parses");
     tera.render("shipped", &context)
