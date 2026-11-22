@@ -150,7 +150,6 @@ fn a_stage_visibility_change_holds_at_once() {
                 .stage(stage_id)
                 .expect("the stage")
                 .visibility
-                .clone()
         };
         for wanted in [StageVisibility::Accessible, StageVisibility::Internal] {
             stages
