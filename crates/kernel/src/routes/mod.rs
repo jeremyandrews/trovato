@@ -15,6 +15,7 @@ pub mod admin_nav;
 pub mod admin_pathauto;
 pub mod admin_queue;
 pub mod admin_record_type;
+pub mod admin_reports;
 pub mod admin_search;
 pub mod admin_search_report;
 pub mod admin_stage;

@@ -235,3 +235,84 @@
 .dashboard-whoami p {
     margin: 0;
 }
+
+/* ---------------------------------------------------------------------------
+ * Reports: the cron report and the site log (B107). The filter and pager
+ * rules match what the content and alias lists declare inline.
+ * ------------------------------------------------------------------------- */
+.filter-form {
+    margin-bottom: 0;
+}
+.filter-row {
+    display: flex;
+    gap: 1rem;
+    align-items: flex-end;
+}
+.filter-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+}
+.filter-item label {
+    font-size: 0.875rem;
+    font-weight: 500;
+}
+.filter-item select {
+    padding: 0.375rem 0.5rem;
+    border: 1px solid #ccc;
+    border-radius: 0.25rem;
+}
+.pagination {
+    margin-top: 1rem;
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+}
+.pagination-info {
+    color: var(--gray-500);
+    font-size: 0.875rem;
+}
+.report-heading {
+    margin: 0 0 0.75rem;
+    font-size: 1rem;
+}
+.report-facts th {
+    width: 10rem;
+    text-align: left;
+}
+.report-list {
+    margin: 0;
+    padding-left: 1.25rem;
+}
+.log-time {
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+.log-level {
+    display: inline-block;
+    padding: 0.125rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+}
+.log-level--error {
+    background: #f8d7da;
+    color: #721c24;
+}
+.log-level--warn {
+    background: #fff3cd;
+    color: #856404;
+}
+.log-level--info {
+    background: #d1ecf1;
+    color: #0c5460;
+}
+.log-context {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.8125rem;
+    color: var(--gray-500);
+    word-break: break-word;
+}
+.log-context__pair {
+    white-space: nowrap;
+}

@@ -349,6 +349,13 @@ pub struct RuntimeConfig {
     /// Retention window for the kernel security audit stream, in days.
     pub security_audit_retention_days: i64,
 
+    /// The site log keeps at most this many days (`SYSTEM_LOG_RETENTION_DAYS`,
+    /// default 30) ...
+    pub system_log_retention_days: i64,
+    /// ... and at most this many rows (`SYSTEM_LOG_MAX_ROWS`, default
+    /// 100,000), whichever is smaller.
+    pub system_log_max_rows: i64,
+
     /// Whether the kernel may ask GitHub whether a newer release exists.
     ///
     /// `UPDATE_CHECK=0` (or `false`/`off`/`no`) turns it off for the process, which
@@ -700,6 +707,16 @@ impl Config {
             slow_request_threshold_ms: parse_or(get, "QUERY_SLOW_THRESHOLD_MS", 100),
             security_audit_retention_days: crate::audit::retention_days_from(
                 get("SECURITY_AUDIT_RETENTION_DAYS").as_deref(),
+            ),
+            system_log_retention_days: parse_or(
+                get,
+                "SYSTEM_LOG_RETENTION_DAYS",
+                crate::system_log::DEFAULT_RETENTION_DAYS,
+            ),
+            system_log_max_rows: parse_or(
+                get,
+                "SYSTEM_LOG_MAX_ROWS",
+                crate::system_log::DEFAULT_MAX_ROWS,
             ),
             site_url: site_url.clone(),
             gather_access: crate::gather::GatherAccessConfig::from_lookup(get),

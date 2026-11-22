@@ -11,6 +11,7 @@ fn test_last_cron_run_serde() {
         timestamp: 1707836400,
         hostname: "server-1".to_string(),
         result: "Completed { tasks_run: [\"cleanup\"], duration_ms: 150 }".to_string(),
+        ..Default::default()
     };
 
     let json = serde_json::to_string(&run).unwrap();

@@ -509,6 +509,13 @@ pub async fn cmd_plugin_enable(pool: &PgPool, plugins_dirs: &[PathBuf], name: &s
     let updated = status::set_status(pool, name, status::STATUS_ENABLED).await?;
     if updated {
         println!("Plugin '{name}' enabled.");
+        crate::system_log::record_info(
+            pool,
+            "plugin",
+            &format!("plugin enabled from the CLI: {name}"),
+            &[("plugin", name)],
+        )
+        .await;
         println!("Note: if the server is running, restart it for CLI changes to take effect.");
     } else {
         println!("Plugin '{name}' not found.");
@@ -529,6 +536,13 @@ pub async fn cmd_plugin_disable(pool: &PgPool, name: &str) -> Result<()> {
     let updated = status::set_status(pool, name, status::STATUS_DISABLED).await?;
     if updated {
         println!("Plugin '{name}' disabled.");
+        crate::system_log::record_info(
+            pool,
+            "plugin",
+            &format!("plugin disabled from the CLI: {name}"),
+            &[("plugin", name)],
+        )
+        .await;
         println!("Note: if the server is running, restart it for CLI changes to take effect.");
     } else {
         println!("Plugin '{name}' not found.");

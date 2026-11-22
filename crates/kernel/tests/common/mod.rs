@@ -454,6 +454,11 @@ impl TestApp {
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 trovato_kernel::middleware::negotiate_language,
+            ))
+            // Maintenance mode, outside language negotiation as in `main.rs`.
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                trovato_kernel::middleware::check_maintenance,
             ));
         // The per-user check, inside both authentication layers as in `main.rs`,
         // so it sees the user a token request authenticated as.

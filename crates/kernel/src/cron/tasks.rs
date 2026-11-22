@@ -27,6 +27,9 @@ pub struct CronTasks {
     /// builds tasks without a `Config` still prunes to a bounded window;
     /// `AppState` overwrites it from [`crate::config::RuntimeConfig`].
     security_audit_retention_days: i64,
+    /// The site log's retention: days and rows, the smaller set kept. From
+    /// [`crate::config::RuntimeConfig`]; the defaults otherwise.
+    system_log_retention: (i64, i64),
     /// How the update check reaches the release endpoint, and whether it may.
     ///
     /// `None` disables the check outright, which is what `UPDATE_CHECK=0` produces
@@ -70,6 +73,10 @@ impl CronTasks {
             audit: None,
             email: None,
             security_audit_retention_days: crate::audit::DEFAULT_RETENTION_DAYS,
+            system_log_retention: (
+                crate::system_log::DEFAULT_RETENTION_DAYS,
+                crate::system_log::DEFAULT_MAX_ROWS,
+            ),
             update_check: None,
         }
     }
@@ -88,6 +95,10 @@ impl CronTasks {
             audit: None,
             email: None,
             security_audit_retention_days: crate::audit::DEFAULT_RETENTION_DAYS,
+            system_log_retention: (
+                crate::system_log::DEFAULT_RETENTION_DAYS,
+                crate::system_log::DEFAULT_MAX_ROWS,
+            ),
             update_check: None,
         }
     }
@@ -171,6 +182,25 @@ impl CronTasks {
         if days > 0 {
             self.security_audit_retention_days = days;
         }
+    }
+
+    /// Set the site log's retention; a value that is not positive keeps the
+    /// default.
+    pub fn set_system_log_retention(&mut self, days: i64, max_rows: i64) {
+        if days > 0 {
+            self.system_log_retention.0 = days;
+        }
+        if max_rows > 0 {
+            self.system_log_retention.1 = max_rows;
+        }
+    }
+
+    /// Prune the site log to the smaller of its day and row caps.
+    pub async fn cleanup_system_log(&self) -> Result<u64> {
+        let (days, rows) = self.system_log_retention;
+        crate::system_log::prune(&self.pool, days, rows)
+            .await
+            .context("failed to prune the system log")
     }
 
     /// Cleanup temporary files older than 6 hours.

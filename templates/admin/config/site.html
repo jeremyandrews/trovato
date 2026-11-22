@@ -146,4 +146,14 @@
         <span class="form-item__description">Sends a test email to the site email address.</span>
     </form>
 </div>
+
+{# Maintenance mode: its own form, through the forms pipeline, so turning the
+   site off is never a side effect of saving the settings above. #}
+<div class="admin-card" id="maintenance">
+    <h3 class="report-heading">Maintenance mode</h3>
+    {% if maintenance_on %}
+    <div class="message message--warning" role="status">The site is in maintenance mode. Visitors get a 503 and the message below.</div>
+    {% endif %}
+    {{ maintenance_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+</div>
 {% endblock %}
