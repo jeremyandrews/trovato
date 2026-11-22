@@ -1,0 +1,38 @@
+/* Lakeside: a fixture theme for the theme registry's tests and screenshots. */
+.theme-lakeside {
+    background: #f4f1ea;
+    color: #1d2b3a;
+    font-family: Georgia, "Times New Roman", serif;
+}
+.theme-lakeside .header,
+.theme-lakeside .site-header {
+    background: #0f2a43;
+    border-bottom: 4px solid #3aa6a0;
+}
+.theme-lakeside .site-branding__name,
+.theme-lakeside .site-nav__link {
+    color: #f4f1ea;
+    -webkit-text-fill-color: #f4f1ea;
+    background: none;
+}
+.theme-lakeside .site-branding__slogan {
+    color: #9fd3cf;
+}
+.theme-lakeside h1,
+.theme-lakeside h2,
+.theme-lakeside h3 {
+    font-family: Georgia, "Times New Roman", serif;
+    color: #0f2a43;
+    letter-spacing: 0;
+}
+.theme-lakeside a {
+    color: #1f7a74;
+}
+.theme-lakeside .main {
+    background: #f4f1ea;
+}
+.theme-lakeside .footer,
+.theme-lakeside .site-footer {
+    background: #0f2a43;
+    color: #c9d6e3;
+}

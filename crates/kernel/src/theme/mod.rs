@@ -4,9 +4,10 @@
 //! and RenderElement to HTML conversion.
 
 mod engine;
+pub mod registry;
 mod render;
 mod viewer;
 
-pub use engine::{ThemeEngine, render_markdown};
+pub use engine::{ActiveThemes, ThemeEngine, render_markdown, scope_request};
 pub use render::RenderTreeConsumer;
 pub use viewer::Viewer;

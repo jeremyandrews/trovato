@@ -7,6 +7,7 @@ pub mod admin_ai_budget;
 pub mod admin_ai_chat;
 pub mod admin_ai_provider;
 pub mod admin_alias;
+pub mod admin_appearance;
 pub mod admin_config;
 pub mod admin_content;
 pub mod admin_content_type;

@@ -1,0 +1,36 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block content %}
+{{ list::header(title="Appearance") }}
+
+{% if flash %}
+<div class="messages"><div class="message message--success" role="status">{{ flash }}</div></div>
+{% endif %}
+
+<div class="admin-card">
+    <p>A theme is a set of templates and styles laid over the stock theme: a page the theme does not provide a template for is drawn by the stock one. Themes are directories under <code>THEMES_DIR</code>, each with a <code>theme.toml</code>.</p>
+    <ul class="theme-list">
+        {% for theme in themes %}
+        <li class="theme-card{% if theme.is_default %} theme-card--default{% endif %}">
+            {% if theme.has_screenshot %}
+            <img class="theme-card__screenshot" src="/admin/appearance/{{ theme.machine_name }}/screenshot" alt="Screenshot of the {{ theme.name }} theme">
+            {% else %}
+            <div class="theme-card__screenshot theme-card__screenshot--none" aria-hidden="true">{{ theme.name }}</div>
+            {% endif %}
+            <div class="theme-card__body">
+                <h3 class="theme-card__name">{{ theme.name }} <code class="theme-card__machine">{{ theme.machine_name }}</code></h3>
+                {% if theme.is_default %}<span class="theme-card__badge">Default theme</span>{% endif %}
+                {% if theme.is_admin %}<span class="theme-card__badge theme-card__badge--admin">Administration theme</span>{% endif %}
+                <p>{{ theme.description }}</p>
+            </div>
+        </li>
+        {% endfor %}
+    </ul>
+</div>
+
+<div class="admin-card">
+    <h3 class="report-heading">Choose themes</h3>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+</div>
+{% endblock %}

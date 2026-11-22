@@ -1,0 +1,3 @@
+name = "Lakeside"
+description = "A calm, serif theme in deep water blues. It overrides only base.html, to add its stylesheet; every other template is the stock theme's."
+screenshot = "screenshot.png"

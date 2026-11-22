@@ -902,10 +902,13 @@ impl AppState {
             .cloned()
             .collect();
         info!(template_dirs = ?template_dirs, "loading templates from search path");
+        let themes = crate::theme::registry::discover(&config.themes_dirs);
+        info!(themes = themes.len(), themes_dirs = ?config.themes_dirs, "discovered themes");
         let theme = match ThemeEngine::new(&template_dirs, locale.clone(), metrics.clone()) {
             Ok(engine) => engine
                 .with_components(page_builder_components.clone())
-                .context("failed to load page builder components")?,
+                .context("failed to load page builder components")?
+                .with_themes(themes, &template_dirs, locale.clone()),
             Err(e) => {
                 tracing::warn!(error = ?e, "failed to load templates, using empty engine");
                 ThemeEngine::empty(metrics.clone()).context("failed to create theme engine")?
@@ -1283,6 +1286,9 @@ impl AppState {
             }),
         };
 
+        // The themes in use (`theme::registry`), read once here.
+        crate::theme::registry::load_active(state.db(), state.theme()).await;
+
         // The stored text formats, which every render reads synchronously.
         if let Err(e) = crate::content::text_format::reload(state.db()).await {
             warn!(error = %e, "failed to load text formats; using the built-in definitions");
@@ -1334,6 +1340,9 @@ impl AppState {
                 }
             }
             CacheKind::Menus => crate::menu::clear_local_config_menus(),
+            CacheKind::Themes => {
+                crate::theme::registry::load_active(self.db(), self.theme()).await;
+            }
             CacheKind::TextFormats => {
                 if let Err(e) = crate::content::text_format::reload(self.db()).await {
                     warn!(error = %e, "failed to reload text formats after a bump");

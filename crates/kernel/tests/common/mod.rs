@@ -509,6 +509,10 @@ impl TestApp {
                 state.clone(),
                 trovato_kernel::middleware::render_error_pages,
             ))
+            // The request's theme scope, as in `main.rs`.
+            .layer(axum::middleware::from_fn(
+                trovato_kernel::middleware::scope_theme,
+            ))
             .layer(session_layer)
             // Resolve the trusted-proxy-gated client IP (RATE-1) so handlers see
             // the `ClientIp` extension exactly as in production.
