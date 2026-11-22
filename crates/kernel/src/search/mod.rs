@@ -7,7 +7,7 @@ pub mod analytics;
 pub mod prompts;
 pub mod sentiment;
 pub mod settings;
-pub mod snippet;
+pub(crate) mod snippet;
 
 pub use settings::{PriorityPage, SearchSettings};
 
