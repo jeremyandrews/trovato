@@ -15,6 +15,7 @@
 //! - `role` - Role definitions
 //! - `stage` - Stage definitions (editorial workflow stages)
 //! - `tile` - Tile definitions (UI region components)
+//! - `text_format` - Text formats and the tags they allow
 //! - `menu_link` - Menu link definitions
 //! - `file` - Managed files, with their bytes
 //! - `plugin_status` - Which plugins are enabled
@@ -261,6 +262,10 @@ pub enum ConfigEntity {
     #[serde(rename = "menu_link")]
     MenuLink(MenuLink),
 
+    /// A text format (`content::text_format`).
+    #[serde(rename = "text_format")]
+    TextFormat(crate::content::text_format::TextFormat),
+
     /// A managed file and its bytes.
     #[serde(rename = "file")]
     File(ConfigFile),
@@ -292,6 +297,7 @@ impl ConfigEntity {
             Self::Stage(_) => "stage",
             Self::Tile(_) => "tile",
             Self::MenuLink(_) => "menu_link",
+            Self::TextFormat(_) => "text_format",
             Self::File(_) => "file",
             Self::PluginStatus(_) => "plugin_status",
             Self::PluginRow(r) => &r.table,
@@ -317,6 +323,7 @@ impl ConfigEntity {
             Self::Stage(s) => s.id.to_string(),
             Self::Tile(t) => t.id.to_string(),
             Self::MenuLink(m) => m.id.to_string(),
+            Self::TextFormat(f) => f.format.clone(),
             Self::File(f) => f.id.to_string(),
             Self::PluginStatus(p) => p.name.clone(),
             Self::PluginRow(r) => r.id.clone(),
@@ -589,6 +596,9 @@ pub mod entity_types {
 
     /// Tile definitions (UI region components).
     pub const TILE: &str = "tile";
+
+    /// Text formats (B108).
+    pub const TEXT_FORMAT: &str = "text_format";
 
     /// Menu link definitions.
     pub const MENU_LINK: &str = "menu_link";

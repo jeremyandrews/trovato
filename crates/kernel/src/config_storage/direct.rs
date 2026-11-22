@@ -1519,6 +1519,9 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::ROLE => self.load_role(id).await,
             entity_types::STAGE => self.load_stage(id).await,
             entity_types::TILE => self.load_tile(id).await,
+            entity_types::TEXT_FORMAT => Ok(crate::content::text_format::find(&self.pool, id)
+                .await?
+                .map(ConfigEntity::TextFormat)),
             entity_types::MENU_LINK => self.load_menu_link(id).await,
             entity_types::FILE => self.load_file(id).await,
             entity_types::PLUGIN_STATUS => Ok(plugin_config::load_status(&self.pool, id)
@@ -1558,6 +1561,13 @@ impl ConfigStorage for DirectConfigStorage {
             ConfigEntity::Stage(s) => self.save_stage(s).await,
             ConfigEntity::Tile(t) => self.save_tile(t).await,
             ConfigEntity::MenuLink(m) => self.save_menu_link(m).await,
+            ConfigEntity::TextFormat(f) => {
+                let saved = crate::content::text_format::save(&self.pool, f).await;
+                if saved.is_ok() {
+                    crate::content::text_format::changed(&self.pool).await;
+                }
+                saved
+            }
             ConfigEntity::File(f) => self.save_file(f).await,
             ConfigEntity::PluginStatus(p) => self.save_plugin_status(p).await,
             ConfigEntity::PluginRow(r) => plugin_config::save_row(&self.pool, r).await,
@@ -1590,6 +1600,13 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::ROLE => self.delete_role(id).await,
             entity_types::STAGE => self.delete_stage(id).await,
             entity_types::TILE => self.delete_tile(id).await,
+            entity_types::TEXT_FORMAT => {
+                let deleted = crate::content::text_format::delete(&self.pool, id).await;
+                if matches!(deleted, Ok(true)) {
+                    crate::content::text_format::changed(&self.pool).await;
+                }
+                deleted
+            }
             entity_types::MENU_LINK => self.delete_menu_link(id).await,
             entity_types::FILE => self.delete_file(id).await,
             entity_types::PLUGIN_STATUS => plugin_config::delete_status(&self.pool, id).await,
@@ -1620,6 +1637,11 @@ impl ConfigStorage for DirectConfigStorage {
             entity_types::ROLE => self.list_roles(filter).await,
             entity_types::STAGE => self.list_stages(filter).await,
             entity_types::TILE => self.list_tiles(filter).await,
+            entity_types::TEXT_FORMAT => Ok(crate::content::text_format::list(&self.pool)
+                .await?
+                .into_iter()
+                .map(ConfigEntity::TextFormat)
+                .collect()),
             entity_types::MENU_LINK => self.list_menu_links(filter).await,
             entity_types::FILE => self.list_files(filter).await,
             entity_types::PLUGIN_STATUS => Ok(plugin_config::list_statuses(&self.pool)

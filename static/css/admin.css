@@ -333,3 +333,13 @@
     background: #d4edda;
     color: #155724;
 }
+
+/* Text formats (B108) */
+.text-format-machine {
+    font-size: 0.8125rem;
+    color: var(--gray-500);
+}
+.text-format-tags {
+    font-size: 0.8125rem;
+    word-break: break-word;
+}

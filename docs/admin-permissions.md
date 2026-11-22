@@ -225,6 +225,21 @@ While maintenance mode is on, a signed-in user without `bypass maintenance mode`
 gets the maintenance page like an anonymous visitor. Administrators hold it
 implicitly; grant it to a role whose members must keep working during the window.
 
+## Text formats
+
+| Route | Method | Permission |
+|---|---|---|
+| `/admin/config/formats` and its add, edit and delete routes | GET, POST | `administer text formats` |
+
+Who may use a format is the `use <format>` permission, as it always was for
+`filtered_html` and `full_html`; a format the site adds gets its own, and the
+permission grid lists it. The format's edit form ticks roles for that
+permission. A non-superuser may change it only for a format whose permission
+they hold themselves, the grid's rule; otherwise the role boxes are shown
+disabled and the save leaves the grants as they were. `plain_text` needs no
+permission. The three built-in formats cannot be deleted and their filter
+cannot be changed.
+
 ## AI
 
 | Route | Method | Permission |

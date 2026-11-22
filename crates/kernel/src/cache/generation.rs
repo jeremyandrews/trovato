@@ -51,11 +51,13 @@ pub enum CacheKind {
     Locale,
     /// Config menus by stage and language (`menu::navigation`).
     Menus,
+    /// Stored text formats (`content::text_format`).
+    TextFormats,
 }
 
 impl CacheKind {
     /// Every kind, for a writer that may have touched any of them.
-    pub const ALL: [CacheKind; 10] = [
+    pub const ALL: [CacheKind; 11] = [
         CacheKind::Permissions,
         CacheKind::Users,
         CacheKind::Items,
@@ -66,6 +68,7 @@ impl CacheKind {
         CacheKind::Redirects,
         CacheKind::Locale,
         CacheKind::Menus,
+        CacheKind::TextFormats,
     ];
 
     /// The field name in the Redis hash.
@@ -81,6 +84,7 @@ impl CacheKind {
             CacheKind::Redirects => "redirects",
             CacheKind::Locale => "locale",
             CacheKind::Menus => "menus",
+            CacheKind::TextFormats => "text_formats",
         }
     }
 
@@ -97,6 +101,7 @@ impl CacheKind {
             "redirect" => CacheKind::Redirects,
             "locale_string" => CacheKind::Locale,
             "menu_link" | "url_alias" => CacheKind::Menus,
+            "text_format" => CacheKind::TextFormats,
             _ => return None,
         })
     }

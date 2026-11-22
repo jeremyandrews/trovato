@@ -81,6 +81,11 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     "administer categories",
     "access files",
     "administer files",
+    // `/admin/config/formats`: which tags each text format allows and which
+    // roles may use it (B108). Granted by no migration; an administrator holds
+    // it implicitly. A stored format's own `use <format>` permission is listed
+    // on the grid beside these (`content::text_format`).
+    "administer text formats",
     "use filtered_html",
     "use full_html",
     "use ai",

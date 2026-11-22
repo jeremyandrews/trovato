@@ -95,7 +95,7 @@ Returned by `host::filter_text` (`trovato:kernel/text-format`, added by B71).
 | Code | Constant | Meaning | Recovery |
 |------|----------|---------|----------|
 | -70 | `ERR_TEXT_FORMAT_NOT_PERMITTED` | The user the plugin acts for may not use this format | Filter with a format they may use; `plain_text` always works |
-| -71 | `ERR_TEXT_FORMAT_UNKNOWN` | No such format | Use `plain_text`, `filtered_html` or `full_html` |
+| -71 | `ERR_TEXT_FORMAT_UNKNOWN` | No such format | Use a format listed at `/admin/config/formats`; `plain_text` always exists |
 | -72 | `ERR_TEXT_FORMAT_TOO_LARGE` | The filtered text is larger than the output buffer | Filter smaller pieces |
 
 ## Query Errors
