@@ -258,10 +258,19 @@ pub async fn negotiate_language(
     // prefix off it and before the alias fallback replaces an alias with its
     // source. Nothing downstream can reconstruct it: by the time a handler runs,
     // `/it/why` is `/item/{uuid}`. See [`RequestedPath`](crate::middleware::RequestedPath).
-    let requested_path = request.uri().path().to_string();
-    request
-        .extensions_mut()
-        .insert(crate::middleware::RequestedPath(requested_path));
+    //
+    // Unless it is already recorded: the front page dispatch replaces `/` with
+    // the configured path before this runs, and records `/` first.
+    if request
+        .extensions()
+        .get::<crate::middleware::RequestedPath>()
+        .is_none()
+    {
+        let requested_path = request.uri().path().to_string();
+        request
+            .extensions_mut()
+            .insert(crate::middleware::RequestedPath(requested_path));
+    }
 
     let path = request.uri().path();
     let default_language = state.default_language();

@@ -571,6 +571,9 @@ impl TestApp {
         // Note: We don't do global cleanup here because it interferes with parallel tests.
         // Each test should use unique identifiers and clean up its own data if needed.
 
+        // The front page dispatch wraps the whole app, as in `main.rs`.
+        let router = trovato_kernel::routes::front::with_front_page(state.clone(), router);
+
         Self { router, db, state }
     }
 

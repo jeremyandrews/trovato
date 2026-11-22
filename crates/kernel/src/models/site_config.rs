@@ -188,6 +188,8 @@ impl SiteConfig {
         .execute(pool)
         .await
         .context("failed to set site config")?;
+        // Every server drops its in-memory site config (the front page path).
+        crate::cache::generation::bump(crate::cache::generation::CacheKind::SiteConfig);
 
         Ok(())
     }
@@ -257,6 +259,7 @@ impl SiteConfig {
             .execute(pool)
             .await
             .context("failed to delete site config")?;
+        crate::cache::generation::bump(crate::cache::generation::CacheKind::SiteConfig);
 
         Ok(result.rows_affected() > 0)
     }

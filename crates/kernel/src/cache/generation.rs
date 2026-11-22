@@ -55,11 +55,14 @@ pub enum CacheKind {
     TextFormats,
     /// The default and admin themes (`theme::registry`).
     Themes,
+    /// Site configuration values held in memory: the front page path
+    /// (`routes::front`).
+    SiteConfig,
 }
 
 impl CacheKind {
     /// Every kind, for a writer that may have touched any of them.
-    pub const ALL: [CacheKind; 12] = [
+    pub const ALL: [CacheKind; 13] = [
         CacheKind::Permissions,
         CacheKind::Users,
         CacheKind::Items,
@@ -72,6 +75,7 @@ impl CacheKind {
         CacheKind::Menus,
         CacheKind::TextFormats,
         CacheKind::Themes,
+        CacheKind::SiteConfig,
     ];
 
     /// The field name in the Redis hash.
@@ -89,6 +93,7 @@ impl CacheKind {
             CacheKind::Menus => "menus",
             CacheKind::TextFormats => "text_formats",
             CacheKind::Themes => "themes",
+            CacheKind::SiteConfig => "site_config",
         }
     }
 
@@ -106,6 +111,7 @@ impl CacheKind {
             "locale_string" => CacheKind::Locale,
             "menu_link" | "url_alias" => CacheKind::Menus,
             "text_format" => CacheKind::TextFormats,
+            "site_config" => CacheKind::SiteConfig,
             _ => return None,
         })
     }

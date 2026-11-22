@@ -93,10 +93,11 @@ async fn promoted_item(app: &TestApp, title: &str, fields: serde_json::Value) ->
 }
 
 async fn front_page_html(app: &TestApp) -> String {
-    sqlx::query("DELETE FROM site_config WHERE key = 'site_front_page'")
-        .execute(&app.db)
+    trovato_kernel::models::SiteConfig::delete(&app.db, "site_front_page")
         .await
         .expect("clear front page");
+    // The front page path is cached; this server reads it again at once.
+    app.state.front_page().clear();
     let response = app
         .request(Request::get("/").body(Body::empty()).unwrap())
         .await;

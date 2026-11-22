@@ -276,6 +276,10 @@ struct AppStateInner {
     /// Redirect lookup cache (available when redirects plugin is enabled).
     redirect_cache: Option<Arc<services::redirect::RedirectCache>>,
 
+    /// The configured front page path, cached, and the application `/` is
+    /// dispatched through (`routes::front`).
+    front_page: crate::routes::front::FrontPageConfig,
+
     /// Comment service (available when comments plugin is enabled).
     ///
     /// Uses `OnceLock` rather than `Option` so the service can be
@@ -1299,6 +1303,7 @@ impl AppState {
                 } else {
                     None
                 },
+                front_page: crate::routes::front::FrontPageConfig::default(),
                 comments,
             }),
         };
@@ -1357,6 +1362,7 @@ impl AppState {
                 }
             }
             CacheKind::Menus => crate::menu::clear_local_config_menus(),
+            CacheKind::SiteConfig => self.front_page().clear(),
             CacheKind::Themes => {
                 crate::theme::registry::load_active(self.db(), self.theme()).await;
             }
@@ -1721,6 +1727,11 @@ impl AppState {
     /// Get the redirect cache (if redirects plugin is enabled).
     pub fn redirect_cache(&self) -> Option<&Arc<services::redirect::RedirectCache>> {
         self.inner.redirect_cache.as_ref()
+    }
+
+    /// The configured front page path, cached (`routes::front`).
+    pub fn front_page(&self) -> &crate::routes::front::FrontPageConfig {
+        &self.inner.front_page
     }
 
     /// Get the comment service (if comments plugin is enabled).

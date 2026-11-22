@@ -482,6 +482,10 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
 
+    // The front page: `/` served as the configured path, rewritten before
+    // routing, outside every layer (`routes::front`).
+    let app = routes::front::with_front_page(state.clone(), app);
+
     // Keep a reference to the DB pool for graceful shutdown cleanup.
     let db_pool = state.db().clone();
 
