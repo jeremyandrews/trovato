@@ -483,8 +483,14 @@ async fn logout(
         return resp;
     }
 
-    // Extract user_id before deleting the session
+    // Extract user_id and the device id before `flush` clears them: the device
+    // id is what the session index is keyed by.
     let user_id: Option<uuid::Uuid> = session.get(SESSION_USER_ID).await.ok().flatten();
+    let device_id: Option<uuid::Uuid> = session
+        .get(crate::services::session_registry::SESSION_DEVICE_ID)
+        .await
+        .ok()
+        .flatten();
 
     // Record logout (dispatches tap_user_logout)
     if let Some(uid) = user_id {
@@ -505,6 +511,13 @@ async fn logout(
             "Internal server error",
         )
         .into_response();
+    }
+
+    // `flush` removed the session record but not the device's entry in the
+    // user's session index, which would otherwise stay on `/user/sessions`
+    // until the index expired.
+    if let Some(uid) = user_id {
+        crate::services::session_registry::forget_ended_session(&state, uid, device_id).await;
     }
 
     Redirect::to("/user/login").into_response()

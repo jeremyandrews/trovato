@@ -756,7 +756,24 @@ async fn delete_user(
     let user_ctx = admin_user_context(&state, &current_user).await;
     match state.users().delete(user_id, &user_ctx).await {
         Ok(true) => {
-            tracing::info!(user_id = %user_id, "user deleted");
+            // Every session of the deleted account ends, as it does for a
+            // self-service deletion (`routes::user_delete`). Revoked after the
+            // delete and without a per-session audit row: the audit log's
+            // `user_id` references `users`, and the account is gone.
+            let sessions_revoked = state
+                .session_registry()
+                .revoke_all_except(user_id, None)
+                .await
+                .map(|entries| entries.len())
+                .unwrap_or_else(|e| {
+                    tracing::error!(
+                        error = %e,
+                        user_id = %user_id,
+                        "failed to end a deleted account's sessions"
+                    );
+                    0
+                });
+            tracing::info!(user_id = %user_id, sessions_revoked, "user deleted");
             Redirect::to("/admin/people").into_response()
         }
         Ok(false) => render_not_found(),

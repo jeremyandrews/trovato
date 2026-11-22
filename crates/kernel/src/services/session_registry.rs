@@ -420,6 +420,38 @@ pub async fn end_user_sessions(
     revoked.len()
 }
 
+/// Drop the index entry of a session that this request has just ended.
+///
+/// For the paths that end the caller's own session with `Session::flush()`:
+/// logout, and a blocked account's next request. `flush` removes the session
+/// record, but the index lives beside it, and the tracking middleware cannot
+/// clean up afterwards because a flushed session no longer names a user. So
+/// the caller reads the device id before flushing and hands it here, and the
+/// entry goes through [`SessionRegistry::revoke`], the same removal every
+/// other revocation uses.
+///
+/// A session with no device id, or one whose entry is already gone, never
+/// reached the index (or already left it): there is nothing to do, and that is
+/// not an error. A Redis failure is logged and not returned, because the
+/// session has already ended; the stale entry then lapses with the index TTL.
+pub async fn forget_ended_session(
+    state: &crate::state::AppState,
+    user_id: Uuid,
+    device_id: Option<Uuid>,
+) {
+    let Some(device_id) = device_id else {
+        return;
+    };
+    if let Err(e) = state.session_registry().revoke(user_id, device_id).await {
+        tracing::warn!(
+            error = %e,
+            user_id = %user_id,
+            device_id = %device_id,
+            "failed to remove an ended session from the session index"
+        );
+    }
+}
+
 impl std::fmt::Debug for SessionRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SessionRegistry")
