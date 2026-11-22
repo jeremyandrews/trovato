@@ -340,7 +340,7 @@ impl TestApp {
         // per-test X-Forwarded-For isolation `login` relies on passes the RATE-1
         // trusted-proxy gate.
         if std::env::var_os("TRUSTED_PROXIES").is_none() {
-            config.trusted_proxies = vec![std::net::IpAddr::from([127, 0, 0, 1])];
+            config.trusted_proxies = vec![std::net::IpAddr::from([127, 0, 0, 1])].into();
         }
 
         // Tests run 100 tests concurrently — bump the default pool size so

@@ -199,7 +199,7 @@ async fn queue_reset_mail(state: &AppState, client_id: String, email: String) {
         .await
         .is_err()
     {
-        info!(client = %client_id, "password reset request over the per-client limit; no mail sent");
+        info!(client = %state.runtime().client_ip_storage.kept_or_empty(&client_id), "password reset request over the per-client limit; no mail sent");
         return;
     }
     if state
@@ -208,7 +208,7 @@ async fn queue_reset_mail(state: &AppState, client_id: String, email: String) {
         .await
         .is_err()
     {
-        info!(client = %client_id, "password reset request over the per-address limit; no mail sent");
+        info!(client = %state.runtime().client_ip_storage.kept_or_empty(&client_id), "password reset request over the per-address limit; no mail sent");
         return;
     }
 
@@ -268,7 +268,7 @@ async fn send_reset_mail(state: AppState, email: String, client_id: String) {
         },
         Ok(None) => {
             // User not found - log but don't reveal to client
-            info!(client = %client_id, "password reset requested for non-existent email");
+            info!(client = %state.runtime().client_ip_storage.kept_or_empty(&client_id), "password reset requested for non-existent email");
         }
         Err(e) => {
             tracing::error!(error = %e, "database error during password reset request");

@@ -372,28 +372,30 @@ pub struct SecurityAuditRow {
 #[derive(Clone)]
 pub struct SecurityAudit {
     pool: PgPool,
+    ip_storage: crate::client_addr::ClientIpStorage,
 }
 
 impl SecurityAudit {
-    /// Create the stream over the kernel's pool.
+    /// Create the stream over the kernel's pool, storing client addresses in
+    /// full.
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self::with_ip_storage(pool, crate::client_addr::ClientIpStorage::Full)
     }
 
-    /// Validate an IP string, mirroring the `AuditService::sanitize_ip`
-    /// precedent: anything that is not a parseable address becomes `"invalid"`
-    /// rather than being stored verbatim.
-    fn sanitize_ip(ip: &str) -> String {
-        if ip.parse::<std::net::IpAddr>().is_ok() {
-            ip.to_string()
-        } else {
-            "invalid".to_string()
-        }
+    /// Create the stream, storing of each client address only what
+    /// `ip_storage` (`CLIENT_IP_STORAGE`) allows: all of it, its network, or
+    /// nothing (a NULL `ip_address`).
+    pub fn with_ip_storage(pool: PgPool, ip_storage: crate::client_addr::ClientIpStorage) -> Self {
+        Self { pool, ip_storage }
     }
 
     /// Append one event, returning an error if the write failed.
     pub async fn record(&self, event: SecurityEvent) -> Result<()> {
-        let ip = event.ip_address.as_deref().map(Self::sanitize_ip);
+        // Anything that is not an address is stored as `"invalid"`, never verbatim.
+        let ip = event
+            .ip_address
+            .as_deref()
+            .and_then(|ip| self.ip_storage.apply(ip));
 
         sqlx::query(
             r#"
@@ -625,10 +627,11 @@ mod tests {
 
     #[test]
     fn ip_sanitization_rejects_injection() {
-        assert_eq!(SecurityAudit::sanitize_ip("192.168.1.1"), "192.168.1.1");
-        assert_eq!(SecurityAudit::sanitize_ip("::1"), "::1");
-        assert_eq!(SecurityAudit::sanitize_ip("'; DROP TABLE --"), "invalid");
-        assert_eq!(SecurityAudit::sanitize_ip(""), "invalid");
+        use crate::client_addr::ClientIpStorage::Full;
+        assert_eq!(Full.apply("192.168.1.1").as_deref(), Some("192.168.1.1"));
+        assert_eq!(Full.apply("::1").as_deref(), Some("::1"));
+        assert_eq!(Full.apply("'; DROP TABLE --").as_deref(), Some("invalid"));
+        assert_eq!(Full.apply("").as_deref(), Some("invalid"));
     }
 
     /// The window is always a positive number of days, whatever it is

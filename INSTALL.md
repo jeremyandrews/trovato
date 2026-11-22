@@ -76,6 +76,8 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 | `PAGEFIND_OUTPUT_DIR` | `pagefind` under the first `STATIC_DIR` | Where the Pagefind index is built and served from; its URL stays `/static/pagefind/`. Each rebuild is made beside it and renamed into place, so its parent must be writable and on the same filesystem. On several servers, point it into the shared volume. |
 | `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated allowed origins |
 | `COOKIE_SAME_SITE` | `strict` | Cookie SameSite policy (`strict`, `lax`, `none`) |
+| `TRUSTED_PROXIES` | *(empty: trust none)* | Reverse proxies whose `X-Forwarded-For` is believed, as comma-separated addresses and CIDR ranges. See "Behind a reverse proxy" below. |
+| `CLIENT_IP_STORAGE` | `full` | How much of a client address is stored: `full`, `truncated` or `none`. See "Client addresses and privacy" below. |
 | `CRON_KEY` | *(none)* | Shared secret in the cron URL, `POST /cron/<CRON_KEY>`. Change it before exposing the server. |
 | `JWT_SECRET` | *(none)* | Required for OAuth2 plugin (min 32 bytes) |
 | `WEBHOOK_ENCRYPTION_KEY` | *(none)* | Encrypts webhook secrets (min 32 bytes, recommended) |
@@ -103,6 +105,73 @@ bodies of up to 10 MB plus 64 KiB of multipart framing. A proxy with a smaller
 body limit (nginx defaults to 1 MB) must allow at least that on `/file/upload`
 and `/api/block-editor/upload`, for example `client_max_body_size 11m;`, or
 editors get the proxy's error instead of the kernel's.
+
+### Behind a reverse proxy
+
+Trovato takes the client address from the TCP connection. Behind a reverse
+proxy (nginx, Caddy, HAProxy, a Kubernetes ingress, a CDN) that connection comes
+from the proxy, so every visitor would share the proxy's address, its rate-limit
+budget and its sign-in lockout counter. Tell Trovato which peers are proxies:
+
+```env
+TRUSTED_PROXIES=127.0.0.1,::1
+```
+
+That is the whole change for nginx on the same host. List every hop in front of
+Trovato, as addresses or CIDR ranges: a load balancer behind a CDN is
+`TRUSTED_PROXIES=10.0.0.0/8,<the CDN's published ranges>`; a pod behind an
+ingress is the cluster's pod network, for example `TRUSTED_PROXIES=10.42.0.0/16`.
+
+When the connection comes from a listed proxy, Trovato reads `X-Forwarded-For`
+from the right, skips the entries that are themselves listed proxies, and takes
+the first address that is not one. A proxy that sends no `X-Forwarded-For` may
+send `X-Real-IP` instead. A connection from anywhere else is the client, and
+its forwarding headers are ignored, so a visitor who connects directly cannot
+choose their own address by sending one. The RFC 7239 `Forwarded` header is not
+read; every common proxy writes `X-Forwarded-For`.
+
+The proxy must append to `X-Forwarded-For`, not pass the client's value through
+unchanged. For nginx:
+
+```nginx
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+```
+
+`TRUSTED_PROXIES` is empty by default, which trusts no proxy. An entry that is
+not an address or a CIDR range (`10.0.0.0/33`, a hostname, a typo) stops the
+server at startup with a message naming it, instead of being dropped and
+silently trusting one proxy fewer.
+
+### Client addresses and privacy
+
+`CLIENT_IP_STORAGE` decides how much of a client address Trovato keeps once the
+request is over:
+
+| Value | What is stored |
+|-------|----------------|
+| `full` (default) | The whole address, as before this setting existed. |
+| `truncated` | The network only: IPv4 to its /24 (`203.0.113.77` is kept as `203.0.113.0`), IPv6 to its /48. |
+| `none` | Nothing. |
+
+It applies everywhere an address outlives the request: the `ip_address` column
+of the security audit log (`security_audit_log`, NULL under `none`) and of the
+audit log plugin's `audit_log` (the empty string under `none`, since that column
+cannot be NULL), the client address on sign-in lockout warnings in the site log
+(`system_log`), the address shown on a user's device list (the session index in
+Redis, kept as long as the session), and the client address in password reset
+log lines. Comments, users and items store no client address under any value.
+
+Rate limiting and sign-in lockout always use the whole address, under every
+value, because telling clients apart is their whole job. They keep it in Redis
+only, as counter keys that expire with their window (a minute to an hour with
+the default limits; lockout keys within thirty minutes). Nothing is written to
+the database for them.
+
+A site that wants no address on record sets `CLIENT_IP_STORAGE=none` and keeps
+its proxy passing the real address in `X-Forwarded-For`; there is no need to
+rewrite the header to a constant at the proxy, which would also put every
+visitor in one rate-limit budget. An unknown value stops the server at startup.
 
 ### Rate Limits
 
