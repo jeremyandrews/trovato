@@ -9,6 +9,7 @@ use tower_sessions::Session;
 
 use crate::content::{AddFieldError, CreateContentTypeError};
 use crate::form::csrf::generate_csrf_token;
+use crate::search::SearchSwitches;
 use crate::state::AppState;
 
 use super::helpers::{
@@ -756,6 +757,51 @@ async fn delete_field_submit(
 // Search Configuration
 // =============================================================================
 
+/// The form id of the search switches form.
+const SEARCH_SWITCHES_FORM_ID: &str = "search_switches_form";
+
+/// A content type's search switches as stored, defaults when it has none.
+async fn stored_search_switches(state: &AppState, type_name: &str) -> SearchSwitches {
+    match crate::models::ItemType::find_by_type(state.db(), type_name).await {
+        Ok(Some(row)) => SearchSwitches::from_settings(&row.settings),
+        Ok(None) => SearchSwitches::default(),
+        Err(e) => {
+            tracing::warn!(error = %e, content_type = %type_name, "failed to read search switches");
+            SearchSwitches::default()
+        }
+    }
+}
+
+/// The two checkboxes, through the kernel's form pipeline.
+fn search_switches_form(type_name: &str, switches: SearchSwitches) -> crate::form::Form {
+    use crate::form::FormElement;
+    crate::form::Form::new(SEARCH_SWITCHES_FORM_ID)
+        .action(format!("/admin/structure/types/{type_name}/search"))
+        .element(
+            "include",
+            FormElement::checkbox()
+                .title("Include this content type in search")
+                .description(
+                    "Unchecked, no item of this type is found by site search, in the browser \
+                     index or on the server.",
+                )
+                .default_value(switches.include)
+                .weight(0),
+        )
+        .element(
+            "comments",
+            FormElement::checkbox()
+                .title("Include comments in search")
+                .description(
+                    "Unchecked, an item of this type is no longer found by words that appear \
+                     only in its published comments.",
+                )
+                .default_value(switches.comments)
+                .weight(1),
+        )
+        .element("op", FormElement::submit("Save search settings").weight(10))
+}
+
 /// Manage search field configuration for a content type.
 ///
 /// GET /admin/structure/types/{type}/search
@@ -764,19 +810,46 @@ async fn manage_search_config(
     session: Session,
     Path(type_name): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    let switches = stored_search_switches(&state, &type_name).await;
+    render_search_config(&state, &session, &user, &type_name, switches, &[]).await
+}
 
-    let Some(content_type) = state.content_types().get(&type_name) else {
+/// The search settings page, its switches form showing `switches`.
+async fn render_search_config(
+    state: &AppState,
+    session: &Session,
+    user: &crate::models::User,
+    type_name: &str,
+    switches: SearchSwitches,
+    errors: &[crate::form::ValidationError],
+) -> Response {
+    let Some(content_type) = state.content_types().get(type_name) else {
         return render_not_found();
     };
 
-    let csrf_token = generate_csrf_token(&session).await;
+    let switches_form = match super::admin_form::render(
+        state,
+        session,
+        user,
+        search_switches_form(type_name, switches),
+        errors,
+    )
+    .await
+    {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+    let flash: Option<String> = session.remove(SEARCH_SWITCHES_FLASH).await.ok().flatten();
+
+    let csrf_token = generate_csrf_token(session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
 
     // Get current search configs
-    let search_configs = match state.search().list_field_configs(&type_name).await {
+    let search_configs = match state.search().list_field_configs(type_name).await {
         Ok(configs) => configs,
         Err(e) => {
             tracing::error!(error = %e, "failed to list search configs");
@@ -804,6 +877,8 @@ async fn manage_search_config(
     context.insert("fields", &content_type.fields);
     context.insert("search_configs", &config_map);
     context.insert("text_fields", &text_fields);
+    context.insert("switches_form", &switches_form);
+    context.insert("flash", &flash);
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert(
@@ -811,13 +886,90 @@ async fn manage_search_config(
         &format!("/admin/structure/types/{type_name}/search"),
     );
 
-    render_admin_template(
+    let viewer = super::helpers::user_context_for(state, user).await;
+    render_admin_template(state, &viewer, "admin/search-config.html", context).await
+}
+
+/// Where the save confirmation waits for the redirect.
+const SEARCH_SWITCHES_FLASH: &str = "search_switches_flash";
+
+/// Save a content type's two search switches.
+///
+/// POST /admin/structure/types/{type}/search
+///
+/// Stores them in the type's `settings` (merged, so nothing else there
+/// changes), recomputes the type's full text vectors so `/search` follows at
+/// once, and asks for a Pagefind rebuild at the next cron run.
+async fn save_search_switches(
+    State(state): State<AppState>,
+    session: Session,
+    Path(type_name): Path<String>,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Response {
+    let posted = crate::content::submission::PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
+    let Some(content_type) = state.content_types().get(&type_name) else {
+        return render_not_found();
+    };
+    let wanted = SearchSwitches {
+        include: posted.contains("include"),
+        comments: posted.contains("comments"),
+    };
+    match super::admin_form::check(
         &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/search-config.html",
-        context,
+        &session,
+        &user,
+        &posted,
+        SEARCH_SWITCHES_FORM_ID,
+        Vec::new(),
     )
     .await
+    {
+        Ok(()) => {}
+        Err(Ok(errors)) => {
+            return render_search_config(&state, &session, &user, &type_name, wanted, &errors)
+                .await;
+        }
+        Err(Err(response)) => return response,
+    }
+
+    let patch = serde_json::json!({ SearchSwitches::SETTINGS_KEY: wanted });
+    if let Err(e) = state
+        .content_types()
+        .update(
+            &type_name,
+            &content_type.label,
+            Some(content_type.description.as_str()),
+            patch,
+        )
+        .await
+    {
+        tracing::error!(error = %e, content_type = %type_name, "failed to save search switches");
+        return render_server_error("The search settings could not be saved.");
+    }
+    if let Err(e) = state.search().reindex_bundle(&type_name).await {
+        tracing::error!(error = %e, content_type = %type_name, "failed to reindex after search switches");
+    }
+    crate::cron::request_search_index_rebuild(state.db()).await;
+
+    tracing::info!(
+        log_type = "config",
+        user_id = %user.id,
+        content_type = %type_name,
+        include = wanted.include,
+        comments = wanted.comments,
+        "search switches changed"
+    );
+    let _ = session
+        .insert(
+            SEARCH_SWITCHES_FLASH,
+            "The search settings were saved. The search index is rebuilt at the next cron run.",
+        )
+        .await;
+    Redirect::to(&format!("/admin/structure/types/{type_name}/search")).into_response()
 }
 
 /// Add or update a search field configuration.
@@ -1094,7 +1246,7 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/admin/structure/types/{type}/search",
-            get(manage_search_config),
+            get(manage_search_config).post(save_search_switches),
         )
         .route(
             "/admin/structure/types/{type}/search/add",

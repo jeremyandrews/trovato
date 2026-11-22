@@ -23,6 +23,7 @@ use crate::models::Role;
 use crate::models::role::well_known::ANONYMOUS_ROLE_ID;
 use crate::models::stage::LIVE_STAGE_ID;
 use crate::routes::helpers::html_escape;
+use crate::search::SearchSwitches;
 use crate::tap::UserContext;
 
 /// Maximum time allowed for the pagefind CLI to run (2 minutes).
@@ -106,12 +107,14 @@ struct FieldConfigRow {
     weight: String,
 }
 
-/// A content type's declared fields, as `item_type.settings` stores them.
+/// A content type's declared fields, and its whole `settings` (for its
+/// search switches), as `item_type` stores them.
 #[derive(sqlx::FromRow)]
 struct TypeFieldsRow {
     #[sqlx(rename = "type")]
     item_type: String,
     fields: Option<serde_json::Value>,
+    settings: Option<serde_json::Value>,
 }
 
 /// One publicly visible comment's body, for the item it is on.
@@ -321,6 +324,29 @@ impl SwapPaths {
 /// nothing.
 #[doc(hidden)]
 pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<Vec<IndexDocument>> {
+    // Every type's declared fields and search switches, once per build: the
+    // fields so every text field is indexed and not only the configured ones,
+    // the switches so a type switched out of search, or its comments, is left
+    // out (`SearchSwitches`, both on unless set to false).
+    let type_rows = sqlx::query_as::<_, TypeFieldsRow>(
+        "SELECT type, settings -> 'fields' AS fields, settings FROM item_type",
+    )
+    .fetch_all(pool)
+    .await
+    .context("failed to read content types for pagefind index")?;
+    let switches: HashMap<String, SearchSwitches> = type_rows
+        .iter()
+        .map(|row| {
+            let switches = row
+                .settings
+                .as_ref()
+                .map(SearchSwitches::from_settings)
+                .unwrap_or_default();
+            (row.item_type.clone(), switches)
+        })
+        .collect();
+    let switches_for = |item_type: &str| switches.get(item_type).copied().unwrap_or_default();
+
     // The coarse candidate set: published, live stage. Exactly what the seam is
     // then asked about, rather than what it is trusted to have already been.
     let candidates = sqlx::query_as::<_, Item>(
@@ -335,6 +361,10 @@ pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<V
     .fetch_all(pool)
     .await
     .context("failed to query items for pagefind index")?;
+    let candidates: Vec<Item> = candidates
+        .into_iter()
+        .filter(|item| switches_for(&item.item_type).include)
+        .collect();
 
     // The anonymous visitor, with the anonymous role's real permission set — not
     // a bare `UserContext::anonymous()`, whose empty set would deny everything
@@ -368,14 +398,6 @@ pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<V
             .push((row.field_name, pagefind_weight(letter)));
     }
 
-    // Every type's declared text fields, once per build, so every text field is
-    // indexed and not only the configured ones.
-    let type_rows = sqlx::query_as::<_, TypeFieldsRow>(
-        "SELECT type, settings -> 'fields' AS fields FROM item_type",
-    )
-    .fetch_all(pool)
-    .await
-    .context("failed to read content type fields for pagefind index")?;
     let mut text_fields: HashMap<String, Vec<String>> = HashMap::new();
     for row in type_rows {
         let names = text_fields.entry(row.item_type).or_default();
@@ -390,8 +412,13 @@ pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<V
         }
     }
 
-    // Every visible comment on every visible item, in one query.
-    let visible_ids: Vec<Uuid> = visible.iter().map(|item| item.id).collect();
+    // Every visible comment on every visible item whose type has comments in
+    // search, in one query.
+    let visible_ids: Vec<Uuid> = visible
+        .iter()
+        .filter(|item| switches_for(&item.item_type).comments)
+        .map(|item| item.id)
+        .collect();
     let comment_rows = sqlx::query_as::<_, CommentRow>(VISIBLE_COMMENTS_SQL)
         .bind(&visible_ids)
         .bind(crate::models::CommentStatus::Published.as_i16())
