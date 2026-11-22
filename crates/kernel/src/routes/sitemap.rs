@@ -114,7 +114,7 @@ struct TranslationRow {
 /// Every path this module emits already starts with `/`, so a `SITE_URL` stored
 /// as `https://example.com/` would otherwise produce `https://example.com//blog`
 /// — a different URL to a crawler, and a duplicate of one it already has.
-fn canonical_base(site_url: &str) -> &str {
+pub(crate) fn canonical_base(site_url: &str) -> &str {
     site_url.trim_end_matches('/')
 }
 

@@ -748,7 +748,8 @@ pub struct QueryDisplay {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub routes: Vec<GatherRoute>,
 
-    /// RSS feed for this query, served at the path it names.
+    /// RSS and Atom feeds for this query, served at the path it names and its
+    /// `.atom` sibling.
     ///
     /// Registered at startup by [`crate::routes::feed::build_feed_router`], and
     /// advertised in every page's head as an autodiscovery link.
@@ -756,7 +757,11 @@ pub struct QueryDisplay {
     pub feed: Option<GatherFeed>,
 }
 
-/// An RSS feed rendering of a gather query.
+/// An RSS 2.0 and Atom 1.0 rendering of a gather query.
+///
+/// One declaration serves both: RSS at [`path`](Self::path), Atom at its
+/// `.atom` sibling (the last segment's extension replaced, or `.atom`
+/// appended when it has none), so `/rss/blog.xml` is also `/rss/blog.atom`.
 ///
 /// The feed carries whatever the fetching viewer's own execution of the query
 /// returns, so an anonymous aggregator sees exactly what an anonymous visitor
@@ -779,6 +784,13 @@ pub struct GatherFeed {
     /// Number of entries to carry, clamped to the feed router's hard maximum.
     #[serde(default = "default_feed_items")]
     pub items: u32,
+
+    /// Carry each item's whole body as well as its summary: RSS
+    /// `content:encoded` and Atom `<content type="html">`, rendered through the
+    /// body's text format the way the item page renders it. Off by default, so
+    /// a feed is a list of summaries that links back to the site.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub full_content: bool,
 }
 
 fn default_feed_items() -> u32 {

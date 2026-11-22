@@ -270,6 +270,75 @@ when the address it points at is one they could open: not a gather they may not
 run, and not a plugin route whose `tap_menu` permission they lack. A link under
 one that is not drawn is not drawn either.
 
+### Gather feeds
+
+A gather declares a feed in its display config and gets an RSS 2.0 document at
+the path it names and an Atom 1.0 document beside it:
+
+```json
+"feed": {
+    "path": "/blog/feed.xml",
+    "title": "Blog",
+    "description": "Recent blog posts",
+    "items": 20,
+    "full_content": false
+}
+```
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `path` | required | Where the RSS document is served. Absolute, and no `{…}` pattern. |
+| `title` | the gather's `label` | Channel and feed title. |
+| `description` | the gather's `description` | Channel description and Atom subtitle. |
+| `items` | 20 | Entries carried, at most 200. |
+| `full_content` | `false` | Also carry the body as HTML (RSS `content:encoded`, Atom `<content type="html">`). |
+
+The Atom document is at the path's `.atom` sibling: the last segment's extension
+replaced, or `.atom` appended when it has none, so `/blog/feed.xml` is also
+`/blog/feed.atom` and `/blog/feed` is also `/blog/feed.atom`. It is derived
+rather than declared so every feed has Atom with no config change and there is
+no second path to keep unique. Both are advertised on every page with
+`<link rel="alternate">` (the `feeds` template variable: `path`, `atom_path`,
+`title`).
+
+Every entry carries:
+
+- an id that never changes, `urn:uuid:<item id>` (RSS
+  `<guid isPermaLink="false">`, Atom `<id>`), so moving an item to a new URL
+  alias does not make every reader show it again as new;
+- the absolute link to the item, its URL alias when it has one;
+- the author's account name (`dc:creator`, Atom `<author><name>`). An account
+  name that is an email address is left out, never published;
+- every taxonomy term on the item (`<category>`, Atom `<category term>`);
+- a plain-text summary: the first of `summary`, `field_summary`, `field_teaser`
+  or `field_description` the item has, otherwise its body (`field_body` or
+  `body`) with the markup stripped and cut at a word boundary near 300
+  characters;
+- with `full_content`, the body rendered through its text format, as the item
+  page renders it.
+
+Text is escaped exactly once, the rule the search snippet uses: extracted from
+the stored markup, then escaped for XML.
+
+Every absolute URL (links, the `rel="self"` links, the Atom feed id) is built
+from `SITE_URL`, never from the request's `Host` header. The kernel logs one
+warning at startup when `SITE_URL` is unset or names a loopback host.
+
+**Access.** A feed is the requesting viewer's own execution of the gather, the
+same as its page: an anonymous aggregator gets what an anonymous visitor would
+see, and a gather that requires a permission answers 403 (see the table above).
+Nothing is cached on the server between viewers.
+
+**Polling.** Each response carries an `ETag` and a `Last-Modified`, computed
+from the entries' ids, `changed` timestamps and links plus the feed's config. A
+request whose `If-None-Match` (or, without one, `If-Modified-Since`) still
+matches gets `304 Not Modified` before anything is rendered. The query itself
+still runs, as the viewer, because that is what decides what the viewer may
+see. An anonymous response is `Cache-Control: public, max-age=300`; a response
+to a signed-in session is `private, no-cache`, since it ran with that viewer's
+access. An author's renamed account or a relabelled term reaches readers with
+the entry's next edit, not before, since neither changes the validators.
+
 ---
 
 ## The Tap System

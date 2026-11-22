@@ -335,6 +335,11 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
     // with axum's message instead of an explanation of what to do about it.
     routes::sitemap::ensure_reserved_paths_unclaimed(&plugin_menus)?;
 
+    // Every absolute URL a feed or the sitemap emits is built from SITE_URL,
+    // never from the request's Host header; say so once when it cannot be a
+    // public address.
+    routes::feed::warn_if_site_url_unusable(&state.runtime().site_url);
+
     let inner_router: Router<AppState> = Router::new()
         .merge(routes::front::router())
         .merge(routes::install::router())
@@ -371,7 +376,7 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         .merge(routes::gather_routes::build_gather_route_router(
             &state.gather().list_queries(),
         ))
-        // RSS feeds declared by gather query display configs.
+        // RSS and Atom feeds declared by gather query display configs.
         .merge(routes::feed::build_feed_router(&state.gather().list_queries()))
         // Plugin-served API routes from `tap_menu` entries whose handler_type
         // is `api` (G-NO-PLUGIN-HTTP). Entries that name a callback without

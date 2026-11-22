@@ -1,8 +1,9 @@
-//! RSS 2.0 feeds for gather queries.
+//! RSS 2.0 and Atom 1.0 feeds for gather queries.
 //!
 //! A gather query declares a feed in its display config
 //! ([`GatherFeed`](crate::gather::types::GatherFeed)) and gets an RSS document
-//! at the path it names. Routes are built once at startup, the same shape
+//! at the path it names and an Atom document at that path's `.atom` sibling
+//! ([`atom_path`]). Routes are built once at startup, the same shape
 //! [`crate::routes::gather_routes::build_gather_route_router`] uses for gather
 //! route aliases.
 //!
@@ -26,23 +27,60 @@
 //!
 //! Whatever the viewer's own execution of the query returns. A feed URL fetched
 //! by an anonymous aggregator is an anonymous execution, so it carries exactly
-//! the rows an anonymous visitor would see on the query's page.
+//! the rows an anonymous visitor would see on the query's page. Nothing about a
+//! feed is cached on the server: each request runs the query as its viewer.
+//!
+//! # What an entry carries
+//!
+//! - an id that never changes: `urn:uuid:<item id>`, so a new URL alias does
+//!   not make every reader show old posts as new;
+//! - the absolute link, from `SITE_URL` and the row's URL alias;
+//! - the author's account name (`dc:creator`, Atom `<author>`), never an email;
+//! - every taxonomy term on the item (`<category>`);
+//! - a plain-text summary: the item's summary field when it has one, otherwise
+//!   its body with the markup stripped, cut at a word boundary;
+//! - with `full_content`, the body as HTML too.
+//!
+//! Authors and terms are loaded in one batched query each, whatever the number
+//! of entries; the alias is already on the row (the gather service resolves it).
+//!
+//! # Escaping
+//!
+//! One rule, the one B123 settled for search snippets: text is extracted from
+//! stored markup with `content::page_meta::plain_text` and escaped
+//! exactly once ([`xml_escape`]). The only HTML a feed carries is the
+//! `full_content` body, rendered through its text format
+//! ([`FilterPipeline::for_format_safe`]) and then either wrapped in CDATA (RSS)
+//! or escaped once as the text of a `type="html"` element (Atom).
+//!
+//! # Polling
+//!
+//! Every response carries an `ETag` and, when it has entries, a
+//! `Last-Modified`. Both come from the entries' ids, their `changed` timestamps
+//! and links, and the feed's config. A request whose `If-None-Match` (or, with
+//! none, `If-Modified-Since`) still matches is answered `304` before terms are
+//! loaded or anything is rendered.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
 
 use axum::{
     Router,
     extract::State,
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
 };
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use tower_sessions::Session;
+use uuid::Uuid;
 
+use crate::content::FilterPipeline;
+use crate::content::body_field::{BODY_FIELD_NAMES, field_text};
+use crate::content::page_meta::{plain_text, truncate_on_word};
 use crate::gather::types::GatherQuery;
-use crate::models::UrlAlias;
 use crate::models::stage::LIVE_STAGE_ID;
 use crate::routes::gather::ExecuteParams;
 use crate::routes::helpers::xml_escape;
@@ -55,26 +93,75 @@ use crate::state::AppState;
 /// is.
 const MAX_FEED_ITEMS: u32 = 200;
 
+/// Longest summary cut from a body, in bytes, before the ellipsis.
+const SUMMARY_MAX_LEN: usize = 300;
+
+/// `max-age` for a feed fetched without a signed-in session.
+const ANONYMOUS_MAX_AGE_SECS: u32 = 300;
+
+/// The fields read as an item's summary, in order, before falling back to its
+/// body. `summary` is what row templates show; the rest are the names content
+/// types declare for a hand-written teaser.
+const SUMMARY_FIELDS: [&str; 4] = [
+    "summary",
+    "field_summary",
+    "field_teaser",
+    "field_description",
+];
+
+/// The two documents one feed declaration serves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FeedFormat {
+    Rss,
+    Atom,
+}
+
+impl FeedFormat {
+    fn content_type(self) -> &'static str {
+        match self {
+            Self::Rss => "application/rss+xml; charset=utf-8",
+            Self::Atom => "application/atom+xml; charset=utf-8",
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Rss => "rss",
+            Self::Atom => "atom",
+        }
+    }
+}
+
 /// One registered feed.
 #[derive(Debug, Clone)]
 struct FeedConfig {
     /// Gather query to execute.
     query_id: String,
-    /// Feed path, as declared.
+    /// RSS path, as declared.
     path: String,
-    /// `<channel><title>`.
+    /// Atom path, derived from `path`.
+    atom_path: String,
+    /// Channel / feed title.
     title: String,
-    /// `<channel><description>`.
+    /// Channel description / Atom subtitle.
     description: String,
     /// Number of entries to carry.
     items: u32,
+    /// Carry the body as HTML as well as the summary.
+    full_content: bool,
+    /// The page the feed is a feed of: the query's canonical URL, else `/`.
+    home_path: String,
+    /// The gather query's own `changed`, so a config edit changes the `ETag`.
+    query_changed: i64,
 }
 
 /// A feed as a template sees it, for autodiscovery link tags.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct FeedLink {
-    /// Path the feed is served at.
+    /// Path the RSS document is served at.
     pub path: String,
+    /// Path the Atom document is served at.
+    pub atom_path: String,
     /// Human-readable feed title.
     pub title: String,
 }
@@ -93,6 +180,7 @@ pub fn feed_links(queries: &[GatherQuery]) -> Vec<FeedLink> {
             }
             Some(FeedLink {
                 path: feed.path.clone(),
+                atom_path: atom_path(&feed.path)?,
                 title: feed_title(query),
             })
         })
@@ -100,6 +188,30 @@ pub fn feed_links(queries: &[GatherQuery]) -> Vec<FeedLink> {
     links.sort_by(|a, b| a.path.cmp(&b.path));
     links.dedup_by(|a, b| a.path == b.path);
     links
+}
+
+/// The Atom sibling of an RSS feed path: the last segment's extension replaced
+/// by `.atom`, or `.atom` appended when it has none.
+///
+/// `/rss/blog.xml` → `/rss/blog.atom`, `/blog/feed` → `/blog/feed.atom`. Derived
+/// rather than declared so that every feed gets Atom with no config change and
+/// no second path to keep unique; `None` for a path already ending in `.atom`,
+/// which has no sibling distinct from itself.
+pub fn atom_path(path: &str) -> Option<String> {
+    let (dir, last) = path.rsplit_once('/')?;
+    let stem = match last.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() && !ext.contains('}') => {
+            if ext == "atom" {
+                return None;
+            }
+            stem
+        }
+        _ => last,
+    };
+    if stem.is_empty() {
+        return None;
+    }
+    Some(format!("{dir}/{stem}.atom"))
 }
 
 /// Build a router serving every gather query that declares a feed.
@@ -111,7 +223,7 @@ pub fn feed_links(queries: &[GatherQuery]) -> Vec<FeedLink> {
 /// down by declaring a duplicate.
 pub fn build_feed_router(queries: &[GatherQuery]) -> Router<AppState> {
     let mut router = Router::new();
-    let mut registered: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut registered: HashSet<String> = HashSet::new();
 
     for query in queries {
         let Some(feed) = query.display.feed.as_ref() else {
@@ -126,8 +238,16 @@ pub fn build_feed_router(queries: &[GatherQuery]) -> Router<AppState> {
             );
             continue;
         }
+        let Some(atom) = atom_path(&feed.path) else {
+            tracing::warn!(
+                query_id = %query.query_id,
+                path = %feed.path,
+                "skipping feed whose path has no distinct .atom sibling"
+            );
+            continue;
+        };
 
-        if !registered.insert(feed.path.clone()) {
+        if registered.contains(&feed.path) || registered.contains(&atom) {
             tracing::warn!(
                 query_id = %query.query_id,
                 path = %feed.path,
@@ -135,10 +255,13 @@ pub fn build_feed_router(queries: &[GatherQuery]) -> Router<AppState> {
             );
             continue;
         }
+        registered.insert(feed.path.clone());
+        registered.insert(atom.clone());
 
         let config = Arc::new(FeedConfig {
             query_id: query.query_id.clone(),
             path: feed.path.clone(),
+            atom_path: atom.clone(),
             title: feed_title(query),
             description: feed
                 .description
@@ -146,21 +269,35 @@ pub fn build_feed_router(queries: &[GatherQuery]) -> Router<AppState> {
                 .or_else(|| query.description.clone())
                 .unwrap_or_default(),
             items: feed.items.clamp(1, MAX_FEED_ITEMS),
+            full_content: feed.full_content,
+            home_path: query
+                .display
+                .canonical_url
+                .clone()
+                .filter(|p| p.starts_with('/'))
+                .unwrap_or_else(|| "/".to_string()),
+            query_changed: query.changed,
         });
 
         tracing::info!(
             query_id = %query.query_id,
             path = %feed.path,
+            atom_path = %atom,
             "registering feed"
         );
 
-        router = router.route(
-            &feed.path,
-            get(move |state: State<AppState>, session: Session| {
-                let config = Arc::clone(&config);
-                async move { serve_feed(state, session, &config).await }
-            }),
-        );
+        for (path, format) in [(&feed.path, FeedFormat::Rss), (&atom, FeedFormat::Atom)] {
+            let config = Arc::clone(&config);
+            router = router.route(
+                path,
+                get(
+                    move |state: State<AppState>, session: Session, headers: HeaderMap| {
+                        let config = Arc::clone(&config);
+                        async move { serve_feed(state, session, headers, &config, format).await }
+                    },
+                ),
+            );
+        }
     }
 
     router
@@ -183,13 +320,59 @@ fn feed_title(query: &GatherQuery) -> String {
         .unwrap_or_else(|| query.label.clone())
 }
 
-/// Execute the query as this viewer and render the result as RSS 2.0.
+/// Log one warning when `SITE_URL` cannot be the address of a public site.
+///
+/// Every absolute URL a feed (and the sitemap) emits is built from `SITE_URL`;
+/// the request's `Host` header is deliberately not consulted, since it is
+/// whatever the client sent. Unset, `SITE_URL` defaults to
+/// `http://localhost:$PORT`, so every link in every feed points at the reader's
+/// own machine. Returns whether it warned.
+pub fn warn_if_site_url_unusable(site_url: &str) -> bool {
+    if !is_loopback_site_url(site_url) {
+        return false;
+    }
+    tracing::warn!(
+        site_url = %site_url,
+        "SITE_URL is unset or names a loopback host: feed links, feed ids and \
+         the sitemap will point at it. Set SITE_URL to the site's public address."
+    );
+    true
+}
+
+/// Whether `site_url` is missing a usable public host: unparsable, hostless,
+/// `localhost`, or a loopback or unspecified IP address.
+fn is_loopback_site_url(site_url: &str) -> bool {
+    let Ok(url) = url::Url::parse(site_url.trim()) else {
+        return true;
+    };
+    match url.host() {
+        None => true,
+        Some(url::Host::Domain(domain)) => {
+            let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+            domain == "localhost" || domain.ends_with(".localhost")
+        }
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback() || ip.is_unspecified(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback() || ip.is_unspecified(),
+    }
+}
+
+/// Execute the query as this viewer and render the result as RSS or Atom.
 async fn serve_feed(
     State(state): State<AppState>,
     session: Session,
+    headers: HeaderMap,
     config: &FeedConfig,
+    format: FeedFormat,
 ) -> Response {
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
+    // A signed-in viewer's feed is that viewer's execution of the query, so no
+    // shared cache may keep it; an anonymous one is the same for every
+    // anonymous reader.
+    let cache_control = if viewer.authenticated {
+        "private, no-cache".to_string()
+    } else {
+        format!("public, max-age={ANONYMOUS_MAX_AGE_SECS}")
+    };
 
     let params = ExecuteParams::new(1, LIVE_STAGE_ID.to_string(), HashMap::new());
     let result = match crate::routes::gather::execute_query_only(
@@ -206,7 +389,7 @@ async fn serve_feed(
         // An aggregator has no login page to be sent to: a feed of a gather the
         // viewer may not run is simply refused.
         Err(e) if e.downcast_ref::<crate::gather::GatherDenied>().is_some() => {
-            return (axum::http::StatusCode::FORBIDDEN, "Access denied").into_response();
+            return (StatusCode::FORBIDDEN, "Access denied").into_response();
         }
         Err(e) => {
             tracing::error!(
@@ -214,169 +397,458 @@ async fn serve_feed(
                 error = %e,
                 "failed to execute gather query for feed"
             );
-            return (
-                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to build feed",
-            )
-                .into_response();
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to build feed").into_response();
         }
     };
 
-    let site_url = state.runtime().site_url.trim_end_matches('/').to_string();
+    let site_url = crate::routes::sitemap::canonical_base(&state.runtime().site_url).to_string();
     let rows: Vec<&serde_json::Value> = result.items.iter().take(config.items as usize).collect();
-    let aliases = load_aliases(&state, &rows).await;
+    let item_ids: Vec<Uuid> = rows.iter().filter_map(|row| row_uuid(row)).collect();
+    let meta = load_entry_meta(&state, &item_ids).await;
 
-    let entries: Vec<String> = rows
-        .iter()
-        .map(|row| render_entry(row, &site_url, &aliases))
-        .collect();
-
-    let body = build_rss_feed(
-        &config.title,
-        &format!("{site_url}{}", config.path),
-        &config.description,
-        &entries,
-    );
-
-    (
-        axum::http::StatusCode::OK,
-        [("content-type", "application/rss+xml; charset=utf-8")],
-        body,
-    )
-        .into_response()
-}
-
-/// Resolve the URL aliases for a page of rows in one query.
-///
-/// A feed of twenty entries would otherwise be twenty alias lookups.
-async fn load_aliases(state: &AppState, rows: &[&serde_json::Value]) -> HashMap<String, String> {
-    let sources: Vec<String> = rows
-        .iter()
-        .filter_map(|row| row_id(row))
-        .map(|id| format!("/item/{id}"))
-        .collect();
-
-    if sources.is_empty() {
-        return HashMap::new();
+    let validators = Validators::compute(config, format, &site_url, &rows, &meta);
+    let cache_headers = validators.headers(&cache_control);
+    if validators.matches(&headers) {
+        return (StatusCode::NOT_MODIFIED, cache_headers).into_response();
     }
 
-    UrlAlias::canonical_aliases_for(
-        state.db(),
-        &sources,
-        LIVE_STAGE_ID,
-        state.default_language(),
+    let term_ids: Vec<Uuid> = {
+        let mut seen = HashSet::new();
+        rows.iter()
+            .flat_map(|row| row_term_ids(row))
+            .filter(|id| seen.insert(*id))
+            .collect()
+    };
+    let terms = load_term_labels(&state, &term_ids).await;
+
+    let entries: Vec<Entry> = rows
+        .iter()
+        .map(|row| Entry::from_row(row, &site_url, &meta, &terms, config.full_content))
+        .collect();
+
+    let channel = Channel {
+        title: &config.title,
+        description: &config.description,
+        home_url: format!("{site_url}{}", config.home_path),
+        rss_url: format!("{site_url}{}", config.path),
+        atom_url: format!("{site_url}{}", config.atom_path),
+        updated: validators.last_modified.unwrap_or(config.query_changed),
+    };
+
+    let body = match format {
+        FeedFormat::Rss => render_rss(&channel, &entries),
+        FeedFormat::Atom => render_atom(&channel, &entries),
+    };
+
+    let mut response = (StatusCode::OK, cache_headers, body).into_response();
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static(format.content_type()),
+    );
+    response
+}
+
+/// What the feed needs from the `item` table for each entry: what the row may
+/// not carry (a query with an explicit field list need not select `changed`),
+/// and the author's name.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct EntryMeta {
+    changed: i64,
+    author: Option<String>,
+}
+
+/// Load `changed` and the author's name for every entry, in one query.
+///
+/// Only ids the viewer's own execution of the query returned are asked about,
+/// and only columns the item page shows anyone who can see the item.
+async fn load_entry_meta(state: &AppState, ids: &[Uuid]) -> HashMap<Uuid, EntryMeta> {
+    if ids.is_empty() {
+        return HashMap::new();
+    }
+    let rows: Result<Vec<(Uuid, i64, Option<String>)>, _> = sqlx::query_as(
+        "SELECT i.id, i.changed, u.name FROM item i \
+         LEFT JOIN users u ON u.id = i.author_id \
+         WHERE i.id = ANY($1)",
     )
-    .await
-    .unwrap_or_else(|e| {
-        // A feed with `/item/{uuid}` links is worth more than no feed.
-        tracing::warn!(error = %e, "failed to load URL aliases for feed");
-        HashMap::new()
-    })
+    .bind(ids)
+    .fetch_all(state.db())
+    .await;
+    match rows {
+        Ok(rows) => rows
+            .into_iter()
+            .map(|(id, changed, name)| {
+                (
+                    id,
+                    EntryMeta {
+                        changed,
+                        author: name.and_then(|n| author_name(&n)),
+                    },
+                )
+            })
+            .collect(),
+        Err(e) => {
+            // A feed without authors is worth more than no feed.
+            tracing::warn!(error = %e, "failed to load authors for feed");
+            HashMap::new()
+        }
+    }
+}
+
+/// The name to publish for an author: the account name, unless it is empty or
+/// an email address, which a feed must never carry.
+fn author_name(name: &str) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() || name.contains('@') {
+        None
+    } else {
+        Some(name.to_string())
+    }
+}
+
+/// Load the labels of every taxonomy term the entries reference, in one query.
+async fn load_term_labels(state: &AppState, ids: &[Uuid]) -> HashMap<Uuid, String> {
+    if ids.is_empty() {
+        return HashMap::new();
+    }
+    let rows: Result<Vec<(Uuid, String)>, _> =
+        sqlx::query_as("SELECT id, label FROM category_tag WHERE id = ANY($1)")
+            .bind(ids)
+            .fetch_all(state.db())
+            .await;
+    match rows {
+        Ok(rows) => rows.into_iter().collect(),
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to load terms for feed");
+            HashMap::new()
+        }
+    }
 }
 
 /// The row's item id, whatever JSON shape the query's field config produced.
 fn row_id(row: &serde_json::Value) -> Option<String> {
-    row.get("id").map(|v| match v {
-        serde_json::Value::String(s) => s.clone(),
-        other => other.to_string(),
-    })
-}
-
-/// Render one gather row as an RSS `<item>`.
-fn render_entry(
-    row: &serde_json::Value,
-    site_url: &str,
-    aliases: &HashMap<String, String>,
-) -> String {
-    let title = row
-        .get("title")
-        .and_then(|v| v.as_str())
-        .unwrap_or("Untitled");
-
-    let link = row_id(row)
-        .map(|id| {
-            let source = format!("/item/{id}");
-            let path = aliases.get(&source).cloned().unwrap_or(source);
-            format!("{site_url}{path}")
-        })
-        .unwrap_or_else(|| site_url.to_string());
-
-    // `summary` is what the row templates show; `field_description` is the
-    // explicit one after it. The long text field last, under either of its two
-    // names (BL-21), so a `page` item's feed entry is not left with no
-    // description because it calls the field `body`.
-    let description = ["summary", "field_description"]
-        .iter()
-        .find_map(|key| row.get(*key).and_then(field_text))
-        .or_else(|| crate::content::body_field::body_text(row))
-        .unwrap_or_default();
-
-    let pub_date = row
-        .get("created")
-        .and_then(|v| v.as_i64())
-        .and_then(rfc822)
-        .unwrap_or_default();
-
-    build_rss_item(title, &link, &description, &pub_date)
-}
-
-/// Read a gather row value as text, accepting both the bare string and the
-/// `{"value": …}` field shape.
-fn field_text(value: &serde_json::Value) -> Option<String> {
-    let text = value
-        .get("value")
-        .and_then(|v| v.as_str())
-        .or_else(|| value.as_str())?;
-    if text.is_empty() {
-        None
-    } else {
-        Some(text.to_string())
+    match row.get("id")? {
+        serde_json::Value::String(s) => Some(s.clone()),
+        serde_json::Value::Null => None,
+        other => Some(other.to_string()),
     }
 }
 
-/// Format a Unix timestamp as RFC 822, which is what RSS 2.0 `<pubDate>` wants.
+fn row_uuid(row: &serde_json::Value) -> Option<Uuid> {
+    row_id(row).and_then(|id| Uuid::parse_str(&id).ok())
+}
+
+/// A field as the row carries it: nested under `fields` for a query that
+/// selects the whole item, at the top level for one with a field list.
+fn row_field<'a>(row: &'a serde_json::Value, name: &str) -> Option<&'a serde_json::Value> {
+    row.get("fields")
+        .and_then(|fields| fields.get(name))
+        .or_else(|| row.get(name))
+}
+
+/// A text field's value under either shape (`{"value": …}` or a bare string).
+fn row_text(row: &serde_json::Value, name: &str) -> Option<String> {
+    let fields = row.get("fields");
+    fields
+        .and_then(|f| field_text(f, name))
+        .or_else(|| field_text(row, name))
+}
+
+/// Every uuid a row's field values hold, as candidates for taxonomy terms.
+///
+/// Term references are stored as uuid strings, one or a list, under whatever
+/// name the content type gave the field. Every candidate goes to
+/// [`load_term_labels`], which keeps only the ones that are terms, so a
+/// reference to another item is not mistaken for one. Only the fields the
+/// gather returned to this viewer are read, so a field the field-access seam
+/// withheld cannot leak its terms here.
+fn row_term_ids(row: &serde_json::Value) -> Vec<Uuid> {
+    let mut ids = Vec::new();
+    let mut push = |value: &serde_json::Value| {
+        let mut one = |v: &serde_json::Value| {
+            let s = v
+                .as_str()
+                .or_else(|| v.get("target_id").and_then(|t| t.as_str()));
+            if let Some(id) = s.and_then(|s| Uuid::parse_str(s).ok())
+                && !ids.contains(&id)
+            {
+                ids.push(id);
+            }
+        };
+        match value {
+            serde_json::Value::Array(values) => values.iter().for_each(&mut one),
+            other => one(other),
+        }
+    };
+    if let Some(fields) = row.get("fields").and_then(|f| f.as_object()) {
+        fields.values().for_each(&mut push);
+    }
+    if let Some(object) = row.as_object() {
+        object
+            .iter()
+            .filter(|(key, _)| key.starts_with("field_"))
+            .for_each(|(_, value)| push(value));
+    }
+    ids
+}
+
+/// One feed entry, format-neutral.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Entry {
+    /// `urn:uuid:<item id>`: never changes for the life of the item.
+    id: String,
+    title: String,
+    /// Absolute URL of the item's page.
+    link: String,
+    /// Plain text.
+    summary: String,
+    /// HTML, rendered through the body's text format, with `full_content`.
+    content_html: Option<String>,
+    published: Option<i64>,
+    updated: Option<i64>,
+    author: Option<String>,
+    categories: Vec<String>,
+}
+
+impl Entry {
+    fn from_row(
+        row: &serde_json::Value,
+        site_url: &str,
+        meta: &HashMap<Uuid, EntryMeta>,
+        terms: &HashMap<Uuid, String>,
+        full_content: bool,
+    ) -> Self {
+        let title = row
+            .get("title")
+            .and_then(|v| v.as_str())
+            .unwrap_or("Untitled")
+            .to_string();
+
+        let raw_id = row_id(row);
+        let uuid = raw_id.as_deref().and_then(|id| Uuid::parse_str(id).ok());
+
+        // `url` is the item's alias, resolved by the gather service for the
+        // whole result set, or `/item/{id}`.
+        let path = row
+            .get("url")
+            .and_then(|v| v.as_str())
+            .filter(|p| p.starts_with('/'))
+            .map(str::to_string)
+            .or_else(|| raw_id.as_ref().map(|id| format!("/item/{id}")));
+        let link = path
+            .map(|p| format!("{site_url}{p}"))
+            .unwrap_or_else(|| site_url.to_string());
+
+        let id = match uuid {
+            Some(uuid) => format!("urn:uuid:{uuid}"),
+            None => link.clone(),
+        };
+
+        let item_meta = uuid.and_then(|u| meta.get(&u));
+        let created = row.get("created").and_then(|v| v.as_i64());
+        let updated = item_meta
+            .map(|m| m.changed)
+            .or_else(|| row.get("changed").and_then(|v| v.as_i64()))
+            .or(created);
+
+        let categories = row_term_ids(row)
+            .iter()
+            .filter_map(|id| terms.get(id).cloned())
+            .collect();
+
+        let content_html = full_content
+            .then(|| row_body(row))
+            .flatten()
+            .map(|(text, format)| {
+                FilterPipeline::for_format_safe(format.as_deref().unwrap_or("plain_text"))
+                    .process(&text)
+            });
+
+        Entry {
+            id,
+            title,
+            link,
+            summary: row_summary(row).unwrap_or_default(),
+            content_html,
+            published: created,
+            updated,
+            author: item_meta.and_then(|m| m.author.clone()),
+            categories,
+        }
+    }
+}
+
+/// The entry's summary, as plain text: the first summary field the item has,
+/// whole, else its body cut at a word boundary.
+fn row_summary(row: &serde_json::Value) -> Option<String> {
+    if let Some(summary) = SUMMARY_FIELDS
+        .iter()
+        .filter_map(|name| row_text(row, name))
+        .map(|raw| plain_text(&raw))
+        .find(|text| !text.is_empty())
+    {
+        return Some(summary);
+    }
+    let (body, _) = row_body(row)?;
+    let text = plain_text(&body);
+    if text.is_empty() {
+        return None;
+    }
+    Some(truncate_on_word(&text, SUMMARY_MAX_LEN))
+}
+
+/// The long text body and its text format, under either of its names (BL-21).
+fn row_body(row: &serde_json::Value) -> Option<(String, Option<String>)> {
+    BODY_FIELD_NAMES.iter().find_map(|name| {
+        let text = row_text(row, name)?;
+        let format = row_field(row, name)
+            .and_then(|v| v.get("format"))
+            .and_then(|f| f.as_str())
+            .map(str::to_string);
+        Some((text, format))
+    })
+}
+
+/// The validators for one feed response.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Validators {
+    etag: String,
+    /// Newest `changed` among the entries.
+    last_modified: Option<i64>,
+}
+
+impl Validators {
+    /// Hash everything the document is a function of that can change between
+    /// polls without a restart: each entry's id, `changed` and link, in order,
+    /// and the site URL. The feed's config is in too, with its query's
+    /// `changed`, so editing the feed declaration invalidates old copies.
+    fn compute(
+        config: &FeedConfig,
+        format: FeedFormat,
+        site_url: &str,
+        rows: &[&serde_json::Value],
+        meta: &HashMap<Uuid, EntryMeta>,
+    ) -> Self {
+        let mut hasher = Sha256::new();
+        let mut line = |s: &str| {
+            hasher.update(s.as_bytes());
+            hasher.update(b"\n");
+        };
+        line(format.name());
+        line(site_url);
+        line(&config.query_id);
+        line(&config.path);
+        line(&config.title);
+        line(&config.description);
+        line(&config.items.to_string());
+        line(&config.full_content.to_string());
+        line(&config.query_changed.to_string());
+
+        let mut newest: Option<i64> = None;
+        for row in rows {
+            let uuid = row_uuid(row);
+            let changed = uuid
+                .and_then(|u| meta.get(&u))
+                .map(|m| m.changed)
+                .or_else(|| row.get("changed").and_then(|v| v.as_i64()))
+                .or_else(|| row.get("created").and_then(|v| v.as_i64()));
+            if let Some(changed) = changed {
+                newest = Some(newest.map_or(changed, |n| n.max(changed)));
+            }
+            line(&row_id(row).unwrap_or_default());
+            line(&changed.unwrap_or_default().to_string());
+            line(row.get("url").and_then(|v| v.as_str()).unwrap_or_default());
+        }
+        let digest = hasher.finalize();
+        let hex: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
+
+        Validators {
+            etag: format!("\"{hex}\""),
+            last_modified: newest,
+        }
+    }
+
+    /// `ETag`, `Last-Modified`, `Cache-Control` and `Vary`, for a `200` and a
+    /// `304` alike.
+    fn headers(&self, cache_control: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        if let Ok(v) = HeaderValue::from_str(&self.etag) {
+            headers.insert(header::ETAG, v);
+        }
+        if let Some(v) = self
+            .last_modified
+            .and_then(http_date)
+            .and_then(|d| HeaderValue::from_str(&d).ok())
+        {
+            headers.insert(header::LAST_MODIFIED, v);
+        }
+        if let Ok(v) = HeaderValue::from_str(cache_control) {
+            headers.insert(header::CACHE_CONTROL, v);
+        }
+        headers.insert(header::VARY, HeaderValue::from_static("Cookie"));
+        headers
+    }
+
+    /// Whether the request's conditional headers still match: `If-None-Match`
+    /// when it is sent, `If-Modified-Since` only when it is not (RFC 9110
+    /// §13.2.2).
+    fn matches(&self, request: &HeaderMap) -> bool {
+        if let Some(inm) = request.get(header::IF_NONE_MATCH) {
+            let Ok(inm) = inm.to_str() else {
+                return false;
+            };
+            return inm
+                .split(',')
+                .map(str::trim)
+                .any(|tag| tag == "*" || tag.strip_prefix("W/").unwrap_or(tag) == self.etag);
+        }
+        let (Some(ims), Some(newest)) =
+            (request.get(header::IF_MODIFIED_SINCE), self.last_modified)
+        else {
+            return false;
+        };
+        ims.to_str()
+            .ok()
+            .and_then(|s| chrono::DateTime::parse_from_rfc2822(s).ok())
+            .is_some_and(|since| newest <= since.timestamp())
+    }
+}
+
+/// An HTTP-date (`Sun, 06 Nov 1994 08:49:37 GMT`).
+fn http_date(timestamp: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp(timestamp, 0)
+        .map(|dt| dt.format("%a, %d %b %Y %H:%M:%S GMT").to_string())
+}
+
+/// RFC 822, which is what RSS 2.0 `<pubDate>` wants.
 fn rfc822(timestamp: i64) -> Option<String> {
     chrono::DateTime::from_timestamp(timestamp, 0).map(|dt| dt.to_rfc2822())
 }
 
-/// Build an RSS 2.0 `<item>` element.
-///
-/// Text content is XML-escaped; the description goes in a CDATA section because
-/// it may legitimately carry markup, with any `]]>` in it split so the section
-/// cannot be closed early.
-fn build_rss_item(title: &str, link: &str, description: &str, pub_date: &str) -> String {
-    let mut item = String::from("    <item>\n");
-    // Infallible: writing to a String.
-    let _ = write!(
-        item,
-        "      <title>{}</title>\n\
-         \x20     <link>{}</link>\n\
-         \x20     <guid isPermaLink=\"true\">{}</guid>\n",
-        xml_escape(title),
-        xml_escape(link),
-        xml_escape(link),
-    );
-
-    if !description.is_empty() {
-        let _ = writeln!(
-            item,
-            "      <description><![CDATA[{}]]></description>",
-            cdata_escape(description)
-        );
-    }
-    if !pub_date.is_empty() {
-        let _ = writeln!(item, "      <pubDate>{}</pubDate>", xml_escape(pub_date));
-    }
-
-    item.push_str("    </item>\n");
-    item
+/// RFC 3339, which is what Atom's dates want.
+fn rfc3339(timestamp: i64) -> Option<String> {
+    chrono::DateTime::from_timestamp(timestamp, 0)
+        .map(|dt| dt.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
 }
 
-/// Wrap rendered entries in an RSS 2.0 envelope.
-fn build_rss_feed(title: &str, link: &str, description: &str, items: &[String]) -> String {
+/// What both envelopes say about the feed itself.
+struct Channel<'a> {
+    title: &'a str,
+    description: &'a str,
+    /// The page the feed is a feed of.
+    home_url: String,
+    rss_url: String,
+    atom_url: String,
+    /// Newest entry, or the query's own `changed` for an empty feed.
+    updated: i64,
+}
+
+/// Render an RSS 2.0 document.
+fn render_rss(channel: &Channel<'_>, entries: &[Entry]) -> String {
     let mut feed = String::from(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
-         <rss version=\"2.0\" xmlns:atom=\"http://www.w3.org/2005/Atom\">\n\
+         <rss version=\"2.0\" xmlns:atom=\"http://www.w3.org/2005/Atom\" \
+         xmlns:dc=\"http://purl.org/dc/elements/1.1/\" \
+         xmlns:content=\"http://purl.org/rss/1.0/modules/content/\">\n\
          \x20 <channel>\n",
     );
 
@@ -387,18 +859,159 @@ fn build_rss_feed(title: &str, link: &str, description: &str, items: &[String]) 
          \x20   <link>{}</link>\n\
          \x20   <description>{}</description>\n\
          \x20   <atom:link href=\"{}\" rel=\"self\" type=\"application/rss+xml\"/>\n",
-        xml_escape(title),
-        xml_escape(link),
-        xml_escape(description),
-        xml_escape(link),
+        xml_escape(channel.title),
+        xml_escape(&channel.home_url),
+        xml_escape(channel.description),
+        xml_escape(&channel.rss_url),
     );
+    if let Some(date) = rfc822(channel.updated) {
+        let _ = writeln!(feed, "    <lastBuildDate>{date}</lastBuildDate>");
+    }
 
-    for item in items {
-        feed.push_str(item);
+    for entry in entries {
+        feed.push_str(&render_rss_item(entry));
     }
 
     feed.push_str("  </channel>\n</rss>\n");
     feed
+}
+
+/// Render one RSS `<item>`.
+fn render_rss_item(entry: &Entry) -> String {
+    let mut item = String::from("    <item>\n");
+    // Infallible: writing to a String.
+    let _ = write!(
+        item,
+        "      <title>{}</title>\n\
+         \x20     <link>{}</link>\n\
+         \x20     <guid isPermaLink=\"false\">{}</guid>\n",
+        xml_escape(&entry.title),
+        xml_escape(&entry.link),
+        xml_escape(&entry.id),
+    );
+    if let Some(author) = &entry.author {
+        let _ = writeln!(
+            item,
+            "      <dc:creator>{}</dc:creator>",
+            xml_escape(author)
+        );
+    }
+    for category in &entry.categories {
+        let _ = writeln!(item, "      <category>{}</category>", xml_escape(category));
+    }
+    if !entry.summary.is_empty() {
+        let _ = writeln!(
+            item,
+            "      <description>{}</description>",
+            xml_escape(&entry.summary)
+        );
+    }
+    if let Some(html) = &entry.content_html {
+        let _ = writeln!(
+            item,
+            "      <content:encoded><![CDATA[{}]]></content:encoded>",
+            cdata_escape(html)
+        );
+    }
+    if let Some(date) = entry.published.and_then(rfc822) {
+        let _ = writeln!(item, "      <pubDate>{date}</pubDate>");
+    }
+    item.push_str("    </item>\n");
+    item
+}
+
+/// Render an Atom 1.0 document.
+fn render_atom(channel: &Channel<'_>, entries: &[Entry]) -> String {
+    let mut feed = String::from(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <feed xmlns=\"http://www.w3.org/2005/Atom\">\n",
+    );
+    // Infallible: writing to a String.
+    let _ = write!(
+        feed,
+        "  <title type=\"text\">{}</title>\n\
+         \x20 <id>{}</id>\n\
+         \x20 <link rel=\"self\" type=\"application/atom+xml\" href=\"{}\"/>\n\
+         \x20 <link rel=\"alternate\" type=\"text/html\" href=\"{}\"/>\n\
+         \x20 <updated>{}</updated>\n",
+        xml_escape(channel.title),
+        xml_escape(&channel.atom_url),
+        xml_escape(&channel.atom_url),
+        xml_escape(&channel.home_url),
+        rfc3339(channel.updated).unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string()),
+    );
+    if !channel.description.is_empty() {
+        let _ = writeln!(
+            feed,
+            "  <subtitle type=\"text\">{}</subtitle>",
+            xml_escape(channel.description)
+        );
+    }
+    // Atom requires an author on every entry or on the feed; the feed's own
+    // title stands in for an entry whose author has no publishable name.
+    if entries.iter().any(|e| e.author.is_none()) {
+        let _ = writeln!(
+            feed,
+            "  <author><name>{}</name></author>",
+            xml_escape(channel.title)
+        );
+    }
+
+    for entry in entries {
+        feed.push_str(&render_atom_entry(entry, channel.updated));
+    }
+    feed.push_str("</feed>\n");
+    feed
+}
+
+/// Render one Atom `<entry>`.
+fn render_atom_entry(entry: &Entry, fallback_updated: i64) -> String {
+    let mut out = String::from("  <entry>\n");
+    let updated = entry
+        .updated
+        .or(entry.published)
+        .unwrap_or(fallback_updated);
+    // Infallible: writing to a String.
+    let _ = write!(
+        out,
+        "    <title type=\"text\">{}</title>\n\
+         \x20   <link rel=\"alternate\" type=\"text/html\" href=\"{}\"/>\n\
+         \x20   <id>{}</id>\n\
+         \x20   <updated>{}</updated>\n",
+        xml_escape(&entry.title),
+        xml_escape(&entry.link),
+        xml_escape(&entry.id),
+        rfc3339(updated).unwrap_or_default(),
+    );
+    if let Some(date) = entry.published.and_then(rfc3339) {
+        let _ = writeln!(out, "    <published>{date}</published>");
+    }
+    if let Some(author) = &entry.author {
+        let _ = writeln!(
+            out,
+            "    <author><name>{}</name></author>",
+            xml_escape(author)
+        );
+    }
+    for category in &entry.categories {
+        let _ = writeln!(out, "    <category term=\"{}\"/>", xml_escape(category));
+    }
+    if !entry.summary.is_empty() {
+        let _ = writeln!(
+            out,
+            "    <summary type=\"text\">{}</summary>",
+            xml_escape(&entry.summary)
+        );
+    }
+    if let Some(html) = &entry.content_html {
+        let _ = writeln!(
+            out,
+            "    <content type=\"html\">{}</content>",
+            xml_escape(html)
+        );
+    }
+    out.push_str("  </entry>\n");
+    out
 }
 
 /// Make a string safe inside a CDATA section.
@@ -417,6 +1030,10 @@ fn cdata_escape(input: &str) -> String {
 mod tests {
     use super::*;
     use crate::gather::types::{GatherFeed, QueryDefinition, QueryDisplay};
+
+    const ID: &str = "01234567-89ab-7def-8123-456789abcdef";
+    const TAG_A: &str = "0193a5a0-0000-7000-8000-00000000000a";
+    const TAG_B: &str = "0193a5a0-0000-7000-8000-00000000000b";
 
     fn query(query_id: &str, label: &str, feed: Option<GatherFeed>) -> GatherQuery {
         GatherQuery {
@@ -440,6 +1057,75 @@ mod tests {
             title: None,
             description: None,
             items: 20,
+            full_content: false,
+        }
+    }
+
+    fn config() -> FeedConfig {
+        FeedConfig {
+            query_id: "q".to_string(),
+            path: "/rss/q.xml".to_string(),
+            atom_path: "/rss/q.atom".to_string(),
+            title: "Q".to_string(),
+            description: "D".to_string(),
+            items: 20,
+            full_content: false,
+            home_path: "/".to_string(),
+            query_changed: 0,
+        }
+    }
+
+    fn meta(author: Option<&str>, changed: i64) -> HashMap<Uuid, EntryMeta> {
+        HashMap::from([(
+            Uuid::parse_str(ID).unwrap(),
+            EntryMeta {
+                changed,
+                author: author.map(str::to_string),
+            },
+        )])
+    }
+
+    fn terms() -> HashMap<Uuid, String> {
+        HashMap::from([
+            (Uuid::parse_str(TAG_A).unwrap(), "Rust".to_string()),
+            (
+                Uuid::parse_str(TAG_B).unwrap(),
+                "Feeds & Readers".to_string(),
+            ),
+        ])
+    }
+
+    fn entry(row: &serde_json::Value) -> Entry {
+        Entry::from_row(
+            row,
+            "https://example.com",
+            &meta(Some("jeremy"), 1_700_000_500),
+            &terms(),
+            false,
+        )
+    }
+
+    fn blog_row() -> serde_json::Value {
+        serde_json::json!({
+            "id": ID,
+            "title": "A Post",
+            "url": "/blog/a-post",
+            "created": 1_700_000_000,
+            "fields": {
+                "field_body": {"value": "<p>Body text.</p>", "format": "filtered_html"},
+                "field_tags": [TAG_A, TAG_B],
+            },
+        })
+    }
+
+    fn channel() -> Channel<'static> {
+        Channel {
+            title: "My Feed",
+            description: "Desc",
+            home_url: "https://example.com/blog".to_string(),
+            rss_url: "https://example.com/rss.xml".to_string(),
+            atom_url: "https://example.com/rss.atom".to_string(),
+            updated: 1_700_000_500,
         }
     }
 
@@ -450,15 +1136,27 @@ mod tests {
             query("without", "No Feed", None),
         ];
 
-        let links = feed_links(&queries);
-
         assert_eq!(
-            links,
+            feed_links(&queries),
             vec![FeedLink {
                 path: "/rss/with.xml".to_string(),
+                atom_path: "/rss/with.atom".to_string(),
                 title: "With Feed".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn the_atom_path_is_the_rss_paths_sibling() {
+        assert_eq!(
+            atom_path("/rss/blog.xml").as_deref(),
+            Some("/rss/blog.atom")
+        );
+        assert_eq!(atom_path("/blog/feed").as_deref(), Some("/blog/feed.atom"));
+        assert_eq!(atom_path("/feed.rss").as_deref(), Some("/feed.atom"));
+        assert_eq!(atom_path("/a.b/feed").as_deref(), Some("/a.b/feed.atom"));
+        assert_eq!(atom_path("/rss/blog.atom"), None, "no distinct sibling");
+        assert_eq!(atom_path("/"), None);
     }
 
     #[test]
@@ -487,17 +1185,17 @@ mod tests {
         assert!(is_valid_feed_path("/rss/blog.xml"));
     }
 
-    /// Two queries claiming one path would panic axum at startup.
+    /// Two queries claiming one path would panic axum at startup; so would one
+    /// query's RSS path landing on another's Atom sibling.
     #[test]
     fn a_duplicate_feed_path_is_registered_once() {
         let queries = vec![
             query("first", "First", Some(feed("/rss/same.xml"))),
             query("second", "Second", Some(feed("/rss/same.xml"))),
+            query("third", "Third", Some(feed("/rss/same.rss"))),
         ];
 
-        let links = feed_links(&queries);
-
-        assert_eq!(links.len(), 1, "one path, one feed");
+        assert_eq!(feed_links(&queries).len(), 2);
         // Building the router must not panic either.
         let _router = build_feed_router(&queries);
     }
@@ -515,111 +1213,269 @@ mod tests {
     }
 
     #[test]
-    fn an_entry_carries_title_link_guid_and_date() {
-        let row = serde_json::json!({
-            "id": "01234567-89ab-7def-8123-456789abcdef",
-            "title": "A Post",
-            "summary": "What it is about.",
-            "created": 1_700_000_000,
-        });
+    fn a_loopback_or_missing_site_url_is_warned_about() {
+        for url in [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://[::1]:3000",
+            "http://0.0.0.0",
+            "http://app.localhost",
+            "not a url",
+            "",
+        ] {
+            assert!(warn_if_site_url_unusable(url), "{url} must warn");
+        }
+        for url in ["https://example.com", "http://192.168.1.20:3000"] {
+            assert!(!warn_if_site_url_unusable(url), "{url} must not warn");
+        }
+    }
 
-        let entry = render_entry(&row, "https://example.com", &HashMap::new());
+    /// The defect: an entry carried title, link, description and date only.
+    #[test]
+    fn an_entry_has_a_creator_categories_and_a_uuid_id() {
+        let entry = entry(&blog_row());
 
-        assert!(entry.contains("<title>A Post</title>"), "{entry}");
+        assert_eq!(entry.id, format!("urn:uuid:{ID}"));
+        assert_eq!(entry.link, "https://example.com/blog/a-post");
+        assert_eq!(entry.author.as_deref(), Some("jeremy"));
+        assert_eq!(entry.categories, vec!["Rust", "Feeds & Readers"]);
+        assert_eq!(entry.updated, Some(1_700_000_500));
+
+        let rss = render_rss_item(&entry);
+        assert!(rss.contains("<dc:creator>jeremy</dc:creator>"), "{rss}");
+        assert!(rss.contains("<category>Rust</category>"), "{rss}");
         assert!(
-            entry.contains(
-                "<link>https://example.com/item/01234567-89ab-7def-8123-456789abcdef</link>"
-            ),
-            "{entry}"
+            rss.contains("<category>Feeds &amp; Readers</category>"),
+            "{rss}"
         );
-        assert!(entry.contains("<guid isPermaLink=\"true\">"), "{entry}");
-        assert!(entry.contains("<![CDATA[What it is about.]]>"), "{entry}");
-        assert!(entry.contains("<pubDate>"), "{entry}");
-    }
-
-    #[test]
-    fn an_entry_links_the_url_alias_when_there_is_one() {
-        let row = serde_json::json!({"id": "01234567-89ab-7def-8123-456789abcdef", "title": "T"});
-        let aliases = HashMap::from([(
-            "/item/01234567-89ab-7def-8123-456789abcdef".to_string(),
-            "/blog/a-post".to_string(),
-        )]);
-
-        let entry = render_entry(&row, "https://example.com", &aliases);
-
         assert!(
-            entry.contains("<link>https://example.com/blog/a-post</link>"),
-            "{entry}"
+            rss.contains(&format!("<guid isPermaLink=\"false\">urn:uuid:{ID}</guid>")),
+            "{rss}"
         );
+
+        let atom = render_atom_entry(&entry, 0);
+        assert!(
+            atom.contains("<author><name>jeremy</name></author>"),
+            "{atom}"
+        );
+        assert!(atom.contains("<category term=\"Rust\"/>"), "{atom}");
+        assert!(atom.contains(&format!("<id>urn:uuid:{ID}</id>")), "{atom}");
+    }
+
+    /// The defect: the guid was the link, so a new alias re-announced the post.
+    #[test]
+    fn an_alias_change_leaves_the_id_unchanged() {
+        let before = entry(&blog_row());
+        let mut moved = blog_row();
+        moved["url"] = serde_json::json!("/blog/2026/a-post-renamed");
+        let after = entry(&moved);
+
+        assert_ne!(before.link, after.link);
+        assert_eq!(before.id, after.id);
     }
 
     #[test]
-    fn an_entry_without_a_description_omits_the_element() {
-        let row = serde_json::json!({"id": "x", "title": "T"});
-
-        let entry = render_entry(&row, "https://example.com", &HashMap::new());
-
-        assert!(!entry.contains("<description>"), "{entry}");
+    fn an_email_is_never_an_author_name() {
+        assert_eq!(author_name("someone@example.com"), None);
+        assert_eq!(author_name("  "), None);
+        assert_eq!(author_name("jeremy").as_deref(), Some("jeremy"));
     }
 
     #[test]
-    fn a_description_in_the_field_value_shape_is_read() {
-        let row = serde_json::json!({
-            "id": "x",
-            "title": "T",
-            "field_body": {"value": "<p>Body text.</p>"},
+    fn a_reference_that_is_not_a_term_is_not_a_category() {
+        let mut row = blog_row();
+        row["fields"]["field_related"] = serde_json::json!(Uuid::now_v7().to_string());
+        assert_eq!(entry(&row).categories, vec!["Rust", "Feeds & Readers"]);
+    }
+
+    #[test]
+    fn the_summary_field_is_the_summary_when_set() {
+        let mut row = blog_row();
+        row["fields"]["field_summary"] =
+            serde_json::json!({"value": "<em>Short</em> &amp; sweet."});
+        assert_eq!(entry(&row).summary, "Short & sweet.");
+
+        let top_level = serde_json::json!({"id": ID, "title": "T", "summary": "Given."});
+        assert_eq!(entry(&top_level).summary, "Given.");
+    }
+
+    /// The defect: with no summary field the whole body went out, markup and all.
+    #[test]
+    fn without_a_summary_the_body_is_stripped_and_trimmed_on_a_word() {
+        let long = format!("<p>{}</p>", "word ".repeat(200));
+        let mut row = blog_row();
+        row["fields"]["field_body"] = serde_json::json!({"value": long});
+
+        let summary = entry(&row).summary;
+        assert!(summary.len() <= SUMMARY_MAX_LEN, "{}", summary.len());
+        assert!(summary.ends_with("word..."), "{summary}");
+        assert!(!summary.contains('<'), "{summary}");
+
+        let mut page = blog_row();
+        page["fields"] = serde_json::json!({"body": {"value": "<p>Under the other name.</p>"}});
+        assert_eq!(entry(&page).summary, "Under the other name.");
+    }
+
+    #[test]
+    fn full_content_carries_the_body_through_its_text_format() {
+        let mut row = blog_row();
+        row["fields"]["field_body"] = serde_json::json!({
+            "value": "<p>Hi <script>alert(1)</script>]]> there</p>",
+            "format": "filtered_html",
         });
+        let without = entry(&row);
+        assert_eq!(without.content_html, None);
 
-        let entry = render_entry(&row, "https://example.com", &HashMap::new());
+        let with = Entry::from_row(&row, "https://example.com", &HashMap::new(), &terms(), true);
+        let html = with.content_html.clone().unwrap();
+        assert!(html.contains("<p>"), "{html}");
+        assert!(!html.contains("<script>"), "{html}");
 
-        assert!(entry.contains("<![CDATA[<p>Body text.</p>]]>"), "{entry}");
+        let rss = render_rss_item(&with);
+        assert!(rss.contains("<content:encoded><![CDATA["), "{rss}");
+        assert!(
+            !rss.contains("]]> there"),
+            "the terminator must be split: {rss}"
+        );
+        let atom = render_atom_entry(&with, 0);
+        assert!(atom.contains("<content type=\"html\">&lt;p&gt;"), "{atom}");
     }
 
     #[test]
-    fn xml_special_characters_in_a_title_are_escaped() {
+    fn xml_special_characters_in_a_title_are_escaped_once() {
         let row = serde_json::json!({"id": "x", "title": "Salt & <Pepper>"});
-
-        let entry = render_entry(&row, "https://example.com", &HashMap::new());
-
+        let rss = render_rss_item(&entry(&row));
         assert!(
-            entry.contains("<title>Salt &amp; &lt;Pepper&gt;</title>"),
-            "{entry}"
+            rss.contains("<title>Salt &amp; &lt;Pepper&gt;</title>"),
+            "{rss}"
         );
     }
 
-    /// A description containing `]]>` would otherwise close the CDATA section
-    /// and inject markup into the feed.
     #[test]
-    fn a_cdata_terminator_in_a_description_cannot_close_the_section() {
-        let row = serde_json::json!({
-            "id": "x",
-            "title": "T",
-            "summary": "before ]]><script>alert(1)</script> after",
-        });
-
-        let entry = render_entry(&row, "https://example.com", &HashMap::new());
-
-        assert!(
-            !entry.contains("]]><script>"),
-            "the terminator must be split: {entry}"
-        );
-        assert!(entry.contains("]]]]><![CDATA[>"), "{entry}");
+    fn a_row_without_an_alias_links_its_item_path() {
+        let row = serde_json::json!({"id": ID, "title": "T"});
+        assert_eq!(entry(&row).link, format!("https://example.com/item/{ID}"));
     }
 
     #[test]
-    fn the_envelope_is_well_formed_rss_two() {
-        let entries = vec![build_rss_item("One", "https://example.com/1", "", "")];
+    fn the_envelopes_carry_self_links_and_updated() {
+        let entries = vec![entry(&blog_row())];
 
-        let feed = build_rss_feed("My Feed", "https://example.com/rss.xml", "Desc", &entries);
-
-        assert!(feed.starts_with("<?xml version=\"1.0\""));
-        assert!(feed.contains("<rss version=\"2.0\""));
-        assert!(feed.contains("<title>My Feed</title>"));
-        assert!(feed.contains(
+        let rss = render_rss(&channel(), &entries);
+        assert!(rss.starts_with("<?xml version=\"1.0\""));
+        assert!(rss.contains(
             "<atom:link href=\"https://example.com/rss.xml\" rel=\"self\" \
              type=\"application/rss+xml\"/>"
         ));
-        assert!(feed.contains("<title>One</title>"));
-        assert!(feed.ends_with("</channel>\n</rss>\n"));
+        assert!(
+            rss.contains("<link>https://example.com/blog</link>"),
+            "{rss}"
+        );
+        assert!(rss.contains("<lastBuildDate>"), "{rss}");
+        assert!(rss.ends_with("</channel>\n</rss>\n"));
+
+        let atom = render_atom(&channel(), &entries);
+        assert!(
+            atom.contains(
+                "<link rel=\"self\" type=\"application/atom+xml\" \
+                 href=\"https://example.com/rss.atom\"/>"
+            ),
+            "{atom}"
+        );
+        assert!(
+            atom.contains("<updated>2023-11-14T22:21:40Z</updated>"),
+            "{atom}"
+        );
+        assert!(
+            !atom.contains("<author><name>My Feed"),
+            "every entry has an author, so the feed needs none: {atom}"
+        );
+    }
+
+    #[test]
+    fn the_etag_follows_the_entries_and_the_config() {
+        let row = blog_row();
+        let rows = vec![&row];
+        let base = Validators::compute(
+            &config(),
+            FeedFormat::Rss,
+            "https://e",
+            &rows,
+            &meta(None, 10),
+        );
+
+        assert_eq!(
+            base,
+            Validators::compute(
+                &config(),
+                FeedFormat::Rss,
+                "https://e",
+                &rows,
+                &meta(None, 10)
+            ),
+            "the same feed must give the same validators"
+        );
+        assert_eq!(base.last_modified, Some(10));
+        assert_ne!(
+            base.etag,
+            Validators::compute(
+                &config(),
+                FeedFormat::Rss,
+                "https://e",
+                &rows,
+                &meta(None, 11)
+            )
+            .etag,
+            "an edited entry changes the etag"
+        );
+        assert_ne!(
+            base.etag,
+            Validators::compute(
+                &config(),
+                FeedFormat::Atom,
+                "https://e",
+                &rows,
+                &meta(None, 10)
+            )
+            .etag,
+            "RSS and Atom are different representations"
+        );
+        let mut edited = config();
+        edited.full_content = true;
+        assert_ne!(
+            base.etag,
+            Validators::compute(
+                &edited,
+                FeedFormat::Rss,
+                "https://e",
+                &rows,
+                &meta(None, 10)
+            )
+            .etag,
+            "a config change changes the etag"
+        );
+    }
+
+    #[test]
+    fn a_matching_if_none_match_or_if_modified_since_is_not_modified() {
+        let v = Validators {
+            etag: "\"abc\"".to_string(),
+            last_modified: Some(1_700_000_000),
+        };
+        let with = |name: header::HeaderName, value: &str| {
+            let mut h = HeaderMap::new();
+            h.insert(name, HeaderValue::from_str(value).unwrap());
+            h
+        };
+
+        assert!(v.matches(&with(header::IF_NONE_MATCH, "\"abc\"")));
+        assert!(v.matches(&with(header::IF_NONE_MATCH, "\"x\", W/\"abc\"")));
+        assert!(!v.matches(&with(header::IF_NONE_MATCH, "\"other\"")));
+        assert!(!v.matches(&HeaderMap::new()));
+
+        let at = http_date(1_700_000_000).unwrap();
+        let before = http_date(1_699_999_999).unwrap();
+        assert!(v.matches(&with(header::IF_MODIFIED_SINCE, &at)));
+        assert!(!v.matches(&with(header::IF_MODIFIED_SINCE, &before)));
     }
 }
