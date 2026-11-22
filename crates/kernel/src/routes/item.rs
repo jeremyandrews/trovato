@@ -736,7 +736,7 @@ async fn view_item(
 /// shown exactly as it would have been. The caller hands in fields already cut
 /// to what the viewer may see. Returns the HTML and the stylesheets the page
 /// builder components in it declared, for the page head.
-async fn render_item_fields(
+pub(crate) async fn render_item_fields(
     state: &AppState,
     viewer: &UserContext,
     fields: &serde_json::Value,
@@ -1277,6 +1277,17 @@ async fn edit_item_form(
         .map_err(|e| AppError::internal_ctx(e, "load item"))?
         .ok_or_else(|| AppError::not_found("Item"))?;
 
+    // An item the viewer may not see is not there for them, as on the item
+    // page and the revision pages: `view` first (404), then `edit` (403), so a
+    // 403 does not confirm that an unseen item exists.
+    if !state
+        .items()
+        .check_access(&item, "view", &user)
+        .await
+        .unwrap_or(false)
+    {
+        return Err(AppError::not_found("Item"));
+    }
     if !state
         .items()
         .check_access(&item, "edit", &user)
