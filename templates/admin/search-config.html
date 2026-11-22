@@ -11,8 +11,9 @@
 
 <div class="admin-card">
     <p class="description">
-        Configure which fields are indexed for full-text search and their relevance weights.
-        Weight <strong>A</strong> is highest priority (title is always A), <strong>D</strong> is lowest.
+        The title, every text field and every published comment are searched. Give a field a
+        weight to rank a match in it higher: <strong>A</strong> is highest (the title is always A),
+        <strong>D</strong> is lowest, and a text field with no weight here counts as D.
     </p>
 
     <table class="table">
@@ -45,8 +46,10 @@
                             {% elif search_configs[field.field_name] == "D" %}(Low)
                             {% endif %}
                         </span>
+                    {% elif field.field_name in text_fields %}
+                        <span class="weight weight--D">D (Low, default)</span>
                     {% else %}
-                        <span class="weight weight--none">Not indexed</span>
+                        <span class="weight weight--none">Not text, not searched</span>
                     {% endif %}
                 </td>
                 <td>
@@ -71,7 +74,7 @@
 
 {% if fields %}
 <div class="admin-card" style="margin-top: 1rem;">
-    <h3 style="margin-top: 0;">Add field to search index</h3>
+    <h3 style="margin-top: 0;">Weight a field</h3>
     <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/add">
         <input type="hidden" name="_token" value="{{ csrf_token }}">
         <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
@@ -99,7 +102,7 @@
             </div>
 
             <div class="form-item">
-                <button type="submit" class="button button--primary">Add to index</button>
+                <button type="submit" class="button button--primary">Set weight</button>
             </div>
         </div>
     </form>

@@ -235,7 +235,11 @@ fn rfc3339(timestamp: i64) -> Option<String> {
 
 /// Reduce markup to the plain text a meta description carries: tags stripped,
 /// entities decoded, whitespace collapsed to single spaces.
-fn plain_text(raw: &str) -> String {
+///
+/// `pub(crate)` because the Pagefind export reduces every value it indexes
+/// (title, fields, comments) with this same function rather than a second
+/// sanitizer of its own.
+pub(crate) fn plain_text(raw: &str) -> String {
     let stripped = crate::content::item_service::strip_html(raw);
     decode_basic_entities(&stripped)
         .split_whitespace()
