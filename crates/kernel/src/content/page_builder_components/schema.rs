@@ -5,7 +5,7 @@
 //! stylesheets. The kernel's standard components and every plugin's use the
 //! same format and the same parser, so there is one path and not two.
 //!
-//! A file is read into [`RawComponent`] with unknown keys refused, then checked
+//! A file is read into `RawComponent` with unknown keys refused, then checked
 //! into a [`ComponentDefinition`]: a misspelt key, a select option class the
 //! component did not declare, or a key that does not belong to a field's type
 //! is an error naming the file, at load, rather than a silently ignored line.

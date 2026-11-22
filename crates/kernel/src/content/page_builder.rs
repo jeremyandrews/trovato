@@ -1,10 +1,9 @@
 //! Puck-based page builder renderer.
 //!
 //! Parses Puck JSON component trees and renders them to HTML using Tera
-//! templates. Each component's definition in the
-//! [`ComponentRegistry`](super::page_builder_components::ComponentRegistry)
-//! names its template, resolved on the kernel's template search path, so a
-//! plugin's `templates/` directory or a theme on `TEMPLATES_DIR` supplies it.
+//! templates. Each component's definition in the [`ComponentRegistry`] names
+//! its template, resolved on the kernel's template search path, so a plugin's
+//! `templates/` directory or a theme on `TEMPLATES_DIR` supplies it.
 //! Zone-based nesting allows arbitrary component composition (e.g., Columns
 //! containing CTA + TextBlock children).
 //!

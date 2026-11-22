@@ -48,7 +48,7 @@ const URL_SCHEMES: &[&str] = &["http", "https", "mailto", "tel"];
 const MAX_URL_LENGTH: usize = 2048;
 
 /// Whether `url` is safe to put in an `href` or `src`: relative, or one of
-/// [`URL_SCHEMES`], with no whitespace or control characters.
+/// `URL_SCHEMES`, with no whitespace or control characters.
 pub fn is_safe_url(url: &str) -> bool {
     if url.len() > MAX_URL_LENGTH || url.chars().any(|c| c.is_whitespace() || c.is_control()) {
         return false;
