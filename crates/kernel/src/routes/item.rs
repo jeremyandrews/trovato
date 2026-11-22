@@ -661,17 +661,23 @@ async fn view_item(
     // here rather than in a plugin because `<head>` is not reachable from one —
     // `tap_item_view` output is appended to the item's body. The canonical URL
     // is the item's alias when it has one, so the address a crawler indexes is
-    // the address the site links to.
-    let canonical_path = UrlAlias::get_canonical_alias_with_context(
-        state.db(),
-        &item_path,
-        item.stage_id,
-        &active_language,
-    )
-    .await
-    .ok()
-    .flatten()
-    .unwrap_or_else(|| item_path.clone());
+    // the address the site links to. Served as the front page, the item's
+    // address is `/`: the canonical link and the language alternates name the
+    // front page, not the path it is configured as.
+    let canonical_path = if super::front::is_front_page_request() {
+        "/".to_string()
+    } else {
+        UrlAlias::get_canonical_alias_with_context(
+            state.db(),
+            &item_path,
+            item.stage_id,
+            &active_language,
+        )
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| item_path.clone())
+    };
     let site_name = context
         .get("site_name")
         .and_then(|v| v.as_str())

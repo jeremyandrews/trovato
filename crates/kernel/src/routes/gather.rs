@@ -513,17 +513,26 @@ pub async fn execute_and_render(
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
 
+    // Where pager links and the exposed filter form point. Served as the front
+    // page, that is the front page (`/`, or `/{lang}`), so paging and
+    // filtering stay on it rather than leaving for the gather's own address.
+    let link_base = if super::front::is_front_page_request() {
+        requested_path.unwrap_or("/")
+    } else {
+        base_path
+    };
+
     // Render gather content (either via theme template or fallback HTML)
     let content_html = render_gather_with_theme(
         state,
         &gather_query,
         &result,
         &filter_values,
-        base_path,
+        link_base,
         &preload,
     )
     .unwrap_or_else(|| {
-        render_gather_content_html(&gather_query, &result, &filter_values, base_path, &preload)
+        render_gather_content_html(&gather_query, &result, &filter_values, link_base, &preload)
     });
 
     // Wrap in page layout with site context.

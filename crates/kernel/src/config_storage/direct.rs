@@ -535,6 +535,8 @@ impl DirectConfigStorage {
         .execute(&self.pool)
         .await
         .context("failed to save variable")?;
+        // Every server drops its in-memory site config (the front page path).
+        crate::cache::generation::bump(crate::cache::generation::CacheKind::SiteConfig);
 
         Ok(())
     }
@@ -545,6 +547,7 @@ impl DirectConfigStorage {
             .execute(&self.pool)
             .await
             .context("failed to delete variable")?;
+        crate::cache::generation::bump(crate::cache::generation::CacheKind::SiteConfig);
 
         Ok(result.rows_affected() > 0)
     }

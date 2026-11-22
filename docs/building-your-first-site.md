@@ -38,7 +38,9 @@ VALUES ('site_front_page', '"/conferences"')
 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value;
 ```
 
-An `/item/{uuid}` path renders that item at `/`, with the address bar unchanged. Any other path redirects `/` to it, so the handler that owns the route serves it. The path must be local — absolute, no scheme, no host — so a front page can never point off-site.
+`/` then answers with exactly what that path renders, with the address bar unchanged and no redirect: the request is served as the configured path, through the same routes and the same access checks, so a paged listing pages through `/?page=2` and its filters work as query strings on `/`. A visitor who may not see the target gets what they would get at the target (a login redirect or a 403). The page carries `<link rel="canonical">` to `/`, and the target path still works at its own address. The path must be local — absolute, no scheme, no host — so a front page can never point off-site, and the settings form refuses a path the site answers 404 for. If the target later disappears (a deleted item, a removed gather), `/` shows the default listing below and logs one warning.
+
+The front page path is cached in memory. Saving it in the settings form takes effect at once on every server; a value written straight into `site_config` with SQL, as above, takes effect within a minute.
 
 If no front page is configured, the home page (`/`) automatically shows all promoted published content.
 
@@ -96,7 +98,7 @@ Trovato uses a template suggestion system. To customize the appearance:
 - `templates/page.html` — site-wide layout (header, nav, footer)
 - `templates/elements/item--page.html` — page content type template
 - `templates/elements/item--blog.html` — blog content type template
-- `templates/page--front.html` — front page layout
+- `templates/page--front.html` — layout of the default front page (the promoted listing). A configured front page uses the layout of the path it is configured as.
 - `templates/gather/view--blog_listing.html` — blog listing template
 
 Templates are resolved from most specific to least specific. For example, viewing a blog post checks for:

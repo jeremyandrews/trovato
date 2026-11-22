@@ -290,6 +290,16 @@ pub async fn inject_site_context_for(
         context.insert("requested_path", &path);
     }
 
+    // A page served as the front page is canonically `/`, whatever path it is
+    // configured as. A route with head metadata of its own (the item route)
+    // sets it after this and names `/` itself.
+    if crate::routes::front::is_front_page_request() && !context.contains_key("page_meta") {
+        context.insert(
+            "page_meta",
+            &crate::content::PageMeta::for_path(&state.runtime().site_url, "/"),
+        );
+    }
+
     // The viewer, with real permissions, loaded once by the caller and used for
     // everything below: navigation visibility, the authentication flags, tile
     // roles, and the template `viewer`.

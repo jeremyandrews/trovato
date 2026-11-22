@@ -6,6 +6,7 @@
 //! only (`SMTP_*`); the page shows what the kernel is using, read only.
 
 use axum::extract::State;
+use axum::http::StatusCode;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Router};
@@ -192,12 +193,26 @@ async fn site_config_submit(
     // Any internal route may be the front page, but only an internal one:
     // rejected here as well as at serve time, so an operator finds out at the
     // form rather than at the home page.
+    //
+    // And it has to resolve. The site is asked for the path, anonymously,
+    // through the same router `/` will be served by, so every route type
+    // counts and nothing here lists them. Only "not found" is refused: a path
+    // an anonymous visitor may not see still resolves, and `/` will answer them
+    // as that path does.
     let front_page = form.front_page.trim();
-    if !front_page.is_empty() && !super::front::is_local_path(front_page) {
-        errors.push(
-            "Front page must be a path on this site, beginning with \"/\" (for example /blog)."
-                .to_string(),
-        );
+    if !front_page.is_empty() {
+        if super::front::local_front_path(front_page).is_none() {
+            errors.push(
+                "Front page must be a path on this site, beginning with \"/\" (for example /blog)."
+                    .to_string(),
+            );
+        } else if let Some(status) = state.front_page().probe(front_page).await
+            && matches!(status, StatusCode::NOT_FOUND | StatusCode::GONE)
+        {
+            errors.push(format!(
+                "Front page {front_page} does not resolve: this site answers {status} there."
+            ));
+        }
     }
 
     let items_per_page_str = form.items_per_page.trim();
@@ -276,6 +291,8 @@ async fn site_config_submit(
         tracing::error!(error = %e, "failed to save front_page");
         return render_server_error("Failed to save site settings.");
     }
+    // This server serves the new front page at once; the others on the bump.
+    state.front_page().clear();
 
     let ipp = if items_per_page_str.is_empty() {
         DEFAULT_ITEMS_PER_PAGE

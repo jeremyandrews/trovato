@@ -71,6 +71,17 @@ pub struct PageMeta {
 }
 
 impl PageMeta {
+    /// Head metadata naming only a page's address: the canonical link and
+    /// `og:url`, for a page that has nothing else to say about itself.
+    pub fn for_path(site_url: &str, path: &str) -> Self {
+        let url = resolve_url(site_url, path);
+        Self {
+            canonical: url.clone(),
+            og_url: url,
+            ..Self::default()
+        }
+    }
+
     /// Derive the head metadata for an item page.
     ///
     /// `path` is the item's canonical path on this site, alias included when it

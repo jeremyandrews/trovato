@@ -2,9 +2,11 @@
 //! Front page routing.
 //!
 //! Two behaviours are pinned here. First, `site_front_page` may name any path
-//! the site serves, not only `/item/{uuid}`: a path the front handler has never
-//! heard of redirects to whichever handler owns it, an item path still renders
-//! inline at `/`, and a path pointing off-site is refused. Second, the default
+//! the site serves, and `/` answers with exactly what that path renders, no
+//! redirect: an item, a gather (paged through `/?page=2`), an alias of one, a
+//! plugin route. Access, status and cache headers are the target's; a target
+//! that is gone is the stock front page; a path pointing off-site is refused.
+//! Second, the default
 //! promoted listing asks for promoted items rather than filtering a page of
 //! published ones, so a promoted item behind a page of newer published items is
 //! still listed.
@@ -16,9 +18,9 @@ mod common;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use axum::response::Response;
-use common::{TestApp, run_test, shared_app};
-use trovato_kernel::models::CreateItem;
+use common::{TestApp, defer_cleanup, run_test, settle_cache_generations, shared_app};
 use trovato_kernel::models::stage::LIVE_STAGE_ID;
+use trovato_kernel::models::{CreateItem, CreateUrlAlias, RegistrationMode, SiteConfig, UrlAlias};
 use trovato_kernel::tap::UserContext;
 use uuid::Uuid;
 
@@ -136,13 +138,14 @@ async fn set_front_page(app: &TestApp, path: &str) {
     trovato_kernel::models::SiteConfig::set_front_page(&app.db, path)
         .await
         .expect("set front page");
+    app.state.front_page().clear();
 }
 
 async fn clear_front_page(app: &TestApp) {
-    sqlx::query("DELETE FROM site_config WHERE key = 'site_front_page'")
-        .execute(&app.db)
+    SiteConfig::delete(&app.db, "site_front_page")
         .await
         .expect("clear front page");
+    app.state.front_page().clear();
 }
 
 async fn get_front_page(app: &TestApp) -> Response {
@@ -165,110 +168,481 @@ async fn body_text(response: Response) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// A front page pointing at a route the front handler knows nothing about
-/// redirects there, and the target really is served by the site.
-///
-/// `/search` stands in for any non-item route — a gather alias, a plugin route,
-/// an aliased path. What matters is that nothing in the front handler names it.
-#[test]
-fn configured_non_item_route_redirects_to_that_route() {
-    run_test(async {
-        let app = shared_app().await;
-        let _guard = FRONT_PAGE.lock().await;
+/// GET `path` anonymously.
+async fn get(app: &TestApp, path: &str) -> Response {
+    app.request(Request::get(path).body(Body::empty()).unwrap())
+        .await
+}
 
-        set_front_page(app, "/search").await;
+/// The `<link rel="canonical">` href of a page, if it has one.
+fn canonical(body: &str) -> Option<String> {
+    let start =
+        body.find(r#"<link rel="canonical" href=""#)? + r#"<link rel="canonical" href=""#.len();
+    let end = body[start..].find('"')?;
+    Some(body[start..start + end].to_string())
+}
 
-        let response = get_front_page(app).await;
-        assert_eq!(
-            response.status(),
-            StatusCode::TEMPORARY_REDIRECT,
-            "a non-item front page must redirect to its route"
-        );
-        assert_eq!(location(&response).as_deref(), Some("/search"));
+/// The site's own root, as an absolute canonical URL names it.
+fn site_root(app: &TestApp) -> String {
+    format!("{}/", app.state.runtime().site_url.trim_end_matches('/'))
+}
 
-        // The redirect lands somewhere the site actually serves — the point of
-        // redirecting rather than teaching the front handler to render it.
-        let target = app
-            .request(Request::get("/search").body(Body::empty()).unwrap())
+/// The headers a response is cached by, for comparing `/` with its target.
+fn cache_headers(response: &Response) -> Vec<(String, String)> {
+    [header::CACHE_CONTROL, header::VARY, header::CONTENT_TYPE]
+        .iter()
+        .filter_map(|name| {
+            response
+                .headers()
+                .get(name)
+                .and_then(|v| v.to_str().ok())
+                .map(|v| (name.to_string(), v.to_string()))
+        })
+        .collect()
+}
+
+/// Register a gather listing this file's items whose title starts with
+/// `marker`, three to a page, sorted by title. Removed when the test ends.
+async fn paged_gather(app: &TestApp, marker: &str, permission: Option<&str>) -> String {
+    let query_id = format!("front_{}", marker.to_lowercase());
+    let mut definition = serde_json::json!({
+        "base_table": "item",
+        "item_type": ITEM_TYPE,
+        "filters": [{ "field": "title", "operator": "starts_with", "value": marker }],
+        "sorts": [{ "field": "title", "direction": "asc", "nulls": null }]
+    });
+    if let Some(permission) = permission {
+        definition["access"] = serde_json::json!({ "permission": permission });
+    }
+    let query: trovato_kernel::gather::types::GatherQuery =
+        serde_json::from_value(serde_json::json!({
+            "query_id": query_id,
+            "label": format!("Front {marker}"),
+            "description": "Front page test listing",
+            "definition": definition,
+            "display": { "format": "table", "items_per_page": 3, "routes": [] },
+            "plugin": "core"
+        }))
+        .expect("gather deserializes");
+    app.state
+        .gather()
+        .register_query(query)
+        .await
+        .expect("register gather");
+    let pool = app.db.clone();
+    let id = query_id.clone();
+    defer_cleanup(move || async move {
+        let _ = sqlx::query("DELETE FROM gather_query WHERE query_id = $1")
+            .bind(&id)
+            .execute(&pool)
             .await;
-        assert_eq!(target.status(), StatusCode::OK);
-
-        clear_front_page(app).await;
     });
+    query_id
 }
 
-/// A gather-style alias path redirects the same way, with no route of that
-/// shape registered anywhere in the kernel. The front handler does not look.
-#[test]
-fn configured_gather_alias_redirects_without_being_known() {
-    run_test(async {
-        let app = shared_app().await;
-        let _guard = FRONT_PAGE.lock().await;
-
-        set_front_page(app, "/devices/online").await;
-
-        let response = get_front_page(app).await;
-        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
-        assert_eq!(location(&response).as_deref(), Some("/devices/online"));
-
-        clear_front_page(app).await;
-    });
+/// Seven items titled `{marker} 1` through `{marker} 7`.
+async fn listed_items(app: &TestApp, marker: &str) -> Vec<Uuid> {
+    let now = chrono::Utc::now().timestamp();
+    let mut ids = Vec::new();
+    for n in 1..=7 {
+        ids.push(create_item(app, &format!("{marker} {n}"), 0, now).await);
+    }
+    ids
 }
 
-/// A query string on `/` survives the redirect, so a paged or filtered front
-/// page keeps its parameters.
+/// An item front page renders at `/`: no redirect, the item's own page, and a
+/// canonical link naming `/`.
 #[test]
-fn redirect_carries_the_query_string() {
-    run_test(async {
-        let app = shared_app().await;
-        let _guard = FRONT_PAGE.lock().await;
-
-        set_front_page(app, "/devices/online").await;
-
-        let response = app
-            .request(Request::get("/?page=2").body(Body::empty()).unwrap())
-            .await;
-
-        assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
-        assert_eq!(
-            location(&response).as_deref(),
-            Some("/devices/online?page=2")
-        );
-
-        clear_front_page(app).await;
-    });
-}
-
-/// The behaviour that already existed: an item front page renders at `/`,
-/// address bar unchanged.
-#[test]
-fn configured_item_still_renders_inline() {
+fn front_page_set_to_an_item_renders_it() {
     run_test(async {
         let app = shared_app().await;
         let _guard = FRONT_PAGE.lock().await;
         ensure_item_type(app).await;
 
-        let title = format!("Inline Front Page {}", Uuid::now_v7().simple());
+        let title = format!("Item Front Page {}", Uuid::now_v7().simple());
         let id = create_item(app, &title, 0, chrono::Utc::now().timestamp()).await;
-
         set_front_page(app, &format!("/item/{id}")).await;
 
-        let response = get_front_page(app).await;
-        assert_eq!(response.status(), StatusCode::OK, "item renders at /");
+        let front = get_front_page(app).await;
+        assert_eq!(front.status(), StatusCode::OK, "item renders at /");
+        assert_eq!(location(&front), None, "no redirect");
+        let front_headers = cache_headers(&front);
+        let body = body_text(front).await;
+        assert!(body.contains(&title), "the item is rendered at /:\n{body}");
         assert_eq!(
-            location(&response),
-            None,
-            "an item front page must not redirect"
+            canonical(&body),
+            Some(site_root(app)),
+            "the front page is canonically /"
         );
 
-        let body = body_text(response).await;
-        assert!(
-            body.contains(&title),
-            "the configured item must be rendered at /, body was:\n{body}"
+        // The item's own address still works, with the same headers.
+        let target = get(app, &format!("/item/{id}")).await;
+        assert_eq!(target.status(), StatusCode::OK);
+        assert_eq!(cache_headers(&target), front_headers);
+        let target_body = body_text(target).await;
+        assert!(target_body.contains(&title));
+        assert_ne!(
+            canonical(&target_body),
+            Some(site_root(app)),
+            "at its own address the item is not canonically /"
         );
 
         clear_front_page(app).await;
         delete_items(app, &[id]).await;
+    });
+}
+
+/// A gather front page renders at `/`, and `/?page=2` is its second page.
+#[test]
+fn front_page_set_to_a_gather_renders_it_with_its_pager() {
+    run_test(async {
+        let app = shared_app().await;
+        let _guard = FRONT_PAGE.lock().await;
+        ensure_item_type(app).await;
+
+        let marker = format!("FPG{}", Uuid::now_v7().simple());
+        let ids = listed_items(app, &marker).await;
+        let query_id = paged_gather(app, &marker, None).await;
+        let path = format!("/gather/{query_id}");
+        set_front_page(app, &path).await;
+
+        let page_one = get_front_page(app).await;
+        assert_eq!(page_one.status(), StatusCode::OK, "the gather renders at /");
+        assert_eq!(location(&page_one), None, "no redirect");
+        let front_headers = cache_headers(&page_one);
+        let body = body_text(page_one).await;
+        assert!(body.contains(&format!("{marker} 1")), "page one:\n{body}");
+        assert!(!body.contains(&format!("{marker} 4")), "page one only");
+        assert!(
+            body.replace("&#x2F;", "/").contains(r#"href="/?page=2""#),
+            "the pager stays on the front page:\n{body}"
+        );
+        assert_eq!(canonical(&body), Some(site_root(app)));
+
+        let page_two = get(app, "/?page=2").await;
+        assert_eq!(page_two.status(), StatusCode::OK);
+        let body = body_text(page_two).await;
+        assert!(body.contains(&format!("{marker} 4")), "page two:\n{body}");
+        assert!(!body.contains(&format!("{marker} 1<")), "not page one");
+
+        // The same page at its own address, with the same headers.
+        let target = get(app, &format!("{path}?page=2")).await;
+        assert_eq!(target.status(), StatusCode::OK);
+        assert_eq!(cache_headers(&target), front_headers);
+        assert!(body_text(target).await.contains(&format!("{marker} 4")));
+
+        clear_front_page(app).await;
+        delete_items(app, &ids).await;
+    });
+}
+
+/// An alias of a gather is resolved as it would be at its own address.
+#[test]
+fn front_page_set_to_an_alias_of_a_gather_renders_the_gather() {
+    run_test(async {
+        let app = shared_app().await;
+        let _guard = FRONT_PAGE.lock().await;
+        ensure_item_type(app).await;
+
+        let marker = format!("FPA{}", Uuid::now_v7().simple());
+        let ids = listed_items(app, &marker).await;
+        let query_id = paged_gather(app, &marker, None).await;
+        let alias = format!("/front-alias-{}", marker.to_lowercase());
+        UrlAlias::create(
+            &app.db,
+            CreateUrlAlias {
+                source: format!("/gather/{query_id}"),
+                alias: alias.clone(),
+                language: Some("en".to_string()),
+                stage_id: Some(LIVE_STAGE_ID),
+            },
+        )
+        .await
+        .expect("create alias");
+        let pool = app.db.clone();
+        let cleanup_alias = alias.clone();
+        defer_cleanup(move || async move {
+            let _ = sqlx::query("DELETE FROM url_alias WHERE alias = $1")
+                .bind(&cleanup_alias)
+                .execute(&pool)
+                .await;
+        });
+        set_front_page(app, &alias).await;
+
+        let front = get_front_page(app).await;
+        assert_eq!(front.status(), StatusCode::OK, "the alias renders at /");
+        assert_eq!(location(&front), None);
+        let body = body_text(front).await;
+        assert!(body.contains(&format!("{marker} 1")), "the gather:\n{body}");
+
+        let page_two = body_text(get(app, "/?page=2").await).await;
+        assert!(
+            page_two.contains(&format!("{marker} 4")),
+            "page two:\n{page_two}"
+        );
+
+        let target = get(app, &alias).await;
+        assert_eq!(target.status(), StatusCode::OK, "the alias still works");
+
+        clear_front_page(app).await;
+        delete_items(app, &ids).await;
+    });
+}
+
+/// A plugin's route renders at `/` like any other: the categories plugin's
+/// topic browser, which nothing in the front page names.
+#[test]
+fn front_page_set_to_a_plugin_route_renders_it() {
+    run_test(async {
+        let app = shared_app().await;
+        let _guard = FRONT_PAGE.lock().await;
+        app.ensure_plugin_enabled("trovato_categories").await;
+        set_front_page(app, "/topics").await;
+
+        let target = get(app, "/topics").await;
+        assert_eq!(target.status(), StatusCode::OK, "the plugin route serves");
+        let target_headers = cache_headers(&target);
+        let target_body = body_text(target).await;
+
+        let front = get_front_page(app).await;
+        assert_eq!(
+            front.status(),
+            StatusCode::OK,
+            "the plugin route renders at /"
+        );
+        assert_eq!(location(&front), None);
+        assert_eq!(cache_headers(&front), target_headers);
+        let body = body_text(front).await;
+        assert!(body.contains("Topics"), "the topic browser:\n{body}");
+        assert!(
+            !body.contains("front-listing") && target_body.contains("Topics"),
+            "the plugin page, not the stock front page"
+        );
+        assert_eq!(canonical(&body), Some(site_root(app)));
+
+        clear_front_page(app).await;
+    });
+}
+
+/// A visitor who may not see the target is answered at `/` exactly as at the
+/// target: here, sent to log in. No row of the listing reaches them, and the
+/// stock front page is not served in its place.
+#[test]
+fn a_target_the_visitor_may_not_see_is_refused_as_at_the_target() {
+    run_test(async {
+        let app = shared_app().await;
+        let _guard = FRONT_PAGE.lock().await;
+        ensure_item_type(app).await;
+
+        let marker = format!("FPP{}", Uuid::now_v7().simple());
+        let ids = listed_items(app, &marker).await;
+        let query_id = paged_gather(app, &marker, Some("view front page test listing")).await;
+        let path = format!("/gather/{query_id}");
+        set_front_page(app, &path).await;
+
+        let target = get(app, &path).await;
+        let target_status = target.status();
+        let target_location = location(&target);
+        assert!(
+            target_status.is_redirection() || target_status == StatusCode::FORBIDDEN,
+            "the target refuses anonymous, got {target_status}"
+        );
+
+        let front = get_front_page(app).await;
+        assert_eq!(front.status(), target_status, "/ answers as the target");
+        assert_eq!(location(&front), target_location);
+        let body = body_text(front).await;
+        assert!(!body.contains(&marker), "no row reaches anonymous:\n{body}");
+
+        clear_front_page(app).await;
+        delete_items(app, &ids).await;
+    });
+}
+
+/// A deleted target is the stock front page, not a 404 or a 500.
+#[test]
+fn a_deleted_target_falls_back_to_the_stock_front_page() {
+    run_test(async {
+        let app = shared_app().await;
+        let _guard = FRONT_PAGE.lock().await;
+        ensure_item_type(app).await;
+
+        let title = format!("Deleted Front Page {}", Uuid::now_v7().simple());
+        let id = create_item(app, &title, 0, chrono::Utc::now().timestamp()).await;
+        set_front_page(app, &format!("/item/{id}")).await;
+        assert!(body_text(get_front_page(app).await).await.contains(&title));
+
+        delete_items(app, &[id]).await;
+        settle_cache_generations().await;
+
+        let front = get_front_page(app).await;
+        assert_eq!(front.status(), StatusCode::OK, "stock front page, not 404");
+        assert_eq!(location(&front), None);
+        let body = body_text(front).await;
+        assert!(!body.contains(&title), "the deleted item is gone");
+
+        // A path no route serves at all is the same.
+        set_front_page(app, "/no/such/front/page").await;
+        let front = get_front_page(app).await;
+        assert_eq!(front.status(), StatusCode::OK);
+
+        clear_front_page(app).await;
+    });
+}
+
+/// A request other than `GET` reaches the target too: nothing about `/` is
+/// special once it has been resolved.
+#[test]
+fn head_is_answered_as_the_target_answers_it() {
+    run_test(async {
+        let app = shared_app().await;
+        let _guard = FRONT_PAGE.lock().await;
+        set_front_page(app, "/search").await;
+
+        let front = app
+            .request(Request::head("/").body(Body::empty()).unwrap())
+            .await;
+        let target = app
+            .request(Request::head("/search").body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(front.status(), target.status());
+        assert_eq!(cache_headers(&front), cache_headers(&target));
+
+        clear_front_page(app).await;
+    });
+}
+
+/// POST the site settings form as an administrator, every field at the value
+/// it already has except the front page. Returns the status and the body.
+///
+/// The registration settings a save rewrites are put back as they were found,
+/// as `smtp_config_source_test` does, for the other binaries sharing this
+/// database.
+async fn post_site_form(app: &TestApp, cookies: &str, front_page: &str) -> (StatusCode, String) {
+    let mut registration = Vec::new();
+    for key in ["user_registration", "allow_user_registration"] {
+        registration.push((key, SiteConfig::get(&app.db, key).await.unwrap()));
+    }
+
+    let page = app
+        .request_with_cookies(
+            Request::get("/admin/config/site")
+                .body(Body::empty())
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    assert_eq!(page.status(), StatusCode::OK);
+    let html = body_text(page).await;
+    let needle = r#"name="_token" value=""#;
+    let start = html.find(needle).expect("token input") + needle.len();
+    let token = html[start..start + html[start..].find('"').unwrap()].to_string();
+
+    let mut site_mail = SiteConfig::site_mail(&app.db).await.unwrap_or_default();
+    if site_mail.is_empty() {
+        site_mail = "site@front.example.test".to_string();
+    }
+    let items_per_page = SiteConfig::get(&app.db, "items_per_page")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.as_str().map(String::from))
+        .unwrap_or_else(|| "10".to_string());
+    let mut fields: Vec<(&str, String)> = vec![
+        ("_token", token),
+        ("site_name", SiteConfig::site_name(&app.db).await.unwrap()),
+        (
+            "site_slogan",
+            SiteConfig::site_slogan(&app.db).await.unwrap_or_default(),
+        ),
+        ("site_mail", site_mail),
+        ("front_page", front_page.to_string()),
+        ("items_per_page", items_per_page),
+        (
+            "registration_mode",
+            RegistrationMode::load(&app.db).await.as_str().to_string(),
+        ),
+    ];
+    if SiteConfig::get(&app.db, "notify_admin_on_register")
+        .await
+        .ok()
+        .flatten()
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        fields.push(("notify_admin_on_register", "1".to_string()));
+    }
+    if trovato_kernel::update_status::setting_allows_check(&app.db).await {
+        fields.push(("update_check", "1".to_string()));
+    }
+    let form = fields
+        .iter()
+        .map(|(k, v)| format!("{k}={}", urlencoding::encode(v)))
+        .collect::<Vec<_>>()
+        .join("&");
+
+    let response = app
+        .request_with_cookies(
+            Request::post("/admin/config/site")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(form))
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    let body = body_text(response).await;
+
+    for (key, value) in registration {
+        match value {
+            Some(value) => SiteConfig::set(&app.db, key, value).await.unwrap(),
+            None => {
+                SiteConfig::delete(&app.db, key).await.unwrap();
+            }
+        }
+    }
+    (status, body)
+}
+
+/// The admin form refuses a front page the site answers 404 for, and saves
+/// one of any route type that resolves, including one anonymous may not see.
+#[test]
+fn the_admin_form_saves_only_a_path_that_resolves() {
+    run_test(async {
+        let app = shared_app().await;
+        let _guard = FRONT_PAGE.lock().await;
+        clear_front_page(app).await;
+        let name = format!("frontadm{}", &Uuid::now_v7().simple().to_string()[20..]);
+        let cookies = app
+            .create_and_login_admin(&name, "Front-Page-Pass-1", &format!("{name}@example.com"))
+            .await;
+
+        let (status, body) = post_site_form(app, &cookies, "/no/such/front/page").await;
+        assert_eq!(status, StatusCode::OK, "the form is shown again");
+        assert!(
+            body.contains("does not resolve"),
+            "a path nothing serves is refused:\n{body}"
+        );
+        assert_eq!(
+            SiteConfig::front_page(&app.db).await.unwrap(),
+            None,
+            "nothing was saved"
+        );
+
+        for path in ["/search", "/admin/config/site"] {
+            let (status, body) = post_site_form(app, &cookies, path).await;
+            assert!(
+                !body.contains("does not resolve"),
+                "{path} resolves ({status}):\n{body}"
+            );
+            assert_eq!(
+                SiteConfig::front_page(&app.db).await.unwrap().as_deref(),
+                Some(path),
+                "{path} was saved"
+            );
+        }
+
+        clear_front_page(app).await;
     });
 }
 
@@ -290,6 +664,9 @@ fn a_front_page_translation_is_served_in_that_language() {
         let title = format!("Front Page {marker}");
         let id = create_item(app, &title, 0, chrono::Utc::now().timestamp()).await;
 
+        // The table is the translation plugin's; a fresh database has it only
+        // once some test has asked for it.
+        common::ensure_translation_table(app);
         let translated = format!("Prima Pagina {marker}");
         sqlx::query(
             "INSERT INTO item_translation (item_id, language, title, fields) \
@@ -521,6 +898,9 @@ fn a_translated_front_page_offers_its_translations() {
         let title = format!("Front Switcher {marker}");
         let id = create_item(app, &title, 0, chrono::Utc::now().timestamp()).await;
 
+        // The table is the translation plugin's; a fresh database has it only
+        // once some test has asked for it.
+        common::ensure_translation_table(app);
         let translated = format!("Selettore {marker}");
         sqlx::query(
             "INSERT INTO item_translation (item_id, language, title, fields) \
