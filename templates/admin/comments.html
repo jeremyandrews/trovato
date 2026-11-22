@@ -24,7 +24,8 @@
         </div>
     </form>
 
-    <form class="filter-form settings-form" method="post" action="/admin/content/comments/settings">
+    {# `GET /admin/content/comments/settings` serves this page; the id is the anchor for links to the form. #}
+    <form id="comment-settings" class="filter-form settings-form" method="post" action="/admin/content/comments/settings">
         <input type="hidden" name="_token" value="{{ csrf_token }}">
         <div class="filter-row">
             <div class="filter-item">

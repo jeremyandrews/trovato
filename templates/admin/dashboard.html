@@ -22,78 +22,58 @@
     <h2>Administration</h2>
 </div>
 
-<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin-top: 1rem;">
-    {# Only for a viewer who may open what it links to. The dashboard is
-       admission to the section, not authority inside it, so a role delegated
-       one screen is shown that screen and not a door that answers 403. #}
-    {% if can_administer_site %}
-    <div class="admin-card">
-        <h3 style="margin-top: 0;">Structure</h3>
-        <ul style="list-style: none; padding: 0; margin: 0;">
-            <li style="padding: 0.5rem 0; border-bottom: 1px solid #eee;">
-                <a href="/admin/structure/types">Content types</a>
-                <p style="margin: 0.25rem 0 0; color: #666; font-size: 0.875rem;">
-                    Manage content types and their fields
-                </p>
-            </li>
+<div class="dashboard-grid">
+    {# Built by `routes::admin_nav::dashboard`: one card per administration
+       area, each link under the same gate and plugin check as the sidebar.
+       The dashboard is admission to the section, not authority inside it, so
+       a role delegated one screen is shown that screen and not a door that
+       answers 403. #}
+    {% for card in dashboard_cards | default(value=[]) %}
+    <section class="admin-card dashboard-card">
+        <h3>{{ card.title }}</h3>
+        <p class="dashboard-card__description">{{ card.description }}</p>
+        <ul class="dashboard-card__links">
+            {% for link in card.links %}
+            <li><a href="{{ link.href | safe }}">{{ link.label }}</a></li> {# SAFE: each href is a constant in `routes::admin_nav::CARDS`, never user text #}
+            {% endfor %}
         </ul>
-    </div>
-    {% endif %}
+    </section>
+    {% endfor %}
 
     {# `content_types` holds only the types this viewer may create: the handler
        filters on the same `create {type} content` string `/item/add/{type}`
        checks. An empty list means no card rather than an empty one. #}
     {% if content_types %}
-    <div class="admin-card">
-        <h3 style="margin-top: 0;">Content</h3>
-        <ul style="list-style: none; padding: 0; margin: 0;">
+    <section class="admin-card dashboard-card">
+        <h3>Create</h3>
+        <ul class="dashboard-card__links">
             {% for content_type in content_types %}
-            <li style="padding: 0.5rem 0; border-bottom: 1px solid #eee;">
-                <a href="/item/add/{{ content_type.machine_name }}">Add {{ content_type.label }}</a>
-            </li>
+            <li><a href="/item/add/{{ content_type.machine_name }}">Add {{ content_type.label }}</a></li>
             {% endfor %}
         </ul>
-    </div>
+    </section>
     {% endif %}
 
-    <div class="admin-card">
-        <h3 style="margin-top: 0;">System</h3>
-        <ul style="list-style: none; padding: 0; margin: 0;">
-            <li style="padding: 0.5rem 0; border-bottom: 1px solid #eee;">
+    <section class="admin-card dashboard-card">
+        <h3>System</h3>
+        <ul class="dashboard-card__links">
+            <li>
                 <a href="/health">Health check</a>
-                <p style="margin: 0.25rem 0 0; color: #666; font-size: 0.875rem;">
-                    Database and Redis status
-                </p>
+                <p class="dashboard-card__description">Database and Redis status</p>
             </li>
-            <li style="padding: 0.5rem 0;">
-                <form method="post" action="/user/logout" style="display:inline">
+            <li>
+                <form method="post" action="/user/logout" class="dashboard-inline-form">
                     <input type="hidden" name="_token" value="{{ csrf_token }}">
-                    <button type="submit" style="background:none;border:none;cursor:pointer;font:inherit;color:inherit;padding:0;text-decoration:underline;">Log out</button>
+                    <button type="submit" class="link-button">Log out</button>
                 </form>
             </li>
         </ul>
-    </div>
+    </section>
 </div>
 
 {% if user %}
-<div style="margin-top: 2rem; padding: 1rem; background: #f5f5f5; border-radius: 4px;">
-    <p style="margin: 0;">Logged in as <strong>{{ user.name }}</strong></p>
+<div class="dashboard-whoami">
+    <p>Logged in as <strong>{{ user.name }}</strong></p>
 </div>
 {% endif %}
-<style>
-    .update-banner {
-        margin-bottom: 1rem;
-        padding: 0.75rem 1rem;
-        border-radius: 0.25rem;
-        border: 1px solid #b8daff;
-        background: #cce5ff;
-        color: #004085;
-    }
-    .update-banner--security {
-        border-color: #f5c6cb;
-        background: #f8d7da;
-        color: #721c24;
-    }
-</style>
-
 {% endblock %}

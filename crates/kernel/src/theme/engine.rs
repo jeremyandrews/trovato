@@ -494,6 +494,19 @@ impl ThemeEngine {
 
     /// Register custom Tera filters.
     fn register_filters(tera: &mut Tera, locale: Option<Arc<LocaleService>>) {
+        // `asset_version()`: the string a template appends to a kernel
+        // stylesheet's URL (`?v=...`), so a release that changes the file is
+        // fetched afresh rather than served from a day-old cache. The kernel
+        // version, because a kernel stylesheet changes only with the kernel.
+        tera.register_function(
+            "asset_version",
+            |_: &std::collections::HashMap<String, tera::Value>| {
+                Ok(tera::Value::String(
+                    crate::update_status::running_version().to_string(),
+                ))
+            },
+        );
+
         // Filter for text format processing
         tera.register_filter(
             "text_format",
