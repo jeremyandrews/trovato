@@ -50,20 +50,24 @@ WORKDIR /app
 
 COPY --from=builder /usr/src/trovato/target/release/trovato .
 
-# Assemble plugin directories: WASM binary + metadata + migrations.
-# Directory names match crate names (trovato_ prefix convention).
+# Assemble plugin directories: WASM binary + metadata + migrations + the
+# plugin's assets (page builder components, templates, static files).
+# Directory names match crate names (trovato_ prefix convention). Only a plugin
+# built above gets a directory: a manifest with no module behind it is a plugin
+# the loader discovers and then cannot load (BL-122), so the in-tree test and
+# reference plugins, which are not built here, are not shipped.
 COPY --from=builder /usr/src/trovato/target/wasm32-wasip1/release/*.wasm /tmp/wasm/
 COPY --from=builder /usr/src/trovato/plugins/ /tmp/plugin-src/
 RUN for wasm in /tmp/wasm/*.wasm; do \
       name=$(basename "$wasm" .wasm); \
+      src="/tmp/plugin-src/$name"; \
+      [ -d "$src" ] || continue; \
       mkdir -p "plugins/$name"; \
       cp "$wasm" "plugins/$name/"; \
-    done && \
-    for dir in /tmp/plugin-src/*/; do \
-      name=$(basename "$dir"); \
-      mkdir -p "plugins/$name"; \
-      cp -f "$dir"/*.info.toml "plugins/$name/" 2>/dev/null || true; \
-      [ -d "$dir/migrations" ] && cp -r "$dir/migrations" "plugins/$name/" || true; \
+      cp -f "$src"/*.info.toml "plugins/$name/" 2>/dev/null || true; \
+      for asset in migrations components templates static; do \
+        [ -d "$src/$asset" ] && cp -r "$src/$asset" "plugins/$name/" || true; \
+      done; \
     done && \
     rm -rf /tmp/wasm /tmp/plugin-src
 

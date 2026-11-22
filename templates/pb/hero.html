@@ -1,12 +1,12 @@
 {% import "pb/macros.html" as a11y %}
-{% set hlevel = headingLevel | default(value=2) %}
-<section class="pb-hero pb-hero--{{ variant | default(value='standard') }}"
+{% set hlevel = headingLevel | default(value=2) %}{% set hero_variant = variant | default(value="standard") %}
+<section class="pb-hero pb-hero--{{ hero_variant }}{% if variant_classes %} {{ variant_classes }}{% endif %}"
   {{- a11y::aria_label(label=title | default(value='Hero')) }}
   {{- a11y::lang_attr(lang=lang | default(value="")) }}
-  {% if backgroundImage and variant == "standard" %} style="background-image: url('{{ backgroundImage }}')"{% endif %}
-  {% if backgroundColor and not backgroundImage %} style="background-color: {{ backgroundColor }}"{% endif %}>
+  {# A background is a declared variant class (variant_classes), never a style attribute. #}
+  {# The standard variant's background image is an <img> behind the content. #}>{% if backgroundImage and hero_variant == "standard" %}<img class="pb-hero__background" src="{{ backgroundImage }}" alt="" loading="lazy">{% endif %}
 
-  {% if variant == "split" and backgroundImage %}
+  {% if hero_variant == "split" and backgroundImage %}
   <div class="pb-hero__image">
     <img src="{{ backgroundImage }}" alt="{{ imageAlt | default(value='') }}" loading="lazy">
   </div>

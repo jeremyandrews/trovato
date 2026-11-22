@@ -1,0 +1,18 @@
+/* FeatureBanner (test_page_builder_components). */
+.feature-banner { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; align-items: center; max-width: 64rem; margin: 2.5rem auto; padding: 2rem; border-radius: 1rem; }
+.feature-banner--light { background: #f1f5f9; color: #0f172a; }
+.feature-banner--dark { background: #0f172a; color: #f8fafc; }
+.feature-banner--accent { background: #7c3aed; color: #fff; }
+.feature-banner--image-right .feature-banner__media { order: 2; }
+.feature-banner__image { width: 100%; height: auto; border-radius: 0.75rem; display: block; }
+.feature-banner:not(:has(.feature-banner__media)) { grid-template-columns: 1fr; }
+.feature-banner__title { margin: 0 0 0.75rem; font-size: 1.75rem; }
+/* The banner sets its own text colour; the theme's heading and paragraph
+   colours would otherwise win on the dark and accent tones. */
+.feature-banner .feature-banner__title, .feature-banner .feature-banner__text :is(p, li) { color: inherit; }
+.feature-banner__cta { display: inline-block; margin-top: 0.5rem; padding: 0.625rem 1.25rem; border-radius: 0.5rem; background: #fff; color: #0f172a; font-weight: 600; text-decoration: none; }
+.feature-banner--light .feature-banner__cta { background: #0f172a; color: #fff; }
+@media (max-width: 720px) {
+  .feature-banner { grid-template-columns: 1fr; padding: 1.25rem; }
+  .feature-banner--image-right .feature-banner__media { order: 0; }
+}

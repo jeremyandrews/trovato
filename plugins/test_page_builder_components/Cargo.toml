@@ -1,0 +1,17 @@
+[package]
+name = "test_page_builder_components"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "A13 test fixture: a plugin that ships two page builder components and a landing page type that uses them"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }

@@ -67,6 +67,14 @@ struct AppStateInner {
     /// Plugin search path on disk.
     plugins_dirs: Vec<PathBuf>,
 
+    /// The page builder components pages may use: the standard set and the
+    /// components of the plugins enabled at startup.
+    page_builder_components: Arc<crate::content::page_builder_components::ComponentRegistry>,
+
+    /// Each plugin enabled at startup that has a `static/` directory, by name:
+    /// served at `/static/plugins/<name>/`.
+    plugin_static_dirs: std::collections::HashMap<String, PathBuf>,
+
     /// Set of enabled plugin names (mutable via admin UI).
     ///
     /// Uses `parking_lot::RwLock` rather than `std::sync::RwLock` because:
@@ -474,6 +482,42 @@ impl AppState {
             );
         }
 
+        // The enabled plugins' asset directories, by name: page builder
+        // components under `components/`, templates under `templates/`,
+        // stylesheets and other files under `static/`. Read at startup, like
+        // the plugins themselves, so a plugin enabled or disabled later
+        // changes them on the next restart.
+        let mut enabled_plugin_dirs: Vec<(String, PathBuf)> = discovered
+            .iter()
+            .filter(|(name, _)| enabled_set.contains(*name))
+            .map(|(name, (_, dir))| (name.clone(), dir.clone()))
+            .collect();
+        enabled_plugin_dirs.sort();
+        let page_builder_components = Arc::new(
+            crate::content::page_builder_components::ComponentRegistry::load(
+                &enabled_plugin_dirs
+                    .iter()
+                    .map(|(name, dir)| {
+                        crate::content::page_builder_components::PluginComponentSource {
+                            name: name.clone(),
+                            dir: dir.clone(),
+                        }
+                    })
+                    .collect::<Vec<_>>(),
+            )
+            .context("failed to load page builder components")?,
+        );
+        let plugin_static_dirs: std::collections::HashMap<String, PathBuf> = enabled_plugin_dirs
+            .iter()
+            .filter(|(_, dir)| dir.join("static").is_dir())
+            .map(|(name, dir)| (name.clone(), dir.join("static")))
+            .collect();
+        let plugin_template_dirs: Vec<PathBuf> = enabled_plugin_dirs
+            .iter()
+            .map(|(_, dir)| dir.join("templates"))
+            .filter(|dir| dir.is_dir())
+            .collect();
+
         // Run pending plugin migrations for enabled plugins
         let enabled_discovered: std::collections::HashMap<
             String,
@@ -847,15 +891,27 @@ impl AppState {
         // Create theme engine. The search path is a `Config` field, resolved at
         // startup, so an embedder points the engine at its own templates by
         // setting a field rather than exporting `TEMPLATES_DIR`.
-        info!(template_dirs = ?config.templates_dirs, "loading templates from search path");
-        let theme = Arc::new(
-            ThemeEngine::new(&config.templates_dirs, locale.clone(), metrics.clone())
-                .inspect_err(
-                    |e| tracing::warn!(error = ?e, "failed to load templates, using empty engine"),
-                )
-                .or_else(|_| ThemeEngine::empty(metrics.clone()))
-                .context("failed to create theme engine")?,
-        );
+        //
+        // The enabled plugins' `templates/` directories come first, so they
+        // are the lowest precedence: a plugin adds templates (a page builder
+        // component's, for one) and cannot replace the kernel's, and a theme
+        // on TEMPLATES_DIR overrides a plugin's as it overrides the kernel's.
+        let template_dirs: Vec<PathBuf> = plugin_template_dirs
+            .iter()
+            .chain(config.templates_dirs.iter())
+            .cloned()
+            .collect();
+        info!(template_dirs = ?template_dirs, "loading templates from search path");
+        let theme = match ThemeEngine::new(&template_dirs, locale.clone(), metrics.clone()) {
+            Ok(engine) => engine
+                .with_components(page_builder_components.clone())
+                .context("failed to load page builder components")?,
+            Err(e) => {
+                tracing::warn!(error = ?e, "failed to load templates, using empty engine");
+                ThemeEngine::empty(metrics.clone()).context("failed to create theme engine")?
+            }
+        };
+        let theme = Arc::new(theme);
 
         // Create form service
         let forms = Arc::new(FormService::new(
@@ -935,6 +991,7 @@ impl AppState {
             Some(vector_store.clone()),
             metrics.clone(),
         ));
+        items.set_page_builder_components(page_builder_components.clone());
 
         // Late-bind the item-access seam into the tap services template, so
         // the `item-api` host functions can decide a request-scoped call as the
@@ -1163,6 +1220,8 @@ impl AppState {
                 db,
                 db_pool_max_connections: config.database_max_connections,
                 plugins_dirs: config.plugins_dirs.clone(),
+                page_builder_components,
+                plugin_static_dirs,
                 enabled_plugins: parking_lot::RwLock::new(enabled_set.clone()),
                 redis,
                 cache,
@@ -1295,6 +1354,20 @@ impl AppState {
     /// Get the plugin search path.
     pub fn plugins_dirs(&self) -> &[PathBuf] {
         &self.inner.plugins_dirs
+    }
+
+    /// The page builder component registry: the standard components and
+    /// those of the plugins enabled at startup.
+    pub fn page_builder_components(
+        &self,
+    ) -> &Arc<crate::content::page_builder_components::ComponentRegistry> {
+        &self.inner.page_builder_components
+    }
+
+    /// The `static/` directory of plugin `name`, if it was enabled at startup
+    /// and has one.
+    pub fn plugin_static_dir(&self, name: &str) -> Option<&PathBuf> {
+        self.inner.plugin_static_dirs.get(name)
     }
 
     /// Check if a plugin is enabled at runtime.

@@ -127,6 +127,29 @@ static MARKDOWN_SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|
     builder
 });
 
+/// Render Markdown to sanitized HTML, rewriting headings so none is above
+/// `min_heading` (1 leaves them alone).
+///
+/// The `markdown` Tera filter and the page builder's rich text fields both
+/// come through here, so one sanitizer decides what Markdown may produce:
+/// raw HTML in the source is cleaned, a code block keeps the class it needs to
+/// be highlighted.
+pub fn render_markdown(text: &str, min_heading: usize) -> String {
+    let processed = if min_heading > 1 {
+        crate::content::page_builder::rewrite_markdown_headings(text, min_heading)
+    } else {
+        text.to_string()
+    };
+
+    let parser = pulldown_cmark::Parser::new(&processed);
+    let mut html_output = String::new();
+    pulldown_cmark::html::push_html(&mut html_output, parser);
+
+    // Sanitize to prevent XSS from raw HTML in Markdown, keeping the
+    // class attribute a code block needs to be highlightable.
+    MARKDOWN_SANITIZER.clean(&html_output).to_string()
+}
+
 /// CLDR-based localized month names for supported locales.
 ///
 /// Covers 14 languages with genitive forms where applicable (e.g.,
@@ -343,6 +366,9 @@ pub struct ThemeEngine {
     metrics: Arc<Metrics>,
     /// Render tree consumer for RenderElement → HTML.
     render_consumer: RenderTreeConsumer,
+    /// The page builder components pages may use: the standard set and the
+    /// enabled plugins'. The standard set until [`Self::with_components`].
+    components: Arc<crate::content::page_builder_components::ComponentRegistry>,
 }
 
 impl ThemeEngine {
@@ -408,6 +434,7 @@ impl ThemeEngine {
             suggestion_cache: DashMap::new(),
             metrics,
             render_consumer: RenderTreeConsumer::new(),
+            components: Arc::new(Default::default()),
         })
     }
 
@@ -461,6 +488,7 @@ impl ThemeEngine {
             suggestion_cache: DashMap::new(),
             metrics,
             render_consumer: RenderTreeConsumer::new(),
+            components: Arc::new(Default::default()),
         })
     }
 
@@ -567,21 +595,7 @@ impl ThemeEngine {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(1) as usize;
 
-                let processed = if min_heading > 1 {
-                    crate::content::page_builder::rewrite_markdown_headings(text, min_heading)
-                } else {
-                    text.to_string()
-                };
-
-                let parser = pulldown_cmark::Parser::new(&processed);
-                let mut html_output = String::new();
-                pulldown_cmark::html::push_html(&mut html_output, parser);
-
-                // Sanitize to prevent XSS from raw HTML in Markdown, keeping the
-                // class attribute a code block needs to be highlightable.
-                let clean = MARKDOWN_SANITIZER.clean(&html_output).to_string();
-
-                Ok(tera::Value::String(clean))
+                Ok(tera::Value::String(render_markdown(text, min_heading)))
             },
         );
 
@@ -1000,19 +1014,51 @@ impl ThemeEngine {
             .context("failed to render page template")
     }
 
+    /// Use `components` as the page builder registry, after checking that
+    /// every component's template is on this engine's search path.
+    ///
+    /// A component whose template no directory supplies is an error naming the
+    /// component, its source and the template, so the server refuses to start
+    /// rather than drop the component from every page that uses it.
+    pub fn with_components(
+        mut self,
+        components: Arc<crate::content::page_builder_components::ComponentRegistry>,
+    ) -> Result<Self> {
+        components.check_templates(|name| self.tera.get_template(name).is_ok())?;
+        self.components = components;
+        Ok(self)
+    }
+
+    /// The page builder component registry this engine renders with.
+    pub fn components(&self) -> &Arc<crate::content::page_builder_components::ComponentRegistry> {
+        &self.components
+    }
+
     /// Render a Puck page builder JSON value to HTML.
     ///
-    /// Parses the Puck JSON, recursively renders components via `pb/*.html`
-    /// templates, sanitizes each component with Ammonia, and validates
-    /// heading hierarchy.
+    /// Parses the Puck JSON, renders each component through the template its
+    /// registry definition names, sanitizes each with Ammonia, and validates
+    /// heading hierarchy. `references` holds what the page's reference fields
+    /// resolved to for this viewer (empty if it has none; see
+    /// `routes::helpers::render_page_builder_field`).
     ///
     /// Call this from route handlers before passing content to Tera context.
-    /// The rendered HTML string can then be output with `| safe` in templates.
-    pub fn render_page_builder_content(&self, page_json: &serde_json::Value) -> Result<String> {
+    /// The rendered HTML string can then be output with `| safe` in templates,
+    /// and the stylesheets linked in the page head.
+    pub fn render_page_builder_content(
+        &self,
+        page_json: &serde_json::Value,
+        references: &crate::content::page_builder::ResolvedReferences,
+    ) -> Result<crate::content::page_builder::RenderedPage> {
         let page: crate::content::page_builder::PuckPage =
             serde_json::from_value(page_json.clone())
                 .context("failed to parse page builder JSON")?;
-        crate::content::page_builder::render_puck_page(&page, &self.tera)
+        crate::content::page_builder::render_puck_page(
+            &page,
+            &self.tera,
+            &self.components,
+            references,
+        )
     }
 
     /// Clear the suggestion cache (useful for development hot-reload).

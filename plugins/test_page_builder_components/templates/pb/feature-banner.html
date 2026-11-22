@@ -1,0 +1,15 @@
+{#- FeatureBanner: test_page_builder_components. variant_classes holds the
+    tone's class and, for a right hand image, the position's. -#}
+<section class="feature-banner {{ variant_classes }}">
+  {% if image %}
+  <div class="feature-banner__media">
+    <img class="feature-banner__image" src="{{ image.src }}" alt="{{ image.alt }}" loading="lazy">
+  </div>
+  {% endif %}
+  <div class="feature-banner__body">
+    {% if title %}<h2 class="feature-banner__title">{{ title }}</h2>{% endif %}
+    {# SAFE: body_html is the kernel's sanitized Markdown rendering of a rich_text field. #}
+    {% if body_html %}<div class="feature-banner__text">{{ body_html | safe }}</div>{% endif %}
+    {% if cta %}<a class="feature-banner__cta" href="{{ cta.url }}"{% if cta.new_tab %} target="_blank"{% endif %}>{{ cta.label }}</a>{% endif %}
+  </div>
+</section>

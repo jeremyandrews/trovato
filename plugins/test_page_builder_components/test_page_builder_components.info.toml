@@ -1,0 +1,18 @@
+name = "test_page_builder_components"
+description = "A13 fixture: two plugin page builder components (a card list, a banner with a variant and an image) and a landing page type"
+version = "0.106.0"
+api_version = "0.106"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_item_info"]
+weight = 0
+
+# The components are not code: components/*.component.toml declares them,
+# templates/pb/ renders them and static/ styles them. The WASM declares the
+# landing page type that holds a page builder field.
+# `logging` because the #[plugin_tap] macro references the logging import on
+# its error paths.
+[capabilities]
+host_interfaces = ["logging"]

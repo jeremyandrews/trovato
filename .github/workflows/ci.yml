@@ -211,7 +211,7 @@ jobs:
             -p test_ai_background \
             -p trovato_field_access_ref \
             -p trovato_recovery_ref -p test_recovery_bystander \
-            -p test_queue_worker -p test_item_writer -p test_site_queries -p test_item_deny -p test_members -p test_menu_entries \
+            -p test_queue_worker -p test_item_writer -p test_site_queries -p test_item_deny -p test_members -p test_menu_entries -p test_page_builder_components \
             -p trovato_record_ref \
             -p trovato_spam \
             -p trovato_series -p test_plugin_api \
@@ -225,7 +225,7 @@ jobs:
             plugins/test_ai_background \
             plugins/trovato_field_access_ref \
             plugins/trovato_recovery_ref plugins/test_recovery_bystander \
-            plugins/test_queue_worker plugins/test_item_writer plugins/test_site_queries plugins/test_item_deny plugins/test_members plugins/test_menu_entries plugins/trovato_record_ref plugins/trovato_spam plugins/trovato_series plugins/test_plugin_api plugins/trovato_book plugins/trovato_contact plugins/test_assistant_scope \
+            plugins/test_queue_worker plugins/test_item_writer plugins/test_site_queries plugins/test_item_deny plugins/test_members plugins/test_menu_entries plugins/test_page_builder_components plugins/trovato_record_ref plugins/trovato_spam plugins/trovato_series plugins/test_plugin_api plugins/trovato_book plugins/trovato_contact plugins/test_assistant_scope \
             plugins/trovato_ai plugins/test_form_taps plugins/test_form_taps_b
           cp target/wasm32-wasip1/release/trovato_blog.wasm plugins/trovato_blog/
           cp target/wasm32-wasip1/release/trovato_search.wasm plugins/trovato_search/
@@ -243,6 +243,7 @@ jobs:
           cp target/wasm32-wasip1/release/test_item_deny.wasm plugins/test_item_deny/
           cp target/wasm32-wasip1/release/test_members.wasm plugins/test_members/
           cp target/wasm32-wasip1/release/test_menu_entries.wasm plugins/test_menu_entries/
+          cp target/wasm32-wasip1/release/test_page_builder_components.wasm plugins/test_page_builder_components/
           cp target/wasm32-wasip1/release/trovato_record_ref.wasm plugins/trovato_record_ref/
           cp target/wasm32-wasip1/release/trovato_spam.wasm plugins/trovato_spam/
           cp target/wasm32-wasip1/release/trovato_book.wasm plugins/trovato_book/
@@ -528,7 +529,7 @@ jobs:
             -p test_ai_background \
             -p trovato_field_access_ref \
             -p trovato_recovery_ref -p test_recovery_bystander \
-            -p test_queue_worker -p test_item_writer -p test_site_queries -p test_item_deny -p test_members -p test_menu_entries \
+            -p test_queue_worker -p test_item_writer -p test_site_queries -p test_item_deny -p test_members -p test_menu_entries -p test_page_builder_components \
             -p trovato_record_ref \
             -p trovato_spam \
             -p trovato_series -p test_plugin_api \
@@ -542,7 +543,7 @@ jobs:
             plugins/test_ai_background \
             plugins/trovato_field_access_ref \
             plugins/trovato_recovery_ref plugins/test_recovery_bystander \
-            plugins/test_queue_worker plugins/test_item_writer plugins/test_site_queries plugins/test_item_deny plugins/test_members plugins/test_menu_entries plugins/trovato_record_ref plugins/trovato_spam plugins/trovato_series plugins/test_plugin_api plugins/trovato_book plugins/trovato_contact plugins/test_assistant_scope \
+            plugins/test_queue_worker plugins/test_item_writer plugins/test_site_queries plugins/test_item_deny plugins/test_members plugins/test_menu_entries plugins/test_page_builder_components plugins/trovato_record_ref plugins/trovato_spam plugins/trovato_series plugins/test_plugin_api plugins/trovato_book plugins/trovato_contact plugins/test_assistant_scope \
             plugins/trovato_ai plugins/test_form_taps plugins/test_form_taps_b
           cp target/wasm32-wasip1/release/trovato_blog.wasm plugins/trovato_blog/
           cp target/wasm32-wasip1/release/trovato_search.wasm plugins/trovato_search/
@@ -560,6 +561,7 @@ jobs:
           cp target/wasm32-wasip1/release/test_item_deny.wasm plugins/test_item_deny/
           cp target/wasm32-wasip1/release/test_members.wasm plugins/test_members/
           cp target/wasm32-wasip1/release/test_menu_entries.wasm plugins/test_menu_entries/
+          cp target/wasm32-wasip1/release/test_page_builder_components.wasm plugins/test_page_builder_components/
           cp target/wasm32-wasip1/release/trovato_record_ref.wasm plugins/trovato_record_ref/
           cp target/wasm32-wasip1/release/trovato_spam.wasm plugins/trovato_spam/
           cp target/wasm32-wasip1/release/trovato_book.wasm plugins/trovato_book/
@@ -779,6 +781,34 @@ jobs:
         env:
           RUSTDOCFLAGS: "-D warnings"
         run: cargo doc --no-deps --document-private-items
+
+  # The page builder editor: its tests, its types, and that the committed
+  # bundle is what its source builds (the kernel serves the bundle from
+  # static/, so a source change without a rebuild would never reach a site).
+  editor:
+    name: Page builder editor
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: plugins/trovato_page_builder/editor
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: plugins/trovato_page_builder/editor/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - run: npm run build
+      - name: The committed bundle matches the source
+        working-directory: .
+        run: |
+          git diff --exit-code -- static/js/page-builder-editor.js static/css/page-builder-editor.css || {
+            echo "::error::static/js/page-builder-editor.js or static/css/page-builder-editor.css is stale: run 'npm run build' in plugins/trovato_page_builder/editor and commit the result."
+            exit 1
+          }
 
   terminology:
     name: Terminology Check

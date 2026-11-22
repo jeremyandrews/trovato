@@ -1,0 +1,56 @@
+# Section: a full width band holding other components.
+type = "SectionWrapper"
+label = "Section"
+category = "layout"
+description = "A band of the page with its own background, padding and width."
+zones = ["content"]
+classes = ["pb-bg--light", "pb-bg--dark", "pb-bg--brand"]
+
+[[fields]]
+name = "background"
+type = "select"
+label = "Background"
+default = ""
+options = [
+  { value = "", label = "None" },
+  { value = "light", label = "Light", class = "pb-bg--light" },
+  { value = "dark", label = "Dark", class = "pb-bg--dark" },
+  { value = "brand", label = "Brand", class = "pb-bg--brand" },
+]
+
+[[fields]]
+name = "padding"
+type = "select"
+default = "default"
+options = [
+  { value = "default", label = "Default" },
+  { value = "large", label = "Large" },
+  { value = "none", label = "None" },
+]
+
+[[fields]]
+name = "maxWidth"
+type = "select"
+default = "default"
+options = [
+  { value = "default", label = "Default" },
+  { value = "wide", label = "Wide" },
+  { value = "full", label = "Full" },
+]
+
+[[fields]]
+name = "ariaLabel"
+type = "text"
+label = "Section Label (accessibility)"
+
+[[fields]]
+name = "lang"
+type = "text"
+label = "Language Override"
+
+# Before 0.107 a free CSS colour written into a style attribute.
+[[fields]]
+name = "backgroundColor"
+type = "text"
+hidden = true
+deprecated = "Replaced by background; the value is no longer written into the page."

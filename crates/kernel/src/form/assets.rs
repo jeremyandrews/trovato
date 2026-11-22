@@ -109,6 +109,22 @@ pub const LIBRARIES: &[Library] = &[
         ],
     },
     Library {
+        // The Puck page builder editor, built from
+        // plugins/trovato_page_builder/editor (`npm run build`) into one
+        // committed bundle, so it is served from /static like every other
+        // kernel script. The media picker is its image field's chooser.
+        name: "page_builder",
+        css: &[
+            "/static/css/media-picker.css",
+            "/static/css/page-builder.css",
+            "/static/css/page-builder-editor.css",
+        ],
+        js: &[
+            local("/static/js/media-picker.js"),
+            local("/static/js/page-builder-editor.js"),
+        ],
+    },
+    Library {
         name: "record_ref",
         css: &["/static/css/record-ref.css"],
         js: &[local("/static/js/record-ref.js")],
@@ -137,6 +153,7 @@ fn widget_library(widget: &str) -> Option<&'static str> {
         "compound" => Some("compound_field"),
         "file" => Some("file_upload"),
         "record_reference" => Some("record_ref"),
+        "page_builder" => Some("page_builder"),
         _ => None,
     }
 }
@@ -211,5 +228,12 @@ mod tests {
         ];
         let names: Vec<&str> = libraries_for(&form).iter().map(|l| l.name).collect();
         assert_eq!(names, vec!["form", "ai_assist"]);
+    }
+
+    #[test]
+    fn a_page_builder_widget_attaches_the_editor() {
+        let form = Form::new("f").element("layout", FormElement::widget("page_builder"));
+        let names: Vec<&str> = libraries_for(&form).iter().map(|l| l.name).collect();
+        assert_eq!(names, vec!["form", "page_builder"]);
     }
 }

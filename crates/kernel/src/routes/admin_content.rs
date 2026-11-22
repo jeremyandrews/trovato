@@ -350,6 +350,25 @@ async fn add_content_submit(
                 )
                 .await;
             }
+            if let Some(invalid) = e.downcast_ref::<crate::content::PageBuilderInvalid>() {
+                let errors: Vec<crate::form::ValidationError> = invalid
+                    .0
+                    .iter()
+                    .map(|(field, error)| {
+                        crate::form::ValidationError::field(field.clone(), error.to_string())
+                    })
+                    .collect();
+                return render_content_form(
+                    &state,
+                    &session,
+                    &user_ctx,
+                    &content_type,
+                    None,
+                    Some(&posted),
+                    &errors,
+                )
+                .await;
+            }
             tracing::error!(error = %e, "failed to create content");
             render_server_error("Failed to create content.")
         }
@@ -547,6 +566,25 @@ async fn edit_content_submit(
                     Some(&item),
                     Some(&posted),
                     &[crate::form::ValidationError::form(denied.to_string())],
+                )
+                .await;
+            }
+            if let Some(invalid) = e.downcast_ref::<crate::content::PageBuilderInvalid>() {
+                let errors: Vec<crate::form::ValidationError> = invalid
+                    .0
+                    .iter()
+                    .map(|(field, error)| {
+                        crate::form::ValidationError::field(field.clone(), error.to_string())
+                    })
+                    .collect();
+                return render_content_form(
+                    &state,
+                    &session,
+                    &user_ctx,
+                    &content_type,
+                    Some(&item),
+                    Some(&posted),
+                    &errors,
                 )
                 .await;
             }

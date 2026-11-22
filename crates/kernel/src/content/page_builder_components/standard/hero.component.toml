@@ -1,0 +1,80 @@
+# Hero: the page's opening band.
+type = "Hero"
+label = "Hero Section"
+category = "content"
+description = "A large heading with an optional subtitle, image and call to action."
+classes = ["pb-bg--light", "pb-bg--dark", "pb-bg--brand"]
+
+[[fields]]
+name = "title"
+type = "text"
+default = "Hero Title"
+
+[[fields]]
+name = "subtitle"
+type = "text"
+
+[[fields]]
+name = "backgroundImage"
+type = "url"
+label = "Background Image URL"
+
+[[fields]]
+name = "imageAlt"
+type = "text"
+label = "Image Alt Text"
+
+[[fields]]
+name = "ctaText"
+type = "text"
+label = "CTA Button Text"
+
+[[fields]]
+name = "ctaUrl"
+type = "url"
+label = "CTA Button URL"
+
+[[fields]]
+name = "variant"
+type = "select"
+default = "standard"
+options = [
+  { value = "standard", label = "Standard" },
+  { value = "split", label = "Split (50/50)" },
+  { value = "minimal", label = "Minimal" },
+]
+
+[[fields]]
+name = "background"
+type = "select"
+label = "Background"
+default = ""
+options = [
+  { value = "", label = "None" },
+  { value = "light", label = "Light", class = "pb-bg--light" },
+  { value = "dark", label = "Dark", class = "pb-bg--dark" },
+  { value = "brand", label = "Brand", class = "pb-bg--brand" },
+]
+
+[[fields]]
+name = "headingLevel"
+type = "heading_level"
+label = "Heading Level (2-6)"
+default = 2
+
+[[fields]]
+name = "lang"
+type = "text"
+label = "Language Override"
+
+[[fields]]
+name = "isDecorative"
+type = "boolean"
+hidden = true
+
+# Before 0.107 a free CSS colour written into a style attribute.
+[[fields]]
+name = "backgroundColor"
+type = "text"
+hidden = true
+deprecated = "Replaced by background; the value is no longer written into the page."

@@ -1,0 +1,37 @@
+# Quote: a quotation with its speaker.
+type = "BlockquoteExtended"
+label = "Quote"
+category = "content"
+description = "A quotation with the speaker's name, role and photo."
+
+[[fields]]
+name = "text"
+type = "text"
+multiline = true
+default = "Quote text here."
+
+[[fields]]
+name = "attribution"
+type = "text"
+
+[[fields]]
+name = "role"
+type = "text"
+label = "Role / Title"
+
+[[fields]]
+name = "imageUrl"
+type = "url"
+label = "Avatar Image URL"
+
+[[fields]]
+name = "sourceUrl"
+type = "url"
+label = "Source URL"
+hidden = true
+
+[[fields]]
+name = "lang"
+type = "text"
+label = "Language Override"
+hidden = true

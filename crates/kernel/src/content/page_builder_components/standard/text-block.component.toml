@@ -1,0 +1,15 @@
+# Text: Markdown, rendered and sanitized by the kernel.
+type = "TextBlock"
+label = "Text"
+category = "content"
+description = "Markdown text. A level one heading is rendered as level two."
+
+[[fields]]
+name = "content"
+type = "rich_text"
+default = "Write **Markdown** here."
+
+[[fields]]
+name = "lang"
+type = "text"
+label = "Language Override"

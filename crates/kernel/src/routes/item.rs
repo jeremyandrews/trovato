@@ -276,10 +276,40 @@ fn write_error(e: anyhow::Error, context: &'static str) -> AppError {
     if let Some(denied) = e.downcast_ref::<crate::content::WriteDenied>() {
         return AppError::forbidden(denied.to_string());
     }
+    if let Some(invalid) = e.downcast_ref::<crate::content::PageBuilderInvalid>() {
+        return page_builder_invalid(invalid);
+    }
     if e.to_string().contains("access denied") {
         return AppError::forbidden("Access denied");
     }
     AppError::internal_ctx(e, context)
+}
+
+/// A 422 naming every value a page builder field refused, each at
+/// `<item field>.<place in the page>.<component field>`, e.g.
+/// `field_layout.content[2].cards[1].title`.
+pub(crate) fn page_builder_invalid(invalid: &crate::content::PageBuilderInvalid) -> AppError {
+    AppError::validation(
+        invalid
+            .0
+            .iter()
+            .map(|(field, error)| {
+                let mut path = field.clone();
+                for part in [&error.location, &error.field] {
+                    if !part.is_empty() {
+                        path.push('.');
+                        path.push_str(part);
+                    }
+                }
+                let message = if error.component.is_empty() {
+                    error.message.clone()
+                } else {
+                    format!("{}: {}", error.component, error.message)
+                };
+                AppError::field_error(path, "invalid", message)
+            })
+            .collect(),
+    )
 }
 
 /// Create the item router.
@@ -422,7 +452,8 @@ async fn view_item(
         .unwrap_or_default();
 
     // Render fields through filter pipeline
-    let mut children_html = render_item_fields(&state, &item.fields, &content_type_fields);
+    let (mut children_html, page_stylesheets) =
+        render_item_fields(&state, &user, &item.fields, &content_type_fields).await;
 
     // Every plugin's `tap_item_view` output, collected once. It reaches the
     // template on its own as `plugin_output`, for a theme that lays out its own
@@ -566,6 +597,7 @@ async fn view_item(
     let mut context = tera::Context::new();
     context.insert("item", &item);
     context.insert("children", &children_html);
+    context.insert("page_stylesheets", &page_stylesheets);
     context.insert("plugin_output", &plugin_output);
     // The viewer this route already loaded, so the item template can name it
     // and `inject_site_context_for` below does not load it again.
@@ -691,13 +723,16 @@ async fn view_item(
 ///
 /// One body for the item page and the revision preview, so a past revision is
 /// shown exactly as it would have been. The caller hands in fields already cut
-/// to what the viewer may see.
-fn render_item_fields(
+/// to what the viewer may see. Returns the HTML and the stylesheets the page
+/// builder components in it declared, for the page head.
+async fn render_item_fields(
     state: &AppState,
+    viewer: &UserContext,
     fields: &serde_json::Value,
     content_type_fields: &[trovato_sdk::types::FieldDefinition],
-) -> String {
+) -> (String, Vec<String>) {
     let mut children_html = String::new();
+    let mut stylesheets: Vec<String> = Vec::new();
     if let Some(fields) = fields.as_object() {
         for (name, value) in fields {
             // A text field's format, stored beside it as `<name>_format`, is
@@ -731,13 +766,18 @@ fn render_item_fields(
             }) || (value.get("root").is_some()
                 && value.get("content").is_some());
             if is_page_builder_field {
-                match state.theme().render_page_builder_content(value) {
+                match super::helpers::render_page_builder_field(state, viewer, value).await {
                     Ok(rendered) => {
                         children_html.push_str(&format!(
                             "<div class=\"field field--page-builder field-{}\">{}</div>",
                             html_escape(name),
-                            rendered
+                            rendered.html
                         ));
+                        for sheet in rendered.stylesheets {
+                            if !stylesheets.contains(&sheet) {
+                                stylesheets.push(sheet);
+                            }
+                        }
                     }
                     Err(e) => {
                         tracing::warn!(field = %name, error = %e, "failed to render page builder field");
@@ -885,7 +925,7 @@ fn render_item_fields(
             }
         }
     }
-    children_html
+    (children_html, stylesheets)
 }
 
 /// Whether `key` is `<name>_format` for a field `<name>` the item type declares
@@ -1539,7 +1579,9 @@ async fn preview_revision(
         .get(&item.item_type)
         .map(|ct| ct.fields.clone())
         .unwrap_or_default();
-    let fields_html = render_item_fields(&state, &revision.fields, &content_type_fields);
+    let viewer = crate::routes::helpers::get_user_context(&session, &state).await;
+    let (fields_html, page_stylesheets) =
+        render_item_fields(&state, &viewer, &revision.fields, &content_type_fields).await;
     let authors = revision_authors(&state, &revisions).await;
 
     let mut context = tera::Context::new();
@@ -1552,14 +1594,10 @@ async fn preview_revision(
     );
     context.insert("current_revision_id", &item.current_revision_id);
     context.insert("fields_html", &fields_html);
+    context.insert("page_stylesheets", &page_stylesheets);
 
-    super::helpers::render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/revision-preview.html",
-        context,
-    )
-    .await
+    super::helpers::render_admin_template(&state, &viewer, "admin/revision-preview.html", context)
+        .await
 }
 
 /// The two revisions a compare is asked for.

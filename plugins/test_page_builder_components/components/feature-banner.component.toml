@@ -1,0 +1,60 @@
+# A banner: an image beside a title, text and a call to action, in one of
+# three tones.
+type = "FeatureBanner"
+label = "Feature banner"
+category = "marketing"
+description = "An image beside a title, text and a button, in a light, dark or accent tone."
+stylesheets = ["feature-banner.css"]
+classes = [
+  "feature-banner--light",
+  "feature-banner--dark",
+  "feature-banner--accent",
+  "feature-banner--image-right",
+]
+
+[[fields]]
+name = "tone"
+type = "select"
+label = "Tone"
+default = "light"
+options = [
+  { value = "light", label = "Light", class = "feature-banner--light" },
+  { value = "dark", label = "Dark", class = "feature-banner--dark" },
+  { value = "accent", label = "Accent", class = "feature-banner--accent" },
+]
+
+[[fields]]
+name = "imagePosition"
+type = "select"
+label = "Image position"
+default = "left"
+options = [
+  { value = "left", label = "Left" },
+  { value = "right", label = "Right", class = "feature-banner--image-right" },
+]
+
+[[fields]]
+name = "image"
+type = "image"
+label = "Image"
+help = "Alt text is required unless the image is decorative."
+
+[[fields]]
+name = "title"
+type = "text"
+label = "Title"
+required = true
+max_length = 80
+default = "See it in action"
+
+[[fields]]
+name = "body"
+type = "rich_text"
+label = "Text"
+max_length = 600
+default = "A **short** paragraph about the feature."
+
+[[fields]]
+name = "cta"
+type = "link"
+label = "Button"
