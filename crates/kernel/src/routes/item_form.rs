@@ -421,8 +421,11 @@ pub(crate) const PROMOTION_RENDERED: &str = "_promotion_rendered";
 /// them.
 pub(crate) const AUTHORING_RENDERED: &str = "_authoring_rendered";
 
-/// The `datetime-local` value format the authored on input reads and writes.
+/// The `datetime-local` value format without seconds, which the authored on
+/// input also reads.
 const AUTHORED_ON_FORMAT: &str = "%Y-%m-%dT%H:%M";
+/// The same with seconds, the shape the form shows a stored time in.
+const AUTHORED_ON_SECONDS_FORMAT: &str = "%Y-%m-%dT%H:%M:%S";
 
 /// The "Publishing options" section of the item form (B107): promoted to the
 /// front page and sticky at the top of lists for a holder of `publish content`
@@ -483,7 +486,18 @@ pub(crate) async fn publishing_element(
         };
         let authored_on = item
             .and_then(|i| chrono::DateTime::from_timestamp(i.created, 0))
-            .map(|t| t.format(AUTHORED_ON_FORMAT).to_string())
+            // To the second, as stored: a minute value would move `created`
+            // back to the minute on every save that changed nothing. Whole
+            // minutes without seconds, as a browser normalizes them.
+            .map(|t| {
+                use chrono::Timelike;
+                let format = if t.second() == 0 {
+                    AUTHORED_ON_FORMAT
+                } else {
+                    AUTHORED_ON_SECONDS_FORMAT
+                };
+                t.format(format).to_string()
+            })
             .unwrap_or_default();
         fieldset = fieldset
             .child(
@@ -498,6 +512,8 @@ pub(crate) async fn publishing_element(
                 "authored_on",
                 FormElement::input("datetime-local")
                     .title("Authored on (UTC)")
+                    // Seconds are allowed, so a stored time to the second is valid.
+                    .attribute("step", "1")
                     .description("Leave empty for now.")
                     .default_value(authored_on)
                     .weight(4),
@@ -582,7 +598,7 @@ pub(crate) async fn requested_publishing(
 /// A `datetime-local` value (with or without seconds), read as UTC.
 fn parse_authored_on(value: &str) -> Option<i64> {
     chrono::NaiveDateTime::parse_from_str(value, AUTHORED_ON_FORMAT)
-        .or_else(|_| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S"))
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(value, AUTHORED_ON_SECONDS_FORMAT))
         .ok()
         .map(|t| t.and_utc().timestamp())
 }

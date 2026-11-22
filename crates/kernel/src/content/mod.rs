@@ -12,6 +12,7 @@ pub mod block_render;
 pub mod block_types;
 pub mod body_field;
 pub mod compound;
+pub mod field_value;
 pub(crate) mod file_refs;
 mod filter;
 mod form;
