@@ -1084,6 +1084,8 @@ pub fn router() -> Router<AppState> {
         .merge(super::admin_search_report::router())
         // The cron report and the site log (B107)
         .merge(super::admin_reports::router())
+        // Access rules (B108)
+        .merge(super::admin_access_rules::router())
         // Plugin-queue dead-letter admin (P11d / D-46)
         .merge(super::admin_queue::router())
         // Async auto-embed lifecycle admin (P11f / D-51, D-52)

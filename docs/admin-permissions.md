@@ -117,6 +117,13 @@ leaves it out keeps the stored value rather than erasing it.
 | `/admin/people/permissions` | GET, POST | `administer users`; a non-superuser may grant or revoke only a permission they hold |
 | `/admin/users/{id}/sessions` and its revoke route | GET, POST | `administer users` |
 | `/admin/recovery` | GET, POST | `administer users` |
+| `/admin/people/rules`, its check box, and its add, edit and delete routes | GET, POST | `administer access rules` |
+
+`administer access rules` is separate from `administer users` on purpose: the
+rules decide who may register and sign in at all, which is a policy over every
+account rather than the management of any one. No migration grants it; an
+administrator holds it implicitly. A user administrator creating an account a
+rule blocks is warned on `/admin/people`, not refused.
 
 **Role membership is delegable; the permissions it can carry are not.**
 The user add and edit forms carry a checkbox per role. `administer users` is a

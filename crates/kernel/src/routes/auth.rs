@@ -65,6 +65,8 @@ pub(crate) enum LoginError {
     Locked(String),
     /// Invalid credentials — wrong username or password (401).
     InvalidCredentials,
+    /// An access rule turns this username or address away (403).
+    Blocked(String),
     /// Internal server error — database failure, etc. (500).
     Internal(String),
 }
@@ -74,6 +76,7 @@ impl LoginError {
         match self {
             LoginError::Locked(_) => StatusCode::TOO_MANY_REQUESTS,
             LoginError::InvalidCredentials => StatusCode::UNAUTHORIZED,
+            LoginError::Blocked(_) => StatusCode::FORBIDDEN,
             LoginError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
     }
@@ -82,6 +85,7 @@ impl LoginError {
         match self {
             LoginError::Locked(msg) => msg,
             LoginError::InvalidCredentials => "Invalid username or password",
+            LoginError::Blocked(msg) => msg,
             LoginError::Internal(msg) => msg,
         }
     }
@@ -278,6 +282,11 @@ async fn do_login(
             username = %request.username,
             "login refused: sign in is locked"
         ),
+        Err(LoginError::Blocked(_)) => info!(
+            log_type = "user",
+            username = %request.username,
+            "login refused: an access rule blocks it"
+        ),
         Err(LoginError::Internal(_)) => {}
     }
     result
@@ -317,6 +326,21 @@ async fn attempt_login(
         Err(e) => {
             tracing::error!(error = %e, "failed to check lockout status");
         }
+    }
+
+    // Access rules (B108): a denied username or client address does not
+    // reach the password check at all. Checked after the lockout, so a
+    // blocked client still spends its attempts.
+    use crate::services::access_rule::{self, RuleType};
+    if access_rule::is_blocked(state.db(), RuleType::Username, &request.username).await {
+        return Err(LoginError::Blocked(
+            "Sign in with this username is not allowed on this site.".to_string(),
+        ));
+    }
+    if access_rule::is_blocked(state.db(), RuleType::Host, client_ip).await {
+        return Err(LoginError::Blocked(
+            "Sign in from your address is not allowed on this site.".to_string(),
+        ));
     }
 
     // Find user by username
@@ -428,6 +452,7 @@ async fn login(
             LoginError::InvalidCredentials => {
                 AppError::unauthorized("Invalid username or password")
             }
+            LoginError::Blocked(msg) => AppError::forbidden(msg),
             LoginError::Internal(msg) => AppError::internal_ctx(anyhow::anyhow!(msg), "login"),
         }),
     }
@@ -587,6 +612,7 @@ async fn render_register_form(
 async fn register_form_submit(
     State(state): State<AppState>,
     session: Session,
+    axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     Form(form): Form<RegisterFormRequest>,
 ) -> Response {
     if !is_registration_enabled(&state).await {
@@ -616,7 +642,15 @@ async fn register_form_submit(
 
     // Validate input
     let mut errors = Vec::new();
-    validate_registration_input(&state, &username, &mail, &form.password, &mut errors).await;
+    validate_registration_input(
+        &state,
+        &username,
+        &mail,
+        &form.password,
+        &client_ip.0,
+        &mut errors,
+    )
+    .await;
 
     if form.password != form.confirm_password {
         errors.push("Passwords do not match.".to_string());
@@ -678,10 +712,25 @@ async fn validate_registration_input(
     username: &str,
     mail: &str,
     password: &str,
+    client_ip: &str,
     errors: &mut Vec<String>,
 ) {
     let username = username.trim();
     let mail = mail.trim();
+
+    // Access rules (B108). One message per blocked type; the uniqueness check
+    // below still runs, so a blocked value is not told apart from a taken one
+    // by what else the form says.
+    for rule_type in crate::services::access_rule::blocked_types(
+        state.db(),
+        Some(username).filter(|u| !u.is_empty()),
+        Some(mail).filter(|m| !m.is_empty()),
+        Some(client_ip),
+    )
+    .await
+    {
+        errors.push(crate::services::access_rule::refusal_message(rule_type).to_string());
+    }
 
     if let Err(msg) = validate_username(username) {
         errors.push(msg.to_string());
@@ -841,6 +890,7 @@ async fn do_register(
 /// (applied by the middleware) provides additional abuse protection.
 async fn register_json(
     State(state): State<AppState>,
+    axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     Json(request): Json<RegisterJsonRequest>,
 ) -> Result<Json<JsonSuccess>, AppError> {
     // The `register` bucket is counted once, per client IP, by the rate-limit
@@ -858,6 +908,7 @@ async fn register_json(
         &request.username,
         &request.mail,
         &request.password,
+        &client_ip.0,
         &mut errors,
     )
     .await;

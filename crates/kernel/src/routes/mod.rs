@@ -1,6 +1,7 @@
 //! HTTP route handlers.
 
 pub mod admin;
+pub mod admin_access_rules;
 pub mod admin_ai_assistant;
 pub mod admin_ai_budget;
 pub mod admin_ai_chat;
@@ -10,6 +11,7 @@ pub mod admin_config;
 pub mod admin_content;
 pub mod admin_content_type;
 pub mod admin_embed;
+pub mod admin_form;
 pub mod admin_menu;
 pub mod admin_nav;
 pub mod admin_pathauto;

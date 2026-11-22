@@ -1,0 +1,59 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block content %}
+{{ list::header(title="Access rules", add_url="/admin/people/rules/add", add_label="Add rule") }}
+
+{% if flash %}
+<div class="messages"><div class="message message--success" role="status">{{ flash }}</div></div>
+{% endif %}
+
+<div class="admin-card">
+    <p>Access rules turn away registrations and sign ins by username, email address or client address. A rule's mask may use <code>%</code> for any run of characters. An allow rule overrides any deny rule of the same type.</p>
+    {% if rules %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th scope="col">Access type</th>
+                <th scope="col">Rule type</th>
+                <th scope="col">Mask</th>
+                <th scope="col">Created</th>
+                <th scope="col">Operations</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for rule in rules %}
+            <tr>
+                <td><span class="access-rule-status access-rule-status--{{ rule.status }}">{{ rule.status | capitalize }}</span></td>
+                <td>{{ rule.rule_type }}</td>
+                <td><code>{{ rule.pattern }}</code></td>
+                <td>{{ rule.created | format_date(format="%Y-%m-%d %H:%M") }}</td>
+                <td>
+                    <a href="/admin/people/rules/{{ rule.id }}/edit">Edit</a>
+                    &middot;
+                    <a href="/admin/people/rules/{{ rule.id }}/delete">Delete</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    {{ list::empty(message="There are no access rules. Every username, email address and client address may register and sign in.", add_url="/admin/people/rules/add", add_label="Add a rule") }}
+    {% endif %}
+</div>
+
+<div class="admin-card">
+    <h3 class="report-heading">Check rules</h3>
+    <p>Test a value against the rules above, without registering or signing in.</p>
+    {% if check %}
+    <div class="messages">
+        {% if check.blocked %}
+        <div class="message message--warning" role="status">{{ check.rule_type }} <code>{{ check.value }}</code> is denied by the rules.</div>
+        {% else %}
+        <div class="message message--success" role="status">{{ check.rule_type }} <code>{{ check.value }}</code> is allowed.</div>
+        {% endif %}
+    </div>
+    {% endif %}
+    {{ check_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+</div>
+{% endblock %}

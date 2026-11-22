@@ -1,0 +1,11 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block content %}
+{{ list::header(title=title) }}
+
+<div class="admin-card">
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+    <p><a href="/admin/people/rules">Back to access rules</a></p>
+</div>
+{% endblock %}

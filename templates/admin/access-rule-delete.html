@@ -1,0 +1,12 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block content %}
+{{ list::header(title="Delete access rule") }}
+
+<div class="admin-card">
+    <p>Delete the {{ rule.status }} rule for {{ rule.rule_type | lower }} <code>{{ rule.pattern }}</code>? This cannot be undone.</p>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+    <p><a href="/admin/people/rules">Cancel</a></p>
+</div>
+{% endblock %}

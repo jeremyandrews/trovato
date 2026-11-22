@@ -5,6 +5,7 @@
 //! wrapped in `Option<Arc<...>>` and initialized only when the
 //! corresponding plugin is enabled.
 
+pub mod access_rule;
 pub mod account_access;
 pub mod ai_assistant;
 pub mod ai_chat;
