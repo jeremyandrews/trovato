@@ -498,6 +498,12 @@ pub struct Config {
     /// Later directories override earlier ones.
     pub templates_dirs: Vec<PathBuf>,
 
+    /// Where the deployment's themes are found (`THEMES_DIR`, default a single
+    /// `./themes` entry): each a directory holding `theme.toml`. A search path
+    /// like `TEMPLATES_DIR`; a later entry's theme replaces an earlier one of
+    /// the same name. See `theme::registry`.
+    pub themes_dirs: Vec<PathBuf>,
+
     /// Proxies whose `X-Forwarded-For` header is believed (RATE-1).
     ///
     /// Empty means trust none, which is the safe default: an unset
@@ -633,6 +639,7 @@ impl Config {
         // one-element list and existing deployments are unaffected.
         let plugins_dirs = settings.search_path("PLUGINS_DIR", "./plugins");
         let templates_dirs = settings.search_path("TEMPLATES_DIR", "./templates");
+        let themes_dirs = settings.search_path("THEMES_DIR", "./themes");
         let static_dirs = settings.search_path("STATIC_DIR", "./static");
         let pagefind_output_dir = get("PAGEFIND_OUTPUT_DIR")
             .map(PathBuf::from)
@@ -755,6 +762,7 @@ impl Config {
             gather_max_page_size,
             language_negotiation_methods,
             templates_dirs,
+            themes_dirs,
             trusted_proxies,
             jwt_secret,
             shutdown_timeout,

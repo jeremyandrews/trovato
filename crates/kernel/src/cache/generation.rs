@@ -53,11 +53,13 @@ pub enum CacheKind {
     Menus,
     /// Stored text formats (`content::text_format`).
     TextFormats,
+    /// The default and admin themes (`theme::registry`).
+    Themes,
 }
 
 impl CacheKind {
     /// Every kind, for a writer that may have touched any of them.
-    pub const ALL: [CacheKind; 11] = [
+    pub const ALL: [CacheKind; 12] = [
         CacheKind::Permissions,
         CacheKind::Users,
         CacheKind::Items,
@@ -69,6 +71,7 @@ impl CacheKind {
         CacheKind::Locale,
         CacheKind::Menus,
         CacheKind::TextFormats,
+        CacheKind::Themes,
     ];
 
     /// The field name in the Redis hash.
@@ -85,6 +88,7 @@ impl CacheKind {
             CacheKind::Locale => "locale",
             CacheKind::Menus => "menus",
             CacheKind::TextFormats => "text_formats",
+            CacheKind::Themes => "themes",
         }
     }
 

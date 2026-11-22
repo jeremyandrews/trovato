@@ -86,6 +86,9 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     // it implicitly. A stored format's own `use <format>` permission is listed
     // on the grid beside these (`content::text_format`).
     "administer text formats",
+    // `/admin/appearance`: the default and admin themes (B108). Granted by no
+    // migration; an administrator holds it implicitly.
+    "administer themes",
     "use filtered_html",
     "use full_html",
     "use ai",

@@ -148,6 +148,12 @@ pub const LINKS: &[Link] = &[
     ),
     link(
         "Structure",
+        "Appearance",
+        "/admin/appearance",
+        Permission("administer themes"),
+    ),
+    link(
+        "Structure",
         "Menus",
         "/admin/structure/menus",
         Permission("administer site"),
@@ -302,6 +308,11 @@ pub const CARDS: &[Card] = &[
         title: "Categories",
         description: "Vocabularies and their tags.",
         links: &[("Categories", "/admin/structure/categories")],
+    },
+    Card {
+        title: "Appearance",
+        description: "The site's theme, and the administration theme.",
+        links: &[("Appearance", "/admin/appearance")],
     },
     Card {
         title: "Menus",

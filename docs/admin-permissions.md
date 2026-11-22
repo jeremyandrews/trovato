@@ -225,6 +225,16 @@ While maintenance mode is on, a signed-in user without `bypass maintenance mode`
 gets the maintenance page like an anonymous visitor. Administrators hold it
 implicitly; grant it to a role whose members must keep working during the window.
 
+## Appearance
+
+| Route | Method | Permission |
+|---|---|---|
+| `/admin/appearance` and a theme's screenshot | GET, POST | `administer themes` |
+
+The default theme draws every page outside `/admin`, the administration theme
+every page under it. No migration grants `administer themes`; an administrator
+holds it implicitly.
+
 ## Text formats
 
 | Route | Method | Permission |

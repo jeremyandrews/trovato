@@ -343,3 +343,65 @@
     font-size: 0.8125rem;
     word-break: break-word;
 }
+
+/* Appearance (B108) */
+.theme-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr));
+    gap: 1rem;
+}
+.theme-card {
+    border: 1px solid var(--gray-200, #e5e7eb);
+    border-radius: 0.5rem;
+    overflow: hidden;
+    background: #fff;
+}
+.theme-card--default {
+    border-color: var(--primary, #6366f1);
+    box-shadow: 0 0 0 1px var(--primary, #6366f1);
+}
+.theme-card__screenshot {
+    display: block;
+    width: 100%;
+    aspect-ratio: 16 / 10;
+    object-fit: cover;
+    object-position: top;
+    border-bottom: 1px solid var(--gray-200, #e5e7eb);
+}
+.theme-card__screenshot--none {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--gray-100, #f3f4f6);
+    color: var(--gray-500, #6b7280);
+    font-size: 1.25rem;
+    font-weight: 600;
+}
+.theme-card__body {
+    padding: 0.75rem 1rem 1rem;
+}
+.theme-card__name {
+    margin: 0 0 0.5rem;
+    font-size: 1.0625rem;
+}
+.theme-card__machine {
+    font-size: 0.8125rem;
+    color: var(--gray-500, #6b7280);
+}
+.theme-card__badge {
+    display: inline-block;
+    margin-right: 0.25rem;
+    padding: 0.125rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: #e0e7ff;
+    color: #3730a3;
+}
+.theme-card__badge--admin {
+    background: #d1ecf1;
+    color: #0c5460;
+}

@@ -449,6 +449,10 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
             state.clone(),
             crate::middleware::render_error_pages,
         ))
+        // The theme each render uses: the admin theme for `/admin`, the
+        // default otherwise (B108). Outside the error-page layer, so an error
+        // page is drawn in the request's theme too.
+        .layer(axum::middleware::from_fn(crate::middleware::scope_theme))
         .layer(session_layer)
         .layer(cors)
         .layer(axum::middleware::from_fn_with_state(

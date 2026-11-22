@@ -33,6 +33,12 @@ async fn serve_static(State(state): State<AppState>, Path(path): Path<String>) -
         // The Pagefind index is served from wherever it is built, and only
         // from there, so a server never mixes its files with a stale copy.
         resolve_static_file(std::slice::from_ref(&runtime.pagefind_output_dir), rest).await
+    } else if let Some((theme, rest)) = theme_path(path) {
+        // A theme's own files, from its `static/` directory (B108).
+        match state.theme().theme(theme).and_then(|t| t.static_dir()) {
+            Some(dir) => resolve_static_file(std::slice::from_ref(&dir), rest).await,
+            None => None,
+        }
     } else if let Some((plugin, rest)) = plugin_path(path) {
         // A plugin's own files (a page builder component's stylesheet, for
         // one), from its `static/` directory, while it is enabled.
@@ -63,6 +69,14 @@ async fn serve_static(State(state): State<AppState>, Path(path): Path<String>) -
 /// The part of a `/static/` path inside the Pagefind index, if it is one.
 fn pagefind_path(path: &str) -> Option<&str> {
     path.strip_prefix("pagefind/")
+}
+
+/// The theme name and the path inside its `static/` directory, if `path` is
+/// under `themes/<name>/`.
+fn theme_path(path: &str) -> Option<(&str, &str)> {
+    let rest = path.strip_prefix("themes/")?;
+    let (theme, file) = rest.split_once('/')?;
+    (!theme.is_empty() && !file.is_empty()).then_some((theme, file))
 }
 
 /// The plugin name and the path inside its `static/` directory, if `path` is

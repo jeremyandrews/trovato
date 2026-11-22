@@ -15,6 +15,39 @@ use crate::services::locale::LocaleService;
 
 use super::render::RenderTreeConsumer;
 
+tokio::task_local! {
+    /// Whether the request being handled is for an `/admin` path, set by
+    /// [`scope_request`]; outside a request (a background task) it is unset,
+    /// and the default theme renders.
+    static ADMIN_REQUEST: bool;
+}
+
+/// Run `f`, a request for `path`, with the theme chosen for that path: the
+/// admin theme for `/admin`, the default theme otherwise.
+pub async fn scope_request<F: std::future::Future>(path: &str, f: F) -> F::Output {
+    ADMIN_REQUEST
+        .scope(ThemeEngine::is_admin_path(path), f)
+        .await
+}
+
+/// The themes in use: their machine names, `stock` for the stock theme.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct ActiveThemes {
+    /// Every page outside `/admin`.
+    pub default: String,
+    /// `/admin` pages.
+    pub admin: String,
+}
+
+impl Default for ActiveThemes {
+    fn default() -> Self {
+        Self {
+            default: super::registry::STOCK.to_string(),
+            admin: super::registry::STOCK.to_string(),
+        }
+    }
+}
+
 /// Class values kept on a `<span>` inside sanitized Markdown.
 ///
 /// The token classes Prism and highlight.js apply, and nothing else. They matter
@@ -358,8 +391,13 @@ use trovato_sdk::types::Item;
 
 /// Theme engine for rendering templates.
 pub struct ThemeEngine {
-    /// Tera template engine instance.
+    /// Tera template engine instance: the stock theme.
     tera: Tera,
+    /// The deployment's themes, each the stock search path with the theme's
+    /// templates laid over it (`theme::registry`).
+    themes: Vec<(super::registry::ThemeInfo, Tera)>,
+    /// The default and admin themes in use.
+    active: std::sync::RwLock<ActiveThemes>,
     /// Cache mapping suggestion lists to resolved template names.
     suggestion_cache: DashMap<String, String>,
     /// Counts `suggestion_cache` hits and misses.
@@ -382,11 +420,7 @@ impl ThemeEngine {
     ///
     /// If a `LocaleService` is provided, a `trans` filter is registered that
     /// translates interface strings.
-    pub fn new(
-        template_dirs: &[PathBuf],
-        locale: Option<Arc<LocaleService>>,
-        metrics: Arc<Metrics>,
-    ) -> Result<Self> {
+    fn build_tera(template_dirs: &[PathBuf], locale: Option<Arc<LocaleService>>) -> Result<Tera> {
         if template_dirs.is_empty() {
             anyhow::bail!("at least one template directory is required");
         }
@@ -428,9 +462,24 @@ impl ThemeEngine {
 
         let template_names: Vec<_> = tera.get_template_names().collect();
         debug!(count = template_names.len(), "loaded templates");
+        Ok(tera)
+    }
 
+    /// Create a new theme engine loading templates from a search path.
+    ///
+    /// Directories are applied in order and a later one overrides a template of
+    /// the same name. The result is the stock theme; [`Self::with_themes`] adds
+    /// the deployment's.
+    pub fn new(
+        template_dirs: &[PathBuf],
+        locale: Option<Arc<LocaleService>>,
+        metrics: Arc<Metrics>,
+    ) -> Result<Self> {
+        let tera = Self::build_tera(template_dirs, locale)?;
         Ok(Self {
             tera,
+            themes: Vec::new(),
+            active: std::sync::RwLock::new(ActiveThemes::default()),
             suggestion_cache: DashMap::new(),
             metrics,
             render_consumer: RenderTreeConsumer::new(),
@@ -485,6 +534,8 @@ impl ThemeEngine {
         let tera = Tera::default();
         Ok(Self {
             tera,
+            themes: Vec::new(),
+            active: std::sync::RwLock::new(ActiveThemes::default()),
             suggestion_cache: DashMap::new(),
             metrics,
             render_consumer: RenderTreeConsumer::new(),
@@ -709,9 +760,100 @@ impl ThemeEngine {
         }
     }
 
-    /// Get the underlying Tera instance for custom operations.
+    /// The Tera instance of the theme this request renders with: the admin
+    /// theme inside [`scope_request`] for an `/admin` path, the default theme
+    /// otherwise, and the stock theme when the active one is not loaded.
     pub fn tera(&self) -> &Tera {
+        let name = self.current_theme_name();
+        self.themes
+            .iter()
+            .find(|(info, _)| info.machine_name == name)
+            .map(|(_, tera)| tera)
+            .unwrap_or(&self.tera)
+    }
+
+    /// The stock theme's Tera instance, whatever theme is active.
+    pub fn stock_tera(&self) -> &Tera {
         &self.tera
+    }
+
+    /// The machine name of the theme this request renders with.
+    pub fn current_theme_name(&self) -> String {
+        let admin = ADMIN_REQUEST.try_with(|admin| *admin).unwrap_or(false);
+        let active = self.active();
+        if admin { active.admin } else { active.default }
+    }
+
+    /// Every theme: the stock theme first, then the deployment's.
+    pub fn themes(&self) -> Vec<super::registry::ThemeInfo> {
+        let mut all = vec![super::registry::ThemeInfo::stock()];
+        all.extend(self.themes.iter().map(|(info, _)| info.clone()));
+        all
+    }
+
+    /// One theme by machine name.
+    pub fn theme(&self, machine_name: &str) -> Option<super::registry::ThemeInfo> {
+        self.themes()
+            .into_iter()
+            .find(|t| t.machine_name == machine_name)
+    }
+
+    /// The default and admin themes in use.
+    pub fn active(&self) -> ActiveThemes {
+        match self.active.read() {
+            Ok(active) => active.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        }
+    }
+
+    /// Switch themes. A name that is not a loaded theme is the stock theme.
+    pub fn set_active(&self, active: ActiveThemes) {
+        let known = |name: &str| {
+            if self
+                .themes
+                .iter()
+                .any(|(info, _)| info.machine_name == name)
+            {
+                name.to_string()
+            } else {
+                super::registry::STOCK.to_string()
+            }
+        };
+        let active = ActiveThemes {
+            default: known(&active.default),
+            admin: known(&active.admin),
+        };
+        match self.active.write() {
+            Ok(mut guard) => *guard = active,
+            Err(poisoned) => *poisoned.into_inner() = active,
+        }
+        self.suggestion_cache.clear();
+    }
+
+    /// Load each of `themes` (the stock theme is skipped) as `base_dirs`
+    /// with the theme's `templates/` laid over them, so a template the theme
+    /// does not provide is the stock one. A theme whose templates do not load
+    /// is left out with a warning; the site keeps the stock theme for it.
+    pub fn with_themes(
+        mut self,
+        themes: Vec<super::registry::ThemeInfo>,
+        base_dirs: &[PathBuf],
+        locale: Option<Arc<LocaleService>>,
+    ) -> Self {
+        for info in themes {
+            let Some(templates) = info.templates_dir() else {
+                continue;
+            };
+            let mut dirs = base_dirs.to_vec();
+            dirs.push(templates);
+            match Self::build_tera(&dirs, locale.clone()) {
+                Ok(tera) => self.themes.push((info, tera)),
+                Err(e) => {
+                    tracing::warn!(theme = %info.machine_name, error = ?e, "failed to load a theme's templates; it is not offered");
+                }
+            }
+        }
+        self
     }
 
     /// Get a mutable reference to Tera (for adding templates at runtime).
@@ -730,8 +872,9 @@ impl ThemeEngine {
             return None;
         }
 
-        // Build cache key from suggestions
-        let cache_key = suggestions.join("|");
+        // Build cache key from suggestions, per theme: two themes may resolve
+        // the same suggestions to different templates.
+        let cache_key = format!("{}|{}", self.current_theme_name(), suggestions.join("|"));
 
         // Check cache first
         if let Some(cached) = self.metrics.cache_lookup(
@@ -744,14 +887,14 @@ impl ThemeEngine {
         // Find first template that exists
         for suggestion in suggestions {
             let template_name = format!("{suggestion}.html");
-            if self.tera.get_template(&template_name).is_ok() {
+            if self.tera().get_template(&template_name).is_ok() {
                 self.suggestion_cache
                     .insert(cache_key, template_name.clone());
                 return Some(template_name);
             }
 
             // Also try without .html extension (in case suggestion already has it)
-            if self.tera.get_template(suggestion).is_ok() {
+            if self.tera().get_template(suggestion).is_ok() {
                 let name = (*suggestion).to_string();
                 self.suggestion_cache.insert(cache_key, name.clone());
                 return Some(name);
@@ -786,7 +929,7 @@ impl ThemeEngine {
         element: &RenderElement,
         context: &mut tera::Context,
     ) -> Result<String> {
-        self.render_consumer.render(&self.tera, element, context)
+        self.render_consumer.render(self.tera(), element, context)
     }
 
     /// Render an item using template suggestions.
@@ -806,7 +949,7 @@ impl ThemeEngine {
         let children_html = self.render_element(element, &mut context)?;
         context.insert("children", &children_html);
 
-        self.tera
+        self.tera()
             .render(&template, &context)
             .context("failed to render item template")
     }
@@ -848,7 +991,7 @@ impl ThemeEngine {
             .resolve_template(&["form/form"])
             .unwrap_or_else(|| "form/form.html".to_string());
 
-        self.tera
+        self.tera()
             .render(&template, &context)
             .context("failed to render form template")
     }
@@ -944,7 +1087,7 @@ impl ThemeEngine {
             el_context.insert("children", &children_html);
         }
 
-        self.tera
+        self.tera()
             .render(template_name, &el_context)
             .with_context(|| format!("failed to render form element: {name}"))
     }
@@ -1022,7 +1165,7 @@ impl ThemeEngine {
         context.insert("path", path);
         context.insert("is_admin", &Self::is_admin_path(path));
 
-        self.tera
+        self.tera()
             .render(&template, context)
             .context("failed to render page template")
     }
@@ -1068,7 +1211,7 @@ impl ThemeEngine {
                 .context("failed to parse page builder JSON")?;
         crate::content::page_builder::render_puck_page(
             &page,
-            &self.tera,
+            self.tera(),
             &self.components,
             references,
         )
@@ -1084,6 +1227,10 @@ impl ThemeEngine {
         self.tera
             .full_reload()
             .context("failed to reload templates")?;
+        for (_, tera) in &mut self.themes {
+            tera.full_reload()
+                .context("failed to reload a theme's templates")?;
+        }
         self.clear_cache();
         Ok(())
     }

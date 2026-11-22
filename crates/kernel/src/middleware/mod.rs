@@ -17,6 +17,7 @@ pub mod requested_path;
 pub mod security_headers;
 pub mod session_tracking;
 pub mod tenant;
+pub mod theme_scope;
 
 pub use api_token::authenticate_api_token;
 pub use bearer_auth::authenticate_bearer_token;
@@ -37,3 +38,4 @@ pub use requested_path::RequestedPath;
 pub use security_headers::{SecurityHeaders, inject_security_headers};
 pub use session_tracking::track_session;
 pub use tenant::{TenantResolution, resolve_tenant};
+pub use theme_scope::scope_theme;

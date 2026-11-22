@@ -1088,6 +1088,8 @@ pub fn router() -> Router<AppState> {
         .merge(super::admin_access_rules::router())
         // Text formats (B108)
         .merge(super::admin_text_format::router())
+        // Appearance: the default and admin themes (B108)
+        .merge(super::admin_appearance::router())
         // Plugin-queue dead-letter admin (P11d / D-46)
         .merge(super::admin_queue::router())
         // Async auto-embed lifecycle admin (P11f / D-51, D-52)
