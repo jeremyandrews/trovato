@@ -138,6 +138,16 @@ pub struct UpdateItem {
     /// make the move is `ItemService::update`'s question.
     #[serde(default)]
     pub stage_id: Option<Uuid>,
+    /// Give the item this author. `None` leaves it.
+    ///
+    /// Only a holder of `administer content` may change it; the model stores
+    /// what it is given, and `ItemService::update` decides (B107).
+    #[serde(default)]
+    pub author_id: Option<Uuid>,
+    /// Set the item's authored on time, a Unix timestamp. `None` leaves it.
+    /// Decided as [`Self::author_id`] is.
+    #[serde(default)]
+    pub created: Option<i64>,
 }
 
 impl Item {
@@ -258,16 +268,18 @@ impl Item {
 
     /// Create a new item with initial revision.
     pub async fn create(pool: &PgPool, input: CreateItem) -> Result<Self> {
-        Self::create_with_file_refs(pool, input, None).await
+        Self::create_with_file_refs(pool, input, None, None).await
     }
 
     /// [`Self::create`], also writing the item's file references (and promoting
     /// the files they name) in the same transaction when `refs` is given. See
-    /// [`crate::content::file_refs`].
+    /// [`crate::content::file_refs`]. `created` sets the authored on time;
+    /// `None` is now.
     pub(crate) async fn create_with_file_refs(
         pool: &PgPool,
         input: CreateItem,
         refs: Option<&crate::content::file_refs::FileReferences>,
+        created: Option<i64>,
     ) -> Result<Self> {
         let now = chrono::Utc::now().timestamp();
         let item_id = Uuid::now_v7();
@@ -290,7 +302,7 @@ impl Item {
         .bind(&input.title)
         .bind(input.author_id)
         .bind(input.status.unwrap_or(1))
-        .bind(now)
+        .bind(created.unwrap_or(now))
         .bind(now)
         .bind(input.promote.unwrap_or(0))
         .bind(input.sticky.unwrap_or(0))
@@ -386,6 +398,8 @@ impl Item {
         let fields = input.fields.unwrap_or(current.fields);
         let log = input.log;
         let stage_id = input.stage_id.unwrap_or(current.stage_id);
+        let item_author = input.author_id.unwrap_or(current.author_id);
+        let created = input.created.unwrap_or(current.created);
 
         // Start transaction
         let mut tx = pool.begin().await.context("failed to start transaction")?;
@@ -420,7 +434,9 @@ impl Item {
                 sticky = $5,
                 fields = $6,
                 current_revision_id = $7,
-                stage_id = $9
+                stage_id = $9,
+                author_id = $10,
+                created = $11
             WHERE id = $8
             "#,
         )
@@ -433,6 +449,8 @@ impl Item {
         .bind(revision_id)
         .bind(id)
         .bind(stage_id)
+        .bind(item_author)
+        .bind(created)
         .execute(&mut *tx)
         .await
         .context("failed to update item")?;
@@ -547,6 +565,8 @@ impl Item {
 
         // Create update input from revision
         let input = UpdateItem {
+            author_id: None,
+            created: None,
             stage_id: None,
             title: Some(revision.title),
             status: Some(revision.status),

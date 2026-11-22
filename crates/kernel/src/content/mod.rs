@@ -32,9 +32,9 @@ pub use form::{
     FieldMode, FormBuilder, LOG_WEIGHT, STATUS_WEIGHT, SUBMIT_WEIGHT, extract_reference_id,
 };
 pub use item_service::{
-    FileAccess, ItemRevisions, ItemService, ItemTranslation, PUBLISH_CONTENT, PageBuilderInvalid,
-    RevisionAccess, RevisionSelection, TRANSLATE_CONTENT, TranslationRefused, USE_STAGES,
-    WriteDenied, decode_view_output,
+    ADMINISTER_CONTENT, FileAccess, ItemRevisions, ItemService, ItemTranslation, PUBLISH_CONTENT,
+    PageBuilderInvalid, RevisionAccess, RevisionSelection, TRANSLATE_CONTENT, TranslationRefused,
+    USE_STAGES, WriteDenied, decode_view_output,
 };
 pub use page_meta::PageMeta;
 pub use record_type::{RecordTypeDef, RecordTypeLoadError, RecordTypeRegistry};

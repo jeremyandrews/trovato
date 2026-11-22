@@ -362,6 +362,11 @@ fn apply_field_decisions(fields: &mut serde_json::Value, decisions: &HashMap<Str
 /// narrower gives its per-type editors a role that does not hold this.
 pub const PUBLISH_CONTENT: &str = "publish content";
 
+/// The permission that lets a user set an item's author and authored on time,
+/// and its publishing options whatever else they hold (B107). An editor can
+/// otherwise only ever be an item's author, at the moment they created it.
+pub const ADMINISTER_CONTENT: &str = "administer content";
+
 /// The permission that lets a user read a stage other than Live
 /// (`routes::helpers::read_stages`).
 pub const USE_STAGES: &str = "use stages";
@@ -387,6 +392,13 @@ pub enum WriteDenied {
     /// someone else's unattached upload, or a file only items they cannot view
     /// hold. Attaching it to a published item would publish it.
     Files,
+    /// The write would change whether the item is promoted to the front page
+    /// or sticky at the top of lists, and the user holds neither
+    /// [`PUBLISH_CONTENT`] nor [`ADMINISTER_CONTENT`].
+    Promotion,
+    /// The write would change the item's author or authored on time, and the
+    /// user does not hold [`ADMINISTER_CONTENT`].
+    Authoring,
 }
 
 impl std::fmt::Display for WriteDenied {
@@ -401,6 +413,14 @@ impl std::fmt::Display for WriteDenied {
                 "changing whether an item is published requires `{PUBLISH_CONTENT}`"
             ),
             Self::Files => write!(f, "you may not attach a file you cannot view"),
+            Self::Promotion => write!(
+                f,
+                "promoting or making an item sticky requires `{PUBLISH_CONTENT}` or `{ADMINISTER_CONTENT}`"
+            ),
+            Self::Authoring => write!(
+                f,
+                "changing an item's author or authored on time requires `{ADMINISTER_CONTENT}`"
+            ),
         }
     }
 }
@@ -674,7 +694,20 @@ impl ItemService {
     /// The presave tap fires before the item is persisted, allowing plugins
     /// to modify fields (e.g., AI content enrichment). The insert tap fires
     /// after persistence for post-save side effects.
-    pub async fn create(&self, mut input: CreateItem, user: &UserContext) -> Result<Item> {
+    pub async fn create(&self, input: CreateItem, user: &UserContext) -> Result<Item> {
+        self.create_authored(input, None, user).await
+    }
+
+    /// [`Self::create`], with an authored on time other than now: `created`,
+    /// a Unix timestamp. Setting it, or an `author_id` other than the user's
+    /// own, is decided by [`Self::gate_authoring`]; `promote` and `sticky` by
+    /// [`Self::gate_promotion`].
+    pub async fn create_authored(
+        &self,
+        mut input: CreateItem,
+        created: Option<i64>,
+        user: &UserContext,
+    ) -> Result<Item> {
         Self::refuse_if_too_deep()?;
         // A create that names a stage other than the default is a move from the
         // default stage, and is decided as one. Naming none lands on the
@@ -691,6 +724,11 @@ impl ItemService {
         // presave tap: a plugin's presave edits are trusted code, not user
         // input. Both return `WriteDenied`, which every caller maps to 403.
         input.status = Self::gate_publish(user, input.status, None)?;
+        Self::gate_promotion(user, input.promote, input.sticky, None)?;
+        // A new item's author is its creator unless they hold the authority to
+        // say otherwise, as is its authored on time.
+        let new_author = (input.author_id != user.id).then_some(input.author_id);
+        Self::gate_authoring(user, new_author, created, None)?;
         let gated_fields = self
             .gate_field_writes(user, &input.item_type, input.fields.as_ref(), None)
             .await?;
@@ -741,7 +779,8 @@ impl ItemService {
             .await?;
 
         // Create the item in the database
-        let item = Item::create_with_file_refs(&self.inner.pool, input, Some(&refs)).await?;
+        let item =
+            Item::create_with_file_refs(&self.inner.pool, input, Some(&refs), created).await?;
 
         // tap_item_insert is a notification: the row exists, and what a handler
         // returns is not read (BL-88). Failures are logged by the dispatcher.
@@ -1219,6 +1258,18 @@ impl ItemService {
         // presave tap. A denied field the submission left out is copied back
         // here, so a partial `fields` object cannot erase it.
         input.status = Self::gate_publish(user, input.status, Some(existing.status))?;
+        Self::gate_promotion(
+            user,
+            input.promote,
+            input.sticky,
+            Some((existing.promote, existing.sticky)),
+        )?;
+        Self::gate_authoring(
+            user,
+            input.author_id,
+            input.created,
+            Some((existing.author_id, existing.created)),
+        )?;
         let gated_fields = self
             .gate_field_writes(
                 user,
@@ -2225,6 +2276,63 @@ impl ItemService {
         }
     }
 
+    /// Decide whether a write may set `promote` and `sticky`.
+    ///
+    /// `submitted` values are what the caller asked for (`None` = leave it);
+    /// `stored` is the item's current pair, `None` on a create. A holder of
+    /// [`PUBLISH_CONTENT`] or [`ADMINISTER_CONTENT`] may set either; anyone
+    /// else is refused any change, and on a create anything but off. The
+    /// background principal passes, as at [`Self::gate_publish`].
+    pub fn gate_promotion(
+        user: &UserContext,
+        promote: Option<i16>,
+        sticky: Option<i16>,
+        stored: Option<(i16, i16)>,
+    ) -> Result<(), WriteDenied> {
+        if user.is_background() || user.can(PUBLISH_CONTENT) || user.can(ADMINISTER_CONTENT) {
+            return Ok(());
+        }
+        let (was_promote, was_sticky) = stored.unwrap_or((0, 0));
+        let changes =
+            promote.is_some_and(|p| p != was_promote) || sticky.is_some_and(|s| s != was_sticky);
+        if changes {
+            Err(WriteDenied::Promotion)
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Decide whether a write may set an item's author and authored on time.
+    ///
+    /// `author_id` and `created` are what the caller asked for (`None` = leave
+    /// it); `stored` is the item's current pair, `None` on a create, where any
+    /// value at all is a change: the create path passes an author only when
+    /// it is not the creator. Only a holder of [`ADMINISTER_CONTENT`] (or the
+    /// background principal) may change either; asking for the value already
+    /// stored is no change.
+    pub fn gate_authoring(
+        user: &UserContext,
+        author_id: Option<Uuid>,
+        created: Option<i64>,
+        stored: Option<(Uuid, i64)>,
+    ) -> Result<(), WriteDenied> {
+        if user.is_background() || user.can(ADMINISTER_CONTENT) {
+            return Ok(());
+        }
+        let changes = match stored {
+            None => author_id.is_some() || created.is_some(),
+            Some((was_author, was_created)) => {
+                author_id.is_some_and(|a| a != was_author)
+                    || created.is_some_and(|c| c != was_created)
+            }
+        };
+        if changes {
+            Err(WriteDenied::Authoring)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Flush this server's field-access decision cache (design amendment α).
     ///
     /// What another server's `FieldAccess` bump does here. The writing server
@@ -2526,6 +2634,8 @@ impl ItemService {
             item_id,
             user.id,
             UpdateItem {
+                author_id: None,
+                created: None,
                 stage_id: None,
                 title: Some(revision.title),
                 status,

@@ -57,6 +57,11 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     // existing site loses the ability to publish on upgrade; nothing implies it
     // afterwards.
     "publish content",
+    // An item's author and authored on time, and its promote and sticky flags
+    // whatever else the user holds. Without it an editor's item is always
+    // their own, dated when they made it. Granted by no migration; an
+    // administrator holds it implicitly.
+    "administer content",
     "delete own content",
     "delete any content",
     // Read a stage other than Live: switch the session's active stage, and see

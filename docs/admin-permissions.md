@@ -81,6 +81,17 @@ per-type `create … content`, so no existing site loses the ability to publish 
 upgrade. Like the admission grant above, that is a one-time correction and not a
 rule: nothing makes those permissions imply this one afterwards.
 
+### Publishing options
+
+The item forms have a "Publishing options" section (B107). Promoted to front
+page and Sticky at top of lists take `publish content` or `administer content`;
+Authored by and Authored on take `administer content`. The section shows only
+what the user may set, and `ItemService` checks every write again on every
+path. Without the permission, a change to any of the four is refused. Asking
+for the value already stored is no change. On a create, an author other than
+the creator or an authored on time counts as a change. `administer content` is
+granted by no migration, and an administrator holds it implicitly.
+
 Field-level edit access is enforced on the same writes. A field a
 `tap_field_access` plugin denies this user for the `edit` operation cannot be
 changed by them, the forms do not render it as an input, and a submission that

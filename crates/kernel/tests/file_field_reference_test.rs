@@ -146,6 +146,8 @@ async fn create_conference(
 /// An update that sets only `status` and/or `fields`.
 fn update_with(status: Option<i16>, fields: Option<serde_json::Value>) -> UpdateItem {
     UpdateItem {
+        author_id: None,
+        created: None,
         stage_id: None,
         title: None,
         status,

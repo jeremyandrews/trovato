@@ -51,6 +51,8 @@ pub(crate) async fn build(
         .with_reference_titles(titles)
         .with_field_modes(modes)
         .with_publish_allowed(user.can(PUBLISH_CONTENT));
+    let mut extra = extra;
+    extra.extend(publishing_element(state, user, item).await);
     let form = match item {
         Some(item) => builder.build_edit_form(item, action),
         None => builder.build_add_form(action),
@@ -409,4 +411,194 @@ fn add_another(
             "Trovato.updateFieldDelta",
             serde_json::json!({ "field": field, "count": count + 1 }),
         )
+}
+
+/// Posted beside promote and sticky when the form rendered them: an unchecked
+/// box posts nothing, so without it "unchecked" and "never offered" are the
+/// same request.
+pub(crate) const PROMOTION_RENDERED: &str = "_promotion_rendered";
+/// Posted beside the author and authored on inputs when the form rendered
+/// them.
+pub(crate) const AUTHORING_RENDERED: &str = "_authoring_rendered";
+
+/// The `datetime-local` value format the authored on input reads and writes.
+const AUTHORED_ON_FORMAT: &str = "%Y-%m-%dT%H:%M";
+
+/// The "Publishing options" section of the item form (B107): promoted to the
+/// front page and sticky at the top of lists for a holder of `publish content`
+/// or `administer content`, and the author and authored on time for a holder
+/// of `administer content`. Nothing for a user who may set none of them. The
+/// service decides every value again ([`ItemService::gate_promotion`],
+/// [`ItemService::gate_authoring`]); this only decides what is offered.
+///
+/// [`ItemService::gate_promotion`]: crate::content::ItemService::gate_promotion
+/// [`ItemService::gate_authoring`]: crate::content::ItemService::gate_authoring
+pub(crate) async fn publishing_element(
+    state: &AppState,
+    user: &UserContext,
+    item: Option<&Item>,
+) -> Vec<(String, FormElement)> {
+    use crate::content::ADMINISTER_CONTENT;
+
+    let may_author = user.can(ADMINISTER_CONTENT);
+    let may_promote = may_author || user.can(PUBLISH_CONTENT);
+    if !may_promote {
+        return Vec::new();
+    }
+
+    let mut fieldset = FormElement::fieldset()
+        .title("Publishing options")
+        .weight(crate::content::STATUS_WEIGHT + 5)
+        .attribute("id", "publishing-options")
+        .child(
+            "promote",
+            FormElement::checkbox()
+                .title("Promoted to front page")
+                .default_value(item.is_some_and(Item::is_promoted))
+                .weight(0),
+        )
+        .child(
+            "sticky",
+            FormElement::checkbox()
+                .title("Sticky at top of lists")
+                .default_value(item.is_some_and(Item::is_sticky))
+                .weight(1),
+        )
+        .child(
+            PROMOTION_RENDERED,
+            FormElement::hidden().default_value("1").weight(2),
+        );
+
+    if may_author {
+        let author = match item {
+            Some(item) => state
+                .users()
+                .find_by_id(item.author_id)
+                .await
+                .ok()
+                .flatten()
+                .map(|u| u.name)
+                .unwrap_or_default(),
+            None => String::new(),
+        };
+        let authored_on = item
+            .and_then(|i| chrono::DateTime::from_timestamp(i.created, 0))
+            .map(|t| t.format(AUTHORED_ON_FORMAT).to_string())
+            .unwrap_or_default();
+        fieldset = fieldset
+            .child(
+                "author",
+                FormElement::textfield()
+                    .title("Authored by")
+                    .description("A username. Leave empty for yourself.")
+                    .default_value(author)
+                    .weight(3),
+            )
+            .child(
+                "authored_on",
+                FormElement::input("datetime-local")
+                    .title("Authored on (UTC)")
+                    .description("Leave empty for now.")
+                    .default_value(authored_on)
+                    .weight(4),
+            )
+            .child(
+                AUTHORING_RENDERED,
+                FormElement::hidden().default_value("1").weight(5),
+            );
+    }
+
+    vec![("publishing".to_string(), fieldset)]
+}
+
+/// What a submission asked of the publishing options: `None` for anything it
+/// did not say, which the service reads as "leave it".
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Publishing {
+    pub promote: Option<i16>,
+    pub sticky: Option<i16>,
+    pub author_id: Option<Uuid>,
+    pub created: Option<i64>,
+}
+
+/// Read the publishing options from a submission, checking that a named
+/// author is a user and that the authored on time parses. Whether this user
+/// may set them is the service's decision, not this one's.
+pub(crate) async fn requested_publishing(
+    state: &AppState,
+    posted: &PostedForm,
+) -> Result<Publishing, Vec<ValidationError>> {
+    let mut out = Publishing::default();
+    let mut errors = Vec::new();
+
+    if posted.contains(PROMOTION_RENDERED) {
+        out.promote = Some(i16::from(posted.contains("promote")));
+        out.sticky = Some(i16::from(posted.contains("sticky")));
+    }
+
+    if posted.contains(AUTHORING_RENDERED) {
+        if let Some(name) = posted
+            .get("author")
+            .map(str::trim)
+            .filter(|n| !n.is_empty())
+        {
+            match state.users().find_by_name(name).await {
+                Ok(Some(user)) => out.author_id = Some(user.id),
+                Ok(None) => errors.push(ValidationError::field(
+                    "author",
+                    format!("There is no user named {name}."),
+                )),
+                Err(e) => {
+                    tracing::error!(error = %e, "author lookup failed");
+                    errors.push(ValidationError::field(
+                        "author",
+                        "The author could not be checked.",
+                    ));
+                }
+            }
+        }
+        if let Some(value) = posted
+            .get("authored_on")
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+        {
+            match parse_authored_on(value) {
+                Some(created) => out.created = Some(created),
+                None => errors.push(ValidationError::field(
+                    "authored_on",
+                    "Authored on must be a date and time.",
+                )),
+            }
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(out)
+    } else {
+        Err(errors)
+    }
+}
+
+/// A `datetime-local` value (with or without seconds), read as UTC.
+fn parse_authored_on(value: &str) -> Option<i64> {
+    chrono::NaiveDateTime::parse_from_str(value, AUTHORED_ON_FORMAT)
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(value, "%Y-%m-%dT%H:%M:%S"))
+        .ok()
+        .map(|t| t.and_utc().timestamp())
+}
+
+#[cfg(test)]
+mod publishing_tests {
+    use super::parse_authored_on;
+
+    #[test]
+    fn authored_on_reads_a_datetime_local_value_as_utc() {
+        assert_eq!(parse_authored_on("2026-01-02T03:04"), Some(1_767_323_040));
+        assert_eq!(
+            parse_authored_on("2026-01-02T03:04:05"),
+            Some(1_767_323_045)
+        );
+        assert_eq!(parse_authored_on("yesterday"), None);
+        assert_eq!(parse_authored_on("2026-13-02T03:04"), None);
+    }
 }

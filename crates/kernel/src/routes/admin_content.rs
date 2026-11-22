@@ -282,20 +282,40 @@ async fn add_content_submit(
             }
         };
 
+    let publishing = match super::item_form::requested_publishing(&state, &posted).await {
+        Ok(publishing) => publishing,
+        Err(errors) => {
+            return render_content_form(
+                &state,
+                &session,
+                &user_ctx,
+                &content_type,
+                None,
+                Some(&posted),
+                &errors,
+            )
+            .await;
+        }
+    };
+
     let input = CreateItem {
         item_type: type_name.clone(),
         title: posted.get("title").unwrap_or_default().trim().to_string(),
-        author_id: user.id,
+        author_id: publishing.author_id.unwrap_or(user.id),
         status: requested_status(&posted),
-        promote: None,
-        sticky: None,
+        promote: publishing.promote,
+        sticky: publishing.sticky,
         fields: Some(serde_json::Value::Object(fields_json)),
         stage_id: None,
         language: Some(resolved_lang.0),
         log: Some("Created via admin UI".to_string()),
     };
 
-    match state.items().create(input, &user_ctx).await {
+    match state
+        .items()
+        .create_authored(input, publishing.created, &user_ctx)
+        .await
+    {
         Ok(item) => {
             // Auto-generate URL alias if pattern configured for this type
             if let Err(e) = crate::services::pathauto::auto_alias_item(
@@ -501,13 +521,30 @@ async fn edit_content_submit(
     let Ok(stage_id) = requested_stage(&posted) else {
         return render_error("The form could not be read.");
     };
+    let publishing = match super::item_form::requested_publishing(&state, &posted).await {
+        Ok(publishing) => publishing,
+        Err(errors) => {
+            return render_content_form(
+                &state,
+                &session,
+                &user_ctx,
+                &content_type,
+                Some(&item),
+                Some(&posted),
+                &errors,
+            )
+            .await;
+        }
+    };
 
     let input = crate::models::UpdateItem {
+        author_id: publishing.author_id,
+        created: publishing.created,
         stage_id,
         title: posted.get("title").map(|t| t.trim().to_string()),
         status: requested_status(&posted),
-        promote: None,
-        sticky: None,
+        promote: publishing.promote,
+        sticky: publishing.sticky,
         fields: Some(serde_json::Value::Object(fields_json)),
         log: Some("Updated via admin UI".to_string()),
     };
@@ -853,6 +890,8 @@ async fn bulk_content_action(
             let new_status: i16 = if form.action == "publish" { 1 } else { 0 };
             for id in &form.ids {
                 let update = crate::models::UpdateItem {
+                    author_id: None,
+                    created: None,
                     stage_id: None,
                     title: None,
                     status: Some(new_status),
@@ -876,6 +915,8 @@ async fn bulk_content_action(
         "move_to_stage" => {
             for id in &form.ids {
                 let update = crate::models::UpdateItem {
+                    author_id: None,
+                    created: None,
                     stage_id: target_stage,
                     title: None,
                     status: None,
