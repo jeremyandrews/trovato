@@ -470,8 +470,12 @@ fn fields_offer_only_the_formats_an_editors_roles_may_use() {
         );
 
         // An editor without it.
-        let (_, without) =
-            user_holding(app, "b108fwithout", &["create page content", "access content"]).await;
+        let (_, without) = user_holding(
+            app,
+            "b108fwithout",
+            &["create page content", "access content"],
+        )
+        .await;
         let (status, html) = get(app, &without, "/item/add/page").await;
         assert_eq!(status, StatusCode::OK);
         assert!(!html.contains(&format!(r#"value="{name}""#)), "not offered");
