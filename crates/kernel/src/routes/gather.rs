@@ -102,6 +102,12 @@ pub struct ExecuteParams {
     /// Exposed filter values as JSON-encoded strings
     #[serde(flatten)]
     filters: HashMap<String, String>,
+    /// Feeds of this gather narrowed to the arguments the page was reached
+    /// with, advertised in its head beside the site-wide ones. Set by a gather
+    /// route ([`crate::routes::feed::argument_feed_links`]), never from the
+    /// request.
+    #[serde(skip)]
+    feeds: Vec<crate::routes::feed::FeedLink>,
 }
 
 impl ExecuteParams {
@@ -114,7 +120,14 @@ impl ExecuteParams {
             page: page.max(1),
             stage,
             filters,
+            feeds: Vec::new(),
         }
+    }
+
+    /// Advertise these argument feeds on the rendered page.
+    pub fn with_feeds(mut self, feeds: Vec<crate::routes::feed::FeedLink>) -> Self {
+        self.feeds = feeds;
+        self
     }
 }
 
@@ -557,6 +570,11 @@ pub async fn execute_and_render(
         );
     }
     super::helpers::inject_site_context(state, session, &mut context, base_path).await;
+    if !params.feeds.is_empty() {
+        let mut feeds = params.feeds.clone();
+        feeds.extend(state.feed_links().iter().cloned());
+        context.insert("feeds", &feeds);
+    }
 
     // Build breadcrumbs: Home > Query Label
     let breadcrumbs = vec![

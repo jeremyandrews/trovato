@@ -770,8 +770,18 @@ pub struct QueryDisplay {
 pub struct GatherFeed {
     /// Absolute path the feed is served at, for example `/rss/blog.xml`.
     ///
-    /// Not a route pattern: a feed is one document at one address.
+    /// May carry one argument as a whole segment, before the last one, for
+    /// example `/blog/author/{user}/feed.xml`. The argument is bound the way
+    /// the gather's own page binds it: by the `display.routes` parameter
+    /// mapping with the same `segment` name (see [`GatherRouteParam`]).
     pub path: String,
+
+    /// More paths serving the same feed, each under the same rules as
+    /// [`path`](Self::path). One declaration can so give a site-wide feed, a
+    /// feed per author and a feed per tag:
+    /// `["/blog/author/{user}/feed.xml", "/blog/tag/{tag}/feed.xml"]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
 
     /// Feed title. Defaults to the query's label.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -913,6 +923,13 @@ pub struct GatherRouteParam {
     /// The system resolves it to a tag UUID before passing as the param value.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tag_category: Option<String>,
+
+    /// When `true`, the path segment is an account name. The system resolves it
+    /// to the active account's id before passing it as the param value, so
+    /// `/blog/author/{user}` can filter on `author_id`. An unknown or blocked
+    /// account is a 404.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub user: bool,
 }
 
 /// Complete gather query (definition + display + metadata).

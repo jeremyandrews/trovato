@@ -287,7 +287,8 @@ the path it names and an Atom 1.0 document beside it:
 
 | Key | Default | Meaning |
 |-----|---------|---------|
-| `path` | required | Where the RSS document is served. Absolute, and no `{…}` pattern. |
+| `path` | required | Where the RSS document is served. Absolute; may carry one argument (below). |
+| `paths` | none | More addresses for the same feed, under the same rules. |
 | `title` | the gather's `label` | Channel and feed title. |
 | `description` | the gather's `description` | Channel description and Atom subtitle. |
 | `items` | 20 | Entries carried, at most 200. |
@@ -338,6 +339,45 @@ see. An anonymous response is `Cache-Control: public, max-age=300`; a response
 to a signed-in session is `private, no-cache`, since it ran with that viewer's
 access. An author's renamed account or a relabelled term reaches readers with
 the entry's next edit, not before, since neither changes the validators.
+
+#### A feed per author, per tag, per anything the gather takes
+
+A feed path may carry one argument, as a whole segment before the last:
+`/blog/author/{user}/feed.xml`, `/tag/{term}/rss.xml`. The argument is bound
+exactly the way the gather's own page binds it: by the `display.routes`
+parameter mapping whose `segment` has the same name. There is no separate
+argument config for feeds, and the lookup is the same code, so `tag_category`
+resolves a tag slug, `user: true` resolves an account name, and anything else
+is passed through.
+
+`paths` lists more addresses for the same feed, so one declaration serves the
+whole listing and each of its arguments. The stock blog gather
+(`trovato_blog`, migration `002_author_and_tag_feeds.sql`) is the worked
+example:
+
+```json
+"routes": [
+    {"path": "/blog/author/{user}", "params": [{"segment": "user", "param": "author", "user": true}]},
+    {"path": "/blog/tag/{tag}", "params": [{"segment": "tag", "param": "tag", "tag_category": "tags"}]}
+],
+"feed": {
+    "path": "/blog/feed.xml",
+    "paths": ["/blog/author/{user}/feed.xml", "/blog/tag/{tag}/feed.xml"]
+}
+```
+
+with the definition filtering `author_id` on `{"url_arg": "author"}` and
+`fields.field_tags` (`has_tag`) on `{"url_arg": "tag"}`. That gives
+`/blog/feed.xml`, `/blog/author/jeremy/feed.xml` and `/blog/tag/rust/feed.xml`,
+each with its `.atom` sibling.
+
+An argument that names nothing answers 404, not an empty feed: an unknown tag
+slug or account name fails the lookup, and a passed-through value that matches
+no row the viewer can see is treated the same way. A feed with an argument is
+not in every page's head; the page reached with the same argument
+(`/blog/author/jeremy`) advertises its own (`/blog/author/jeremy/feed.xml`).
+A path with two arguments, an argument inside a segment (`/rss/{slug}.xml`),
+or an argument no route binds is skipped at startup with a warning.
 
 ---
 
