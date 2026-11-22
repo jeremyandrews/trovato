@@ -247,6 +247,61 @@ impl MenuLink {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Delete a menu link inside the caller's transaction, promoting its
+    /// children to its own parent rather than letting the foreign key's
+    /// `ON DELETE SET NULL` turn a nested branch into a row of top-level links.
+    ///
+    /// Returns whether the link was there. The caller invalidates the
+    /// navigation cache once the transaction commits.
+    pub async fn delete_in(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        id: Uuid,
+    ) -> Result<bool> {
+        let parent: Option<(Option<Uuid>,)> =
+            sqlx::query_as("SELECT parent_id FROM menu_link WHERE id = $1 FOR UPDATE")
+                .bind(id)
+                .fetch_optional(&mut **tx)
+                .await
+                .context("failed to load menu link")?;
+        let Some((parent_id,)) = parent else {
+            return Ok(false);
+        };
+        sqlx::query("UPDATE menu_link SET parent_id = $1, changed = $2 WHERE parent_id = $3")
+            .bind(parent_id)
+            .bind(chrono::Utc::now().timestamp())
+            .bind(id)
+            .execute(&mut **tx)
+            .await
+            .context("failed to promote menu link children")?;
+        let result = sqlx::query("DELETE FROM menu_link WHERE id = $1")
+            .bind(id)
+            .execute(&mut **tx)
+            .await
+            .context("failed to delete menu link")?;
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Delete every menu link to any of `paths`, on every stage and in every
+    /// menu, inside the caller's transaction, each as [`Self::delete_in`] does.
+    /// Returns the number deleted.
+    pub async fn delete_by_paths_in(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        paths: &[String],
+    ) -> Result<u64> {
+        let ids: Vec<(Uuid,)> = sqlx::query_as("SELECT id FROM menu_link WHERE path = ANY($1)")
+            .bind(paths)
+            .fetch_all(&mut **tx)
+            .await
+            .context("failed to find menu links by path")?;
+        let mut deleted = 0;
+        for (id,) in ids {
+            if Self::delete_in(tx, id).await? {
+                deleted += 1;
+            }
+        }
+        Ok(deleted)
+    }
+
     /// List menu links for a given menu with pagination.
     pub async fn list_by_menu(
         pool: &PgPool,

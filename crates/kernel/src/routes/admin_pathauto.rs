@@ -263,15 +263,7 @@ async fn regenerate_aliases(
 
     let mut count: u64 = 0;
     for item in &items {
-        match update_alias_item(
-            state.db(),
-            item.id,
-            &item.title,
-            &item.item_type,
-            item.created,
-        )
-        .await
-        {
+        match update_alias_item(state.db(), item).await {
             Ok(Some(_)) => count += 1,
             Ok(None) => {} // alias already matches or no pattern configured
             Err(e) => {

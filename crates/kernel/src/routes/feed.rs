@@ -260,13 +260,18 @@ async fn load_aliases(state: &AppState, rows: &[&serde_json::Value]) -> HashMap<
         return HashMap::new();
     }
 
-    UrlAlias::canonical_aliases_for(state.db(), &sources, LIVE_STAGE_ID, "en")
-        .await
-        .unwrap_or_else(|e| {
-            // A feed with `/item/{uuid}` links is worth more than no feed.
-            tracing::warn!(error = %e, "failed to load URL aliases for feed");
-            HashMap::new()
-        })
+    UrlAlias::canonical_aliases_for(
+        state.db(),
+        &sources,
+        LIVE_STAGE_ID,
+        state.default_language(),
+    )
+    .await
+    .unwrap_or_else(|e| {
+        // A feed with `/item/{uuid}` links is worth more than no feed.
+        tracing::warn!(error = %e, "failed to load URL aliases for feed");
+        HashMap::new()
+    })
 }
 
 /// The row's item id, whatever JSON shape the query's field config produced.

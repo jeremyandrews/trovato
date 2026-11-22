@@ -904,13 +904,13 @@ fn test_part01_step05_pathauto_generates_conference_aliases() {
         // Call update_alias_item for each — this is exactly what the admin
         // "Regenerate aliases" button invokes for every item of the type.
         let mut generated = std::collections::HashMap::new();
-        for (id, title, created) in &conferences {
+        for (id, title, _created) in &conferences {
             let alias = trovato_kernel::services::pathauto::update_alias_item(
                 &app.db,
-                *id,
-                title,
-                "conference",
-                *created,
+                &trovato_kernel::models::Item::find_by_id(&app.db, *id)
+                    .await
+                    .unwrap()
+                    .unwrap(),
             )
             .await
             .expect("update_alias_item should succeed");
@@ -979,13 +979,13 @@ fn test_part01_step05_aliases_resolvable_by_middleware_lookup() {
                 .await
                 .expect("failed to fetch conferences");
 
-        for (id, title, created) in &conferences {
+        for (id, _title, _created) in &conferences {
             trovato_kernel::services::pathauto::update_alias_item(
                 &app.db,
-                *id,
-                title,
-                "conference",
-                *created,
+                &trovato_kernel::models::Item::find_by_id(&app.db, *id)
+                    .await
+                    .unwrap()
+                    .unwrap(),
             )
             .await
             .expect("update_alias_item should succeed");
@@ -1060,15 +1060,15 @@ fn test_part01_step05_regenerate_skips_already_matching_alias() {
         .await
         .expect("RustConf 2026 must exist");
 
-        let (id, title, created) = row;
+        let (id, _title, _created) = row;
 
         // First call: creates the alias.
         let first = trovato_kernel::services::pathauto::update_alias_item(
             &app.db,
-            id,
-            &title,
-            "conference",
-            created,
+            &trovato_kernel::models::Item::find_by_id(&app.db, id)
+                .await
+                .unwrap()
+                .unwrap(),
         )
         .await
         .expect("first update_alias_item should succeed");
@@ -1079,10 +1079,10 @@ fn test_part01_step05_regenerate_skips_already_matching_alias() {
         // skipped automatically."
         let second = trovato_kernel::services::pathauto::update_alias_item(
             &app.db,
-            id,
-            &title,
-            "conference",
-            created,
+            &trovato_kernel::models::Item::find_by_id(&app.db, id)
+                .await
+                .unwrap()
+                .unwrap(),
         )
         .await
         .expect("second update_alias_item should succeed");

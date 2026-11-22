@@ -733,6 +733,13 @@ impl ItemService {
         user: &UserContext,
     ) -> Result<Item> {
         Self::refuse_if_too_deep()?;
+        // An item that names no language is in the site's default language,
+        // not a hard-coded one: its alias and its translations are keyed on it.
+        if input.language.is_none() {
+            input.language = crate::models::Language::get_default(&self.inner.pool)
+                .await?
+                .map(|l| l.id);
+        }
         // A create that names a stage other than the default is a move from the
         // default stage, and is decided as one. Naming none lands on the
         // default, which `Item::create` resolves in its one INSERT.
@@ -808,6 +815,8 @@ impl ItemService {
         let item =
             Item::create_with_file_refs(&self.inner.pool, input, Some(&refs), created).await?;
 
+        self.write_alias(&item, true).await;
+
         // tap_item_insert is a notification: the row exists, and what a handler
         // returns is not read (BL-88). Failures are logged by the dispatcher.
         let item_json = serde_json::to_string(&item).context("serialize item")?;
@@ -834,6 +843,23 @@ impl ItemService {
         let public = |item: &Item| item.is_published() && item.stage_id == LIVE_STAGE_ID;
         if before.is_some_and(public) || after.is_some_and(public) {
             crate::cron::request_search_index_rebuild(&self.inner.pool).await;
+        }
+    }
+
+    /// Give `item` the alias its type's pathauto pattern asks for, on its
+    /// stage and in its language: a new one after a create, a regenerated one
+    /// after an update whose title or date moved it. Every item write runs
+    /// this, so an item gets its alias whichever route, plugin, bulk action or
+    /// revert made it. A failure is logged and does not fail the write, which
+    /// has already committed.
+    async fn write_alias(&self, item: &Item, created: bool) {
+        let result = if created {
+            crate::services::pathauto::auto_alias_item(&self.inner.pool, item).await
+        } else {
+            crate::services::pathauto::update_alias_item(&self.inner.pool, item).await
+        };
+        if let Err(e) = result {
+            warn!(error = %e, item_id = %item.id, "pathauto alias generation failed");
         }
     }
 
@@ -1380,6 +1406,8 @@ impl ItemService {
             .await?;
 
         if let Some(ref i) = item {
+            self.write_alias(i, false).await;
+
             // tap_item_update is a notification, as tap_item_insert is.
             let item_json = serde_json::to_string(i).context("serialize item")?;
             self.dispatch_write_tap("tap_item_update", &item_json, user)
@@ -2644,10 +2672,6 @@ impl ItemService {
             anyhow::bail!("access denied");
         }
 
-        // A revert is a write, so it runs both gates — on the revision's own
-        // content, which is what it is asking to store. Reverting to a revision
-        // whose published state differs needs `publish content`, and reverting a
-        // field the user may not edit to an older value is refused.
         let revision = Item::get_revision(&self.inner.pool, revision_id)
             .await?
             .ok_or_else(|| anyhow::anyhow!("revision not found"))?;
@@ -2655,65 +2679,29 @@ impl ItemService {
             anyhow::bail!("revision does not belong to this item");
         }
 
-        let status = Self::gate_publish(user, Some(revision.status), Some(item.status))?;
-        let fields = self
-            .gate_field_writes(
+        // A revert is an update whose values are the revision's, so it is one:
+        // the same gates (a published state that differs needs `publish
+        // content`, a field the user may not edit is copied back from the item
+        // rather than reverted), the same presave tap, file references, alias,
+        // index and taps as any other edit.
+        let updated = self
+            .update(
+                item_id,
+                UpdateItem {
+                    author_id: None,
+                    created: None,
+                    stage_id: None,
+                    title: Some(revision.title),
+                    status: Some(revision.status),
+                    promote: None,
+                    sticky: None,
+                    fields: Some(revision.fields),
+                    log: Some(format!("Reverted to revision {revision_id}")),
+                },
                 user,
-                &item.item_type,
-                Some(&revision.fields),
-                Some(&item.fields),
             )
-            .await?;
-
-        // The gated input is applied here rather than through
-        // `Item::revert_to_revision`, which restores the revision's fields
-        // verbatim and would undo the copy-back above. That model method, like
-        // `Item::create` and `Item::update`, enforces nothing by design — the
-        // service is where the gates live.
-        let refs = match fields.as_ref() {
-            Some(fields) => {
-                let refs = self.file_references(&item.item_type, Some(fields)).await?;
-                self.authorize_new_file_references(Some(item_id), &refs, user)
-                    .await?;
-                Some(refs)
-            }
-            None => None,
-        };
-        let updated = Item::update_with_file_refs(
-            &self.inner.pool,
-            item_id,
-            user.id,
-            UpdateItem {
-                author_id: None,
-                created: None,
-                stage_id: None,
-                title: Some(revision.title),
-                status,
-                promote: None,
-                sticky: None,
-                fields,
-                log: Some(format!("Reverted to revision {revision_id}")),
-            },
-            refs.as_ref(),
-        )
-        .await?
-        .ok_or_else(|| anyhow::anyhow!("failed to revert item"))?;
-
-        self.request_search_rebuild(Some(&item), Some(&updated))
-            .await;
-
-        // Invalidate cache
-        self.invalidate(item_id);
-
-        // Invoke tap_item_update for the revert
-        let item_json = serde_json::to_string(&updated).context("serialize item")?;
-        let state = self.tap_state(user);
-
-        let _ = self
-            .inner
-            .dispatcher
-            .dispatch("tap_item_update", &item_json, state)
-            .await;
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("failed to revert item"))?;
 
         info!(item_id = %item_id, revision_id = %revision_id, "item reverted");
         Ok(updated)

@@ -1223,19 +1223,6 @@ async fn create_item(
         .await
         .map_err(|e| write_error(e, "create item"))?;
 
-    // Auto-generate URL alias if pattern configured for this type
-    if let Err(e) = crate::services::pathauto::auto_alias_item(
-        state.db(),
-        item.id,
-        &item.title,
-        &item.item_type,
-        item.created,
-    )
-    .await
-    {
-        tracing::warn!(error = %e, item_id = %item.id, "pathauto alias generation failed");
-    }
-
     if let (Some(form_state), Some(posted)) = (form_state, request.posted.as_ref()) {
         state
             .forms()
@@ -1376,7 +1363,9 @@ async fn update_item(
 
     match state.items().update(id, input, &user).await {
         Ok(Some(item)) => {
-            // Handle URL alias update if provided
+            // An alias the form names replaces the one `update` derived from
+            // the pathauto pattern, if any, on the item's stage and in its
+            // language.
             if let Some(ref alias_path) = request.url_alias {
                 let source = format!("/item/{id}");
                 let alias_path = alias_path.trim();
@@ -1399,26 +1388,13 @@ async fn update_item(
                         state.db(),
                         &source,
                         &alias_path,
-                        crate::models::stage::LIVE_STAGE_ID,
-                        "en",
+                        item.stage_id,
+                        &item.language,
                     )
                     .await
                     {
                         tracing::warn!(error = %e, "failed to update url alias");
                     }
-                }
-            } else {
-                // No explicit alias — auto-update from pathauto pattern
-                if let Err(e) = crate::services::pathauto::update_alias_item(
-                    state.db(),
-                    item.id,
-                    &item.title,
-                    &item.item_type,
-                    item.created,
-                )
-                .await
-                {
-                    tracing::warn!(error = %e, item_id = %item.id, "pathauto alias update failed");
                 }
             }
 

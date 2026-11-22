@@ -9,6 +9,32 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### URL aliases: every item write, in the item's language and stage
+
+**Who is affected:** sites with a pathauto pattern for a content type whose
+items are also written by a plugin, a bulk action on `/admin/content`, a
+revert, or `config import`; sites whose items are not all in `en` or not all
+on the live stage.
+
+**What changed.**
+
+- Pathauto now runs on every item create and update, not only the two edit
+  forms. Items those other paths wrote before the upgrade have no alias.
+  **Check:** for each type with a pattern,
+  `SELECT id, title FROM item i WHERE type = '<type>' AND NOT EXISTS (SELECT 1 FROM url_alias a WHERE a.source = '/item/' || i.id)`.
+  **Repair:** press *Regenerate* for the type at `/admin/config/pathauto`,
+  which creates the missing aliases and leaves ones that match alone.
+- A new alias is written in the item's language and on the item's stage, not
+  `en` on the live stage. Resolving an address, and linking to an item, now
+  prefer an alias in the reader's language and otherwise take one in any
+  language, so an existing `en` alias of an item in another language keeps
+  working and nothing needs rewriting.
+- Deleting an item now deletes its URL aliases and every menu link to its
+  `/item/{id}` path or to one of its aliases, in the same transaction; a link
+  nested under one of those moves up to that link's parent. Aliases and links
+  left behind by items deleted before the upgrade stay until removed at
+  `/admin/structure/aliases` and `/admin/structure/menus`.
+
 ### Page builder: no inline styles, server-side validation, plugin components
 
 **Who is affected:** sites with `trovato_page_builder` enabled and pages built

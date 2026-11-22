@@ -5608,7 +5608,11 @@ fn pathauto_generates_alias_on_item_create() {
 
         // Call pathauto
         let result = trovato_kernel::services::pathauto::auto_alias_item(
-            &app.db, item_id, title, &type_name, now,
+            &app.db,
+            &trovato_kernel::models::Item::find_by_id(&app.db, item_id)
+                .await
+                .unwrap()
+                .unwrap(),
         )
         .await
         .expect("pathauto should succeed");
@@ -5720,10 +5724,10 @@ fn pathauto_skips_when_alias_exists() {
         // Pathauto should skip because alias already exists
         let result = trovato_kernel::services::pathauto::auto_alias_item(
             &app.db,
-            item_id,
-            "Skip Test",
-            &type_name,
-            now,
+            &trovato_kernel::models::Item::find_by_id(&app.db, item_id)
+                .await
+                .unwrap()
+                .unwrap(),
         )
         .await
         .expect("pathauto should succeed");
@@ -5774,10 +5778,23 @@ fn pathauto_returns_none_without_pattern() {
         // Call pathauto with a type that has no pattern configured
         let result = trovato_kernel::services::pathauto::auto_alias_item(
             &app.db,
-            item_id,
-            "No Pattern",
-            "nonexistent_type_xyz",
-            now,
+            &serde_json::from_value::<trovato_kernel::models::Item>(serde_json::json!({
+                "id": item_id,
+                "current_revision_id": null,
+                "type": "nonexistent_type_xyz",
+                "title": "No Pattern",
+                "author_id": uuid::Uuid::nil(),
+                "status": 1,
+                "created": now,
+                "changed": now,
+                "promote": 0,
+                "sticky": 0,
+                "fields": {},
+                "stage_id": trovato_kernel::models::stage::LIVE_STAGE_ID,
+                "language": "en",
+                "item_group_id": item_id,
+            }))
+            .unwrap(),
         )
         .await
         .expect("pathauto should succeed even without pattern");

@@ -8,8 +8,8 @@ use chrono::{DateTime, Datelike, Utc};
 use sqlx::PgPool;
 use uuid::Uuid;
 
-use crate::models::SiteConfig;
-use crate::models::url_alias::{CreateUrlAlias, UrlAlias};
+use crate::models::url_alias::{CreateUrlAlias, UpdateUrlAlias, UrlAlias};
+use crate::models::{Item, Language, SiteConfig};
 
 /// Convert text into a URL-safe slug.
 ///
@@ -157,59 +157,80 @@ pub async fn get_pattern(pool: &PgPool, item_type: &str) -> Result<Option<String
     Ok(patterns.and_then(|v| v.get(item_type).and_then(|p| p.as_str().map(String::from))))
 }
 
-/// Automatically generate and create a URL alias for an item.
+/// The alias an item's pattern expands to, with its leading slash, or `None`
+/// when the expansion is empty (a title of nothing but non-ASCII, say).
+fn base_alias(pattern: &str, item: &Item) -> Option<String> {
+    let created = DateTime::from_timestamp(item.created, 0).unwrap_or_else(Utc::now);
+    let expanded = expand_pattern(pattern, &item.title, &item.item_type, created);
+    if expanded.trim_matches('/').is_empty() {
+        tracing::debug!(item_id = %item.id, "skipping pathauto: expanded pattern is empty");
+        return None;
+    }
+    Some(if expanded.starts_with('/') {
+        expanded
+    } else {
+        format!("/{expanded}")
+    })
+}
+
+/// The language an item's alias is written in: the item's own, or the site's
+/// default language for an item that names none.
+async fn alias_language(pool: &PgPool, item: &Item) -> Result<String> {
+    if !item.language.is_empty() {
+        return Ok(item.language.clone());
+    }
+    Ok(Language::get_default(pool)
+        .await?
+        .map(|l| l.id)
+        .unwrap_or_else(|| "en".to_string()))
+}
+
+/// Automatically generate and create a URL alias for an item, on the item's
+/// stage and in the item's language.
 ///
 /// Does nothing if:
 /// - No pattern configured for this content type
-/// - An alias already exists for this item (manual override)
+/// - The item already has an alias, on any stage and in any language (a
+///   manual alias, or one a config import brought with it)
 ///
-/// Returns the alias path if created, or `None` if skipped.
-pub async fn auto_alias_item(
-    pool: &PgPool,
-    item_id: Uuid,
-    title: &str,
-    item_type: &str,
-    created_ts: i64,
-) -> Result<Option<String>> {
-    let created = DateTime::from_timestamp(created_ts, 0).unwrap_or_else(Utc::now);
-    let Some(pattern) = get_pattern(pool, item_type).await? else {
+/// Returns the alias path if created, or `None` if skipped. Called by
+/// [`crate::content::ItemService`] after every create, so an item gets its
+/// alias whichever route, plugin or import made it.
+pub async fn auto_alias_item(pool: &PgPool, item: &Item) -> Result<Option<String>> {
+    let Some(pattern) = get_pattern(pool, &item.item_type).await? else {
         return Ok(None);
     };
 
-    let source = format!("/item/{item_id}");
+    let source = format!("/item/{}", item.id);
 
     // Don't overwrite manually-set aliases
-    let existing = UrlAlias::find_by_source(pool, &source).await?;
-    if !existing.is_empty() {
+    if !UrlAlias::find_all_by_source(pool, &source)
+        .await?
+        .is_empty()
+    {
         return Ok(None);
     }
 
-    // Expand the pattern and generate a unique alias
-    let expanded = expand_pattern(&pattern, title, item_type, created);
-
-    // If the slug is empty (e.g. pure non-ASCII title), skip alias generation
-    if expanded.trim_matches('/').is_empty() {
-        tracing::debug!(item_id = %item_id, "skipping pathauto: expanded pattern is empty");
+    let Some(base) = base_alias(&pattern, item) else {
         return Ok(None);
-    }
+    };
+    let alias = generate_unique_alias(pool, &base).await?;
+    let language = alias_language(pool, item).await?;
 
-    let alias = generate_unique_alias(pool, &expanded).await?;
-
-    // Create the alias
     UrlAlias::create(
         pool,
         CreateUrlAlias {
             source,
             alias: alias.clone(),
-            language: None,
-            stage_id: None,
+            language: Some(language),
+            stage_id: Some(item.stage_id),
         },
     )
     .await
     .context("failed to create auto-generated alias")?;
 
     tracing::info!(
-        item_id = %item_id,
+        item_id = %item.id,
         alias = %alias,
         "auto-generated path alias"
     );
@@ -221,69 +242,64 @@ pub async fn auto_alias_item(
 ///
 /// Does nothing if:
 /// - No pattern configured for this content type
-/// - The existing alias already matches the current pattern output
+/// - An alias of the item already matches the current pattern output (the
+///   base or a suffixed variant such as `/blog/post-1`), on any stage
 ///
 /// When a pathauto pattern is configured for a content type, this function
 /// owns the alias for items of that type. Aliases set via the URL alias
 /// admin will be overwritten if a pattern exists. To keep a manual alias,
 /// remove the pathauto pattern for the content type.
-pub async fn update_alias_item(
-    pool: &PgPool,
-    item_id: Uuid,
-    title: &str,
-    item_type: &str,
-    created_ts: i64,
-) -> Result<Option<String>> {
-    let created = DateTime::from_timestamp(created_ts, 0).unwrap_or_else(Utc::now);
-    let Some(pattern) = get_pattern(pool, item_type).await? else {
+///
+/// The alias rewritten is the item's own on its stage and in its language
+/// when it has one, and otherwise its most recent; it is left on the item's
+/// stage and in its language, which repairs an alias an older release wrote
+/// in `en` on the live stage whatever the item's were.
+pub async fn update_alias_item(pool: &PgPool, item: &Item) -> Result<Option<String>> {
+    let Some(pattern) = get_pattern(pool, &item.item_type).await? else {
+        return Ok(None);
+    };
+    let Some(base) = base_alias(&pattern, item) else {
         return Ok(None);
     };
 
-    let source = format!("/item/{item_id}");
-    let expanded = expand_pattern(&pattern, title, item_type, created);
-
-    // If the slug is empty (e.g. pure non-ASCII title), skip alias update
-    if expanded.trim_matches('/').is_empty() {
-        tracing::debug!(item_id = %item_id, "skipping pathauto update: expanded pattern is empty");
-        return Ok(None);
-    }
-
-    let base_alias = if expanded.starts_with('/') {
-        expanded
-    } else {
-        format!("/{expanded}")
-    };
-
-    // Check if current alias already matches — no update needed.
-    // An alias matches if it equals the base or is a suffixed variant (e.g. /blog/post-1).
-    let existing = UrlAlias::find_by_source(pool, &source).await?;
-    let suffixed_prefix = format!("{base_alias}-");
+    let source = format!("/item/{}", item.id);
+    let existing = UrlAlias::find_all_by_source(pool, &source).await?;
+    let suffixed_prefix = format!("{base}-");
     if existing
         .iter()
-        .any(|a| a.alias == base_alias || a.alias.starts_with(&suffixed_prefix))
+        .any(|a| a.alias == base || a.alias.starts_with(&suffixed_prefix))
     {
         return Ok(None);
     }
 
-    if existing.is_empty() {
-        // No alias exists yet — delegate to auto_alias_item for creation
-        return auto_alias_item(pool, item_id, title, item_type, created_ts).await;
-    }
+    let language = alias_language(pool, item).await?;
+    let Some(row) = existing
+        .iter()
+        .find(|a| a.stage_id == item.stage_id && a.language == language)
+        .or_else(|| existing.iter().find(|a| a.stage_id == item.stage_id))
+        .or_else(|| existing.first())
+    else {
+        // No alias exists yet — create one.
+        return auto_alias_item(pool, item).await;
+    };
 
     // Alias exists but doesn't match current pattern — regenerate
-    let alias = generate_unique_alias(pool, &base_alias).await?;
-    UrlAlias::upsert_for_source(
+    let alias = generate_unique_alias(pool, &base).await?;
+    UrlAlias::update(
         pool,
-        &source,
-        &alias,
-        crate::models::stage::LIVE_STAGE_ID,
-        "en",
+        row.id,
+        UpdateUrlAlias {
+            source: None,
+            alias: Some(alias.clone()),
+            language: Some(language),
+            stage_id: Some(item.stage_id),
+        },
     )
     .await
     .context("failed to update auto-generated alias")?;
 
     tracing::info!(
-        item_id = %item_id,
+        item_id = %item.id,
         alias = %alias,
         "auto-updated path alias"
     );
