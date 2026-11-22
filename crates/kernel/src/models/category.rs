@@ -27,6 +27,24 @@ pub struct Category {
 
     /// Sort weight.
     pub weight: i16,
+
+    /// The kind of owner this vocabulary belongs to, as a plugin declared it
+    /// (`[[vocabulary_owners]]` in its manifest); `None` for a site-wide
+    /// vocabulary. Set together with `owner_id` or not at all (B108).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_type: Option<String>,
+
+    /// The owning plugin's id for the one owner; `None` for a site-wide
+    /// vocabulary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_id: Option<String>,
+}
+
+impl Category {
+    /// The owner, for an owned vocabulary.
+    pub fn owner(&self) -> Option<(&str, &str)> {
+        Some((self.owner_type.as_deref()?, self.owner_id.as_deref()?))
+    }
 }
 
 /// A tag within a category.
@@ -130,7 +148,8 @@ impl Category {
     /// Find a category by ID.
     pub async fn find_by_id(pool: &PgPool, id: &str) -> Result<Option<Self>> {
         let category = sqlx::query_as::<_, Self>(
-            "SELECT id, label, description, hierarchy, weight FROM category WHERE id = $1",
+            "SELECT id, label, description, hierarchy, weight, owner_type, owner_id \
+             FROM category WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(pool)
@@ -143,7 +162,8 @@ impl Category {
     /// List all categories ordered by weight.
     pub async fn list(pool: &PgPool) -> Result<Vec<Self>> {
         let categories = sqlx::query_as::<_, Self>(
-            "SELECT id, label, description, hierarchy, weight FROM category ORDER BY weight, label",
+            "SELECT id, label, description, hierarchy, weight, owner_type, owner_id \
+             FROM category ORDER BY weight, label",
         )
         .fetch_all(pool)
         .await
@@ -213,6 +233,32 @@ impl Category {
             .context("failed to delete category")?;
 
         Ok(result.rows_affected() > 0)
+    }
+
+    /// Every vocabulary `owner_type` / `owner_id` owns, ordered by weight.
+    pub async fn list_owned(pool: &PgPool, owner_type: &str, owner_id: &str) -> Result<Vec<Self>> {
+        sqlx::query_as::<_, Self>(
+            "SELECT id, label, description, hierarchy, weight, owner_type, owner_id \
+             FROM category WHERE owner_type = $1 AND owner_id = $2 ORDER BY weight, label",
+        )
+        .bind(owner_type)
+        .bind(owner_id)
+        .fetch_all(pool)
+        .await
+        .context("failed to list owned categories")
+    }
+
+    /// Give a vocabulary an owner, or make it site-wide with `None`.
+    pub async fn set_owner(pool: &PgPool, id: &str, owner: Option<(&str, &str)>) -> Result<()> {
+        let (owner_type, owner_id) = owner.unzip();
+        sqlx::query("UPDATE category SET owner_type = $1, owner_id = $2 WHERE id = $3")
+            .bind(owner_type)
+            .bind(owner_id)
+            .bind(id)
+            .execute(pool)
+            .await
+            .context("failed to set category owner")?;
+        Ok(())
     }
 
     /// Check if a category exists.
@@ -831,6 +877,8 @@ mod tests {
             description: None,
             hierarchy: 0,
             weight: 0,
+            owner_type: None,
+            owner_id: None,
         };
         assert_eq!(flat.hierarchy, 0);
 
@@ -840,6 +888,8 @@ mod tests {
             description: Some("Hierarchical topics".to_string()),
             hierarchy: 2,
             weight: 0,
+            owner_type: None,
+            owner_id: None,
         };
         assert_eq!(dag.hierarchy, 2);
     }

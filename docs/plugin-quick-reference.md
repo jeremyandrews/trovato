@@ -82,6 +82,7 @@ fn tap_cron(_input: serde_json::Value) -> Result<(), String> {
 | **CRUD** | `tap_item_update_index` | the saved item | ignored (notification) |
 | **CRUD** | `tap_item_delete` | the item being deleted | ignored (notification; cannot abort) |
 | **Access** | `tap_item_access` | `ItemAccessInput` | `AccessResult` |
+| **Access** | `tap_vocabulary_owner_access` | `VocabularyOwnerAccessRequest` | `VocabularyOwnerAccess` (grant, deny, neutral, not_found) |
 | **Forms** | `tap_form_alter` | the form as JSON (`form_id`, `elements`, `libraries`) | the form, altered; plugins chain in weight order |
 | **Forms** | `tap_form_validate` | `{form_id, values}` (rendered inputs only, no passwords) | `{}` or `{"errors": ["msg" or {"field", "message"}]}` |
 | **Forms** | `tap_form_submit` | `{form_id, values, item_id}` | ignored; fires once after a successful save |
@@ -278,6 +279,17 @@ it through this first**: the kernel does not filter a plugin's output.
 ```rust
 let safe = host::filter_text(&body, "filtered_html")?;  // Err(-70): user may not use it
                                                          // Err(-71): no such format
+```
+
+### Owned vocabularies
+Needs `vocabulary` in `host_interfaces` and a `[[vocabulary_owners]]` entry in
+the manifest (`owner_type`, `label`, `path = "/group/{owner}/categories"`,
+optional `permission`). See "Owned vocabularies" in the plugin guide.
+```rust
+let v = host::create_owned_vocabulary(
+    &OwnedVocabularyRequest::new("group", &group_id, "group_7_topics", "Topics"))?;
+let all = host::list_owned_vocabularies("group", &group_id)?;
+// Err(-90): owner type not declared  Err(-91): bad id or label  Err(-92): id taken
 ```
 
 ### Cache

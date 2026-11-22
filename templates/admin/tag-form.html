@@ -7,9 +7,9 @@
 </div>
 
 <nav class="breadcrumb" aria-label="Breadcrumb">
-    <a href="/admin/structure/categories">Categories</a>
+    <a href="{{ urls.index }}">{{ urls.index_label }}</a>
     &raquo;
-    <a href="/admin/structure/categories/{{ category.id }}/tags">{{ category.label }}</a>
+    <a href="{{ urls.list }}">{{ category.label }}</a>
     &raquo;
     <span aria-current="page">{% if editing %}Edit{% else %}Add{% endif %}</span>
 </nav>
@@ -47,7 +47,7 @@
             <select id="parent_id" name="parent_id" class="form-select">
                 <option value="">- None (root) -</option>
                 {% for tag in existing_tags %}
-                <option value="{{ tag.id }}" {% if values.parent_id == tag.id %}selected{% endif %}>{{ tag.label }}</option>
+                <option value="{{ tag.id }}" {% if values.parent_id is defined and values.parent_id == tag.id %}selected{% endif %}>{{ tag.label }}</option>
                 {% endfor %}
             </select>
             <p class="form-item__description">Select a parent tag to create a hierarchy.</p>
@@ -62,9 +62,9 @@
         </div>
 
         {% if editing %}
-        {{ form::actions(submit_label="Save changes", cancel_url="/admin/structure/categories/" ~ category.id ~ "/tags") }}
+        {{ form::actions(submit_label="Save changes", cancel_url=urls.list) }}
         {% else %}
-        {{ form::actions(submit_label="Create tag", cancel_url="/admin/structure/categories/" ~ category.id ~ "/tags") }}
+        {{ form::actions(submit_label="Create tag", cancel_url=urls.list) }}
         {% endif %}
     </form>
 </div>

@@ -260,6 +260,7 @@ mod tests {
             }),
             record_types: vec![],
             config: Default::default(),
+            vocabulary_owners: Vec::new(),
         };
         DbPolicy::derive(&info, Path::new("/nonexistent-plugin-dir"))
     }

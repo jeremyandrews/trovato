@@ -1,0 +1,29 @@
+name = "test_owned_vocabulary"
+description = "B108 fixture: clubs that own vocabularies, administered by their managers"
+version = "0.106.0"
+api_version = "0.106"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_menu", "tap_perm", "tap_api", "tap_vocabulary_owner_access"]
+weight = 0
+
+# `vocabulary` to create and list the clubs' vocabularies; `db` + `raw_sql`
+# for the fixture's own two tables.
+[capabilities]
+host_interfaces = ["logging", "db", "vocabulary"]
+db_tables = ["tov_club", "tov_manager"]
+raw_sql = true
+
+[migrations]
+files = ["migrations/001_tov_schema.sql"]
+
+# A club owns vocabularies. The kernel serves their term administration at
+# /club/{owner}/categories, admitting whoever `tap_vocabulary_owner_access`
+# grants, and anyone holding the permission below.
+[[vocabulary_owners]]
+owner_type = "club"
+label = "Club"
+path = "/club/{owner}/categories"
+permission = "administer every club's categories"

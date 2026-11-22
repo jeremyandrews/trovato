@@ -77,6 +77,48 @@ pub struct PluginInfo {
     /// (added by B92, after 0.105.0). See [`PluginConfigDecl`].
     #[serde(default)]
     pub config: PluginConfigDecl,
+
+    /// The kinds of owner this plugin's vocabularies may belong to (added by
+    /// B108, after 0.106.0). See [`VocabularyOwnerDecl`].
+    #[serde(default)]
+    pub vocabulary_owners: Vec<VocabularyOwnerDecl>,
+}
+
+/// One `[[vocabulary_owners]]` entry of a manifest: a kind of owner (a
+/// group, a club, a project) whose vocabularies the plugin creates, and the
+/// route under which the kernel serves their term administration.
+///
+/// ```toml
+/// [[vocabulary_owners]]
+/// owner_type = "group"
+/// label = "Group"
+/// path = "/group/{owner}/categories"
+/// permission = "administer group categories"   # optional
+/// ```
+///
+/// - `owner_type`: `[a-z][a-z0-9_]*`, at most 64 characters, unique across
+///   the enabled plugins. Stored on each owned vocabulary.
+/// - `path`: three segments, the middle one `{owner}`; the first may not be
+///   one the kernel serves (`/admin`, `/api`, `/user`, …). The kernel mounts
+///   the owner's vocabulary list there and the term list and term form below.
+/// - `permission`: optional. A user holding it administers the terms of every
+///   owner of this type. Per-owner access ("is this user a manager of this
+///   group?") is the plugin's `tap_vocabulary_owner_access`, which also
+///   resolves the `{owner}` path segment to the owner id.
+///
+/// Additive: a manifest without the table declares no owners, as before.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+pub struct VocabularyOwnerDecl {
+    /// The kind of owner, e.g. `group`.
+    pub owner_type: String,
+    /// What the admin screens call one owner, e.g. `Group`.
+    #[serde(default)]
+    pub label: String,
+    /// The owner route, e.g. `/group/{owner}/categories`.
+    pub path: String,
+    /// A permission whose holders administer every owner's terms.
+    #[serde(default)]
+    pub permission: Option<String>,
 }
 
 /// The `[config]` table of a manifest: which of the plugin's own tables hold
@@ -445,6 +487,9 @@ pub const KNOWN_TAPS: &[&str] = &[
     "tap_comment_access",
     // Gather extensions
     "tap_gather_extend",
+    // Owned vocabularies (added by B108, after 0.106.0): resolve an owner
+    // route's `{owner}` and decide who administers its terms.
+    "tap_vocabulary_owner_access",
 ];
 
 /// Host interface names a plugin may declare under `[capabilities].host_interfaces`.
@@ -473,6 +518,8 @@ pub const KNOWN_HOST_INTERFACES: &[&str] = &[
     // Run a Gather definition for the request's viewer (added by B80, after
     // 0.105.0; docs/design/plugin-query-surface.md).
     "query",
+    // Create and list owned vocabularies (added by B108, after 0.106.0).
+    "vocabulary",
 ];
 
 fn default_true() -> bool {
@@ -645,6 +692,26 @@ impl PluginInfo {
                     "plugin '{}': migration file '{}' must have .sql extension",
                     self.name,
                     file
+                );
+            }
+        }
+
+        // Vocabulary owners (B108): the owner type and the route shape.
+        let mut seen_owner_types: std::collections::HashSet<&str> =
+            std::collections::HashSet::new();
+        for owner in &self.vocabulary_owners {
+            if let Err(problem) = crate::content::owned_vocabulary::check_declaration(owner) {
+                anyhow::bail!(
+                    "plugin info at {} declares vocabulary owner '{}': {problem}",
+                    path.display(),
+                    owner.owner_type
+                );
+            }
+            if !seen_owner_types.insert(owner.owner_type.as_str()) {
+                anyhow::bail!(
+                    "plugin info at {} declares vocabulary owner '{}' twice",
+                    path.display(),
+                    owner.owner_type
                 );
             }
         }
@@ -1323,6 +1390,7 @@ api_version = "1.2.3"
             capabilities: None,
             record_types: vec![],
             config: Default::default(),
+            vocabulary_owners: Vec::new(),
         }
     }
 

@@ -1751,6 +1751,12 @@ fn deserialize_entity(entity_type: &str, content: &str) -> Result<ParsedFile> {
         entity_types::CATEGORY => {
             let category: Category =
                 serde_yml::from_str(content).context("invalid category YAML")?;
+            if let Err(problem) = crate::content::owned_vocabulary::check_owner(
+                category.owner_type.as_deref(),
+                category.owner_id.as_deref(),
+            ) {
+                anyhow::bail!("category {}: {problem}", category.id);
+            }
             Ok(ParsedFile::plain(ConfigEntity::Category(category)))
         }
         entity_types::TAG => {
@@ -2090,6 +2096,8 @@ mod tests {
             description: Some("Content topics".to_string()),
             hierarchy: 1,
             weight: 0,
+            owner_type: None,
+            owner_id: None,
         };
 
         let yaml = serde_yml::to_string(&category).unwrap();

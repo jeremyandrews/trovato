@@ -193,6 +193,21 @@ where that plugin is disabled they could not be granted to anyone, and the
 screens would become superuser-only again through the back door.
 `administer categories` is in `KERNEL_PERMISSIONS`, so it is always grantable.
 
+### Owned vocabularies
+
+A plugin may declare a kind of owner (a group, a club) whose vocabularies the
+kernel serves under a route the plugin names, e.g. `/group/{owner}/categories`.
+See "Owned vocabularies" in `docs/plugin-development.md`.
+
+| Route | Method | Who |
+|---|---|---|
+| `<owner route>`, `/{vocabulary}`, `/{vocabulary}/add`, `/{vocabulary}/terms/{term}/edit` and `/delete` | GET, POST | a signed-in user the plugin's `tap_vocabulary_owner_access` grants for that owner, or a holder of the permission the plugin declares for the owner type, or a superuser |
+
+An anonymous user is sent to sign in, and a user who is refused gets 403. A
+vocabulary or term of another owner is a 404 under this owner's route. Owned
+vocabularies are also listed at `/admin/structure/categories`, with their
+owner, for holders of `administer categories`.
+
 ## Site structure and configuration
 
 These screens have no more specific permission declared anywhere in the kernel

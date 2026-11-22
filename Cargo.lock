@@ -4856,6 +4856,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "test_owned_vocabulary"
+version = "0.106.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "test_page_builder_components"
 version = "0.106.0"
 dependencies = [

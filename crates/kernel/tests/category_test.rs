@@ -49,6 +49,8 @@ fn category_hierarchy_modes() {
         description: None,
         hierarchy: 0,
         weight: 0,
+        owner_type: None,
+        owner_id: None,
     };
     assert_eq!(flat.hierarchy, 0);
 
@@ -59,6 +61,8 @@ fn category_hierarchy_modes() {
         description: None,
         hierarchy: 1,
         weight: 0,
+        owner_type: None,
+        owner_id: None,
     };
     assert_eq!(tree.hierarchy, 1);
 
@@ -69,6 +73,8 @@ fn category_hierarchy_modes() {
         description: None,
         hierarchy: 2,
         weight: 0,
+        owner_type: None,
+        owner_id: None,
     };
     assert_eq!(dag.hierarchy, 2);
 }
@@ -217,6 +223,8 @@ fn category_with_special_characters() {
         description: Some("Description with \"quotes\" and 'apostrophes'".to_string()),
         hierarchy: 0,
         weight: 0,
+        owner_type: None,
+        owner_id: None,
     };
 
     let json = serde_json::to_string(&category).unwrap();

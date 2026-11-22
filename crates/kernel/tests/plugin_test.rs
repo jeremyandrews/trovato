@@ -683,6 +683,8 @@ async fn every_known_host_interface_except_pending_is_registered() {
         (func (param i32 i32 i32 i32 i32 i32) (result i32)))
       (import "trovato:kernel/query" "run"
         (func (param i32 i32 i32 i32 i32 i32) (result i32)))
+      (import "trovato:kernel/vocabulary" "create-owned"
+        (func (param i32 i32 i32 i32) (result i32)))
       (memory (export "memory") 1))
     "#;
 
@@ -712,6 +714,7 @@ async fn every_known_host_interface_except_pending_is_registered() {
         "mail",
         "text-format",
         "query",
+        "vocabulary",
     ]
     .into_iter()
     .collect();
@@ -1103,6 +1106,7 @@ fn dependency_resolution_no_deps() {
             capabilities: None,
             record_types: vec![],
             config: Default::default(),
+            vocabulary_owners: Vec::new(),
         },
     );
     plugins.insert(
@@ -1119,6 +1123,7 @@ fn dependency_resolution_no_deps() {
             capabilities: None,
             record_types: vec![],
             config: Default::default(),
+            vocabulary_owners: Vec::new(),
         },
     );
 
@@ -1146,6 +1151,7 @@ fn dependency_resolution_with_deps() {
             capabilities: None,
             record_types: vec![],
             config: Default::default(),
+            vocabulary_owners: Vec::new(),
         },
     );
     plugins.insert(
@@ -1162,6 +1168,7 @@ fn dependency_resolution_with_deps() {
             capabilities: None,
             record_types: vec![],
             config: Default::default(),
+            vocabulary_owners: Vec::new(),
         },
     );
 
@@ -1193,6 +1200,7 @@ fn dependency_resolution_circular() {
             capabilities: None,
             record_types: vec![],
             config: Default::default(),
+            vocabulary_owners: Vec::new(),
         },
     );
     plugins.insert(
@@ -1209,6 +1217,7 @@ fn dependency_resolution_circular() {
             capabilities: None,
             record_types: vec![],
             config: Default::default(),
+            vocabulary_owners: Vec::new(),
         },
     );
 
@@ -1311,6 +1320,7 @@ fn db_probe_state(plugin: &str) -> PluginState {
         }),
         record_types: vec![],
         config: Default::default(),
+        vocabulary_owners: Vec::new(),
     };
     let policy = DbPolicy::derive(&info, &dir);
     std::fs::remove_dir_all(&dir).ok();
@@ -1458,6 +1468,7 @@ async fn raw_probe_state(plugin: &str) -> PluginState {
         }),
         record_types: vec![],
         config: Default::default(),
+        vocabulary_owners: Vec::new(),
     };
     let policy = DbPolicy::derive(&info, Path::new("/nonexistent"));
 

@@ -436,6 +436,7 @@ mod tests {
             }),
             record_types: vec![],
             config: Default::default(),
+            vocabulary_owners: Vec::new(),
         };
 
         let policy = DbPolicy::derive(&info, &dir);
@@ -571,6 +572,7 @@ mod tests {
             }),
             record_types: vec![],
             config: Default::default(),
+            vocabulary_owners: Vec::new(),
         };
 
         let policy = DbPolicy::derive(&info, &dir);
@@ -603,6 +605,7 @@ mod tests {
             capabilities: None,
             record_types: vec![],
             config: Default::default(),
+            vocabulary_owners: Vec::new(),
         };
         let policy = DbPolicy::derive(&info, Path::new("/nonexistent"));
         assert!(policy.check_table("anything").is_err());

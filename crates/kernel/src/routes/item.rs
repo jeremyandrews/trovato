@@ -279,6 +279,17 @@ fn write_error(e: anyhow::Error, context: &'static str) -> AppError {
     if let Some(invalid) = e.downcast_ref::<crate::content::PageBuilderInvalid>() {
         return page_builder_invalid(invalid);
     }
+    if let Some(refused) = e.downcast_ref::<crate::content::owned_vocabulary::TermsNotOwned>() {
+        return AppError::validation(
+            refused
+                .0
+                .iter()
+                .map(|(field, message)| {
+                    AppError::field_error(field.clone(), "invalid", message.clone())
+                })
+                .collect(),
+        );
+    }
     if e.to_string().contains("access denied") {
         return AppError::forbidden("Access denied");
     }

@@ -408,6 +408,19 @@ interface query {
     run: func(definition-json: string, options-json: string) -> result<string, string>;
 }
 
+/// Owned vocabularies: vocabularies that belong to an owner the plugin
+/// declares under `[[vocabulary_owners]]` in its manifest (a group, a club).
+/// `create-owned` takes `{owner_type, owner_id, id, label, description?,
+/// hierarchy?, weight?}` and returns the vocabulary; the owner type must be one
+/// this plugin declared (-90), the id a new machine name (-91 invalid, -92
+/// taken). `list-owned` returns the owner's vocabularies as a JSON array.
+///
+/// Added by B108, after 0.106.0: a new interface; no existing signature changed.
+interface vocabulary {
+    create-owned: func(request-json: string) -> result<string, string>;
+    list-owned: func(owner-type: string, owner-id: string) -> result<string, string>;
+}
+
 /// The plugin world — all imports and exports for a Trovato plugin.
 /// All tap functions use full-serialization (JSON in, JSON out).
 ///
@@ -454,6 +467,7 @@ world plugin {
     import mail;
     import text-format;
     import query;
+    import vocabulary;
 
     // --- Tap export naming convention (PF-3 / D-1, sub-decision 1) ----------
     // Host *import* fields above are kebab-case and match these WIT identifiers
@@ -620,6 +634,11 @@ world plugin {
     // Gather extensions — plugins declare extra filters/relationships/sorts
     // (returns a JSON GatherExtensionDeclaration; no input).
     export tap-gather-extend: func() -> string;
+
+    // Owned vocabularies (B108): `{owner_type, owner_key, operation, user_id,
+    // authenticated}` in, `{owner_id, access}` out, `access` one of grant,
+    // deny, neutral. Dispatched only to the plugin that declared the owner type.
+    export tap-vocabulary-owner-access: func(request-json: string) -> string;
 
     // AI governance (dispatch pending) — `tap-ai-request` decides allow/modify/
     // deny for an outbound AI request (AiRequestContext in, AiRequestDecision

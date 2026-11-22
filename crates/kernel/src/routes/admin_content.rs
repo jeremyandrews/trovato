@@ -370,14 +370,32 @@ async fn add_content_submit(
                 )
                 .await;
             }
-            if let Some(invalid) = e.downcast_ref::<crate::content::PageBuilderInvalid>() {
-                let errors: Vec<crate::form::ValidationError> = invalid
-                    .0
-                    .iter()
-                    .map(|(field, error)| {
-                        crate::form::ValidationError::field(field.clone(), error.to_string())
-                    })
-                    .collect();
+            let owned_terms = e
+                .downcast_ref::<crate::content::owned_vocabulary::TermsNotOwned>()
+                .map(|refused| {
+                    refused
+                        .0
+                        .iter()
+                        .map(|(field, message)| {
+                            crate::form::ValidationError::field(field.clone(), message.clone())
+                        })
+                        .collect::<Vec<_>>()
+                });
+            let page_builder =
+                e.downcast_ref::<crate::content::PageBuilderInvalid>()
+                    .map(|invalid| {
+                        invalid
+                            .0
+                            .iter()
+                            .map(|(field, error)| {
+                                crate::form::ValidationError::field(
+                                    field.clone(),
+                                    error.to_string(),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    });
+            if let Some(errors) = page_builder.or(owned_terms) {
                 return render_content_form(
                     &state,
                     &session,
@@ -606,14 +624,32 @@ async fn edit_content_submit(
                 )
                 .await;
             }
-            if let Some(invalid) = e.downcast_ref::<crate::content::PageBuilderInvalid>() {
-                let errors: Vec<crate::form::ValidationError> = invalid
-                    .0
-                    .iter()
-                    .map(|(field, error)| {
-                        crate::form::ValidationError::field(field.clone(), error.to_string())
-                    })
-                    .collect();
+            let owned_terms = e
+                .downcast_ref::<crate::content::owned_vocabulary::TermsNotOwned>()
+                .map(|refused| {
+                    refused
+                        .0
+                        .iter()
+                        .map(|(field, message)| {
+                            crate::form::ValidationError::field(field.clone(), message.clone())
+                        })
+                        .collect::<Vec<_>>()
+                });
+            let page_builder =
+                e.downcast_ref::<crate::content::PageBuilderInvalid>()
+                    .map(|invalid| {
+                        invalid
+                            .0
+                            .iter()
+                            .map(|(field, error)| {
+                                crate::form::ValidationError::field(
+                                    field.clone(),
+                                    error.to_string(),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    });
+            if let Some(errors) = page_builder.or(owned_terms) {
                 return render_content_form(
                     &state,
                     &session,

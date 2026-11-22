@@ -53,6 +53,7 @@ pub mod lock;
 pub mod mail_preference;
 pub mod metrics;
 pub mod oauth;
+pub mod owned_vocabulary;
 pub mod password_reset;
 pub mod plugin_admin;
 pub mod plugin_api;
