@@ -1133,6 +1133,7 @@ async fn submitted_fields(
         crate::routes::helpers::require_csrf_header(session, headers)
             .await
             .map_err(|_| AppError::forbidden("Invalid or missing CSRF token"))?;
+        check_json_fields(content_type, request.fields.as_ref(), item, user)?;
         return Ok(Submitted::Fields(request.fields.clone(), None));
     };
     match super::item_form::process(state, session, user, content_type, item, posted).await {
@@ -1155,6 +1156,33 @@ async fn submitted_fields(
             )
             .await?,
         )),
+    }
+}
+
+/// Check a JSON body's `fields` with the reading the forms use
+/// (`content::field_value::check_json`): every declared field the body changes
+/// must be a shape its type reads, and a long text's format one this user may
+/// use. A 400 names every refusal. A field the body sends as already stored is
+/// not checked, so an item a plugin wrote in another shape stays saveable.
+fn check_json_fields(
+    content_type: &trovato_sdk::types::ContentTypeDefinition,
+    fields: Option<&serde_json::Value>,
+    item: Option<&crate::models::Item>,
+    user: &UserContext,
+) -> Result<(), AppError> {
+    let Some(sent) = fields.and_then(serde_json::Value::as_object) else {
+        return Ok(());
+    };
+    let refused = crate::content::field_value::check_json_fields(
+        &content_type.fields,
+        sent,
+        item.and_then(|i| i.fields.as_object()),
+        &crate::content::submission::permitted_text_formats(user),
+    );
+    if refused.is_empty() {
+        Ok(())
+    } else {
+        Err(AppError::bad_request(refused.join(" ")))
     }
 }
 
@@ -1362,6 +1390,20 @@ async fn update_item(
         crate::routes::helpers::require_csrf_header(&session, &headers)
             .await
             .map_err(|_| AppError::forbidden("Invalid or missing CSRF token"))?;
+        // The stored item (cached) says which fields the body changes. A missing
+        // item or type, or a user who may not edit it, is the service's 404 or
+        // 403 to give, before anything about the body is said.
+        if request.fields.is_some()
+            && let Ok(Some(stored)) = state.items().load(id).await
+            && let Some(content_type) = state.content_types().get(&stored.item_type)
+            && state
+                .items()
+                .check_access(&stored, "edit", &user)
+                .await
+                .unwrap_or(false)
+        {
+            check_json_fields(&content_type, request.fields.as_ref(), Some(&stored), &user)?;
+        }
         (request.fields.clone(), None)
     };
     let stage_id = request.requested_stage()?;

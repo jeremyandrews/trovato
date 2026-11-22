@@ -14,6 +14,7 @@
 use serde_json::{Map, Value};
 use trovato_sdk::types::{ContentTypeDefinition, FieldDefinition, FieldType};
 
+use super::field_value::{self, is_truthy};
 use crate::form::ValidationError;
 use crate::tap::UserContext;
 
@@ -151,6 +152,12 @@ pub fn is_visible(
 /// `visible_when` condition is false for the posted values: it is neither
 /// written nor required.
 ///
+/// On an edit (`stored` is `Some`), a field whose posted value is what its
+/// widget showed keeps its stored value byte for byte, absent included
+/// (`field_value::is_unchanged`), and a changed value is written into the
+/// stored value's shape (`field_value::reshape`): a save without changes is
+/// a no op on the stored data, whichever writer stored it and in which shape.
+///
 /// Returns every error at once, so the form can show them all.
 pub fn build_item_fields(
     stored: Option<&Map<String, Value>>,
@@ -174,11 +181,20 @@ pub fn build_item_fields(
         .filter(|f| is_visible(f, content_type, stored, rendered, Some(posted)))
     {
         let name = &field.field_name;
+        // On an edit, what the form showed and got back unchanged keeps the
+        // stored value exactly, whatever its shape; an add form has nothing
+        // stored to keep.
+        let prior = stored.and_then(|s| s.get(name));
+        let editing = stored.is_some();
+
         if matches!(
             field.field_type,
             FieldType::Compound { .. } | FieldType::Blocks
         ) {
             if let Some(raw) = posted.get(name) {
+                if editing && field_value::is_unchanged(&field.field_type, prior, raw, None) {
+                    continue;
+                }
                 json_inputs.insert(name.clone(), Value::String(raw.to_string()));
             }
             json_defs.push(field.clone());
@@ -186,13 +202,37 @@ pub fn build_item_fields(
         }
 
         if field.cardinality != 1 {
+            let raws: Vec<&str> = posted
+                .values_of(name)
+                .into_iter()
+                .filter(|raw| !raw.trim().is_empty())
+                .collect();
+            let shown: Vec<&Value> = field_value::form_values(prior)
+                .into_iter()
+                .filter(|v| !field_value::form_text(&field.field_type, Some(v)).is_empty())
+                .collect();
+            if editing
+                && raws.len() == shown.len()
+                && raws.iter().zip(&shown).all(|(raw, v)| {
+                    field_value::is_unchanged(&field.field_type, Some(v), raw, None)
+                })
+            {
+                if field.required && raws.is_empty() {
+                    errors.push(required_error(field));
+                }
+                continue;
+            }
             let mut values = Vec::new();
-            for raw in posted.values_of(name) {
-                if raw.trim().is_empty() {
+            for (delta, raw) in raws.into_iter().enumerate() {
+                let was = shown.get(delta).copied();
+                if was.is_some_and(|v| {
+                    field_value::is_unchanged(&field.field_type, Some(v), raw, None)
+                }) {
+                    values.extend(was.cloned());
                     continue;
                 }
-                match coerce(field, raw, posted, permitted_formats) {
-                    Ok(Some(v)) => values.push(v),
+                match field_value::parse(field, raw, None, permitted_formats) {
+                    Ok(Some(v)) => values.push(field_value::reshape(was, v)),
                     Ok(None) => {}
                     Err(e) => errors.push(e),
                 }
@@ -213,20 +253,32 @@ pub fn build_item_fields(
             continue;
         }
 
+        let raw = posted.get(name).unwrap_or("");
+        let format_key = format!("{name}_format");
+        let format = matches!(field.field_type, FieldType::TextLong)
+            .then(|| posted.get(&format_key))
+            .flatten();
         if matches!(field.field_type, FieldType::Boolean) {
-            let checked = posted.get(name).is_some_and(is_truthy);
-            out.insert(name.clone(), Value::Bool(checked));
+            if editing && field_value::is_unchanged(&field.field_type, prior, raw, None) {
+                continue;
+            }
+            out.insert(
+                name.clone(),
+                field_value::reshape(prior, Value::Bool(is_truthy(raw))),
+            );
             continue;
         }
 
-        let raw = posted.get(name).unwrap_or("");
         if field.required && raw.trim().is_empty() {
             errors.push(required_error(field));
             continue;
         }
-        match coerce(field, raw, posted, permitted_formats) {
+        if editing && field_value::is_unchanged(&field.field_type, prior, raw, format) {
+            continue;
+        }
+        match field_value::parse(field, raw, format, permitted_formats) {
             Ok(Some(v)) => {
-                out.insert(name.clone(), v);
+                out.insert(name.clone(), field_value::reshape(prior, v));
             }
             Ok(None) => {
                 out.remove(name);
@@ -256,88 +308,6 @@ pub fn build_item_fields(
 /// The "is required" error for `field`.
 fn required_error(field: &FieldDefinition) -> ValidationError {
     ValidationError::field(&field.field_name, format!("{} is required.", field.label))
-}
-
-/// Whether a posted checkbox value means checked. A browser posts the input's
-/// `value` (the kernel renders `1`); `true` and `on` are what a hand built
-/// request or a browser default send.
-fn is_truthy(raw: &str) -> bool {
-    matches!(raw.trim(), "1" | "true" | "on")
-}
-
-/// Coerce one posted value by the field's type. `Ok(None)` means "no value":
-/// the key is removed rather than stored as an empty string a number field
-/// cannot hold.
-fn coerce(
-    field: &FieldDefinition,
-    raw: &str,
-    posted: &PostedForm,
-    permitted_formats: &[String],
-) -> Result<Option<Value>, ValidationError> {
-    let name = &field.field_name;
-    let trimmed = raw.trim();
-    match &field.field_type {
-        FieldType::Boolean => Ok(Some(Value::Bool(is_truthy(raw)))),
-        FieldType::Integer => {
-            if trimmed.is_empty() {
-                return Ok(None);
-            }
-            trimmed
-                .parse::<i64>()
-                .map(|n| Some(Value::from(n)))
-                .map_err(|_| {
-                    ValidationError::field(name, format!("{} must be a whole number.", field.label))
-                })
-        }
-        FieldType::Float => {
-            if trimmed.is_empty() {
-                return Ok(None);
-            }
-            trimmed
-                .parse::<f64>()
-                .ok()
-                .and_then(serde_json::Number::from_f64)
-                .map(|n| Some(Value::Number(n)))
-                .ok_or_else(|| {
-                    ValidationError::field(name, format!("{} must be a number.", field.label))
-                })
-        }
-        FieldType::Email => {
-            if !trimmed.is_empty() && !trimmed.contains('@') {
-                return Err(ValidationError::field(
-                    name,
-                    format!("{} must be a valid email address.", field.label),
-                ));
-            }
-            Ok(Some(Value::String(trimmed.to_string())))
-        }
-        FieldType::TextLong => {
-            let Some(format) = posted.get(&format!("{name}_format")) else {
-                return Ok(Some(Value::String(raw.to_string())));
-            };
-            if !permitted_formats.iter().any(|f| f == format) {
-                return Err(ValidationError::field(
-                    name,
-                    format!("{}: you may not use the {format} text format.", field.label),
-                ));
-            }
-            Ok(Some(serde_json::json!({ "value": raw, "format": format })))
-        }
-        FieldType::PageBuilder => {
-            if trimmed.is_empty() {
-                return Ok(None);
-            }
-            serde_json::from_str(trimmed).map(Some).map_err(|_| {
-                ValidationError::field(name, format!("{}: invalid page data.", field.label))
-            })
-        }
-        FieldType::Text { .. }
-        | FieldType::Date
-        | FieldType::File
-        | FieldType::RecordReference(_)
-        | FieldType::Compound { .. }
-        | FieldType::Blocks => Ok(Some(Value::String(raw.to_string()))),
-    }
 }
 
 #[cfg(test)]

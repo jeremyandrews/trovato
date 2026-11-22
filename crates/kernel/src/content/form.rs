@@ -1,5 +1,6 @@
 //! Item forms, built as typed [`Form`]s from content type field definitions.
 
+use super::field_value;
 use crate::form::{Form, FormElement};
 use crate::models::Item;
 use trovato_sdk::types::{ContentTypeDefinition, FieldDefinition, FieldType};
@@ -266,7 +267,24 @@ impl FormBuilder {
     ) -> Vec<(String, FormElement)> {
         let name = &field.field_name;
         if field.cardinality == 1 {
-            let mut elements = vec![(name.clone(), self.widget(field, value, mode))];
+            // A long text in a format this user may not use is shown, not
+            // offered: the selector could not show its format, so a save would
+            // change it (or be refused). Disabled, it is not submitted and the
+            // stored value stays as it is.
+            let mut mode = mode;
+            let locked = matches!(field.field_type, FieldType::TextLong)
+                && value.is_some_and(|v| !v.is_null())
+                && !self.is_format_permitted(&field_value::form_format(value));
+            if locked && mode == FieldMode::Editable {
+                mode = FieldMode::ReadOnly;
+            }
+            let mut widget = self.widget(field, value, mode);
+            if locked {
+                widget = widget.description(
+                    "This field is in a text format you may not use, so it cannot be changed here.",
+                );
+            }
+            let mut elements = vec![(name.clone(), widget)];
             if matches!(field.field_type, FieldType::TextLong) {
                 elements.push((format!("{name}_format"), self.format_select(value, mode)));
             }
@@ -276,11 +294,7 @@ impl FormBuilder {
                 .collect();
         }
 
-        let stored: Vec<&serde_json::Value> = match value {
-            Some(serde_json::Value::Array(values)) => values.iter().collect(),
-            Some(serde_json::Value::Null) | None => Vec::new(),
-            Some(single) => vec![single],
-        };
+        let stored = field_value::form_values(value);
         let room = field.cardinality < 0 || stored.len() < field.cardinality as usize;
         let mut slots: Vec<Option<&serde_json::Value>> = stored.into_iter().map(Some).collect();
         if room && mode == FieldMode::Editable {
@@ -326,86 +340,71 @@ impl FormBuilder {
         value: Option<&serde_json::Value>,
         mode: FieldMode,
     ) -> FormElement {
-        let mut element =
-            match &field.field_type {
-                FieldType::Text { max_length } => {
-                    let mut e = FormElement::textfield();
-                    if let Some(max) = max_length {
-                        e = e.max_length(*max);
-                    }
-                    e.default_value(raw_field_text(value).unwrap_or_default())
+        // What the widget shows is the field type's to say (`field_value`), the
+        // same module that reads the posted value back into the stored shape.
+        let text = field_value::form_text(&field.field_type, value);
+        let mut element = match &field.field_type {
+            FieldType::Text { max_length } => {
+                let mut e = FormElement::textfield();
+                if let Some(max) = max_length {
+                    e = e.max_length(*max);
                 }
-                FieldType::TextLong => FormElement::textarea(10)
-                    .default_value(raw_field_text(value).unwrap_or_default()),
-                FieldType::Integer => FormElement::input("number").default_value(
-                    scalar_of(value)
-                        .and_then(|v| v.as_i64().map(|n| n.to_string()))
-                        .unwrap_or_default(),
-                ),
-                FieldType::Float => FormElement::input("number")
-                    .attribute("step", "any")
-                    .default_value(
-                        scalar_of(value)
-                            .and_then(|v| v.as_f64().map(|n| n.to_string()))
-                            .unwrap_or_default(),
-                    ),
-                FieldType::Boolean => FormElement::checkbox().default_value(
-                    scalar_of(value)
-                        .and_then(serde_json::Value::as_bool)
-                        .unwrap_or(false),
-                ),
-                FieldType::Date => FormElement::input("date")
-                    .default_value(raw_field_text(value).unwrap_or_default()),
-                FieldType::Email => FormElement::input("email")
-                    .default_value(raw_field_text(value).unwrap_or_default()),
-                FieldType::RecordReference(target_type) => {
-                    let id = extract_reference_id(value);
-                    // Display title for the current value: an inline `title` key if
-                    // the writer supplied one, else the route-resolved title for
-                    // this uuid. Without the latter the box renders empty on every
-                    // edit, because what the widget stores is a bare uuid.
-                    let display = value
-                        .and_then(|v| v.get("title"))
-                        .and_then(|v| v.as_str())
-                        .map(str::to_string)
-                        .or_else(|| self.reference_titles.get(&id).cloned())
-                        .unwrap_or_default();
-                    FormElement::widget("record_reference")
-                        .attribute("data-target-type", target_type.clone())
-                        .attribute("data-display", display)
-                        .default_value(id)
-                }
-                FieldType::File => FormElement::widget("file")
-                    .default_value(raw_field_text(value).unwrap_or_default()),
-                FieldType::Blocks => {
-                    FormElement::widget("blocks").default_value(json_input(value, "[]"))
-                }
-                FieldType::PageBuilder => FormElement::widget("page_builder")
-                    .default_value(json_input(value, r#"{"root":{"title":""},"content":[]}"#)),
-                FieldType::Compound {
-                    allowed_types,
-                    min_items,
-                    max_items,
-                } => {
-                    let config = serde_json::json!({
-                        "allowed_types": allowed_types,
-                        "min_items": min_items,
-                        "max_items": max_items,
-                    });
-                    let section_types =
-                        crate::content::compound::parse_section_schemas(&field.settings);
-                    FormElement::widget("compound")
-                        .attribute(
-                            "data-config",
-                            serde_json::to_string(&config).unwrap_or_default(),
-                        )
-                        .attribute(
-                            "data-section-types",
-                            serde_json::to_string(&section_types).unwrap_or_default(),
-                        )
-                        .default_value(json_input(value, r#"{"sections":[]}"#))
-                }
-            };
+                e.default_value(text)
+            }
+            FieldType::TextLong => FormElement::textarea(10).default_value(text),
+            FieldType::Integer => FormElement::input("number").default_value(text),
+            FieldType::Float => FormElement::input("number")
+                .attribute("step", "any")
+                .default_value(text),
+            FieldType::Boolean => {
+                FormElement::checkbox().default_value(field_value::form_checked(value))
+            }
+            FieldType::Date => FormElement::input("date").default_value(text),
+            FieldType::Email => FormElement::input("email").default_value(text),
+            FieldType::RecordReference(target_type) => {
+                let id = text;
+                // Display title for the current value: an inline `title` key if
+                // the writer supplied one, else the route-resolved title for
+                // this uuid. Without the latter the box renders empty on every
+                // edit, because what the widget stores is a bare uuid.
+                let display = value
+                    .and_then(|v| v.get("title"))
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string)
+                    .or_else(|| self.reference_titles.get(&id).cloned())
+                    .unwrap_or_default();
+                FormElement::widget("record_reference")
+                    .attribute("data-target-type", target_type.clone())
+                    .attribute("data-display", display)
+                    .default_value(id)
+            }
+            FieldType::File => FormElement::widget("file").default_value(text),
+            FieldType::Blocks => FormElement::widget("blocks").default_value(text),
+            FieldType::PageBuilder => FormElement::widget("page_builder").default_value(text),
+            FieldType::Compound {
+                allowed_types,
+                min_items,
+                max_items,
+            } => {
+                let config = serde_json::json!({
+                    "allowed_types": allowed_types,
+                    "min_items": min_items,
+                    "max_items": max_items,
+                });
+                let section_types =
+                    crate::content::compound::parse_section_schemas(&field.settings);
+                FormElement::widget("compound")
+                    .attribute(
+                        "data-config",
+                        serde_json::to_string(&config).unwrap_or_default(),
+                    )
+                    .attribute(
+                        "data-section-types",
+                        serde_json::to_string(&section_types).unwrap_or_default(),
+                    )
+                    .default_value(text)
+            }
+        };
         element = element.title(field.label.clone());
         // A checkbox that must be ticked is not what "required" means for a
         // Boolean; the other widgets carry it to the browser.
@@ -421,7 +420,7 @@ impl FormBuilder {
     /// The text format selector beside a long text field, offering the
     /// formats this user may use.
     fn format_select(&self, value: Option<&serde_json::Value>, mode: FieldMode) -> FormElement {
-        let current = extract_format_value(value);
+        let current = field_value::form_format(value);
         // The stored formats, lightest first (`content::text_format`).
         let options: Vec<(String, String)> = super::text_format::all()
             .iter()
@@ -437,22 +436,6 @@ impl FormBuilder {
         }
         element
     }
-}
-
-/// A stored JSON value as the text a widget's hidden input carries, or
-/// `empty` when there is none.
-fn json_input(value: Option<&serde_json::Value>, empty: &str) -> String {
-    match value {
-        Some(serde_json::Value::Null) | None => empty.to_string(),
-        Some(v) => serde_json::to_string(v).unwrap_or_else(|_| empty.to_string()),
-    }
-}
-
-/// The scalar inside a stored field value: the `{"value": …}` wrapper's payload
-/// when present, otherwise the value itself. See [`raw_field_text`] for why
-/// both shapes have to be read.
-fn scalar_of(value: Option<&serde_json::Value>) -> Option<&serde_json::Value> {
-    value.map(|v| v.get("value").unwrap_or(v))
 }
 
 /// The wrapper a field with `visible_when` renders in: a container holding the
@@ -487,40 +470,6 @@ fn visible_when_wrapper(
     wrapper
 }
 
-/// Read a stored field value as raw text, accepting **both** shapes the kernel
-/// writes.
-///
-/// Two item-form stacks disagreed about storage: the admin stack
-/// (`admin_content.rs`) writes **flat** scalars and reads them back flat, so it
-/// round-trips; `FormBuilder` read only the `{"value": …}` wrapper, which
-/// nothing on its own path ever wrote — so every saved value rendered back
-/// empty (**G-ITEM-FORM-MISMATCH**, Argus M3).
-///
-/// Rather than pick a winner and migrate every stored item, this reads either:
-/// the wrapper when present, the bare scalar otherwise. Both shapes are live in
-/// the tree — plugin-written items use the wrapper (`argus_story`) and
-/// admin-written items are flat (`argus_feed`) — so tolerance here is not
-/// laxity, it is the only reading that is correct for the data that exists.
-/// Numbers and booleans are rendered too; before, a stored `5` produced an
-/// empty input.
-fn raw_field_text(value: Option<&serde_json::Value>) -> Option<String> {
-    match scalar_of(value)? {
-        serde_json::Value::String(s) => Some(s.clone()),
-        serde_json::Value::Number(n) => Some(n.to_string()),
-        serde_json::Value::Bool(b) => Some(b.to_string()),
-        _ => None,
-    }
-}
-
-/// Extract format from field JSON.
-fn extract_format_value(value: Option<&serde_json::Value>) -> String {
-    value
-        .and_then(|v| v.get("format"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("filtered_html")
-        .to_string()
-}
-
 /// Read a `RecordReference` field's target id, accepting every shape that
 /// reaches it.
 ///
@@ -532,22 +481,9 @@ fn extract_format_value(value: Option<&serde_json::Value>) -> String {
 /// string, and the first element of a list (the multi-value shape the reverse
 /// -reference resolver in `routes/item.rs` already handles).
 pub fn extract_reference_id(value: Option<&serde_json::Value>) -> String {
-    let Some(value) = value else {
-        return String::new();
-    };
-    let candidate = value
-        .get("target_id")
-        .or_else(|| value.get("value"))
-        .unwrap_or(value);
-    let id = match candidate {
-        serde_json::Value::String(s) => s.as_str(),
-        serde_json::Value::Array(items) => items
-            .first()
-            .and_then(|v| v.get("target_id").unwrap_or(v).as_str())
-            .unwrap_or_default(),
-        _ => "",
-    };
-    id.to_string()
+    value
+        .map(super::field_value::reference_id)
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -656,14 +592,12 @@ mod tests {
     }
 
     #[test]
-    fn extract_format_default() {
-        assert_eq!(extract_format_value(None), "filtered_html");
-    }
-
-    #[test]
-    fn extract_format_specified() {
-        let val = serde_json::json!({"format": "plain_text"});
-        assert_eq!(extract_format_value(Some(&val)), "plain_text");
+    fn the_format_shown_is_the_stored_one_or_how_it_renders() {
+        assert_eq!(field_value::form_format(None), "filtered_html");
+        let val = serde_json::json!({"format": "full_html"});
+        assert_eq!(field_value::form_format(Some(&val)), "full_html");
+        let plain = serde_json::json!("no format");
+        assert_eq!(field_value::form_format(Some(&plain)), "plain_text");
     }
 
     #[test]
