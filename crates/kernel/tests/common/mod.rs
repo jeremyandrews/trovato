@@ -1210,7 +1210,10 @@ pub async fn user_holding(app: &TestApp, prefix: &str, permissions: &[&str]) -> 
 pub async fn create_test_stage(app: &TestApp, prefix: &str) -> Uuid {
     use trovato_kernel::models::stage::{CreateStage, Stage};
 
-    let suffix = &Uuid::now_v7().simple().to_string()[..8];
+    // The random tail of a v7 id: its first eight digits are the clock, the
+    // same for every stage made in the same minute.
+    let id = Uuid::now_v7().simple().to_string();
+    let suffix = &id[24..];
     let stage = Stage::create(
         &app.db,
         CreateStage {

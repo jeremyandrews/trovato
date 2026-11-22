@@ -311,11 +311,13 @@ async fn add_stage_submit(
     // A new default has to displace the old one, and only `Stage::update` knows
     // how to do that atomically, so create first and then set the flag.
     let wants_default = form.is_default.is_some();
-    let created = match state.stage().create_stage(CreateStage {
-        is_default: Some(false),
-        ..input
-    })
-    .await
+    let created = match state
+        .stage()
+        .create_stage(CreateStage {
+            is_default: Some(false),
+            ..input
+        })
+        .await
     {
         Ok(stage) => stage,
         Err(e) => {
