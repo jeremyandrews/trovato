@@ -177,6 +177,7 @@ async fn feed_router(app: &TestApp, query: &GatherQuery) -> axum::Router {
     let session_layer = trovato_kernel::session::create_session_layer(
         &redis_url,
         tower_sessions::cookie::SameSite::Strict,
+        trovato_kernel::session::CookieSecure::Always,
     )
     .await
     .expect("create session layer");

@@ -354,6 +354,12 @@ pub struct RuntimeConfig {
     /// the database, the session index or a log. See [`crate::client_addr`].
     pub client_ip_storage: crate::client_addr::ClientIpStorage,
 
+    /// Whether the session cookie, the only cookie the kernel sets, carries
+    /// `Secure` (`COOKIE_SECURE`: `always`, the default, or `never`). `never`
+    /// is refused with an `https://` `SITE_URL` or `COOKIE_SAME_SITE=none`.
+    /// See [`crate::session::CookieSecure`].
+    pub cookie_secure: crate::session::CookieSecure,
+
     /// The site log keeps at most this many days (`SYSTEM_LOG_RETENTION_DAYS`,
     /// default 30) ...
     pub system_log_retention_days: i64,
@@ -569,6 +575,42 @@ impl Settings<'_> {
     }
 }
 
+/// Resolve `COOKIE_SECURE`, refusing a combination that cannot be right.
+///
+/// `never` with an `https://` `SITE_URL` is refused: that site is served over
+/// HTTPS, so dropping `Secure` only lets the session cookie leak over any plain
+/// HTTP request to the same host. `never` with `COOKIE_SAME_SITE=none` is
+/// refused because browsers reject a `SameSite=None` cookie without `Secure`,
+/// so nobody could log in.
+pub(crate) fn cookie_secure_from(
+    raw: Option<&str>,
+    site_url: &str,
+    cookie_same_site: &str,
+) -> Result<crate::session::CookieSecure> {
+    let cookie_secure = crate::session::CookieSecure::parse(raw.unwrap_or_default())
+        .map_err(|e| anyhow::anyhow!("COOKIE_SECURE: {e}"))?;
+    if cookie_secure == crate::session::CookieSecure::Never {
+        if site_url
+            .trim()
+            .get(..8)
+            .is_some_and(|scheme| scheme.eq_ignore_ascii_case("https://"))
+        {
+            anyhow::bail!(
+                "COOKIE_SECURE=never is refused because SITE_URL ({site_url}) is https://: \
+                 a site served over HTTPS must keep its session cookie Secure. \
+                 Unset COOKIE_SECURE, or set it to always."
+            );
+        }
+        if cookie_same_site == "none" {
+            anyhow::bail!(
+                "COOKIE_SECURE=never is refused with COOKIE_SAME_SITE=none: browsers reject \
+                 a SameSite=None cookie that is not Secure, so nobody could log in."
+            );
+        }
+    }
+    Ok(cookie_secure)
+}
+
 /// The environment lookup for path-valued settings. See [`env_lookup`].
 fn env_os_lookup(name: &str) -> Option<std::ffi::OsString> {
     env::var_os(name)
@@ -716,6 +758,13 @@ impl Config {
         )
         .map_err(|e| anyhow::anyhow!("CLIENT_IP_STORAGE: {e}"))?;
 
+        // Whether the session cookie is Secure. Unset ⇒ `always`, as before.
+        let cookie_secure = cookie_secure_from(
+            get("COOKIE_SECURE").as_deref(),
+            &site_url,
+            &cookie_same_site,
+        )?;
+
         let jwt_secret = get("JWT_SECRET");
 
         let shutdown_timeout = Duration::from_secs(parse_or(get, "SHUTDOWN_TIMEOUT_SECS", 30));
@@ -731,6 +780,7 @@ impl Config {
                 get("SECURITY_AUDIT_RETENTION_DAYS").as_deref(),
             ),
             client_ip_storage,
+            cookie_secure,
             system_log_retention_days: parse_or(
                 get,
                 "SYSTEM_LOG_RETENTION_DAYS",
@@ -917,6 +967,82 @@ mod config_tests {
     }
 
     #[test]
+    fn cookie_secure_never_is_read_and_always_is_the_default() {
+        use crate::session::CookieSecure;
+        assert_eq!(
+            with_db(&[("COOKIE_SECURE", "always")])
+                .runtime
+                .cookie_secure,
+            CookieSecure::Always
+        );
+        assert_eq!(
+            with_db(&[("COOKIE_SECURE", " NEVER ")])
+                .runtime
+                .cookie_secure,
+            CookieSecure::Never
+        );
+        // Plain HTTP LAN site: allowed.
+        assert_eq!(
+            with_db(&[
+                ("COOKIE_SECURE", "never"),
+                ("SITE_URL", "http://192.168.1.20:3000"),
+            ])
+            .runtime
+            .cookie_secure,
+            CookieSecure::Never
+        );
+    }
+
+    #[test]
+    fn cookie_secure_rejects_an_unknown_value() {
+        for value in ["auto", "false", "yes"] {
+            let err = config_from(&[("DATABASE_URL", "postgres://x"), ("COOKIE_SECURE", value)])
+                .expect_err("an unknown COOKIE_SECURE must fail startup");
+            assert!(err.to_string().contains("COOKIE_SECURE"), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn cookie_secure_never_with_an_https_site_url_fails_startup() {
+        for site_url in [
+            "https://example.com",
+            "HTTPS://example.com/",
+            " https://lan.test",
+        ] {
+            let err = config_from(&[
+                ("DATABASE_URL", "postgres://x"),
+                ("COOKIE_SECURE", "never"),
+                ("SITE_URL", site_url),
+            ])
+            .expect_err("never with an https SITE_URL must fail startup");
+            let message = err.to_string();
+            assert!(
+                message.contains("COOKIE_SECURE=never") && message.contains("SITE_URL"),
+                "got: {message}"
+            );
+        }
+        // `always` with the same URL is fine.
+        assert!(
+            config_from(&[
+                ("DATABASE_URL", "postgres://x"),
+                ("COOKIE_SECURE", "always"),
+                ("SITE_URL", "https://example.com"),
+            ])
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn cookie_secure_never_with_same_site_none_fails_startup() {
+        let err = config_from(&[
+            ("DATABASE_URL", "postgres://x"),
+            ("COOKIE_SECURE", "never"),
+            ("COOKIE_SAME_SITE", "None"),
+        ])
+        .expect_err("never with SameSite=None must fail startup");
+        assert!(err.to_string().contains("COOKIE_SAME_SITE"), "got: {err}");
+    }
+    #[test]
     fn database_url_is_required() {
         let err = config_from(&[]).expect_err("no DATABASE_URL must fail");
         assert!(err.to_string().contains("DATABASE_URL"), "got: {err}");
@@ -953,6 +1079,11 @@ mod config_tests {
         assert_eq!(
             config.runtime.client_ip_storage,
             crate::client_addr::ClientIpStorage::Full
+        );
+        // Unset COOKIE_SECURE keeps the session cookie Secure.
+        assert_eq!(
+            config.runtime.cookie_secure,
+            crate::session::CookieSecure::Always
         );
 
         // The values request handling reads.

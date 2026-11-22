@@ -136,6 +136,7 @@ async fn site_config_form(State(state): State<AppState>, session: Session) -> Re
     context.insert("items_per_page", &items_per_page);
     context.insert("registration_mode", &registration_mode);
     context.insert("smtp", state.smtp_summary());
+    context.insert("cookie_secure", &state.runtime().cookie_secure);
     context.insert("notify_admin_on_register", &notify_admin_on_register);
     context.insert("update_check", &update_check);
     context.insert("update_status", &update_status);
@@ -232,6 +233,7 @@ async fn site_config_submit(
         context.insert("items_per_page", &form.items_per_page);
         context.insert("registration_mode", &form.registration_mode);
         context.insert("smtp", state.smtp_summary());
+        context.insert("cookie_secure", &state.runtime().cookie_secure);
         context.insert("notify_admin_on_register", &notify_admin_on_register);
         context.insert("update_check", &form.update_check.is_some());
         context.insert(
