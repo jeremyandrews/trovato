@@ -1,7 +1,7 @@
 name = "test_page_builder_components"
 description = "A13 fixture: two plugin page builder components (a card list, a banner with a variant and an image) and a landing page type"
-version = "0.106.0"
-api_version = "0.106"
+version = "0.107.0"
+api_version = "0.107"
 default_enabled = false
 dependencies = []
 

@@ -9,6 +9,56 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### A config export never contains a secret; plugin API 0.107
+
+**Who is affected:** anyone who moves a site with `trovato config export` and
+`config import`, and in particular anyone with webhooks, OAuth clients or the
+`trovato_captcha` Turnstile key; a plugin whose config tables hold a secret;
+anyone pinning the plugin API version.
+
+**What changed.**
+
+- Export no longer writes a secret, in any form. Where one belongs, the file
+  holds a reference to an environment variable instead:
+
+  ```yaml
+  # webhook.0193a5a0-0092-7000-8000-000000000004.yml
+  secret: env:TROVATO_SECRET_WEBHOOK_0193A5A0_0092_7000_8000_000000000004_SECRET
+  ```
+
+  The name is always `TROVATO_SECRET_<TYPE>_<ID>_<COLUMN>`, upper case, with
+  every other character as `_`. An empty secret is left out of the file. This
+  covers `webhook.secret`, `oauth_client.client_secret_hash`, the variable
+  `plugin.trovato_captcha.turnstile_secret_key`
+  (`TROVATO_SECRET_VARIABLE_PLUGIN_TROVATO_CAPTCHA_TURNSTILE_SECRET_KEY_VALUE`)
+  and, if an older import put it back, `smtp_password`.
+- Import resolves each secret before it writes anything, first match wins:
+  1. the target already holds a value for it: that value is kept;
+  2. the variable the file names is set in the environment of
+     `trovato config import`: its value is stored. For an OAuth client the
+     variable holds the plaintext client secret, which import hashes; the
+     plaintext is never stored;
+  3. otherwise import fails, naming each variable to set, and writes nothing.
+
+  So re-importing an export onto the site it came from needs no variable, and
+  importing into a fresh install needs one per secret. The variables are read
+  by the import only; the server does not need them.
+- A file that holds a secret in the clear, as every `webhook` and
+  `oauth_client` file from an export made before this release does, is refused,
+  whatever the target holds. Re-export from the source site, or replace each
+  value with the `env:` reference the error names.
+- A plugin names its secret columns beside its config tables (see the plugin
+  development guide). The key is additive; the project version moves to
+  0.107.0, so `KERNEL_API_VERSION` is `(0, 107)` and the bundled manifests
+  declare `api_version = "0.107"`. A config table column whose name says it
+  holds a credential (`secret`, `password`, `api_key`, ...) is treated as a
+  secret even when undeclared, and export warns.
+
+**How to find out.** `grep -rl 'secret:\|client_secret_hash:' <export dir>`
+on an export made before this release: every file it lists holds a secret in
+the clear. Remove that directory from any repository it was committed to,
+rotate the webhook secrets and OAuth client secrets it held, and export again.
+
 ### A bad `TRUSTED_PROXIES` entry stops startup
 
 **Who is affected:** a site that sets `TRUSTED_PROXIES`. Check that every entry
@@ -159,9 +209,9 @@ anyone pinning the plugin API version.
 - `StageAwareConfigStorage` and `AppState::config_storage_for_stage` are gone.
   Nothing called them; configuration is not staged.
 
-**How to find out.** An export directory from before this release still
-imports. Re-export once to pick up plugin configuration; the `webhook` files
-carry each webhook's signing secret, so treat the directory as a secret.
+**How to find out.** Re-export once to pick up plugin configuration. An export
+holds no secret (see "A config export never contains a secret" above), so the
+directory can be committed.
 
 ### Errors on HTML pages: a themed page for browsers, `AppError` for scripts
 

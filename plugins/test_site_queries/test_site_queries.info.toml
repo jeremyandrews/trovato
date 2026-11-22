@@ -1,7 +1,7 @@
 name = "test_site_queries"
 description = "B80 fixture: a site plugin's listings, sitemap, docs and translation sync without raw_sql"
-version = "0.106.0"
-api_version = "0.106"
+version = "0.107.0"
+api_version = "0.107"
 default_enabled = false
 dependencies = []
 

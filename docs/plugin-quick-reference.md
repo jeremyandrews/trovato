@@ -41,6 +41,10 @@ weight = 0
 # carried by `trovato config export` / `config import`.
 [config]
 tables = ["my_plugin_setting"]
+# Optional (API 0.107): columns holding a secret, password, token, key or a
+# hash of one. Exported as env:TROVATO_SECRET_<TABLE>_<PK>_<COLUMN>, never as
+# the value; import reads that variable.
+secret_columns = { my_plugin_setting = ["api_key"] }
 ```
 
 ---

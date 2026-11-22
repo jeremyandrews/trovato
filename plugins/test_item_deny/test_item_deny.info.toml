@@ -1,7 +1,7 @@
 name = "test_item_deny"
 description = "B69 fixture: denies edit on items of type test_edit_denied"
-version = "0.106.0"
-api_version = "0.106"
+version = "0.107.0"
+api_version = "0.107"
 default_enabled = false
 dependencies = []
 

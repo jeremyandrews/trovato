@@ -135,11 +135,30 @@ pub struct VocabularyOwnerDecl {
 /// must be one the plugin's own migrations create; a table holding a log, a
 /// queue or anything else that changes while the site runs must not be named.
 /// Additive: a manifest without `[config]` declares no tables, as before.
+///
+/// `secret_columns` (added by B130, plugin API 0.107) names, per table, the
+/// columns that hold a secret, a password, a token, a key or a hash of one:
+///
+/// ```toml
+/// [config]
+/// tables = ["webhook"]
+/// secret_columns = { webhook = ["secret"] }
+/// ```
+///
+/// Export never writes such a column's value: it writes the reference
+/// `env:TROVATO_SECRET_<TABLE>_<PK>_<COLUMN>`, or leaves the key out when the
+/// value is empty. Import keeps the value a row already holds, or reads the
+/// named environment variable, or refuses the row. A column whose name ends in
+/// `_hash` stores an Argon2id hash, and its variable holds the plaintext. See
+/// `config_storage::plugin_config`. Additive: absent means no secret columns.
 #[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq)]
 pub struct PluginConfigDecl {
     /// The plugin's configuration tables, in import order.
     #[serde(default)]
     pub tables: Vec<String>,
+    /// Per config table, the columns that hold a secret.
+    #[serde(default)]
+    pub secret_columns: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// A lightweight-record type declaration (P11g / D-53) — the manifest surface
@@ -815,6 +834,42 @@ impl PluginInfo {
                 );
             }
         }
+        // Secret columns (B130): only of a declared table, each a valid
+        // column name, none twice.
+        for (table, columns) in &self.config.secret_columns {
+            if !seen_tables.contains(table.as_str()) {
+                anyhow::bail!(
+                    "plugin '{}': secret_columns names table '{}', which is not in \
+                     [config] tables",
+                    self.name,
+                    table
+                );
+            }
+            let mut seen_columns: std::collections::HashSet<&str> =
+                std::collections::HashSet::new();
+            for column in columns {
+                if !is_valid_sql_identifier(column)
+                    || column.chars().any(|c| c.is_ascii_uppercase())
+                {
+                    anyhow::bail!(
+                        "plugin '{}': secret column '{}' of table '{}' is not a valid \
+                         column name",
+                        self.name,
+                        column,
+                        table
+                    );
+                }
+                if !seen_columns.insert(column.as_str()) {
+                    anyhow::bail!(
+                        "plugin '{}': secret column '{}' of table '{}' is declared more \
+                         than once",
+                        self.name,
+                        column,
+                        table
+                    );
+                }
+            }
+        }
 
         Ok(())
     }
@@ -951,6 +1006,49 @@ tables = ["redirect", "redirect_group"]
             assert!(
                 PluginInfo::parse_str(&toml, Path::new("test.toml")).is_err(),
                 "tables = [{bad}] must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_secret_columns() {
+        let toml = r#"
+name = "hooks"
+description = "Hooks"
+version = "1.0.0"
+
+[config]
+tables = ["webhook"]
+secret_columns = { webhook = ["secret"] }
+"#;
+        let info = PluginInfo::parse_str(toml, Path::new("test.toml")).unwrap();
+        assert_eq!(
+            info.config.secret_columns.get("webhook"),
+            Some(&vec!["secret".to_string()])
+        );
+        let minimal = PluginInfo::parse_str(
+            "name = \"m\"\ndescription = \"m\"\nversion = \"0.1.0\"\n[config]\ntables = [\"t\"]\n",
+            Path::new("test.toml"),
+        )
+        .unwrap();
+        assert!(minimal.config.secret_columns.is_empty());
+    }
+
+    #[test]
+    fn reject_bad_secret_columns() {
+        for bad in [
+            "{ other = [\"secret\"] }",
+            "{ t = [\"Secret\"] }",
+            "{ t = [\"a; drop\"] }",
+            "{ t = [\"s\", \"s\"] }",
+        ] {
+            let toml = format!(
+                "name = \"m\"\ndescription = \"m\"\nversion = \"0.1.0\"\n[config]\n\
+                 tables = [\"t\"]\nsecret_columns = {bad}\n"
+            );
+            assert!(
+                PluginInfo::parse_str(&toml, Path::new("test.toml")).is_err(),
+                "secret_columns = {bad} must be refused"
             );
         }
     }
