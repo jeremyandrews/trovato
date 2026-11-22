@@ -46,8 +46,8 @@ User types query
 
 **How it works in Trovato:**
 
-- **Change detection (plugin):** The `trovato_search` plugin's `tap_cron` handler compares `MAX(changed)` of published live-stage items against a stored `last_indexed_at` timestamp. When content is newer, it sets `rebuild_requested = true` in the `pagefind_index_status` signal table.
-- **Index generation (kernel):** The kernel cron task checks the signal table. When a rebuild is requested, it exports live-stage published items as HTML fragments (title, body, configured search fields, metadata), runs the Pagefind CLI, and atomically deploys the index via rename-swap to `PAGEFIND_OUTPUT_DIR` (`./static/pagefind/` by default), served at `/static/pagefind/`.
+- **Change detection (kernel and plugin):** The kernel's item and comment write services set `rebuild_requested = true` in the `pagefind_index_status` signal table after every write that changes what the index may hold, deletes, unpublishes and comments included. The `trovato_search` plugin's `tap_cron` handler also compares `MAX(changed)` of published live-stage items against a stored `last_indexed_at` timestamp, for writes that bypass those services.
+- **Index generation (kernel):** The kernel cron task checks the signal table. When a rebuild is requested, it exports live-stage published items as HTML fragments (title, every text field, published comments, metadata; see [What Goes in the Index](#what-goes-in-the-index)), runs the Pagefind CLI, and atomically deploys the index via rename-swap to `PAGEFIND_OUTPUT_DIR` (`./static/pagefind/` by default), served at `/static/pagefind/`.
 - **Why the split:** WASM plugins run in sandboxed instances with no access to the filesystem or subprocess spawning. The plugin detects *when* a rebuild is needed; the kernel performs the *how*.
 - **Client-side search:** The Pagefind JS library loads in the browser. When the user types, Pagefind searches its local index and returns results. No HTTP request, no database query, no server involvement.
 - **Fallback:** If JavaScript is disabled or Pagefind fails to load, the search form submits to the server-side tsvector endpoint. Progressive enhancement means the server-side search is always available.
@@ -184,7 +184,7 @@ statement about the content, not about the page it is shown on.
 
 ### Field weights in the Pagefind index
 
-Each configured field is its own element inside `data-pagefind-body`, with a
+Each text field is its own element inside `data-pagefind-body`, with a
 `data-pagefind-weight` from its letter, at the ratios of PostgreSQL's default
 `ts_rank` weights scaled so A is Pagefind's maximum:
 
@@ -197,8 +197,7 @@ Each configured field is its own element inside `data-pagefind-body`, with a
 
 The title is A, as in the trigger, and sits inside the indexed region with
 `data-pagefind-meta="title"`, so a title alone is findable. Fields are ordered by
-weight, then by name. An item whose configured fields are all empty is indexed by
-its long text field at D, as before. A changed weight reaches the browser at the
+weight, then by name. A text field with no configured weight is indexed at D. A changed weight reaches the browser at the
 next index build.
 
 ### AI stages are enforced on the server
@@ -428,7 +427,7 @@ Cron interval fires
               +-> Clear signal (prevent double builds)
               |
               +-> Export live-stage published Items as HTML fragments
-              |     (title, body, configured search fields, metadata)
+              |     (title, every text field, published comments, metadata)
               |     Items on stages with non-public visibility excluded --
               |     AI-modified content not indexed until human-promoted
               |
@@ -445,19 +444,58 @@ For a site with thousands of Items, a full re-index takes seconds. Incremental w
 
 ### What Goes in the Index
 
-Only items on the **live stage** (which has **public** visibility) are indexed. This is the human-in-the-middle guarantee: AI-enriched content sitting on stages with internal visibility is invisible to search until a human promotes it to the live stage.
+**By default, everything an anonymous visitor can see is searchable**, in both
+backends (the Pagefind index and the Postgres vector behind `/search`):
 
-Trovato's stage system uses visibility levels (`public`, `internal`, `accessible`) on stage definitions. The live stage is a deterministic UUID seeded during installation with `public` visibility. See the [Stage model](../../crates/kernel/src/models/stage.rs) for details.
+- every published item on the **live stage** that the anonymous role may view;
+- its **title** (weight A);
+- **every text field** its type declares (`Text` and `TextLong`, value and
+  summary), each at its `search_field_config` weight, D when it has none. A
+  weight says how much a field counts; it no longer decides whether the field is
+  searched. Files, references, numbers, dates, booleans and structured fields are
+  not text and are not indexed;
+- **every published comment** on it that the item page shows (published, under
+  a published parent), at Pagefind's default weight and D in Postgres. A match in
+  a comment is a result for the item and links to the item.
 
-Each live-stage item produces an index entry containing:
+Every value is indexed as plain text (`page_meta::plain_text`: tags stripped,
+entities decoded), never as markup.
 
-- **Title** (boosted weight)
-- **Body text** (stripped of HTML)
-- **Configured search fields** (from `search_field_config` table -- all fields marked searchable for the item's type)
-- **Metadata fields** (configurable per Item type: date, location, author, etc.)
-- **URL** (for linking results)
-- **Content type** (for filtering and type boost)
-- **Publish date** (for recency ranking)
+**Only content an anonymous visitor may see goes in the Pagefind index.** The
+index is a set of static files any visitor downloads, so it is built as the
+anonymous role, through the same item and field access seam a page view uses: an
+unpublished item, an item on an internal stage, a field `tap_field_access`
+denies to anonymous visitors, and an unpublished or held comment are never in
+it. Server side search applies the searching user's own access instead.
+
+#### The two switches
+
+Each content type has two checkboxes at `/admin/structure/types/{type}/search`
+(permission `administer site`), both on by default, so a new install and every
+existing site search everything:
+
+- **Include this content type in search.** Off, no item of the type is found by
+  either backend.
+- **Include comments in search.** Off, the type's items stay searchable by
+  their title and fields, but no longer by words found only in their comments.
+
+They are stored in the type's `item_type.settings` under `search`
+(`{"include": …, "comments": …}`, only an explicit `false` turns one off), so
+`config export` and `config import` carry them with the type. Saving recomputes
+the type's Postgres vectors at once and requests a Pagefind rebuild, which runs
+at the next cron run.
+
+#### When the index is rebuilt
+
+The kernel's item and comment write services request a rebuild themselves after
+every write that changes what the index may hold: an item published, edited,
+unpublished, moved off the live stage or deleted; a published comment written,
+edited, unpublished or deleted, or a held one published. The rebuild runs at the
+next cron run, so a new comment is findable one cron interval after it is
+posted. `trovato_search`'s `tap_cron` still compares `MAX(changed)` with
+`last_indexed_at`, for writes that bypass the services (a scheduled publish).
+The Postgres vector needs no rebuild: triggers on `item` and `comment` keep it
+current inside the write's own transaction.
 
 Pagefind supports custom metadata per page, which is how we inject ranking signals into the client-side index.
 

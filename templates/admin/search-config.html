@@ -9,7 +9,19 @@
     </div>
 </div>
 
-<div class="admin-card">
+{% if flash %}
+<div class="admin-card messages messages--status" role="status">{{ flash }}</div>
+{% endif %}
+
+<div class="admin-card search-switches">
+    <h3 style="margin-top: 0;">What site search includes</h3>
+    <p class="description">
+        Only content an anonymous visitor may see is in the public search index, whatever is checked here.
+    </p>
+    {{ switches_form | safe }}
+</div>
+
+<div class="admin-card" style="margin-top: 1rem;">
     <p class="description">
         The title, every text field and every published comment are searched. Give a field a
         weight to rank a match in it higher: <strong>A</strong> is highest (the title is always A),

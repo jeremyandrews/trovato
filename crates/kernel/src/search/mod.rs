@@ -34,6 +34,52 @@ pub fn normalize_query(query: &str) -> String {
         .to_lowercase()
 }
 
+/// A content type's two search switches, stored under `settings.search` in
+/// its `item_type` row (so config export and import carry them with the type).
+///
+/// Both default to on: a type with no `search` key, which is every type on a
+/// site that never opened the screen, is searched with its comments. Only an
+/// explicit `false` turns one off. Both backends honour them: the Pagefind
+/// export leaves the type's items (or their comments) out, and the
+/// `item_search_vector` SQL function reads the same two keys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SearchSwitches {
+    /// Whether the type's items are in search at all.
+    pub include: bool,
+    /// Whether the type's items are found by their published comments.
+    pub comments: bool,
+}
+
+impl Default for SearchSwitches {
+    fn default() -> Self {
+        Self {
+            include: true,
+            comments: true,
+        }
+    }
+}
+
+impl SearchSwitches {
+    /// The `settings` key the switches live under.
+    pub const SETTINGS_KEY: &'static str = "search";
+
+    /// Read the switches out of a type's `settings`. Anything that is not an
+    /// explicit `false` reads as on.
+    pub fn from_settings(settings: &serde_json::Value) -> Self {
+        let switch = |name: &str| {
+            settings
+                .get(Self::SETTINGS_KEY)
+                .and_then(|s| s.get(name))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true)
+        };
+        Self {
+            include: switch("include"),
+            comments: switch("comments"),
+        }
+    }
+}
+
 /// Whether a field type carries text that search indexes: `Text` (string) and
 /// `TextLong` (long text, with or without a summary). Files, references,
 /// numbers, dates, booleans and structured fields do not.
