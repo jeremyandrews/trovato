@@ -217,6 +217,12 @@ struct AppStateInner {
     /// Tile rendering service.
     tiles: Arc<services::tile::TileService>,
 
+    /// URL alias writes.
+    aliases: Arc<services::url_alias::UrlAliasService>,
+
+    /// Menu link writes.
+    menu_links: Arc<services::menu_link::MenuLinkService>,
+
     /// The kernel-internal append-only security audit stream (Epic 4).
     ///
     /// Non-optional kernel infrastructure, distinct from the plugin-gated
@@ -1051,6 +1057,8 @@ impl AppState {
 
         // Create tile service
         let tiles = Arc::new(services::tile::TileService::new(db.clone()));
+        let aliases = Arc::new(services::url_alias::UrlAliasService::new(db.clone()));
+        let menu_links = Arc::new(services::menu_link::MenuLinkService::new(db.clone()));
 
         // Build language negotiator chain (languages were loaded earlier for locale)
         let mut language_negotiators: Vec<Arc<dyn LanguageNegotiator>> = vec![
@@ -1265,6 +1273,8 @@ impl AppState {
                 users,
                 roles,
                 tiles,
+                aliases,
+                menu_links,
                 security_audit,
                 webauthn,
                 session_registry,
@@ -1624,6 +1634,16 @@ impl AppState {
     /// Get the tile service.
     pub fn tiles(&self) -> &Arc<services::tile::TileService> {
         &self.inner.tiles
+    }
+
+    /// Get the URL alias write service.
+    pub fn aliases(&self) -> &Arc<services::url_alias::UrlAliasService> {
+        &self.inner.aliases
+    }
+
+    /// Get the menu link write service.
+    pub fn menu_links(&self) -> &Arc<services::menu_link::MenuLinkService> {
+        &self.inner.menu_links
     }
 
     /// Get the email service (if SMTP is configured).

@@ -191,6 +191,23 @@ impl UserService {
         Ok(updated)
     }
 
+    /// Remove a user's password with `tap_user_update` invocation, as
+    /// [`update_password`](Self::update_password) changes one.
+    ///
+    /// Authorizes nothing: the caller decides that the account keeps a way in
+    /// without it.
+    pub async fn remove_password(&self, id: Uuid, acting_user: &UserContext) -> Result<bool> {
+        let removed = User::clear_password(&self.inner.pool, id).await?;
+
+        if removed {
+            self.invalidate(id);
+            self.dispatch_tap("tap_user_update", id, acting_user).await;
+            info!(user_id = %id, "user password removed");
+        }
+
+        Ok(removed)
+    }
+
     /// Delete a user with `tap_user_delete` invocation (before delete).
     ///
     /// The tap fires **before** the row goes, which is the only order that works: a

@@ -28,7 +28,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::cache::CacheLayer;
-use crate::models::stage::{CreateStage, LIVE_STAGE_ID, Stage};
+use crate::models::stage::{CreateStage, LIVE_STAGE_ID, Stage, UpdateStage};
 
 /// Identifies which publish phase is executing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -378,8 +378,28 @@ impl StageService {
     // ── Stage management ──
 
     /// Create a new stage.
+    ///
+    /// Stage writes go through here, not the model, so that what a write must
+    /// also do has one place to live. Today that is all in the model: it bumps
+    /// the categories cache generation, and the stage reads every item access
+    /// decision makes are not cached (`ItemService::stage_view`), so a
+    /// visibility change holds on the next request. The kernel defines no
+    /// stage taps.
     pub async fn create_stage(&self, input: CreateStage) -> Result<Stage> {
         Stage::create(&self.pool, input).await
+    }
+
+    /// Update a stage. `None` when there is no such stage; the model's
+    /// refusals (the live stage staying public, the last default staying set)
+    /// are errors whose message is meant for the operator.
+    pub async fn update_stage(&self, id: Uuid, input: UpdateStage) -> Result<Option<Stage>> {
+        Stage::update(&self.pool, id, input).await
+    }
+
+    /// Delete a stage. `false` when there is no such stage; a stage that may
+    /// not go (live, the default, one with content) is an error naming why.
+    pub async fn delete_stage(&self, id: Uuid) -> Result<bool> {
+        Stage::delete(&self.pool, id).await
     }
 
     /// Get a stage by UUID.

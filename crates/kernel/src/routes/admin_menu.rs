@@ -644,7 +644,7 @@ async fn add_link_submit(
         stage_id: Some(LIVE_STAGE_ID),
     };
 
-    match MenuLink::create(state.db(), input).await {
+    match state.menu_links().create(input).await {
         Ok(link) => {
             tracing::info!(link_id = %link.id, menu = %menu_name, "menu link created");
             Redirect::to(&format!("/admin/structure/menus/{menu_name}")).into_response()
@@ -807,7 +807,7 @@ async fn edit_link_submit(
         stage_id: None,
     };
 
-    match MenuLink::update(state.db(), link_id, input).await {
+    match state.menu_links().update(link_id, input).await {
         Ok(Some(_)) => {
             tracing::info!(link_id = %link_id, menu = %menu_name, "menu link updated");
             Redirect::to(&format!("/admin/structure/menus/{menu_name}")).into_response()
@@ -860,23 +860,11 @@ async fn delete_link(
         return plugin_owned_response(&link.plugin);
     }
 
-    // Promote children to the deleted link's own parent, rather than letting the
-    // foreign key's ON DELETE SET NULL turn a nested branch into a row of
-    // top-level links. The listing warns which of the two happens, and this is
-    // the one it promises.
-    if let Err(e) =
-        sqlx::query("UPDATE menu_link SET parent_id = $1, changed = $2 WHERE parent_id = $3")
-            .bind(link.parent_id)
-            .bind(chrono::Utc::now().timestamp())
-            .bind(link_id)
-            .execute(state.db())
-            .await
-    {
-        tracing::error!(error = %e, "failed to promote menu link children");
-        return render_server_error("Failed to reparent the link's children.");
-    }
-
-    match MenuLink::delete(state.db(), link_id).await {
+    // The service promotes the link's children to its own parent, rather than
+    // letting the foreign key's ON DELETE SET NULL turn a nested branch into a
+    // row of top-level links, in the delete's own transaction. The listing
+    // warns which of the two happens, and this is the one it promises.
+    match state.menu_links().delete(link_id).await {
         Ok(true) => {
             tracing::info!(link_id = %link_id, menu = %menu_name, "menu link deleted");
             Redirect::to(&format!("/admin/structure/menus/{menu_name}")).into_response()

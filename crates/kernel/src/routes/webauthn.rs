@@ -916,11 +916,8 @@ async fn remove_password(
             .into_response();
     }
 
-    if let Err(e) = sqlx::query("UPDATE users SET pass = '' WHERE id = $1")
-        .bind(user.id)
-        .execute(state.db())
-        .await
-    {
+    let acting = crate::routes::helpers::user_context_for(&state, &user).await;
+    if let Err(e) = state.users().remove_password(user.id, &acting).await {
         tracing::error!(error = %e, "failed to remove password");
         return crate::error::AppError::with_status(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -928,7 +925,6 @@ async fn remove_password(
         )
         .into_response();
     }
-    state.users().invalidate(user.id);
 
     // An auth-state change, so the fixation defence fires here too.
     if let Err(e) = session.cycle_id().await {

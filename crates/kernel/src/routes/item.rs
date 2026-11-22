@@ -1367,34 +1367,14 @@ async fn update_item(
             // the pathauto pattern, if any, on the item's stage and in its
             // language.
             if let Some(ref alias_path) = request.url_alias {
-                let source = format!("/item/{id}");
                 let alias_path = alias_path.trim();
-
                 if alias_path.is_empty() {
-                    // Delete existing alias if path is cleared
-                    if let Err(e) = UrlAlias::delete_by_source(state.db(), &source).await {
+                    // A cleared field removes the item's aliases.
+                    if let Err(e) = state.aliases().clear_for_item(&item).await {
                         tracing::warn!(error = %e, "failed to delete url alias");
                     }
-                } else {
-                    // Ensure alias starts with /
-                    let alias_path = if alias_path.starts_with('/') {
-                        alias_path.to_string()
-                    } else {
-                        format!("/{alias_path}")
-                    };
-
-                    // Create or update alias
-                    if let Err(e) = UrlAlias::upsert_for_source(
-                        state.db(),
-                        &source,
-                        &alias_path,
-                        item.stage_id,
-                        &item.language,
-                    )
-                    .await
-                    {
-                        tracing::warn!(error = %e, "failed to update url alias");
-                    }
+                } else if let Err(e) = state.aliases().set_for_item(&item, alias_path).await {
+                    tracing::warn!(error = %e, "failed to update url alias");
                 }
             }
 
