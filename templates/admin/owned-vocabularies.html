@@ -1,0 +1,40 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{#- An owner's vocabularies (B108): served under the owner route a plugin
+    declares, e.g. /group/{owner}/categories. -#}
+{% block content %}
+{{ list::header(title=owner_label ~ " categories") }}
+
+<div class="admin-card">
+    {% if vocabularies %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>Description</th>
+                <th>Tags</th>
+                <th>Operations</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for vocabulary in vocabularies %}
+            <tr>
+                <td><a href="{{ base }}/{{ vocabulary.id }}">{{ vocabulary.label }}</a></td>
+                <td>{{ vocabulary.description | default(value="") }}</td>
+                <td>{{ tag_counts[vocabulary.id] | default(value=0) }}</td>
+                <td>
+                    <a href="{{ base }}/{{ vocabulary.id }}">List tags</a>
+                    &middot;
+                    <a href="{{ base }}/{{ vocabulary.id }}/add">Add tag</a>
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    {% set owner_name = owner_label | lower %}
+    {{ list::empty(message="This " ~ owner_name ~ " has no categories yet.") }}
+    {% endif %}
+</div>
+{% endblock %}

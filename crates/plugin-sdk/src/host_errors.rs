@@ -246,6 +246,23 @@
 //!   - `-81`: the definition exceeds a bound ([`ERR_QUERY_BOUND`])
 //!   - `≥ 0`: bytes written (a JSON `GatherResult`)
 //!
+//! ## Vocabulary (`trovato:kernel/vocabulary`)
+//!
+//! - **`create-owned(req_ptr, req_len, out_ptr, out_max_len) → i32`** (B108)
+//!   - `-1`: memory missing, `-2`: request read failed, `-3`: output write failed
+//!   - `-10`: no services in this context
+//!   - `-12`: the write failed
+//!   - `-14`: the request is not valid JSON of its shape
+//!   - `-90`: the owner type is not one this plugin declared ([`ERR_VOCABULARY_OWNER_UNDECLARED`])
+//!   - `-91`: the id, label or owner id is not valid ([`ERR_VOCABULARY_INVALID`])
+//!   - `-92`: a vocabulary with this id exists ([`ERR_VOCABULARY_EXISTS`])
+//!   - `≥ 0`: bytes written (the vocabulary as JSON)
+//!
+//! - **`list-owned(type_ptr, type_len, id_ptr, id_len, out_ptr, out_max_len) → i32`** (B108)
+//!   - `-1`, `-10`, `-12` as above; `-2`: owner type read failed, `-3`: owner id read or output write failed
+//!   - `-90`: the owner type is not one this plugin declared
+//!   - `≥ 0`: bytes written (a JSON array of vocabularies)
+//!
 //! ## SDK-side Errors (client-side, before/after WASM boundary)
 //!
 //! These errors are produced by the SDK wrapper functions in `host.rs`, not by host functions:
@@ -442,6 +459,29 @@ pub const ERR_QUERY_INVALID: i32 = -80;
 ///
 /// Added by B80, after 0.105.0.
 pub const ERR_QUERY_BOUND: i32 = -81;
+
+// =============================================================================
+// Vocabulary errors (`trovato:kernel/vocabulary`)
+// =============================================================================
+
+/// The owner type is not one the calling plugin declares under
+/// `[[vocabulary_owners]]`: a plugin creates and lists vocabularies only for
+/// the owners it declared.
+///
+/// Added by B108, after 0.106.0.
+pub const ERR_VOCABULARY_OWNER_UNDECLARED: i32 = -90;
+
+/// The vocabulary id is not a machine name (lowercase letters, digits and
+/// underscores, at most 32), the label is empty, or the owner id is empty or
+/// longer than 255.
+///
+/// Added by B108, after 0.106.0.
+pub const ERR_VOCABULARY_INVALID: i32 = -91;
+
+/// A vocabulary with this id exists, owned or not.
+///
+/// Added by B108, after 0.106.0.
+pub const ERR_VOCABULARY_EXISTS: i32 = -92;
 
 // =============================================================================
 // HTTP API errors (`trovato:kernel/http`)

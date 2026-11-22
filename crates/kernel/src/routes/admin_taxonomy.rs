@@ -36,7 +36,7 @@ struct CategoryFormData {
 
 /// Tag form data.
 #[derive(Debug, Deserialize)]
-struct TagFormData {
+pub(crate) struct TagFormData {
     #[serde(rename = "_token")]
     token: String,
     #[serde(rename = "_form_build_id")]
@@ -386,9 +386,49 @@ async fn delete_category(
 // =============================================================================
 // Tag handlers
 // =============================================================================
+//
+// The term list and term form are served in two places: here, for every
+// vocabulary, behind `administer categories`; and under a plugin's owner route
+// (`routes::owned_vocabulary`, B108) for that owner's vocabularies, behind the
+// owner's access check. The handlers below check access and find the
+// vocabulary; the `pub(crate)` functions after them do the rest for both,
+// with the URLs a [`TermUrls`] gives.
 
-/// List tags in a category.
-///
+/// Where the term screens of one vocabulary live.
+#[derive(Debug, Clone, serde::Serialize)]
+pub(crate) struct TermUrls {
+    /// The page listing the vocabularies, the breadcrumb's first link.
+    pub index: String,
+    /// What that page is called.
+    pub index_label: String,
+    /// This vocabulary's term list.
+    pub list: String,
+    /// Its add-term form.
+    pub add: String,
+    /// The base a term's `/{id}/edit` and `/{id}/delete` hang off.
+    pub term_base: String,
+}
+
+impl TermUrls {
+    /// The site-wide screens under `/admin/structure`.
+    pub(crate) fn site(category_id: &str) -> Self {
+        Self {
+            index: "/admin/structure/categories".to_string(),
+            index_label: "Categories".to_string(),
+            list: format!("/admin/structure/categories/{category_id}/tags"),
+            add: format!("/admin/structure/categories/{category_id}/tags/add"),
+            term_base: "/admin/structure/tags".to_string(),
+        }
+    }
+
+    fn edit(&self, tag_id: uuid::Uuid) -> String {
+        format!("{}/{tag_id}/edit", self.term_base)
+    }
+}
+
+/// The posted term form.
+pub(crate) type TermForm = TagFormData;
+
 /// GET /admin/structure/categories/{id}/tags
 async fn list_tags(
     State(state): State<AppState>,
@@ -398,7 +438,6 @@ async fn list_tags(
     if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
     }
-
     let Some(category) = state
         .categories()
         .get_category(&category_id)
@@ -408,37 +447,9 @@ async fn list_tags(
     else {
         return render_not_found();
     };
-
-    let tags = match state.categories().list_tags(&category_id).await {
-        Ok(tags) => tags,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to list tags");
-            return render_server_error("Failed to load tags.");
-        }
-    };
-
-    let csrf_token = generate_csrf_token(&session).await;
-
-    let mut context = tera::Context::new();
-    context.insert("category", &category);
-    context.insert("tags", &tags);
-    context.insert("csrf_token", &csrf_token);
-    context.insert(
-        "path",
-        &format!("/admin/structure/categories/{category_id}/tags"),
-    );
-
-    render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/tags.html",
-        context,
-    )
-    .await
+    term_list(&state, &session, &category, &TermUrls::site(&category_id)).await
 }
 
-/// Show add tag form.
-///
 /// GET /admin/structure/categories/{id}/tags/add
 async fn add_tag_form(
     State(state): State<AppState>,
@@ -448,7 +459,6 @@ async fn add_tag_form(
     if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
     }
-
     let Some(category) = state
         .categories()
         .get_category(&category_id)
@@ -458,44 +468,9 @@ async fn add_tag_form(
     else {
         return render_not_found();
     };
-
-    // Get existing tags for parent selector
-    let tags = state
-        .categories()
-        .list_tags(&category_id)
-        .await
-        .unwrap_or_default();
-
-    let csrf_token = generate_csrf_token(&session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
-
-    let mut context = tera::Context::new();
-    context.insert(
-        "action",
-        &format!("/admin/structure/categories/{category_id}/tags/add"),
-    );
-    context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
-    context.insert("editing", &false);
-    context.insert("category", &category);
-    context.insert("existing_tags", &tags);
-    context.insert("values", &serde_json::json!({}));
-    context.insert(
-        "path",
-        &format!("/admin/structure/categories/{category_id}/tags/add"),
-    );
-
-    render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/tag-form.html",
-        context,
-    )
-    .await
+    term_add_form(&state, &session, &category, &TermUrls::site(&category_id)).await
 }
 
-/// Handle add tag form submission.
-///
 /// POST /admin/structure/categories/{id}/tags/add
 async fn add_tag_submit(
     State(state): State<AppState>,
@@ -506,12 +481,6 @@ async fn add_tag_submit(
     if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
     }
-
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-
     let Some(category) = state
         .categories()
         .get_category(&category_id)
@@ -521,110 +490,16 @@ async fn add_tag_submit(
     else {
         return render_not_found();
     };
-
-    // Normalize slug: empty string → None, otherwise validate.
-    let slug = form
-        .slug
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .map(String::from);
-
-    // Validate
-    let mut errors = Vec::new();
-
-    if form.label.trim().is_empty() {
-        errors.push("Name is required.".to_string());
-    }
-
-    if let Some(ref s) = slug
-        && !is_valid_slug(s)
-    {
-        errors.push(SLUG_FORMAT_ERROR.to_string());
-    }
-
-    // Check for duplicate slug within this category.
-    if errors.is_empty()
-        && let Some(ref s) = slug
-        && let Ok(Some(_)) = crate::models::Tag::find_by_slug(state.db(), &category_id, s).await
-    {
-        errors.push("A tag with this slug already exists in this category.".to_string());
-    }
-
-    if !errors.is_empty() {
-        let tags = state
-            .categories()
-            .list_tags(&category_id)
-            .await
-            .unwrap_or_default();
-        let csrf_token = generate_csrf_token(&session).await;
-        let form_build_id = uuid::Uuid::new_v4().to_string();
-
-        let mut context = tera::Context::new();
-        context.insert(
-            "action",
-            &format!("/admin/structure/categories/{category_id}/tags/add"),
-        );
-        context.insert("csrf_token", &csrf_token);
-        context.insert("form_build_id", &form_build_id);
-        context.insert("editing", &false);
-        context.insert("category", &category);
-        context.insert("existing_tags", &tags);
-        context.insert("errors", &errors);
-        context.insert(
-            "values",
-            &serde_json::json!({
-                "label": form.label,
-                "description": form.description,
-                "slug": form.slug,
-                "weight": form.weight,
-                "parent_id": form.parent_id,
-            }),
-        );
-        context.insert(
-            "path",
-            &format!("/admin/structure/categories/{category_id}/tags/add"),
-        );
-
-        return render_admin_template(
-            &state,
-            &crate::routes::helpers::get_user_context(&session, &state).await,
-            "admin/tag-form.html",
-            context,
-        )
-        .await;
-    }
-
-    let parent_ids = match &form.parent_id {
-        Some(id) if !id.is_empty() => match uuid::Uuid::parse_str(id) {
-            Ok(uuid) => Some(vec![uuid]),
-            Err(_) => None,
-        },
-        _ => None,
-    };
-
-    let input = CreateTag {
-        category_id: category_id.clone(),
-        label: form.label.clone(),
-        description: form.description.clone(),
-        slug,
-        weight: form.weight.as_ref().and_then(|s| s.parse().ok()),
-        parent_ids,
-    };
-
-    match state.categories().create_tag(input).await {
-        Ok(_) => {
-            tracing::info!(category = %category_id, label = %form.label, "tag created");
-            Redirect::to(&format!("/admin/structure/categories/{category_id}/tags")).into_response()
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "failed to create tag");
-            render_server_error("Failed to create tag.")
-        }
-    }
+    term_add_submit(
+        &state,
+        &session,
+        &category,
+        form,
+        &TermUrls::site(&category_id),
+    )
+    .await
 }
 
-/// Show edit tag form.
-///
 /// GET /admin/structure/tags/{id}/edit
 async fn edit_tag_form(
     State(state): State<AppState>,
@@ -634,11 +509,9 @@ async fn edit_tag_form(
     if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
     }
-
     let Some(tag) = state.categories().get_tag(tag_id).await.ok().flatten() else {
         return render_not_found();
     };
-
     let Some(category) = state
         .categories()
         .get_category(&tag.category_id)
@@ -648,59 +521,10 @@ async fn edit_tag_form(
     else {
         return render_error("Category not found.");
     };
-
-    // Get existing tags for parent selector (excluding self)
-    let tags: Vec<_> = state
-        .categories()
-        .list_tags(&tag.category_id)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|t| t.id != tag_id)
-        .collect();
-
-    // Get current parents
-    let parents = state
-        .categories()
-        .get_parents(tag_id)
-        .await
-        .unwrap_or_default();
-    let current_parent_id = parents.first().map(|p| p.id.to_string());
-
-    let csrf_token = generate_csrf_token(&session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
-
-    let mut context = tera::Context::new();
-    context.insert("action", &format!("/admin/structure/tags/{tag_id}/edit"));
-    context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
-    context.insert("editing", &true);
-    context.insert("tag_id", &tag_id.to_string());
-    context.insert("category", &category);
-    context.insert("existing_tags", &tags);
-    context.insert(
-        "values",
-        &serde_json::json!({
-            "label": tag.label,
-            "description": tag.description,
-            "slug": tag.slug,
-            "weight": tag.weight,
-            "parent_id": current_parent_id,
-        }),
-    );
-    context.insert("path", &format!("/admin/structure/tags/{tag_id}/edit"));
-
-    render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/tag-form.html",
-        context,
-    )
-    .await
+    let urls = TermUrls::site(&category.id);
+    term_edit_form(&state, &session, &category, &tag, &urls).await
 }
 
-/// Handle edit tag form submission.
-///
 /// POST /admin/structure/tags/{id}/edit
 async fn edit_tag_submit(
     State(state): State<AppState>,
@@ -711,16 +535,9 @@ async fn edit_tag_submit(
     if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
     }
-
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-
     let Some(tag) = state.categories().get_tag(tag_id).await.ok().flatten() else {
         return render_not_found();
     };
-
     let Some(category) = state
         .categories()
         .get_category(&tag.category_id)
@@ -730,22 +547,292 @@ async fn edit_tag_submit(
     else {
         return render_error("Category not found.");
     };
+    let urls = TermUrls::site(&category.id);
+    term_edit_submit(&state, &session, &category, &tag, form, &urls).await
+}
+
+/// POST /admin/structure/tags/{id}/delete
+async fn delete_tag(
+    State(state): State<AppState>,
+    session: Session,
+    Path(tag_id): Path<uuid::Uuid>,
+    Form(form): Form<CsrfOnlyForm>,
+) -> Response {
+    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
+        return redirect;
+    }
+    let Some(tag) = state.categories().get_tag(tag_id).await.ok().flatten() else {
+        return render_not_found();
+    };
+    let urls = TermUrls::site(&tag.category_id);
+    term_delete(&state, &session, &tag, &form.token, &urls).await
+}
+
+// ---- Shared with the owner routes ------------------------------------------
+
+/// The term list of `category`.
+pub(crate) async fn term_list(
+    state: &AppState,
+    session: &Session,
+    category: &crate::models::Category,
+    urls: &TermUrls,
+) -> Response {
+    let tags = match state.categories().list_tags(&category.id).await {
+        Ok(tags) => tags,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to list tags");
+            return render_server_error("Failed to load tags.");
+        }
+    };
+
+    let csrf_token = generate_csrf_token(session).await;
+
+    let mut context = tera::Context::new();
+    context.insert("category", category);
+    context.insert("tags", &tags);
+    context.insert("csrf_token", &csrf_token);
+    context.insert("urls", urls);
+    context.insert("path", &urls.list);
+
+    render_admin_template(
+        state,
+        &crate::routes::helpers::get_user_context(session, state).await,
+        "admin/tags.html",
+        context,
+    )
+    .await
+}
+
+/// Render the term form. `tag_id` is the term being edited, if any;
+/// `values` what the fields hold.
+#[allow(clippy::too_many_arguments)]
+async fn render_term_form(
+    state: &AppState,
+    session: &Session,
+    category: &crate::models::Category,
+    tag_id: Option<uuid::Uuid>,
+    values: serde_json::Value,
+    errors: &[String],
+    urls: &TermUrls,
+) -> Response {
+    // The parent selector: every term of the vocabulary but this one.
+    let tags: Vec<_> = state
+        .categories()
+        .list_tags(&category.id)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| Some(t.id) != tag_id)
+        .collect();
+
+    let csrf_token = generate_csrf_token(session).await;
+    let form_build_id = uuid::Uuid::new_v4().to_string();
+    let action = match tag_id {
+        Some(id) => urls.edit(id),
+        None => urls.add.clone(),
+    };
+
+    let mut context = tera::Context::new();
+    context.insert("action", &action);
+    context.insert("csrf_token", &csrf_token);
+    context.insert("form_build_id", &form_build_id);
+    context.insert("editing", &tag_id.is_some());
+    if let Some(id) = tag_id {
+        context.insert("tag_id", &id.to_string());
+    }
+    context.insert("category", category);
+    context.insert("existing_tags", &tags);
+    if !errors.is_empty() {
+        context.insert("errors", errors);
+    }
+    context.insert("values", &values);
+    context.insert("urls", urls);
+    context.insert("path", &action);
+
+    render_admin_template(
+        state,
+        &crate::routes::helpers::get_user_context(session, state).await,
+        "admin/tag-form.html",
+        context,
+    )
+    .await
+}
+
+/// What the posted form held, to show it again.
+fn posted_values(form: &TagFormData) -> serde_json::Value {
+    serde_json::json!({
+        "label": form.label,
+        "description": form.description,
+        "slug": form.slug,
+        "weight": form.weight,
+        "parent_id": form.parent_id,
+    })
+}
+
+/// The empty add-term form for `category`.
+pub(crate) async fn term_add_form(
+    state: &AppState,
+    session: &Session,
+    category: &crate::models::Category,
+    urls: &TermUrls,
+) -> Response {
+    render_term_form(
+        state,
+        session,
+        category,
+        None,
+        serde_json::json!({}),
+        &[],
+        urls,
+    )
+    .await
+}
+
+/// Add a term to `category`.
+pub(crate) async fn term_add_submit(
+    state: &AppState,
+    session: &Session,
+    category: &crate::models::Category,
+    form: TermForm,
+    urls: &TermUrls,
+) -> Response {
+    if let Err(resp) = require_csrf(session, &form.token).await {
+        return resp;
+    }
+
+    // Normalize slug: empty string → None, otherwise validate.
+    let slug = form
+        .slug
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(String::from);
+
+    let mut errors = Vec::new();
+    if form.label.trim().is_empty() {
+        errors.push("Name is required.".to_string());
+    }
+    if let Some(ref s) = slug
+        && !is_valid_slug(s)
+    {
+        errors.push(SLUG_FORMAT_ERROR.to_string());
+    }
+    // Check for duplicate slug within this category.
+    if errors.is_empty()
+        && let Some(ref s) = slug
+        && let Ok(Some(_)) = crate::models::Tag::find_by_slug(state.db(), &category.id, s).await
+    {
+        errors.push("A tag with this slug already exists in this category.".to_string());
+    }
+    let parent_ids = match parent_of(state, category, form.parent_id.as_deref()).await {
+        Ok(parents) => parents,
+        Err(e) => {
+            errors.push(e);
+            None
+        }
+    };
+    if !errors.is_empty() {
+        return render_term_form(
+            state,
+            session,
+            category,
+            None,
+            posted_values(&form),
+            &errors,
+            urls,
+        )
+        .await;
+    }
+
+    let input = CreateTag {
+        category_id: category.id.clone(),
+        label: form.label.clone(),
+        description: form.description.clone(),
+        slug,
+        weight: form.weight.as_ref().and_then(|s| s.parse().ok()),
+        parent_ids,
+    };
+
+    match state.categories().create_tag(input).await {
+        Ok(_) => {
+            tracing::info!(category = %category.id, label = %form.label, "tag created");
+            Redirect::to(&urls.list).into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, "failed to create tag");
+            render_server_error("Failed to create tag.")
+        }
+    }
+}
+
+/// The parent a posted `parent_id` names: none for empty, else a term of the
+/// same vocabulary. A term of another vocabulary is refused, so an owner's
+/// manager cannot hang a term off another owner's tree.
+async fn parent_of(
+    state: &AppState,
+    category: &crate::models::Category,
+    parent_id: Option<&str>,
+) -> Result<Option<Vec<uuid::Uuid>>, String> {
+    let Some(id) = parent_id.filter(|id| !id.is_empty()) else {
+        return Ok(None);
+    };
+    let Ok(id) = uuid::Uuid::parse_str(id) else {
+        return Ok(None);
+    };
+    match state.categories().get_tag(id).await {
+        Ok(Some(parent)) if parent.category_id == category.id => Ok(Some(vec![id])),
+        _ => Err("The parent tag must be a tag of this category.".to_string()),
+    }
+}
+
+/// The edit form for `tag`.
+pub(crate) async fn term_edit_form(
+    state: &AppState,
+    session: &Session,
+    category: &crate::models::Category,
+    tag: &crate::models::Tag,
+    urls: &TermUrls,
+) -> Response {
+    let parents = state
+        .categories()
+        .get_parents(tag.id)
+        .await
+        .unwrap_or_default();
+    let current_parent_id = parents.first().map(|p| p.id.to_string());
+    let values = serde_json::json!({
+        "label": tag.label,
+        "description": tag.description,
+        "slug": tag.slug,
+        "weight": tag.weight,
+        "parent_id": current_parent_id,
+    });
+    render_term_form(state, session, category, Some(tag.id), values, &[], urls).await
+}
+
+/// Save `tag`.
+pub(crate) async fn term_edit_submit(
+    state: &AppState,
+    session: &Session,
+    category: &crate::models::Category,
+    tag: &crate::models::Tag,
+    form: TermForm,
+    urls: &TermUrls,
+) -> Response {
+    if let Err(resp) = require_csrf(session, &form.token).await {
+        return resp;
+    }
+    let tag_id = tag.id;
 
     // For update: empty string signals "clear the slug" to Tag::update,
     // None means "keep current value". Non-empty values are validated.
     let slug_value = form.slug.as_deref().unwrap_or("");
 
-    // Validate
     let mut errors = Vec::new();
-
     if form.label.trim().is_empty() {
         errors.push("Name is required.".to_string());
     }
-
     if !slug_value.is_empty() && !is_valid_slug(slug_value) {
         errors.push(SLUG_FORMAT_ERROR.to_string());
     }
-
     // Check for duplicate slug within the same category (excluding this tag).
     if errors.is_empty()
         && !slug_value.is_empty()
@@ -755,46 +842,29 @@ async fn edit_tag_submit(
     {
         errors.push("A tag with this slug already exists in this category.".to_string());
     }
-
+    let parent_ids = if category.hierarchy > 0 {
+        match parent_of(state, category, form.parent_id.as_deref()).await {
+            Ok(parents) => parents.unwrap_or_default(),
+            Err(e) => {
+                errors.push(e);
+                Vec::new()
+            }
+        }
+    } else {
+        Vec::new()
+    };
+    if parent_ids.contains(&tag_id) {
+        errors.push("A tag cannot be its own parent.".to_string());
+    }
     if !errors.is_empty() {
-        let tags: Vec<_> = state
-            .categories()
-            .list_tags(&tag.category_id)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|t| t.id != tag_id)
-            .collect();
-
-        let csrf_token = generate_csrf_token(&session).await;
-        let form_build_id = uuid::Uuid::new_v4().to_string();
-
-        let mut context = tera::Context::new();
-        context.insert("action", &format!("/admin/structure/tags/{tag_id}/edit"));
-        context.insert("csrf_token", &csrf_token);
-        context.insert("form_build_id", &form_build_id);
-        context.insert("editing", &true);
-        context.insert("tag_id", &tag_id.to_string());
-        context.insert("category", &category);
-        context.insert("existing_tags", &tags);
-        context.insert("errors", &errors);
-        context.insert(
-            "values",
-            &serde_json::json!({
-                "label": form.label,
-                "description": form.description,
-                "slug": form.slug,
-                "weight": form.weight,
-                "parent_id": form.parent_id,
-            }),
-        );
-        context.insert("path", &format!("/admin/structure/tags/{tag_id}/edit"));
-
-        return render_admin_template(
-            &state,
-            &crate::routes::helpers::get_user_context(&session, &state).await,
-            "admin/tag-form.html",
-            context,
+        return render_term_form(
+            state,
+            session,
+            category,
+            Some(tag_id),
+            posted_values(&form),
+            &errors,
+            urls,
         )
         .await;
     }
@@ -813,61 +883,31 @@ async fn edit_tag_submit(
     }
 
     // Update parent if hierarchy is enabled
-    if category.hierarchy > 0 {
-        let parent_ids: Vec<uuid::Uuid> = match &form.parent_id {
-            Some(id) if !id.is_empty() => match uuid::Uuid::parse_str(id) {
-                Ok(uuid) => vec![uuid],
-                Err(_) => vec![],
-            },
-            _ => vec![],
-        };
-
-        if let Err(e) = state.categories().set_parents(tag_id, &parent_ids).await {
-            tracing::error!(error = %e, "failed to update tag parents");
-        }
+    if category.hierarchy > 0
+        && let Err(e) = state.categories().set_parents(tag_id, &parent_ids).await
+    {
+        tracing::error!(error = %e, "failed to update tag parents");
     }
 
     tracing::info!(tag_id = %tag_id, "tag updated");
-    Redirect::to(&format!(
-        "/admin/structure/categories/{}/tags",
-        tag.category_id
-    ))
-    .into_response()
+    Redirect::to(&urls.list).into_response()
 }
 
-/// Delete a tag.
-///
-/// POST /admin/structure/tags/{id}/delete
-async fn delete_tag(
-    State(state): State<AppState>,
-    session: Session,
-    Path(tag_id): Path<uuid::Uuid>,
-    Form(form): Form<CsrfOnlyForm>,
+/// Delete `tag`.
+pub(crate) async fn term_delete(
+    state: &AppState,
+    session: &Session,
+    tag: &crate::models::Tag,
+    token: &str,
+    urls: &TermUrls,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
-        return redirect;
-    }
-
-    if let Err(resp) = require_csrf(&session, &form.token).await {
+    if let Err(resp) = require_csrf(session, token).await {
         return resp;
     }
-
-    // Get category ID for redirect
-    let category_id = state
-        .categories()
-        .get_tag(tag_id)
-        .await
-        .ok()
-        .flatten()
-        .map(|t| t.category_id);
-
-    match state.categories().delete_tag(tag_id).await {
+    match state.categories().delete_tag(tag.id).await {
         Ok(true) => {
-            tracing::info!(tag_id = %tag_id, "tag deleted");
-            let redirect_url = category_id
-                .map(|id| format!("/admin/structure/categories/{id}/tags"))
-                .unwrap_or_else(|| "/admin/structure/categories".to_string());
-            Redirect::to(&redirect_url).into_response()
+            tracing::info!(tag_id = %tag.id, "tag deleted");
+            Redirect::to(&urls.list).into_response()
         }
         Ok(false) => render_not_found(),
         Err(e) => {

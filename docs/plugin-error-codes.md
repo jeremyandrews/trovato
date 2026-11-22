@@ -110,6 +110,18 @@ read from cron or the queue without `item_background`.
 | -80 | `ERR_QUERY_INVALID` | The definition is refused: `stage_aware = false` on content, an include, `semantic_similarity`, a plugin-table base joining content, a `url` filter other than `equals` or `in`, or anything the gather validator rejects | The host log names the reason; see `docs/design/plugin-query-surface.md` |
 | -81 | `ERR_QUERY_BOUND` | More than 100 rows per call, 32 filters (grouped ones and `having` included), 8 sorts, 3 relationships, filter groups nested past 3, or more than 8 `group_by` columns or aggregates | Page with `page`, or split the query |
 
+## Vocabulary Errors
+
+Returned by `host::create_owned_vocabulary` and `host::list_owned_vocabularies`
+(`trovato:kernel/vocabulary`, added by B108). They also return `-12` when the
+write or read fails and `-14` for a request that is not valid JSON.
+
+| Code | Constant | Meaning | Recovery |
+|------|----------|---------|----------|
+| -90 | `ERR_VOCABULARY_OWNER_UNDECLARED` | The owner type is not one this plugin declares under `[[vocabulary_owners]]` | Declare it in the manifest |
+| -91 | `ERR_VOCABULARY_INVALID` | The id is not a machine name of at most 32 characters, the label is empty, or the owner id is empty or longer than 255 | Fix the request |
+| -92 | `ERR_VOCABULARY_EXISTS` | A vocabulary with this id exists | Put the owner in the id, or list the owner's vocabularies first |
+
 ## User Directory Errors
 
 Returned by `host::load_users` (`trovato:kernel/user-api` `load-users`, added by

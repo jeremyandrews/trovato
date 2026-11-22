@@ -163,6 +163,8 @@ async fn config_storage_category_crud() {
         description: Some("A test category".to_string()),
         hierarchy: 0,
         weight: 0,
+        owner_type: None,
+        owner_id: None,
     };
 
     // Save
@@ -229,6 +231,8 @@ async fn config_storage_tag_crud() {
         description: None,
         hierarchy: 0,
         weight: 0,
+        owner_type: None,
+        owner_id: None,
     };
 
     app.config_storage()
@@ -634,6 +638,8 @@ async fn config_export_carries_tag_slug() {
             description: None,
             hierarchy: 0,
             weight: 0,
+            owner_type: None,
+            owner_id: None,
         }))
         .await
         .expect("failed to save category");

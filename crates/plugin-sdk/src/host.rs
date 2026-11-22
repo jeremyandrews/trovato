@@ -180,6 +180,23 @@ unsafe extern "C" {
 }
 
 #[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "trovato:kernel/vocabulary")]
+unsafe extern "C" {
+    #[link_name = "create-owned"]
+    fn __create_owned_vocabulary(req_ptr: i32, req_len: i32, out_ptr: i32, out_max_len: i32)
+    -> i32;
+    #[link_name = "list-owned"]
+    fn __list_owned_vocabularies(
+        type_ptr: i32,
+        type_len: i32,
+        id_ptr: i32,
+        id_len: i32,
+        out_ptr: i32,
+        out_max_len: i32,
+    ) -> i32;
+}
+
+#[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "trovato:kernel/query")]
 unsafe extern "C" {
     #[link_name = "run"]
@@ -1052,6 +1069,60 @@ pub fn filter_text(text: &str, format: &str) -> Result<String, i32> {
     String::from_utf8(buf).map_err(|_| crate::host_errors::ERR_SDK_UTF8)
 }
 
+/// Create a vocabulary owned by one owner of a type this plugin declares
+/// under `[[vocabulary_owners]]` (B108). Needs the `vocabulary` host
+/// interface.
+///
+/// Returns the vocabulary, or
+/// [`ERR_VOCABULARY_OWNER_UNDECLARED`](crate::host_errors::ERR_VOCABULARY_OWNER_UNDECLARED),
+/// [`ERR_VOCABULARY_INVALID`](crate::host_errors::ERR_VOCABULARY_INVALID) or
+/// [`ERR_VOCABULARY_EXISTS`](crate::host_errors::ERR_VOCABULARY_EXISTS).
+#[cfg(target_arch = "wasm32")]
+pub fn create_owned_vocabulary(
+    request: &crate::types::OwnedVocabularyRequest,
+) -> Result<crate::types::Vocabulary, i32> {
+    let json = serde_json::to_string(request).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)?;
+    let mut buf = vec![0u8; MAX_OUTPUT_BUFFER];
+    let result = unsafe {
+        __create_owned_vocabulary(
+            json.as_ptr() as i32,
+            json.len() as i32,
+            buf.as_mut_ptr() as i32,
+            buf.len() as i32,
+        )
+    };
+    if result < 0 {
+        return Err(result);
+    }
+    buf.truncate(result as usize);
+    serde_json::from_slice(&buf).map_err(|_| crate::host_errors::ERR_SDK_DESERIALIZE)
+}
+
+/// The vocabularies one owner owns, for an owner type this plugin declares
+/// (B108). Needs the `vocabulary` host interface.
+#[cfg(target_arch = "wasm32")]
+pub fn list_owned_vocabularies(
+    owner_type: &str,
+    owner_id: &str,
+) -> Result<Vec<crate::types::Vocabulary>, i32> {
+    let mut buf = vec![0u8; MAX_OUTPUT_BUFFER];
+    let result = unsafe {
+        __list_owned_vocabularies(
+            owner_type.as_ptr() as i32,
+            owner_type.len() as i32,
+            owner_id.as_ptr() as i32,
+            owner_id.len() as i32,
+            buf.as_mut_ptr() as i32,
+            buf.len() as i32,
+        )
+    };
+    if result < 0 {
+        return Err(result);
+    }
+    buf.truncate(result as usize);
+    serde_json::from_slice(&buf).map_err(|_| crate::host_errors::ERR_SDK_DESERIALIZE)
+}
+
 /// Check if the current user has a specific permission.
 ///
 /// Returns `true` if the user has the permission, `false` otherwise
@@ -1301,6 +1372,24 @@ pub fn http_read(_handle: u32) -> Result<Vec<u8>, i32> {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn http_close(_handle: u32) -> Result<(), i32> {
     Ok(())
+}
+
+/// Create an owned vocabulary (stub for native testing): there is no
+/// kernel, so nothing is created.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn create_owned_vocabulary(
+    _request: &crate::types::OwnedVocabularyRequest,
+) -> Result<crate::types::Vocabulary, i32> {
+    Err(crate::host_errors::ERR_NO_SERVICES)
+}
+
+/// List an owner's vocabularies (stub for native testing): none.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn list_owned_vocabularies(
+    _owner_type: &str,
+    _owner_id: &str,
+) -> Result<Vec<crate::types::Vocabulary>, i32> {
+    Ok(Vec::new())
 }
 
 /// Filter text through a text format (stub for native testing).

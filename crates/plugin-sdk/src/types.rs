@@ -1978,6 +1978,159 @@ impl AssistantToolResult {
     }
 }
 
+// =============================================================================
+// Owned vocabularies (B108): `vocabulary` host interface and
+// `tap_vocabulary_owner_access`
+// =============================================================================
+
+/// What a plugin sends `vocabulary::create-owned`: a vocabulary for one owner
+/// of a type the plugin declares under `[[vocabulary_owners]]`.
+///
+/// `#[non_exhaustive]`: build it with [`OwnedVocabularyRequest::new`] and the
+/// setters.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct OwnedVocabularyRequest {
+    /// The owner type, as declared in the manifest.
+    pub owner_type: String,
+    /// The plugin's id for the one owner.
+    pub owner_id: String,
+    /// The vocabulary's machine name, unique across the site.
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// 0 flat (the default), 1 single parent, 2 multiple parents.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hierarchy: Option<i16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub weight: Option<i16>,
+}
+
+impl OwnedVocabularyRequest {
+    /// A flat vocabulary `id` labelled `label`, owned by `owner_type` /
+    /// `owner_id`.
+    pub fn new(
+        owner_type: impl Into<String>,
+        owner_id: impl Into<String>,
+        id: impl Into<String>,
+        label: impl Into<String>,
+    ) -> Self {
+        Self {
+            owner_type: owner_type.into(),
+            owner_id: owner_id.into(),
+            id: id.into(),
+            label: label.into(),
+            description: None,
+            hierarchy: None,
+            weight: None,
+        }
+    }
+
+    /// Set the description.
+    #[must_use]
+    pub fn description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
+    }
+
+    /// Set the hierarchy mode: 0 flat, 1 single parent, 2 multiple parents.
+    #[must_use]
+    pub fn hierarchy(mut self, hierarchy: i16) -> Self {
+        self.hierarchy = Some(hierarchy);
+        self
+    }
+
+    /// Set the sort weight.
+    #[must_use]
+    pub fn weight(mut self, weight: i16) -> Self {
+        self.weight = Some(weight);
+        self
+    }
+}
+
+/// A vocabulary as `vocabulary::create-owned` and `list-owned` return it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct Vocabulary {
+    pub id: String,
+    pub label: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub hierarchy: i16,
+    #[serde(default)]
+    pub weight: i16,
+    /// `None` for a site-wide vocabulary.
+    #[serde(default)]
+    pub owner_type: Option<String>,
+    #[serde(default)]
+    pub owner_id: Option<String>,
+}
+
+/// What the kernel sends `tap_vocabulary_owner_access` when a request reaches
+/// an owner route the plugin declared.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct VocabularyOwnerAccessRequest {
+    /// The owner type the route serves.
+    pub owner_type: String,
+    /// The route's `{owner}` segment, as requested: a slug, an id, whatever
+    /// the plugin puts in its links.
+    pub owner_key: String,
+    /// `"administer terms"`.
+    pub operation: String,
+    /// The user asking.
+    pub user_id: String,
+    pub authenticated: bool,
+}
+
+/// A plugin's answer to `tap_vocabulary_owner_access`.
+///
+/// `owner_id` is the owner `owner_key` names, `None` if there is none (the
+/// kernel answers 404). `access`: `grant` admits the user; `deny` refuses
+/// anyone but a superuser; `neutral` leaves it to the declared permission.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct VocabularyOwnerAccess {
+    pub owner_id: Option<String>,
+    pub access: String,
+}
+
+impl VocabularyOwnerAccess {
+    /// The owner exists and this user administers its terms.
+    pub fn grant(owner_id: impl Into<String>) -> Self {
+        Self {
+            owner_id: Some(owner_id.into()),
+            access: "grant".to_string(),
+        }
+    }
+
+    /// The owner exists and this user may not administer its terms.
+    pub fn deny(owner_id: impl Into<String>) -> Self {
+        Self {
+            owner_id: Some(owner_id.into()),
+            access: "deny".to_string(),
+        }
+    }
+
+    /// The owner exists; the declared permission decides.
+    pub fn neutral(owner_id: impl Into<String>) -> Self {
+        Self {
+            owner_id: Some(owner_id.into()),
+            access: "neutral".to_string(),
+        }
+    }
+
+    /// No owner by that key.
+    pub fn not_found() -> Self {
+        Self {
+            owner_id: None,
+            access: "neutral".to_string(),
+        }
+    }
+}
+
 #[cfg(test)]
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]

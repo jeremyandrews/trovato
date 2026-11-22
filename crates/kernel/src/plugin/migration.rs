@@ -295,6 +295,7 @@ mod tests {
             capabilities: None,
             record_types: vec![],
             config: Default::default(),
+            vocabulary_owners: Vec::new(),
         }
     }
 

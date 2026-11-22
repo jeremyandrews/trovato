@@ -22,7 +22,7 @@
                 <td>
                     <a href="/admin/structure/categories/{{ cat.id }}/tags">{{ cat.label }}</a>
                 </td>
-                <td><code>{{ cat.id }}</code></td>
+                <td><code>{{ cat.id }}</code>{% if cat.owner_type %}<br><small>Owned by {{ cat.owner_type }} {{ cat.owner_id }}</small>{% endif %}</td>
                 <td>
                     {% if cat.hierarchy == 0 %}Flat
                     {% elif cat.hierarchy == 1 %}Single parent

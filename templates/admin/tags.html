@@ -2,10 +2,10 @@
 {% import "admin/macros/list.html" as list %}
 
 {% block content %}
-{{ list::header(title=category.label ~ " - Tags", add_url="/admin/structure/categories/" ~ category.id ~ "/tags/add", add_label="Add tag") }}
+{{ list::header(title=category.label ~ " - Tags", add_url=urls.add, add_label="Add tag") }}
 
 <nav class="breadcrumb" aria-label="Breadcrumb">
-    <a href="/admin/structure/categories">Categories</a>
+    <a href="{{ urls.index }}">{{ urls.index_label }}</a>
     &raquo;
     <span aria-current="page">{{ category.label }}</span>
 </nav>
@@ -26,16 +26,16 @@
                 <td>{{ tag.label }}</td>
                 <td>{{ tag.weight }}</td>
                 <td>
-                    <a href="/admin/structure/tags/{{ tag.id }}/edit">Edit</a>
+                    <a href="{{ urls.term_base }}/{{ tag.id }}/edit">Edit</a>
                     &middot;
-                    {{ list::delete_button(action="/admin/structure/tags/" ~ tag.id ~ "/delete", confirm_text="Are you sure you want to delete this tag?", csrf_token=csrf_token) }}
+                    {{ list::delete_button(action=urls.term_base ~ "/" ~ tag.id ~ "/delete", confirm_text="Are you sure you want to delete this tag?", csrf_token=csrf_token) }}
                 </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
     {% else %}
-    {{ list::empty(message="No tags in this category.", add_url="/admin/structure/categories/" ~ category.id ~ "/tags/add", add_label="Add one now") }}
+    {{ list::empty(message="No tags in this category.", add_url=urls.add, add_label="Add one now") }}
     {% endif %}
 </div>
 

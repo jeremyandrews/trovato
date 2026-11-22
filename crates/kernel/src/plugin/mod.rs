@@ -26,7 +26,7 @@ pub use dependency::{check_dependencies, resolve_load_order};
 pub use error::PluginError;
 pub use info_parser::{
     KNOWN_HOST_INTERFACES, KNOWN_TAPS, MigrationConfig, PluginCapabilities, PluginConfigDecl,
-    PluginInfo, RecordTypeDecl, TapConfig, TapOptions,
+    PluginInfo, RecordTypeDecl, TapConfig, TapOptions, VocabularyOwnerDecl,
 };
 pub(crate) use runtime::WasmtimeExt;
 pub use runtime::{CompiledPlugin, PluginConfig, PluginLoadError, PluginRuntime, PluginState};

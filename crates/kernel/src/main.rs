@@ -366,7 +366,9 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         // asking for `api` are logged: that combination registers nothing.
         .merge(routes::plugin_api::build_plugin_api_router(
             &state.menu_registry().all().cloned().collect::<Vec<_>>(),
-        ));
+        ))
+        // Owner routes for the vocabulary owners plugins declare (B108).
+        .merge(routes::owned_vocabulary::router(&state));
 
     // Wrap the inner router with state so we can clone it for the fallback.
     let inner_with_state: Router = inner_router.clone().with_state(state.clone());

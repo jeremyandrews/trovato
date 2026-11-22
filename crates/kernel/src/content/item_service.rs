@@ -646,6 +646,30 @@ impl ItemService {
         }
     }
 
+    /// Refuse a write whose reference fields limited to the item's owner's
+    /// vocabularies (`settings.vocabulary_owner`, B108) hold a term from any
+    /// other vocabulary. See `content::owned_vocabulary::check_item_terms`.
+    async fn validate_owned_terms(
+        &self,
+        item_type: &str,
+        fields: Option<&serde_json::Value>,
+        existing: Option<&serde_json::Value>,
+    ) -> Result<()> {
+        if fields.is_none() {
+            return Ok(());
+        }
+        let mut conn = self.inner.pool.acquire().await?;
+        let definitions = file_refs::load_field_definitions(&mut conn, item_type).await?;
+        drop(conn);
+        crate::content::owned_vocabulary::check_item_terms(
+            &self.inner.pool,
+            &definitions,
+            fields,
+            existing,
+        )
+        .await
+    }
+
     /// Build a `RequestState` for tap dispatch with the user context and services.
     fn tap_state(&self, user: &UserContext) -> RequestState {
         RequestState::new(user.clone(), self.inner.tap_services.clone())
@@ -767,6 +791,8 @@ impl ItemService {
 
         // Pages are checked after presave, so what is stored is what passed.
         self.validate_page_builder_fields(&input.item_type, input.fields.as_ref(), None)
+            .await?;
+        self.validate_owned_terms(&input.item_type, input.fields.as_ref(), None)
             .await?;
 
         // The files the item will reference: any it may not attach refuse the
@@ -1308,6 +1334,12 @@ impl ItemService {
         }
 
         self.validate_page_builder_fields(
+            &existing.item_type,
+            input.fields.as_ref(),
+            Some(&existing.fields),
+        )
+        .await?;
+        self.validate_owned_terms(
             &existing.item_type,
             input.fields.as_ref(),
             Some(&existing.fields),

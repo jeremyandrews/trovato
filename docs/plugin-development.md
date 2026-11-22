@@ -16,10 +16,11 @@ This guide covers everything you need to know to develop plugins for Trovato CMS
 10. [Caching](#caching)
 11. [Inter-Plugin Communication](#inter-plugin-communication)
 12. [Letting an assistant configure your plugin](#letting-an-assistant-configure-your-plugin)
-13. [Page builder components](#page-builder-components)
-14. [Testing](#testing)
-15. [Deployment](#deployment)
-16. [Best Practices](#best-practices)
+13. [Owned vocabularies](#owned-vocabularies)
+14. [Page builder components](#page-builder-components)
+15. [Testing](#testing)
+16. [Deployment](#deployment)
+17. [Best Practices](#best-practices)
 
 ---
 
@@ -1308,6 +1309,129 @@ the log, so one broken tool does not end a conversation.
   literal scope from your own template:
   `{% include "assistant/launcher.html" %}` with `scope` (and `scope_id`) set.
   It renders nothing when the assistant is off.
+
+---
+
+## Owned vocabularies
+
+A vocabulary (a category) normally belongs to the site: one list of terms,
+administered under `/admin/structure/categories` by whoever holds `administer
+categories`. A site plugin that models groups, clubs or projects can give each
+of them **their own vocabularies**, administered by that owner's managers with
+the kernel's own term list and term form (B108). A vocabulary with no owner
+behaves exactly as before.
+
+A plugin does three things.
+
+### 1. Declare the kind of owner
+
+In the manifest:
+
+```toml
+[[vocabulary_owners]]
+owner_type = "group"                         # [a-z][a-z0-9_]*, at most 64
+label = "Group"                              # what the screens call one owner
+path = "/group/{owner}/categories"           # where the kernel serves them
+permission = "administer group categories"   # optional, see below
+```
+
+`path` is three segments with `{owner}` in the middle. Its first segment may not
+be one the kernel serves (`admin`, `api`, `user`, `item`, `static`, …); the
+manifest is refused if it is. An owner type or path another enabled plugin
+already declared is skipped with a warning (the first plugin by name keeps it).
+Declare `permission` with `tap_perm` too if you name one.
+
+The kernel mounts, under `path`:
+
+| Route | |
+|---|---|
+| `GET /group/{owner}/categories` | the owner's vocabularies |
+| `GET …/{vocabulary}` | the term list |
+| `GET`, `POST …/{vocabulary}/add` | the add-term form |
+| `GET`, `POST …/{vocabulary}/terms/{term}/edit` | the edit-term form |
+| `POST …/{vocabulary}/terms/{term}/delete` | delete a term |
+
+Link to them from your own pages; the kernel adds no menu entry.
+
+### 2. Create the owner's vocabularies
+
+With the `vocabulary` host interface (`host_interfaces = ["vocabulary", …]`),
+usually when the owner is created:
+
+```rust
+use trovato_sdk::host;
+use trovato_sdk::types::OwnedVocabularyRequest;
+
+let request = OwnedVocabularyRequest::new("group", &group_id, format!("group_{group_id}_topics"), "Topics")
+    .description("What this group writes about")
+    .hierarchy(1);
+let vocabulary = host::create_owned_vocabulary(&request)?;
+let all = host::list_owned_vocabularies("group", &group_id)?;
+```
+
+The id is a site-wide machine name (lowercase letters, digits and underscores,
+at most 32), so put the owner in it. A plugin may only create and list
+vocabularies for owner types it declares (`-90`); a bad id or label is `-91`;
+an id in use is `-92`.
+
+### 3. Decide who administers an owner's terms
+
+Implement `tap_vocabulary_owner_access` (list it under `[taps] implements`). The
+kernel calls it, on the declaring plugin only, for every request to an owner
+route by a signed-in user:
+
+```rust
+use trovato_sdk::types::{VocabularyOwnerAccess, VocabularyOwnerAccessRequest};
+
+#[plugin_tap]
+pub fn tap_vocabulary_owner_access(request: VocabularyOwnerAccessRequest) -> VocabularyOwnerAccess {
+    // `owner_key` is the `{owner}` path segment: a slug, an id, whatever your links use.
+    let Some(group) = find_group(&request.owner_key) else {
+        return VocabularyOwnerAccess::not_found();
+    };
+    if is_manager(&group, &request.user_id) {
+        VocabularyOwnerAccess::grant(group.id)
+    } else {
+        VocabularyOwnerAccess::neutral(group.id)
+    }
+}
+```
+
+The kernel decides:
+
+- an anonymous user is sent to sign in, whatever the tap says;
+- `not_found()` (no owner id) is a 404;
+- `deny` refuses everyone but a superuser;
+- `grant` admits;
+- `neutral` admits a superuser, or a holder of the declared `permission`, and
+  refuses everyone else.
+
+A plugin that does not implement the tap treats the `{owner}` segment as the owner
+id, and only the declared permission (or a superuser) admits.
+
+A vocabulary, or a term, that belongs to another owner is a 404 under this
+owner's route.
+
+### Limiting a reference field to the item's owner
+
+A term reference field (`FieldType::RecordReference("category_term")`) can be
+limited to the vocabularies the item's owner owns, through a field setting:
+
+```rust
+let mut field = FieldDefinition::new("field_topics", FieldType::RecordReference("category_term".into()))
+    .cardinality(-1)
+    .label("Topics");
+field.settings = serde_json::json!({
+    "vocabulary_owner": { "owner_type": "group", "owner_field": "field_group" }
+});
+```
+
+The item's owner is the value of `owner_field` on the same item: an id, or a
+reference `{"target_id": …}`. Every save, whether from a form, the API or a
+plugin, then refuses a term from any other vocabulary, a site-wide one included,
+and any term at all on an item with no owner. A form shows the refusal at the
+field; the API answers 422. A value the save does not change is not checked
+again.
 
 ---
 

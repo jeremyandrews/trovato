@@ -422,7 +422,9 @@ impl TestApp {
             // Plugin-served API routes (G-NO-PLUGIN-HTTP).
             .merge(trovato_kernel::routes::plugin_api::build_plugin_api_router(
                 &state.menu_registry().all().cloned().collect::<Vec<_>>(),
-            ));
+            ))
+            // Owner routes for declared vocabulary owners (B108).
+            .merge(trovato_kernel::routes::owned_vocabulary::router(&state));
 
         let inner_with_state: Router = inner_router.clone().with_state(state.clone());
         let shared_router = std::sync::Arc::new(inner_with_state);

@@ -20,6 +20,7 @@ pub mod text_format;
 pub(crate) mod trace;
 pub mod user;
 mod variables;
+pub mod vocabulary;
 
 use anyhow::{Result, anyhow};
 use wasmtime::Linker;
@@ -45,6 +46,7 @@ pub use request_context::register_request_context_functions;
 pub use text_format::register_text_format_functions;
 pub use user::register_user_functions;
 pub use variables::register_variables_functions;
+pub use vocabulary::register_vocabulary_functions;
 
 /// Registers one host interface's functions on a plugin `Linker`.
 ///
@@ -77,13 +79,14 @@ pub const HOST_INTERFACE_REGISTRARS: &[(&str, HostInterfaceRegistrar)] = &[
     ("mail", register_mail_functions),
     ("text-format", register_text_format_functions),
     ("query", register_query_functions),
+    ("vocabulary", register_vocabulary_functions),
 ];
 
 /// Register every known host interface with the linker.
 ///
 /// Iterates [`HOST_INTERFACE_REGISTRARS`] so the map remains the single source
 /// of truth. Behaviour is unchanged from the previous straight-line call list:
-/// all 15 interfaces are registered. The per-plugin linker uses
+/// all 16 interfaces are registered. The per-plugin linker uses
 /// [`register_declared`] instead to expose only a declared subset (WASM-1).
 pub fn register_all(linker: &mut Linker<PluginState>) -> Result<()> {
     for (_iface, register) in HOST_INTERFACE_REGISTRARS {

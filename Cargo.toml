@@ -91,6 +91,10 @@ members = [
     # `event_record` record type and governs it with tap_field_access, exercised
     # through real gather + the real FR-8 seam; built with --target wasm32-wasip1.
     "plugins/trovato_record_ref",
+    # B108 owned-vocabulary fixture: clubs own vocabularies, created through
+    # the `vocabulary` host interface and administered by the club's managers
+    # through tap_vocabulary_owner_access; built with --target wasm32-wasip1.
+    "plugins/test_owned_vocabulary",
 ]
 # Guest WASM crate must be built separately with --target wasm32-wasip1
 # Plugin cdylibs (goose) excluded — build with --target wasm32-wasip1

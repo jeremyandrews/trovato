@@ -366,6 +366,9 @@ impl DirectConfigStorage {
             )
             .await?;
         }
+        // An owned vocabulary (B108) keeps its owner through export and
+        // import; a site-wide one stays site-wide.
+        Category::set_owner(&self.pool, &category.id, category.owner()).await?;
 
         Ok(())
     }
