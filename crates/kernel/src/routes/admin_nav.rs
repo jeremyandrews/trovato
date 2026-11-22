@@ -194,6 +194,18 @@ pub const LINKS: &[Link] = &[
         "/admin/reports/search",
         Permission("administer site"),
     ),
+    link(
+        "System",
+        "Site log",
+        "/admin/reports/log",
+        Permission("administer site"),
+    ),
+    link(
+        "System",
+        "Cron",
+        "/admin/reports/cron",
+        Permission("administer site"),
+    ),
     link("System", "Plugins", "/admin/plugins", Administrator),
     link(
         "System",
@@ -314,6 +326,8 @@ pub const CARDS: &[Card] = &[
         title: "Reports",
         description: "What the site has been doing.",
         links: &[
+            ("Site log", "/admin/reports/log"),
+            ("Cron", "/admin/reports/cron"),
             ("Search report", "/admin/reports/search"),
             ("AI Budgets", "/admin/system/ai-budgets"),
         ],

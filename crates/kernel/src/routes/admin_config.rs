@@ -76,9 +76,10 @@ fn is_valid_email(email: &str) -> bool {
 ///
 /// GET /admin/config/site
 async fn site_config_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let pool = state.db();
 
@@ -141,6 +142,9 @@ async fn site_config_form(State(state): State<AppState>, session: Session) -> Re
     context.insert("running_version", crate::update_status::running_version());
     context.insert("flash", &flash);
     context.insert("path", "/admin/config/site");
+    if let Err(resp) = insert_maintenance_form(&state, &session, &user, &mut context).await {
+        return resp;
+    }
 
     render_admin_template(
         &state,
@@ -159,9 +163,10 @@ async fn site_config_submit(
     session: Session,
     Form(form): Form<SiteConfigFormData>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
     if let Err(resp) = require_csrf(&session, &form.token).await {
         return resp;
     }
@@ -236,6 +241,9 @@ async fn site_config_submit(
         context.insert("running_version", crate::update_status::running_version());
         context.insert("errors", &errors);
         context.insert("path", "/admin/config/site");
+        if let Err(resp) = insert_maintenance_form(&state, &session, &user, &mut context).await {
+            return resp;
+        }
 
         return render_admin_template(
             &state,
@@ -392,4 +400,161 @@ pub fn router() -> Router<AppState> {
             get(site_config_form).post(site_config_submit),
         )
         .route("/admin/config/site/test-email", post(test_email))
+        .route("/admin/config/site/maintenance", post(maintenance_submit))
+}
+
+// =============================================================================
+// Maintenance mode
+// =============================================================================
+
+/// The form id of the maintenance mode form.
+const MAINTENANCE_FORM_ID: &str = "site_maintenance_form";
+
+/// The maintenance mode form: on or off, and the message visitors see.
+fn maintenance_form(on: bool, message: &str) -> crate::form::Form {
+    use crate::form::FormElement;
+    crate::form::Form::new(MAINTENANCE_FORM_ID)
+        .action("/admin/config/site/maintenance")
+        .element(
+            "maintenance_mode",
+            FormElement::checkbox()
+                .title("Put the site into maintenance mode")
+                .description(
+                    "Everyone without the \"bypass maintenance mode\" permission gets a 503 \
+                     with this message. Signing in, static files, the health check and cron \
+                     still work, and administrators can use the whole site.",
+                )
+                .default_value(on)
+                .weight(0),
+        )
+        .element(
+            "maintenance_message",
+            FormElement::textarea(3)
+                .title("Message")
+                .default_value(message.to_string())
+                .weight(1),
+        )
+        .element(
+            "op",
+            FormElement::submit("Save maintenance mode").weight(10),
+        )
+}
+
+/// Build the maintenance mode form through the forms pipeline and put it,
+/// rendered, and whether the mode is on into `context`.
+async fn insert_maintenance_form(
+    state: &AppState,
+    session: &Session,
+    user: &crate::models::User,
+    context: &mut tera::Context,
+) -> Result<(), Response> {
+    let (on, message) = crate::middleware::maintenance::current(state).await;
+    let viewer = super::helpers::user_context_for(state, user).await;
+    let mut form_state = crate::form::FormState::new(MAINTENANCE_FORM_ID, "");
+    form_state.user_id = Some(user.id);
+    let html = state
+        .forms()
+        .build(
+            maintenance_form(on, &message),
+            session,
+            &super::item_form::tap_state(state, &viewer),
+            form_state,
+        )
+        .await
+        .and_then(|form| state.theme().render_form(&form))
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to build the maintenance form");
+            render_server_error("The site settings could not be displayed.")
+        })?;
+    context.insert("maintenance_form", &html);
+    context.insert("maintenance_on", &on);
+    Ok(())
+}
+
+/// Turn maintenance mode on or off, and set its message.
+///
+/// POST /admin/config/site/maintenance
+async fn maintenance_submit(
+    State(state): State<AppState>,
+    session: Session,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Response {
+    let posted = crate::content::submission::PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    let viewer = super::helpers::user_context_for(&state, &user).await;
+    match state
+        .forms()
+        .process(
+            posted.get("_form_build_id").unwrap_or_default(),
+            &posted,
+            &session,
+            &super::item_form::tap_state(&state, &viewer),
+            |form_state| {
+                if form_state.form_id == MAINTENANCE_FORM_ID {
+                    Ok(())
+                } else {
+                    Err(vec![crate::form::ValidationError::form(
+                        crate::form::FORM_EXPIRED,
+                    )])
+                }
+            },
+        )
+        .await
+    {
+        Ok(_) => {}
+        Err(crate::form::ProcessError::Csrf) => {
+            return super::helpers::render_error(
+                "Invalid or expired form token. Please try again.",
+            );
+        }
+        Err(crate::form::ProcessError::Invalid(_)) => {
+            return super::helpers::render_error(
+                "The form has expired. Reload the page and try again.",
+            );
+        }
+    }
+
+    let on = posted.contains("maintenance_mode");
+    let message = posted
+        .get("maintenance_message")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let pool = state.db();
+    if let Err(e) = SiteConfig::set(
+        pool,
+        crate::middleware::maintenance::MAINTENANCE_MESSAGE_KEY,
+        serde_json::json!(message),
+    )
+    .await
+    {
+        tracing::error!(error = %e, "failed to save the maintenance message");
+        return render_server_error("Failed to save maintenance mode.");
+    }
+    if let Err(e) = SiteConfig::set(
+        pool,
+        crate::middleware::maintenance::MAINTENANCE_MODE_KEY,
+        serde_json::json!(on),
+    )
+    .await
+    {
+        tracing::error!(error = %e, "failed to save maintenance mode");
+        return render_server_error("Failed to save maintenance mode.");
+    }
+    tracing::info!(
+        log_type = "config",
+        user_id = %user.id,
+        maintenance_mode = on,
+        "maintenance mode changed"
+    );
+    let notice = if on {
+        "Maintenance mode is on."
+    } else {
+        "Maintenance mode is off."
+    };
+    let _ = session.insert(FLASH_KEY, notice).await;
+    Redirect::to("/admin/config/site#maintenance").into_response()
 }

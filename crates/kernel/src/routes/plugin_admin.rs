@@ -232,6 +232,11 @@ async fn toggle_plugin(
     // change made here takes effect on each server when it restarts.
     match status::set_status(state.db(), &form.plugin_name, new_status).await {
         Ok(true) => {
+            tracing::info!(
+                log_type = "plugin",
+                plugin = %form.plugin_name,
+                "plugin {action_word}"
+            );
             // Flash messages are rendered in Tera templates that autoescape
             // .html files, so we must NOT pre-escape here.
             let msg = format!(

@@ -1,0 +1,77 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block content %}
+{{ list::header(title="Site log") }}
+
+<div class="admin-card">
+    <form class="filter-form" method="get" action="/admin/reports/log">
+        <div class="filter-row">
+            <div class="filter-item">
+                <label for="level">Level</label>
+                <select id="level" name="level">
+                    <option value="">- Any -</option>
+                    {% for level in levels %}
+                    <option value="{{ level }}" {% if level_filter == level %}selected{% endif %}>{{ level }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="filter-item">
+                <label for="type">Type</label>
+                <select id="type" name="type">
+                    <option value="">- Any -</option>
+                    {% for t in types %}
+                    <option value="{{ t }}" {% if type_filter == t %}selected{% endif %}>{{ t }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="filter-item">
+                <button type="submit" class="button button--secondary">Filter</button>
+            </div>
+        </div>
+    </form>
+</div>
+
+<div class="admin-card">
+    {% if entries %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Time (UTC)</th>
+                <th>Level</th>
+                <th>Type</th>
+                <th>Message</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for entry in entries %}
+            <tr>
+                <td class="log-time">{{ entry.created | format_date(format="%Y-%m-%d %H:%M:%S") }}</td>
+                <td><span class="log-level log-level--{{ entry.level }}">{{ entry.level }}</span></td>
+                <td>{{ entry.log_type }}</td>
+                <td>{{ entry.message }}</td>
+                <td class="log-context">
+                    {% for key, value in entry.context %}<span class="log-context__pair">{{ key }}={{ value }}</span> {% endfor %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {% if total_pages > 1 %}
+    <div class="pagination">
+        {% if page > 1 %}
+        <a href="?page={{ page - 1 }}{% if filter_qs %}&{{ filter_qs }}{% endif %}" class="button button--secondary">&laquo; Previous</a>
+        {% endif %}
+        <span class="pagination-info">Page {{ page }} of {{ total_pages }} ({{ total }} entries)</span>
+        {% if page < total_pages %}
+        <a href="?page={{ page + 1 }}{% if filter_qs %}&{{ filter_qs }}{% endif %}" class="button button--secondary">Next &raquo;</a>
+        {% endif %}
+    </div>
+    {% endif %}
+    {% else %}
+    {{ list::empty(message="Nothing has been logged that matches.") }}
+    {% endif %}
+</div>
+{% endblock %}

@@ -37,6 +37,7 @@ mod services;
 mod session;
 mod stage;
 mod state;
+mod system_log;
 mod tap;
 mod theme;
 mod update_status;
@@ -55,7 +56,7 @@ use tower_http::trace::TraceLayer;
 use tower_sessions::Session;
 use tower_sessions::cookie::SameSite;
 use tracing::{info, warn};
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use tracing_subscriber::{EnvFilter, Layer as _, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::cache::generation::CacheKind;
 use crate::config::Config;
@@ -179,13 +180,14 @@ async fn main() -> Result<()> {
     // Load .env file if present
     dotenvy::dotenv().ok();
 
-    // Initialize tracing
-    init_tracing();
+    // Initialize tracing. The site log's rows wait in a channel until the
+    // server has a database pool to write them to.
+    let log_receiver = init_tracing();
 
     let cli = Cli::parse();
 
     match cli.command {
-        None | Some(Commands::Serve) => run_server().await,
+        None | Some(Commands::Serve) => run_server(log_receiver).await,
         Some(Commands::Plugin { action }) => run_plugin_command(action).await,
         Some(Commands::Config { action }) => run_config_command(action).await,
         Some(Commands::User { action }) => run_user_command(action).await,
@@ -195,7 +197,7 @@ async fn main() -> Result<()> {
 // path_alias_fallback lives in middleware::path_alias and is reused by tests.
 
 /// Run the HTTP server (original startup path).
-async fn run_server() -> Result<()> {
+async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
     info!("Starting Trovato kernel");
 
     // Load configuration from environment
@@ -211,6 +213,10 @@ async fn run_server() -> Result<()> {
         .context("failed to initialize application state")?;
 
     info!("Database and Redis connections established");
+
+    // The site log (`/admin/reports/log`): warnings and errors from here on
+    // are written to `system_log`.
+    system_log::spawn_writer(state.db().clone(), log_receiver);
 
     // Create a cancellation token for coordinated shutdown of background tasks.
     let shutdown_token = tokio_util::sync::CancellationToken::new();
@@ -401,6 +407,12 @@ async fn run_server() -> Result<()> {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::negotiate_language,
+        ))
+        // Maintenance mode: a 503 for everyone but a holder of the bypass
+        // permission. After the installation check, inside the session layer.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::check_maintenance,
         ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -856,12 +868,18 @@ fn build_cors_layer(config: &Config) -> CorsLayer {
     }
 }
 
-fn init_tracing() {
+fn init_tracing() -> system_log::SystemLogReceiver {
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,tower_http=debug,sqlx=warn"));
+    let (log_layer, log_receiver) = system_log::SystemLogLayer::new();
 
+    // The site log takes its own level decision (warn and error, and the
+    // allowlisted info events), so it sits beside the `RUST_LOG` filter rather
+    // than under it: a quiet `RUST_LOG=error` must not empty the admin's log.
+    // Its own `INFO` filter keeps debug and trace callsites disabled.
     tracing_subscriber::registry()
-        .with(filter)
-        .with(tracing_subscriber::fmt::layer())
+        .with(tracing_subscriber::fmt::layer().with_filter(filter))
+        .with(log_layer.with_filter(tracing_subscriber::filter::LevelFilter::INFO))
         .init();
+    log_receiver
 }

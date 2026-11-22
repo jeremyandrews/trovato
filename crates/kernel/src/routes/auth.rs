@@ -252,8 +252,39 @@ pub(crate) async fn setup_session(
     Ok(())
 }
 
-/// Perform login and return typed error on failure.
+/// Perform login and return typed error on failure, and record the attempt
+/// in the site log (`log_type = "user"`): the username and the outcome, never
+/// the password.
 async fn do_login(
+    state: &AppState,
+    session: &Session,
+    request: &LoginRequest,
+    client_ip: &str,
+) -> Result<(), LoginError> {
+    let result = attempt_login(state, session, request, client_ip).await;
+    match &result {
+        Ok(()) => info!(
+            log_type = "user",
+            username = %request.username,
+            "user logged in"
+        ),
+        Err(LoginError::InvalidCredentials) => info!(
+            log_type = "user",
+            username = %request.username,
+            "login failed: wrong username or password"
+        ),
+        Err(LoginError::Locked(_)) => info!(
+            log_type = "user",
+            username = %request.username,
+            "login refused: sign in is locked"
+        ),
+        Err(LoginError::Internal(_)) => {}
+    }
+    result
+}
+
+/// [`do_login`] without the log entry.
+async fn attempt_login(
     state: &AppState,
     session: &Session,
     request: &LoginRequest,

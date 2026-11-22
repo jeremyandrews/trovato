@@ -210,6 +210,13 @@ neither.
 | `/admin/config/site` and its test-email route | GET, POST | `administer site` |
 | `/admin/config/pathauto` and its regenerate route | GET, POST | `administer site` |
 | `/cron/status` | GET | `administer site` |
+| `/admin/config/site/maintenance`, the maintenance mode toggle | POST | `administer site` |
+| `/admin/reports/cron`, the cron report and its Run now button | GET, POST | `administer site` |
+| `/admin/reports/log`, the site log | GET | `administer site` |
+
+While maintenance mode is on, a signed-in user without `bypass maintenance mode`
+gets the maintenance page like an anonymous visitor. Administrators hold it
+implicitly; grant it to a role whose members must keep working during the window.
 
 ## AI
 

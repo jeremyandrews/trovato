@@ -897,6 +897,10 @@ impl CronService {
     pub fn apply_runtime_config(&mut self, runtime: &crate::config::RuntimeConfig) {
         self.tasks
             .set_security_audit_retention_days(runtime.security_audit_retention_days);
+        self.tasks.set_system_log_retention(
+            runtime.system_log_retention_days,
+            runtime.system_log_max_rows,
+        );
         // The update check is off unless the process allows it. The client is the
         // same SSRF-hardened outbound client the plugin fetchers use: this request
         // goes to a name resolved at runtime, so it gets the same rebinding-safe
@@ -1059,6 +1063,16 @@ impl CronService {
                 tasks_run.push(format!("cleanup_audit_log: {count}"));
             }
             Err(e) => warn!(error = %e, "failed to cleanup audit log"),
+            _ => {}
+        }
+
+        // Keep the site log to its caps (`/admin/reports/log`).
+        match self.tasks.cleanup_system_log().await {
+            Ok(count) if count > 0 => {
+                info!(count = count, "pruned the system log");
+                tasks_run.push(format!("cleanup_system_log: {count}"));
+            }
+            Err(e) => warn!(error = %e, "failed to prune the system log"),
             _ => {}
         }
 
@@ -1958,10 +1972,21 @@ impl CronService {
 
     /// Record the last cron run.
     async fn record_run(&self, result: &CronResult) -> Result<()> {
+        let (status, tasks, duration_ms) = match result {
+            CronResult::Completed {
+                tasks_run,
+                duration_ms,
+            } => ("completed", tasks_run.clone(), Some(*duration_ms)),
+            CronResult::Skipped => ("skipped", Vec::new(), None),
+            CronResult::Failed(_) => ("failed", Vec::new(), None),
+        };
         let run = LastCronRun {
             timestamp: chrono::Utc::now().timestamp(),
             hostname: hostname(),
             result: format!("{result:?}"),
+            status: status.to_string(),
+            tasks,
+            duration_ms,
         };
 
         let mut conn = self
@@ -1980,11 +2005,21 @@ impl CronService {
 }
 
 /// Last cron run information.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct LastCronRun {
     pub timestamp: i64,
     pub hostname: String,
     pub result: String,
+    /// `completed`, `skipped` or `failed`. Empty in a record written before
+    /// these fields existed.
+    #[serde(default)]
+    pub status: String,
+    /// The tasks a completed run reported, each as `name: count`.
+    #[serde(default)]
+    pub tasks: Vec<String>,
+    /// How long a completed run took.
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
 }
 
 /// What [`run_heartbeat`] is allowed to do, and for how long.
@@ -2174,6 +2209,7 @@ mod tests {
             timestamp: 1234567890,
             hostname: "test-host".to_string(),
             result: "Completed".to_string(),
+            ..Default::default()
         };
 
         let json = serde_json::to_string(&run).unwrap();

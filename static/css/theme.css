@@ -2170,3 +2170,15 @@ form select:focus {
         break-inside: avoid;
     }
 }
+
+/* ─── Maintenance page (templates/maintenance.html) ─────────── */
+.maintenance-page {
+    max-width: 40rem;
+    margin: 4rem auto;
+    text-align: center;
+}
+
+.maintenance-page__login {
+    margin-top: 2rem;
+    font-size: 0.875rem;
+}

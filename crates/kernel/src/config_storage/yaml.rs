@@ -686,7 +686,12 @@ pub async fn import_config(
     dir: &Path,
     dry_run: bool,
 ) -> Result<ConfigOpResult> {
-    info!(dir = %dir.display(), dry_run, "Starting config import");
+    info!(
+        log_type = "config",
+        dir = %dir.display(),
+        dry_run,
+        "Starting config import"
+    );
 
     let mut result = ConfigOpResult::default();
     let mut failures: Vec<ConfigImportFailure> = Vec::new();

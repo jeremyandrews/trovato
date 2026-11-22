@@ -36,6 +36,7 @@ pub mod services;
 pub mod session;
 pub mod stage;
 pub mod state;
+pub mod system_log;
 pub mod tap;
 pub mod theme;
 pub mod update_status;

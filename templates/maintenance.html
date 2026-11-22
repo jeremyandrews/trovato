@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{# The page every visitor gets while maintenance mode is on: a 503 with
+   Retry-After, from `middleware::maintenance`. Extends the site's base.html,
+   so it wears the site theme. #}
+{% block title %}Down for maintenance | {{ site_name }}{% endblock %}
+
+{% block content %}
+<section class="maintenance-page">
+    <h1>{{ site_name }} is down for maintenance</h1>
+    <p>{{ maintenance_message }}</p>
+    <p class="maintenance-page__login"><a href="/user/login">Log in</a></p>
+</section>
+{% endblock %}
