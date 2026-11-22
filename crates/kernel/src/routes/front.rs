@@ -105,7 +105,7 @@ pub fn is_front_page_request() -> bool {
 ///
 /// The path is read from `site_config` once and kept until a write bumps the
 /// `SiteConfig` cache generation (any server's write clears every server's
-/// copy) or [`FRONT_PAGE_TTL`] passes, so `/` costs no database query to find
+/// copy) or `FRONT_PAGE_TTL` (a minute) passes, so `/` costs no database query to find
 /// out what it is.
 #[derive(Default)]
 pub struct FrontPageConfig {
