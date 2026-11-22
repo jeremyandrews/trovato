@@ -23,3 +23,7 @@ its autodiscovery links; argument feeds are not added to every page's head.
 filters on `blog_listing` (author and tag, each a no-op when absent, so `/blog`
 is unchanged), the routes `/blog/author/{user}` and `/blog/tag/{tag}`, and the
 feed declaration. Every feed still runs the query as the requesting viewer.
+
+A feed also now carries its own `items` count. It executed page one of the
+gather, so a feed declaring `items: 20` over a gather showing ten a page
+carried ten; it now asks the gather for exactly `items` rows.
