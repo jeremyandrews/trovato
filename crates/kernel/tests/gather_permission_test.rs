@@ -198,6 +198,7 @@ async fn get_startup_routes(
     let session_layer = trovato_kernel::session::create_session_layer(
         &trovato_test_utils::env::redis_url(),
         tower_sessions::cookie::SameSite::Strict,
+        trovato_kernel::session::CookieSecure::Always,
     )
     .await
     .expect("create session layer");

@@ -102,6 +102,27 @@
         </fieldset>
 
         <fieldset class="fieldset">
+            <legend>Session cookie</legend>
+            <div class="fieldset__content">
+                {# Read only, like Email delivery: COOKIE_SECURE is read at startup. #}
+                <dl>
+                    <dt>Secure flag (<code>COOKIE_SECURE</code>)</dt>
+                    <dd id="cookie-secure">{{ cookie_secure }}</dd>
+                </dl>
+                {% if cookie_secure == "never" %}
+                <div class="message message--warning" id="cookie-secure-warning" role="alert">
+                    <strong>The session cookie is not Secure.</strong> <code>COOKIE_SECURE=never</code>
+                    sends the login cookie over plain HTTP, where anyone on the network path can
+                    read it and take over the session. Use it only for a plain HTTP LAN or
+                    development site, never on the internet.
+                </div>
+                {% endif %}
+                <div class="form-item__description">Set in the server environment and read
+                at startup; change it there and restart the server.</div>
+            </div>
+        </fieldset>
+
+        <fieldset class="fieldset">
             <legend>Notifications</legend>
             <div class="fieldset__content">
                 <div class="form-item form-item--checkbox">

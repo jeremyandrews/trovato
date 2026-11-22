@@ -373,6 +373,7 @@ impl TestApp {
         let session_layer = trovato_kernel::session::create_session_layer(
             &config.redis_url,
             tower_sessions::cookie::SameSite::Strict,
+            config.runtime.cookie_secure,
         )
         .await
         .expect("Failed to create session layer");

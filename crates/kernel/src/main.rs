@@ -298,9 +298,20 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         "none" => SameSite::None,
         _ => SameSite::Strict,
     };
-    let session_layer = session::create_session_layer(&config.redis_url, same_site)
-        .await
-        .context("failed to create session layer")?;
+    // COOKIE_SECURE=never is legitimate only on a plain HTTP LAN or development
+    // site; say so on every start, so it is never on by accident.
+    if !config.runtime.cookie_secure.is_secure() {
+        warn!(
+            setting = "COOKIE_SECURE",
+            value = config.runtime.cookie_secure.as_str(),
+            "COOKIE_SECURE=never: the session cookie is not Secure and is sent over plain HTTP. \
+             Use this only for a plain HTTP LAN or development site, never on the internet."
+        );
+    }
+    let session_layer =
+        session::create_session_layer(&config.redis_url, same_site, config.runtime.cookie_secure)
+            .await
+            .context("failed to create session layer")?;
 
     // Log plugin and content type info
     info!(

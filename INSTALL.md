@@ -76,6 +76,7 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 | `PAGEFIND_OUTPUT_DIR` | `pagefind` under the first `STATIC_DIR` | Where the Pagefind index is built and served from; its URL stays `/static/pagefind/`. Each rebuild is made beside it and renamed into place, so its parent must be writable and on the same filesystem. On several servers, point it into the shared volume. |
 | `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated allowed origins |
 | `COOKIE_SAME_SITE` | `strict` | Cookie SameSite policy (`strict`, `lax`, `none`) |
+| `COOKIE_SECURE` | `always` | Whether the session cookie is `Secure`: `always` or `never`. Leave it at `always` for any site reached over HTTPS. `never` is for a plain HTTP LAN or development site only. See "Serving over plain HTTP" below. |
 | `TRUSTED_PROXIES` | *(empty: trust none)* | Reverse proxies whose `X-Forwarded-For` is believed, as comma-separated addresses and CIDR ranges. See "Behind a reverse proxy" below. |
 | `CLIENT_IP_STORAGE` | `full` | How much of a client address is stored: `full`, `truncated` or `none`. See "Client addresses and privacy" below. |
 | `CRON_KEY` | *(none)* | Shared secret in the cron URL, `POST /cron/<CRON_KEY>`. Change it before exposing the server. |
@@ -142,6 +143,39 @@ proxy_set_header X-Forwarded-Proto $scheme;
 not an address or a CIDR range (`10.0.0.0/33`, a hostname, a typo) stops the
 server at startup with a message naming it, instead of being dropped and
 silently trusting one proxy fewer.
+
+### Serving over plain HTTP
+
+The session cookie, the only cookie Trovato sets (CSRF tokens and "remember me"
+live inside the session), is `Secure` by default. A browser keeps a `Secure`
+cookie only from an HTTPS page, with one exception for `localhost`, so a site
+served over plain HTTP at a LAN address such as `http://192.168.1.20:3000` or
+`http://cms.lan` cannot be logged in to: the login answers, the browser drops
+the cookie, and the next page is anonymous again.
+
+For that site, and only that site, set:
+
+```env
+COOKIE_SECURE=never
+SITE_URL=http://192.168.1.20:3000
+```
+
+Use `never` only on a plain HTTP LAN or a development machine, never on a site
+reachable from the internet. Without `Secure` the browser sends the session
+cookie over any plain HTTP request to the host, so anyone on the network path
+(a shared Wi-Fi, a hostile router, an ISP) can read it and act as the signed-in
+user, an administrator included, without knowing the password. Behind HTTPS,
+either directly or through a TLS-terminating proxy, leave it at `always`, even
+when the proxy talks plain HTTP to Trovato: the browser sees HTTPS, and that
+is what `Secure` is about.
+
+Guard rails: with `never` the server logs a warning naming `COOKIE_SECURE` on
+every start, and the site settings page (`/admin/config/site`) shows it under
+"Session cookie". `never` is refused at startup when `SITE_URL` is `https://`,
+and when `COOKIE_SAME_SITE=none` (browsers reject a `SameSite=None` cookie that
+is not `Secure`). Any value other than `always` or `never` is refused too. There
+is no `auto`: the flag is fixed at startup, and a per-request guess from the
+request scheme is one forwarded header away from the wrong answer.
 
 ### Client addresses and privacy
 
