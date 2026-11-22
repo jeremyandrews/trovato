@@ -383,6 +383,8 @@ async fn edit_as(app: &common::TestApp, user: &UserContext, id: Uuid, title: &st
         .update(
             id,
             trovato_kernel::models::UpdateItem {
+                author_id: None,
+                created: None,
                 title: Some(title.to_string()),
                 status: None,
                 promote: None,

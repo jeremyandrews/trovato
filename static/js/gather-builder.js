@@ -238,6 +238,7 @@
         fieldInput.placeholder = 'Field name';
         fieldInput.value = data.field || '';
         fieldInput.setAttribute('aria-label', 'Filter field name');
+        fieldInput.setAttribute('list', 'gather-item-columns');
 
         // Operator
         var opSelect = document.createElement('select');
@@ -333,6 +334,7 @@
         fieldInput.placeholder = 'Field name';
         fieldInput.value = data.field || '';
         fieldInput.setAttribute('aria-label', 'Sort field name');
+        fieldInput.setAttribute('list', 'gather-item-columns');
 
         // Direction
         var dirSelect = document.createElement('select');

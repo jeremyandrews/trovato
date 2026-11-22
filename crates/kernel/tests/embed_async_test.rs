@@ -328,6 +328,8 @@ fn save_create_and_update_both_enqueue_without_inline_embed() {
             .update(
                 created.id,
                 UpdateItem {
+                    author_id: None,
+                    created: None,
                     stage_id: None,
                     title: Some("P11f save-path update".to_string()),
                     status: None,

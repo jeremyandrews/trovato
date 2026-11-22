@@ -65,6 +65,16 @@
             </select>
         </div>
 
+        {# Suggested field names for filters and sorts on content: the item
+           columns, `promote` and `sticky` among them, so a front page gather
+           can list promoted items and a listing can put sticky items first. A
+           JSONB field is still typed as `fields.<name>`. #}
+        <datalist id="gather-item-columns">
+            {% for column in ["title", "type", "status", "promote", "sticky", "created", "changed", "author_id", "language"] %}
+            <option value="{{ column }}">
+            {% endfor %}
+        </datalist>
+
         <div id="filters-section">
             <h4>Filters</h4>
             <div id="filters-container"></div>

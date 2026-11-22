@@ -1192,13 +1192,14 @@ async fn create_item(
         .filter(|t| !t.is_empty())
         .ok_or_else(|| AppError::bad_request("Title is required"))?;
 
+    let publishing = form_publishing(&state, &request).await?;
     let input = CreateItem {
         item_type: item_type.clone(),
         title,
-        author_id: user.id,
+        author_id: publishing.author_id.unwrap_or(user.id),
         status: request.status,
-        promote: None,
-        sticky: None,
+        promote: publishing.promote,
+        sticky: publishing.sticky,
         fields,
         stage_id,
         language: Some(language),
@@ -1207,7 +1208,7 @@ async fn create_item(
 
     let item = state
         .items()
-        .create(input, &user)
+        .create_authored(input, publishing.created, &user)
         .await
         .map_err(|e| write_error(e, "create item"))?;
 
@@ -1243,6 +1244,24 @@ async fn create_item(
         status: item.status,
     })
     .into_response())
+}
+
+/// The publishing options a form submission asked for; nothing for a JSON
+/// body, which sets none of them. A named author who is not a user, or an
+/// authored on time that does not parse, is a 400 naming the problem.
+async fn form_publishing(
+    state: &AppState,
+    request: &ItemSubmission,
+) -> Result<super::item_form::Publishing, AppError> {
+    let Some(posted) = request.posted.as_ref() else {
+        return Ok(super::item_form::Publishing::default());
+    };
+    super::item_form::requested_publishing(state, posted)
+        .await
+        .map_err(|errors| {
+            let messages: Vec<String> = errors.into_iter().map(|e| e.message).collect();
+            AppError::bad_request(messages.join(" "))
+        })
 }
 
 /// Display edit item form.
@@ -1330,13 +1349,16 @@ async fn update_item(
         (request.fields.clone(), None)
     };
     let stage_id = request.requested_stage()?;
+    let publishing = form_publishing(&state, &request).await?;
 
     let input = UpdateItem {
+        author_id: publishing.author_id,
+        created: publishing.created,
         stage_id,
         title: request.title.clone(),
         status: request.status,
-        promote: None,
-        sticky: None,
+        promote: publishing.promote,
+        sticky: publishing.sticky,
         fields,
         log: request.log.clone(),
     };

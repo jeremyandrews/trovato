@@ -228,6 +228,8 @@ pub async fn update_item(
     let id = parse_uuid(&params.id)?;
 
     let input = UpdateItem {
+        author_id: None,
+        created: None,
         stage_id: None,
         title: params.title,
         status: params.status,

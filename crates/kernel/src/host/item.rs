@@ -321,6 +321,8 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
 
                     let result = if let Some(id) = existing_id {
                         let update = UpdateItem {
+                            author_id: None,
+                            created: None,
                             stage_id,
                             title: text("title").map(String::from),
                             status,

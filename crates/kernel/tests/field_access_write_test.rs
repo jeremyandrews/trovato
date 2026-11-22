@@ -523,6 +523,8 @@ fn a_denied_field_is_in_neither_the_revision_preview_nor_the_compare() {
             .update(
                 id,
                 trovato_kernel::models::UpdateItem {
+                    author_id: None,
+                    created: None,
                     title: None,
                     status: None,
                     promote: None,
