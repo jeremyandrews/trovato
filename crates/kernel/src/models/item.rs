@@ -477,13 +477,47 @@ impl Item {
 
     /// Delete an item and all its revisions.
     pub async fn delete(pool: &PgPool, id: Uuid) -> Result<bool> {
-        // Revisions are deleted via CASCADE
+        let mut tx = pool.begin().await.context("failed to start item delete")?;
+        let deleted = Self::delete_in(&mut tx, id).await?;
+        if !deleted {
+            // No item: leave whatever else had its path alone.
+            tx.rollback()
+                .await
+                .context("failed to roll back item delete")?;
+            return Ok(false);
+        }
+        tx.commit().await.context("failed to commit item delete")?;
+        crate::menu::invalidate_config_menus();
+
+        Ok(deleted)
+    }
+
+    /// Delete an item inside the caller's transaction, with what points at it:
+    /// its URL aliases, and the menu links to its `/item/{id}` path or to any
+    /// of those aliases. Revisions and file references go by `ON DELETE
+    /// CASCADE`. The caller invalidates the navigation cache once the
+    /// transaction commits.
+    pub async fn delete_in(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        id: Uuid,
+    ) -> Result<bool> {
+        let source = format!("/item/{id}");
+        let mut paths: Vec<String> =
+            sqlx::query_scalar("SELECT alias FROM url_alias WHERE source = $1")
+                .bind(&source)
+                .fetch_all(&mut **tx)
+                .await
+                .context("failed to load item aliases")?;
+        paths.push(source.clone());
+
+        crate::models::MenuLink::delete_by_paths_in(tx, &paths).await?;
+        crate::models::UrlAlias::delete_by_source_in(tx, &source).await?;
+
         let result = sqlx::query("DELETE FROM item WHERE id = $1")
             .bind(id)
-            .execute(pool)
+            .execute(&mut **tx)
             .await
             .context("failed to delete item")?;
-        crate::menu::invalidate_config_menus();
 
         Ok(result.rows_affected() > 0)
     }

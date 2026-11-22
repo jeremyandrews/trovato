@@ -1234,3 +1234,128 @@ async fn a_write_nested_past_the_depth_bound_is_refused() {
     assert!(allowed.code >= 0, "a write inside fewer taps succeeds");
     forget(&pool, id, &title).await;
 }
+
+// =============================================================================
+// B87b: a plugin's write and a revert carry the same side effects
+// =============================================================================
+
+/// A plugin's `save-item` create gets the alias its type's pathauto pattern
+/// asks for: pathauto runs in `ItemService`, not in the edit form's handler.
+#[tokio::test]
+async fn save_item_create_gets_its_pathauto_alias() {
+    let pool = probe_pool().await;
+    let item_type = "b87b_plugin_alias";
+    ensure_type(&pool, item_type).await;
+    sqlx::query(
+        "INSERT INTO site_config (key, value) VALUES ('pathauto_patterns', $1) \
+         ON CONFLICT (key) DO UPDATE SET value = site_config.value || EXCLUDED.value",
+    )
+    .bind(json!({ item_type: "plugin-made/[title]" }))
+    .execute(&pool)
+    .await
+    .expect("set the pattern");
+    let items = items_for(&pool);
+    let title = unique("b87b plugin");
+
+    let payload = json!({"type": item_type, "title": title}).to_string();
+    let answer = run(&pool, admin(), &items, "save-item", &payload, true, false).await;
+    assert!(answer.code >= 0, "the create must succeed: {}", answer.code);
+    let id: Uuid = serde_json::from_str::<serde_json::Value>(&answer.body).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    let aliases: Vec<String> = sqlx::query_scalar("SELECT alias FROM url_alias WHERE source = $1")
+        .bind(format!("/item/{id}"))
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM url_alias WHERE source = $1")
+        .bind(format!("/item/{id}"))
+        .execute(&pool)
+        .await
+        .ok();
+    forget(&pool, id, &title).await;
+    assert_eq!(
+        aliases,
+        vec![format!(
+            "/plugin-made/{}",
+            trovato_kernel::services::pathauto::slugify(&title)
+        )],
+        "a plugin's create must get the same alias a person's does"
+    );
+}
+
+/// A revert is an update: it fires the presave tap and reindexes, as an edit
+/// does, where it used to write the row and fire `tap_item_update` alone.
+#[tokio::test]
+async fn a_revert_fires_presave_and_reindexes() {
+    let pool = probe_pool().await;
+    ensure_type(&pool, "page").await;
+    ensure_tiw_log(&pool).await;
+    let w = witnessed(&pool);
+    let first = unique("b87b revert from");
+    let second = unique("b87b revert to");
+
+    let created = w
+        .items
+        .create(
+            trovato_kernel::models::CreateItem {
+                item_type: "page".to_string(),
+                title: first.clone(),
+                author_id: Uuid::nil(),
+                status: Some(1),
+                promote: None,
+                sticky: None,
+                fields: Some(json!({})),
+                stage_id: None,
+                language: None,
+                log: None,
+            },
+            &admin(),
+        )
+        .await
+        .expect("create");
+    let original_revision = created.current_revision_id.expect("a first revision");
+    w.items
+        .update(
+            created.id,
+            trovato_kernel::models::UpdateItem {
+                author_id: None,
+                created: None,
+                stage_id: None,
+                title: Some(second.clone()),
+                status: None,
+                promote: None,
+                sticky: None,
+                fields: None,
+                log: None,
+            },
+            &admin(),
+        )
+        .await
+        .expect("update")
+        .expect("the item");
+    sqlx::query("DELETE FROM tiw_log WHERE title = $1 OR item_id = $2")
+        .bind(&first)
+        .bind(created.id.to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let reverted = w
+        .items
+        .revert_to_revision(created.id, original_revision, &admin())
+        .await
+        .expect("revert");
+    assert_eq!(reverted.title, first);
+
+    let taps = taps_titled(&pool, &first).await;
+    forget(&pool, created.id, "b87b revert").await;
+    assert_eq!(
+        taps,
+        vec!["presave", "update", "update_index"],
+        "a revert must fire the taps an edit does"
+    );
+}

@@ -317,19 +317,6 @@ async fn add_content_submit(
         .await
     {
         Ok(item) => {
-            // Auto-generate URL alias if pattern configured for this type
-            if let Err(e) = crate::services::pathauto::auto_alias_item(
-                state.db(),
-                item.id,
-                &item.title,
-                &item.item_type,
-                item.created,
-            )
-            .await
-            {
-                tracing::warn!(error = %e, item_id = %item.id, "pathauto alias generation failed");
-            }
-
             state
                 .forms()
                 .submitted(
@@ -569,20 +556,6 @@ async fn edit_content_submit(
 
     match state.items().update(item_id, input, &user_ctx).await {
         Ok(updated) => {
-            // Auto-update URL alias from pathauto pattern
-            if let Some(ref updated_item) = updated
-                && let Err(e) = crate::services::pathauto::update_alias_item(
-                    state.db(),
-                    updated_item.id,
-                    &updated_item.title,
-                    &updated_item.item_type,
-                    updated_item.created,
-                )
-                .await
-            {
-                tracing::warn!(error = %e, item_id = %item_id, "pathauto alias update failed");
-            }
-
             state
                 .forms()
                 .submitted(

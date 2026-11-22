@@ -101,9 +101,10 @@ impl UrlAlias {
     /// Find a URL alias by alias path with specific stage and language.
     /// Find an alias by path, stage, and language.
     ///
-    /// Tries the requested language first, then falls back to `'en'` if
-    /// no language-specific alias exists. This allows shared aliases
-    /// (e.g., `/conferences`) to resolve for all languages.
+    /// Tries the requested language first, then `'en'`, then any language. An
+    /// alias is written in its item's language, and the address has to resolve
+    /// for a reader in any language, as it did when every alias was `en`;
+    /// where one path has a row per language, the reader's own wins.
     pub async fn find_by_alias_with_context(
         pool: &PgPool,
         alias_path: &str,
@@ -114,8 +115,9 @@ impl UrlAlias {
             r#"
             SELECT id, source, alias, language, stage_id, created
             FROM url_alias
-            WHERE alias = $1 AND stage_id = $2 AND language IN ($3, 'en')
-            ORDER BY CASE WHEN language = $3 THEN 0 ELSE 1 END
+            WHERE alias = $1 AND stage_id = $2
+            ORDER BY CASE WHEN language = $3 THEN 0 WHEN language = 'en' THEN 1 ELSE 2 END,
+                     created DESC, id DESC
             LIMIT 1
             "#,
         )
@@ -132,6 +134,25 @@ impl UrlAlias {
     /// Find all URL aliases for a given source path.
     pub async fn find_by_source(pool: &PgPool, source: &str) -> Result<Vec<Self>> {
         Self::find_by_source_with_context(pool, source, LIVE_STAGE_ID, "en").await
+    }
+
+    /// Every alias of a source path, on every stage and in every language,
+    /// most recent first.
+    pub async fn find_all_by_source(pool: &PgPool, source: &str) -> Result<Vec<Self>> {
+        let aliases = sqlx::query_as::<_, UrlAlias>(
+            r#"
+            SELECT id, source, alias, language, stage_id, created
+            FROM url_alias
+            WHERE source = $1
+            ORDER BY created DESC, id DESC
+            "#,
+        )
+        .bind(source)
+        .fetch_all(pool)
+        .await
+        .context("failed to fetch url aliases by source")?;
+
+        Ok(aliases)
     }
 
     /// Find all URL aliases for a given source path with specific stage and language.
@@ -165,7 +186,10 @@ impl UrlAlias {
         Self::get_canonical_alias_with_context(pool, source, LIVE_STAGE_ID, "en").await
     }
 
-    /// Get the canonical (most recent) alias for a source path with specific stage and language.
+    /// Get the canonical (most recent) alias for a source path on a stage,
+    /// preferring one in `language` and otherwise the most recent in any:
+    /// an item's alias is written in the item's language, and a reader in
+    /// another one is still linked to it rather than to `/item/{id}`.
     pub async fn get_canonical_alias_with_context(
         pool: &PgPool,
         source: &str,
@@ -176,8 +200,8 @@ impl UrlAlias {
             r#"
             SELECT alias
             FROM url_alias
-            WHERE source = $1 AND stage_id = $2 AND language = $3
-            ORDER BY created DESC, id DESC
+            WHERE source = $1 AND stage_id = $2
+            ORDER BY (language = $3) DESC, created DESC, id DESC
             LIMIT 1
             "#,
         )
@@ -215,8 +239,8 @@ impl UrlAlias {
             r#"
             SELECT DISTINCT ON (source) source, alias
             FROM url_alias
-            WHERE source = ANY($1) AND stage_id = $2 AND language = $3
-            ORDER BY source, created DESC, id DESC
+            WHERE source = ANY($1) AND stage_id = $2
+            ORDER BY source, (language = $3) DESC, created DESC, id DESC
             "#,
         )
         .bind(sources)
@@ -253,8 +277,8 @@ impl UrlAlias {
             r#"
             SELECT DISTINCT ON (source) source, alias
             FROM url_alias
-            WHERE source = ANY($1) AND stage_id = ANY($2) AND language = $3
-            ORDER BY source, created DESC, id DESC
+            WHERE source = ANY($1) AND stage_id = ANY($2)
+            ORDER BY source, (language = $3) DESC, created DESC, id DESC
             "#,
         )
         .bind(sources)
@@ -290,8 +314,8 @@ impl UrlAlias {
             r#"
             SELECT DISTINCT ON (alias) alias, source
             FROM url_alias
-            WHERE alias = ANY($1) AND stage_id = ANY($2) AND language = $3
-            ORDER BY alias, created DESC, id DESC
+            WHERE alias = ANY($1) AND stage_id = ANY($2)
+            ORDER BY alias, (language = $3) DESC, created DESC, id DESC
             "#,
         )
         .bind(aliases)
@@ -368,6 +392,22 @@ impl UrlAlias {
             .context("failed to delete url aliases by source")?;
         crate::menu::invalidate_config_menus();
 
+        Ok(result.rows_affected())
+    }
+
+    /// Delete every alias of a source path inside the caller's transaction.
+    ///
+    /// The caller invalidates the navigation cache once the transaction
+    /// commits.
+    pub async fn delete_by_source_in(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        source: &str,
+    ) -> Result<u64> {
+        let result = sqlx::query("DELETE FROM url_alias WHERE source = $1")
+            .bind(source)
+            .execute(&mut **tx)
+            .await
+            .context("failed to delete url aliases by source")?;
         Ok(result.rows_affected())
     }
 

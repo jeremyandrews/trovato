@@ -1087,18 +1087,22 @@ impl DirectConfigStorage {
         .await?;
         tx.commit().await.context("failed to commit item import")?;
 
+        // The alias the item's type pattern gives it, as every other item write
+        // does. Aliases import before items, so an item the set brings an alias
+        // for keeps that one: pathauto only fills in an item that has none.
+        if let Some(saved) = crate::models::Item::find_by_id(&self.pool, item.id).await?
+            && let Err(e) = crate::services::pathauto::auto_alias_item(&self.pool, &saved).await
+        {
+            tracing::warn!(error = %e, item_id = %item.id, "pathauto alias generation failed");
+        }
+
         Ok(())
     }
 
-    /// Delete an item by UUID string.
+    /// Delete an item by UUID string, with its aliases and menu links.
     async fn delete_item(&self, id: &str) -> Result<bool> {
         let uuid = id.parse::<Uuid>().context("invalid item UUID")?;
-        let result = sqlx::query("DELETE FROM item WHERE id = $1")
-            .bind(uuid)
-            .execute(&self.pool)
-            .await
-            .context("failed to delete item")?;
-        Ok(result.rows_affected() > 0)
+        crate::models::Item::delete(&self.pool, uuid).await
     }
 
     /// List all items (optionally filtered by type).
