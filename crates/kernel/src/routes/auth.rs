@@ -435,7 +435,14 @@ async fn logout(
         let _ = state.users().record_logout(uid).await;
     }
 
-    if let Err(e) = session.delete().await {
+    // `flush`, not `delete`: `delete` removes the record from Redis and leaves
+    // the in-memory session as it was: holding data, keeping its id, and
+    // marked modified by the CSRF check above, which spent its token. The
+    // session layer then saves it after this handler with `SET .. XX`, Redis
+    // answers nil because the key is gone, the store reads that reply as a
+    // bool and fails, and the layer answers 500. `flush` clears the data and
+    // the id as well, so the layer has nothing to save and removes the cookie.
+    if let Err(e) = session.flush().await {
         tracing::error!(error = %e, "failed to delete session");
         return crate::error::AppError::with_status(
             StatusCode::INTERNAL_SERVER_ERROR,

@@ -49,7 +49,10 @@ pub async fn session_user(state: &AppState, session: &Session) -> Option<User> {
     let id: Uuid = session.get(SESSION_USER_ID).await.ok().flatten()?;
     let user = state.users().find_by_id(id).await.ok().flatten()?;
     if !user.is_active() {
-        let _ = session.delete().await;
+        // `flush`, not `delete`: see `routes::auth::logout`. A session only
+        // deleted from the store is saved again by the session layer if this
+        // request writes to it, and that save fails on the missing key.
+        let _ = session.flush().await;
         return None;
     }
     Some(user)
@@ -869,7 +872,8 @@ pub async fn get_user_context(session: &Session, state: &AppState) -> UserContex
         // routes that gate on it. Without this every render and read handler
         // went on treating a blocked user as themselves.
         Some(user) if !user.is_active() => {
-            let _ = session.delete().await;
+            // `flush`, not `delete`, as in `session_user` above.
+            let _ = session.flush().await;
             anonymous_user_context(state).await
         }
         Some(user) => user_context_for(state, &user).await,
