@@ -997,3 +997,345 @@ fn isolate(query: &mut GatherQuery, stamp: &str) {
         .expect("title filter"),
     );
 }
+
+// ---------------------------------------------------------------------------
+// B127 part two: feeds with a path argument.
+// ---------------------------------------------------------------------------
+
+/// The shipped `blog_listing` gather, as `trovato_blog`'s migrations leave it,
+/// registered with the gather service.
+async fn shipped_blog_listing(app: &TestApp) -> GatherQuery {
+    common::ensure_plugin_tables(app, "trovato_blog");
+    let (definition, display, label, description, changed): (
+        serde_json::Value,
+        serde_json::Value,
+        String,
+        Option<String>,
+        i64,
+    ) = sqlx::query_as(
+        "SELECT definition, display, label, description, changed \
+         FROM gather_query WHERE query_id = 'blog_listing'",
+    )
+    .fetch_one(&app.db)
+    .await
+    .expect("blog_listing is seeded");
+    let query: GatherQuery = serde_json::from_value(serde_json::json!({
+        "query_id": "blog_listing",
+        "label": label,
+        "description": description,
+        "definition": definition,
+        "display": display,
+        "plugin": "blog",
+        "created": 0,
+        "changed": changed,
+    }))
+    .expect("blog_listing deserializes");
+    register(app, &query).await;
+    query
+}
+
+/// The `blog` type, if no earlier test registered it, with the fields
+/// `trovato_blog` declares.
+async fn ensure_blog_type(app: &TestApp) {
+    if app.state.content_types().exists("blog") {
+        return;
+    }
+    let settings = serde_json::json!({ "fields": [] });
+    sqlx::query(
+        "INSERT INTO item_type (type, label, description, has_title, title_label, plugin, settings) \
+         VALUES ('blog', 'Blog Post', 'A blog entry', true, 'Title', 'blog', $1) \
+         ON CONFLICT (type) DO NOTHING",
+    )
+    .bind(&settings)
+    .execute(&app.db)
+    .await
+    .expect("seed blog type");
+    app.state
+        .content_types()
+        .replace("blog", "Blog Post", Some("A blog entry"), settings)
+        .await
+        .ok();
+}
+
+/// A term in the kernel's `tags` vocabulary, which the blog's tag route binds.
+async fn create_tag(app: &TestApp, label: &str, slug: &str) -> Uuid {
+    let id = Uuid::now_v7();
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO category_tag (id, category_id, label, slug, weight, created, changed) \
+         VALUES ($1, 'tags', $2, $3, 0, $4, $4)",
+    )
+    .bind(id)
+    .bind(label)
+    .bind(slug)
+    .bind(now)
+    .execute(&app.db)
+    .await
+    .expect("create tag");
+    id
+}
+
+async fn create_blog_post(
+    app: &TestApp,
+    title: &str,
+    status: i16,
+    author: Uuid,
+    tag: Uuid,
+) -> Uuid {
+    app.state
+        .items()
+        .create(
+            CreateItem {
+                item_type: "blog".to_string(),
+                title: title.to_string(),
+                author_id: author,
+                status: Some(status),
+                promote: Some(0),
+                sticky: Some(0),
+                fields: Some(serde_json::json!({
+                    "field_body": {"value": format!("<p>{title} body.</p>"), "format": "filtered_html"},
+                    "field_tags": [tag.to_string()],
+                })),
+                stage_id: Some(LIVE_STAGE_ID),
+                language: Some("en".to_string()),
+                log: Some("feed test".to_string()),
+            },
+            &admin(),
+        )
+        .await
+        .expect("create blog post")
+        .id
+}
+
+async fn get(app: &TestApp, query: &GatherQuery, path: &str) -> (StatusCode, String) {
+    let (status, _, body) = send(app, query, Request::get(path).body(Body::empty()).unwrap()).await;
+    (status, body)
+}
+
+/// One feed declaration on the stock blog gather gives a feed per author and a
+/// feed per tag, in both formats, each bound through the gather's own route
+/// mapping; an unknown author or tag is a 404, and an unpublished post is in
+/// none of them.
+#[test]
+fn the_blog_gather_serves_a_feed_per_author_and_per_tag() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_blog_type(app).await;
+        let blog = shipped_blog_listing(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let s = &stamp[stamp.len() - 12..];
+        let alice_name = format!("alice{s}");
+        let alice = create_user(app, &alice_name).await;
+        let bob = create_user(app, &format!("bob{s}")).await;
+        let rust_slug = format!("rust-{s}");
+        let rust = create_tag(app, &format!("Rust {s}"), &rust_slug).await;
+        let go = create_tag(app, &format!("Go {s}"), &format!("go-{s}")).await;
+
+        let by_alice = format!("Alice on Rust {s}");
+        let by_bob = format!("Bob on Go {s}");
+        let draft = format!("Alice draft {s}");
+        let ids = vec![
+            create_blog_post(app, &by_alice, 1, alice, rust).await,
+            create_blog_post(app, &by_bob, 1, bob, go).await,
+            create_blog_post(app, &draft, 0, alice, rust).await,
+        ];
+
+        for ext in ["xml", "atom"] {
+            let (status, body) =
+                get(app, &blog, &format!("/blog/author/{alice_name}/feed.{ext}")).await;
+            assert_eq!(status, StatusCode::OK, "author feed .{ext}: {body}");
+            assert!(body.contains(&by_alice), "author feed .{ext}: {body}");
+            assert!(!body.contains(&by_bob), "only alice's posts: {body}");
+            assert!(!body.contains(&draft), "no unpublished post: {body}");
+            assert!(
+                body.contains(&format!("/blog/author/{alice_name}/feed.{ext}")),
+                "the self link carries the argument: {body}"
+            );
+            feed_rs::parser::parse(body.as_bytes()).expect("parses");
+
+            let (status, body) =
+                get(app, &blog, &format!("/blog/tag/{rust_slug}/feed.{ext}")).await;
+            assert_eq!(status, StatusCode::OK, "tag feed .{ext}: {body}");
+            assert!(body.contains(&by_alice), "tag feed .{ext}: {body}");
+            assert!(!body.contains(&by_bob), "only rust posts: {body}");
+            assert!(!body.contains(&draft), "no unpublished post: {body}");
+
+            let (status, body) =
+                get(app, &blog, &format!("/blog/author/nobody{s}/feed.{ext}")).await;
+            assert_eq!(
+                status,
+                StatusCode::NOT_FOUND,
+                "unknown author .{ext}: {body}"
+            );
+            let (status, body) =
+                get(app, &blog, &format!("/blog/tag/nothing-{s}/feed.{ext}")).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "unknown tag .{ext}: {body}");
+        }
+
+        let (status, _) = get(app, &blog, "/blog/feed.xml").await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the site-wide blog feed is still served"
+        );
+
+        delete_items(app, &ids).await;
+        sqlx::query("DELETE FROM category_tag WHERE id = ANY($1)")
+            .bind(vec![rust, go])
+            .execute(&app.db)
+            .await
+            .ok();
+        for user in [alice, bob] {
+            sqlx::query("DELETE FROM users WHERE id = $1")
+                .bind(user)
+                .execute(&app.db)
+                .await
+                .ok();
+        }
+    });
+}
+
+/// The page that shows the gather with an argument advertises the feed with
+/// the same argument.
+#[test]
+fn the_author_page_advertises_the_author_feed() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_blog_type(app).await;
+        let blog = shipped_blog_listing(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let name = format!("carol{}", &stamp[stamp.len() - 12..]);
+        let carol = create_user(app, &name).await;
+
+        let redis_url = trovato_test_utils::env::redis_url();
+        let session_layer = trovato_kernel::session::create_session_layer(
+            &redis_url,
+            tower_sessions::cookie::SameSite::Strict,
+            trovato_kernel::session::CookieSecure::Always,
+        )
+        .await
+        .expect("create session layer");
+        let router = trovato_kernel::routes::gather_routes::build_gather_route_router(
+            std::slice::from_ref(&blog),
+        )
+        .with_state(app.state.clone())
+        .layer(axum::Extension(
+            trovato_kernel::middleware::language::ResolvedLanguage("en".to_string()),
+        ))
+        .layer(session_layer);
+
+        let response = router
+            .oneshot(
+                Request::get(format!("/blog/author/{name}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .expect("serve page");
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = String::from_utf8_lossy(
+            &to_bytes(response.into_body(), 4 * 1024 * 1024).await.unwrap(),
+        )
+        .into_owned()
+        // Tera escapes `/` in an attribute; the browser reads it back as `/`.
+        .replace("&#x2F;", "/");
+
+        assert!(
+            html.contains(&format!(
+                "type=\"application/rss+xml\" title=\"Blog: {name}\" href=\"/blog/author/{name}/feed.xml\""
+            )),
+            "{html}"
+        );
+        assert!(
+            html.contains(&format!("href=\"/blog/author/{name}/feed.atom\"")),
+            "{html}"
+        );
+
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(carol)
+            .execute(&app.db)
+            .await
+            .ok();
+    });
+}
+
+/// A passed-through argument is not looked up, so a value that matches
+/// nothing the viewer can see is a 404, not an empty feed.
+#[test]
+fn a_pass_through_argument_matching_nothing_is_not_found() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_item_type(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let word = &stamp[8..];
+        let path = format!("/rss/feed-word-{stamp}/{{word}}/feed.xml");
+        let mut query = feed_query(&format!("feed_word_{stamp}"), &path);
+        query.definition.filters.push(
+            serde_json::from_value(serde_json::json!({
+                "field": "title", "operator": "contains", "value": {"url_arg": "word"},
+            }))
+            .unwrap(),
+        );
+        query.display.routes = serde_json::from_value(serde_json::json!([
+            {"path": format!("/words-{stamp}/{{word}}"), "params": [{"segment": "word", "param": "word"}]},
+        ]))
+        .unwrap();
+        let title = format!("Word {word}");
+        let id = create_item(app, &title, 1, chrono::Utc::now().timestamp()).await;
+        register(app, &query).await;
+
+        let (status, body) = get(
+            app,
+            &query,
+            &format!("/rss/feed-word-{stamp}/{word}/feed.xml"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains(&title), "{body}");
+
+        let (status, _) = get(
+            app,
+            &query,
+            &format!("/rss/feed-word-{stamp}/zz{word}/feed.atom"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+
+        delete_items(app, &[id]).await;
+        unregister(app, &query).await;
+    });
+}
+
+/// The defect: the feed executed page one of the gather, so `items` above the
+/// gather's page size was ignored (`items: 20` on a ten-a-page blog gave ten).
+#[test]
+fn a_feed_carries_its_own_item_count_not_the_page_size() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_item_type(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let path = format!("/rss/feed-count-{stamp}.xml");
+        let mut query = feed_query(&format!("feed_count_{stamp}"), &path);
+        isolate(&mut query, &stamp);
+        query.display.items_per_page = 2;
+        query.display.feed =
+            Some(serde_json::from_value(serde_json::json!({"path": path, "items": 3})).unwrap());
+        let base = chrono::Utc::now().timestamp();
+        let mut ids = Vec::new();
+        for n in 0..4 {
+            ids.push(create_item(app, &format!("Counted {n} {stamp}"), 1, base + n).await);
+        }
+        register(app, &query).await;
+
+        let (status, body) = get(app, &query, &path).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body.matches("<item>").count(), 3, "{body}");
+
+        delete_items(app, &ids).await;
+        unregister(app, &query).await;
+    });
+}

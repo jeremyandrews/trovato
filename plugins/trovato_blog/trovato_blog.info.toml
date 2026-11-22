@@ -17,7 +17,10 @@ weight = 0
 # plugin_migration table. Kernel tables (item, gather_query, url_alias, roles,
 # role_permissions) are guaranteed to exist before plugin migrations run.
 [migrations]
-files = ["migrations/001_seed_gather_query.sql"]
+files = [
+    "migrations/001_seed_gather_query.sql",
+    "migrations/002_author_and_tag_feeds.sql",
+]
 
 # Declared plugin capabilities (WASM-1, deny-unless-declared). The kernel
 # builds this plugin's WASM linker from host_interfaces — it receives exactly

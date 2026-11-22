@@ -1,7 +1,7 @@
 //! RSS 2.0 and Atom 1.0 feeds for gather queries.
 //!
 //! A gather query declares a feed in its display config
-//! ([`GatherFeed`](crate::gather::types::GatherFeed)) and gets an RSS document
+//! ([`GatherFeed`]) and gets an RSS document
 //! at the path it names and an Atom document at that path's `.atom` sibling
 //! ([`atom_path`]). Routes are built once at startup, the same shape
 //! [`crate::routes::gather_routes::build_gather_route_router`] uses for gather
@@ -29,6 +29,17 @@
 //! by an anonymous aggregator is an anonymous execution, so it carries exactly
 //! the rows an anonymous visitor would see on the query's page. Nothing about a
 //! feed is cached on the server: each request runs the query as its viewer.
+//!
+//! # Feeds with an argument
+//!
+//! A feed path may carry one argument as a whole segment
+//! (`/blog/author/{user}/feed.xml`), and `GatherFeed::paths` lists more
+//! addresses for the same feed. The argument is bound by the gather's own
+//! `display.routes` mapping with the same segment name and resolved by
+//! `gather_routes::resolve_route_params`, the code the gather's page route runs, so a feed
+//! and its page cannot disagree about what `/author/{user}` means. An argument
+//! that names nothing is a 404. A page reached with an argument advertises the
+//! feed with the same argument ([`argument_feed_links`]).
 //!
 //! # What an entry carries
 //!
@@ -67,7 +78,7 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::State,
+    extract::{Path, State},
     http::{HeaderMap, HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
     routing::get,
@@ -80,9 +91,10 @@ use uuid::Uuid;
 use crate::content::FilterPipeline;
 use crate::content::body_field::{BODY_FIELD_NAMES, field_text};
 use crate::content::page_meta::{plain_text, truncate_on_word};
-use crate::gather::types::GatherQuery;
+use crate::gather::types::{GatherFeed, GatherQuery, GatherRouteParam};
 use crate::models::stage::LIVE_STAGE_ID;
 use crate::routes::gather::ExecuteParams;
+use crate::routes::gather_routes::{RouteParamError, resolve_route_params};
 use crate::routes::helpers::xml_escape;
 use crate::state::AppState;
 
@@ -137,7 +149,7 @@ impl FeedFormat {
 struct FeedConfig {
     /// Gather query to execute.
     query_id: String,
-    /// RSS path, as declared.
+    /// RSS path, as declared (a pattern when the feed takes an argument).
     path: String,
     /// Atom path, derived from `path`.
     atom_path: String,
@@ -149,10 +161,14 @@ struct FeedConfig {
     items: u32,
     /// Carry the body as HTML as well as the summary.
     full_content: bool,
-    /// The page the feed is a feed of: the query's canonical URL, else `/`.
+    /// The page the feed is a feed of: for an argument feed, the gather route
+    /// with the same argument when there is one; else the query's canonical
+    /// URL; else its `/gather/{query_id}` page. A pattern, like `path`.
     home_path: String,
     /// The gather query's own `changed`, so a config edit changes the `ETag`.
     query_changed: i64,
+    /// The path argument and the `display.routes` mapping that binds it.
+    argument: Option<GatherRouteParam>,
 }
 
 /// A feed as a template sees it, for autodiscovery link tags.
@@ -166,28 +182,70 @@ pub struct FeedLink {
     pub title: String,
 }
 
-/// Every feed declared by a gather query, for `<link rel="alternate">` tags.
+/// Every declared path of a feed: `path`, then `paths`.
+fn declared_paths(feed: &GatherFeed) -> impl Iterator<Item = &String> {
+    std::iter::once(&feed.path).chain(feed.paths.iter())
+}
+
+/// Every feed declared by a gather query that takes no argument, for the
+/// `<link rel="alternate">` tags on every page. A feed with an argument is
+/// advertised only on the page showing the same argument
+/// ([`argument_feed_links`]).
 ///
 /// Sorted by path so the head is stable between restarts rather than following
 /// registry iteration order.
 pub fn feed_links(queries: &[GatherQuery]) -> Vec<FeedLink> {
     let mut links: Vec<FeedLink> = queries
         .iter()
-        .filter_map(|query| {
-            let feed = query.display.feed.as_ref()?;
-            if !is_valid_feed_path(&feed.path) {
-                return None;
-            }
-            Some(FeedLink {
-                path: feed.path.clone(),
-                atom_path: atom_path(&feed.path)?,
-                title: feed_title(query),
-            })
+        .flat_map(|query| {
+            let title = feed_title(query);
+            query
+                .display
+                .feed
+                .iter()
+                .flat_map(declared_paths)
+                .filter(|path| matches!(path_argument(path), Ok(None)))
+                .filter_map(move |path| {
+                    Some(FeedLink {
+                        path: path.clone(),
+                        atom_path: atom_path(path)?,
+                        title: title.clone(),
+                    })
+                })
         })
         .collect();
     links.sort_by(|a, b| a.path.cmp(&b.path));
     links.dedup_by(|a, b| a.path == b.path);
     links
+}
+
+/// The feeds of `query` that take one of the arguments a page of the same
+/// gather was reached with, filled in with the page's values: what
+/// `/blog/author/jeremy` advertises is `/blog/author/jeremy/feed.xml`.
+///
+/// `segments` are the page route's raw path segments, before resolution, which
+/// is what the feed's own path takes.
+pub fn argument_feed_links(
+    query: &GatherQuery,
+    segments: &HashMap<String, String>,
+) -> Vec<FeedLink> {
+    let Some(feed) = query.display.feed.as_ref() else {
+        return Vec::new();
+    };
+    let title = feed_title(query);
+    declared_paths(feed)
+        .filter_map(|path| {
+            let segment = path_argument(path).ok()??;
+            let value = segments.get(&segment)?;
+            binding_for(query, &segment)?;
+            let atom = atom_path(path)?;
+            Some(FeedLink {
+                path: fill(path, &segment, value),
+                atom_path: fill(&atom, &segment, value),
+                title: argument_title(&title, value),
+            })
+        })
+        .collect()
 }
 
 /// The Atom sibling of an RSS feed path: the last segment's extension replaced
@@ -199,8 +257,11 @@ pub fn feed_links(queries: &[GatherQuery]) -> Vec<FeedLink> {
 /// which has no sibling distinct from itself.
 pub fn atom_path(path: &str) -> Option<String> {
     let (dir, last) = path.rsplit_once('/')?;
+    if last.contains('{') || last.contains('}') {
+        return None;
+    }
     let stem = match last.rsplit_once('.') {
-        Some((stem, ext)) if !stem.is_empty() && !ext.contains('}') => {
+        Some((stem, ext)) if !stem.is_empty() => {
             if ext == "atom" {
                 return None;
             }
@@ -214,13 +275,79 @@ pub fn atom_path(path: &str) -> Option<String> {
     Some(format!("{dir}/{stem}.atom"))
 }
 
+/// The argument a feed path takes, if any.
+///
+/// A feed path is absolute and may carry at most one argument, `{name}`, as a
+/// whole segment that is not the last: the last segment names the document
+/// and gives the Atom sibling. `Err` is a path that cannot be registered.
+fn path_argument(path: &str) -> Result<Option<String>, &'static str> {
+    if !path.starts_with('/') {
+        return Err("a feed path must be absolute");
+    }
+    let segments: Vec<&str> = path.split('/').skip(1).collect();
+    let mut argument = None;
+    for (n, segment) in segments.iter().enumerate() {
+        if !segment.contains('{') && !segment.contains('}') {
+            continue;
+        }
+        let name = segment
+            .strip_prefix('{')
+            .and_then(|s| s.strip_suffix('}'))
+            .filter(|name| {
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            })
+            .ok_or("a feed path argument must be a whole segment, {name}")?;
+        if n + 1 == segments.len() {
+            return Err("a feed path argument cannot be its last segment");
+        }
+        if argument.replace(name.to_string()).is_some() {
+            return Err("a feed path takes at most one argument");
+        }
+    }
+    Ok(argument)
+}
+
+/// The `display.routes` parameter mapping that binds `segment`: the same
+/// binding the gather's page route applies to it.
+fn binding_for(query: &GatherQuery, segment: &str) -> Option<GatherRouteParam> {
+    query
+        .display
+        .routes
+        .iter()
+        .flat_map(|route| route.params.iter())
+        .find(|param| param.segment == segment)
+        .cloned()
+}
+
+/// The page an argument feed is a feed of: the gather route taking just that
+/// argument, when the gather has one.
+fn argument_home_path(query: &GatherQuery, segment: &str) -> Option<String> {
+    query
+        .display
+        .routes
+        .iter()
+        .find(|route| route.params.len() == 1 && route.params[0].segment == segment)
+        .map(|route| route.path.clone())
+}
+
+/// `pattern` with `{segment}` replaced by `value`, percent-encoded.
+fn fill(pattern: &str, segment: &str, value: &str) -> String {
+    pattern.replace(&format!("{{{segment}}}"), &urlencoding::encode(value))
+}
+
+/// The title of a feed narrowed by an argument.
+fn argument_title(title: &str, value: &str) -> String {
+    format!("{title}: {value}")
+}
+
 /// Build a router serving every gather query that declares a feed.
 ///
 /// Called once at startup after gather queries are loaded. Entries are skipped
 /// with a warning when they are unusable rather than absent: a path that is not
-/// absolute, or one that collides with a feed already registered — axum panics
-/// on a route conflict, and a config entity must not be able to take the process
-/// down by declaring a duplicate.
+/// absolute or takes more than one argument, an argument the gather's
+/// `display.routes` does not bind, or a path that collides with a feed already
+/// registered — axum panics on a route conflict, and a config entity must not
+/// be able to take the process down by declaring a duplicate.
 pub fn build_feed_router(queries: &[GatherQuery]) -> Router<AppState> {
     let mut router = Router::new();
     let mut registered: HashSet<String> = HashSet::new();
@@ -230,84 +357,146 @@ pub fn build_feed_router(queries: &[GatherQuery]) -> Router<AppState> {
             continue;
         };
 
-        if !is_valid_feed_path(&feed.path) {
-            tracing::warn!(
-                query_id = %query.query_id,
-                path = %feed.path,
-                "skipping feed with a path that is not absolute"
-            );
-            continue;
-        }
-        let Some(atom) = atom_path(&feed.path) else {
-            tracing::warn!(
-                query_id = %query.query_id,
-                path = %feed.path,
-                "skipping feed whose path has no distinct .atom sibling"
-            );
-            continue;
-        };
+        for path in declared_paths(feed) {
+            let argument = match path_argument(path) {
+                Ok(argument) => argument,
+                Err(reason) => {
+                    tracing::warn!(
+                        query_id = %query.query_id,
+                        path = %path,
+                        reason,
+                        "skipping feed with an unusable path"
+                    );
+                    continue;
+                }
+            };
+            let binding = match argument.as_deref() {
+                None => None,
+                Some(segment) => match binding_for(query, segment) {
+                    Some(binding) => Some(binding),
+                    None => {
+                        tracing::warn!(
+                            query_id = %query.query_id,
+                            path = %path,
+                            segment,
+                            "skipping feed whose argument no display.routes parameter binds"
+                        );
+                        continue;
+                    }
+                },
+            };
+            let Some(atom) = atom_path(path) else {
+                tracing::warn!(
+                    query_id = %query.query_id,
+                    path = %path,
+                    "skipping feed whose path has no distinct .atom sibling"
+                );
+                continue;
+            };
 
-        if registered.contains(&feed.path) || registered.contains(&atom) {
-            tracing::warn!(
-                query_id = %query.query_id,
-                path = %feed.path,
-                "skipping duplicate feed path"
-            );
-            continue;
-        }
-        registered.insert(feed.path.clone());
-        registered.insert(atom.clone());
+            // Two patterns that differ only in their argument's name are one
+            // route to axum.
+            let route_key = |p: &str| match argument.as_deref() {
+                Some(segment) => p.replace(&format!("{{{segment}}}"), "{}"),
+                None => p.to_string(),
+            };
+            let (path_key, atom_key) = (route_key(path), route_key(&atom));
+            if registered.contains(&path_key) || registered.contains(&atom_key) {
+                tracing::warn!(
+                    query_id = %query.query_id,
+                    path = %path,
+                    "skipping duplicate feed path"
+                );
+                continue;
+            }
+            registered.insert(path_key);
+            registered.insert(atom_key);
 
-        let config = Arc::new(FeedConfig {
-            query_id: query.query_id.clone(),
-            path: feed.path.clone(),
-            atom_path: atom.clone(),
-            title: feed_title(query),
-            description: feed
-                .description
-                .clone()
-                .or_else(|| query.description.clone())
-                .unwrap_or_default(),
-            items: feed.items.clamp(1, MAX_FEED_ITEMS),
-            full_content: feed.full_content,
-            home_path: query
+            let canonical = query
                 .display
                 .canonical_url
                 .clone()
-                .filter(|p| p.starts_with('/'))
-                .unwrap_or_else(|| "/".to_string()),
-            query_changed: query.changed,
-        });
+                .filter(|p| p.starts_with('/'));
+            let home_path = argument
+                .as_deref()
+                .and_then(|segment| argument_home_path(query, segment))
+                .or(canonical)
+                .unwrap_or_else(|| format!("/gather/{}", query.query_id));
 
-        tracing::info!(
-            query_id = %query.query_id,
-            path = %feed.path,
-            atom_path = %atom,
-            "registering feed"
-        );
+            let config = Arc::new(FeedConfig {
+                query_id: query.query_id.clone(),
+                path: path.clone(),
+                atom_path: atom.clone(),
+                title: feed_title(query),
+                description: feed
+                    .description
+                    .clone()
+                    .or_else(|| query.description.clone())
+                    .unwrap_or_default(),
+                items: feed.items.clamp(1, MAX_FEED_ITEMS),
+                full_content: feed.full_content,
+                home_path,
+                query_changed: query.changed,
+                argument: binding,
+            });
 
-        for (path, format) in [(&feed.path, FeedFormat::Rss), (&atom, FeedFormat::Atom)] {
-            let config = Arc::clone(&config);
-            router = router.route(
-                path,
-                get(
-                    move |state: State<AppState>, session: Session, headers: HeaderMap| {
-                        let config = Arc::clone(&config);
-                        async move { serve_feed(state, session, headers, &config, format).await }
-                    },
-                ),
+            tracing::info!(
+                query_id = %query.query_id,
+                path = %path,
+                atom_path = %atom,
+                "registering feed"
             );
+
+            for (route_path, format) in [(path, FeedFormat::Rss), (&atom, FeedFormat::Atom)] {
+                let config = Arc::clone(&config);
+                router = if config.argument.is_some() {
+                    router.route(
+                        route_path,
+                        get(
+                            move |state: State<AppState>,
+                                  session: Session,
+                                  headers: HeaderMap,
+                                  Path(segments): Path<HashMap<String, String>>| {
+                                let config = Arc::clone(&config);
+                                async move {
+                                    serve_feed(state, session, headers, &config, format, segments)
+                                        .await
+                                }
+                            },
+                        ),
+                    )
+                } else {
+                    router.route(
+                        route_path,
+                        get(
+                            move |state: State<AppState>, session: Session, headers: HeaderMap| {
+                                let config = Arc::clone(&config);
+                                async move {
+                                    serve_feed(
+                                        state,
+                                        session,
+                                        headers,
+                                        &config,
+                                        format,
+                                        HashMap::new(),
+                                    )
+                                    .await
+                                }
+                            },
+                        ),
+                    )
+                };
+            }
         }
     }
 
     router
 }
 
-/// A feed path has to be absolute, and cannot be a path pattern: a feed is one
-/// document at one address, and `{param}` in an axum route would capture
-/// segments nothing here can fill.
+/// Whether a feed path can be registered: absolute, at most one argument.
+#[cfg(test)]
 fn is_valid_feed_path(path: &str) -> bool {
-    path.starts_with('/') && !path.contains('{') && !path.contains('}')
+    path_argument(path).is_ok()
 }
 
 /// The feed's title: its own, else the query's label.
@@ -357,13 +546,39 @@ fn is_loopback_site_url(site_url: &str) -> bool {
 }
 
 /// Execute the query as this viewer and render the result as RSS or Atom.
+///
+/// `segments` are the request's path arguments, empty for a feed that takes
+/// none.
 async fn serve_feed(
     State(state): State<AppState>,
     session: Session,
     headers: HeaderMap,
     config: &FeedConfig,
     format: FeedFormat,
+    segments: HashMap<String, String>,
 ) -> Response {
+    // The argument, resolved by the same code the gather's page route uses:
+    // an unknown tag or author is a 404, not an empty feed.
+    let (url_args, raw_value) = match &config.argument {
+        None => (HashMap::new(), None),
+        Some(binding) => {
+            match resolve_route_params(&state, std::slice::from_ref(binding), &segments).await {
+                Ok(resolved) => (resolved, segments.get(&binding.segment).cloned()),
+                Err(RouteParamError::NotFound) => {
+                    return (StatusCode::NOT_FOUND, "Feed not found").into_response();
+                }
+                Err(RouteParamError::Failed) => {
+                    return (StatusCode::INTERNAL_SERVER_ERROR, "Failed to build feed")
+                        .into_response();
+                }
+            }
+        }
+    };
+    let filled = |pattern: &str| match (&config.argument, &raw_value) {
+        (Some(binding), Some(value)) => fill(pattern, &binding.segment, value),
+        _ => pattern.to_string(),
+    };
+
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
     // A signed-in viewer's feed is that viewer's execution of the query, so no
     // shared cache may keep it; an anonymous one is the same for every
@@ -374,14 +589,16 @@ async fn serve_feed(
         format!("public, max-age={ANONYMOUS_MAX_AGE_SECS}")
     };
 
-    let params = ExecuteParams::new(1, LIVE_STAGE_ID.to_string(), HashMap::new());
+    let params = ExecuteParams::new(1, LIVE_STAGE_ID.to_string(), url_args);
     let result = match crate::routes::gather::execute_query_only(
         &state,
         &config.query_id,
         params,
         None,
         viewer,
-        None,
+        // The feed's own size, not the page's: `items: 20` on a gather that
+        // shows ten a page used to carry ten.
+        Some(config.items),
     )
     .await
     {
@@ -401,12 +618,25 @@ async fn serve_feed(
         }
     };
 
+    // A passed-through argument is not looked up, so the only sign that it
+    // names nothing is that nothing matched it. That is a 404 too: an
+    // aggregator subscribed to a typo should be told, not fed an empty feed.
+    if config
+        .argument
+        .as_ref()
+        .is_some_and(|b| b.tag_category.is_none() && !b.user)
+        && result.items.is_empty()
+    {
+        return (StatusCode::NOT_FOUND, "Feed not found").into_response();
+    }
+
     let site_url = crate::routes::sitemap::canonical_base(&state.runtime().site_url).to_string();
     let rows: Vec<&serde_json::Value> = result.items.iter().take(config.items as usize).collect();
     let item_ids: Vec<Uuid> = rows.iter().filter_map(|row| row_uuid(row)).collect();
     let meta = load_entry_meta(&state, &item_ids).await;
 
-    let validators = Validators::compute(config, format, &site_url, &rows, &meta);
+    let rss_path = filled(&config.path);
+    let validators = Validators::compute(config, format, &site_url, &rss_path, &rows, &meta);
     let cache_headers = validators.headers(&cache_control);
     if validators.matches(&headers) {
         return (StatusCode::NOT_MODIFIED, cache_headers).into_response();
@@ -426,12 +656,16 @@ async fn serve_feed(
         .map(|row| Entry::from_row(row, &site_url, &meta, &terms, config.full_content))
         .collect();
 
+    let title = match &raw_value {
+        Some(value) => argument_title(&config.title, value),
+        None => config.title.clone(),
+    };
     let channel = Channel {
-        title: &config.title,
+        title: &title,
         description: &config.description,
-        home_url: format!("{site_url}{}", config.home_path),
-        rss_url: format!("{site_url}{}", config.path),
-        atom_url: format!("{site_url}{}", config.atom_path),
+        home_url: format!("{site_url}{}", filled(&config.home_path)),
+        rss_url: format!("{site_url}{rss_path}"),
+        atom_url: format!("{site_url}{}", filled(&config.atom_path)),
         updated: validators.last_modified.unwrap_or(config.query_changed),
     };
 
@@ -725,6 +959,7 @@ impl Validators {
         config: &FeedConfig,
         format: FeedFormat,
         site_url: &str,
+        request_path: &str,
         rows: &[&serde_json::Value],
         meta: &HashMap<Uuid, EntryMeta>,
     ) -> Self {
@@ -737,6 +972,8 @@ impl Validators {
         line(site_url);
         line(&config.query_id);
         line(&config.path);
+        // The argument's value: two authors' feeds are two documents.
+        line(request_path);
         line(&config.title);
         line(&config.description);
         line(&config.items.to_string());
@@ -1056,6 +1293,7 @@ mod tests {
             path: path.to_string(),
             title: None,
             description: None,
+            paths: Vec::new(),
             items: 20,
             full_content: false,
         }
@@ -1072,6 +1310,7 @@ mod tests {
             full_content: false,
             home_path: "/".to_string(),
             query_changed: 0,
+            argument: None,
         }
     }
 
@@ -1400,6 +1639,7 @@ mod tests {
             &config(),
             FeedFormat::Rss,
             "https://e",
+            "/rss/q.xml",
             &rows,
             &meta(None, 10),
         );
@@ -1410,6 +1650,7 @@ mod tests {
                 &config(),
                 FeedFormat::Rss,
                 "https://e",
+                "/rss/q.xml",
                 &rows,
                 &meta(None, 10)
             ),
@@ -1422,6 +1663,7 @@ mod tests {
                 &config(),
                 FeedFormat::Rss,
                 "https://e",
+                "/rss/q.xml",
                 &rows,
                 &meta(None, 11)
             )
@@ -1434,6 +1676,7 @@ mod tests {
                 &config(),
                 FeedFormat::Atom,
                 "https://e",
+                "/rss/q.xml",
                 &rows,
                 &meta(None, 10)
             )
@@ -1448,6 +1691,7 @@ mod tests {
                 &edited,
                 FeedFormat::Rss,
                 "https://e",
+                "/rss/q.xml",
                 &rows,
                 &meta(None, 10)
             )
@@ -1477,5 +1721,105 @@ mod tests {
         let before = http_date(1_699_999_999).unwrap();
         assert!(v.matches(&with(header::IF_MODIFIED_SINCE, &at)));
         assert!(!v.matches(&with(header::IF_MODIFIED_SINCE, &before)));
+    }
+    /// A blog gather the way `trovato_blog` declares it: routes binding `user`
+    /// and `tag`, one feed declaration with three paths.
+    fn blog_query() -> GatherQuery {
+        let mut q = query("blog", "Blog", None);
+        q.display.routes = serde_json::from_value(serde_json::json!([
+            {"path": "/blog/author/{user}", "params": [{"segment": "user", "param": "author", "user": true}]},
+            {"path": "/blog/tag/{tag}", "params": [{"segment": "tag", "param": "tag", "tag_category": "tags"}]},
+        ]))
+        .unwrap();
+        q.display.feed = Some(
+            serde_json::from_value(serde_json::json!({
+                "path": "/blog/feed.xml",
+                "paths": ["/blog/author/{user}/feed.xml", "/blog/tag/{tag}/feed.xml"],
+            }))
+            .unwrap(),
+        );
+        q
+    }
+
+    #[test]
+    fn a_feed_path_takes_at_most_one_whole_segment_argument() {
+        assert_eq!(path_argument("/blog/feed.xml"), Ok(None));
+        assert_eq!(
+            path_argument("/blog/{user}/feed").unwrap().as_deref(),
+            Some("user")
+        );
+        assert_eq!(
+            path_argument("/tag/{term}/rss.xml").unwrap().as_deref(),
+            Some("term")
+        );
+        for refused in [
+            "/rss/{slug}.xml",
+            "/rss/{slug}",
+            "/a/{x}/{y}/feed",
+            "/a/x{y}/feed",
+            "/a/{}/feed",
+            "/a/{x-y}/feed",
+            "relative/{x}/feed",
+        ] {
+            assert!(path_argument(refused).is_err(), "{refused} must be refused");
+        }
+    }
+
+    #[test]
+    fn an_argument_feed_is_not_advertised_site_wide() {
+        let links = feed_links(&[blog_query()]);
+        let paths: Vec<&str> = links.iter().map(|l| l.path.as_str()).collect();
+        assert_eq!(paths, vec!["/blog/feed.xml"]);
+    }
+
+    #[test]
+    fn a_page_with_an_argument_advertises_the_matching_feed() {
+        let q = blog_query();
+        let author = HashMap::from([("user".to_string(), "jeremy".to_string())]);
+        assert_eq!(
+            argument_feed_links(&q, &author),
+            vec![FeedLink {
+                path: "/blog/author/jeremy/feed.xml".to_string(),
+                atom_path: "/blog/author/jeremy/feed.atom".to_string(),
+                title: "Blog: jeremy".to_string(),
+            }]
+        );
+
+        let tag = HashMap::from([("tag".to_string(), "rust lang".to_string())]);
+        let links = argument_feed_links(&q, &tag);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0].path, "/blog/tag/rust%20lang/feed.xml");
+
+        assert!(argument_feed_links(&q, &HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn an_argument_feed_binds_through_the_gathers_route_mapping() {
+        let q = blog_query();
+        let binding = binding_for(&q, "user").unwrap();
+        assert_eq!(binding.param, "author");
+        assert!(binding.user);
+        assert_eq!(
+            binding_for(&q, "tag").unwrap().tag_category.as_deref(),
+            Some("tags")
+        );
+        assert!(binding_for(&q, "nothing").is_none());
+        assert_eq!(
+            argument_home_path(&q, "user").as_deref(),
+            Some("/blog/author/{user}")
+        );
+    }
+
+    /// An argument no route binds, and two patterns differing only in the
+    /// argument's name, would otherwise reach axum: one as a route nothing can
+    /// fill, the other as a conflict that panics.
+    #[test]
+    fn an_unbound_or_conflicting_argument_feed_is_skipped_not_registered() {
+        let mut q = blog_query();
+        if let Some(feed) = q.display.feed.as_mut() {
+            feed.paths.push("/blog/author/{who}/feed.xml".to_string());
+            feed.paths.push("/blog/tag/{user}/feed.xml".to_string());
+        }
+        let _router = build_feed_router(&[q]);
     }
 }

@@ -654,12 +654,13 @@ The filter is then rewritten to `HasAnyTag` with the full expanded list. A query
 
 The kernel's `gather_routes` module provides a generic mechanism for mapping friendly URLs to gather queries. Rather than hard-coding routes for each plugin, route aliases are declared in the gather query's `display.routes` YAML configuration and registered dynamically at startup.
 
-Each route alias defines a URL path pattern and a list of parameter mappings. Two mapping modes are supported:
+Each route alias defines a URL path pattern and a list of parameter mappings. Three mapping modes are supported:
 
 | Mode | Config | Behaviour |
 |---|---|---|
 | **Pass-through** | `segment` + `param` | Path segment value is passed directly as a gather query parameter |
 | **Tag slug lookup** | `segment` + `param` + `tag_category` | Path segment is resolved to a tag UUID via `category_tag.slug`, then the UUID is passed |
+| **Account lookup** | `segment` + `param` + `user: true` | Path segment is an account name, resolved to the active account's id, then the id is passed. An unknown or blocked account is a 404 |
 
 For the `/topics/{slug}` route, the `ritrovo.by_topic` gather query declares:
 
