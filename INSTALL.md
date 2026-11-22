@@ -122,7 +122,8 @@ compiled default stands.
 | Bucket | Default | Applies to |
 |--------|---------|------------|
 | `static` | 2000 / minute | Reads under `/static/` and `FILES_URL` (default `/files/`), and `/favicon.ico` |
-| `api` | 100 / minute | `/api/` endpoints, and any request no other bucket claims |
+| `page` | 600 / minute | Page views: a `GET` or `HEAD` outside `/api/` that no bucket above claims |
+| `api` | 100 / minute | `/api/` endpoints, and any other request no bucket claims |
 | `forms` | 30 / minute | Any other POST |
 | `search` | 20 / minute | `/search` and `/api/search` |
 | `search_expand` | 30 / minute | `POST /api/v1/search/expand` |
