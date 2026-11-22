@@ -287,7 +287,7 @@ fn decode_basic_entities(s: &str) -> String {
 
 /// Truncate to at most `max_len` bytes, breaking at a word boundary and
 /// marking the cut with an ellipsis.
-fn truncate_on_word(s: &str, max_len: usize) -> String {
+pub(crate) fn truncate_on_word(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         return s.to_string();
     }

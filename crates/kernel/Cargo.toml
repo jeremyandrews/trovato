@@ -78,6 +78,9 @@ default = []
 workspace = true
 
 [dev-dependencies]
+# Parses the RSS and Atom the feed routes emit, so the feed tests check them
+# with a real reader's parser rather than by string matching alone.
+feed-rs = "2"
 http-body-util = "0.1"
 uuid = { workspace = true }
 # `trovato_test_utils::env` is the workspace's one mechanism for touching the
