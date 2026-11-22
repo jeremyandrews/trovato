@@ -61,6 +61,24 @@ pub const RUNTIME_STATE_KEYS: &[&str] = &[
     "queue_runner",
 ];
 
+/// `site_config` keys that hold a secret. Export writes the reference
+/// `env:TROVATO_SECRET_VARIABLE_<KEY>_VALUE` in place of the value (nothing
+/// when the value is empty), and import resolves it as it does a plugin
+/// table's secret column (see [`plugin_config`]).
+///
+/// - `plugin.trovato_captcha.turnstile_secret_key`: the Turnstile secret
+///   `trovato_captcha` reads through `host::variables_get`.
+/// - `smtp_password`: no longer written or read (B26 moved SMTP to the
+///   environment and deleted the key), but a database restored from an older
+///   export may hold it again, and export must never write it.
+pub const SECRET_VARIABLE_KEYS: &[&str] = &[
+    "plugin.trovato_captcha.turnstile_secret_key",
+    "smtp_password",
+];
+
+/// The column a variable's secret is in, for [`plugin_config::secret_env_name`].
+pub const SECRET_VARIABLE_COLUMN: &str = "value";
+
 use crate::gather::types::GatherQuery;
 use crate::models::tile::Tile;
 use crate::models::{Category, ItemType, Language, MenuLink, Role, Stage, Tag, UrlAlias};

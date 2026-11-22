@@ -153,6 +153,7 @@ weight = 0  # Lower weight = earlier execution
 | `[migrations].depends_on` | No | Plugin names whose migrations run first |
 | `[capabilities]` | No | What the plugin may reach: host interfaces, tables, `raw_sql` and the background grants. Absent means nothing. See [plugin-capabilities.md](plugin-capabilities.md) |
 | `[config].tables` | No | The plugin's own tables that hold site configuration, carried by `config export` and `config import` (API 0.106). See [Configuration Tables](#configuration-tables) |
+| `[config].secret_columns` | No | Per config table, the columns that hold a secret, a password, a token, a key or a hash of one; never exported (API 0.107). See [Secret Columns](#secret-columns) |
 
 ### Configuration Tables
 
@@ -178,6 +179,33 @@ Name only configuration: not content, not a log, a queue, a cache or anything
 else that changes while the site runs. The table must be one your migrations
 create and the table needs a primary key. Whether the plugin is enabled travels
 too, as `plugin_status.<name>.yml`.
+
+### Secret Columns
+
+A config set is meant to be committed to a repository, so it never carries a
+secret. Name every column of a config table that holds a secret, a password, a
+token, an API or signing key, or a hash of one:
+
+```toml
+[config]
+tables = ["webhook"]
+secret_columns = { webhook = ["secret"] }
+```
+
+Export writes such a column as `env:TROVATO_SECRET_<TABLE>_<PK>_<COLUMN>` (upper
+case, every other character `_`), or leaves it out when it is empty. Import
+keeps the value the target row already holds; failing that it reads the named
+variable from its environment; failing that it refuses the row and writes
+nothing. A file holding a value in the clear there is refused. A column whose
+name ends in `_hash` stores an Argon2id hash in PHC form: its variable holds
+the plaintext, which import hashes (verify it with `argon2`'s
+`PasswordVerifier`, as the OAuth token endpoint does). A secret column holds
+text.
+
+A column whose name says it is a credential (`secret`, `password`, `api_key`,
+`access_token`, ...) is treated as secret even if you forget to name it, and
+export warns. Name it anyway: the declaration is the contract, the name check
+is the backstop.
 
 ### SQL Migrations
 

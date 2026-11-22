@@ -14,7 +14,9 @@
 use std::path::{Path, PathBuf};
 
 use sqlx::PgPool;
-use trovato_kernel::config_storage::yaml::{ConfigImportFailed, export_config, import_config};
+use trovato_kernel::config_storage::yaml::{
+    ConfigImportFailed, export_config, import_config, import_config_with_env,
+};
 use trovato_kernel::config_storage::{
     ConfigPluginStatus, ConfigStorage, DirectConfigStorage, PluginConfigSet, entity_types,
     plugin_config,
@@ -680,7 +682,10 @@ async fn the_menu_tree_survives_export_and_re_import() {
         "key: update_status\nvalue: {latest: 9.9.9}\n",
     );
 
-    if let Err(e) = import_config(&first_storage, first.pool(), source.path(), false).await {
+    let env = round_trip_secrets;
+    if let Err(e) =
+        import_config_with_env(&first_storage, first.pool(), source.path(), false, &env).await
+    {
         first.cleanup().await;
         second.cleanup().await;
         panic!("the menu tree must import clean: {e:#}");
@@ -722,7 +727,15 @@ async fn the_menu_tree_survives_export_and_re_import() {
     );
 
     // Re-import that export into a second, independent database.
-    if let Err(e) = import_config(&second_storage, second.pool(), export_one.path(), false).await {
+    if let Err(e) = import_config_with_env(
+        &second_storage,
+        second.pool(),
+        export_one.path(),
+        false,
+        &env,
+    )
+    .await
+    {
         first.cleanup().await;
         second.cleanup().await;
         panic!("re-importing an export must succeed: {e:#}");
@@ -809,6 +822,20 @@ async fn the_menu_tree_survives_export_and_re_import() {
     second.cleanup().await;
 }
 
+/// The secrets the round trip's set refers to, as the environment of the
+/// import would hold them.
+fn round_trip_secrets(name: &str) -> Option<String> {
+    match name {
+        "TROVATO_SECRET_OAUTH_CLIENT_0193A5A0_0092_7000_8000_000000000003_CLIENT_SECRET_HASH" => {
+            Some("rt-client-secret".to_string())
+        }
+        "TROVATO_SECRET_WEBHOOK_0193A5A0_0092_7000_8000_000000000004_SECRET" => {
+            Some("rt-webhook-secret".to_string())
+        }
+        _ => None,
+    }
+}
+
 /// Every in-tree plugin whose manifest declares `[config] tables`.
 const PLUGINS_WITH_CONFIG: [&str; 6] = [
     "trovato_config_translation",
@@ -862,7 +889,8 @@ fn write_plugin_config(dir: &TempConfigDir) -> Vec<(String, &'static str, String
     dir.write(
         &format!("oauth_client.{client}.yml"),
         &format!(
-            "id: {client}\nclient_id: rt-client\nclient_secret_hash: $argon2id$v=19$x\n\
+            "id: {client}\nclient_id: rt-client\n\
+             client_secret_hash: env:TROVATO_SECRET_OAUTH_CLIENT_0193A5A0_0092_7000_8000_000000000003_CLIENT_SECRET_HASH\n\
              name: Round trip\nredirect_uris:\n- https://example.com/cb\n\
              grant_types:\n- authorization_code\nscopes: []\ncreated: 1700000000\n"
         ),
@@ -878,7 +906,8 @@ fn write_plugin_config(dir: &TempConfigDir) -> Vec<(String, &'static str, String
         &format!("webhook.{hook}.yml"),
         &format!(
             "id: {hook}\nname: Deploy\nurl: https://example.com/hook\nevents:\n- item.insert\n\
-             secret: s3cret\nactive: true\ncreated: 1700000000\nchanged: 1700000000\n"
+             secret: env:TROVATO_SECRET_WEBHOOK_0193A5A0_0092_7000_8000_000000000004_SECRET\n\
+             active: true\ncreated: 1700000000\nchanged: 1700000000\n"
         ),
     );
     expect.push((format!("webhook.{hook}.yml"), "name", "Deploy".to_string()));
@@ -2087,5 +2116,566 @@ async fn a_plugin_row_is_refused_by_name_when_it_cannot_be_written() {
         "the unknown column must be named: {text}"
     );
 
+    db.cleanup().await;
+}
+
+// ---------------------------------------------------------------------------
+// B130: a config set never carries a secret.
+//
+// PR 201 exported each plugin config row with `to_jsonb`, so `webhook.secret`
+// and `oauth_client.client_secret_hash` were written in the clear. These tests
+// pin the fix at the export and import layer.
+// ---------------------------------------------------------------------------
+
+/// The two plugins whose config tables hold a secret.
+const SECRET_PLUGINS: [&str; 2] = ["trovato_oauth2", "trovato_webhooks"];
+
+/// One site's secrets, unique per test so that a match in an export can only
+/// have come from this site.
+struct SiteSecrets {
+    hook_id: String,
+    client_id: String,
+    webhook_secret: String,
+    client_secret: String,
+    client_secret_hash: String,
+    turnstile: String,
+}
+
+impl SiteSecrets {
+    fn new() -> Self {
+        let tag = uuid::Uuid::now_v7().simple().to_string();
+        let client_secret = format!("client-secret-{tag}");
+        let client_secret_hash = argon2::password_hash::PasswordHasher::hash_password(
+            &argon2::Argon2::default(),
+            client_secret.as_bytes(),
+            &argon2::password_hash::SaltString::generate(
+                &mut argon2::password_hash::rand_core::OsRng,
+            ),
+        )
+        .unwrap()
+        .to_string();
+        Self {
+            hook_id: uuid::Uuid::now_v7().to_string(),
+            client_id: uuid::Uuid::now_v7().to_string(),
+            webhook_secret: format!("whsec-{tag}"),
+            client_secret,
+            client_secret_hash,
+            turnstile: format!("turnstile-{tag}"),
+        }
+    }
+
+    fn webhook_var(&self) -> String {
+        plugin_config::secret_env_name("webhook", &self.hook_id, "secret")
+    }
+
+    fn client_var(&self) -> String {
+        plugin_config::secret_env_name("oauth_client", &self.client_id, "client_secret_hash")
+    }
+
+    fn turnstile_var(&self) -> String {
+        plugin_config::secret_env_name(
+            "variable",
+            "plugin.trovato_captcha.turnstile_secret_key",
+            "value",
+        )
+    }
+
+    /// The import environment that supplies every secret, in plaintext.
+    fn env(&self) -> impl Fn(&str) -> Option<String> + Send + Sync + use<> {
+        let vars = [
+            (self.webhook_var(), self.webhook_secret.clone()),
+            (self.client_var(), self.client_secret.clone()),
+            (self.turnstile_var(), self.turnstile.clone()),
+        ];
+        move |name: &str| vars.iter().find(|(k, _)| k == name).map(|(_, v)| v.clone())
+    }
+}
+
+/// Enable the secret-holding plugins and run their migrations, as a booted
+/// install would have.
+async fn enable_secret_plugins(db: &ScratchDb, storage: &DirectConfigStorage) {
+    for plugin in SECRET_PLUGINS {
+        plugin_config::save_status(
+            db.pool(),
+            &ConfigPluginStatus {
+                name: plugin.to_string(),
+                enabled: true,
+            },
+            "0",
+        )
+        .await
+        .unwrap();
+    }
+    storage
+        .plugins()
+        .unwrap()
+        .migrate_enabled(db.pool())
+        .await
+        .unwrap();
+}
+
+/// A site with one webhook (secret set), one OAuth client and the captcha
+/// secret.
+async fn seed_secret_site(db: &ScratchDb, storage: &DirectConfigStorage, s: &SiteSecrets) {
+    enable_secret_plugins(db, storage).await;
+    sqlx::query(
+        "INSERT INTO webhook (id, name, url, events, secret) \
+         VALUES ($1::uuid, 'Deploy', 'https://example.com/hook', '[\"item.insert\"]', $2)",
+    )
+    .bind(&s.hook_id)
+    .bind(&s.webhook_secret)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO oauth_client (id, client_id, client_secret_hash, name, grant_types) \
+         VALUES ($1::uuid, 'b130-client', $2, 'B130', '[\"client_credentials\"]')",
+    )
+    .bind(&s.client_id)
+    .bind(&s.client_secret_hash)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO site_config (key, value) \
+         VALUES ('plugin.trovato_captcha.turnstile_secret_key', to_jsonb($1::text))",
+    )
+    .bind(&s.turnstile)
+    .execute(db.pool())
+    .await
+    .unwrap();
+}
+
+/// Every file under `dir`, recursively, as `(relative path, bytes)`.
+fn every_file(dir: &Path) -> Vec<(String, Vec<u8>)> {
+    let mut out = Vec::new();
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                let rel = path.strip_prefix(dir).unwrap().display().to_string();
+                out.push((rel, std::fs::read(&path).unwrap()));
+            }
+        }
+    }
+    out
+}
+
+fn contains(haystack: &[u8], needle: &str) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|w| w == needle.as_bytes())
+}
+
+async fn webhook_secret_of(db: &ScratchDb, id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT secret FROM webhook WHERE id = $1::uuid")
+        .bind(id)
+        .fetch_optional(db.pool())
+        .await
+        .unwrap()
+}
+
+async fn client_hash_of(db: &ScratchDb, id: &str) -> Option<String> {
+    sqlx::query_scalar("SELECT client_secret_hash FROM oauth_client WHERE id = $1::uuid")
+        .bind(id)
+        .fetch_optional(db.pool())
+        .await
+        .unwrap()
+}
+
+/// (a) The guard: no file an export writes holds a stored secret, the OAuth
+/// client's hash or its plaintext. Each secret is a reference instead.
+#[tokio::test]
+async fn an_export_never_contains_a_secret() {
+    let db = ScratchDb::new("b130export").await;
+    let storage = db.plugin_storage().await;
+    let s = SiteSecrets::new();
+    seed_secret_site(&db, &storage, &s).await;
+
+    let out = TempConfigDir::new("b130export");
+    export_config(&storage, db.pool(), out.path(), false)
+        .await
+        .unwrap();
+
+    let files = every_file(out.path());
+    assert!(
+        files
+            .iter()
+            .any(|(name, _)| name == &format!("webhook.{}.yml", s.hook_id)),
+        "the webhook itself must still be exported"
+    );
+    for (name, bytes) in &files {
+        for secret in [
+            &s.webhook_secret,
+            &s.client_secret,
+            &s.client_secret_hash,
+            &s.turnstile,
+        ] {
+            assert!(
+                !contains(bytes, secret),
+                "{name} holds a secret:\n{}",
+                String::from_utf8_lossy(bytes)
+            );
+        }
+        // No Argon2 hash of anything, either.
+        assert!(
+            !contains(bytes, "$argon2"),
+            "{name} holds a password hash:\n{}",
+            String::from_utf8_lossy(bytes)
+        );
+    }
+    let hook =
+        std::fs::read_to_string(out.path().join(format!("webhook.{}.yml", s.hook_id))).unwrap();
+    assert!(
+        yaml_declares(&hook, "secret", &format!("env:{}", s.webhook_var())),
+        "the webhook's secret must be a reference, got:\n{hook}"
+    );
+    let client =
+        std::fs::read_to_string(out.path().join(format!("oauth_client.{}.yml", s.client_id)))
+            .unwrap();
+    assert!(
+        yaml_declares(
+            &client,
+            "client_secret_hash",
+            &format!("env:{}", s.client_var())
+        ),
+        "the client's hash must be a reference, got:\n{client}"
+    );
+    db.cleanup().await;
+}
+
+/// An empty secret is left out of the file, not written as a reference
+/// nobody could supply.
+#[tokio::test]
+async fn an_empty_secret_is_left_out_of_the_export() {
+    let db = ScratchDb::new("b130empty").await;
+    let storage = db.plugin_storage().await;
+    enable_secret_plugins(&db, &storage).await;
+    let hook = uuid::Uuid::now_v7().to_string();
+    sqlx::query(
+        "INSERT INTO webhook (id, name, url) VALUES ($1::uuid, 'Open', 'https://example.com/h')",
+    )
+    .bind(&hook)
+    .execute(db.pool())
+    .await
+    .unwrap();
+    let out = TempConfigDir::new("b130empty");
+    export_config(&storage, db.pool(), out.path(), false)
+        .await
+        .unwrap();
+    let file = std::fs::read_to_string(out.path().join(format!("webhook.{hook}.yml"))).unwrap();
+    assert!(
+        !file.lines().any(|l| l.starts_with("secret:")),
+        "an empty secret must be left out, got:\n{file}"
+    );
+
+    // And it imports into a fresh install with no variable set.
+    let fresh = ScratchDb::new("b130emptyfresh").await;
+    let fresh_storage = fresh.plugin_storage().await;
+    enable_secret_plugins(&fresh, &fresh_storage).await;
+    let none = |_: &str| None;
+    import_config_with_env(&fresh_storage, fresh.pool(), out.path(), false, &none)
+        .await
+        .unwrap();
+    assert_eq!(webhook_secret_of(&fresh, &hook).await.as_deref(), Some(""));
+    db.cleanup().await;
+    fresh.cleanup().await;
+}
+
+/// (b) An export imports into a fresh install with the variables set: the
+/// webhook holds the supplied secret, the OAuth client authenticates with the
+/// supplied secret, and neither plaintext of the client secret nor the old
+/// hash is stored.
+#[tokio::test]
+async fn an_export_imports_into_a_fresh_install_with_its_secrets_from_the_environment() {
+    let source = ScratchDb::new("b130src").await;
+    let source_storage = source.plugin_storage().await;
+    let s = SiteSecrets::new();
+    seed_secret_site(&source, &source_storage, &s).await;
+    let out = TempConfigDir::new("b130fresh");
+    export_config(&source_storage, source.pool(), out.path(), false)
+        .await
+        .unwrap();
+
+    // A fresh install that has booted with the plugins enabled, as in the
+    // round trip above: their migrations have run and seeded their roles.
+    let fresh = ScratchDb::new("b130dst").await;
+    let fresh_storage = fresh.plugin_storage().await;
+    enable_secret_plugins(&fresh, &fresh_storage).await;
+    let env = s.env();
+    if let Err(e) =
+        import_config_with_env(&fresh_storage, fresh.pool(), out.path(), false, &env).await
+    {
+        source.cleanup().await;
+        fresh.cleanup().await;
+        panic!("an export must import with its secrets supplied: {e:#}");
+    }
+
+    assert_eq!(
+        webhook_secret_of(&fresh, &s.hook_id).await.as_deref(),
+        Some(s.webhook_secret.as_str()),
+        "the webhook must sign with the supplied secret"
+    );
+    let hash = client_hash_of(&fresh, &s.client_id).await.unwrap();
+    assert_ne!(hash, s.client_secret, "the plaintext must never be stored");
+    assert!(hash.starts_with("$argon2id$"), "stored {hash}");
+    let oauth = trovato_kernel::services::oauth::OAuthService::new(
+        fresh.pool().clone(),
+        b"b130-test-jwt-secret-at-least-32-bytes!!",
+    );
+    assert!(
+        oauth
+            .validate_client_credentials("b130-client", &s.client_secret)
+            .await
+            .unwrap()
+            .is_some(),
+        "the client must authenticate with the supplied secret"
+    );
+    assert!(
+        oauth
+            .validate_client_credentials("b130-client", "wrong")
+            .await
+            .unwrap()
+            .is_none(),
+        "and not with another"
+    );
+    let turnstile: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT value FROM site_config WHERE key = 'plugin.trovato_captcha.turnstile_secret_key'",
+    )
+    .fetch_optional(fresh.pool())
+    .await
+    .unwrap();
+    assert_eq!(turnstile, Some(serde_json::json!(s.turnstile)));
+
+    source.cleanup().await;
+    fresh.cleanup().await;
+}
+
+/// (c) With the variables unset, import refuses, names each variable, and
+/// writes nothing: not the rows, not the plugin status, not the variables.
+#[tokio::test]
+async fn an_import_without_the_variables_refuses_and_writes_nothing() {
+    let source = ScratchDb::new("b130unsetsrc").await;
+    let source_storage = source.plugin_storage().await;
+    let s = SiteSecrets::new();
+    seed_secret_site(&source, &source_storage, &s).await;
+    let out = TempConfigDir::new("b130unset");
+    export_config(&source_storage, source.pool(), out.path(), false)
+        .await
+        .unwrap();
+    out.write(
+        "variable.site_name.yml",
+        "key: site_name\nvalue: Must not land\n",
+    );
+
+    let fresh = ScratchDb::new("b130unsetdst").await;
+    let fresh_storage = fresh.plugin_storage().await;
+    enable_secret_plugins(&fresh, &fresh_storage).await;
+    let none = |_: &str| None;
+    let err = import_config_with_env(&fresh_storage, fresh.pool(), out.path(), false, &none)
+        .await
+        .expect_err("an import missing its secrets must fail");
+    let failed = err
+        .downcast_ref::<ConfigImportFailed>()
+        .expect("a validation failure");
+    let all = failed
+        .failures
+        .iter()
+        .map(|f| format!("{}: {}", f.filename, f.error))
+        .collect::<Vec<_>>()
+        .join("\n");
+    for var in [s.webhook_var(), s.client_var(), s.turnstile_var()] {
+        assert!(
+            all.contains(&var),
+            "the failure must name {var}, got:\n{all}"
+        );
+    }
+
+    // Only the refused files name a variable: the rest of the set is fine.
+    assert_eq!(failed.failures.len(), 3, "{all}");
+    for table in ["webhook", "oauth_client"] {
+        let rows: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}")))
+                .fetch_one(fresh.pool())
+                .await
+                .unwrap();
+        assert_eq!(rows, 0, "a refused import must not write a {table} row");
+    }
+    let name: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT value FROM site_config WHERE key = 'site_name'")
+            .fetch_optional(fresh.pool())
+            .await
+            .unwrap();
+    assert_ne!(
+        name,
+        Some(serde_json::json!("Must not land")),
+        "a refused import must not write the files that did validate"
+    );
+    let captcha: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT value FROM site_config WHERE key = 'plugin.trovato_captcha.turnstile_secret_key'",
+    )
+    .fetch_optional(fresh.pool())
+    .await
+    .unwrap();
+    assert!(captcha.is_none());
+
+    source.cleanup().await;
+    fresh.cleanup().await;
+}
+
+/// (d) Re-importing an export onto the install it came from, with no
+/// variable set, keeps every secret that install holds.
+#[tokio::test]
+async fn a_re_import_keeps_the_secrets_the_install_holds() {
+    let db = ScratchDb::new("b130keep").await;
+    let storage = db.plugin_storage().await;
+    let s = SiteSecrets::new();
+    seed_secret_site(&db, &storage, &s).await;
+    let out = TempConfigDir::new("b130keep");
+    export_config(&storage, db.pool(), out.path(), false)
+        .await
+        .unwrap();
+
+    let none = |_: &str| None;
+    if let Err(e) = import_config_with_env(&storage, db.pool(), out.path(), false, &none).await {
+        db.cleanup().await;
+        panic!("a re-import onto the same install must not need the variables: {e:#}");
+    }
+    assert_eq!(
+        webhook_secret_of(&db, &s.hook_id).await.as_deref(),
+        Some(s.webhook_secret.as_str())
+    );
+    assert_eq!(
+        client_hash_of(&db, &s.client_id).await.as_deref(),
+        Some(s.client_secret_hash.as_str())
+    );
+    let turnstile: Option<serde_json::Value> = sqlx::query_scalar(
+        "SELECT value FROM site_config WHERE key = 'plugin.trovato_captcha.turnstile_secret_key'",
+    )
+    .fetch_optional(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(turnstile, Some(serde_json::json!(s.turnstile)));
+
+    // A variable set to something else does not overwrite what the install
+    // holds either: first match wins.
+    let other = |_: &str| Some("other".to_string());
+    import_config_with_env(&storage, db.pool(), out.path(), false, &other)
+        .await
+        .unwrap();
+    assert_eq!(
+        webhook_secret_of(&db, &s.hook_id).await.as_deref(),
+        Some(s.webhook_secret.as_str())
+    );
+    db.cleanup().await;
+}
+
+/// A file holding a secret in the clear, as an export from before B130 does,
+/// is refused even where the install already holds a secret, and nothing is
+/// written.
+#[tokio::test]
+async fn a_secret_in_the_clear_is_refused() {
+    let db = ScratchDb::new("b130literal").await;
+    let storage = db.plugin_storage().await;
+    let s = SiteSecrets::new();
+    seed_secret_site(&db, &storage, &s).await;
+
+    let dir = TempConfigDir::new("b130literal");
+    dir.write(
+        &format!("webhook.{}.yml", s.hook_id),
+        &format!(
+            "id: {}\nname: Renamed\nurl: https://example.com/hook\nevents: []\n\
+             secret: smuggled\nactive: true\ncreated: 1700000000\nchanged: 1700000000\n",
+            s.hook_id
+        ),
+    );
+    dir.write(
+        "variable.plugin.trovato_captcha.turnstile_secret_key.yml",
+        "key: plugin.trovato_captcha.turnstile_secret_key\nvalue: smuggled\n",
+    );
+    // A reference to a variable outside TROVATO_SECRET_ is a literal too.
+    let client = uuid::Uuid::now_v7();
+    dir.write(
+        &format!("oauth_client.{client}.yml"),
+        &format!("id: {client}\nclient_id: other\nclient_secret_hash: env:DATABASE_URL\nname: x\n"),
+    );
+    let env = |_: &str| Some("supplied".to_string());
+    let err = import_config_with_env(&storage, db.pool(), dir.path(), false, &env)
+        .await
+        .expect_err("a secret in the clear must be refused");
+    let failed = err.downcast_ref::<ConfigImportFailed>().unwrap();
+    assert_eq!(failed.failures.len(), 3, "{:?}", failed.failures);
+    assert!(
+        failed
+            .failures
+            .iter()
+            .all(|f| f.error.contains("in the clear")),
+        "{:?}",
+        failed.failures
+    );
+    let name: String = sqlx::query_scalar("SELECT name FROM webhook WHERE id = $1::uuid")
+        .bind(&s.hook_id)
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(name, "Deploy", "nothing may be written");
+    assert_eq!(
+        webhook_secret_of(&db, &s.hook_id).await.as_deref(),
+        Some(s.webhook_secret.as_str())
+    );
+    db.cleanup().await;
+}
+
+/// Every in-tree config table's credential-looking column is declared under
+/// `[config] secret_columns`, so the export warning never fires for an
+/// in-tree plugin and the declaration, not the name heuristic, is the
+/// contract.
+#[tokio::test]
+async fn every_in_tree_credential_column_is_declared_secret() {
+    let db = ScratchDb::new("b130decl").await;
+    let storage = db.plugin_storage().await;
+    let plugins = storage.plugins().unwrap();
+    for plugin in PLUGINS_WITH_CONFIG {
+        plugin_config::save_status(
+            db.pool(),
+            &ConfigPluginStatus {
+                name: plugin.to_string(),
+                enabled: true,
+            },
+            "0",
+        )
+        .await
+        .unwrap();
+    }
+    plugins.migrate_enabled(db.pool()).await.unwrap();
+    for (_, table) in plugins.tables() {
+        let shape = plugin_config::table_shape(db.pool(), &table)
+            .await
+            .unwrap()
+            .unwrap();
+        let declared = plugins.secret_columns(&table);
+        for column in &shape.columns {
+            if plugin_config::looks_like_credential(column) {
+                assert!(
+                    declared.contains(column),
+                    "{table}.{column} looks like a credential and is not declared secret"
+                );
+            }
+        }
+        for column in &declared {
+            assert!(
+                shape.columns.contains(column),
+                "{table} declares secret column {column}, which it does not have"
+            );
+        }
+    }
+    assert_eq!(plugins.secret_columns("webhook"), vec!["secret"]);
+    assert_eq!(
+        plugins.secret_columns("oauth_client"),
+        vec!["client_secret_hash"]
+    );
     db.cleanup().await;
 }

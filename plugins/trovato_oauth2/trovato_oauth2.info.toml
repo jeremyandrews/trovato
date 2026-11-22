@@ -1,7 +1,7 @@
 name = "trovato_oauth2"
 description = "OAuth2 authorization server with JWT tokens"
-version = "0.106.0"
-api_version = "0.106"
+version = "0.107.0"
+api_version = "0.107"
 dependencies = []
 
 [taps]
@@ -27,6 +27,9 @@ files = [
 host_interfaces = []
 
 # Site configuration this plugin owns: `config export` writes each row of
-# these tables and `config import` reads them back.
+# these tables and `config import` reads them back. A secret column is never
+# exported: the file holds `env:TROVATO_SECRET_<TABLE>_<PK>_<COLUMN>` and
+# import reads that variable (API 0.107).
 [config]
 tables = ["oauth_client"]
+secret_columns = { oauth_client = ["client_secret_hash"] }

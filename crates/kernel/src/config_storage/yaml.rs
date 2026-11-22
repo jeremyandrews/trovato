@@ -9,6 +9,11 @@
 //! runtime state ([`super::RUNTIME_STATE_KEYS`]) are neither exported nor
 //! imported.
 //!
+//! No secret is ever exported: a plugin table's secret columns and the
+//! [`super::SECRET_VARIABLE_KEYS`] variables are written as
+//! `env:TROVATO_SECRET_...` references, and import resolves them (see
+//! [`import_config_with_env`] and [`super::plugin_config`]).
+//!
 //! Import is idempotent: `ConfigStorage::save()` performs upsert, so
 //! re-running import on a partially-imported database converges to the
 //! correct state.
@@ -40,7 +45,10 @@ use tracing::{debug, info};
 use uuid::Uuid;
 
 use super::plugin_config::{self, PluginRow};
-use super::{ConfigEntity, ConfigStorage, RUNTIME_STATE_KEYS, SearchFieldConfig, entity_types};
+use super::{
+    ConfigEntity, ConfigStorage, RUNTIME_STATE_KEYS, SECRET_VARIABLE_COLUMN, SECRET_VARIABLE_KEYS,
+    SearchFieldConfig, entity_types,
+};
 use crate::file::{FileService, MAX_FILE_SIZE};
 use crate::gather::types::GatherQuery;
 use crate::models::tile::Tile;
@@ -497,6 +505,9 @@ pub async fn export_config(
             .map(|(_, table)| table.clone()),
     );
     let table_names: Vec<String> = all_plugin_tables.into_iter().map(|(_, t)| t).collect();
+    // `(table, column)` pairs already warned about, so a table of a thousand
+    // rows warns once.
+    let mut undeclared: HashSet<(String, String)> = HashSet::new();
 
     for entity_type in &order {
         let entity_type = entity_type.as_str();
@@ -507,13 +518,18 @@ pub async fn export_config(
 
         let mut count = 0usize;
 
-        for entity in entities {
+        for mut entity in entities {
             let id = entity.id();
 
             // Runtime state is not configuration.
             if let ConfigEntity::Variable { key, .. } = &entity
                 && RUNTIME_STATE_KEYS.contains(&key.as_str())
             {
+                continue;
+            }
+
+            // A secret is never written: its reference, or nothing when empty.
+            if !redact_for_export(storage, &mut entity, &mut undeclared, &mut result.warnings) {
                 continue;
             }
 
@@ -632,6 +648,54 @@ pub async fn export_config(
     Ok(result)
 }
 
+/// Replace every secret `entity` holds with its `env:` reference, before it is
+/// written. Returns `false` when the entity should not be written at all: a
+/// secret variable whose value is empty.
+///
+/// A plugin row's secret columns are the ones its manifest declares under
+/// `[config] secret_columns`, and any other whose name looks like a
+/// credential ([`plugin_config::looks_like_credential`]); the second kind is
+/// redacted all the same, with a warning that the manifest should say so.
+fn redact_for_export(
+    storage: &dyn ConfigStorage,
+    entity: &mut ConfigEntity,
+    undeclared: &mut HashSet<(String, String)>,
+    warnings: &mut Vec<String>,
+) -> bool {
+    match entity {
+        ConfigEntity::Variable { key, value } if SECRET_VARIABLE_KEYS.contains(&key.as_str()) => {
+            if plugin_config::is_empty_secret(Some(value)) {
+                return false;
+            }
+            *value = serde_json::Value::String(format!(
+                "env:{}",
+                plugin_config::secret_env_name(entity_types::VARIABLE, key, SECRET_VARIABLE_COLUMN)
+            ));
+            true
+        }
+        ConfigEntity::PluginRow(row) => {
+            let declared = storage
+                .plugins()
+                .map(|p| p.secret_columns(&row.table))
+                .unwrap_or_default();
+            let secret = plugin_config::secret_columns_of(&declared, &row.row);
+            for column in secret.iter().filter(|c| !declared.contains(c)) {
+                if undeclared.insert((row.table.clone(), column.clone())) {
+                    warnings.push(format!(
+                        "table '{}' column '{column}' looks like a credential, so it was \
+                         exported as a reference; its plugin should name it under \
+                         [config] secret_columns",
+                        row.table
+                    ));
+                }
+            }
+            plugin_config::redact_row(&row.table, &row.id, &secret, &mut row.row);
+            true
+        }
+        _ => true,
+    }
+}
+
 /// Write a file entity's bytes under `dir`, at `files/<sanitized filename>`,
 /// or `files/<id>_<sanitized filename>` when another file took that name.
 /// Returns the entity with the `path` it was written to.
@@ -684,11 +748,42 @@ async fn export_file_bytes(
 ///
 /// Import is idempotent — `ConfigStorage::save()` performs upsert, so
 /// re-running import on a partially-imported database converges correctly.
+///
+/// A secret (a plugin table's secret column, a [`SECRET_VARIABLE_KEYS`]
+/// variable) is resolved in phase 2 from the process environment: see
+/// [`import_config_with_env`].
 pub async fn import_config(
     storage: &dyn ConfigStorage,
     pool: &PgPool,
     dir: &Path,
     dry_run: bool,
+) -> Result<ConfigOpResult> {
+    let env = |name: &str| std::env::var(name).ok();
+    import_config_with_env(storage, pool, dir, dry_run, &env).await
+}
+
+/// Where import reads a secret's `TROVATO_SECRET_*` variable from.
+pub type SecretLookup = dyn Fn(&str) -> Option<String> + Send + Sync;
+
+/// [`import_config`], reading secrets through `env` rather than the process
+/// environment.
+///
+/// Each secret is resolved before anything is written, first match wins:
+///
+/// 1. the target already holds a non-empty value for it: kept, untouched;
+/// 2. the file holds `env:TROVATO_SECRET_...` and `env` has that variable: its
+///    value is stored (hashed first for a column ending in `_hash`);
+/// 3. otherwise the file fails, naming the variable to set, and nothing is
+///    written.
+///
+/// A file holding a secret in the clear fails whatever the target holds, so a
+/// set exported before secrets were redacted cannot write one back.
+pub async fn import_config_with_env(
+    storage: &dyn ConfigStorage,
+    pool: &PgPool,
+    dir: &Path,
+    dry_run: bool,
+    env: &SecretLookup,
 ) -> Result<ConfigOpResult> {
     info!(
         log_type = "config",
@@ -711,7 +806,7 @@ pub async fn import_config(
         .unwrap_or_default();
     let mut seen = HashSet::new();
     table_names.retain(|t| seen.insert(t.clone()));
-    let parsed =
+    let mut parsed =
         read_and_validate_files(dir, &table_names, &mut result.warnings, &mut failures).await?;
     let parsed_total: usize = parsed.values().map(|v| v.len()).sum();
     debug!(
@@ -724,6 +819,7 @@ pub async fn import_config(
     // Phase 2: resolve every reference the set makes, before writing anything.
     validate_references(storage, pool, &parsed, &mut failures).await;
     validate_plugins(storage, pool, &parsed, &mut result.warnings, &mut failures).await;
+    resolve_secrets(storage, pool, &mut parsed, env, &mut failures).await;
 
     if !failures.is_empty() {
         return Err(ConfigImportFailed {
@@ -985,6 +1081,177 @@ async fn validate_references(
     validate_menu_link_parents(storage, parsed, failures).await;
     validate_role_permissions(pool, parsed, failures).await;
     validate_workflow(pool, parsed, failures).await;
+}
+
+/// What import does with one secret.
+enum SecretResolution {
+    /// The target's value stands, untouched.
+    Keep,
+    /// No secret: the file had none and the target has none.
+    Empty,
+    /// Store this value.
+    Set(String),
+}
+
+/// Resolve one secret from what the file holds and whether the target
+/// already holds one. `expected` is the variable export would have named.
+fn resolve_secret(
+    column: &str,
+    input: plugin_config::SecretInput,
+    stored: Option<&serde_json::Value>,
+    expected: &str,
+    env: &SecretLookup,
+) -> std::result::Result<SecretResolution, String> {
+    use plugin_config::SecretInput;
+    if input == SecretInput::Literal {
+        return Err(format!(
+            "'{column}' holds a secret in the clear, which a config set must never carry; \
+             write `env:{expected}` in its place and set {expected} when importing"
+        ));
+    }
+    if !plugin_config::is_empty_secret(stored) {
+        return Ok(SecretResolution::Keep);
+    }
+    match input {
+        SecretInput::Empty | SecretInput::Literal => Ok(SecretResolution::Empty),
+        SecretInput::Reference(name) => match env(&name).filter(|v| !v.is_empty()) {
+            Some(secret) => plugin_config::hash_secret(column, &secret)
+                .map(SecretResolution::Set)
+                .map_err(|e| format!("failed to hash '{column}': {e:#}")),
+            None => Err(format!(
+                "'{column}' is a secret the config set does not carry; set the environment \
+                 variable {name} to its value and import again"
+            )),
+        },
+    }
+}
+
+/// Replace every secret reference in the set with the value import will
+/// store, or drop it where the target's value stands; fail each file whose
+/// secret cannot be supplied. Reads only.
+async fn resolve_secrets(
+    storage: &dyn ConfigStorage,
+    pool: &PgPool,
+    parsed: &mut BTreeMap<String, Vec<ParsedEntity>>,
+    env: &SecretLookup,
+    failures: &mut Vec<ConfigImportFailure>,
+) {
+    let mut shapes: HashMap<String, Option<plugin_config::TableShape>> = HashMap::new();
+    for entities in parsed.values_mut() {
+        let mut kept = Vec::with_capacity(entities.len());
+        for mut pe in std::mem::take(entities) {
+            let filename = pe.filename.clone();
+            let mut fail = |error: String| {
+                failures.push(ConfigImportFailure {
+                    filename: filename.clone(),
+                    error,
+                });
+            };
+            match &mut pe.entity {
+                ConfigEntity::Variable { key, value }
+                    if SECRET_VARIABLE_KEYS.contains(&key.as_str()) =>
+                {
+                    let expected = plugin_config::secret_env_name(
+                        entity_types::VARIABLE,
+                        key,
+                        SECRET_VARIABLE_COLUMN,
+                    );
+                    let stored = match crate::models::SiteConfig::get(pool, key).await {
+                        Ok(stored) => stored,
+                        Err(e) => {
+                            fail(format!("failed to read variable '{key}': {e:#}"));
+                            continue;
+                        }
+                    };
+                    let input = plugin_config::secret_input(Some(value));
+                    match resolve_secret(
+                        SECRET_VARIABLE_COLUMN,
+                        input,
+                        stored.as_ref(),
+                        &expected,
+                        env,
+                    ) {
+                        // The variable is the secret: writing nothing keeps it.
+                        Ok(SecretResolution::Keep) => continue,
+                        Ok(SecretResolution::Empty) => {}
+                        Ok(SecretResolution::Set(secret)) => {
+                            *value = serde_json::Value::String(secret);
+                        }
+                        Err(error) => fail(error),
+                    }
+                }
+                ConfigEntity::PluginRow(row) => {
+                    let declared = storage
+                        .plugins()
+                        .map(|p| p.secret_columns(&row.table))
+                        .unwrap_or_default();
+                    let secret = plugin_config::secret_columns_of(&declared, &row.row);
+                    if secret.is_empty() {
+                        kept.push(pe);
+                        continue;
+                    }
+                    if !shapes.contains_key(&row.table) {
+                        // A failure here was already reported by validation.
+                        let shape = plugin_config::table_shape(pool, &row.table)
+                            .await
+                            .ok()
+                            .flatten();
+                        shapes.insert(row.table.clone(), shape);
+                    }
+                    let shape = shapes.get(&row.table).cloned().flatten();
+                    for column in &secret {
+                        let stored = match &shape {
+                            Some(shape) => match plugin_config::stored_secret(
+                                pool, &row.table, shape, &row.row, column,
+                            )
+                            .await
+                            {
+                                Ok(stored) => stored,
+                                Err(e) => {
+                                    fail(format!("{e:#}"));
+                                    continue;
+                                }
+                            },
+                            // The import is about to create the table.
+                            None => None,
+                        };
+                        let expected = plugin_config::secret_env_name(&row.table, &row.id, column);
+                        let input = plugin_config::secret_input(row.row.get(column));
+                        match resolve_secret(column, input, stored.as_ref(), &expected, env) {
+                            // The stored value, written back as it is: an
+                            // upsert checks NOT NULL on the proposed row
+                            // before it finds the existing one, so leaving
+                            // the column out would fail.
+                            Ok(SecretResolution::Keep) => {
+                                if let Some(stored) = stored {
+                                    row.row.insert(column.clone(), stored);
+                                }
+                            }
+                            Ok(SecretResolution::Empty) => {
+                                let known = shape
+                                    .as_ref()
+                                    .is_none_or(|s| s.columns.iter().any(|c| c == column));
+                                if known {
+                                    row.row.insert(
+                                        column.clone(),
+                                        serde_json::Value::String(String::new()),
+                                    );
+                                }
+                            }
+                            Ok(SecretResolution::Set(value)) => {
+                                row.row
+                                    .insert(column.clone(), serde_json::Value::String(value));
+                            }
+                            Err(error) => fail(error),
+                        }
+                    }
+                }
+                _ => {}
+            }
+            kept.push(pe);
+        }
+        *entities = kept;
+    }
 }
 
 /// Check the plugin half of the set against the plugins on disk and the

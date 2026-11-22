@@ -14,6 +14,19 @@
 //!
 //! The plugin manifests are read from disk, so this works in the `config`
 //! command's own process, with no running server.
+//!
+//! # Secret columns
+//!
+//! A config set is meant to be committed, so it never carries a secret. A
+//! column a manifest names under `[config] secret_columns` (and any column
+//! whose name says it holds a credential, see [`looks_like_credential`]) is
+//! exported as the reference `env:TROVATO_SECRET_<TABLE>_<PK>_<COLUMN>`
+//! ([`secret_env_name`]), or left out when it is empty. Import resolves each
+//! one: a value the target row already holds is kept; otherwise the named
+//! environment variable supplies it; otherwise the row is refused. A literal
+//! value in a secret column is refused too. A column whose name ends in
+//! `_hash` stores an Argon2id hash: its variable holds the plaintext, which
+//! import hashes ([`hash_secret`]) and never stores.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -99,6 +112,22 @@ impl PluginConfigSet {
         tables
     }
 
+    /// The columns of `table` its owner declares under
+    /// `[config] secret_columns`.
+    pub fn secret_columns(&self, table: &str) -> Vec<String> {
+        self.plugins
+            .values()
+            .filter(|(info, _)| info.config.tables.iter().any(|t| t == table))
+            .flat_map(|(info, _)| {
+                info.config
+                    .secret_columns
+                    .get(table)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
     /// The plugin that declares `table`, if any.
     pub fn owner(&self, table: &str) -> Option<&str> {
         self.plugins
@@ -182,6 +211,175 @@ fn migration_created_tables(info: &PluginInfo, dir: &Path) -> HashSet<String> {
         }
     }
     tables
+}
+
+/// The prefix of every environment variable a config set's secrets are
+/// supplied in. Import reads no other: a config file cannot point a secret
+/// column at `DATABASE_URL` or `JWT_SECRET`.
+pub const SECRET_ENV_PREFIX: &str = "TROVATO_SECRET_";
+
+/// The environment variable that supplies the secret in `column` of the
+/// entity `entity_type` / `id` (a plugin table's row, or a variable, whose
+/// column is `value`): `TROVATO_SECRET_<TYPE>_<ID>_<COLUMN>`, upper case, every
+/// character that is not an ASCII letter or digit as `_`.
+pub fn secret_env_name(entity_type: &str, id: &str, column: &str) -> String {
+    let raw = format!("{SECRET_ENV_PREFIX}{entity_type}_{id}_{column}");
+    raw.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Whether a column's name says it holds a credential, whether or not its
+/// plugin declared it.
+///
+/// The guard against the next plugin forgetting `secret_columns`: a config
+/// table's `password`, `api_key` or `client_secret` column is treated as a
+/// secret column regardless, and export warns that the manifest should say
+/// so. Deliberately narrow, because a false positive costs an environment
+/// variable on import.
+pub fn looks_like_credential(column: &str) -> bool {
+    let name = column.to_ascii_lowercase();
+    let words: Vec<&str> = name.split('_').collect();
+    let word = |w: &str| words.contains(&w);
+    word("secret")
+        || word("password")
+        || word("passwd")
+        || word("credential")
+        || word("credentials")
+        || word("apikey")
+        || [
+            "api_key",
+            "private_key",
+            "signing_key",
+            "access_token",
+            "refresh_token",
+            "auth_token",
+        ]
+        .iter()
+        .any(|s| name.contains(s))
+}
+
+/// Every secret column of `row`: the declared ones, and any other the row
+/// carries whose name looks like a credential.
+pub fn secret_columns_of(
+    declared: &[String],
+    row: &serde_json::Map<String, serde_json::Value>,
+) -> Vec<String> {
+    let mut columns: Vec<String> = declared.to_vec();
+    for key in row.keys() {
+        if looks_like_credential(key) && !columns.contains(key) {
+            columns.push(key.clone());
+        }
+    }
+    columns
+}
+
+/// Whether a stored secret value is empty (no secret set).
+pub fn is_empty_secret(value: Option<&serde_json::Value>) -> bool {
+    match value {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::String(s)) => s.is_empty(),
+        Some(_) => false,
+    }
+}
+
+/// Replace every secret in `row` for export: the reference to its variable,
+/// or nothing when the stored value is empty. `id` is the row's file name id.
+pub fn redact_row(
+    table: &str,
+    id: &str,
+    secret: &[String],
+    row: &mut serde_json::Map<String, serde_json::Value>,
+) {
+    for column in secret {
+        if !row.contains_key(column) {
+            continue;
+        }
+        if is_empty_secret(row.get(column)) {
+            row.remove(column);
+        } else {
+            row.insert(
+                column.clone(),
+                serde_json::Value::String(format!("env:{}", secret_env_name(table, id, column))),
+            );
+        }
+    }
+}
+
+/// What a config file holds where a secret belongs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretInput {
+    /// Nothing: the key is absent, null or the empty string.
+    Empty,
+    /// `env:<NAME>`, a reference to a variable under [`SECRET_ENV_PREFIX`].
+    Reference(String),
+    /// Anything else: a value in the clear, which import refuses.
+    Literal,
+}
+
+/// Classify what a file holds in a secret's place.
+pub fn secret_input(value: Option<&serde_json::Value>) -> SecretInput {
+    if is_empty_secret(value) {
+        return SecretInput::Empty;
+    }
+    match value {
+        Some(serde_json::Value::String(s)) => match s.strip_prefix("env:") {
+            Some(name) if name.starts_with(SECRET_ENV_PREFIX) => {
+                SecretInput::Reference(name.to_string())
+            }
+            _ => SecretInput::Literal,
+        },
+        _ => SecretInput::Literal,
+    }
+}
+
+/// What a secret column stores for the plaintext `secret`: the plaintext, or
+/// for a column whose name ends in `_hash`, its Argon2id hash in PHC form,
+/// the same hash user passwords use and the OAuth token endpoint verifies.
+pub fn hash_secret(column: &str, secret: &str) -> Result<String> {
+    if column.ends_with("_hash") {
+        crate::models::user::hash_password(secret)
+    } else {
+        Ok(secret.to_string())
+    }
+}
+
+/// The value `column` holds in the row of `table` with `row`'s primary key;
+/// `None` when there is no such row or the value is NULL.
+pub async fn stored_secret(
+    pool: &PgPool,
+    table: &str,
+    shape: &TableShape,
+    row: &serde_json::Map<String, serde_json::Value>,
+    column: &str,
+) -> Result<Option<serde_json::Value>> {
+    if !shape.columns.iter().any(|c| c == column) {
+        return Ok(None);
+    }
+    let pk = shape
+        .primary_key
+        .iter()
+        .map(|c| format!("t.{c} = r.{c}", c = ident(c)))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let sql = format!(
+        "SELECT to_jsonb(t.{col}) FROM {tbl} t, jsonb_populate_record(NULL::{tbl}, $1) r \
+         WHERE {pk}",
+        col = ident(column),
+        tbl = ident(table),
+    );
+    let value: Option<Option<serde_json::Value>> = sqlx::query_scalar(AssertSqlSafe(sql))
+        .bind(serde_json::Value::Object(row.clone()))
+        .fetch_optional(pool)
+        .await
+        .with_context(|| format!("failed to read '{column}' of the existing row in '{table}'"))?;
+    Ok(value.flatten())
 }
 
 /// Quote an identifier for interpolation into SQL.
@@ -539,6 +737,104 @@ mod tests {
             primary_key: pk.iter().map(|s| s.to_string()).collect(),
             unique: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_secret_env_name_is_upper_case_with_underscores() {
+        assert_eq!(
+            secret_env_name("webhook", "0193a5a0-0092-7000-8000-000000000004", "secret"),
+            "TROVATO_SECRET_WEBHOOK_0193A5A0_0092_7000_8000_000000000004_SECRET"
+        );
+        assert_eq!(
+            secret_env_name(
+                "variable",
+                "plugin.trovato_captcha.turnstile_secret_key",
+                "value"
+            ),
+            "TROVATO_SECRET_VARIABLE_PLUGIN_TROVATO_CAPTCHA_TURNSTILE_SECRET_KEY_VALUE"
+        );
+    }
+
+    #[test]
+    fn credential_names_are_recognized_and_ordinary_ones_are_not() {
+        for yes in [
+            "secret",
+            "client_secret_hash",
+            "password",
+            "smtp_passwd",
+            "api_key",
+            "openai_apikey",
+            "private_key",
+            "signing_key",
+            "access_token",
+            "credentials",
+        ] {
+            assert!(looks_like_credential(yes), "{yes} is a credential");
+        }
+        for no in [
+            "id",
+            "name",
+            "url",
+            "events",
+            "token_limit",
+            "content_hash",
+            "secretary",
+            "label",
+            "keyword",
+        ] {
+            assert!(!looks_like_credential(no), "{no} is not a credential");
+        }
+    }
+
+    #[test]
+    fn redacting_writes_a_reference_or_drops_an_empty_value() {
+        let mut row =
+            serde_json::json!({"id": "a", "secret": "s3cret", "token_hash": "", "name": "n"})
+                .as_object()
+                .unwrap()
+                .clone();
+        redact_row(
+            "webhook",
+            "a",
+            &["secret".to_string(), "token_hash".to_string()],
+            &mut row,
+        );
+        assert_eq!(row["secret"], "env:TROVATO_SECRET_WEBHOOK_A_SECRET");
+        assert!(!row.contains_key("token_hash"));
+        assert_eq!(row["name"], "n");
+    }
+
+    #[test]
+    fn a_file_value_is_empty_a_reference_or_a_literal() {
+        use serde_json::json;
+        assert_eq!(secret_input(None), SecretInput::Empty);
+        assert_eq!(secret_input(Some(&json!(null))), SecretInput::Empty);
+        assert_eq!(secret_input(Some(&json!(""))), SecretInput::Empty);
+        assert_eq!(
+            secret_input(Some(&json!("env:TROVATO_SECRET_X"))),
+            SecretInput::Reference("TROVATO_SECRET_X".to_string())
+        );
+        // Only the import's own variables: a file cannot read DATABASE_URL.
+        assert_eq!(
+            secret_input(Some(&json!("env:DATABASE_URL"))),
+            SecretInput::Literal
+        );
+        assert_eq!(secret_input(Some(&json!("s3cret"))), SecretInput::Literal);
+        assert_eq!(secret_input(Some(&json!(42))), SecretInput::Literal);
+    }
+
+    #[test]
+    fn a_hash_column_stores_a_verifiable_hash_and_never_the_plaintext() {
+        use argon2::PasswordVerifier;
+        let stored = hash_secret("client_secret_hash", "plain").unwrap();
+        assert_ne!(stored, "plain");
+        let parsed = argon2::PasswordHash::new(&stored).unwrap();
+        assert!(
+            argon2::Argon2::default()
+                .verify_password(b"plain", &parsed)
+                .is_ok()
+        );
+        assert_eq!(hash_secret("secret", "plain").unwrap(), "plain");
     }
 
     #[test]

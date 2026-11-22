@@ -538,7 +538,10 @@ fn argon2_instance() -> Argon2<'static> {
 }
 
 /// Hash a password using Argon2id.
-fn hash_password(password: &str) -> Result<String> {
+///
+/// Also the hash of an OAuth client secret a config import supplies
+/// (`config_storage::plugin_config::hash_secret`).
+pub(crate) fn hash_password(password: &str) -> Result<String> {
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = argon2_instance();
 
