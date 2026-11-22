@@ -895,3 +895,56 @@ fn an_admin_can_delete_an_account_that_authored_content() {
         cleanup(app, &admin).await;
     });
 }
+
+/// An administrator deleting an account ends that account's sessions and
+/// empties its session index, as self-service deletion does. Before, the admin
+/// path deleted the row and left every session and index entry in place, so the
+/// deleted account's devices stayed listed and its session kept being touched.
+#[test]
+fn an_admin_deletion_ends_the_accounts_sessions_and_empties_its_index() {
+    run_test(async {
+        let app = shared_app().await;
+        let victim = seed_account(app, "delindexed", false).await;
+        let admin = seed_account(app, "deladmin3", true).await;
+
+        // One request so the tracking middleware indexes the victim's session.
+        let _ = app
+            .request_with_cookies(
+                Request::get("/user/profile").body(Body::empty()).unwrap(),
+                &victim.cookies,
+            )
+            .await;
+        let before = app.state.session_registry().list(victim.id).await.unwrap();
+        assert_eq!(before.len(), 1, "the victim's session is indexed");
+
+        let (cookies, token) = form_token(app, &admin.cookies, "/admin/people").await;
+        let response = post_form(
+            app,
+            &cookies,
+            &format!("/admin/people/{}/delete", victim.id),
+            &[("_token", &token)],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+
+        let after = app.state.session_registry().list(victim.id).await.unwrap();
+        assert!(
+            after.is_empty(),
+            "the deleted account's devices must leave the index, got {}",
+            after.len()
+        );
+        let mut conn = app
+            .state
+            .redis()
+            .get_multiplexed_async_connection()
+            .await
+            .unwrap();
+        let record: bool = redis::AsyncCommands::exists(&mut conn, &before[0].session_id)
+            .await
+            .unwrap();
+        assert!(!record, "the deleted account's session record must be gone");
+
+        cleanup(app, &victim).await;
+        cleanup(app, &admin).await;
+    });
+}

@@ -49,13 +49,28 @@ pub async fn session_user(state: &AppState, session: &Session) -> Option<User> {
     let id: Uuid = session.get(SESSION_USER_ID).await.ok().flatten()?;
     let user = state.users().find_by_id(id).await.ok().flatten()?;
     if !user.is_active() {
-        // `flush`, not `delete`: see `routes::auth::logout`. A session only
-        // deleted from the store is saved again by the session layer if this
-        // request writes to it, and that save fails on the missing key.
-        let _ = session.flush().await;
+        end_blocked_session(state, session, id).await;
         return None;
     }
     Some(user)
+}
+
+/// End the session of a blocked account: flush it, and drop its device from
+/// the user's session index.
+///
+/// `flush`, not `delete`: see `routes::auth::logout`. A session only deleted
+/// from the store is saved again by the session layer if this request writes to
+/// it, and that save fails on the missing key. The device id is read first
+/// because `flush` clears it, and the index entry would otherwise outlive the
+/// session. Runs only for a blocked account, never on an ordinary request.
+async fn end_blocked_session(state: &AppState, session: &Session, user_id: Uuid) {
+    let device_id: Option<Uuid> = session
+        .get(crate::services::session_registry::SESSION_DEVICE_ID)
+        .await
+        .ok()
+        .flatten();
+    let _ = session.flush().await;
+    crate::services::session_registry::forget_ended_session(state, user_id, device_id).await;
 }
 
 /// Whether `user` holds `permission`; an administrator holds every permission.
@@ -882,8 +897,7 @@ pub async fn get_user_context(session: &Session, state: &AppState) -> UserContex
         // routes that gate on it. Without this every render and read handler
         // went on treating a blocked user as themselves.
         Some(user) if !user.is_active() => {
-            // `flush`, not `delete`, as in `session_user` above.
-            let _ = session.flush().await;
+            end_blocked_session(state, session, id).await;
             anonymous_user_context(state).await
         }
         Some(user) => user_context_for(state, &user).await,
