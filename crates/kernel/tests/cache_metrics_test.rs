@@ -82,6 +82,12 @@ fn loading_an_item_twice_counts_a_miss_then_a_hit() {
         // Whatever creating it left in the cache, the first page load below
         // starts cold.
         app.state.items().invalidate(item);
+        // Creating the item and invalidating it each bump the item cache
+        // generation, and this server's own watcher clears the item cache when
+        // it sees a bump, on its next 250 ms poll. Let that clear land now, or
+        // it can fall between the two loads below and turn the warm load into
+        // a miss.
+        common::settle_cache_generations().await;
 
         let label = "cache=\"item\"";
         let hits_before = sample(app, "cache_hits_total", &[label]).await;
