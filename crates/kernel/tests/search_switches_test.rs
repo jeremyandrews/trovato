@@ -42,6 +42,24 @@ async fn fresh_type(app: &TestApp) -> String {
         )
         .await
         .expect("create the fixture type");
+
+    // The type, and the items on it (whose comments cascade), go when the test
+    // ends: every run names a new type, so leaving it would leave one more
+    // behind on every run.
+    let pool = app.db.clone();
+    let registry = std::sync::Arc::clone(app.state.content_types());
+    let machine_name = name.clone();
+    common::defer_cleanup(move || async move {
+        let _ = sqlx::query("DELETE FROM item WHERE type = $1")
+            .bind(&machine_name)
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM item_type WHERE type = $1")
+            .bind(&machine_name)
+            .execute(&pool)
+            .await;
+        registry.invalidate(&machine_name);
+    });
     name
 }
 
