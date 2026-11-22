@@ -422,15 +422,12 @@ impl FormBuilder {
     /// formats this user may use.
     fn format_select(&self, value: Option<&serde_json::Value>, mode: FieldMode) -> FormElement {
         let current = extract_format_value(value);
-        let options: Vec<(String, String)> = [
-            ("filtered_html", "Filtered HTML"),
-            ("full_html", "Full HTML"),
-            ("plain_text", "Plain Text"),
-        ]
-        .into_iter()
-        .filter(|(format, _)| self.is_format_permitted(format))
-        .map(|(format, label)| (format.to_string(), label.to_string()))
-        .collect();
+        // The stored formats, lightest first (`content::text_format`).
+        let options: Vec<(String, String)> = super::text_format::all()
+            .iter()
+            .filter(|format| self.is_format_permitted(&format.format))
+            .map(|format| (format.format.clone(), format.name.clone()))
+            .collect();
         let mut element = FormElement::select(options)
             .title("Text format")
             .default_value(current)

@@ -22,6 +22,7 @@ pub mod admin_search;
 pub mod admin_search_report;
 pub mod admin_stage;
 pub mod admin_taxonomy;
+pub mod admin_text_format;
 pub mod admin_translation;
 pub mod admin_user;
 pub mod api_ai_assist;

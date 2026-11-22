@@ -1283,6 +1283,11 @@ impl AppState {
             }),
         };
 
+        // The stored text formats, which every render reads synchronously.
+        if let Err(e) = crate::content::text_format::reload(state.db()).await {
+            warn!(error = %e, "failed to load text formats; using the built-in definitions");
+        }
+
         // Cache generations (`cache::generation`): writes from here bump, and
         // a bump from any server clears that cache here. A single server runs
         // this too; it then only ever sees its own bumps.
@@ -1329,6 +1334,11 @@ impl AppState {
                 }
             }
             CacheKind::Menus => crate::menu::clear_local_config_menus(),
+            CacheKind::TextFormats => {
+                if let Err(e) = crate::content::text_format::reload(self.db()).await {
+                    warn!(error = %e, "failed to reload text formats after a bump");
+                }
+            }
         }
     }
 

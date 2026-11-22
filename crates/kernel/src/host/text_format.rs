@@ -18,16 +18,13 @@ use crate::plugin::{PluginState, WasmtimeExt};
 use crate::tap::UserContext;
 use trovato_sdk::host_errors;
 
-/// The formats the kernel knows.
-const FORMATS: [&str; 3] = ["plain_text", "filtered_html", "full_html"];
-
 /// Filter `text` through `format` for `user`, or the error code a plugin gets.
 ///
-/// The format must exist ([`host_errors::ERR_TEXT_FORMAT_UNKNOWN`]) and be one
+/// The format must be stored (`content::text_format`) ([`host_errors::ERR_TEXT_FORMAT_UNKNOWN`]) and be one
 /// `user` may write ([`host_errors::ERR_TEXT_FORMAT_NOT_PERMITTED`]); the
 /// check is [`permitted_text_formats`], the one the item forms use.
 pub fn filter_for(user: &UserContext, text: &str, format: &str) -> Result<String, i32> {
-    if !FORMATS.contains(&format) {
+    if crate::content::text_format::get(format).is_none() {
         return Err(host_errors::ERR_TEXT_FORMAT_UNKNOWN);
     }
     if !permitted_text_formats(user).iter().any(|f| f == format) {

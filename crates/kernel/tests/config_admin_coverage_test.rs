@@ -7,7 +7,7 @@
 //! import-only, and prose drifts: menus were on the list of types *with* screens for
 //! a while, and did not have one.
 //!
-//! So the list is a table here, and this file is the audit. For each of the thirteen
+//! So the list is a table here, and this file is the audit. For each of the
 //! config entity types it is one of two things:
 //!
 //! - **`Screen`** — a path that must actually serve for an administrator. Not "a
@@ -90,6 +90,7 @@ const COVERAGE: &[(&str, Coverage)] = &[
     ("plugin_status", Screen("/admin/plugins", None)),
     ("tile", Screen("/admin/structure/tiles", None)),
     ("menu_link", Screen("/admin/structure/menus", None)),
+    ("text_format", Screen("/admin/config/formats", None)),
 ];
 
 async fn admin_cookies(app: &TestApp) -> String {

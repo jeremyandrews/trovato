@@ -1,6 +1,8 @@
 //! Text format filter pipeline.
 //!
-//! Provides security filtering for text content based on format type:
+//! Provides security filtering for text content based on format type. The
+//! formats are stored (`content::text_format`); the three the kernel ships are
+//! seeded with the definitions here:
 //! - plain_text: HTML-escapes all content
 //! - filtered_html: Allows safe tags, strips dangerous ones
 //! - full_html: No filtering (admin only)
@@ -34,36 +36,44 @@ impl FilterPipeline {
         self
     }
 
-    /// Create pipeline for a specific format.
+    /// Create pipeline for a specific format, as stored
+    /// (`content::text_format`). An unknown format gets `plain_text`, the
+    /// safest.
     pub fn for_format(format: &str) -> Self {
-        match format {
-            "plain_text" => Self::plain_text(),
-            "filtered_html" => Self::filtered_html(),
-            "full_html" => Self::full_html(),
-            _ => Self::plain_text(), // Default to safest option
+        match super::text_format::get(format) {
+            Some(stored) => stored.pipeline(),
+            None => Self::plain_text(),
         }
     }
 
     /// Create pipeline for a format, rejecting unsafe formats.
     ///
-    /// Only `plain_text` and `filtered_html` are permitted. Any other format
-    /// (including `full_html`) is downgraded to `plain_text`. Use this at
-    /// every view-time rendering site where the format string originates from
+    /// Only a format that filters is permitted: one that escapes or limits
+    /// HTML, as `plain_text` and `filtered_html` do. A format that keeps text
+    /// as written (`full_html`, or any stored format with no filtering) and an
+    /// unknown format are downgraded to `plain_text`. Use this at every
+    /// view-time rendering site where the format string originates from
     /// stored data or plugin input.
     pub fn for_format_safe(format: &str) -> Self {
-        match format {
-            "plain_text" | "filtered_html" => Self::for_format(format),
+        match super::text_format::get(format) {
+            Some(stored) if stored.filter != super::text_format::FilterKind::None => {
+                stored.pipeline()
+            }
             _ => Self::plain_text(),
         }
     }
 
     /// Create pipeline with permission check.
     ///
-    /// If `has_full_html` is false and format is "full_html", downgrades to
-    /// filtered_html for safety.
+    /// If `has_full_html` is false and the format keeps text as written
+    /// (`full_html`), downgrades to filtered_html for safety.
     pub fn for_format_checked(format: &str, has_full_html: bool) -> Self {
-        match format {
-            "full_html" if !has_full_html => Self::filtered_html(),
+        match super::text_format::get(format) {
+            Some(stored)
+                if stored.filter == super::text_format::FilterKind::None && !has_full_html =>
+            {
+                Self::for_format("filtered_html")
+            }
             _ => Self::for_format(format),
         }
     }
@@ -132,8 +142,9 @@ impl TextFilter for NewlineFilter {
 pub struct FilteredHtmlFilter;
 
 impl FilteredHtmlFilter {
-    /// List of allowed HTML tags.
-    const ALLOWED_TAGS: &'static [&'static str] = &[
+    /// List of allowed HTML tags: the code definition `filtered_html` is
+    /// seeded with.
+    pub(crate) const ALLOWED_TAGS: &'static [&'static str] = &[
         "p",
         "br",
         "strong",
@@ -169,7 +180,7 @@ impl FilteredHtmlFilter {
     ///
     /// Note: "rel" on `<a>` is managed by ammonia's `link_rel()` and must not
     /// appear here — ammonia panics if both are set.
-    fn allowed_attributes(tag: &str) -> &'static [&'static str] {
+    pub(crate) fn allowed_attributes(tag: &str) -> &'static [&'static str] {
         match tag {
             "a" => &["href", "title", "target"],
             "img" => &["src", "alt", "title", "width", "height"],
@@ -201,6 +212,71 @@ impl TextFilter for FilteredHtmlFilter {
                 tag_attributes.insert(tag, attrs.iter().copied().collect());
             }
         }
+
+        ammonia::Builder::default()
+            .tags(tags)
+            .tag_attributes(tag_attributes)
+            .link_rel(Some("noopener noreferrer"))
+            .clean(input)
+            .to_string()
+    }
+}
+
+/// Filter that keeps only a configured set of tags and attributes: what a
+/// stored format with the `html` filter applies. With `filtered_html`'s seeded
+/// lists it is [`FilteredHtmlFilter`].
+pub struct ConfiguredHtmlFilter {
+    tags: Vec<String>,
+    attributes: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+impl ConfiguredHtmlFilter {
+    /// A filter keeping `tags` and, for each, its `attributes`.
+    ///
+    /// Names ammonia would refuse to build with (`script` and `style`, whose
+    /// content it always removes, and `rel` on `<a>`, which it sets itself)
+    /// are dropped here as well as refused when a format is saved, so a
+    /// format that reached the table some other way cannot panic a render.
+    pub fn new(
+        tags: &[String],
+        attributes: &std::collections::BTreeMap<String, Vec<String>>,
+    ) -> Self {
+        let tags: Vec<String> = tags
+            .iter()
+            .map(|t| t.to_ascii_lowercase())
+            .filter(|t| !super::text_format::FORBIDDEN_TAGS.contains(&t.as_str()))
+            .collect();
+        let attributes = attributes
+            .iter()
+            .filter(|(tag, _)| tags.contains(tag))
+            .map(|(tag, attrs)| {
+                let attrs: Vec<String> = attrs
+                    .iter()
+                    .filter(|a| !(tag == "a" && a.as_str() == "rel"))
+                    .cloned()
+                    .collect();
+                (tag.clone(), attrs)
+            })
+            .filter(|(_, attrs)| !attrs.is_empty())
+            .collect();
+        Self { tags, attributes }
+    }
+}
+
+impl TextFilter for ConfiguredHtmlFilter {
+    fn name(&self) -> &str {
+        "configured_html"
+    }
+
+    fn process(&self, input: &str) -> String {
+        use std::collections::{HashMap, HashSet};
+
+        let tags: HashSet<&str> = self.tags.iter().map(String::as_str).collect();
+        let tag_attributes: HashMap<&str, HashSet<&str>> = self
+            .attributes
+            .iter()
+            .map(|(tag, attrs)| (tag.as_str(), attrs.iter().map(String::as_str).collect()))
+            .collect();
 
         ammonia::Builder::default()
             .tags(tags)

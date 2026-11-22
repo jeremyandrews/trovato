@@ -63,17 +63,18 @@ impl PostedForm {
     }
 }
 
-/// The text formats `user` may write: `plain_text` always, then the two the
-/// `use filtered_html` and `use full_html` permissions grant.
+/// The text formats `user` may write: `plain_text` always, then each stored
+/// format whose `use <format>` permission they hold, lightest first.
 pub fn permitted_text_formats(user: &UserContext) -> Vec<String> {
-    // `can` carries the administrator bypass, so the two formats need no
-    // separate admin arm: an administrator answers `true` to both.
-    let mut formats = vec!["plain_text".to_string()];
-    if user.can("use filtered_html") {
-        formats.push("filtered_html".to_string());
-    }
-    if user.can("use full_html") {
-        formats.push("full_html".to_string());
+    // `can` carries the administrator bypass, so the formats need no
+    // separate admin arm: an administrator answers `true` to every one.
+    let mut formats = vec![super::text_format::PLAIN_TEXT.to_string()];
+    for format in super::text_format::all().iter() {
+        if let Some(permission) = format.permission()
+            && user.can(&permission)
+        {
+            formats.push(format.format.clone());
+        }
     }
     formats
 }

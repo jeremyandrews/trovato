@@ -1,0 +1,12 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block content %}
+{{ list::header(title="Delete text format") }}
+
+<div class="admin-card">
+    <p>Delete the {{ name }} text format (<code>{{ format }}</code>)? Every role loses its <code>use {{ format }}</code> permission. Text already saved in it is shown as plain text from then on. This cannot be undone.</p>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+    <p><a href="/admin/config/formats">Cancel</a></p>
+</div>
+{% endblock %}

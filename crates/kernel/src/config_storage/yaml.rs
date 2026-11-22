@@ -66,6 +66,9 @@ pub const ENTITY_TYPE_ORDER: &[&str] = &[
     entity_types::PLUGIN_STATUS,
     entity_types::VARIABLE,
     entity_types::LANGUAGE,
+    // Before ROLE: a role may be granted `use <format>` for a format the same
+    // set creates.
+    entity_types::TEXT_FORMAT,
     entity_types::ROLE,
     entity_types::ITEM_TYPE,
     entity_types::CATEGORY,
@@ -344,6 +347,7 @@ fn serialize_entity(entity: &ConfigEntity, warnings: &mut Vec<String>) -> Option
         ConfigEntity::Stage(s) => serde_yml::to_string(s),
         ConfigEntity::Tile(t) => serde_yml::to_string(t),
         ConfigEntity::MenuLink(m) => serde_yml::to_string(m),
+        ConfigEntity::TextFormat(f) => serde_yml::to_string(f),
         // The bytes are written beside it by `export_config`; `data` is never
         // serialized.
         ConfigEntity::File(f) => serde_yml::to_string(f),
@@ -1157,6 +1161,11 @@ async fn known_permissions(pool: &PgPool) -> std::result::Result<HashSet<String>
         .await
         .map_err(|e| format!("failed to read the existing permission grants: {e:#}"))?;
     known.extend(granted);
+    // `use <format>` for every stored text format.
+    let formats = crate::content::text_format::list(pool)
+        .await
+        .map_err(|e| format!("failed to read the text formats: {e:#}"))?;
+    known.extend(formats.iter().filter_map(|f| f.permission()));
     Ok(known)
 }
 
@@ -1260,7 +1269,7 @@ async fn validate_role_permissions(
     // Without every source, a plugin's permission would be rejected as
     // unknown. Failing the import is the safe answer: silently narrowing what
     // counts as valid would revoke grants the file meant to keep.
-    let known = match known_permissions(pool).await {
+    let mut known = match known_permissions(pool).await {
         Ok(known) => known,
         Err(error) => {
             failures.push(ConfigImportFailure {
@@ -1270,6 +1279,15 @@ async fn validate_role_permissions(
             return;
         }
     };
+
+    // And for every text format the same set creates.
+    if let Some(formats) = parsed.get(entity_types::TEXT_FORMAT) {
+        for pe in formats {
+            if let ConfigEntity::TextFormat(format) = &pe.entity {
+                known.extend(format.permission());
+            }
+        }
+    }
 
     for pe in roles {
         let Some(permissions) = pe.role_permissions.as_ref() else {
@@ -1827,6 +1845,21 @@ fn deserialize_entity(entity_type: &str, content: &str) -> Result<ParsedFile> {
             let link: MenuLink = serde_yml::from_str(content).context("invalid menu_link YAML")?;
             Ok(ParsedFile::plain(ConfigEntity::MenuLink(link)))
         }
+        entity_types::TEXT_FORMAT => {
+            let format: crate::content::text_format::TextFormat =
+                serde_yml::from_str(content).context("invalid text_format YAML")?;
+            // The admin form's rules, so an import cannot store a format the
+            // form would refuse. A built-in format's filter is checked against
+            // what it ships with.
+            let shipped = crate::content::text_format::built_in()
+                .into_iter()
+                .find(|f| f.format == format.format);
+            let problems = crate::content::text_format::validate(&format, shipped.as_ref());
+            if let Some((_, message)) = problems.first() {
+                anyhow::bail!("invalid text format {}: {message}", format.format);
+            }
+            Ok(ParsedFile::plain(ConfigEntity::TextFormat(format)))
+        }
         entity_types::FILE => {
             let file: super::ConfigFile =
                 serde_yml::from_str(content).context("invalid file YAML")?;
@@ -2269,6 +2302,7 @@ mod tests {
             entity_types::STAGE,
             entity_types::TILE,
             entity_types::MENU_LINK,
+            entity_types::TEXT_FORMAT,
         ]
         .into_iter()
         .collect();

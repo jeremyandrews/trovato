@@ -190,6 +190,12 @@ pub const LINKS: &[Link] = &[
     ),
     link(
         "System",
+        "Text formats",
+        "/admin/config/formats",
+        Permission("administer text formats"),
+    ),
+    link(
+        "System",
         "Search settings",
         "/admin/config/search",
         Permission("administer site"),
@@ -328,6 +334,7 @@ pub const CARDS: &[Card] = &[
         links: &[
             ("Site settings", "/admin/config/site"),
             ("Search settings", "/admin/config/search"),
+            ("Text formats", "/admin/config/formats"),
             ("AI Providers", "/admin/system/ai-providers"),
         ],
     },

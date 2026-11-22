@@ -900,8 +900,9 @@ let safe = host::filter_text(&comment_body, "filtered_html")?;
 ```
 
 The format must be one the user the plugin is acting for may use, by the rule
-the item forms apply: `plain_text` always, `filtered_html` with
-`use filtered_html`, `full_html` with `use full_html`. Anything else is an error,
+the item forms apply: `plain_text` always, and any other format with its
+`use <format>` permission (`use filtered_html`, `use full_html`, or that of a
+format the site added at `/admin/config/formats`). Anything else is an error,
 never the text unfiltered: `ERR_TEXT_FORMAT_NOT_PERMITTED` (-70) for a format
 the user may not use, `ERR_TEXT_FORMAT_UNKNOWN` (-71) for one that does not
 exist, `ERR_TEXT_FORMAT_TOO_LARGE` (-72) when the result is larger than the

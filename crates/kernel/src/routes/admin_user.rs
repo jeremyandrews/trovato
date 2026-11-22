@@ -1262,6 +1262,20 @@ fn grid_permissions(state: &AppState) -> Vec<GridPermission> {
         })
         .collect();
 
+    // `use <format>` for each stored text format the kernel's list does not
+    // already name (B108): a site's own formats are granted here too.
+    for format in crate::content::text_format::all().iter() {
+        if let Some(permission) = format.permission()
+            && !rows.iter().any(|r| r.name == permission)
+        {
+            rows.push(GridPermission {
+                name: permission,
+                provider: "Text formats".to_string(),
+                description: format!("Use the {} text format.", format.name),
+            });
+        }
+    }
+
     for declared in state.plugin_permissions().permissions() {
         rows.push(GridPermission {
             name: declared.name.clone(),
