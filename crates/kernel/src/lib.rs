@@ -11,6 +11,7 @@ pub mod audit;
 pub mod batch;
 pub mod cache;
 pub mod circuit_breaker;
+pub mod client_addr;
 pub mod config;
 pub mod config_storage;
 pub mod content;

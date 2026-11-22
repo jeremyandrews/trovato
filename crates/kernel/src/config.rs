@@ -349,6 +349,11 @@ pub struct RuntimeConfig {
     /// Retention window for the kernel security audit stream, in days.
     pub security_audit_retention_days: i64,
 
+    /// What of a client address may be stored (`CLIENT_IP_STORAGE`: `full`, the
+    /// default, `truncated` or `none`). Applied wherever an address is written to
+    /// the database, the session index or a log. See [`crate::client_addr`].
+    pub client_ip_storage: crate::client_addr::ClientIpStorage,
+
     /// The site log keeps at most this many days (`SYSTEM_LOG_RETENTION_DAYS`,
     /// default 30) ...
     pub system_log_retention_days: i64,
@@ -504,11 +509,13 @@ pub struct Config {
     /// the same name. See `theme::registry`.
     pub themes_dirs: Vec<PathBuf>,
 
-    /// Proxies whose `X-Forwarded-For` header is believed (RATE-1).
+    /// Proxies whose `X-Forwarded-For` header is believed (`TRUSTED_PROXIES`:
+    /// comma-separated addresses and CIDR ranges).
     ///
     /// Empty means trust none, which is the safe default: an unset
-    /// `TRUSTED_PROXIES` must not let any client spoof its own address.
-    pub trusted_proxies: Vec<std::net::IpAddr>,
+    /// `TRUSTED_PROXIES` must not let any client spoof its own address. An entry
+    /// that does not parse fails startup. See [`crate::client_addr`].
+    pub trusted_proxies: crate::client_addr::TrustedProxies,
 
     /// HMAC secret for OAuth2 access tokens. `None` disables OAuth2.
     ///
@@ -696,10 +703,18 @@ impl Config {
             &["url_prefix", "accept_header"],
         );
 
-        // Trusted proxies whose X-Forwarded-For is believed (RATE-1). Unset ⇒
-        // trust none, so no client can spoof its own address by default.
+        // Trusted proxies whose X-Forwarded-For is believed. Unset ⇒ trust none,
+        // so no client can spoof its own address by default. A bad entry is a
+        // hard error: dropping it would quietly stop trusting a real proxy.
         let trusted_proxies =
-            crate::middleware::parse_trusted_proxies(&get("TRUSTED_PROXIES").unwrap_or_default());
+            crate::client_addr::TrustedProxies::parse(&get("TRUSTED_PROXIES").unwrap_or_default())
+                .map_err(|e| anyhow::anyhow!("TRUSTED_PROXIES: {e}"))?;
+
+        // What of a client address may be stored. Unset ⇒ `full`, as before.
+        let client_ip_storage = crate::client_addr::ClientIpStorage::parse(
+            &get("CLIENT_IP_STORAGE").unwrap_or_default(),
+        )
+        .map_err(|e| anyhow::anyhow!("CLIENT_IP_STORAGE: {e}"))?;
 
         let jwt_secret = get("JWT_SECRET");
 
@@ -715,6 +730,7 @@ impl Config {
             security_audit_retention_days: crate::audit::retention_days_from(
                 get("SECURITY_AUDIT_RETENTION_DAYS").as_deref(),
             ),
+            client_ip_storage,
             system_log_retention_days: parse_or(
                 get,
                 "SYSTEM_LOG_RETENTION_DAYS",
@@ -867,6 +883,27 @@ mod config_tests {
         config_from(&pairs).expect("config resolves")
     }
 
+    /// A bad `TRUSTED_PROXIES` entry or `CLIENT_IP_STORAGE` value refuses to
+    /// start, naming the setting and the value, rather than being dropped.
+    #[test]
+    fn a_bad_proxy_range_or_storage_value_fails_startup() {
+        let base = ("DATABASE_URL", "postgres://localhost/x");
+        let err = config_from(&[base, ("TRUSTED_PROXIES", "10.0.0.1, 10.0.0.0/33")])
+            .expect_err("a bad CIDR fails")
+            .to_string();
+        assert!(
+            err.contains("TRUSTED_PROXIES") && err.contains("10.0.0.0/33"),
+            "{err}"
+        );
+        let err = config_from(&[base, ("CLIENT_IP_STORAGE", "hashed")])
+            .expect_err("an unknown storage value fails")
+            .to_string();
+        assert!(
+            err.contains("CLIENT_IP_STORAGE") && err.contains("hashed"),
+            "{err}"
+        );
+    }
+
     /// `PAGEFIND_OUTPUT_DIR` moves the index, say onto a volume every server
     /// shares, without moving the static directories.
     #[test]
@@ -912,6 +949,11 @@ mod config_tests {
         assert!(config.jwt_secret.is_none());
         // Unset TRUSTED_PROXIES must trust nothing (RATE-1), not everything.
         assert!(config.trusted_proxies.is_empty());
+        // Unset CLIENT_IP_STORAGE keeps storing what it always did.
+        assert_eq!(
+            config.runtime.client_ip_storage,
+            crate::client_addr::ClientIpStorage::Full
+        );
 
         // The values request handling reads.
         assert_eq!(config.runtime.static_dirs, vec![PathBuf::from("./static")]);
@@ -1027,7 +1069,8 @@ mod config_tests {
             ("SECURITY_AUDIT_RETENTION_DAYS", "30"),
             ("TENANT_RESOLUTION_METHOD", "header"),
             ("GATHER_ACCESS_MAX_SCAN", "77"),
-            ("TRUSTED_PROXIES", "127.0.0.1, 10.0.0.5"),
+            ("TRUSTED_PROXIES", "127.0.0.1, 10.0.0.0/8"),
+            ("CLIENT_IP_STORAGE", "truncated"),
             ("JWT_SECRET", "0123456789abcdef0123456789abcdef"),
             ("SHUTDOWN_TIMEOUT_SECS", "5"),
         ]);
@@ -1040,6 +1083,10 @@ mod config_tests {
         );
         assert_eq!(config.runtime.gather_access.max_scan, 77);
         assert_eq!(config.trusted_proxies.len(), 2);
+        assert_eq!(
+            config.runtime.client_ip_storage,
+            crate::client_addr::ClientIpStorage::Truncated
+        );
         assert_eq!(
             config.jwt_secret.as_deref(),
             Some("0123456789abcdef0123456789abcdef")

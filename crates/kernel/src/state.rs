@@ -342,9 +342,9 @@ impl AppState {
         // function, so every dispatch path has to be able to carry the
         // limiter, the boot-time `tap_install` spawn below included.
         //
-        // Trusted proxies (whose X-Forwarded-For is
-        // believed) are parsed once by `Config::from_env` from TRUSTED_PROXIES;
-        // an empty list ⇒ trust none (RATE-1).
+        // Trusted proxies (whose X-Forwarded-For is believed) are parsed once by
+        // `Config::from_env` from TRUSTED_PROXIES; an empty list ⇒ trust none.
+        // The limiter carries them because `resolve_client_ip` reads them there.
         //
         // Each bucket starts at its compiled default and is then overridden by
         // `TROVATO_RATE_LIMIT_<BUCKET>` or the `rate_limit.<bucket>` site config
@@ -411,7 +411,8 @@ impl AppState {
             PermissionService::new(db.clone(), cache_config.ttl_permissions, metrics.clone());
 
         // Create lockout service
-        let lockout = LockoutService::new(redis.clone());
+        let lockout =
+            LockoutService::new(redis.clone()).with_ip_storage(config.runtime.client_ip_storage);
 
         // Discover plugins on disk (parse info.toml without compiling WASM)
         let discovered = PluginRuntime::discover_plugins(&config.plugins_dirs).await;
@@ -1072,7 +1073,10 @@ impl AppState {
 
         // The kernel-internal security audit stream. Always present: an audit
         // trail that is only sometimes written is not an audit trail.
-        let security_audit = Arc::new(crate::audit::SecurityAudit::new(db.clone()));
+        let security_audit = Arc::new(crate::audit::SecurityAudit::with_ip_storage(
+            db.clone(),
+            config.runtime.client_ip_storage,
+        ));
 
         // The WebAuthn relying party, derived from SITE_URL so the RP ID and the
         // origin can never drift apart (a mismatch silently invalidates every
@@ -1110,7 +1114,10 @@ impl AppState {
 
         // Initialize optional services based on enabled plugins
         let audit = if enabled_set.contains("trovato_audit_log") {
-            Some(Arc::new(services::audit::AuditService::new(db.clone())))
+            Some(Arc::new(services::audit::AuditService::with_ip_storage(
+                db.clone(),
+                config.runtime.client_ip_storage,
+            )))
         } else {
             None
         };

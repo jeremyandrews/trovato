@@ -179,7 +179,7 @@ async fn render_step_up(
 async fn delete_reauth(
     State(state): State<AppState>,
     session: Session,
-    headers: HeaderMap,
+    axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     Form(form): Form<ReauthForm>,
 ) -> Response {
     let user = match require_login(&state, &session).await {
@@ -192,7 +192,7 @@ async fn delete_reauth(
 
     // Same bucket as a password change: this is a password guess against a known
     // account, and the limiter should not care which form it arrived through.
-    let ip = client_ip(&headers);
+    let ip = client_ip.0;
     if let Err(retry_after) = state.rate_limiter().check("password", &ip).await {
         return too_many(retry_after);
     }
@@ -431,7 +431,7 @@ async fn delete_confirm_form(State(state): State<AppState>, session: Session) ->
 async fn delete_confirm_submit(
     State(state): State<AppState>,
     session: Session,
-    headers: HeaderMap,
+    axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
     let user = match require_login(&state, &session).await {
@@ -451,7 +451,7 @@ async fn delete_confirm_submit(
         return render_server_error("That account cannot be deleted.");
     }
 
-    let ip = client_ip(&headers);
+    let ip = client_ip.0;
 
     // The last administrator cannot leave: a site with no active administrator
     // cannot be administered back into having one.
@@ -599,16 +599,6 @@ async fn render_user_template(
             render_server_error("Could not render the page.")
         }
     }
-}
-
-fn client_ip(headers: &HeaderMap) -> String {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .map(str::trim)
-        .unwrap_or("0.0.0.0")
-        .to_string()
 }
 
 fn too_many(retry_after: u64) -> Response {

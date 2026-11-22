@@ -721,6 +721,7 @@ async fn rename_credential(
     session: Session,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     headers: HeaderMap,
+    axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     Json(body): Json<CredentialActionRequest>,
 ) -> Response {
     let user = match require_login_json(&state, &session).await {
@@ -751,7 +752,7 @@ async fn rename_credential(
                     SecurityEvent::new(SecurityEventKind::PasskeyRenamed)
                         .user(user.id)
                         .subject(&id.to_string())
-                        .ip(client_ip_of(&headers, &state)),
+                        .ip(client_ip.0),
                 )
                 .await;
             Json(serde_json::json!({ "success": true, "device_name": name })).into_response()
@@ -769,21 +770,6 @@ async fn rename_credential(
     }
 }
 
-/// The IP for an audit event when the handler has no `ClientIp` extractor.
-///
-/// Management endpoints are already login-gated, so the IP is context rather
-/// than a security decision; falling back to the header keeps the audit row
-/// useful without adding an extractor to every signature.
-fn client_ip_of(headers: &HeaderMap, _state: &AppState) -> String {
-    headers
-        .get("x-forwarded-for")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.split(',').next())
-        .map(str::trim)
-        .unwrap_or("")
-        .to_string()
-}
-
 /// `POST /user/passkeys/{id}/revoke` — remove a credential (AC-2, AC-3).
 ///
 /// State-changing, so POST + `require_csrf`. The removal is gated by the
@@ -795,6 +781,7 @@ async fn revoke_credential(
     session: Session,
     axum::extract::Path(id): axum::extract::Path<uuid::Uuid>,
     headers: HeaderMap,
+    axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
 ) -> Response {
     let user = match require_login_json(&state, &session).await {
         Ok(u) => u,
@@ -803,7 +790,7 @@ async fn revoke_credential(
     if let Err(refusal) = require_csrf_header(&session, &headers).await {
         return refusal.into_response();
     }
-    let ip = client_ip_of(&headers, &state);
+    let ip = client_ip.0;
 
     // Confirm ownership before doing anything else, so a bad id is a 404 rather
     // than an invariant question about someone else's account.
@@ -880,6 +867,7 @@ async fn remove_password(
     State(state): State<AppState>,
     session: Session,
     headers: HeaderMap,
+    axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
 ) -> Response {
     let user = match require_login_json(&state, &session).await {
         Ok(u) => u,
@@ -888,7 +876,7 @@ async fn remove_password(
     if let Err(refusal) = require_csrf_header(&session, &headers).await {
         return refusal.into_response();
     }
-    let ip = client_ip_of(&headers, &state);
+    let ip = client_ip.0;
 
     if user.pass.is_empty() {
         return Json(serde_json::json!({

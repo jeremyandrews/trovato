@@ -3,11 +3,13 @@
 //! Uses a sliding window counter pattern with Redis INCR + EXPIRE.
 
 use std::collections::BTreeMap;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{ConnectInfo, State};
+
+use crate::client_addr::{TrustedProxies, resolve_client_addr};
 use axum::response::{IntoResponse, Response};
 use redis::AsyncCommands;
 use redis::Client as RedisClient;
@@ -17,23 +19,24 @@ use crate::state::AppState;
 
 /// The vetted client IP for the current request.
 ///
-/// Resolved once by [`resolve_client_ip`] with trusted-proxy gating and stored
-/// as a request extension. Handlers that key rate limits by IP read this
-/// instead of trusting `X-Forwarded-For` directly (RATE-1).
+/// Resolved once by [`resolve_client_ip`] with [`resolve_client_addr`], the one
+/// resolver, and stored as a request extension. Everything that wants the
+/// client address reads this; nothing reads `X-Forwarded-For` itself. What of it
+/// may be stored is [`ClientIpStorage`](crate::client_addr::ClientIpStorage)'s
+/// business, applied where it is written.
 #[derive(Clone, Debug)]
 pub struct ClientIp(pub String);
 
-/// Parse a comma-separated `TRUSTED_PROXIES` value into IP addresses.
-///
-/// Unparseable entries are dropped. An empty/unset value yields an empty list,
-/// i.e. **no** proxy is trusted and forwarding headers are ignored — the safe
-/// default for a directly-exposed server.
-pub fn parse_trusted_proxies(raw: &str) -> Vec<IpAddr> {
-    raw.split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .filter_map(|s| s.parse::<IpAddr>().ok())
-        .collect()
+impl ClientIp {
+    /// Resolve the client address of `request`: its `ConnectInfo` peer and its
+    /// headers, through [`resolve_client_addr`].
+    pub fn of(request: &axum::extract::Request, trusted: &TrustedProxies) -> Self {
+        let peer = request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ci| ci.0.ip());
+        Self(resolve_client_addr(peer, request.headers(), trusted))
+    }
 }
 
 /// Rate limit configuration for different endpoint categories.
@@ -496,8 +499,8 @@ pub struct RateLimiter {
     redis: RedisClient,
     config: RateLimitConfig,
     /// Proxies whose `X-Forwarded-For` / `X-Real-IP` headers are trusted. Empty
-    /// ⇒ trust none (ignore forwarding headers). See [`parse_trusted_proxies`].
-    trusted_proxies: Arc<Vec<IpAddr>>,
+    /// ⇒ trust none (ignore forwarding headers). See [`TrustedProxies`].
+    trusted_proxies: Arc<TrustedProxies>,
     /// Path prefixes routed to the `static` bucket. Defaults to
     /// [`DEFAULT_STATIC_PREFIXES`]; production supplies the configured
     /// `FILES_URL` via [`RateLimiter::with_static_prefixes`].
@@ -506,11 +509,15 @@ pub struct RateLimiter {
 
 impl RateLimiter {
     /// Create a new rate limiter.
-    pub fn new(redis: RedisClient, config: RateLimitConfig, trusted_proxies: Vec<IpAddr>) -> Self {
+    pub fn new(
+        redis: RedisClient,
+        config: RateLimitConfig,
+        trusted_proxies: impl Into<TrustedProxies>,
+    ) -> Self {
         Self {
             redis,
             config,
-            trusted_proxies: Arc::new(trusted_proxies),
+            trusted_proxies: Arc::new(trusted_proxies.into()),
             static_prefixes: Arc::new(
                 DEFAULT_STATIC_PREFIXES
                     .iter()
@@ -548,7 +555,7 @@ impl RateLimiter {
     }
 
     /// The configured trusted-proxy allowlist.
-    pub fn trusted_proxies(&self) -> &[IpAddr] {
+    pub fn trusted_proxies(&self) -> &TrustedProxies {
         &self.trusted_proxies
     }
 
@@ -795,64 +802,6 @@ fn is_comment_write(path: &str, method: &str) -> bool {
         || path.starts_with("/api/comment/")
 }
 
-/// Resolve the client identifier (IP address) for rate limiting.
-///
-/// `X-Forwarded-For` is read from the right: the client is the first entry that
-/// is not itself a trusted proxy, so every proxy hop in front of the site must
-/// be listed in `trusted_proxies`.
-///
-/// `X-Forwarded-For` / `X-Real-IP` are honored **only** when the direct socket
-/// peer (`addr`) is in the `trusted_proxies` allowlist (RATE-1). Otherwise the
-/// socket peer IP is used and the forwarding headers are ignored — this stops a
-/// directly-connecting client from spoofing `X-Forwarded-For` to mint unlimited
-/// distinct rate-limit buckets. With no peer and no trust, the identifier is
-/// `"unknown"`.
-pub fn get_client_id(
-    addr: Option<std::net::SocketAddr>,
-    headers: &axum::http::HeaderMap,
-    trusted_proxies: &[IpAddr],
-) -> String {
-    let peer = addr.map(|a| a.ip());
-
-    // Only a trusted proxy's forwarding headers are believed.
-    if peer.is_some_and(|ip| trusted_proxies.contains(&ip)) {
-        // X-Forwarded-For, read from the right. Each proxy appends the address
-        // it received the request from, so the rightmost entries are the
-        // trusted proxies' own observations and everything to the left of the
-        // first untrusted one is whatever the client chose to send. The first
-        // entry from the right that is not itself a trusted proxy is the
-        // client. Reading the leftmost entry instead let a client behind an
-        // appending proxy pick its own identity.
-        if let Some(forwarded) = headers.get("x-forwarded-for")
-            && let Ok(value) = forwarded.to_str()
-            && let Some(client) = value
-                .rsplit(',')
-                .map(str::trim)
-                .filter(|entry| !entry.is_empty())
-                .find(|entry| {
-                    entry
-                        .parse::<IpAddr>()
-                        .map_or(true, |ip| !trusted_proxies.contains(&ip))
-                })
-        {
-            return client.to_string();
-        }
-        // X-Real-IP fallback.
-        if let Some(real_ip) = headers.get("x-real-ip")
-            && let Ok(value) = real_ip.to_str()
-        {
-            let value = value.trim();
-            if !value.is_empty() {
-                return value.to_string();
-            }
-        }
-    }
-
-    // Untrusted or unknown peer: use the socket peer, never the headers.
-    peer.map(|ip| ip.to_string())
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
 /// Middleware that resolves the vetted client IP once and stores it as a
 /// [`ClientIp`] request extension.
 ///
@@ -866,16 +815,8 @@ pub async fn resolve_client_ip(
     mut request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
-    let addr = request
-        .extensions()
-        .get::<ConnectInfo<SocketAddr>>()
-        .map(|ci| ci.0);
-    let client_id = get_client_id(
-        addr,
-        request.headers(),
-        state.rate_limiter().trusted_proxies(),
-    );
-    request.extensions_mut().insert(ClientIp(client_id));
+    let client_ip = ClientIp::of(&request, state.rate_limiter().trusted_proxies());
+    request.extensions_mut().insert(client_ip);
     next.run(request).await
 }
 
@@ -910,7 +851,6 @@ pub fn rate_limit_response(retry_after: u64) -> Response {
 /// office does not spend its anonymous visitors' budget, or the reverse.
 pub async fn check_rate_limit(
     State(state): State<AppState>,
-    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
@@ -919,19 +859,14 @@ pub async fn check_rate_limit(
         request.method().as_str(),
         state.rate_limiter().static_prefixes(),
     );
-    // Prefer the vetted IP resolved by `resolve_client_ip`; fall back to an
-    // inline trusted-proxy resolution if that middleware is not in the stack.
+    // The address `resolve_client_ip` resolved; the same resolver here if that
+    // layer is not in the stack.
     let client_id = request
         .extensions()
         .get::<ClientIp>()
-        .map(|c| c.0.clone())
-        .unwrap_or_else(|| {
-            get_client_id(
-                Some(addr),
-                request.headers(),
-                state.rate_limiter().trusted_proxies(),
-            )
-        });
+        .cloned()
+        .unwrap_or_else(|| ClientIp::of(&request, state.rate_limiter().trusted_proxies()))
+        .0;
 
     // A credential is a `Bearer` header or a session that names a user. The
     // session is cloned out before the await: a request body is not `Sync`, so a
@@ -1467,148 +1402,6 @@ mod tests {
                 .unwrap(),
             "60"
         );
-    }
-
-    // --- get_client_id tests (RATE-1: forwarding headers gated on trust) ---
-
-    fn proxy() -> std::net::SocketAddr {
-        "10.9.8.7:443".parse().unwrap()
-    }
-
-    /// From a TRUSTED proxy, X-Forwarded-For is honored: the entry the proxy
-    /// appended (the rightmost untrusted one).
-    #[test]
-    fn trusted_proxy_honors_x_forwarded_for() {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("x-forwarded-for", "1.2.3.4, 5.6.7.8".parse().unwrap());
-        let trusted = [proxy().ip()];
-        assert_eq!(get_client_id(Some(proxy()), &headers, &trusted), "5.6.7.8");
-    }
-
-    /// From a trusted proxy, X-Real-IP is honored when XFF is absent.
-    #[test]
-    fn trusted_proxy_honors_x_real_ip() {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("x-real-ip", "10.0.0.1".parse().unwrap());
-        let trusted = [proxy().ip()];
-        assert_eq!(get_client_id(Some(proxy()), &headers, &trusted), "10.0.0.1");
-    }
-
-    /// RATE-1 core: an UNTRUSTED direct peer cannot spoof its identity via
-    /// X-Forwarded-For — the socket peer wins, not the header.
-    #[test]
-    fn untrusted_peer_ignores_x_forwarded_for() {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("x-forwarded-for", "1.2.3.4".parse().unwrap());
-        headers.insert("x-real-ip", "10.0.0.1".parse().unwrap());
-        let addr: std::net::SocketAddr = "203.0.113.9:5555".parse().unwrap();
-        // No trusted proxies configured ⇒ headers ignored, socket peer used.
-        assert_eq!(get_client_id(Some(addr), &headers, &[]), "203.0.113.9");
-    }
-
-    /// A peer that isn't in the (non-empty) allowlist is still untrusted.
-    #[test]
-    fn peer_not_in_allowlist_is_untrusted() {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("x-forwarded-for", "1.2.3.4".parse().unwrap());
-        let addr: std::net::SocketAddr = "203.0.113.9:5555".parse().unwrap();
-        let trusted = [proxy().ip()]; // different IP
-        assert_eq!(get_client_id(Some(addr), &headers, &trusted), "203.0.113.9");
-    }
-
-    #[test]
-    fn client_id_from_socket_addr_no_headers() {
-        let addr = "192.168.1.1:8080".parse().ok();
-        assert_eq!(
-            get_client_id(addr, &axum::http::HeaderMap::new(), &[]),
-            "192.168.1.1"
-        );
-    }
-
-    #[test]
-    fn client_id_unknown_fallback() {
-        assert_eq!(
-            get_client_id(None, &axum::http::HeaderMap::new(), &[]),
-            "unknown"
-        );
-    }
-
-    /// Trusted proxy with a multi-hop XFF: the rightmost entry that is not a
-    /// trusted proxy wins, whatever sits to its left.
-    #[test]
-    fn trusted_proxy_x_forwarded_for_takes_the_rightmost_untrusted_ip() {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert(
-            "x-forwarded-for",
-            "1.1.1.1, 2.2.2.2, 3.3.3.3".parse().unwrap(),
-        );
-        let trusted = [proxy().ip()];
-        assert_eq!(get_client_id(Some(proxy()), &headers, &trusted), "3.3.3.3");
-    }
-
-    #[test]
-    fn trusted_proxy_xff_trims_whitespace_and_skips_empty_entries() {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("x-forwarded-for", " 1.2.3.4 , 5.6.7.8 , ".parse().unwrap());
-        let trusted = [proxy().ip()];
-        assert_eq!(get_client_id(Some(proxy()), &headers, &trusted), "5.6.7.8");
-    }
-
-    /// Every entry a trusted proxy: fall back to X-Real-IP, then the peer.
-    #[test]
-    fn an_xff_of_only_trusted_proxies_falls_back() {
-        let mut headers = axum::http::HeaderMap::new();
-        headers.insert("x-forwarded-for", "10.9.8.7".parse().unwrap());
-        let trusted = [proxy().ip()];
-        assert_eq!(get_client_id(Some(proxy()), &headers, &trusted), "10.9.8.7");
-        headers.insert("x-real-ip", "198.51.100.9".parse().unwrap());
-        assert_eq!(
-            get_client_id(Some(proxy()), &headers, &trusted),
-            "198.51.100.9"
-        );
-    }
-
-    /// A proxy that appends to `X-Forwarded-For` passes on whatever the client
-    /// sent as the leftmost entries. Only the entry the trusted proxy appended
-    /// (the rightmost) is its own observation of the client.
-    #[test]
-    fn trusted_proxy_ignores_a_client_supplied_leftmost_entry() {
-        let mut headers = axum::http::HeaderMap::new();
-        // The client claimed 6.6.6.6; the proxy appended the real 198.51.100.7.
-        headers.insert("x-forwarded-for", "6.6.6.6, 198.51.100.7".parse().unwrap());
-        let trusted = [proxy().ip()];
-        assert_eq!(
-            get_client_id(Some(proxy()), &headers, &trusted),
-            "198.51.100.7"
-        );
-    }
-
-    /// Behind two trusted proxies, the client is the first entry from the right
-    /// that is not itself a trusted proxy.
-    #[test]
-    fn a_chain_of_two_trusted_proxies_resolves_to_the_client() {
-        let edge: std::net::IpAddr = "10.9.8.1".parse().unwrap();
-        let mut headers = axum::http::HeaderMap::new();
-        // client spoof, real client (added by the edge), edge (added by the
-        // inner proxy, which is the socket peer).
-        headers.insert(
-            "x-forwarded-for",
-            "6.6.6.6, 198.51.100.7, 10.9.8.1".parse().unwrap(),
-        );
-        let trusted = [proxy().ip(), edge];
-        assert_eq!(
-            get_client_id(Some(proxy()), &headers, &trusted),
-            "198.51.100.7"
-        );
-    }
-
-    #[test]
-    fn parse_trusted_proxies_filters_junk() {
-        let list = parse_trusted_proxies("127.0.0.1, , 10.0.0.5 ,notanip,::1");
-        assert!(list.contains(&"127.0.0.1".parse().unwrap()));
-        assert!(list.contains(&"10.0.0.5".parse().unwrap()));
-        assert!(list.contains(&"::1".parse().unwrap()));
-        assert_eq!(list.len(), 3, "junk entries dropped");
     }
 
     // ── Per-role counts ────────────────────────────────────────────────────

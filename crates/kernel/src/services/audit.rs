@@ -11,24 +11,20 @@ use uuid::Uuid;
 #[derive(Clone)]
 pub struct AuditService {
     pool: PgPool,
+    ip_storage: crate::client_addr::ClientIpStorage,
 }
 
 impl AuditService {
-    /// Create a new audit service.
+    /// Create a new audit service, storing client addresses in full.
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self::with_ip_storage(pool, crate::client_addr::ClientIpStorage::Full)
     }
 
-    /// Sanitize an IP address string for storage.
-    ///
-    /// Validates that the string is a valid IP address (v4 or v6). If not,
-    /// returns "invalid" to prevent arbitrary string injection.
-    fn sanitize_ip(ip: &str) -> &str {
-        if ip.parse::<std::net::IpAddr>().is_ok() {
-            ip
-        } else {
-            "invalid"
-        }
+    /// Create a new audit service that stores of each client address only what
+    /// `ip_storage` (`CLIENT_IP_STORAGE`) allows. The column is `NOT NULL`, so
+    /// "nothing" is the empty string.
+    pub fn with_ip_storage(pool: PgPool, ip_storage: crate::client_addr::ClientIpStorage) -> Self {
+        Self { pool, ip_storage }
     }
 
     /// Log an auditable action.
@@ -41,7 +37,8 @@ impl AuditService {
         ip_address: &str,
         details: serde_json::Value,
     ) -> Result<()> {
-        let ip_address = Self::sanitize_ip(ip_address);
+        // Anything that is not an address is stored as `"invalid"`, never verbatim.
+        let ip_address = self.ip_storage.apply(ip_address).unwrap_or_default();
 
         sqlx::query(
             r#"
@@ -102,21 +99,6 @@ impl std::fmt::Debug for AuditService {
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn ip_address_sanitization() {
-        assert_eq!(AuditService::sanitize_ip("192.168.1.1"), "192.168.1.1");
-        assert_eq!(AuditService::sanitize_ip("::1"), "::1");
-        assert_eq!(AuditService::sanitize_ip("2001:db8::1"), "2001:db8::1");
-        assert_eq!(AuditService::sanitize_ip("not-an-ip"), "invalid");
-        assert_eq!(AuditService::sanitize_ip(""), "invalid");
-        assert_eq!(
-            AuditService::sanitize_ip("192.168.1.1; DROP TABLE"),
-            "invalid"
-        );
-    }
-
     #[test]
     fn retention_cutoff_calculation() {
         let days = 90;

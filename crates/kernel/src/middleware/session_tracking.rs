@@ -106,7 +106,9 @@ pub async fn track_session(
             user_id,
             device_id,
             &session_id,
-            &ip,
+            // The device list keeps only what CLIENT_IP_STORAGE allows; the audit
+            // rows below apply the same setting where they are written.
+            &state.runtime().client_ip_storage.kept_or_empty(&ip),
             &user_agent,
             was_registered,
             now,

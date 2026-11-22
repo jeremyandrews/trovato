@@ -46,12 +46,26 @@ const ATTEMPT_WINDOW_SECS: u64 = 15 * 60;
 #[derive(Clone)]
 pub struct LockoutService {
     redis: RedisClient,
+    /// What of an address the lockout warning may log. The Redis keys always
+    /// hold the full address: they are counters, and they expire.
+    ip_storage: crate::client_addr::ClientIpStorage,
 }
 
 impl LockoutService {
     /// Create a new lockout service.
     pub fn new(redis: RedisClient) -> Self {
-        Self { redis }
+        Self {
+            redis,
+            ip_storage: crate::client_addr::ClientIpStorage::Full,
+        }
+    }
+
+    /// Log only what `CLIENT_IP_STORAGE` allows of an address. The warning is a
+    /// `system_log` row, which outlives the lockout.
+    #[must_use]
+    pub fn with_ip_storage(mut self, ip_storage: crate::client_addr::ClientIpStorage) -> Self {
+        self.ip_storage = ip_storage;
+        self
     }
 
     async fn conn(&self) -> Result<redis::aio::MultiplexedConnection> {
@@ -120,7 +134,7 @@ impl LockoutService {
                 .context("failed to clear attempt counter")?;
             tracing::warn!(
                 username = %normalize(username),
-                client_ip,
+                client_ip = %self.ip_storage.kept_or_empty(client_ip),
                 "sign-in locked for one address after failed attempts"
             );
             return Ok((true, 0));

@@ -9,6 +9,22 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### A bad `TRUSTED_PROXIES` entry stops startup
+
+**Who is affected:** a site that sets `TRUSTED_PROXIES`. Check that every entry
+is an IP address or a CIDR range; a hostname, a stray character or a prefix
+longer than the address family allows (`/33` for IPv4) is now refused.
+
+**What changed.** An entry that did not parse used to be dropped without a word,
+so the proxy it was meant to name was not trusted and every visitor behind it
+shared one rate-limit budget. The server now refuses to start and names the
+entry. CIDR ranges are accepted, so a proxy tier whose addresses change can be
+listed as its network. A site with `TRUSTED_PROXIES` unset is unaffected.
+
+`CLIENT_IP_STORAGE` is new and defaults to `full`, which stores what was stored
+before; see "Client addresses and privacy" in `INSTALL.md` for `truncated` and
+`none`.
+
 ### URL aliases: every item write, in the item's language and stage
 
 **Who is affected:** sites with a pathauto pattern for a content type whose

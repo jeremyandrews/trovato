@@ -12,6 +12,7 @@ mod audit;
 mod batch;
 mod cache;
 mod circuit_breaker;
+mod client_addr;
 mod config;
 mod config_storage;
 mod content;
