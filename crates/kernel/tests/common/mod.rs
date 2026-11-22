@@ -1077,11 +1077,15 @@ const TRANSLATION_MIGRATION_LOCK: i64 = 0x_7A11_0000_0001;
 /// builds the app: the migration runner's future does not meet `run_test`'s
 /// `Send` bound.
 pub fn ensure_translation_table(app: &TestApp) {
-    let dir = project_root().join("plugins/trovato_content_translation");
-    let info = trovato_kernel::plugin::PluginInfo::parse(
-        &dir.join("trovato_content_translation.info.toml"),
-    )
-    .expect("parse the translation plugin manifest");
+    ensure_plugin_tables(app, "trovato_content_translation");
+}
+
+/// Apply one plugin's own migrations, as [`ensure_translation_table`] does for
+/// the translation plugin: `trovato_search`'s `pagefind_index_status`, say.
+pub fn ensure_plugin_tables(app: &TestApp, plugin: &'static str) {
+    let dir = project_root().join("plugins").join(plugin);
+    let info = trovato_kernel::plugin::PluginInfo::parse(&dir.join(format!("{plugin}.info.toml")))
+        .expect("parse the plugin manifest");
     let db = app.db.clone();
     let handle = shared_runtime_handle();
 
@@ -1095,19 +1099,15 @@ pub fn ensure_translation_table(app: &TestApp) {
                 .execute(&mut *guard)
                 .await
                 .expect("take migration lock");
-            let result = trovato_kernel::plugin::migration::run_plugin_migrations(
-                &db,
-                "trovato_content_translation",
-                &info,
-                &dir,
-            )
-            .await;
+            let result =
+                trovato_kernel::plugin::migration::run_plugin_migrations(&db, plugin, &info, &dir)
+                    .await;
             guard.commit().await.expect("release migration lock");
-            result.expect("run the translation plugin migrations");
+            result.expect("run the plugin migrations");
         });
     })
     .join()
-    .expect("translation migration thread panicked");
+    .expect("plugin migration thread panicked");
 }
 
 // =============================================================================

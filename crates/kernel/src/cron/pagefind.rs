@@ -17,6 +17,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::content::ItemService;
+use crate::content::page_meta::plain_text;
 use crate::models::Item;
 use crate::models::Role;
 use crate::models::role::well_known::ANONYMOUS_ROLE_ID;
@@ -45,9 +46,14 @@ pub struct IndexDocument {
     pub title: String,
     /// The URL the result card links to: the alias when there is one.
     pub url: String,
-    /// The indexed fields that survived the seam, heaviest first, each with
-    /// the Pagefind weight its `search_field_config` letter maps to.
+    /// The indexed fields that survived the seam, as plain text, heaviest
+    /// first, each with the Pagefind weight its `search_field_config` letter
+    /// maps to (D for a text field nobody configured).
     pub fields: Vec<IndexedField>,
+    /// The body of every comment an anonymous visitor sees on the item, as
+    /// plain text, in thread order. Indexed with the item: a match in a comment
+    /// is a result for the item, never for the comment.
+    pub comments: Vec<String>,
     /// The `description` meta value, likewise.
     pub description: String,
     /// The `location` meta value, likewise.
@@ -98,6 +104,71 @@ struct FieldConfigRow {
     bundle: String,
     field_name: String,
     weight: String,
+}
+
+/// A content type's declared fields, as `item_type.settings` stores them.
+#[derive(sqlx::FromRow)]
+struct TypeFieldsRow {
+    #[sqlx(rename = "type")]
+    item_type: String,
+    fields: Option<serde_json::Value>,
+}
+
+/// One publicly visible comment's body, for the item it is on.
+#[derive(sqlx::FromRow)]
+struct CommentRow {
+    item_id: Uuid,
+    body: String,
+}
+
+/// Every comment an anonymous visitor sees on the given items, in one query.
+///
+/// The rule the item page's thread follows ([`crate::models::Comment::list_for_item`]):
+/// published, and under a published parent all the way up, so a published
+/// reply to a comment a moderator hid is hidden with it. Ordered as the thread
+/// is, which keeps the fragment, and so the index, stable between builds.
+const VISIBLE_COMMENTS_SQL: &str = r#"
+    WITH RECURSIVE visible AS (
+        SELECT id, item_id, body, ARRAY[created] AS sort_path
+        FROM comment
+        WHERE item_id = ANY($1) AND parent_id IS NULL AND status = $2
+        UNION ALL
+        SELECT c.id, c.item_id, c.body, v.sort_path || c.created
+        FROM comment c
+        JOIN visible v ON c.parent_id = v.id
+        WHERE c.status = $2
+    )
+    SELECT item_id, body FROM visible ORDER BY item_id, sort_path
+"#;
+
+/// Ask for a Pagefind rebuild at the next cron run.
+///
+/// The kernel's item and comment write services call this after a write that
+/// changes what the public index holds: an item published, edited, unpublished
+/// or deleted; a visible comment written, edited, published, unpublished or
+/// deleted. Polling `MAX(changed)` over published items, which is all
+/// `trovato_search`'s `tap_cron` does, cannot see a delete, an unpublish or a
+/// comment, so before this a deleted item stayed findable and a new comment
+/// never became findable.
+///
+/// The flag lives in `trovato_search`'s own table, which does not exist on a
+/// site that never installed the plugin, so the statement checks for the table
+/// itself rather than failing: one round trip, and nothing in the server log.
+/// Best effort: a failure is logged and the write it follows stands.
+pub async fn request_rebuild(pool: &PgPool) {
+    let result = sqlx::query(
+        "DO $$ BEGIN \
+           IF to_regclass('pagefind_index_status') IS NOT NULL THEN \
+             UPDATE pagefind_index_status SET rebuild_requested = true \
+             WHERE id = 1 AND rebuild_requested = false; \
+           END IF; \
+         END $$",
+    )
+    .execute(pool)
+    .await;
+    if let Err(e) = result {
+        warn!(error = %e, "failed to request a pagefind rebuild");
+    }
 }
 
 /// Check if the `trovato_search` plugin has requested a rebuild and
@@ -238,6 +309,16 @@ impl SwapPaths {
 /// Every value below — the body text and all four meta values — is built from
 /// the **filtered** fields, so there is no second path to the field the first
 /// one dropped. `title` is a column rather than a field and is not governed.
+///
+/// Comments follow the same rule from the other side: only the comments on an
+/// item that survived the seam, and of those only the ones the item page shows
+/// a visitor ([`VISIBLE_COMMENTS_SQL`]).
+///
+/// Six queries whatever the number of items: the candidates, the anonymous
+/// role's permissions, the search field configuration, the declared fields of
+/// every type, the visible comments of every visible item, and the URL aliases.
+/// Live published items are decided by the access fast path, which reads
+/// nothing.
 #[doc(hidden)]
 pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<Vec<IndexDocument>> {
     // The coarse candidate set: published, live stage. Exactly what the seam is
@@ -287,6 +368,44 @@ pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<V
             .push((row.field_name, pagefind_weight(letter)));
     }
 
+    // Every type's declared text fields, once per build, so every text field is
+    // indexed and not only the configured ones.
+    let type_rows = sqlx::query_as::<_, TypeFieldsRow>(
+        "SELECT type, settings -> 'fields' AS fields FROM item_type",
+    )
+    .fetch_all(pool)
+    .await
+    .context("failed to read content type fields for pagefind index")?;
+    let mut text_fields: HashMap<String, Vec<String>> = HashMap::new();
+    for row in type_rows {
+        let names = text_fields.entry(row.item_type).or_default();
+        if let Some(serde_json::Value::Array(defs)) = row.fields {
+            for def in defs {
+                if let Ok(def) = serde_json::from_value::<trovato_sdk::types::FieldDefinition>(def)
+                    && crate::search::is_text_field(&def.field_type)
+                {
+                    names.push(def.field_name);
+                }
+            }
+        }
+    }
+
+    // Every visible comment on every visible item, in one query.
+    let visible_ids: Vec<Uuid> = visible.iter().map(|item| item.id).collect();
+    let comment_rows = sqlx::query_as::<_, CommentRow>(VISIBLE_COMMENTS_SQL)
+        .bind(&visible_ids)
+        .bind(crate::models::CommentStatus::Published.as_i16())
+        .fetch_all(pool)
+        .await
+        .context("failed to query comments for pagefind index")?;
+    let mut comments_by_item: HashMap<Uuid, Vec<String>> = HashMap::new();
+    for row in comment_rows {
+        let text = plain_text(&row.body);
+        if !text.is_empty() {
+            comments_by_item.entry(row.item_id).or_default().push(text);
+        }
+    }
+
     // Batch-load URL aliases for all items so we can use friendly paths.
     let alias_rows = sqlx::query_as::<_, AliasRow>(
         "SELECT source, alias FROM url_alias WHERE source LIKE '/item/%'",
@@ -302,7 +421,17 @@ pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<V
 
     let mut documents = Vec::with_capacity(visible.len());
     for item in &visible {
-        let fields = searchable_fields(&item.fields, &item.item_type, &config_map);
+        let fields = searchable_fields(
+            &item.fields,
+            text_fields
+                .get(&item.item_type)
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
+            config_map
+                .get(&item.item_type)
+                .map(Vec::as_slice)
+                .unwrap_or_default(),
+        );
 
         // Use friendly URL alias if available, otherwise /item/{id}
         let source_path = format!("/item/{}", item.id);
@@ -314,15 +443,16 @@ pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<V
         let description = extract_field_text(&item.fields, "field_description")
             .or_else(|| crate::content::body_field::body_text(&item.fields))
             .unwrap_or_default();
-        // Strip HTML and truncate for a clean description meta
-        let description_clean = ammonia::clean(&description);
+        // Plain text, then truncated, for a clean description meta.
+        let description_clean = plain_text(&description);
 
         documents.push(IndexDocument {
             id: item.id,
             item_type: item.item_type.clone(),
-            title: item.title.clone(),
+            title: plain_text(&item.title),
             url,
             fields,
+            comments: comments_by_item.remove(&item.id).unwrap_or_default(),
             description: truncate_meta(&description_clean, 200),
             location: build_location_meta(&item.fields),
             event_dates: build_date_range_meta(&item.fields),
@@ -338,7 +468,8 @@ pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<V
 /// Pagefind indexes only inside `data-pagefind-body` when a page has one, so
 /// everything searchable goes in there: the title, at weight A and still the
 /// result's `title` meta, then each field in its own element at its own weight,
-/// heaviest first. The meta values sit outside the region; they are shown on
+/// heaviest first, then each visible comment. The result URL stays the item's: a
+/// match in a comment is a result for the item. The meta values sit outside the region; they are shown on
 /// the result card but not searched.
 ///
 /// Exposed (`#[doc(hidden)]`, re-exported from `cron`) beside
@@ -389,6 +520,10 @@ pub fn render_fragment(document: &IndexDocument) -> String {
             field.weight,
             html_escape(&field.text),
         ));
+    }
+    // Comments last, each in its own element at Pagefind's default weight.
+    for comment in &document.comments {
+        body.push_str(&format!("\n<p>{}</p>", html_escape(comment)));
     }
 
     format!(
@@ -521,39 +656,43 @@ fn truncate_meta(s: &str, max_len: usize) -> String {
     format!("{}…", &s[..end])
 }
 
-/// The configured searchable fields an item has text in, heaviest first, then
-/// by field name.
+/// Every text field an item has text in, as plain text, heaviest first, then by
+/// field name.
 ///
-/// When none of the item's configured fields has text, the long text field
-/// (under either of its two names, BL-21) is indexed at weight D, so an item of
-/// a type with no search configuration is still findable by its body.
+/// Which fields: every text field the type declares (`text_fields`), every
+/// field configured in `search_field_config` (`configs`), and the long text
+/// field under either of its names (BL-21), so a type that declares no fields
+/// is still findable by its body. Each at its configured weight, D when it has
+/// none: the configuration says how much a field counts, never whether it is
+/// searched at all. `fields` is the item's fields after the anonymous field
+/// access pass, so a field the seam dropped is not there to be read.
 fn searchable_fields(
     fields: &serde_json::Value,
-    item_type: &str,
-    configs: &HashMap<String, Vec<(String, f32)>>,
+    text_fields: &[String],
+    configs: &[(String, f32)],
 ) -> Vec<IndexedField> {
-    let mut indexed: Vec<IndexedField> = configs
-        .get(item_type)
+    let mut names: Vec<&str> = text_fields.iter().map(String::as_str).collect();
+    names.extend(configs.iter().map(|(name, _)| name.as_str()));
+    names.extend(crate::content::body_field::BODY_FIELD_NAMES);
+    names.sort_unstable();
+    names.dedup();
+
+    let mut indexed: Vec<IndexedField> = names
         .into_iter()
-        .flatten()
-        .filter_map(|(name, weight)| {
-            extract_field_text(fields, name).map(|text| IndexedField {
-                name: name.clone(),
-                weight: *weight,
+        .filter_map(|name| {
+            let text = field_plain_text(fields, name)?;
+            let weight = configs
+                .iter()
+                .find(|(configured, _)| configured == name)
+                .map(|(_, weight)| *weight)
+                .unwrap_or_else(|| pagefind_weight('D'));
+            Some(IndexedField {
+                name: name.to_string(),
+                weight,
                 text,
             })
         })
         .collect();
-
-    if indexed.is_empty()
-        && let Some(body) = crate::content::body_field::body_text(fields)
-    {
-        indexed.push(IndexedField {
-            name: "body".to_string(),
-            weight: pagefind_weight('D'),
-            text: body,
-        });
-    }
 
     indexed.sort_by(|a, b| {
         b.weight
@@ -561,6 +700,34 @@ fn searchable_fields(
             .then_with(|| a.name.cmp(&b.name))
     });
     indexed
+}
+
+/// One text field's searchable text, as plain text: its value, and its summary
+/// when it has one. A field holding more than one value (an array of either
+/// shape) contributes every value. `None` when nothing is left.
+fn field_plain_text(fields: &serde_json::Value, name: &str) -> Option<String> {
+    fn collect<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
+        match value {
+            serde_json::Value::String(s) => out.push(s),
+            serde_json::Value::Object(obj) => {
+                for key in ["value", "summary"] {
+                    if let Some(serde_json::Value::String(s)) = obj.get(key) {
+                        out.push(s);
+                    }
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for v in values {
+                    collect(v, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut parts = Vec::new();
+    collect(fields.get(name)?, &mut parts);
+    let text = plain_text(&parts.join(" "));
+    (!text.is_empty()).then_some(text)
 }
 
 /// Extract text from a single JSONB field.

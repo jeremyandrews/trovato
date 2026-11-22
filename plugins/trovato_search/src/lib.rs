@@ -3,6 +3,11 @@
 //! Detects content changes via `tap_cron` and signals the kernel to
 //! rebuild the Pagefind search index when published live-stage content
 //! has been modified since the last index build.
+//!
+//! The kernel's item and comment write services set the same flag themselves
+//! after every write that changes the public index, including the ones this
+//! poll cannot see (a delete, an unpublish, any comment). The poll stays for
+//! writes that bypass those services, such as a scheduled publish.
 
 use trovato_sdk::host;
 use trovato_sdk::prelude::*;

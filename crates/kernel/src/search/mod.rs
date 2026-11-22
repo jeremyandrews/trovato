@@ -34,6 +34,18 @@ pub fn normalize_query(query: &str) -> String {
         .to_lowercase()
 }
 
+/// Whether a field type carries text that search indexes: `Text` (string) and
+/// `TextLong` (long text, with or without a summary). Files, references,
+/// numbers, dates, booleans and structured fields do not.
+///
+/// Both backends index every field of these types: the Pagefind export and
+/// the `item_search_vector` SQL function, which reads the same two types out
+/// of `item_type.settings`.
+pub fn is_text_field(field_type: &trovato_sdk::types::FieldType) -> bool {
+    use trovato_sdk::types::FieldType;
+    matches!(field_type, FieldType::Text { .. } | FieldType::TextLong)
+}
+
 /// Search result with ranking information.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResult {
@@ -408,17 +420,20 @@ impl SearchService {
     }
 
     /// Reindex a single item (useful after bulk field config changes).
+    ///
+    /// Recomputes the vector with `item_search_vector`, the function the
+    /// `trg_item_search` trigger calls. Touching `changed`, which this used to
+    /// do, never fired that trigger (it runs on `title`, `fields` and `type`
+    /// only), so a reindex left the vector as it was.
     pub async fn reindex_item(&self, item_id: Uuid) -> Result<()> {
-        // Touch the item to trigger the search_vector update trigger
         sqlx::query(
             r#"
             UPDATE item
-            SET changed = $2
+            SET search_vector = item_search_vector(id, type, title, fields)
             WHERE id = $1
             "#,
         )
         .bind(item_id)
-        .bind(chrono::Utc::now().timestamp())
         .execute(&self.pool)
         .await
         .context("failed to reindex item")?;
@@ -427,17 +442,16 @@ impl SearchService {
         Ok(())
     }
 
-    /// Reindex all items of a specific type.
+    /// Reindex all items of a specific type, as [`Self::reindex_item`] does one.
     pub async fn reindex_bundle(&self, bundle: &str) -> Result<u64> {
         let result = sqlx::query(
             r#"
             UPDATE item
-            SET changed = $2
+            SET search_vector = item_search_vector(id, type, title, fields)
             WHERE type = $1
             "#,
         )
         .bind(bundle)
-        .bind(chrono::Utc::now().timestamp())
         .execute(&self.pool)
         .await
         .context("failed to reindex bundle")?;

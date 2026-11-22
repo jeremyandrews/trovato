@@ -790,10 +790,20 @@ async fn manage_search_config(
         .map(|c| (c.field_name.clone(), c.weight))
         .collect();
 
+    // Every text field is searched whether or not it has a weight here; the
+    // page says so rather than calling it "not indexed".
+    let text_fields: Vec<&str> = content_type
+        .fields
+        .iter()
+        .filter(|f| crate::search::is_text_field(&f.field_type))
+        .map(|f| f.field_name.as_str())
+        .collect();
+
     let mut context = tera::Context::new();
     context.insert("content_type", &content_type);
     context.insert("fields", &content_type.fields);
     context.insert("search_configs", &config_map);
+    context.insert("text_fields", &text_fields);
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert(
