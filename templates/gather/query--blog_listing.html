@@ -26,7 +26,7 @@
                     {% set body_val = row.fields.body %}
                     {% if body_val.value is defined %}
                     <div class="blog-teaser__summary">
-                        {{ body_val.value | truncate(length=200) }}
+                        {{ body_val.value | plain_text | truncate(length=200) }}
                     </div>
                     {% endif %}
                 {% endif %}

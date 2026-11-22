@@ -26,7 +26,7 @@
                     <h2><a href="/item/{{ result.id }}">{{ result.title }}</a></h2>
                     <div class="result-meta">{{ result.item_type }}</div>
                     {% if result.snippet %}
-                        {# SAFE: the search service HTML-escapes the source title/body BEFORE ts_headline (XSS-3 fix in search/mod.rs); the only raw HTML in the snippet is the <mark> highlight added afterwards, so `| safe` is genuine. #}
+                        {# SAFE: the one place a search snippet is printed unescaped. crate::search::snippet::render built it: tags stripped from the source before highlighting, the text escaped exactly once, then only its own markers turned into <mark>. Do not escape it again. #}
                         <div class="result-snippet">{{ result.snippet | safe }}</div>
                     {% endif %}
                 </article>
@@ -69,7 +69,7 @@
                         <h2><a href="/item/{{ result.id }}">{{ result.title }}</a></h2>
                         <div class="result-meta">{{ result.item_type }}</div>
                         {% if result.snippet %}
-                            {# SAFE: the search service HTML-escapes the source title/body BEFORE ts_headline (XSS-3 fix in search/mod.rs); the only raw HTML in the snippet is the <mark> highlight added afterwards, so `| safe` is genuine. #}
+                            {# SAFE: the one place a search snippet is printed unescaped. crate::search::snippet::render built it: tags stripped from the source before highlighting, the text escaped exactly once, then only its own markers turned into <mark>. Do not escape it again. #}
                             <div class="result-snippet">{{ result.snippet | safe }}</div>
                         {% endif %}
                     </article>

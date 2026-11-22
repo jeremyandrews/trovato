@@ -7,6 +7,7 @@ pub mod analytics;
 pub mod prompts;
 pub mod sentiment;
 pub mod settings;
+pub mod snippet;
 
 pub use settings::{PriorityPage, SearchSettings};
 
@@ -14,7 +15,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use tracing::debug;
 use uuid::Uuid;
 
@@ -270,11 +271,14 @@ impl SearchService {
             .context("failed to count search results")?
         };
 
-        // Get ranked results
-        // Headline source: title + body text for richer snippets
+        // Get ranked results. The snippet is `ts_headline` over the title and
+        // body with tags stripped, highlighted with fixed markers that
+        // [`snippet::render`] escapes and turns into `<mark>` (B123).
         let results = if let Some(uid) = user_id {
             sqlx::query_as::<_, SearchResultRow>(
-                r#"
+                // Built from compile-time constants only: no input in the text.
+                AssertSqlSafe(format!(
+                    r#"
                 SELECT
                     id,
                     type,
@@ -283,28 +287,11 @@ impl SearchService {
                         * COALESCE(boost.factor, 1.0::real) AS rank,
                     ts_headline(
                         'english',
-                        -- XSS-3 fix (FR-6 audit): HTML-escape the source text
-                        -- BEFORE ts_headline so any markup stored in title/body
-                        -- (e.g. `<img src=x onerror=...>`) is neutralized. The
-                        -- only raw HTML in the result is the <mark> highlight
-                        -- added by StartSel/StopSel afterwards, so the snippet is
-                        -- genuinely safe to render with `| safe`.
-                        replace(replace(replace(replace(
-                            -- The long text field goes by two names (BL-21):
-                            -- `field_body` where a content type declared it,
-                            -- `body` on the kernel's own `page`. Both, in that
-                            -- order, or a `page` matched only on its title gets
-                            -- a snippet with no body text in it.
-                            COALESCE(title, '') || ' ' || COALESCE(
-                                fields->'field_body'->>'value',
-                                fields->>'field_body',
-                                fields->'body'->>'value',
-                                fields->>'body',
-                                ''
-                            ),
-                        '&', '&amp;'), '<', '&lt;'), '>', '&gt;'), '"', '&quot;'),
+                        -- B123: tags stripped from the source before
+                        -- highlighting; see crate::search::snippet.
+                        {source},
                         to_tsquery('english', $1),
-                        'StartSel=<mark>, StopSel=</mark>, MaxWords=35, MinWords=15'
+                        '{options}'
                     ) as snippet
                 FROM item
                 LEFT JOIN unnest($6::text[], $7::real[]) AS boost(item_type, factor)
@@ -315,6 +302,9 @@ impl SearchService {
                 ORDER BY rank DESC, created DESC
                 LIMIT $4 OFFSET $5
                 "#,
+                    source = snippet::SOURCE_SQL,
+                    options = snippet::HEADLINE_OPTIONS,
+                )),
             )
             .bind(&ts_query)
             .bind(uid)
@@ -328,7 +318,9 @@ impl SearchService {
             .context("failed to execute search query")?
         } else {
             sqlx::query_as::<_, SearchResultRow>(
-                r#"
+                // Built from compile-time constants only: no input in the text.
+                AssertSqlSafe(format!(
+                    r#"
                 SELECT
                     id,
                     type,
@@ -337,28 +329,11 @@ impl SearchService {
                         * COALESCE(boost.factor, 1.0::real) AS rank,
                     ts_headline(
                         'english',
-                        -- XSS-3 fix (FR-6 audit): HTML-escape the source text
-                        -- BEFORE ts_headline so any markup stored in title/body
-                        -- (e.g. `<img src=x onerror=...>`) is neutralized. The
-                        -- only raw HTML in the result is the <mark> highlight
-                        -- added by StartSel/StopSel afterwards, so the snippet is
-                        -- genuinely safe to render with `| safe`.
-                        replace(replace(replace(replace(
-                            -- The long text field goes by two names (BL-21):
-                            -- `field_body` where a content type declared it,
-                            -- `body` on the kernel's own `page`. Both, in that
-                            -- order, or a `page` matched only on its title gets
-                            -- a snippet with no body text in it.
-                            COALESCE(title, '') || ' ' || COALESCE(
-                                fields->'field_body'->>'value',
-                                fields->>'field_body',
-                                fields->'body'->>'value',
-                                fields->>'body',
-                                ''
-                            ),
-                        '&', '&amp;'), '<', '&lt;'), '>', '&gt;'), '"', '&quot;'),
+                        -- B123: tags stripped from the source before
+                        -- highlighting; see crate::search::snippet.
+                        {source},
                         to_tsquery('english', $1),
-                        'StartSel=<mark>, StopSel=</mark>, MaxWords=35, MinWords=15'
+                        '{options}'
                     ) as snippet
                 FROM item
                 LEFT JOIN unnest($5::text[], $6::real[]) AS boost(item_type, factor)
@@ -369,6 +344,9 @@ impl SearchService {
                 ORDER BY rank DESC, created DESC
                 LIMIT $3 OFFSET $4
                 "#,
+                    source = snippet::SOURCE_SQL,
+                    options = snippet::HEADLINE_OPTIONS,
+                )),
             )
             .bind(&ts_query)
             .bind(stage_ids)
@@ -526,7 +504,8 @@ impl From<SearchResultRow> for SearchResult {
             item_type: row.item_type,
             title: row.title,
             rank: row.rank,
-            snippet: row.snippet,
+            // The one place a snippet is built: see [`snippet`].
+            snippet: row.snippet.as_deref().map(snippet::render),
         }
     }
 }

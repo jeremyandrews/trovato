@@ -159,9 +159,9 @@ fn search_keeps_snippet_fail_open() {
 
 /// XSS-3 regression (FR-6 audit): `ts_headline` builds the search snippet over
 /// the stored title/body, which is rendered `| safe`. HTML stored in the source
-/// (e.g. `<img src=x onerror=alert(1)>`) must be escaped in the snippet — only
-/// the `<mark>` highlight may be raw HTML. The fix HTML-escapes the source
-/// columns before `ts_headline`.
+/// (e.g. `<img src=x onerror=alert(1)>`) must never reach the snippet as markup.
+/// Since B123 the tags are stripped from the source before `ts_headline`, so the
+/// tag is gone entirely and the only raw HTML is the kernel's `<mark>`.
 #[test]
 fn search_snippet_escapes_html_in_source() {
     run_test(async {
@@ -217,8 +217,12 @@ fn search_snippet_escapes_html_in_source() {
             "raw <img must not survive into the snippet: {snippet}"
         );
         assert!(
-            snippet.contains("&lt;img"),
-            "the stored markup must be HTML-escaped in the snippet: {snippet}"
+            !snippet.contains("onerror"),
+            "the stored tag is stripped, attributes and all: {snippet}"
+        );
+        assert!(
+            snippet.contains(&format!("<mark>{term}</mark>")),
+            "the term is still highlighted: {snippet}"
         );
     });
 }
