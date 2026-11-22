@@ -45,6 +45,16 @@ pub struct RateLimitConfig {
     pub forms: (u32, Duration),
     /// API endpoints
     pub api: (u32, Duration),
+    /// Ordinary page views: a `GET` or `HEAD` of anything outside `/api/` that no
+    /// more specific bucket claims.
+    ///
+    /// Before this bucket existed a page view fell through to `api` at 100 a
+    /// minute, shared with every API call from the same address, so a reader on
+    /// a shared or NATed IP (an office, a school, a phone carrier) could be
+    /// served a 429 for browsing. Page views get their own, looser budget; the
+    /// API keeps its own, and sign in, registration and password reset keep
+    /// theirs.
+    pub page: (u32, Duration),
     /// Search queries
     pub search: (u32, Duration),
     /// File uploads
@@ -211,10 +221,11 @@ pub fn role_config_key(bucket: &str, role: &str) -> String {
 /// The one list: [`RateLimitConfig::bucket`] and its private `bucket_mut` twin
 /// resolve each of these to a field, and `every_bucket_resolves_to_a_field` fails
 /// if a name here has no field behind it.
-pub const BUCKETS: [&str; 20] = [
+pub const BUCKETS: [&str; 21] = [
     "login",
     "forms",
     "api",
+    "page",
     "search",
     "uploads",
     "register",
@@ -258,6 +269,7 @@ impl Default for RateLimitConfig {
             login: (5, Duration::from_secs(60)),         // 5 per minute
             forms: (30, Duration::from_secs(60)),        // 30 per minute
             api: (100, Duration::from_secs(60)),         // 100 per minute
+            page: (600, Duration::from_secs(60)),        // 600 per minute
             search: (20, Duration::from_secs(60)),       // 20 per minute
             uploads: (10, Duration::from_secs(60)),      // 10 per minute
             register: (3, Duration::from_secs(3600)),    // 3 per hour
@@ -288,6 +300,7 @@ impl RateLimitConfig {
             "login" => self.login,
             "forms" => self.forms,
             "api" => self.api,
+            "page" => self.page,
             "search" => self.search,
             "uploads" => self.uploads,
             "register" => self.register,
@@ -315,6 +328,7 @@ impl RateLimitConfig {
             "login" => &mut self.login,
             "forms" => &mut self.forms,
             "api" => &mut self.api,
+            "page" => &mut self.page,
             "search" => &mut self.search,
             "uploads" => &mut self.uploads,
             "register" => &mut self.register,
@@ -443,7 +457,7 @@ impl RateLimitConfig {
     ///   authentication has said whose the credential is, so it must not refuse
     ///   a request the user's own count would admit.
     ///
-    /// An unknown bucket is counted as `api`, as [`categorize_path`] defaults.
+    /// An unknown bucket is counted as `api`, the generic bucket.
     pub fn count_for(&self, bucket: &str, caller: RateLimitCaller<'_>) -> u32 {
         let bucket = if self.bucket(bucket).is_some() {
             bucket
@@ -526,6 +540,11 @@ impl RateLimiter {
                 .collect(),
         );
         self
+    }
+
+    /// The limits this limiter enforces, overrides applied.
+    pub fn config(&self) -> &RateLimitConfig {
+        &self.config
     }
 
     /// The configured trusted-proxy allowlist.
@@ -737,8 +756,11 @@ pub fn categorize_path_with<S: AsRef<str>>(
         "api"
     } else if method == "POST" {
         "forms"
+    } else if matches!(method, "GET" | "HEAD") {
+        // A page view: its own bucket, not the API's.
+        "page"
     } else {
-        "api" // Default category for GET requests
+        "api"
     }
 }
 
@@ -1174,7 +1196,9 @@ mod tests {
 
     #[test]
     fn categorize_default_get() {
-        assert_eq!(categorize_path("/some/page", "GET"), "api");
+        assert_eq!(categorize_path("/some/page", "GET"), "page");
+        assert_eq!(categorize_path("/some/page", "HEAD"), "page");
+        assert_eq!(categorize_path("/item/123", "PUT"), "api");
     }
 
     // --- static asset bucket ---
@@ -1201,8 +1225,8 @@ mod tests {
     /// Prefix matching is on a path segment, not a string prefix.
     #[test]
     fn an_asset_prefix_does_not_match_a_longer_word() {
-        assert_eq!(categorize_path("/staticky", "GET"), "api");
-        assert_eq!(categorize_path("/filesystem/etc/passwd", "GET"), "api");
+        assert_eq!(categorize_path("/staticky", "GET"), "page");
+        assert_eq!(categorize_path("/filesystem/etc/passwd", "GET"), "page");
     }
 
     /// A site with a non-default `FILES_URL` gets its own prefix routed, with or
@@ -1223,7 +1247,7 @@ mod tests {
         // And the default prefix is no longer special once overridden.
         assert_eq!(
             categorize_path_with("/files/x.jpg", "GET", &limiter_prefixes),
-            "api"
+            "page"
         );
     }
 
@@ -1237,8 +1261,8 @@ mod tests {
 
         assert_eq!(
             categorize_path("/some/page", "GET"),
-            "api",
-            "the page itself is still an api-bucket request"
+            "page",
+            "the page itself is a page-bucket request"
         );
         assert!(
             config.static_assets.0 >= assets * 10,
