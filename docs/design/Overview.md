@@ -63,6 +63,9 @@ See [Phases](Phases.md) for the development roadmap.
 **Plugin SDK:**
 - [Plugin SDK Spec](Design-Plugin-SDK.md) — Types, macros, host functions, WIT interface, mutation model, examples
 
+**Search:**
+- [Scolta in Core](scolta-in-core.md) — Whether and how Tag1's Scolta AI search fits Trovato core
+
 **Reference:**
 - [Terminology](Terminology.md) — Drupal → Trovato naming map
 
