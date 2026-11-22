@@ -12,8 +12,9 @@ use uuid::Uuid;
 
 use crate::content::FilterPipeline;
 use crate::middleware::language::{ResolvedLanguage, text_direction_for_language};
-use crate::models::{Item, SiteConfig};
+use crate::models::SiteConfig;
 use crate::state::AppState;
+use crate::tap::UserContext;
 
 use super::helpers::{html_escape, inject_site_context};
 
@@ -61,7 +62,8 @@ async fn front_page(
     }
 
     // Fall back to promoted items listing
-    let content = render_promoted_listing(&state).await;
+    let viewer = super::item::get_user_context(&session, &state).await;
+    let content = render_promoted_listing(&state, &viewer).await;
 
     let mut context = tera::Context::new();
     insert_language_context(&mut context, &active_language);
@@ -226,8 +228,14 @@ async fn render_front_page_item(
         }
     }
 
-    // Render item fields and plugin outputs
-    let (mut children_html, page_stylesheets) = render_item_fields(&item, state, &user).await;
+    // Render item fields as the item page does, and plugin outputs
+    let content_type_fields = state
+        .content_types()
+        .get(&item.item_type)
+        .map(|ct| ct.fields.clone())
+        .unwrap_or_default();
+    let (mut children_html, page_stylesheets) =
+        super::item::render_item_fields(state, &user, &item.fields, &content_type_fields).await;
     for output in render_outputs {
         children_html.push_str(&output);
     }
@@ -300,12 +308,23 @@ fn insert_language_context(context: &mut tera::Context, active_language: &str) {
 /// Asks for promoted items directly, with paging, rather than filtering a page
 /// of published items: promotion is what decides membership of this list, so
 /// it has to decide the query too.
-async fn render_promoted_listing(state: &AppState) -> String {
-    let promoted = state
+///
+/// The list is the viewer's: every item goes through the item access path
+/// ([`crate::content::ItemService::filter_page_for_view`]), so a viewer
+/// without `access content`, or one a plugin denies an item to, is not shown
+/// it, and a field they may not view is not used for its teaser.
+async fn render_promoted_listing(state: &AppState, viewer: &UserContext) -> String {
+    // Over-fetch so a few items the viewer may not see do not leave the
+    // listing short.
+    let candidates = state
         .items()
-        .list_promoted(PROMOTED_LISTING_LIMIT, 0)
+        .list_promoted(PROMOTED_LISTING_LIMIT * 3, 0)
         .await
         .unwrap_or_default();
+    let promoted = state
+        .items()
+        .filter_page_for_view(candidates, viewer, "view", PROMOTED_LISTING_LIMIT as usize)
+        .await;
 
     if promoted.is_empty() {
         return String::new();
@@ -336,22 +355,9 @@ async fn render_promoted_listing(state: &AppState) -> String {
         if let Some(field) = crate::content::body_field::body_field_name(&item.fields) {
             let body =
                 crate::content::body_field::field_text(&item.fields, field).unwrap_or_default();
-            let format = item
-                .fields
-                .get(field)
-                .and_then(|f| f.get("format"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("plain_text");
-            let filtered = FilterPipeline::for_format_safe(format).process(&body);
-            // Truncate for teaser (char-boundary safe)
-            let summary = if filtered.chars().count() > 200 {
-                let truncated: String = filtered.chars().take(200).collect();
-                format!("{truncated}...")
-            } else {
-                filtered
-            };
             html.push_str(&format!(
-                "<div class=\"blog-teaser__summary\">{summary}</div>"
+                "<div class=\"blog-teaser__summary\">{}</div>",
+                teaser(&body)
             ));
         }
 
@@ -366,56 +372,21 @@ async fn render_promoted_listing(state: &AppState) -> String {
     html
 }
 
-/// Render item fields to HTML, and the stylesheets the page builder
-/// components in them declared, for the page head.
-async fn render_item_fields(
-    item: &Item,
-    state: &AppState,
-    viewer: &crate::tap::UserContext,
-) -> (String, Vec<String>) {
-    let mut html = String::new();
-    let mut stylesheets: Vec<String> = Vec::new();
+/// How many characters of a body a teaser shows.
+const TEASER_CHARS: usize = 200;
 
-    if let Some(fields) = item.fields.as_object() {
-        for (name, value) in fields {
-            // PageBuilder field: Puck JSON with root + content keys
-            if value.get("root").is_some() && value.get("content").is_some() {
-                match super::helpers::render_page_builder_field(state, viewer, value).await {
-                    Ok(rendered) => {
-                        html.push_str(&format!(
-                            "<div class=\"field field--page-builder field-{}\">{}</div>",
-                            html_escape(name),
-                            rendered.html
-                        ));
-                        for sheet in rendered.stylesheets {
-                            if !stylesheets.contains(&sheet) {
-                                stylesheets.push(sheet);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!(field = %name, error = %e, "failed to render page builder field on front page");
-                    }
-                }
-                continue;
-            }
-
-            // Text field with {value, format}
-            if let Some(text_val) = value.get("value").and_then(|v| v.as_str()) {
-                let format = value
-                    .get("format")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("plain_text");
-                let filtered = FilterPipeline::for_format_safe(format).process(text_val);
-                let safe_name = html_escape(name);
-                html.push_str(&format!(
-                    "<div class=\"field field-{safe_name}\">{filtered}</div>"
-                ));
-            }
-        }
-    }
-
-    (html, stylesheets)
+/// A body's teaser: its plain text, cut to [`TEASER_CHARS`] characters, then
+/// escaped. Cutting the filtered HTML instead could end inside a tag or an
+/// entity, and left an element open across the rest of the page.
+fn teaser(body: &str) -> String {
+    let text = crate::content::page_meta::plain_text(body);
+    let cut = if text.chars().count() > TEASER_CHARS {
+        let truncated: String = text.chars().take(TEASER_CHARS).collect();
+        format!("{}...", truncated.trim_end())
+    } else {
+        text
+    };
+    FilterPipeline::for_format_safe("plain_text").process(&cut)
 }
 
 #[cfg(test)]

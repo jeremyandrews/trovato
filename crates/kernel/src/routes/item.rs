@@ -736,7 +736,7 @@ async fn view_item(
 /// shown exactly as it would have been. The caller hands in fields already cut
 /// to what the viewer may see. Returns the HTML and the stylesheets the page
 /// builder components in it declared, for the page head.
-async fn render_item_fields(
+pub(crate) async fn render_item_fields(
     state: &AppState,
     viewer: &UserContext,
     fields: &serde_json::Value,
@@ -1277,12 +1277,24 @@ async fn edit_item_form(
         .map_err(|e| AppError::internal_ctx(e, "load item"))?
         .ok_or_else(|| AppError::not_found("Item"))?;
 
-    if !state
-        .items()
+    // A user who may not edit the item is refused as the item page and the
+    // revision pages refuse: 404 when they may not see it either, so a 403
+    // never confirms that an unseen item exists, and 403 when they may. One
+    // who may edit gets the form even without a view grant, as an author
+    // with `edit own content` on their own unpublished item does.
+    let items = state.items();
+    if !items
         .check_access(&item, "edit", &user)
         .await
         .unwrap_or(false)
     {
+        if !items
+            .check_access(&item, "view", &user)
+            .await
+            .unwrap_or(false)
+        {
+            return Err(AppError::not_found("Item"));
+        }
         return Err(super::helpers::refusal_for(&user, "Access denied"));
     }
 
