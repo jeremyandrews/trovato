@@ -66,6 +66,9 @@ See [Phases](Phases.md) for the development roadmap.
 **Search:**
 - [Scolta in Core](scolta-in-core.md) — Whether and how Tag1's Scolta AI search fits Trovato core
 
+**Assessments:**
+- [Bottega needs](bottega-needs.md) — A multi-author, multi-blog host checked against `main`: what is present, what is missing, what blocks launch
+
 **Reference:**
 - [Terminology](Terminology.md) — Drupal → Trovato naming map
 
