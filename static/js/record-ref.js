@@ -41,6 +41,11 @@
    * of the owner field when the field is limited to the item's owner. The
    * server decides from these whether this editor may be offered terms, and
    * which.
+   *
+   * `owner` is sent whenever the field has an owner field at all, blank or
+   * not: its absence and its emptiness mean different things to the server,
+   * which cannot otherwise tell "the owner field is empty" from "this
+   * request says nothing about an owner."
    */
   function context(input) {
     var params = '';
@@ -50,8 +55,17 @@
     add('item_type', input.getAttribute('data-item-type'));
     add('field', input.getAttribute('data-field'));
     add('item', input.getAttribute('data-item'));
-    add('owner', formValue(input, input.getAttribute('data-owner-field')));
+    var ownerField = input.getAttribute('data-owner-field');
+    if (ownerField) {
+      params += '&owner=' + encodeURIComponent(formValue(input, ownerField));
+    }
     return params;
+  }
+
+  /** Whether `input` is limited to an owner field that is currently empty. */
+  function ownerFieldEmpty(input) {
+    var ownerField = input.getAttribute('data-owner-field');
+    return !!ownerField && !formValue(input, ownerField);
   }
 
   /** Fetch autocomplete results from the API. */
@@ -94,6 +108,17 @@
     resultsEl.style.display = 'block';
   }
 
+  /** Show a short hint in place of results, e.g. while an owner field a term
+   * search depends on is empty. */
+  function showHint(resultsEl, text) {
+    resultsEl.innerHTML = '';
+    var div = document.createElement('div');
+    div.className = 'record-ref-hint';
+    div.textContent = text;
+    resultsEl.appendChild(div);
+    resultsEl.style.display = 'block';
+  }
+
   /** Initialize autocomplete on all record reference fields. */
   function init() {
     var fields = document.querySelectorAll('.record-ref-autocomplete');
@@ -104,6 +129,10 @@
       if (!targetType || !resultsEl) return;
 
       var search = debounce(function () {
+        if (ownerFieldEmpty(input)) {
+          showHint(resultsEl, input.getAttribute('data-owner-hint') || 'Choose the owner first');
+          return;
+        }
         var q = input.value.trim();
         if (q.length < MIN_CHARS) {
           resultsEl.style.display = 'none';
@@ -127,7 +156,7 @@
       });
 
       input.addEventListener('focus', function () {
-        if (input.value.trim().length >= MIN_CHARS) {
+        if (ownerFieldEmpty(input) || input.value.trim().length >= MIN_CHARS) {
           search();
         }
       });

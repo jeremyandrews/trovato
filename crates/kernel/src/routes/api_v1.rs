@@ -210,8 +210,10 @@ const TERM_TARGET: &str = "category_term";
 ///
 /// Terms are not items, so the item query above has nothing to say about
 /// them. The widget sends the field it is filling in (`item_type`, `field`),
-/// the item when it is editing one (`item`) and the current value of the
-/// field's owner field (`owner`). The caller must be able to edit that field
+/// the item when it is editing one (`item`) and, for a field limited to the
+/// item's owner, the current value of the owner field on the open form
+/// (`owner`) — not the value stored on the item, which may be stale the
+/// moment the editor changes it. The caller must be able to edit that field
 /// as the item form decides it: the type's create permission, or edit access
 /// to the item, and the field's own view and edit decisions. Without that
 /// context, or without that access, the answer is empty.
@@ -301,7 +303,19 @@ async fn autocomplete_terms(
             // The owner the save would see: the form's, when this editor may
             // write the owner field, else the stored one (the write gate
             // copies a field they may not edit back from the item).
-            let posted = param("owner")
+            //
+            // `owner` is read raw, not through `param`, because its absence
+            // and its emptiness mean different things here. The widget sends
+            // it, blank or not, whenever the field has an owner limit (see
+            // `data-owner-field` in `record-ref.js`), so a blank value is the
+            // owner field cleared on the open form: the save would see no
+            // owner, not the one still stored on the item, and this must
+            // match. Only a request that says nothing about `owner` at all —
+            // no such field on the request, the form predates this context —
+            // falls back to what is stored.
+            let posted = params
+                .get("owner")
+                .map(|v| v.trim())
                 .filter(|_| editable(&rule.owner_field))
                 .map(|owner| {
                     let mut posted = serde_json::Map::new();
