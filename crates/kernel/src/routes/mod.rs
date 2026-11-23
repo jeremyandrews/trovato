@@ -140,10 +140,12 @@ pub fn gated_plugin_routes(state: &AppState) -> Router<AppState> {
                 )),
         )
         .merge(
-            admin::comment_admin_router().route_layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                gate_comments,
-            )),
+            admin::comment_admin_router()
+                .merge(comment::router())
+                .route_layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    gate_comments,
+                )),
         )
         .merge(
             admin_translation::router().route_layer(axum::middleware::from_fn_with_state(
