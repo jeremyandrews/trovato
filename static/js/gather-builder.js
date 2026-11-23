@@ -53,7 +53,7 @@
 
     var display = {
         format: 'table',
-        items_per_page: 10,
+        items_per_page: null,
         pager: { enabled: true, show_count: false, style: 'full', zero_based: false },
         empty_text: '',
         canonical_url: ''
@@ -162,7 +162,7 @@
             if (dispVal && dispVal !== '{}') {
                 var parsed = JSON.parse(dispVal);
                 display.format         = parsed.format         || display.format;
-                display.items_per_page = parsed.items_per_page || display.items_per_page;
+                display.items_per_page = parsed.items_per_page || null;
                 display.empty_text     = parsed.empty_text !== undefined ? parsed.empty_text : display.empty_text;
                 display.canonical_url  = parsed.canonical_url !== undefined ? parsed.canonical_url : display.canonical_url;
                 if (parsed.pager) {
@@ -183,7 +183,7 @@
      */
     function syncDisplayFieldsFromState() {
         if (displayFormatSelect)    displayFormatSelect.value    = display.format;
-        if (itemsPerPageInput)      itemsPerPageInput.value      = display.items_per_page;
+        if (itemsPerPageInput)      itemsPerPageInput.value      = display.items_per_page || '';
         if (emptyTextInput)         emptyTextInput.value         = display.empty_text;
         if (canonicalUrlInput)      canonicalUrlInput.value      = display.canonical_url;
         if (pagerEnabledCheckbox)   pagerEnabledCheckbox.checked = display.pager.enabled;
@@ -724,9 +724,8 @@
         if (itemsPerPageInput) {
             itemsPerPageInput.addEventListener('input', function () {
                 var val = parseInt(itemsPerPageInput.value, 10);
-                if (!isNaN(val) && val > 0) {
-                    display.items_per_page = val;
-                }
+                // Blank: the site's items per page (/admin/config/site).
+                display.items_per_page = (!isNaN(val) && val > 0) ? val : null;
                 syncToHiddenInputs();
             });
         }

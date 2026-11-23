@@ -140,6 +140,11 @@ pub struct ExecuteParams {
     /// gather with no `canonical_url` by. Never from the request.
     #[serde(skip)]
     link_base: Option<String>,
+    /// The term a term page is about (`id`, `label`, `slug`, `description`),
+    /// set by a gather route whose path names a tag. The page is titled by it
+    /// and its templates read it as `term`. Never from the request.
+    #[serde(skip)]
+    term: Option<serde_json::Value>,
 }
 
 impl ExecuteParams {
@@ -154,7 +159,21 @@ impl ExecuteParams {
             filters,
             feeds: Vec::new(),
             link_base: None,
+            term: None,
         }
+    }
+
+    /// The page is about this term: titled by its label (see `term`).
+    pub fn with_term(mut self, term: Option<&crate::models::Tag>) -> Self {
+        self.term = term.map(|tag| {
+            serde_json::json!({
+                "id": tag.id,
+                "label": tag.label,
+                "slug": tag.slug,
+                "description": tag.description,
+            })
+        });
+        self
     }
 
     /// Advertise these argument feeds on the rendered page.
@@ -558,7 +577,7 @@ pub async fn execute_query_only(
 
     let mut display = query.display;
     if let Some(per_page) = per_page {
-        display.items_per_page = per_page;
+        display.items_per_page = Some(per_page);
     }
     state
         .gather()
@@ -649,6 +668,7 @@ pub async fn execute_and_render(
     };
 
     // Render gather content (either via theme template or fallback HTML)
+    let term = params.term.as_ref();
     let content_html = render_gather_with_theme(
         state,
         &gather_query,
@@ -656,10 +676,25 @@ pub async fn execute_and_render(
         &filter_values,
         link_base,
         &preload,
+        term,
     )
     .unwrap_or_else(|| {
-        render_gather_content_html(&gather_query, &result, &filter_values, link_base, &preload)
+        render_gather_content_html(
+            &gather_query,
+            &result,
+            &filter_values,
+            link_base,
+            &preload,
+            term,
+        )
     });
+
+    // A term page is titled by its term, a listing by its gather (B160).
+    let page_title = term
+        .and_then(|t| t.get("label"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(&gather_query.label)
+        .to_string();
 
     // Wrap in page layout with site context.
     //
@@ -675,6 +710,9 @@ pub async fn execute_and_render(
     if let Some(requested_path) = requested_path {
         context.insert("requested_path", requested_path);
     }
+    if let Some(term) = term {
+        context.insert("term", term);
+    }
     if let Some(ref lang) = query_context.language {
         context.insert("active_language", lang);
         context.insert(
@@ -689,16 +727,16 @@ pub async fn execute_and_render(
         context.insert("feeds", &feeds);
     }
 
-    // Build breadcrumbs: Home > Query Label
+    // Build breadcrumbs: Home > the page's title
     let breadcrumbs = vec![
         serde_json::json!({"path": "/", "title": "Home"}),
-        serde_json::json!({"path": null, "title": gather_query.label}),
+        serde_json::json!({"path": null, "title": page_title}),
     ];
     context.insert("breadcrumbs", &breadcrumbs);
 
     let page_html = state
         .theme()
-        .render_page(base_path, &gather_query.label, &content_html, &mut context)
+        .render_page(base_path, &page_title, &content_html, &mut context)
         .map_err(|e| {
             tracing::error!(error = %e, "failed to render a gather page");
             GatherPageError::Failed("This page could not be displayed.".to_string())
@@ -750,6 +788,7 @@ fn render_gather_with_theme(
     filter_values: &HashMap<String, String>,
     base_path: &str,
     preload: &WidgetPreloadData,
+    term: Option<&serde_json::Value>,
 ) -> Option<String> {
     // Try to find a template for this query
     let suggestions = [
@@ -765,6 +804,9 @@ fn render_gather_with_theme(
     let mut context = tera::Context::new();
     context.insert("query", query);
     context.insert("rows", &result.items);
+    if let Some(term) = term {
+        context.insert("term", term);
+    }
     context.insert("columns", &gather_columns(query, &result.items));
     context.insert("total", &result.total);
     context.insert("page", &result.page);
@@ -1253,11 +1295,16 @@ fn render_gather_content_html(
     filter_values: &HashMap<String, String>,
     base_path: &str,
     preload: &WidgetPreloadData,
+    term: Option<&serde_json::Value>,
 ) -> String {
     let mut html = String::new();
 
-    // Title
-    html.push_str(&format!("<h1>{}</h1>\n", escape_html(&query.label)));
+    // Title: the term a term page is about, else the gather's label.
+    let title = term
+        .and_then(|t| t.get("label"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(&query.label);
+    html.push_str(&format!("<h1>{}</h1>\n", escape_html(title)));
 
     if let Some(ref desc) = query.description {
         html.push_str(&format!("<p>{}</p>\n", escape_html(desc)));

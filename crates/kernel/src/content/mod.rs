@@ -33,6 +33,7 @@ pub mod revision_compare;
 pub mod submission;
 pub mod text_format;
 mod type_registry;
+pub mod view_counter;
 
 pub use block_render::render_blocks;
 pub use block_types::{BlockTypeDefinition, BlockTypeRegistry};

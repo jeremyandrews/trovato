@@ -93,7 +93,7 @@ fn feed_query(query_id: &str, path: &str) -> GatherQuery {
             ..Default::default()
         },
         display: QueryDisplay {
-            items_per_page: 10,
+            items_per_page: Some(10),
             // Built from JSON, the shape a `gather_query.display` row holds.
             feed: Some(
                 serde_json::from_value(serde_json::json!({
@@ -1321,7 +1321,7 @@ fn a_feed_carries_its_own_item_count_not_the_page_size() {
         let path = format!("/rss/feed-count-{stamp}.xml");
         let mut query = feed_query(&format!("feed_count_{stamp}"), &path);
         isolate(&mut query, &stamp);
-        query.display.items_per_page = 2;
+        query.display.items_per_page = Some(2);
         query.display.feed =
             Some(serde_json::from_value(serde_json::json!({"path": path, "items": 3})).unwrap());
         let base = chrono::Utc::now().timestamp();

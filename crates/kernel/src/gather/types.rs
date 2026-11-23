@@ -709,15 +709,17 @@ pub enum JoinType {
 }
 
 /// Display configuration for rendering results.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct QueryDisplay {
     /// Output format.
     #[serde(default)]
     pub format: DisplayFormat,
 
-    /// Number of items per page.
-    #[serde(default = "default_items_per_page")]
-    pub items_per_page: u32,
+    /// Number of items per page. `None` (the key absent) is the site's
+    /// items per page, set at `/admin/config/site` (B160): a gather that
+    /// replaces a Drupal listing paged by "posts per page" leaves it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items_per_page: Option<u32>,
 
     /// Pager configuration.
     #[serde(default)]
@@ -805,26 +807,6 @@ pub struct GatherFeed {
 
 fn default_feed_items() -> u32 {
     20
-}
-
-fn default_items_per_page() -> u32 {
-    10
-}
-
-impl Default for QueryDisplay {
-    fn default() -> Self {
-        Self {
-            format: DisplayFormat::default(),
-            items_per_page: default_items_per_page(),
-            pager: PagerConfig::default(),
-            empty_text: None,
-            header: None,
-            footer: None,
-            canonical_url: None,
-            routes: Vec::new(),
-            feed: None,
-        }
-    }
 }
 
 /// Display format options.
@@ -1293,7 +1275,10 @@ mod tests {
     #[test]
     fn query_display_defaults() {
         let display = QueryDisplay::default();
-        assert_eq!(display.items_per_page, 10);
+        assert_eq!(
+            display.items_per_page, None,
+            "no size of its own: the site's"
+        );
         assert!(display.pager.enabled);
     }
 
@@ -1490,7 +1475,7 @@ mod tests {
         }"#;
         let display: QueryDisplay = serde_json::from_str(json).unwrap();
         assert_eq!(display.format, DisplayFormat::List);
-        assert_eq!(display.items_per_page, 10);
+        assert_eq!(display.items_per_page, Some(10));
     }
 
     #[test]
@@ -1613,7 +1598,7 @@ mod tests {
         }"#;
         let display: QueryDisplay = serde_json::from_str(json).unwrap();
         assert_eq!(display.format, DisplayFormat::Table);
-        assert_eq!(display.items_per_page, 50);
+        assert_eq!(display.items_per_page, Some(50));
     }
 
     #[test]
@@ -1628,7 +1613,7 @@ mod tests {
         }"#;
         let display: QueryDisplay = serde_json::from_str(json).unwrap();
         assert_eq!(display.format, DisplayFormat::Table);
-        assert_eq!(display.items_per_page, 100);
+        assert_eq!(display.items_per_page, Some(100));
     }
 
     #[test]
@@ -1643,7 +1628,7 @@ mod tests {
         }"#;
         let display: QueryDisplay = serde_json::from_str(json).unwrap();
         assert_eq!(display.format, DisplayFormat::List);
-        assert_eq!(display.items_per_page, 20);
+        assert_eq!(display.items_per_page, Some(20));
     }
 
     #[test]
@@ -1658,7 +1643,7 @@ mod tests {
         }"#;
         let display: QueryDisplay = serde_json::from_str(json).unwrap();
         assert_eq!(display.format, DisplayFormat::Table);
-        assert_eq!(display.items_per_page, 20);
+        assert_eq!(display.items_per_page, Some(20));
     }
 
     #[test]
