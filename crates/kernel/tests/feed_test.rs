@@ -1339,3 +1339,353 @@ fn a_feed_carries_its_own_item_count_not_the_page_size() {
         unregister(app, &query).await;
     });
 }
+
+// ---------------------------------------------------------------------------
+// B171: the channel link is the address a visitor actually uses, so a gather
+// reachable only through a URL alias (no `canonical_url`, the way the stock
+// blog ships) still links that alias rather than `/gather/{query_id}`.
+// ---------------------------------------------------------------------------
+
+/// Step 2's evidence: a `canonical_url` that names the same address a URL
+/// alias already rewrites to a gather's `/gather/{id}` does not loop.
+///
+/// `check_redirect` (`crate::middleware::redirect`) is driven by
+/// `RedirectCache::find`, and `path_alias_fallback`
+/// (`crate::middleware::path_alias`) is driven by
+/// `UrlAlias::find_by_alias_with_context`: this exercises the exact pair of
+/// lookups each middleware runs, straight against the database rather than
+/// through a mock. A request for `/gather/{id}` finds the redirect row and is
+/// sent to the alias (one 301 hop, asserted below); a request for the alias
+/// finds no redirect row at all, so `check_redirect` never fires for it a
+/// second time, and the alias rewrite alone finishes the request.
+///
+/// That the alias rewrite's own internal re-dispatch cannot invoke
+/// `check_redirect` again is a fact of how both `main.rs` and the `TestApp`
+/// harness are wired, not something this test can exercise directly:
+/// `path_alias_fallback`'s inner router (`shared_router` in both) is cloned
+/// from `inner_router` *before* `.layer(check_redirect)` is added to the outer
+/// one, so the fallback's re-dispatch runs none of the outer middleware,
+/// `check_redirect` included. A real loop needs two redirect rows pointing at
+/// each other; nothing here, or `sync_canonical_redirect`, writes that.
+#[test]
+fn a_canonical_url_duplicating_an_alias_does_not_loop() {
+    run_test(async {
+        let app = shared_app().await;
+        common::ensure_plugin_tables(app, "trovato_redirects");
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let gather_path = format!("/gather/loop_{stamp}");
+        let alias_path = format!("/loop-{stamp}");
+
+        // What `sync_canonical_redirect` would write for `canonical_url: alias_path`.
+        trovato_kernel::services::redirect::Redirect::create(
+            &app.db,
+            &gather_path,
+            &alias_path,
+            301,
+            "en",
+        )
+        .await
+        .expect("create redirect");
+
+        // The alias already seeded for the gather, the one `canonical_url`
+        // would duplicate.
+        UrlAlias::create(
+            &app.db,
+            CreateUrlAlias {
+                source: gather_path.clone(),
+                alias: alias_path.clone(),
+                language: Some("en".to_string()),
+                stage_id: Some(LIVE_STAGE_ID),
+            },
+        )
+        .await
+        .expect("create alias");
+
+        let cache = trovato_kernel::services::redirect::RedirectCache::new();
+
+        let redirect = cache
+            .find(&app.db, &gather_path, "en")
+            .await
+            .expect("lookup")
+            .expect("the raw gather path redirects once");
+        assert_eq!(redirect.destination, alias_path, "redirects to the alias");
+
+        let second_hop = cache
+            .find(&app.db, &alias_path, "en")
+            .await
+            .expect("lookup");
+        assert!(
+            second_hop.is_none(),
+            "the alias itself must carry no redirect, or the hop would repeat: {second_hop:?}"
+        );
+
+        let resolved =
+            UrlAlias::find_by_alias_with_context(&app.db, &alias_path, LIVE_STAGE_ID, "en")
+                .await
+                .expect("lookup")
+                .expect("the alias resolves");
+        assert_eq!(
+            resolved.source, gather_path,
+            "the alias rewrites back to the gather path, internally, with no further redirect"
+        );
+
+        sqlx::query("DELETE FROM redirect WHERE source = $1")
+            .bind(&gather_path)
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM url_alias WHERE alias = $1")
+            .bind(&alias_path)
+            .execute(&app.db)
+            .await
+            .ok();
+    });
+}
+
+/// The stock blog has no `canonical_url`, only a URL alias (`/blog` to
+/// `/gather/blog_listing`): the defect being that the channel link was
+/// `/gather/blog_listing`, the address nobody visiting the site ever uses.
+#[test]
+fn the_blog_gather_links_its_url_alias_not_the_raw_gather_path() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_blog_type(app).await;
+        let blog = shipped_blog_listing(app).await;
+
+        let site_url = app
+            .state
+            .runtime()
+            .site_url
+            .trim_end_matches('/')
+            .to_string();
+
+        for path in ["/blog/feed.xml", "/blog/feed.atom"] {
+            let (status, body) = get(app, &blog, path).await;
+            assert_eq!(status, StatusCode::OK, "{path}: {body}");
+            assert!(
+                body.contains(&format!("{site_url}/blog")),
+                "{path}: the channel link must be the alias, was:\n{body}"
+            );
+            assert!(
+                !body.contains("/gather/blog_listing"),
+                "{path}: the raw gather path must not leak into the channel, was:\n{body}"
+            );
+        }
+    });
+}
+
+/// `canonical_url` still wins over an alias, when a query has both: the
+/// address the query itself declares as canonical is not second-guessed.
+#[test]
+fn a_canonical_url_still_wins_over_an_alias() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_item_type(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let path = format!("/rss/feed-canon-{stamp}.xml");
+        let mut query = feed_query(&format!("feed_canon_{stamp}"), &path);
+        query.display.canonical_url = Some(format!("/canon-{stamp}"));
+        register(app, &query).await;
+
+        // An alias for the gather's default path, which must lose to
+        // `canonical_url`.
+        let gather_path = format!("/gather/feed_canon_{stamp}");
+        let alias_path = format!("/alias-{stamp}");
+        UrlAlias::create(
+            &app.db,
+            CreateUrlAlias {
+                source: gather_path,
+                alias: alias_path.clone(),
+                language: Some("en".to_string()),
+                stage_id: Some(LIVE_STAGE_ID),
+            },
+        )
+        .await
+        .expect("create alias");
+
+        let site_url = app
+            .state
+            .runtime()
+            .site_url
+            .trim_end_matches('/')
+            .to_string();
+        let (status, body) = get(app, &query, &path).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            body.contains(&format!(
+                "<link>{site_url}{}",
+                query.display.canonical_url.clone().unwrap()
+            )),
+            "canonical_url must win over the alias: {body}"
+        );
+        assert!(!body.contains(&alias_path), "{body}");
+
+        sqlx::query("DELETE FROM url_alias WHERE alias = $1")
+            .bind(&alias_path)
+            .execute(&app.db)
+            .await
+            .ok();
+        unregister(app, &query).await;
+    });
+}
+
+/// With neither an alias nor a `canonical_url`, the channel link is still
+/// `/gather/{query_id}`: this feature must not change a gather with no address
+/// of its own.
+#[test]
+fn with_no_alias_and_no_canonical_the_channel_link_is_the_gather_path() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_item_type(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let path = format!("/rss/feed-bare-{stamp}.xml");
+        let query = feed_query(&format!("feed_bare_{stamp}"), &path);
+        register(app, &query).await;
+
+        let site_url = app
+            .state
+            .runtime()
+            .site_url
+            .trim_end_matches('/')
+            .to_string();
+        let (status, body) = get(app, &query, &path).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            body.contains(&format!("<link>{site_url}/gather/feed_bare_{stamp}</link>")),
+            "{body}"
+        );
+
+        unregister(app, &query).await;
+    });
+}
+
+/// Per author and per tag feeds keep their argument home paths: this feature
+/// only changes the tier below `canonical_url`, which an argument route never
+/// reaches.
+#[test]
+fn an_argument_feeds_home_path_is_unaffected_by_the_alias() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_blog_type(app).await;
+        let blog = shipped_blog_listing(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let name = format!("dana{}", &stamp[stamp.len() - 12..]);
+        let dana = create_user(app, &name).await;
+
+        let site_url = app
+            .state
+            .runtime()
+            .site_url
+            .trim_end_matches('/')
+            .to_string();
+        let (status, body) = get(app, &blog, &format!("/blog/author/{name}/feed.xml")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            body.contains(&format!("<link>{site_url}/blog/author/{name}</link>")),
+            "an argument feed's channel link is its own route, not the alias: {body}"
+        );
+
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(dana)
+            .execute(&app.db)
+            .await
+            .ok();
+    });
+}
+
+/// An alias written after the gather is registered still reaches the feed: the
+/// channel link is resolved per request (cached), not baked in at startup like
+/// `canonical_url` and `display.routes` are. The ETag must change with it,
+/// since the channel link is part of the document.
+#[test]
+fn an_alias_written_after_startup_reaches_the_feed_and_changes_the_etag() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_item_type(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let path = format!("/rss/feed-late-alias-{stamp}.xml");
+        let query = feed_query(&format!("feed_late_{stamp}"), &path);
+        register(app, &query).await;
+
+        let site_url = app
+            .state
+            .runtime()
+            .site_url
+            .trim_end_matches('/')
+            .to_string();
+        let gather_path = format!("/gather/feed_late_{stamp}");
+        let (status, headers, before) = send(
+            app,
+            &query,
+            Request::get(&path).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{before}");
+        assert!(
+            before.contains(&format!("<link>{site_url}{gather_path}</link>")),
+            "no alias yet: {before}"
+        );
+        let etag_before = headers.get("etag").unwrap().to_str().unwrap().to_string();
+
+        let alias_path = format!("/late-alias-{stamp}");
+        UrlAlias::create(
+            &app.db,
+            CreateUrlAlias {
+                source: gather_path.clone(),
+                alias: alias_path.clone(),
+                language: Some("en".to_string()),
+                stage_id: Some(LIVE_STAGE_ID),
+            },
+        )
+        .await
+        .expect("create alias");
+
+        // `UrlAlias::create` bumps `CacheKind::Menus`, which every server
+        // (including this one) picks up on its 250ms poll
+        // (`cache::generation::spawn_watcher`), the same propagation delay
+        // `cache_test.rs` already waits out for other kinds.
+        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+
+        let (status, headers, after) = send(
+            app,
+            &query,
+            Request::get(&path).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{after}");
+        assert!(
+            after.contains(&format!("<link>{site_url}{alias_path}</link>")),
+            "the alias must reach the feed without a restart: {after}"
+        );
+        let etag_after = headers.get("etag").unwrap().to_str().unwrap().to_string();
+        assert_ne!(
+            etag_before, etag_after,
+            "the channel link changed, so the etag must too"
+        );
+
+        // The old etag must not satisfy a conditional request against the new
+        // document: a real reader with the stale etag must see the new link.
+        let (status, _, body) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-none-match", &etag_before)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        sqlx::query("DELETE FROM url_alias WHERE alias = $1")
+            .bind(&alias_path)
+            .execute(&app.db)
+            .await
+            .ok();
+        unregister(app, &query).await;
+    });
+}

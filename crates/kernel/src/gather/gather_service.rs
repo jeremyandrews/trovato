@@ -50,6 +50,16 @@ const DISTINCT_VALUES_TTL: Duration = Duration::from_secs(300);
 /// Maximum entries in the distinct-values cache.
 const DISTINCT_VALUES_CAPACITY: u64 = 500;
 
+/// TTL for [`GatherService::outbound_alias_cache`], a safety net: the cache is
+/// also cleared at once when a `url_alias` write bumps `CacheKind::Menus`
+/// (`AppState::clear_local_cache`), so this only matters if a bump is missed.
+const OUTBOUND_ALIAS_TTL: Duration = Duration::from_secs(300);
+
+/// Maximum entries in [`GatherService::outbound_alias_cache`]: one per gather
+/// query that declares a feed and has neither `canonical_url` nor an
+/// argument's own route.
+const OUTBOUND_ALIAS_CAPACITY: u64 = 500;
+
 // The semantic candidate pool size is `GatherAccessConfig::semantic_search_max` (Story 3.4 /
 // D-26 over-fetch): the top-N nearest embeddings become the `id IN (...)`
 // candidate set that the gather's own filters/sorts/pagination — and the
@@ -65,6 +75,13 @@ pub struct GatherService {
     queries: Cache<String, GatherQuery>,
     /// Cache of distinct field values per `"item_type::source_field"`.
     distinct_values_cache: Cache<String, Vec<String>>,
+    /// The outbound URL alias of `/gather/{query_id}`, per query id, for a feed
+    /// with no argument home path and no `canonical_url`
+    /// ([`Self::outbound_alias_for_gather`]). `None` is cached too: a query with
+    /// no alias must not cost a lookup on every request to its feed. Cleared
+    /// at once on a `url_alias` write ([`Self::clear_outbound_alias_cache`]),
+    /// same as [`crate::menu::clear_local_config_menus`].
+    outbound_alias_cache: Cache<String, Option<String>>,
     /// Maximum per_page for query execution (from `GATHER_MAX_PAGE_SIZE`).
     max_page_size: u32,
     /// D-26 over-fetch and backfill bounds for access-filtered pages. Was a set
@@ -210,6 +227,10 @@ impl GatherService {
                 .max_capacity(DISTINCT_VALUES_CAPACITY)
                 .time_to_live(DISTINCT_VALUES_TTL)
                 .build(),
+            outbound_alias_cache: Cache::builder()
+                .max_capacity(OUTBOUND_ALIAS_CAPACITY)
+                .time_to_live(OUTBOUND_ALIAS_TTL)
+                .build(),
             max_page_size: config.max_page_size,
             access: config.access,
             ai_providers,
@@ -301,6 +322,42 @@ impl GatherService {
     /// List all registered queries.
     pub fn list_queries(&self) -> Vec<GatherQuery> {
         self.queries.iter().map(|(_k, v)| v).collect()
+    }
+
+    /// The outbound URL alias of `/gather/{query_id}`, if one exists: the
+    /// address a visitor to that gather's page actually uses, when it has
+    /// neither an argument home path nor a `canonical_url`
+    /// ([`crate::routes::feed`]'s channel link).
+    ///
+    /// Served from [`Self::outbound_alias_cache`] once warm, so a feed request
+    /// costs no query beyond the first; a `url_alias` write clears the cache at
+    /// once ([`Self::clear_outbound_alias_cache`]), so an alias written after
+    /// startup reaches the feed without a restart.
+    pub async fn outbound_alias_for_gather(&self, query_id: &str) -> Option<String> {
+        if let Some(cached) = self.outbound_alias_cache.get(query_id) {
+            return cached;
+        }
+        let source = format!("/gather/{query_id}");
+        let alias = UrlAlias::get_canonical_alias(&self.pool, &source)
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(
+                    query_id,
+                    error = %e,
+                    "failed to resolve the outbound alias of a gather's default URL"
+                );
+                None
+            });
+        self.outbound_alias_cache
+            .insert(query_id.to_string(), alias.clone());
+        alias
+    }
+
+    /// Drop this server's cache of [`Self::outbound_alias_for_gather`]: what a
+    /// `url_alias` write's `CacheKind::Menus` bump does here, alongside
+    /// [`crate::menu::clear_local_config_menus`].
+    pub fn clear_outbound_alias_cache(&self) {
+        self.outbound_alias_cache.invalidate_all();
     }
 
     /// The registered gather a request path serves, if any.
