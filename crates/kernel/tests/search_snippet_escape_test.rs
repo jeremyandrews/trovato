@@ -67,9 +67,8 @@ async fn rendered_snippet(query: &str) -> String {
         .expect("read body");
     let html = String::from_utf8_lossy(&bytes).into_owned();
 
-    // The page renders the results twice (the <noscript> list and the fallback
-    // list shown before scolta.js takes over): every copy must be the same one
-    // snippet, which also proves the unique term matched a single item.
+    // The page writes its results once (B160): exactly one snippet, which also
+    // proves the unique term matched a single item.
     let open = "<div class=\"result-snippet\">";
     let snippets: Vec<&str> = html
         .match_indices(open)
@@ -84,7 +83,7 @@ async fn rendered_snippet(query: &str) -> String {
         "no snippet on the results page for {query:?}:\n{html}"
     );
     assert!(
-        snippets.iter().all(|s| *s == snippets[0]),
+        snippets.len() == 1,
         "the query {query:?} should match exactly one item: {snippets:?}"
     );
     snippets[0].to_string()
