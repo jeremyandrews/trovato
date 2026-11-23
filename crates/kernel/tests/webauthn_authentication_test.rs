@@ -203,10 +203,12 @@ fn authenticates_with_a_registered_passkey() {
 
         // AC-5 (4.1's module, this story's emitter): the login is audited with
         // its method, so "which factor was used" is answerable after the fact.
+        // The password login that set the passkey up is audited too, usually
+        // in the same second, so the newest is found by its time-ordered id.
         let method: Option<String> = sqlx::query_scalar(
             "SELECT details->>'method' FROM security_audit_log
              WHERE user_id = $1 AND kind = 'auth.login_succeeded'
-             ORDER BY created DESC LIMIT 1",
+             ORDER BY created DESC, id DESC LIMIT 1",
         )
         .bind(user_id)
         .fetch_optional(&app.db)
