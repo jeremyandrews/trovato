@@ -133,6 +133,18 @@ async fn content_type(app: &TestApp) -> String {
     .await
     .unwrap();
     app.cleanup_content_type_on_exit(&item_type);
+    // Cleanups run last first: the type's items go before the type, which
+    // they would otherwise keep alive through `item.type`'s foreign key.
+    {
+        let pool = app.db.clone();
+        let item_type = item_type.clone();
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query("DELETE FROM item WHERE type = $1")
+                .bind(&item_type)
+                .execute(&pool)
+                .await;
+        });
+    }
     app.state
         .content_types()
         .replace(&item_type, "B137 post", Some("B137 fixture"), settings)
