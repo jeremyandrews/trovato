@@ -137,6 +137,10 @@ pub struct RateLimitConfig {
     /// An hour rather than a minute, because the runaway this stops would send
     /// thousands, and a limit measured per minute would still let one through
     /// every minute all day.
+    ///
+    /// Also the path bucket of `POST /admin/config/site/test-email`, the one
+    /// kernel route that sends mail on demand; its mail goes to the same
+    /// mailbox, the site's own address.
     pub mail: (u32, Duration),
 
     /// Password reset mails, per destination address.
@@ -754,8 +758,12 @@ pub fn categorize_path_with<S: AsRef<str>>(
         "login"
     } else if path.starts_with("/user/register") && method == "POST" {
         "register"
-    } else if path.starts_with("/file/upload") {
+    } else if is_upload(path) {
         "uploads"
+    } else if method == "POST" && path.trim_end_matches('/') == TEST_EMAIL_PATH {
+        // The one kernel route that sends mail on demand. The mail goes to the
+        // site's own address, the mailbox the `mail` bucket protects.
+        "mail"
     } else if let Some(category) = ai_search_category(path) {
         // Each of the three spends provider tokens, at three different costs.
         category
@@ -778,6 +786,16 @@ pub fn categorize_path_with<S: AsRef<str>>(
     } else {
         "api"
     }
+}
+
+/// The admin page's "send a test email" action.
+const TEST_EMAIL_PATH: &str = "/admin/config/site/test-email";
+
+/// Whether this request writes an uploaded file: the file upload form's
+/// endpoint, or the block editor's image upload (and its unversioned alias,
+/// which the caller has already mapped onto it).
+fn is_upload(path: &str) -> bool {
+    path.starts_with("/file/upload") || path.trim_end_matches('/') == "/api/v1/block-editor/upload"
 }
 
 /// The `/api/v1` path a deprecated unversioned `/api/...` alias stands for,
@@ -1010,6 +1028,218 @@ mod tests {
     #[test]
     fn categorize_upload_paths() {
         assert_eq!(categorize_path("/file/upload", "POST"), "uploads");
+        assert_eq!(
+            categorize_path("/api/v1/block-editor/upload", "POST"),
+            "uploads"
+        );
+        assert_eq!(
+            categorize_path("/api/block-editor/upload", "POST"),
+            "uploads"
+        );
+        assert_eq!(
+            categorize_path("/api/v1/block-editor/preview", "POST"),
+            "api"
+        );
+    }
+
+    /// Where a sensitive route's named bucket is checked.
+    enum Checked {
+        /// By [`categorize_path_with`], in the middleware, per client and per
+        /// signed-in user.
+        ByPath,
+        /// In the handler, in this file, which keys it per account or per
+        /// address asked about, or emits a security event on refusal. The
+        /// middleware must not count the same request in that bucket too.
+        InHandler(&'static str),
+        /// Not yet in a bucket of its own: deferred to the named work item.
+        Deferred(&'static str),
+    }
+
+    /// Every kernel route that writes files, sends mail or spends money on
+    /// an AI provider, and the bucket that bounds it: `(method, route
+    /// template, a path it serves, bucket, where it is checked)`.
+    ///
+    /// A new route of any of these kinds belongs here. Plugin routes are
+    /// bounded by the host functions they call (`mail`, `mail_users`,
+    /// `mail_recipient`), not here.
+    const SENSITIVE_ROUTES: &[(&str, &str, &str, &str, Checked)] = {
+        use Checked::*;
+        &[
+            // Writes files.
+            ("POST", "/file/upload", "/file/upload", "uploads", ByPath),
+            (
+                "POST",
+                "/block-editor/upload",
+                "/api/v1/block-editor/upload",
+                "uploads",
+                ByPath,
+            ),
+            // A derivative is written once per style and source file, and
+            // only for a configured style of an existing image; then it is a
+            // file on disk like any other.
+            (
+                "GET",
+                "/files/styles/{style_name}/{*path}",
+                "/files/styles/thumbnail/2026/11/a.jpg",
+                "static",
+                ByPath,
+            ),
+            // Sends mail.
+            (
+                "POST",
+                "/user/register",
+                "/user/register",
+                "register",
+                ByPath,
+            ),
+            (
+                "POST",
+                "/user/register/json",
+                "/user/register/json",
+                "register",
+                ByPath,
+            ),
+            (
+                "POST",
+                "/user/password-reset",
+                "/user/password-reset",
+                "reset_mail",
+                InHandler("password_reset.rs"),
+            ),
+            (
+                "POST",
+                "/user/recover/start",
+                "/user/recover/start",
+                "recovery",
+                InHandler("recovery.rs"),
+            ),
+            (
+                "POST",
+                "/user/profile",
+                "/user/profile",
+                "profile",
+                InHandler("auth.rs"),
+            ),
+            ("POST", TEST_EMAIL_PATH, TEST_EMAIL_PATH, "mail", ByPath),
+            // A comment write can notify the item's author.
+            (
+                "POST",
+                "/item/{id}/comments",
+                "/api/v1/item/x/comments",
+                "comment",
+                ByPath,
+            ),
+            (
+                "PUT",
+                "/comment/{id}",
+                "/api/v1/comment/x",
+                "comment",
+                ByPath,
+            ),
+            // Spends money: an AI provider call per request.
+            (
+                "POST",
+                "/search/expand",
+                "/api/v1/search/expand",
+                "search_expand",
+                ByPath,
+            ),
+            (
+                "POST",
+                "/search/summarize",
+                "/api/v1/search/summarize",
+                "search_summarize",
+                ByPath,
+            ),
+            (
+                "POST",
+                "/search/followup",
+                "/api/v1/search/followup",
+                "search_followup",
+                ByPath,
+            ),
+            (
+                "POST",
+                "/chat",
+                "/api/v1/chat",
+                "chat",
+                InHandler("api_chat.rs"),
+            ),
+            (
+                "POST",
+                "/assistant/{conversation_id}/message",
+                "/api/v1/assistant/x/message",
+                "assistant",
+                InHandler("assistant.rs"),
+            ),
+            (
+                "POST",
+                "/ai/assist",
+                "/api/v1/ai/assist",
+                "api",
+                Deferred("B89"),
+            ),
+            // Builds a document of everything the account wrote.
+            (
+                "GET",
+                "/user/data-export",
+                "/user/data-export",
+                "data_export",
+                InHandler("user_data_export.rs"),
+            ),
+        ]
+    };
+
+    /// The source of a file under `src/routes`.
+    fn route_source(file: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("src/routes")
+            .join(file);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    }
+
+    /// Each sensitive route is served, and is in its named bucket: the
+    /// middleware puts it there, or its handler checks it and the middleware
+    /// does not count it there a second time.
+    #[test]
+    fn every_sensitive_route_is_in_its_named_bucket() {
+        let routes: String =
+            std::fs::read_dir(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/routes"))
+                .unwrap()
+                .map(|entry| std::fs::read_to_string(entry.unwrap().path()).unwrap_or_default())
+                .collect();
+
+        for (method, template, path, bucket, checked) in SENSITIVE_ROUTES {
+            assert!(
+                routes.contains(&format!("\"{template}\"")),
+                "{template} is not a route under src/routes"
+            );
+            let category = categorize_path(path, method);
+            match checked {
+                Checked::ByPath => assert_eq!(
+                    category, *bucket,
+                    "{method} {path} is counted in `{category}`, not `{bucket}`"
+                ),
+                Checked::InHandler(file) => {
+                    assert_ne!(
+                        category, *bucket,
+                        "{method} {path} would be counted in `{bucket}` twice"
+                    );
+                    let source = route_source(file);
+                    assert!(
+                        source.contains(&format!("\"{bucket}\"")),
+                        "{file} does not check the `{bucket}` bucket"
+                    );
+                }
+                Checked::Deferred(_) => assert_eq!(category, *bucket),
+            }
+            if !matches!(checked, Checked::InHandler(_)) {
+                assert!(
+                    BUCKETS.contains(bucket),
+                    "`{bucket}` is not a configured bucket"
+                );
+            }
+        }
     }
 
     #[test]
