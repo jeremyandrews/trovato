@@ -131,6 +131,15 @@
             <label style="margin-left: 1rem;"><input type="checkbox" id="pager_zero_based"> Count <code>?page=</code> from 0 (Drupal links)</label>
         </div>
 
+        {# Shown only for a gather that has a feed (display.feed). #}
+        <div class="form-item" id="feed-settings" hidden>
+            <label class="form-item__label">Feed</label>
+            <label for="feed_items">Number of items in the feed</label>
+            <input type="number" id="feed_items" class="form-text" min="1" max="200">
+            <label><input type="checkbox" id="feed_full_content"> Each entry carries the full text, not only the summary</label>
+            <p class="form-item__description">RSS and Atom alike. Saving keeps the feed's path and title.</p>
+        </div>
+
         <div id="includes-section">
             <h4>Includes (Sub-queries)</h4>
             <p class="form-item__description">Nest child query results into parent items. Each include runs a batched sub-query, matching child rows to parent rows by field.</p>

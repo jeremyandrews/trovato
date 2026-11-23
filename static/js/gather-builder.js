@@ -80,6 +80,9 @@
     var pagerEnabledCheckbox;
     var pagerShowCountCheckbox;
     var pagerZeroBasedCheckbox;
+    var feedSettings;
+    var feedItemsInput;
+    var feedFullContentCheckbox;
 
     // Preview debounce timer
     var previewTimer = null;
@@ -110,6 +113,9 @@
         pagerEnabledCheckbox   = document.getElementById('pager_enabled');
         pagerShowCountCheckbox = document.getElementById('pager_show_count');
         pagerZeroBasedCheckbox = document.getElementById('pager_zero_based');
+        feedSettings           = document.getElementById('feed-settings');
+        feedItemsInput         = document.getElementById('feed_items');
+        feedFullContentCheckbox = document.getElementById('feed_full_content');
 
         // Bail if the form is not present on this page
         if (!definitionInput || !displayInput) return;
@@ -171,6 +177,11 @@
                     display.pager.style      = parsed.pager.style || display.pager.style;
                     display.pager.zero_based = parsed.pager.zero_based === true;
                 }
+                // The feed, when the gather has one: its item count and full text
+                // are edited here, the rest kept as stored.
+                if (parsed.feed) {
+                    display.feed = parsed.feed;
+                }
             }
         } catch (e) {
             // Keep defaults on parse error
@@ -189,6 +200,13 @@
         if (pagerEnabledCheckbox)   pagerEnabledCheckbox.checked = display.pager.enabled;
         if (pagerShowCountCheckbox) pagerShowCountCheckbox.checked = display.pager.show_count;
         if (pagerZeroBasedCheckbox) pagerZeroBasedCheckbox.checked = display.pager.zero_based;
+        if (feedSettings) {
+            feedSettings.hidden = !display.feed;
+            if (display.feed) {
+                if (feedItemsInput) feedItemsInput.value = display.feed.items || 20;
+                if (feedFullContentCheckbox) feedFullContentCheckbox.checked = display.feed.full_content === true;
+            }
+        }
         if (baseTableSelect)        baseTableSelect.value        = definition.base_table;
     }
 
@@ -762,6 +780,25 @@
             pagerZeroBasedCheckbox.addEventListener('change', function () {
                 display.pager.zero_based = pagerZeroBasedCheckbox.checked;
                 syncToHiddenInputs();
+            });
+        }
+
+        if (feedItemsInput) {
+            feedItemsInput.addEventListener('input', function () {
+                var val = parseInt(feedItemsInput.value, 10);
+                if (display.feed && !isNaN(val) && val > 0) {
+                    display.feed.items = val;
+                    syncToHiddenInputs();
+                }
+            });
+        }
+
+        if (feedFullContentCheckbox) {
+            feedFullContentCheckbox.addEventListener('change', function () {
+                if (display.feed) {
+                    display.feed.full_content = feedFullContentCheckbox.checked;
+                    syncToHiddenInputs();
+                }
             });
         }
     }
