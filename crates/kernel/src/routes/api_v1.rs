@@ -333,6 +333,8 @@ async fn export_user_data(
 /// `GET /api/v1/items/autocomplete?type=article&q=rust&limit=10`
 ///
 /// Returns `[{"id": "uuid", "title": "..."}]` for items matching the query.
+/// For `type=category_term` the answer is category terms instead, in the same
+/// shape, decided by `autocomplete_terms`.
 ///
 /// Answers as the viewer. The query is a coarse candidate filter — type, title
 /// prefix, published — and
@@ -356,6 +358,14 @@ async fn autocomplete_items(
 
     if item_type.is_empty() || query.is_empty() {
         return Json(serde_json::json!([])).into_response();
+    }
+
+    // Category terms are not items: a term reference field is answered from
+    // the terms, as the field allows. See `autocomplete_terms`.
+    if item_type == TERM_TARGET {
+        let user = crate::routes::item::get_user_context(&session, &state).await;
+        let results = autocomplete_terms(&state, &user, &params, query, limit).await;
+        return Json(serde_json::Value::Array(results)).into_response();
     }
 
     // Search by title using ILIKE for case-insensitive prefix matching
@@ -398,6 +408,148 @@ async fn autocomplete_items(
         Err(e) => {
             tracing::warn!(error = %e, "autocomplete query failed");
             Json(serde_json::json!([])).into_response()
+        }
+    }
+}
+
+/// The `RecordReference` target type of a category term field.
+const TERM_TARGET: &str = "category_term";
+
+/// The suggestions for a `category_term` reference field: terms whose name
+/// starts with `q`, limited to what the field's save check accepts, for a
+/// caller who may edit the field.
+///
+/// Terms are not items, so the item query above has nothing to say about
+/// them. The widget sends the field it is filling in (`item_type`, `field`),
+/// the item when it is editing one (`item`) and the current value of the
+/// field's owner field (`owner`). The caller must be able to edit that field
+/// as the item form decides it: the type's create permission, or edit access
+/// to the item, and the field's own view and edit decisions. Without that
+/// context, or without that access, the answer is empty.
+///
+/// Which vocabularies are searched is the field's: one limited to the item's
+/// owner (`settings.vocabulary_owner`) searches the vocabularies
+/// [`OwnerLimit::admits`](crate::content::owned_vocabulary::OwnerLimit::admits),
+/// the rule the save path enforces; an open field searches the site-wide
+/// vocabularies, never an owner's.
+async fn autocomplete_terms(
+    state: &AppState,
+    user: &crate::tap::UserContext,
+    params: &HashMap<String, String>,
+    query: &str,
+    limit: i64,
+) -> Vec<serde_json::Value> {
+    use crate::content::owned_vocabulary;
+    use trovato_sdk::types::FieldType;
+
+    let param = |key: &str| params.get(key).map(|v| v.trim()).filter(|v| !v.is_empty());
+    let (Some(item_type), Some(field_name)) = (param("item_type"), param("field")) else {
+        return Vec::new();
+    };
+    let Some(content_type) = state.content_types().get(item_type) else {
+        return Vec::new();
+    };
+    let Some(field) = content_type.fields.iter().find(|f| {
+        f.field_name == field_name
+            && matches!(&f.field_type, FieldType::RecordReference(t) if t == TERM_TARGET)
+    }) else {
+        return Vec::new();
+    };
+
+    // The item, when the form is editing one, decided as the edit form is.
+    let existing = match param("item") {
+        Some(id) => {
+            let Ok(id) = id.parse::<Uuid>() else {
+                return Vec::new();
+            };
+            let Ok(Some(item)) = state.items().load(id).await else {
+                return Vec::new();
+            };
+            if item.item_type != item_type
+                || !state
+                    .items()
+                    .check_access(&item, "edit", user)
+                    .await
+                    .unwrap_or(false)
+            {
+                return Vec::new();
+            }
+            Some(item)
+        }
+        None => {
+            if !user.can(&format!("create {item_type} content")) {
+                return Vec::new();
+            }
+            None
+        }
+    };
+
+    let limit_rule = owned_vocabulary::limit_of(&field.settings);
+    let mut names = vec![field.field_name.clone()];
+    if let Some(rule) = &limit_rule {
+        names.push(rule.owner_field.clone());
+    }
+    let may_view = state
+        .items()
+        .field_access_decisions(user, item_type, &names, "view")
+        .await;
+    let may_edit = state
+        .items()
+        .field_access_decisions(user, item_type, &names, "edit")
+        .await;
+    let editable = |name: &str| {
+        may_view.get(name).copied().unwrap_or(true) && may_edit.get(name).copied().unwrap_or(true)
+    };
+    if !editable(&field.field_name) {
+        return Vec::new();
+    }
+
+    let Ok(vocabularies) = state.categories().list_categories().await else {
+        return Vec::new();
+    };
+    let vocabularies: Vec<String> = match &limit_rule {
+        Some(rule) => {
+            // The owner the save would see: the form's, when this editor may
+            // write the owner field, else the stored one (the write gate
+            // copies a field they may not edit back from the item).
+            let posted = param("owner")
+                .filter(|_| editable(&rule.owner_field))
+                .map(|owner| {
+                    let mut posted = serde_json::Map::new();
+                    posted.insert(rule.owner_field.clone(), owner.into());
+                    serde_json::Value::Object(posted)
+                });
+            let Some(owner) =
+                rule.item_owner(posted.as_ref(), existing.as_ref().map(|item| &item.fields))
+            else {
+                return Vec::new();
+            };
+            vocabularies
+                .into_iter()
+                .filter(|v| rule.admits(&owner, v.owner()))
+                .map(|v| v.id)
+                .collect()
+        }
+        None => vocabularies
+            .into_iter()
+            .filter(|v| v.owner().is_none())
+            .map(|v| v.id)
+            .collect(),
+    };
+
+    let page_size = usize::try_from(limit).unwrap_or(0);
+    match state
+        .categories()
+        .search_tags(&vocabularies, query, page_size)
+        .await
+    {
+        Ok(terms) => terms
+            .into_iter()
+            .map(|t| serde_json::json!({ "id": t.id, "title": t.label }))
+            .collect(),
+        Err(e) => {
+            tracing::warn!(error = %e, "term autocomplete failed");
+            Vec::new()
         }
     }
 }

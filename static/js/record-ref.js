@@ -1,6 +1,7 @@
 /**
- * RecordReference autocomplete — searches items by type and title,
- * sets the hidden UUID field when a result is selected.
+ * RecordReference autocomplete — searches items by type and title, or
+ * category terms by name for a `category_term` field, and sets the hidden
+ * UUID field when a result is selected.
  */
 (function () {
   'use strict';
@@ -19,12 +20,47 @@
     };
   }
 
+  /**
+   * The value of the form's `name` input, for a single or multi value field:
+   * `name`, else its first value `name[0]`. A disabled (read-only) input
+   * still has its value in the page.
+   */
+  function formValue(input, name) {
+    var form = input.form;
+    if (!form || !name) return '';
+    var el = form.elements[name] || form.elements[name + '[0]'];
+    if (!el) return '';
+    // A RadioNodeList or several same-named inputs: the first value.
+    if (typeof el.value !== 'string' && el.length) el = el[0];
+    return (el && typeof el.value === 'string') ? el.value.trim() : '';
+  }
+
+  /**
+   * The field context a category term search needs: which field of which
+   * type is being edited, the item when there is one, and the current value
+   * of the owner field when the field is limited to the item's owner. The
+   * server decides from these whether this editor may be offered terms, and
+   * which.
+   */
+  function context(input) {
+    var params = '';
+    var add = function (key, value) {
+      if (value) params += '&' + key + '=' + encodeURIComponent(value);
+    };
+    add('item_type', input.getAttribute('data-item-type'));
+    add('field', input.getAttribute('data-field'));
+    add('item', input.getAttribute('data-item'));
+    add('owner', formValue(input, input.getAttribute('data-owner-field')));
+    return params;
+  }
+
   /** Fetch autocomplete results from the API. */
-  function fetchResults(targetType, query, callback) {
+  function fetchResults(targetType, query, input, callback) {
     var url = '/api/v1/items/autocomplete?type=' +
       encodeURIComponent(targetType) +
       '&q=' + encodeURIComponent(query) +
       '&limit=10';
+    if (targetType === 'category_term') url += context(input);
 
     fetch(url, { credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
@@ -73,7 +109,7 @@
           resultsEl.style.display = 'none';
           return;
         }
-        fetchResults(targetType, q, function (items) {
+        fetchResults(targetType, q, input, function (items) {
           showResults(resultsEl, items, hiddenFieldId, input);
         });
       }, DEBOUNCE_MS);

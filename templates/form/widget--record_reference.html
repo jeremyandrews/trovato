@@ -7,6 +7,10 @@
            class="form-text record-ref-autocomplete"
            data-target-type="{{ element.attributes['data-target-type'] | default(value='') }}"
            data-hidden-field="{{ name }}"
+           {% if element.attributes['data-item-type'] %}data-item-type="{{ element.attributes['data-item-type'] }}"{% endif %}
+           {% if element.attributes['data-field'] %}data-field="{{ element.attributes['data-field'] }}"{% endif %}
+           {% if element.attributes['data-item'] %}data-item="{{ element.attributes['data-item'] }}"{% endif %}
+           {% if element.attributes['data-owner-field'] %}data-owner-field="{{ element.attributes['data-owner-field'] }}"{% endif %}
            value="{{ element.attributes['data-display'] | default(value='') }}"
            placeholder="Search {{ element.attributes['data-target-type'] | default(value='') }}..."
            autocomplete="off"

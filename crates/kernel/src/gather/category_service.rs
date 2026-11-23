@@ -138,6 +138,38 @@ impl CategoryService {
         Ok(tags)
     }
 
+    /// The terms of `vocabularies` whose name starts with `prefix`, ignoring
+    /// case, ordered by name, at most `limit`: what a term reference field's
+    /// autocomplete offers. Reads each vocabulary's cached term list.
+    pub async fn search_tags(
+        &self,
+        vocabularies: &[String],
+        prefix: &str,
+        limit: usize,
+    ) -> Result<Vec<Tag>> {
+        let prefix = prefix.trim().to_lowercase();
+        if prefix.is_empty() || limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut found = Vec::new();
+        for vocabulary in vocabularies {
+            found.extend(
+                self.list_tags(vocabulary)
+                    .await?
+                    .into_iter()
+                    .filter(|t| t.label.to_lowercase().starts_with(&prefix)),
+            );
+        }
+        found.sort_by(|a, b| {
+            a.label
+                .to_lowercase()
+                .cmp(&b.label.to_lowercase())
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        found.truncate(limit);
+        Ok(found)
+    }
+
     /// List all tags in a category with hierarchy depth for display.
     ///
     /// Returns tags ordered root-first (depth 0) then children, suitable for

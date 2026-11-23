@@ -49,6 +49,7 @@ pub(crate) async fn build(
     let builder = FormBuilder::new(content_type.clone())
         .with_permitted_formats(permitted_text_formats(user))
         .with_reference_titles(titles)
+        .with_item_id(item.map(|i| i.id))
         .with_field_modes(modes)
         .with_publish_allowed(user.can(PUBLISH_CONTENT));
     let mut extra = extra;
@@ -72,6 +73,10 @@ pub(crate) async fn build(
 /// The display title of every `RecordReference` target the item points at,
 /// for a target this user may view: one query for all of them, multi value
 /// fields included. A target they may not see keeps its id and no title.
+///
+/// A `category_term` field points at a term, not an item, and shows the
+/// term's name: the editor may edit this item, which already holds it, and
+/// term names are what every term page shows.
 async fn reference_titles(
     state: &AppState,
     user: &UserContext,
@@ -80,10 +85,12 @@ async fn reference_titles(
     modes: &HashMap<String, FieldMode>,
 ) -> HashMap<String, String> {
     let mut ids: Vec<Uuid> = Vec::new();
+    let mut term_ids: Vec<Uuid> = Vec::new();
     for field in &content_type.fields {
-        if !matches!(field.field_type, FieldType::RecordReference(_))
-            || modes.get(&field.field_name) == Some(&FieldMode::Hidden)
-        {
+        let FieldType::RecordReference(target) = &field.field_type else {
+            continue;
+        };
+        if modes.get(&field.field_name) == Some(&FieldMode::Hidden) {
             continue;
         }
         let values: Vec<&Value> = match item.fields.get(&field.field_name) {
@@ -91,19 +98,31 @@ async fn reference_titles(
             Some(value) => vec![value],
             None => Vec::new(),
         };
-        ids.extend(values.into_iter().filter_map(|v| {
+        let found = values.into_iter().filter_map(|v| {
             crate::content::extract_reference_id(Some(v))
                 .parse::<Uuid>()
                 .ok()
-        }));
+        });
+        if target == "category_term" {
+            term_ids.extend(found);
+        } else {
+            ids.extend(found);
+        }
     }
     ids.sort_unstable();
     ids.dedup();
+    term_ids.sort_unstable();
+    term_ids.dedup();
 
+    let mut titles = HashMap::new();
+    for id in term_ids {
+        if let Ok(Some(term)) = state.categories().get_tag(id).await {
+            titles.insert(term.id.to_string(), term.label);
+        }
+    }
     let targets = Item::find_by_ids(state.db(), &ids)
         .await
         .unwrap_or_default();
-    let mut titles = HashMap::new();
     for target in targets {
         // Editing this item says nothing about reading the one it points at.
         if state
@@ -393,7 +412,9 @@ fn add_another(
         ));
     }
 
-    let mut widget = FormBuilder::new(content_type).widget(&definition, None, FieldMode::Editable);
+    let mut widget = FormBuilder::new(content_type)
+        .with_item_id(form_state.item_id)
+        .widget(&definition, None, FieldMode::Editable);
     widget.title = None;
     widget.required = false;
     let name = format!("{field}[{count}]");
