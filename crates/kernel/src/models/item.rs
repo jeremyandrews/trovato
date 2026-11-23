@@ -542,6 +542,22 @@ impl Item {
         Ok(revisions)
     }
 
+    /// Delete revision `revision_id` of item `item_id`, unless it is the item's
+    /// current revision. `false` when no row matched: another item's revision,
+    /// a revision already gone, or the current one.
+    pub async fn delete_revision(pool: &PgPool, item_id: Uuid, revision_id: Uuid) -> Result<bool> {
+        let result = sqlx::query(
+            "DELETE FROM item_revision WHERE id = $1 AND item_id = $2 \
+             AND id IS DISTINCT FROM (SELECT current_revision_id FROM item WHERE id = $2)",
+        )
+        .bind(revision_id)
+        .bind(item_id)
+        .execute(pool)
+        .await
+        .context("failed to delete revision")?;
+        Ok(result.rows_affected() == 1)
+    }
+
     /// Get a specific revision.
     pub async fn get_revision(pool: &PgPool, revision_id: Uuid) -> Result<Option<ItemRevision>> {
         let revision = sqlx::query_as::<_, ItemRevision>(

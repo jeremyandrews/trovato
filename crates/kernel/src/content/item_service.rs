@@ -370,6 +370,14 @@ pub const PUBLISH_CONTENT: &str = "publish content";
 /// otherwise only ever be an item's author, at the moment they created it.
 pub const ADMINISTER_CONTENT: &str = "administer content";
 
+/// The permission that lets a user who may view an item but not edit it read
+/// its revision history (Drupal's `view revisions`).
+pub const VIEW_REVISIONS: &str = "view revisions";
+
+/// The permission that lets a user delete a past revision of an item they may
+/// delete (Drupal's `delete revisions`).
+pub const DELETE_REVISIONS: &str = "delete revisions";
+
 /// The permission that lets a user read a stage other than Live
 /// (`routes::helpers::read_stages`).
 pub const USE_STAGES: &str = "use stages";
@@ -546,6 +554,20 @@ pub enum RevisionAccess {
     /// The user may view the item but not edit it.
     Forbidden,
     /// A load or an access decision failed.
+    Failed(anyhow::Error),
+}
+
+/// Why [`ItemService::delete_revision`] deleted nothing.
+#[derive(Debug)]
+pub enum RevisionDeleted {
+    /// No such item, an item the user may not view, or a revision that is not
+    /// one of this item's.
+    NotFound,
+    /// The user may view the item but not delete its revisions.
+    Forbidden,
+    /// The revision is the item's current one, which is never deleted.
+    Current,
+    /// A load, an access decision or the delete failed.
     Failed(anyhow::Error),
 }
 
@@ -2695,7 +2717,7 @@ impl ItemService {
             return Err(RevisionAccess::NotFound);
         }
         if !self
-            .check_access(&item, "edit", user)
+            .may_read_revisions(&item, user)
             .await
             .map_err(RevisionAccess::Failed)?
         {
@@ -2738,6 +2760,77 @@ impl ItemService {
         }
 
         Ok(ItemRevisions { item, revisions })
+    }
+
+    /// Whether `user`, who may view `item`, may read its revision history: an
+    /// editor of the item through their edit access, anyone else through
+    /// [`VIEW_REVISIONS`]. The view check is the caller's, asked first, so an
+    /// item the user may not see stays a 404.
+    pub async fn may_read_revisions(&self, item: &Item, user: &UserContext) -> Result<bool> {
+        if user.can(VIEW_REVISIONS) {
+            return Ok(true);
+        }
+        self.check_access(item, "edit", user).await
+    }
+
+    /// Whether `user` may delete past revisions of `item`: [`DELETE_REVISIONS`]
+    /// and delete access to the item itself, as Drupal asks.
+    pub async fn may_delete_revisions(&self, item: &Item, user: &UserContext) -> Result<bool> {
+        if !user.can(DELETE_REVISIONS) {
+            return Ok(false);
+        }
+        self.check_access(item, "delete", user).await
+    }
+
+    /// Delete one past revision of an item.
+    ///
+    /// The item's current revision is never deleted: it is what the item row
+    /// holds, and the row points at it. Access is [`Self::may_delete_revisions`]
+    /// after the item is visible to the user at all; a revision id that is not
+    /// one of this item's is not found.
+    pub async fn delete_revision(
+        &self,
+        item_id: Uuid,
+        revision_id: Uuid,
+        user: &UserContext,
+    ) -> std::result::Result<(), RevisionDeleted> {
+        let item = self
+            .load(item_id)
+            .await
+            .map_err(RevisionDeleted::Failed)?
+            .ok_or(RevisionDeleted::NotFound)?;
+        if !self
+            .check_access(&item, "view", user)
+            .await
+            .map_err(RevisionDeleted::Failed)?
+        {
+            return Err(RevisionDeleted::NotFound);
+        }
+        if !self
+            .may_delete_revisions(&item, user)
+            .await
+            .map_err(RevisionDeleted::Failed)?
+        {
+            return Err(RevisionDeleted::Forbidden);
+        }
+        if item.current_revision_id == Some(revision_id) {
+            return Err(RevisionDeleted::Current);
+        }
+        let deleted = Item::delete_revision(&self.inner.pool, item_id, revision_id)
+            .await
+            .map_err(RevisionDeleted::Failed)?;
+        if !deleted {
+            return Err(RevisionDeleted::NotFound);
+        }
+        info!(item_id = %item_id, revision_id = %revision_id, "revision deleted");
+        self.audit(
+            "delete_revision",
+            item_id,
+            Some(user),
+            serde_json::json!({ "revision_id": revision_id, "title": item.title }),
+        )
+        .await;
+        Ok(())
     }
 
     /// Revert an item to a previous revision.

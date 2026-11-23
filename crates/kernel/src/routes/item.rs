@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use crate::content::{FieldMode, FilterPipeline, ItemRevisions, RevisionAccess, RevisionSelection};
+use crate::content::{
+    FieldMode, FilterPipeline, ItemRevisions, RevisionAccess, RevisionDeleted, RevisionSelection,
+};
 use crate::error::AppError;
 use crate::form::csrf::generate_csrf_token;
 use crate::middleware::language::ResolvedLanguage;
@@ -324,6 +326,10 @@ pub fn router() -> Router<AppState> {
         .route("/item/{id}/revisions/compare", get(compare_revisions))
         .route("/item/{id}/revisions/{rev_id}", get(preview_revision))
         .route("/item/{id}/revert/{rev_id}", post(revert_revision))
+        .route(
+            "/item/{id}/revisions/{rev_id}/delete",
+            post(delete_revision),
+        )
 }
 
 /// The item JSON API, under `/api/v1` ([`super::api`]).
@@ -1755,9 +1761,25 @@ async fn list_revisions(
         .map(|rev| revision_summary(rev, &authors, item.current_revision_id))
         .collect();
 
+    // What each row offers. A revert is an edit of the item; a delete needs
+    // `delete revisions` and delete access. The submit decides both again.
+    let viewer = get_user_context(&session, &state).await;
+    let may_revert = state
+        .items()
+        .check_access(&item, "edit", &viewer)
+        .await
+        .unwrap_or(false);
+    let may_delete = state
+        .items()
+        .may_delete_revisions(&item, &viewer)
+        .await
+        .unwrap_or(false);
+
     let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
+    context.insert("may_revert", &may_revert);
+    context.insert("may_delete", &may_delete);
     context.insert("path", &format!("/item/{id}/revisions"));
     context.insert("item_id", &id);
     context.insert("item_title", &item.title);
@@ -1913,6 +1935,36 @@ async fn revert_revision(
     match state.items().revert_to_revision(id, rev_id, &user).await {
         Ok(_) => Ok(Redirect::to(&format!("/item/{id}/revisions"))),
         Err(e) => Err(write_error(e, "revert revision")),
+    }
+}
+
+/// Delete one past revision of an item.
+///
+/// `POST /item/{id}/revisions/{rev_id}/delete`, with the form token. The
+/// current revision is refused (409); a user who may view the item but not
+/// delete its revisions gets 403, and one who may not view it 404.
+async fn delete_revision(
+    State(state): State<AppState>,
+    session: Session,
+    Path((id, rev_id)): Path<(Uuid, Uuid)>,
+    Form(form): Form<CsrfOnlyForm>,
+) -> Result<Response, AppError> {
+    let user = get_user_context(&session, &state).await;
+    crate::routes::helpers::require_csrf(&session, &form.token)
+        .await
+        .map_err(|_| AppError::forbidden("Invalid or expired form token. Please try again."))?;
+
+    match state.items().delete_revision(id, rev_id, &user).await {
+        Ok(()) => Ok(Redirect::to(&format!("/item/{id}/revisions")).into_response()),
+        Err(RevisionDeleted::NotFound) => Err(AppError::not_found("Revision")),
+        Err(RevisionDeleted::Forbidden) => Err(super::helpers::refusal_for(
+            &user,
+            "You may not delete this item's revisions.",
+        )),
+        Err(RevisionDeleted::Current) => Err(AppError::conflict(
+            "The current revision cannot be deleted.",
+        )),
+        Err(RevisionDeleted::Failed(e)) => Err(AppError::internal_ctx(e, "delete revision")),
     }
 }
 
