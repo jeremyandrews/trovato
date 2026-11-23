@@ -1,0 +1,62 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Moderated content</h2>
+    <a href="/admin/content" class="button">All content</a>
+</div>
+
+<div class="admin-card">
+    <form class="filter-form" method="get" action="/admin/content/moderated">
+        <div class="filter-item">
+            <label for="state">Moderation state</label>
+            <select id="state" name="state">
+                <option value="">- Any not published -</option>
+                <option value="draft" {% if state_filter == "draft" %}selected{% endif %}>Draft</option>
+                <option value="archived" {% if state_filter == "archived" %}selected{% endif %}>Archived</option>
+            </select>
+        </div>
+        <button type="submit" class="button button--small">Filter</button>
+    </form>
+
+    <table class="table moderated-content">
+        <thead>
+            <tr>
+                <th>Title</th>
+                <th>Type</th>
+                <th>Author</th>
+                <th>Moderation state</th>
+                <th>Updated</th>
+                <th>Operations</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in items %}
+            <tr>
+                <td>
+                    {% if item.ahead %}
+                    <a href="/item/{{ item.id }}/latest">{{ item.title }}</a>
+                    {% else %}
+                    <a href="/item/{{ item.id }}">{{ item.title }}</a>
+                    {% endif %}
+                </td>
+                <td>{{ item.type }}</td>
+                <td>{{ item.author }}</td>
+                <td>{{ item.state }}{% if item.ahead %} (ahead of the published version){% endif %}</td>
+                <td>{{ item.changed }}</td>
+                <td>
+                    <a href="/item/{{ item.id }}/edit">Edit</a>
+                    &middot;
+                    <a href="/item/{{ item.id }}/revisions">Revisions</a>
+                </td>
+            </tr>
+            {% endfor %}
+            {% if not items %}
+            <tr>
+                <td colspan="6">No moderated content available.</td>
+            </tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

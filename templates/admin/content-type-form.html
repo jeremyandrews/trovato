@@ -82,6 +82,15 @@
                         <label for="sticky_default">Sticky at top of lists by default</label>
                     </div>
                 </div>
+
+                <div class="form-item form-item--checkbox">
+                    <div class="form-checkbox-wrapper">
+                        <input type="checkbox" id="moderation" name="moderation" value="1"
+                               {% if values.moderation %}checked{% endif %}>
+                        <label for="moderation">Moderate content of this type</label>
+                    </div>
+                    <p class="form-item__description">Items move between Draft, Published and Archived by transitions each role is granted (<code>use editorial transition …</code>). A draft saved over a published item waits beside it: visitors keep seeing the published version until the draft is published.</p>
+                </div>
             </div>
         </fieldset>
 

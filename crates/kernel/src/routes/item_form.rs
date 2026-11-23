@@ -40,6 +40,12 @@ pub(crate) async fn build(
     extra: Vec<(String, FormElement)>,
 ) -> anyhow::Result<Form> {
     let type_name = &content_type.machine_name;
+    // On a moderated type the form edits the latest revision, which can be a
+    // draft ahead of the published one, and a state select replaces the
+    // published checkbox.
+    let moderation = moderation_context(state, type_name, item).await;
+    let working = moderation.as_ref().and_then(|m| m.working.as_ref());
+    let item = working.or(item);
     let modes =
         super::item::field_modes_for(state, user, type_name, content_type, item.is_none()).await;
     let titles = match item {
@@ -51,8 +57,11 @@ pub(crate) async fn build(
         .with_reference_titles(titles)
         .with_item_id(item.map(|i| i.id))
         .with_field_modes(modes)
-        .with_publish_allowed(user.can(PUBLISH_CONTENT));
+        .with_publish_allowed(user.can(PUBLISH_CONTENT) && moderation.is_none());
     let mut extra = extra;
+    if let Some(moderation) = &moderation {
+        extra.push(moderation_element(user, moderation.state));
+    }
     extra.extend(publishing_element(state, user, type_name, item).await);
     let form = match item {
         Some(item) => builder.build_edit_form(item, action),
@@ -137,6 +146,90 @@ async fn reference_titles(
     titles
 }
 
+/// What the item form needs of content moderation, on a moderated type.
+pub(crate) struct ModerationContext {
+    /// The state the item is in: Draft for a new item.
+    pub state: &'static str,
+    /// The item as an editor works on it ([`ItemService::load_for_moderation`]);
+    /// `None` for a new item.
+    ///
+    /// [`ItemService::load_for_moderation`]: crate::content::ItemService::load_for_moderation
+    pub working: Option<Item>,
+}
+
+/// The moderation context of the form for `item` (or a new item) of
+/// `type_name`: `None` when the type is not moderated.
+pub(crate) async fn moderation_context(
+    state: &AppState,
+    type_name: &str,
+    item: Option<&Item>,
+) -> Option<ModerationContext> {
+    match item {
+        None => state
+            .items()
+            .is_moderated(type_name)
+            .await
+            .then_some(ModerationContext {
+                state: crate::content::moderation::DRAFT,
+                working: None,
+            }),
+        Some(item) => match state.items().load_for_moderation(item).await {
+            Ok(found) => found.map(|(state, working)| ModerationContext {
+                state,
+                working: Some(working),
+            }),
+            Err(e) => {
+                tracing::warn!(error = %e, item_id = %item.id, "loading the latest revision failed");
+                None
+            }
+        },
+    }
+}
+
+/// The moderation control: the current state, and a `moderation_state`
+/// select of the states this user may move the item to, defaulting to the
+/// current one when they may stay. The service decides the transition again.
+fn moderation_element(user: &UserContext, current: &'static str) -> (String, FormElement) {
+    use crate::content::moderation;
+
+    let targets = moderation::targets(current, user);
+    let current_label = moderation::label(current);
+    let mut fieldset = FormElement::fieldset()
+        .title("Moderation state")
+        .weight(crate::content::STATUS_WEIGHT)
+        .attribute("id", "moderation-state")
+        .child(
+            "_moderation_current",
+            FormElement::markup(format!(
+                r#"<p class="moderation-current">Current state: <strong>{current_label}</strong></p>"#
+            ))
+            .weight(0),
+        );
+    if targets.is_empty() {
+        fieldset = fieldset.child(
+            "_moderation_none",
+            FormElement::markup(
+                r#"<p class="moderation-none">You may not change the state of this item.</p>"#,
+            )
+            .weight(1),
+        );
+    } else {
+        let options: Vec<(String, String)> = targets
+            .iter()
+            .map(|s| ((*s).to_string(), moderation::label(s).to_string()))
+            .collect();
+        let default = moderation::default_target(current, user).unwrap_or(current);
+        let mut select = FormElement::select(options)
+            .title("Change to")
+            .default_value(default)
+            .weight(1);
+        // Required, so the template offers no empty "- Select -" of its own.
+        select.required = true;
+        fieldset = fieldset.child("moderation_state", select);
+    }
+    ("moderation".to_string(), fieldset)
+}
+
 /// The stage selector: the stages this user may move `item` to by the
 /// editorial workflow, or nothing when there are none. The submit decides the
 /// move again.
@@ -184,6 +277,15 @@ pub(crate) async fn process(
 ) -> Result<(FormState, Map<String, Value>), ProcessError> {
     let build_id = posted.get("_form_build_id").unwrap_or("").to_string();
     let formats = permitted_text_formats(user);
+    // A save builds on what the form showed: on a moderated type, the latest
+    // revision.
+    let working = match item {
+        Some(stored) => moderation_context(state, &content_type.machine_name, Some(stored))
+            .await
+            .and_then(|m| m.working),
+        None => None,
+    };
+    let item = working.as_ref().or(item);
     state
         .forms()
         .process(

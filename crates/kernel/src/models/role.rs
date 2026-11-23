@@ -75,6 +75,17 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     // Delete a past revision of an item the user may delete. The current
     // revision is never deleted. Granted by no migration.
     "delete revisions",
+    // Content moderation (B158, `content::moderation`): one permission per
+    // transition of the Editorial workflow, named as Drupal names them, and
+    // the latest (draft) revision of an item ahead of its published one, with
+    // the moderated content list. Granted by no migration; an administrator
+    // holds them implicitly.
+    "use editorial transition create_new_draft",
+    "use editorial transition publish",
+    "use editorial transition archive",
+    "use editorial transition archived_draft",
+    "use editorial transition archived_published",
+    "view latest version",
     // Read a stage other than Live: switch the session's active stage, and see
     // it (with Live beneath it) in search, gathers and aliases. Granted to no
     // role by any migration; an administrator holds it implicitly. See

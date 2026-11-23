@@ -102,6 +102,95 @@ async fn list_content(
     .await
 }
 
+/// The moderated content list: every item of a moderated type whose latest
+/// revision is a Draft or Archived, newest change first.
+///
+/// GET /admin/content/moderated, `?state=draft` or `?state=archived` to narrow
+/// it. For a holder of `view latest version` or `edit any content`.
+async fn list_moderated(
+    State(state): State<AppState>,
+    session: Session,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    use crate::content::moderation;
+
+    let viewer = crate::routes::helpers::get_user_context(&session, &state).await;
+    if !(viewer.can(moderation::VIEW_LATEST_VERSION) || viewer.can("edit any content")) {
+        return match require_permission(&state, &session, moderation::VIEW_LATEST_VERSION).await {
+            Err(refusal) => refusal,
+            Ok(_) => render_forbidden("You may not see the moderated content list."),
+        };
+    }
+    let state_filter = params
+        .get("state")
+        .and_then(|s| moderation::state(s))
+        .filter(|s| *s != moderation::PUBLISHED);
+
+    let rows = match crate::models::Item::list_moderated(state.db(), state_filter, 200).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to list moderated content");
+            return render_server_error("Failed to load moderated content.");
+        }
+    };
+    let mut ids: Vec<uuid::Uuid> = rows.iter().map(|r| r.id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    // An item this viewer may not see is not listed.
+    let items = crate::models::Item::find_by_ids(state.db(), &ids)
+        .await
+        .unwrap_or_default();
+    let mut visible = std::collections::HashSet::new();
+    for item in &items {
+        if state
+            .items()
+            .check_access(item, "view", &viewer)
+            .await
+            .unwrap_or(false)
+        {
+            visible.insert(item.id);
+        }
+    }
+    let mut author_ids: Vec<uuid::Uuid> = rows.iter().map(|r| r.author_id).collect();
+    author_ids.sort_unstable();
+    author_ids.dedup();
+    let authors = state
+        .users()
+        .names_by_ids(&author_ids)
+        .await
+        .unwrap_or_default();
+    let labels: std::collections::HashMap<String, String> = state
+        .content_types()
+        .list_all()
+        .await
+        .into_iter()
+        .map(|ct| (ct.machine_name, ct.label))
+        .collect();
+    let listed: Vec<serde_json::Value> = rows
+        .iter()
+        .filter(|r| visible.contains(&r.id))
+        .map(|r| {
+            serde_json::json!({
+                "id": r.id,
+                "title": r.title,
+                "type": labels.get(&r.item_type).unwrap_or(&r.item_type),
+                "author": authors.get(&r.author_id).cloned().unwrap_or_else(|| "anonymous".to_string()),
+                "state": moderation::label(&r.state),
+                "ahead": r.ahead,
+                "changed": chrono::DateTime::from_timestamp(r.changed, 0)
+                    .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+                    .unwrap_or_default(),
+            })
+        })
+        .collect();
+
+    let mut context = tera::Context::new();
+    context.insert("items", &listed);
+    context.insert("state_filter", &state_filter.unwrap_or(""));
+    context.insert("path", "/admin/content/moderated");
+    render_admin_template(&state, &viewer, "admin/content-moderated.html", context).await
+}
+
 /// Select content type before adding.
 ///
 /// GET /admin/content/add
@@ -324,7 +413,12 @@ async fn add_content_submit(
 
     match state
         .items()
-        .create_authored(input, publishing.created, &user_ctx)
+        .create_moderated(
+            input,
+            publishing.created,
+            requested_moderation_state(&posted),
+            &user_ctx,
+        )
         .await
     {
         Ok(item) => {
@@ -470,6 +564,12 @@ fn requested_status(posted: &PostedForm) -> Option<i16> {
         .then(|| i16::from(posted.contains("status")))
 }
 
+/// The content moderation state a submission asks for, on a moderated type;
+/// `None` when the form offered no choice.
+fn requested_moderation_state(posted: &PostedForm) -> Option<&str> {
+    posted.get("moderation_state").filter(|s| !s.is_empty())
+}
+
 /// The stage a submission asks to move the item to: `Ok(None)` when it asked
 /// for none, `Err` when the value is not a stage id. Whether the move is
 /// allowed is `ItemService::update`'s decision.
@@ -583,7 +683,16 @@ async fn edit_content_submit(
         return response;
     }
 
-    match state.items().update(item_id, input, &user_ctx).await {
+    match state
+        .items()
+        .update_moderated(
+            item_id,
+            input,
+            requested_moderation_state(&posted),
+            &user_ctx,
+        )
+        .await
+    {
         Ok(updated) => {
             super::item::release_edit_lock(&state, &user_ctx, item_id).await;
             state
@@ -1060,6 +1169,7 @@ async fn bulk_content_action(
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/admin/content", get(list_content))
+        .route("/admin/content/moderated", get(list_moderated))
         .route("/admin/content/add", get(select_content_type))
         .route(
             "/admin/content/add/{type}",

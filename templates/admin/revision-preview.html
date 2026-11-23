@@ -2,13 +2,21 @@
 
 {% block content %}
 <div class="admin-header">
+    {% if latest_state is defined %}
+    <h2>Latest version: {{ revision.title }}</h2>
+    {% else %}
     <h2>Revision of {{ revision.date }}: {{ revision.title }}</h2>
+    {% endif %}
     <a href="/item/{{ item_id }}/revisions" class="button">Back to history</a>
 </div>
 
 <div class="admin-card">
     <p>
-        {% if revision.is_current %}
+        {% if latest_state is defined %}
+        This {{ latest_state }} is ahead of the published version of
+        <a href="/item/{{ item_id }}">{{ item_title }}</a>, which visitors see.
+        <a href="/item/{{ item_id }}/edit" class="button button--small">Edit</a>
+        {% elif revision.is_current %}
         This is the current version of <a href="/item/{{ item_id }}">{{ item_title }}</a>.
         {% else %}
         <strong>This is not the current version</strong> of

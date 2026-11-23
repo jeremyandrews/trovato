@@ -42,7 +42,7 @@
                     {{ rev.date }}
                 </td>
                 <td>{{ rev.author }}</td>
-                <td>{{ rev.title }}</td>
+                <td>{{ rev.title }}{% if rev.state %} <span class="badge">{{ rev.state }}</span>{% endif %}</td>
                 <td>{{ rev.log | default(value="-") }}</td>
                 <td>
                     <a href="/item/{{ item_id }}/revisions/{{ rev.id }}" class="button button--small">View</a>
