@@ -11,6 +11,7 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::models::{Comment, CommentStatus, CreateComment, UpdateComment};
+use crate::services::audit::AuditTrail;
 use crate::tap::{RequestServices, RequestState, TapDispatcher, UserContext};
 use trovato_sdk::types::AccessResult;
 
@@ -27,6 +28,7 @@ struct CommentServiceInner {
     pool: PgPool,
     dispatcher: Arc<TapDispatcher>,
     tap_services: RequestServices,
+    audit: AuditTrail,
 }
 
 impl CommentService {
@@ -35,14 +37,30 @@ impl CommentService {
         pool: PgPool,
         dispatcher: Arc<TapDispatcher>,
         tap_services: RequestServices,
+        audit: AuditTrail,
     ) -> Self {
         Self {
             inner: Arc::new(CommentServiceInner {
                 pool,
                 dispatcher,
                 tap_services,
+                audit,
             }),
         }
+    }
+
+    /// Record one comment write in the audit log.
+    async fn audit(&self, action: &str, id: Uuid, item_id: Option<Uuid>, user: &UserContext) {
+        self.inner
+            .audit
+            .record(
+                action,
+                "comment",
+                id,
+                user.authenticated.then_some(user.id),
+                serde_json::json!({ "item_id": item_id }),
+            )
+            .await;
     }
 
     /// Build a `RequestState` for tap dispatch with the user context and services.
@@ -82,6 +100,8 @@ impl CommentService {
         self.request_search_rebuild(None, Some(&comment)).await;
 
         info!(comment_id = %comment.id, item_id = %comment.item_id, "comment created");
+        self.audit("create", comment.id, Some(comment.item_id), user)
+            .await;
         Ok(comment)
     }
 
@@ -106,6 +126,7 @@ impl CommentService {
                 .await;
 
             info!(comment_id = %id, "comment updated");
+            self.audit("update", id, Some(c.item_id), user).await;
         }
 
         Ok(comment)
@@ -129,6 +150,8 @@ impl CommentService {
         if deleted {
             self.request_search_rebuild(existing.as_ref(), None).await;
             info!(comment_id = %id, "comment deleted");
+            self.audit("delete", id, existing.as_ref().map(|c| c.item_id), user)
+                .await;
         }
         Ok(deleted)
     }

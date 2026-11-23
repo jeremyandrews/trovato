@@ -623,7 +623,7 @@ async fn edit_user_submit(
                 Some(ref password) if !password.is_empty() => {
                     if let Err(e) = state
                         .users()
-                        .update_password(user_id, password, &user_ctx)
+                        .update_password(user_id, password, &user_ctx, "admin")
                         .await
                     {
                         tracing::error!(error = %e, "failed to update user password");

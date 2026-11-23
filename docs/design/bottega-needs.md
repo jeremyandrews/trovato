@@ -82,7 +82,7 @@ added with this note. Paths are under `crates/kernel/` unless they say otherwise
 | **7** | **Safety and law** | | | |
 | 7.1 | Abuse report form | missing | No report or flag feature; `plugins/trovato_contact` is a general form that stores nothing. | BL-150 |
 | 7.2 | Notice and action records with timestamps (EU DSA) | missing | No table or code. | BL-150 |
-| 7.3 | Audit rows for moderation | partly present | `audit_log` table (`plugins/trovato_audit_log`) and `services/audit.rs` `AuditService::log`, which has no caller. `audit.rs` `SecurityAudit` records authentication events only. | BL-151 |
+| 7.3 | Audit rows for moderation | present | Every write service records an `audit_log` row (`plugins/trovato_audit_log`) through `services/audit.rs` `AuditTrail` when the plugin is enabled, listed at `/admin/reports/audit`; `audit.rs` `SecurityAudit` adds role, permission, membership and blocked-state events. | none |
 | 7.4 | Upload quotas per user | partly present | Per file only: `file/service.rs` `MAX_FILE_SIZE` (10 MiB, fixed) and the `uploads` rate bucket. No per-user total. | BL-152 |
 | 7.5 | Per-blog isolation: no owner reads or edits another's drafts | partly present | Per author today: `content/item_service.rs` `check_access` (own and any permissions), `plugins/trovato_blog` `tap_item_access` grants authors their own posts, `gather/access.rs` filters listings. No grouping above the user (BL-129, BL-132), and BL-120 lets anonymous visitors edit nil-author imported items under such a grant. | BL-129, BL-132, BL-120 |
 | **8** | **Scale** | | | |

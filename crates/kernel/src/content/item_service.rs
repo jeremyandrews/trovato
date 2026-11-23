@@ -194,6 +194,9 @@ struct ItemServiceInner {
     /// standard set until `AppState` sets the merged one at startup.
     page_builder_components:
         std::sync::OnceLock<Arc<crate::content::page_builder_components::ComponentRegistry>>,
+    /// What item writes are audited through. Set once by `AppState`; a
+    /// service built without it records nothing.
+    audit: std::sync::OnceLock<crate::services::audit::AuditTrail>,
 }
 
 /// A translation record for an item in a specific language.
@@ -579,6 +582,7 @@ impl ItemService {
                 ai_providers,
                 vector_store,
                 page_builder_components: std::sync::OnceLock::new(),
+                audit: std::sync::OnceLock::new(),
             }),
         }
     }
@@ -593,6 +597,34 @@ impl ItemService {
         if self.inner.page_builder_components.set(components).is_err() {
             warn!("page builder components were already set; keeping the first registry");
         }
+    }
+
+    /// Record item writes through `audit`. Set once, at startup.
+    pub fn set_audit_trail(&self, audit: crate::services::audit::AuditTrail) {
+        let _ = self.inner.audit.set(audit);
+    }
+
+    /// Record one item write in the audit log.
+    async fn audit(
+        &self,
+        action: &str,
+        id: Uuid,
+        user: Option<&UserContext>,
+        details: serde_json::Value,
+    ) {
+        if let Some(audit) = self.inner.audit.get() {
+            let actor = user.filter(|u| u.authenticated).map(|u| u.id);
+            audit.record(action, "item", id, actor, details).await;
+        }
+    }
+
+    /// What an item's audit row says about it.
+    fn audit_details(item: &Item) -> serde_json::Value {
+        serde_json::json!({
+            "title": item.title,
+            "type": item.item_type,
+            "status": item.status,
+        })
     }
 
     /// The registry saved pages are validated against.
@@ -830,6 +862,8 @@ impl ItemService {
         self.request_search_rebuild(None, Some(&item)).await;
 
         info!(item_id = %item.id, item_type = %item.item_type, "item created");
+        self.audit("create", item.id, Some(user), Self::audit_details(&item))
+            .await;
         Ok(item)
     }
 
@@ -1006,6 +1040,13 @@ impl ItemService {
         .context("failed to save item translation")?;
         // A translated title is what a localized menu label is read from.
         crate::menu::invalidate_config_menus();
+        self.audit(
+            "translate",
+            item_id,
+            Some(user),
+            serde_json::json!({ "language": language, "title": title }),
+        )
+        .await;
 
         Ok(row)
     }
@@ -1026,8 +1067,18 @@ impl ItemService {
                 .await
                 .context("failed to delete item translation")?;
         crate::menu::invalidate_config_menus();
+        let removed = result.rows_affected() > 0;
+        if removed {
+            self.audit(
+                "delete_translation",
+                item_id,
+                None,
+                serde_json::json!({ "language": language }),
+            )
+            .await;
+        }
 
-        Ok(result.rows_affected() > 0)
+        Ok(removed)
     }
 
     /// List all translations that exist for an item, ordered by language.
@@ -1423,6 +1474,8 @@ impl ItemService {
             self.invalidate(id);
 
             info!(item_id = %id, "item updated");
+            self.audit("update", id, Some(user), Self::audit_details(i))
+                .await;
         }
 
         Ok(item)
@@ -1588,6 +1641,8 @@ impl ItemService {
             self.invalidate(id);
             self.request_search_rebuild(Some(&item), None).await;
             info!(item_id = %id, "item deleted");
+            self.audit("delete", id, Some(user), Self::audit_details(&item))
+                .await;
         }
         // The item's `file_reference` rows are removed by the FK cascade
         // (`ON DELETE CASCADE` on `item_id`) when the item row is deleted above.

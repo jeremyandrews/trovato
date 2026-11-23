@@ -12,6 +12,7 @@ use crate::menu::MenuTreeLink;
 use crate::models::tile::{CreateTile, Tile, UpdateTile, gather_tile_items};
 use crate::routes::gather::{ExecuteParams, execute_query_only, query_language};
 use crate::routes::helpers::html_escape;
+use crate::services::audit::AuditTrail;
 use crate::state::AppState;
 use crate::tap::UserContext;
 
@@ -37,12 +38,26 @@ pub struct TileRenderContext<'a> {
 /// Service for loading and rendering tiles.
 pub struct TileService {
     db: PgPool,
+    audit: AuditTrail,
 }
 
 impl TileService {
     /// Create a new tile service.
-    pub fn new(db: PgPool) -> Self {
-        Self { db }
+    pub fn new(db: PgPool, audit: AuditTrail) -> Self {
+        Self { db, audit }
+    }
+
+    /// Record one tile write in the audit log.
+    async fn audit(&self, action: &str, tile: &Tile) {
+        self.audit
+            .record(
+                action,
+                "tile",
+                tile.id,
+                None,
+                serde_json::json!({ "machine_name": tile.machine_name, "region": tile.region }),
+            )
+            .await;
     }
 
     /// Create a tile.
@@ -52,17 +67,29 @@ impl TileService {
     /// tiles are read per render, not cached, and the kernel defines no tile
     /// taps.
     pub async fn create(&self, input: CreateTile) -> Result<Tile> {
-        Tile::create(&self.db, input).await
+        let tile = Tile::create(&self.db, input).await?;
+        self.audit("create", &tile).await;
+        Ok(tile)
     }
 
     /// Update a tile. `None` when there is no such tile.
     pub async fn update(&self, id: uuid::Uuid, input: UpdateTile) -> Result<Option<Tile>> {
-        Tile::update(&self.db, id, input).await
+        let tile = Tile::update(&self.db, id, input).await?;
+        if let Some(tile) = &tile {
+            self.audit("update", tile).await;
+        }
+        Ok(tile)
     }
 
     /// Delete a tile. `false` when there is no such tile.
     pub async fn delete(&self, id: uuid::Uuid) -> Result<bool> {
-        Tile::delete(&self.db, id).await
+        let deleted = Tile::delete(&self.db, id).await?;
+        if deleted {
+            self.audit
+                .record("delete", "tile", id, None, serde_json::json!({}))
+                .await;
+        }
+        Ok(deleted)
     }
 
     /// Get visible tiles for a region, filtered by path and role visibility rules.

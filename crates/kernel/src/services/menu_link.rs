@@ -12,27 +12,48 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use crate::models::{CreateMenuLink, MenuLink, UpdateMenuLink};
+use crate::services::audit::AuditTrail;
 
 /// Service for menu link writes.
 #[derive(Clone)]
 pub struct MenuLinkService {
     pool: PgPool,
+    audit: AuditTrail,
 }
 
 impl MenuLinkService {
     /// Create the service.
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: PgPool, audit: AuditTrail) -> Self {
+        Self { pool, audit }
+    }
+
+    /// Record one link write in the audit log.
+    async fn audit(&self, action: &str, link: &MenuLink) {
+        self.audit
+            .record(
+                action,
+                "menu_link",
+                link.id,
+                None,
+                serde_json::json!({ "menu": link.menu_name, "title": link.title, "path": link.path }),
+            )
+            .await;
     }
 
     /// Create a link.
     pub async fn create(&self, input: CreateMenuLink) -> Result<MenuLink> {
-        MenuLink::create(&self.pool, input).await
+        let link = MenuLink::create(&self.pool, input).await?;
+        self.audit("create", &link).await;
+        Ok(link)
     }
 
     /// Update a link. `None` when there is no such link.
     pub async fn update(&self, id: Uuid, input: UpdateMenuLink) -> Result<Option<MenuLink>> {
-        MenuLink::update(&self.pool, id, input).await
+        let link = MenuLink::update(&self.pool, id, input).await?;
+        if let Some(link) = &link {
+            self.audit("update", link).await;
+        }
+        Ok(link)
     }
 
     /// Delete a link, its children moving up to its own parent rather than
@@ -50,6 +71,9 @@ impl MenuLinkService {
             .context("failed to commit menu link delete")?;
         if deleted {
             crate::menu::invalidate_config_menus();
+            self.audit
+                .record("delete", "menu_link", id, None, serde_json::json!({}))
+                .await;
         }
         Ok(deleted)
     }

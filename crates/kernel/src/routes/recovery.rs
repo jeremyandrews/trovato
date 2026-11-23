@@ -724,7 +724,7 @@ async fn recover_reset(
     };
     match state
         .users()
-        .update_password(grant.user_id, &body.new_password, &user_ctx)
+        .update_password(grant.user_id, &body.new_password, &user_ctx, "recovery")
         .await
     {
         Ok(true) => {}
