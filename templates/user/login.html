@@ -42,6 +42,7 @@
             <button type="submit" class="login-form__submit">Sign in</button>
         </form>
 
+        {% if webauthn_available %}
         {# The passkey path is the SSR entry point onto the same JSON ceremony
            endpoints an API client drives. Hidden unless the browser supports
            WebAuthn, so password login is never obstructed. #}
@@ -52,6 +53,12 @@
             <div id="passkey-login-message" role="status" style="display: none; margin-top: 0.75rem;"></div>
         </div>
         <script src="/static/js/passkey-login.js" defer></script>
+        {% else %}
+        <p class="login-card__passkey-note" style="margin-top: 1rem; color: #777; font-size: 0.9em;">
+            Passkey sign-in isn't available on this site — it needs a secure address
+            (HTTPS or a hostname), not a bare IP address. Sign in with your password above.
+        </p>
+        {% endif %}
 
         <div class="login-card__footer">
             Don't have an account? <a href="/user/register">Create one</a>

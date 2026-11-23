@@ -80,6 +80,13 @@ async fn register_start(
     if let Err(refusal) = require_csrf_header(&session, &headers).await {
         return refusal.into_response();
     }
+    let Some(webauthn) = state.webauthn() else {
+        return crate::error::AppError::with_status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Passkeys are not available on this site.",
+        )
+        .into_response();
+    };
 
     let existing = match WebauthnCredential::list_for_user(state.db(), user.id).await {
         Ok(creds) => creds,
@@ -98,7 +105,7 @@ async fn register_start(
         .filter_map(|c| c.passkey().ok().map(|p| p.cred_id().clone()))
         .collect();
 
-    let (challenge, reg_state) = match state.webauthn().start_passkey_registration(
+    let (challenge, reg_state) = match webauthn.start_passkey_registration(
         user.id,
         &user.name,
         &user.name,
@@ -161,6 +168,13 @@ async fn register_finish(
     if let Err(refusal) = require_csrf_header(&session, &headers).await {
         return refusal.into_response();
     }
+    let Some(webauthn) = state.webauthn() else {
+        return crate::error::AppError::with_status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Passkeys are not available on this site.",
+        )
+        .into_response();
+    };
     let (ip, ua) = request_context(&headers, &client_ip);
 
     let audit_failure = |reason: &'static str| {
@@ -219,8 +233,7 @@ async fn register_finish(
         .into_response();
     }
 
-    let passkey = match state
-        .webauthn()
+    let passkey = match webauthn
         .finish_passkey_registration(&body.credential, &pending.state)
     {
         Ok(pk) => pk,
@@ -326,6 +339,13 @@ async fn login_start(
     if let Err(retry_after) = state.rate_limiter().check("login", &client_ip.0).await {
         return crate::middleware::rate_limit_response(retry_after);
     }
+    let Some(webauthn) = state.webauthn() else {
+        return crate::error::AppError::with_status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Passkeys are not available on this site.",
+        )
+        .into_response();
+    };
 
     let generic = || {
         crate::error::AppError::with_status(
@@ -368,7 +388,7 @@ async fn login_start(
         return generic();
     }
 
-    let (challenge, auth_state) = match state.webauthn().start_passkey_authentication(&passkeys) {
+    let (challenge, auth_state) = match webauthn.start_passkey_authentication(&passkeys) {
         Ok(v) => v,
         Err(e) => {
             warn!(error = %e, user_id = %user.id, "failed to start passkey authentication");
@@ -448,6 +468,17 @@ async fn login_finish(
         .into_response();
     }
 
+    // Disabled mid-ceremony is the only way this is reached (`/login/start`
+    // already refuses when passkeys are unavailable), but fail closed rather
+    // than unwrap a relying party that no longer exists.
+    let Some(webauthn) = state.webauthn() else {
+        return crate::error::AppError::with_status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Passkeys are not available on this site.",
+        )
+        .into_response();
+    };
+
     // Which credential is being asserted, for the D-37 flag and the audit trail.
     let asserted_id = encode_credential_id(body.credential.raw_id.as_ref());
     let stored = WebauthnCredential::find_by_credential_id(state.db(), &asserted_id)
@@ -458,8 +489,7 @@ async fn login_finish(
         // belongs to someone else must not be usable to complete this flow.
         .filter(|c| c.user_id == pending.user_id);
 
-    let auth_result = match state
-        .webauthn()
+    let auth_result = match webauthn
         .finish_passkey_authentication(&body.credential, &pending.state)
     {
         Ok(r) => r,
@@ -960,6 +990,7 @@ async fn passkeys_page(State(state): State<AppState>, session: Session) -> Respo
     context.insert("csrf_token", &csrf_token);
     context.insert("user", &user);
     context.insert("credentials", &views);
+    context.insert("webauthn_available", &state.webauthn().is_some());
     context.insert("has_password", &access.has_password);
     context.insert("recovery_paths", &access.non_password_recovery_paths);
     // Pre-computed so the template states the outcome rather than re-deriving
