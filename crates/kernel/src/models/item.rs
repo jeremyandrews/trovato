@@ -105,6 +105,34 @@ pub struct ItemRevision {
     /// yet**: every revision carries the column default.
     #[serde(default)]
     pub ai_generated: Option<bool>,
+
+    /// The content moderation state of this revision, `draft`, `published` or
+    /// `archived`, on a moderated type (`content::moderation`). `None` on a
+    /// revision saved while the type was not moderated, which reads as
+    /// published or draft from its `status`.
+    #[serde(default)]
+    #[sqlx(default)]
+    pub moderation_state: Option<String>,
+}
+
+/// One row of the moderated content list ([`Item::list_moderated`]): an item
+/// and its latest revision.
+#[derive(Debug, Clone, Serialize, sqlx::FromRow)]
+pub struct ModeratedItem {
+    /// The item.
+    pub id: Uuid,
+    /// Its content type.
+    pub item_type: String,
+    /// The latest revision's title.
+    pub title: String,
+    /// Who saved the latest revision.
+    pub author_id: Uuid,
+    /// When the latest revision was saved, a Unix timestamp.
+    pub changed: i64,
+    /// The latest revision's state: `draft` or `archived`.
+    pub state: String,
+    /// Whether the latest revision is a draft ahead of the published one.
+    pub ahead: bool,
 }
 
 /// Input for creating a new item.
@@ -268,7 +296,7 @@ impl Item {
 
     /// Create a new item with initial revision.
     pub async fn create(pool: &PgPool, input: CreateItem) -> Result<Self> {
-        Self::create_with_file_refs(pool, input, None, None).await
+        Self::create_with_file_refs(pool, input, None, None, None).await
     }
 
     /// [`Self::create`], also writing the item's file references (and promoting
@@ -280,6 +308,7 @@ impl Item {
         input: CreateItem,
         refs: Option<&crate::content::file_refs::FileReferences>,
         created: Option<i64>,
+        moderation_state: Option<&str>,
     ) -> Result<Self> {
         let now = chrono::Utc::now().timestamp();
         let item_id = Uuid::now_v7();
@@ -323,8 +352,8 @@ impl Item {
         // Insert initial revision
         sqlx::query(
             r#"
-            INSERT INTO item_revision (id, item_id, author_id, title, status, fields, created, log)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            INSERT INTO item_revision (id, item_id, author_id, title, status, fields, created, log, moderation_state)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             "#,
         )
         .bind(revision_id)
@@ -335,6 +364,7 @@ impl Item {
         .bind(input.fields.clone().unwrap_or(serde_json::json!({})))
         .bind(now)
         .bind(input.log.as_deref().unwrap_or("Initial revision"))
+        .bind(moderation_state)
         .execute(&mut *tx)
         .await
         .context("failed to insert initial revision")?;
@@ -366,7 +396,7 @@ impl Item {
         author_id: Uuid,
         input: UpdateItem,
     ) -> Result<Option<Self>> {
-        Self::update_with_file_refs(pool, id, author_id, input, None).await
+        Self::update_with_file_refs(pool, id, author_id, input, None, None).await
     }
 
     /// [`Self::update`], also rewriting the item's file references (and
@@ -378,6 +408,7 @@ impl Item {
         author_id: Uuid,
         input: UpdateItem,
         refs: Option<&crate::content::file_refs::FileReferences>,
+        moderation_state: Option<&str>,
     ) -> Result<Option<Self>> {
         let now = chrono::Utc::now().timestamp();
         let revision_id = Uuid::now_v7();
@@ -407,8 +438,8 @@ impl Item {
         // Create new revision FIRST (before updating item to point to it)
         sqlx::query(
             r#"
-            INSERT INTO item_revision (id, item_id, author_id, title, status, fields, created, log)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            INSERT INTO item_revision (id, item_id, author_id, title, status, fields, created, log, moderation_state)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             "#,
         )
         .bind(revision_id)
@@ -419,6 +450,7 @@ impl Item {
         .bind(&fields)
         .bind(now)
         .bind(log)
+        .bind(moderation_state)
         .execute(&mut *tx)
         .await
         .context("failed to insert revision")?;
@@ -531,8 +563,8 @@ impl Item {
         // which is why the revision list page answered 500 to everybody.
         let revisions = sqlx::query_as::<_, ItemRevision>(
             "SELECT id, item_id, author_id, title, status, fields, created, log, \
-             change_summary, ai_generated FROM item_revision WHERE item_id = $1 \
-             ORDER BY created DESC",
+             change_summary, ai_generated, moderation_state FROM item_revision WHERE item_id = $1 \
+             ORDER BY created DESC, id DESC",
         )
         .bind(item_id)
         .fetch_all(pool)
@@ -558,11 +590,91 @@ impl Item {
         Ok(result.rows_affected() == 1)
     }
 
+    /// The item's latest revision: the newest by time, then by id. On a
+    /// moderated item it can be newer than the current revision (a draft
+    /// ahead of the published one).
+    pub async fn latest_revision(pool: &PgPool, item_id: Uuid) -> Result<Option<ItemRevision>> {
+        sqlx::query_as::<_, ItemRevision>(
+            "SELECT id, item_id, author_id, title, status, fields, created, log, \
+             change_summary, ai_generated, moderation_state FROM item_revision \
+             WHERE item_id = $1 ORDER BY created DESC, id DESC LIMIT 1",
+        )
+        .bind(item_id)
+        .fetch_optional(pool)
+        .await
+        .context("failed to fetch the latest revision")
+    }
+
+    /// Record a revision of item `id` that the item row does not take: a
+    /// draft ahead of the published revision visitors keep seeing. Returns the
+    /// revision's id.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn insert_forward_revision(
+        pool: &PgPool,
+        id: Uuid,
+        author_id: Uuid,
+        title: &str,
+        fields: &serde_json::Value,
+        log: Option<&str>,
+        moderation_state: &str,
+    ) -> Result<Uuid> {
+        let revision_id = Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO item_revision (id, item_id, author_id, title, status, fields, created, log, moderation_state) \
+             VALUES ($1, $2, $3, $4, 0, $5, $6, $7, $8)",
+        )
+        .bind(revision_id)
+        .bind(id)
+        .bind(author_id)
+        .bind(title)
+        .bind(fields)
+        .bind(chrono::Utc::now().timestamp())
+        .bind(log)
+        .bind(moderation_state)
+        .execute(pool)
+        .await
+        .context("failed to insert a forward revision")?;
+        Ok(revision_id)
+    }
+
+    /// The items of moderated types whose latest revision is not published,
+    /// newest change first: the moderated content list. `state` narrows it to
+    /// one state. A revision saved before its type was moderated reads its
+    /// state from its status, as `content::moderation::state_of` does.
+    pub async fn list_moderated(
+        pool: &PgPool,
+        state: Option<&str>,
+        limit: i64,
+    ) -> Result<Vec<ModeratedItem>> {
+        sqlx::query_as::<_, ModeratedItem>(
+            "SELECT id, item_type, title, author_id, changed, state, ahead FROM ( \
+                 SELECT i.id, i.type AS item_type, r.title, r.author_id, r.created AS changed, \
+                        COALESCE(r.moderation_state, \
+                                 CASE WHEN r.status = 1 THEN 'published' ELSE 'draft' END) AS state, \
+                        (r.id IS DISTINCT FROM i.current_revision_id) AS ahead \
+                 FROM item i \
+                 JOIN item_type t ON t.type = i.type AND t.settings -> 'moderation' = 'true'::jsonb \
+                 JOIN LATERAL ( \
+                     SELECT id, title, author_id, created, status, moderation_state \
+                     FROM item_revision WHERE item_id = i.id \
+                     ORDER BY created DESC, id DESC LIMIT 1 \
+                 ) r ON true \
+             ) latest \
+             WHERE state <> 'published' AND ($1::text IS NULL OR state = $1) \
+             ORDER BY changed DESC, id DESC LIMIT $2",
+        )
+        .bind(state)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .context("failed to list moderated items")
+    }
+
     /// Get a specific revision.
     pub async fn get_revision(pool: &PgPool, revision_id: Uuid) -> Result<Option<ItemRevision>> {
         let revision = sqlx::query_as::<_, ItemRevision>(
             "SELECT id, item_id, author_id, title, status, fields, created, log, \
-             change_summary, ai_generated FROM item_revision WHERE id = $1",
+             change_summary, ai_generated, moderation_state FROM item_revision WHERE id = $1",
         )
         .bind(revision_id)
         .fetch_optional(pool)
@@ -584,8 +696,8 @@ impl Item {
     ) -> Result<Vec<ItemRevision>> {
         let revisions = sqlx::query_as::<_, ItemRevision>(
             "SELECT id, item_id, author_id, title, status, fields, created, log, \
-             change_summary, ai_generated FROM item_revision \
-             WHERE item_id = $1 AND id = ANY($2) ORDER BY created DESC",
+             change_summary, ai_generated, moderation_state FROM item_revision \
+             WHERE item_id = $1 AND id = ANY($2) ORDER BY created DESC, id DESC",
         )
         .bind(item_id)
         .bind(revision_ids)

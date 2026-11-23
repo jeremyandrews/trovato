@@ -36,6 +36,7 @@ struct ContentTypeFormData {
     revision_default: Option<String>,
     promote_default: Option<String>,
     sticky_default: Option<String>,
+    moderation: Option<String>,
 }
 
 /// The per-type defaults the content type form edits, by settings key. Each
@@ -45,6 +46,9 @@ const DEFAULT_SWITCHES: &[&str] = &[
     "revision_default",
     "promote_default",
     "sticky_default",
+    // Content moderation (`content::moderation`): Draft, Published and
+    // Archived, with a permission per transition.
+    "moderation",
 ];
 
 impl ContentTypeFormData {
@@ -55,6 +59,7 @@ impl ContentTypeFormData {
             "revision_default" => self.revision_default.is_some(),
             "promote_default" => self.promote_default.is_some(),
             "sticky_default" => self.sticky_default.is_some(),
+            "moderation" => self.moderation.is_some(),
             _ => false,
         }
     }

@@ -751,6 +751,7 @@ fn item_revision_struct() {
         log: Some("Updated body".to_string()),
         change_summary: None,
         ai_generated: None,
+        moderation_state: None,
     };
 
     assert_eq!(rev.title, "Revision Title");
@@ -770,6 +771,7 @@ fn item_revision_optional_log() {
         log: None,
         change_summary: None,
         ai_generated: None,
+        moderation_state: None,
     };
 
     assert!(rev.log.is_none());

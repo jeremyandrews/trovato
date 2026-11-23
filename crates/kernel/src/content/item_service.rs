@@ -14,6 +14,7 @@ use tracing::{info, warn};
 use uuid::Uuid;
 
 use super::file_refs::{self, FileReferences};
+use super::moderation;
 use super::reentry::{self, MAX_ITEM_WRITE_DEPTH, WriteTooDeep};
 use crate::cache::generation::{CacheKind, bump};
 use crate::metrics::{CacheName, Metrics};
@@ -410,6 +411,14 @@ pub enum WriteDenied {
     /// The write would change the item's author or authored on time, and the
     /// user does not hold [`ADMINISTER_CONTENT`].
     Authoring,
+    /// On a moderated type, the write asked for a state the user may not move
+    /// the item to from the one it is in (`content::moderation`).
+    Transition {
+        /// The state the item is in.
+        from: String,
+        /// The state the write asked for.
+        to: String,
+    },
 }
 
 impl std::fmt::Display for WriteDenied {
@@ -431,6 +440,12 @@ impl std::fmt::Display for WriteDenied {
             Self::Authoring => write!(
                 f,
                 "changing an item's author or authored on time requires `{ADMINISTER_CONTENT}`"
+            ),
+            Self::Transition { from, to } => write!(
+                f,
+                "you may not move this item from {} to {}",
+                moderation::label(from),
+                moderation::label(to)
             ),
         }
     }
@@ -782,8 +797,25 @@ impl ItemService {
     /// [`Self::gate_promotion`].
     pub async fn create_authored(
         &self,
+        input: CreateItem,
+        created: Option<i64>,
+        user: &UserContext,
+    ) -> Result<Item> {
+        self.create_moderated(input, created, None, user).await
+    }
+
+    /// [`Self::create_authored`], asking for a content moderation state.
+    ///
+    /// On a moderated type ([`moderation`]) a new item leaves Draft by a
+    /// transition the user must hold: `moderation_state`, or Draft when it is
+    /// `None` (Published when the input asks for `status: 1`). The state decides
+    /// the published status, so the transition permission is the publish
+    /// permission there. On any other type the state is ignored.
+    pub async fn create_moderated(
+        &self,
         mut input: CreateItem,
         created: Option<i64>,
+        moderation_state: Option<&str>,
         user: &UserContext,
     ) -> Result<Item> {
         Self::refuse_if_too_deep()?;
@@ -808,7 +840,19 @@ impl ItemService {
         // The two write gates, on the client's own submission and before the
         // presave tap: a plugin's presave edits are trusted code, not user
         // input. Both return `WriteDenied`, which every caller maps to 403.
-        input.status = Self::gate_publish(user, input.status, None)?;
+        let moderated_state = if self.is_moderated(&input.item_type).await {
+            let requested = match (moderation_state, input.status) {
+                (Some(name), _) => name,
+                (None, Some(1)) => moderation::PUBLISHED,
+                (None, _) => moderation::DRAFT,
+            };
+            let to = Self::gate_transition(user, moderation::DRAFT, requested)?;
+            input.status = Some(moderation::status_of(to));
+            Some(to)
+        } else {
+            input.status = Self::gate_publish(user, input.status, None)?;
+            None
+        };
         Self::gate_promotion(user, input.promote, input.sticky, None)?;
         // A new item's author is its creator unless they hold the authority to
         // say otherwise, as is its authored on time.
@@ -874,8 +918,14 @@ impl ItemService {
             .await?;
 
         // Create the item in the database
-        let item =
-            Item::create_with_file_refs(&self.inner.pool, input, Some(&refs), created).await?;
+        let item = Item::create_with_file_refs(
+            &self.inner.pool,
+            input,
+            Some(&refs),
+            created,
+            moderated_state,
+        )
+        .await?;
 
         self.write_alias(&item, true).await;
 
@@ -895,6 +945,96 @@ impl ItemService {
         self.audit("create", item.id, Some(user), Self::audit_details(&item))
             .await;
         Ok(item)
+    }
+
+    /// Whether items of `item_type` are moderated: its `moderation` setting
+    /// ([`moderation::is_moderated`]). Asked on the write path and by the
+    /// forms, never on a read; a type that cannot be read is not moderated.
+    pub async fn is_moderated(&self, item_type: &str) -> bool {
+        match crate::models::ItemType::find_by_type(&self.inner.pool, item_type).await {
+            Ok(Some(row)) => moderation::is_moderated(&row.settings),
+            Ok(None) => false,
+            Err(e) => {
+                warn!(error = %e, item_type, "reading whether the type is moderated failed");
+                false
+            }
+        }
+    }
+
+    /// The moderation state of `item`: the state of its latest revision
+    /// (`latest`, which may be ahead of the current one), read from its
+    /// status when the revision has none.
+    pub fn moderation_state_of(item: &Item, latest: Option<&ItemRevision>) -> &'static str {
+        match latest {
+            Some(r) if Some(r.id) != item.current_revision_id => {
+                moderation::state_of(r.moderation_state.as_deref(), r.status)
+            }
+            Some(r) => moderation::state_of(r.moderation_state.as_deref(), item.status),
+            None => moderation::state_of(None, item.status),
+        }
+    }
+
+    /// The item's moderation state and the item as an editor works on it: the
+    /// title and fields of a draft ahead of the published revision, over the
+    /// item row. `None` for an item whose type is not moderated. One query
+    /// more than a load, on the edit form only.
+    pub async fn load_for_moderation(&self, item: &Item) -> Result<Option<(&'static str, Item)>> {
+        if !self.is_moderated(&item.item_type).await {
+            return Ok(None);
+        }
+        let latest = Item::latest_revision(&self.inner.pool, item.id).await?;
+        let state = Self::moderation_state_of(item, latest.as_ref());
+        let mut working = item.clone();
+        if let Some(latest) = latest.filter(|r| Some(r.id) != item.current_revision_id) {
+            working.title = latest.title;
+            working.fields = latest.fields;
+        }
+        Ok(Some((state, working)))
+    }
+
+    /// The latest revision of `item` when it is a draft ahead of the published
+    /// one, for a user who may view the item and holds edit access, `view
+    /// latest version` or `view revisions`. `Ok(None)` when there is no such
+    /// revision or the user may not read it.
+    pub async fn latest_version(
+        &self,
+        item: &Item,
+        user: &UserContext,
+    ) -> Result<Option<ItemRevision>> {
+        if !self.check_access(item, "view", user).await? {
+            return Ok(None);
+        }
+        if !(user.can(moderation::VIEW_LATEST_VERSION)
+            || self.may_read_revisions(item, user).await?)
+        {
+            return Ok(None);
+        }
+        Ok(Item::latest_revision(&self.inner.pool, item.id)
+            .await?
+            .filter(|r| Some(r.id) != item.current_revision_id))
+    }
+
+    /// Decide a moderation transition: `to` must be a state, and the user
+    /// must hold the transition from `from` to it.
+    fn gate_transition(
+        user: &UserContext,
+        from: &str,
+        to: &str,
+    ) -> Result<&'static str, WriteDenied> {
+        let Some(to) = moderation::state(to) else {
+            return Err(WriteDenied::Transition {
+                from: from.to_string(),
+                to: to.to_string(),
+            });
+        };
+        if moderation::may(from, to, user) {
+            Ok(to)
+        } else {
+            Err(WriteDenied::Transition {
+                from: from.to_string(),
+                to: to.to_string(),
+            })
+        }
     }
 
     /// A content type's promote and sticky defaults for a new item, from its
@@ -1398,7 +1538,28 @@ impl ItemService {
     pub async fn update(
         &self,
         id: Uuid,
+        input: UpdateItem,
+        user: &UserContext,
+    ) -> Result<Option<Item>> {
+        self.update_moderated(id, input, None, user).await
+    }
+
+    /// [`Self::update`], asking for a content moderation state.
+    ///
+    /// On a moderated type ([`moderation`]) the save is a transition from the
+    /// state of the item's latest revision to `moderation_state`; with `None`,
+    /// to the state a changed `status` implies, or else to the current state if
+    /// the user may stay there and the first state they may reach if not. The
+    /// state decides the published status. A Draft saved over a published item
+    /// is a forward revision: recorded, and the item row (what visitors see)
+    /// left as it is. Any other save starts from the latest revision, so a
+    /// transition that names no title or fields publishes or archives the
+    /// draft ahead of the published one, not the published one again.
+    pub async fn update_moderated(
+        &self,
+        id: Uuid,
         mut input: UpdateItem,
+        moderation_state: Option<&str>,
         user: &UserContext,
     ) -> Result<Option<Item>> {
         Self::refuse_if_too_deep()?;
@@ -1429,7 +1590,42 @@ impl ItemService {
         // Field-level and publish gates, after item-level access and before the
         // presave tap. A denied field the submission left out is copied back
         // here, so a partial `fields` object cannot erase it.
-        input.status = Self::gate_publish(user, input.status, Some(existing.status))?;
+        let mut moderated_state = None;
+        let mut forward = false;
+        if self.is_moderated(&existing.item_type).await {
+            let latest = Item::latest_revision(&self.inner.pool, id).await?;
+            let from = Self::moderation_state_of(&existing, latest.as_ref());
+            let requested = match (moderation_state, input.status) {
+                (Some(name), _) => Some(name),
+                (None, Some(status)) if status != existing.status => Some(if status == 1 {
+                    moderation::PUBLISHED
+                } else if from == moderation::PUBLISHED {
+                    moderation::ARCHIVED
+                } else {
+                    moderation::DRAFT
+                }),
+                (None, _) => moderation::default_target(from, user),
+            };
+            let to = Self::gate_transition(user, from, requested.unwrap_or(from))?;
+            // A save starts from the latest revision: a draft ahead of the
+            // published one is what the user is working on.
+            if let Some(latest) = latest
+                .as_ref()
+                .filter(|r| Some(r.id) != existing.current_revision_id)
+            {
+                input.title.get_or_insert_with(|| latest.title.clone());
+                input.fields.get_or_insert_with(|| latest.fields.clone());
+            }
+            forward = to == moderation::DRAFT && existing.is_published();
+            input.status = Some(if forward {
+                existing.status
+            } else {
+                moderation::status_of(to)
+            });
+            moderated_state = Some(to);
+        } else {
+            input.status = Self::gate_publish(user, input.status, Some(existing.status))?;
+        }
         Self::gate_promotion(
             user,
             input.promote,
@@ -1506,9 +1702,39 @@ impl ItemService {
             None => None,
         };
 
-        // Update the item
-        let item = Item::update_with_file_refs(&self.inner.pool, id, user.id, input, refs.as_ref())
+        // A draft over a published item: a revision, and nothing else. The
+        // item row, its alias, its file references and the search index keep
+        // the published revision; the taps that announce a change to the item
+        // do not fire, because visitors see none.
+        if forward {
+            let revision_id = Item::insert_forward_revision(
+                &self.inner.pool,
+                id,
+                user.id,
+                input.title.as_deref().unwrap_or(&existing.title),
+                input.fields.as_ref().unwrap_or(&existing.fields),
+                input.log.as_deref(),
+                moderation::DRAFT,
+            )
             .await?;
+            info!(item_id = %id, revision_id = %revision_id, "draft saved ahead of the published revision");
+            let mut details = Self::audit_details(&existing);
+            details["moderation_state"] = serde_json::Value::from(moderation::DRAFT);
+            details["revision_id"] = serde_json::Value::from(revision_id.to_string());
+            self.audit("update", id, Some(user), details).await;
+            return Ok(Some(existing));
+        }
+
+        // Update the item
+        let item = Item::update_with_file_refs(
+            &self.inner.pool,
+            id,
+            user.id,
+            input,
+            refs.as_ref(),
+            moderated_state,
+        )
+        .await?;
 
         if let Some(ref i) = item {
             self.write_alias(i, false).await;

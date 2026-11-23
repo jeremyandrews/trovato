@@ -157,6 +157,9 @@ pub struct ItemSubmission {
     /// The stage asked for, as sent: `_stage` on a form, `stage_id` in JSON.
     /// Read through `ItemSubmission::requested_stage`.
     pub stage: Option<String>,
+    /// The content moderation state asked for, on a moderated type:
+    /// `moderation_state` on a form and in JSON.
+    pub moderation_state: Option<String>,
 }
 
 impl ItemSubmission {
@@ -194,6 +197,7 @@ impl ItemSubmission {
                 .filter(|l| !l.is_empty()),
             url_alias: get("url_alias"),
             stage: get("_stage"),
+            moderation_state: get("moderation_state").filter(|s| !s.is_empty()),
             posted: Some(form),
         }
     }
@@ -214,6 +218,10 @@ impl ItemSubmission {
                 .map(String::from),
             stage: body
                 .get("stage_id")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            moderation_state: body
+                .get("moderation_state")
                 .and_then(|v| v.as_str())
                 .map(String::from),
             posted: None,
@@ -324,6 +332,7 @@ pub fn router() -> Router<AppState> {
         // Revision history
         .route("/item/{id}/revisions", get(list_revisions))
         .route("/item/{id}/revisions/compare", get(compare_revisions))
+        .route("/item/{id}/latest", get(latest_version))
         .route("/item/{id}/revisions/{rev_id}", get(preview_revision))
         .route("/item/{id}/revert/{rev_id}", post(revert_revision))
         .route(
@@ -1280,7 +1289,12 @@ async fn create_item(
 
     let item = state
         .items()
-        .create_authored(input, publishing.created, &user)
+        .create_moderated(
+            input,
+            publishing.created,
+            request.moderation_state.as_deref(),
+            &user,
+        )
         .await
         .map_err(|e| write_error(e, "create item"))?;
 
@@ -1598,7 +1612,11 @@ async fn update_item(
         return Err(refusal);
     }
 
-    match state.items().update(id, input, &user).await {
+    match state
+        .items()
+        .update_moderated(id, input, request.moderation_state.as_deref(), &user)
+        .await
+    {
         Ok(Some(item)) => {
             release_edit_lock(&state, &user, id).await;
             // An alias the form names replaces the one `update` derived from
@@ -1736,6 +1754,11 @@ fn revision_summary(
         "log": revision.log,
         "author": authors.get(&revision.author_id),
         "is_current": Some(revision.id) == current,
+        // The moderation state, on a revision of a moderated type.
+        "state": revision
+            .moderation_state
+            .as_deref()
+            .map(crate::content::moderation::label),
     })
 }
 
@@ -1841,6 +1864,97 @@ async fn preview_revision(
 
     super::helpers::render_admin_template(&state, &viewer, "admin/revision-preview.html", context)
         .await
+}
+
+/// The latest version of a moderated item: the draft ahead of its published
+/// revision, rendered as a past revision is.
+///
+/// `GET /item/{id}/latest`. A user who may view the item and holds edit
+/// access, `view revisions` or `view latest version` reads it; anyone else who
+/// may view the item is refused, and one who may not gets 404. With no draft
+/// ahead, the item itself is the latest version, and the page redirects there.
+async fn latest_version(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<Uuid>,
+) -> Result<Response, AppError> {
+    let viewer = get_user_context(&session, &state).await;
+    let items = state.items();
+    let item = items
+        .load(id)
+        .await
+        .map_err(|e| AppError::internal_ctx(e, "load item"))?
+        .ok_or_else(|| AppError::not_found("Item"))?;
+    if !items
+        .check_access(&item, "view", &viewer)
+        .await
+        .unwrap_or(false)
+    {
+        return Err(AppError::not_found("Item"));
+    }
+    let may_read = viewer.can(crate::content::moderation::VIEW_LATEST_VERSION)
+        || items
+            .may_read_revisions(&item, &viewer)
+            .await
+            .unwrap_or(false);
+    if !may_read {
+        return Err(super::helpers::refusal_for(
+            &viewer,
+            "You may not read the latest version of this item.",
+        ));
+    }
+    let Some(mut revision) = items
+        .latest_version(&item, &viewer)
+        .await
+        .map_err(|e| AppError::internal_ctx(e, "load the latest version"))?
+    else {
+        return Ok(Redirect::to(&format!("/item/{id}")).into_response());
+    };
+
+    let content_type_fields = state
+        .content_types()
+        .get(&item.item_type)
+        .map(|ct| ct.fields.clone())
+        .unwrap_or_default();
+    // The fields this viewer may see, as every revision page cuts them.
+    if let Some(fields) = revision.fields.as_object_mut() {
+        let names: Vec<String> = fields.keys().cloned().collect();
+        let visible: std::collections::HashSet<String> = items
+            .accessible_fields(&viewer, &item.item_type, &names, "view")
+            .await
+            .into_iter()
+            .collect();
+        fields.retain(|name, _| visible.contains(name));
+    }
+    let (fields_html, page_stylesheets) =
+        render_item_fields(&state, &viewer, &revision.fields, &content_type_fields).await;
+    let authors = revision_authors(&state, std::slice::from_ref(&revision)).await;
+    let latest_state = crate::content::moderation::label(crate::content::moderation::state_of(
+        revision.moderation_state.as_deref(),
+        revision.status,
+    ))
+    .to_lowercase();
+
+    let mut context = tera::Context::new();
+    context.insert("path", &format!("/item/{id}/latest"));
+    context.insert("item_id", &id);
+    context.insert("item_title", &item.title);
+    context.insert(
+        "revision",
+        &revision_summary(&revision, &authors, item.current_revision_id),
+    );
+    context.insert("current_revision_id", &item.current_revision_id);
+    context.insert("latest_state", &latest_state);
+    context.insert("fields_html", &fields_html);
+    context.insert("page_stylesheets", &page_stylesheets);
+
+    Ok(super::helpers::render_admin_template(
+        &state,
+        &viewer,
+        "admin/revision-preview.html",
+        context,
+    )
+    .await)
 }
 
 /// The two revisions a compare is asked for.
