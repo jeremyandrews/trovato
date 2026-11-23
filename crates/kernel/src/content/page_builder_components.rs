@@ -16,6 +16,14 @@
 //! Two declarations of one type name are refused when the registry is built,
 //! naming both sources: a plugin cannot silently replace a standard component
 //! or another plugin's.
+//!
+//! The registry also holds the page root fields: page level values (beyond
+//! the built in `title`) a plugin declares in `components/<name>.root.toml`,
+//! with the same field types, limits and checks as component fields. The
+//! editor builds its page settings form from them, a save is checked against
+//! them, and page, region and tile templates receive the validated values as
+//! `page_root` (see `page_builder::page_root_values`). Two plugins declaring
+//! one root field name are refused the same way as a duplicate component.
 
 pub mod schema;
 mod validate;
@@ -26,8 +34,8 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, bail};
 
 pub use schema::{
-    ComponentDefinition, ComponentSource, FieldDefinition, FieldKind, ReferenceTarget,
-    SelectOption, to_kebab_case,
+    ComponentDefinition, ComponentSource, FieldDefinition, FieldKind, RESERVED_ROOT_FIELD_NAMES,
+    ReferenceTarget, RootFieldDefinition, SelectOption, to_kebab_case,
 };
 pub use validate::{FieldError, is_gather_id, is_safe_url};
 
@@ -107,6 +115,15 @@ pub struct ComponentRegistry {
     components: Vec<ComponentDefinition>,
     /// Type name to (index, file it was read from).
     index: HashMap<String, (usize, String)>,
+    /// The declared page root fields, in load order: plugins by name, files
+    /// by name, fields in file order.
+    root_fields: Vec<RootFieldDefinition>,
+    /// The same fields without their source, for the shared field checks.
+    root_field_defs: Vec<FieldDefinition>,
+    /// Root field name to the file it was read from.
+    root_files: HashMap<String, String>,
+    /// Every class a root select option may add to `page_root.variant_classes`.
+    root_classes: Vec<String>,
 }
 
 impl ComponentRegistry {
@@ -127,6 +144,10 @@ impl ComponentRegistry {
         let mut registry = Self {
             components: Vec::new(),
             index: HashMap::new(),
+            root_fields: Vec::new(),
+            root_field_defs: Vec::new(),
+            root_files: HashMap::new(),
+            root_classes: Vec::new(),
         };
         for (file, text) in STANDARD {
             let def =
@@ -169,8 +190,89 @@ impl ComponentRegistry {
                 })?;
                 registry.insert(def, path.display().to_string())?;
             }
+            for path in plugin_files(&plugin.dir, ".root.toml")? {
+                let text = std::fs::read_to_string(&path)
+                    .with_context(|| format!("failed to read {}", path.display()))?;
+                let declaration =
+                    schema::parse_root(&text, ComponentSource::Plugin(plugin.name.clone()))
+                        .with_context(|| {
+                            format!(
+                                "plugin '{}': page root file {}",
+                                plugin.name,
+                                path.display()
+                            )
+                        })?;
+                registry.insert_root(declaration, path.display().to_string())?;
+            }
         }
         Ok(registry)
+    }
+
+    fn insert_root(&mut self, declaration: schema::RootDeclaration, file: String) -> Result<()> {
+        for root_field in declaration.fields {
+            let name = root_field.field.name.clone();
+            if let Some(existing_file) = self.root_files.get(&name) {
+                let existing = self
+                    .root_fields
+                    .iter()
+                    .find(|f| f.field.name == name)
+                    .map(|f| f.source.to_string())
+                    .unwrap_or_default();
+                bail!(
+                    "page root field '{name}' is declared twice: by {existing} ({existing_file}) \
+                     and by {} ({file}). Rename one of them, or disable one of the plugins.",
+                    root_field.source,
+                );
+            }
+            // A default the field's own rules refuse would be put in every
+            // page that leaves the field alone, so it is an error at load.
+            if let Some(default) = &root_field.field.default {
+                let mut errors = Vec::new();
+                let fields = std::slice::from_ref(&root_field.field);
+                validate::Checker {
+                    location: "root",
+                    component: "",
+                    errors: &mut errors,
+                }
+                .check_props(
+                    fields,
+                    &serde_json::json!({ name.clone(): default }),
+                    "",
+                );
+                if let Some(error) = errors.first() {
+                    bail!(
+                        "{} ({file}): page root field '{name}' has a default its own rules \
+                         refuse: {}",
+                        root_field.source,
+                        error.message
+                    );
+                }
+            }
+            self.root_files.insert(name, file.clone());
+            self.root_field_defs.push(root_field.field.clone());
+            self.root_fields.push(root_field);
+        }
+        for class in declaration.classes {
+            if !self.root_classes.contains(&class) {
+                self.root_classes.push(class);
+            }
+        }
+        Ok(())
+    }
+
+    /// The declared page root fields, in load order, each with its source.
+    pub fn root_fields(&self) -> &[RootFieldDefinition] {
+        &self.root_fields
+    }
+
+    /// The declared page root fields' definitions, in load order.
+    pub fn root_field_definitions(&self) -> &[FieldDefinition] {
+        &self.root_field_defs
+    }
+
+    /// Every class a page root select option may add.
+    pub fn root_classes(&self) -> &[String] {
+        &self.root_classes
     }
 
     fn insert(&mut self, def: ComponentDefinition, file: String) -> Result<()> {
@@ -234,9 +336,14 @@ impl ComponentRegistry {
     ///
     /// Returns every error (empty = valid): unknown component types, values
     /// outside their field's type or limits, an image without alt text, a
-    /// heading level of 1, zones nested deeper than [`MAX_ZONE_DEPTH`].
+    /// heading level of 1, zones nested deeper than [`MAX_ZONE_DEPTH`], and
+    /// in the page root ([`Self::validate_root`]) a value outside its root
+    /// field's rules or a key no enabled plugin declares.
     pub fn validate_page(&self, page: &serde_json::Value) -> Vec<FieldError> {
         let mut errors = Vec::new();
+        if let Some(root) = page.get("root") {
+            self.validate_root(root, &mut errors);
+        }
         let Some(content) = page.get("content") else {
             errors.push(page_error("page data needs a content list"));
             return errors;
@@ -249,6 +356,67 @@ impl ComponentRegistry {
             self.validate_component(&format!("content[{i}]"), component, 0, &mut errors);
         }
         errors
+    }
+
+    /// Check a page's `root` against the declared root fields.
+    ///
+    /// Both shapes the editor's Puck may write are read: values directly
+    /// under `root`, as the stored pages have them, and under `root.props`,
+    /// as current Puck versions keep them ([`root_values`]). `title` is the
+    /// built in root field and must be text. Any other key no enabled plugin
+    /// declares is refused, so a misspelt name or a value meant for a disabled
+    /// plugin is not saved silently. Only a write checks this: a stored page
+    /// is never validated to render, and an unknown key is simply not handed
+    /// to templates.
+    pub fn validate_root(&self, root: &serde_json::Value, errors: &mut Vec<FieldError>) {
+        let push = |field: &str, message: String, errors: &mut Vec<FieldError>| {
+            errors.push(FieldError {
+                location: "root".to_string(),
+                component: String::new(),
+                field: field.to_string(),
+                message,
+            });
+        };
+        if root.is_null() {
+            return;
+        }
+        if !root.is_object() {
+            push("", "the page root must be an object".to_string(), errors);
+            return;
+        }
+        if let Some(props) = root.get("props")
+            && !props.is_object()
+            && !props.is_null()
+        {
+            push("props", "must be an object".to_string(), errors);
+            return;
+        }
+        let values = root_values(root);
+        if let Some(title) = values.get("title")
+            && !title.is_string()
+            && !title.is_null()
+        {
+            push("title", "must be text".to_string(), errors);
+        }
+        for key in values.keys() {
+            if key != "title" && !self.root_files.contains_key(key) {
+                push(
+                    key,
+                    format!("'{key}' is not a page root field any enabled plugin declares"),
+                    errors,
+                );
+            }
+        }
+        validate::Checker {
+            location: "root",
+            component: "",
+            errors,
+        }
+        .check_props(
+            &self.root_field_defs,
+            &serde_json::Value::Object(values),
+            "",
+        );
     }
 
     fn validate_component(
@@ -360,9 +528,37 @@ fn page_error(message: &str) -> FieldError {
     }
 }
 
+/// A page root's values, from either shape Puck writes: directly under
+/// `root` (the stored shape, and older Puck versions'), and under
+/// `root.props` (current Puck versions'). A key in both takes the value
+/// under `props`. Anything that is not an object holds no values.
+pub fn root_values(root: &serde_json::Value) -> serde_json::Map<String, serde_json::Value> {
+    let mut values = serde_json::Map::new();
+    let Some(obj) = root.as_object() else {
+        return values;
+    };
+    for (key, value) in obj {
+        if key != "props" {
+            values.insert(key.clone(), value.clone());
+        }
+    }
+    if let Some(props) = obj.get("props").and_then(|p| p.as_object()) {
+        for (key, value) in props {
+            values.insert(key.clone(), value.clone());
+        }
+    }
+    values
+}
+
 /// The `*.component.toml` files under `dir/components`, sorted by name. A
 /// plugin without the directory has none.
 fn component_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    plugin_files(dir, ".component.toml")
+}
+
+/// The files under `dir/components` whose names end in `suffix`, sorted by
+/// name.
+fn plugin_files(dir: &Path, suffix: &str) -> Result<Vec<PathBuf>> {
     let components = dir.join("components");
     if !components.is_dir() {
         return Ok(Vec::new());
@@ -374,7 +570,7 @@ fn component_files(dir: &Path) -> Result<Vec<PathBuf>> {
             p.is_file()
                 && p.file_name()
                     .and_then(|n| n.to_str())
-                    .is_some_and(|n| n.ends_with(".component.toml"))
+                    .is_some_and(|n| n.ends_with(suffix))
         })
         .collect();
     files.sort();
@@ -628,6 +824,182 @@ required = true
         std::fs::remove_dir_all(dir).ok();
     }
 
+    const FOOTER_ROOT: &str = r#"
+classes = ["page--no-footer-cta"]
+[[fields]]
+name = "footer_mode"
+type = "select"
+default = "default"
+options = [
+  { value = "default" },
+  { value = "hide", class = "page--no-footer-cta" },
+  { value = "custom" },
+]
+[[fields]]
+name = "footer_text"
+type = "rich_text"
+max_length = 20
+"#;
+
+    fn root_registry(tag: &str) -> (ComponentRegistry, PathBuf) {
+        let dir = plugin_dir(tag, &[("components/page.root.toml", FOOTER_ROOT)]);
+        let registry = ComponentRegistry::load(&[PluginComponentSource {
+            name: "site".into(),
+            dir: dir.clone(),
+        }])
+        .unwrap();
+        (registry, dir)
+    }
+
+    #[test]
+    fn a_plugin_declares_page_root_fields() {
+        let (registry, dir) = root_registry("root-ok");
+        let names: Vec<&str> = registry
+            .root_fields()
+            .iter()
+            .map(|f| f.field.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["footer_mode", "footer_text"]);
+        assert_eq!(
+            registry.root_fields()[0].source,
+            ComponentSource::Plugin("site".into())
+        );
+        assert_eq!(registry.root_classes(), ["page--no-footer-cta"]);
+        // The standard registry declares none.
+        assert!(ComponentRegistry::new().root_fields().is_empty());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn root_values_are_validated_in_either_shape() {
+        let (registry, dir) = root_registry("root-validate");
+        let valid = [
+            json!({ "content": [], "root": { "title": "T", "footer_mode": "hide" } }),
+            json!({ "content": [], "root": { "props": { "title": "T", "footer_mode": "custom", "footer_text": "Hi" } } }),
+            json!({ "content": [], "root": {} }),
+            json!({ "content": [] }),
+        ];
+        for page in &valid {
+            assert!(registry.validate_page(page).is_empty(), "{page}");
+        }
+
+        for (page, field, needle) in [
+            (
+                json!({ "content": [], "root": { "footer_mode": "blink" } }),
+                "footer_mode",
+                "'blink' is not one of: default, hide, custom",
+            ),
+            (
+                json!({ "content": [], "root": { "props": { "footer_text": "x".repeat(21) } } }),
+                "footer_text",
+                "at most 20 characters",
+            ),
+            (
+                json!({ "content": [], "root": { "title": "T", "colour": "red" } }),
+                "colour",
+                "not a page root field",
+            ),
+            (
+                json!({ "content": [], "root": { "title": 3 } }),
+                "title",
+                "must be text",
+            ),
+        ] {
+            let errors = registry.validate_page(&page);
+            assert_eq!(errors.len(), 1, "{page}: {errors:?}");
+            assert_eq!(errors[0].location, "root");
+            assert_eq!(errors[0].component, "");
+            assert_eq!(errors[0].field, field);
+            assert!(errors[0].message.contains(needle), "{errors:?}");
+            assert!(errors[0].to_string().starts_with(&format!("root: {field}: ")));
+        }
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_root_key_without_a_declaring_plugin_is_refused_on_save() {
+        // The plugin that declared it is disabled: the standard registry.
+        let registry = ComponentRegistry::new();
+        let errors = registry.validate_page(&json!({
+            "content": [], "root": { "title": "T", "footer_mode": "hide" }
+        }));
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].field, "footer_mode");
+    }
+
+    #[test]
+    fn two_plugins_declaring_one_root_field_are_refused_naming_both() {
+        let a = plugin_dir("root-dup-a", &[("components/page.root.toml", FOOTER_ROOT)]);
+        let b = plugin_dir(
+            "root-dup-b",
+            &[(
+                "components/other.root.toml",
+                "[[fields]]\nname = \"footer_text\"\ntype = \"text\"\n",
+            )],
+        );
+        let err = ComponentRegistry::load(&[
+            PluginComponentSource {
+                name: "beta".into(),
+                dir: b.clone(),
+            },
+            PluginComponentSource {
+                name: "alpha".into(),
+                dir: a.clone(),
+            },
+        ])
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("page root field 'footer_text'"), "{msg}");
+        assert!(msg.contains("plugin 'alpha'"), "{msg}");
+        assert!(msg.contains("plugin 'beta'"), "{msg}");
+        std::fs::remove_dir_all(a).ok();
+        std::fs::remove_dir_all(b).ok();
+    }
+
+    #[test]
+    fn a_root_field_cannot_redeclare_title_or_default_outside_its_rules() {
+        let dir = plugin_dir(
+            "root-title",
+            &[(
+                "components/page.root.toml",
+                "[[fields]]\nname = \"title\"\ntype = \"text\"\n",
+            )],
+        );
+        let err = ComponentRegistry::load(&[PluginComponentSource {
+            name: "site".into(),
+            dir: dir.clone(),
+        }])
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("reserved") && msg.contains("plugin 'site'"), "{msg}");
+        std::fs::remove_dir_all(dir).ok();
+
+        let dir = plugin_dir(
+            "root-default",
+            &[(
+                "components/page.root.toml",
+                "[[fields]]\nname = \"mode\"\ntype = \"select\"\ndefault = \"z\"\noptions = [{ value = \"a\" }]\n",
+            )],
+        );
+        let err = ComponentRegistry::load(&[PluginComponentSource {
+            name: "site".into(),
+            dir: dir.clone(),
+        }])
+        .unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("default its own rules refuse"), "{msg}");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn root_values_read_both_shapes_props_first() {
+        let values = root_values(&json!({ "title": "flat", "a": 1, "props": { "title": "nested" } }));
+        assert_eq!(values["title"], "nested");
+        assert_eq!(values["a"], 1);
+        assert!(!values.contains_key("props"));
+        assert!(root_values(&json!("x")).is_empty());
+    }
+
     #[test]
     fn a_missing_template_is_named() {
         let registry = ComponentRegistry::new();
@@ -648,7 +1020,10 @@ required = true
             "../../plugins/trovato_page_builder/editor/src/__fixtures__/standard-registry.json",
         );
         let registry = ComponentRegistry::new();
-        let mut current = serde_json::to_string_pretty(&json!({ "data": registry.all() })).unwrap();
+        let mut current = serde_json::to_string_pretty(
+            &json!({ "data": registry.all(), "root_fields": registry.root_fields() }),
+        )
+        .unwrap();
         current.push('\n');
         if std::env::var_os("TROVATO_UPDATE_FIXTURES").is_some() {
             std::fs::write(&path, &current).unwrap();

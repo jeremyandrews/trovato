@@ -70,7 +70,7 @@ pub fn kernel_api() -> ApiRoutes {
         .get(
             "/page-builder/components",
             list_page_builder_components,
-            doc("The page builder component registry"),
+            doc("The page builder component registry and page root fields"),
         )
         .post(
             "/page-builder/preview",
@@ -485,9 +485,16 @@ async fn browse_media(
 /// standard components and those of the plugins enabled at startup, in the
 /// editor's order, each with its fields (type, label, limits, options,
 /// defaults), zones, variant classes and stylesheets.
+///
+/// Beside `data`, `root_fields` lists the page root fields the enabled
+/// plugins declare (`components/<name>.root.toml`), in the same field format
+/// plus each one's `source`: the editor's page settings form, after the
+/// built in title.
 async fn list_page_builder_components(State(state): State<AppState>) -> impl IntoResponse {
+    let registry = state.page_builder_components();
     Json(serde_json::json!({
-        "data": state.page_builder_components().all(),
+        "data": registry.all(),
+        "root_fields": registry.root_fields(),
     }))
 }
 

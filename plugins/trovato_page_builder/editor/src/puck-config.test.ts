@@ -182,3 +182,55 @@ describe("a plugin component, built from its registry entry", () => {
     expect(config.components.PromoCards.defaultProps).toEqual({ level: 2, tone: "light" });
   });
 });
+
+describe("the page settings form, built from the declared root fields", () => {
+  const rootFields = [
+    {
+      name: "footer_cta_mode",
+      type: "select",
+      label: "Footer call to action",
+      required: false,
+      hidden: false,
+      default: "default",
+      options: [
+        { value: "default", label: "Site default" },
+        { value: "hide", label: "Hide" },
+        { value: "custom", label: "Custom" },
+      ],
+      source: { kind: "plugin", name: "site" },
+    },
+    {
+      name: "footer_cta_content",
+      type: "rich_text",
+      label: "Custom call to action",
+      required: false,
+      hidden: false,
+      min_heading: 2,
+      max_length: 280,
+      source: { kind: "plugin", name: "site" },
+    },
+  ] as any[];
+
+  it("is the title alone when no plugin declares root fields", () => {
+    const config = buildConfig(standard, ctx);
+    expect(Object.keys(config.root?.fields ?? {})).toEqual(["title"]);
+    expect(config.root?.defaultProps).toEqual({ title: "" });
+  });
+
+  it("adds each declared field after the title, mapped as a component field is", () => {
+    const config = buildConfig(standard, ctx, rootFields);
+    const fields = config.root?.fields as Record<string, any>;
+    expect(Object.keys(fields)).toEqual(["title", "footer_cta_mode", "footer_cta_content"]);
+    expect(fields.footer_cta_mode).toEqual({
+      type: "select",
+      label: "Footer call to action",
+      options: [
+        { label: "Site default", value: "default" },
+        { label: "Hide", value: "hide" },
+        { label: "Custom", value: "custom" },
+      ],
+    });
+    expect(fields.footer_cta_content.type).toBe("custom");
+    expect(config.root?.defaultProps).toEqual({ title: "", footer_cta_mode: "default" });
+  });
+});

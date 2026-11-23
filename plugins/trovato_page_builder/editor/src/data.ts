@@ -24,7 +24,7 @@ export type StoredPage = {
 export type PuckComponentData = { type: string; props: Record<string, unknown> & { id: string } };
 
 export type PuckData = {
-  root: { props?: Record<string, unknown> };
+  root: { props?: Record<string, unknown> } & Record<string, unknown>;
   content: PuckComponentData[];
   zones?: Record<string, PuckComponentData[]>;
 };
@@ -65,7 +65,13 @@ export function storedToPuck(page: StoredPage): PuckData {
     return { type: component.type, props: props as PuckComponentData["props"] };
   };
   const content = (page.content ?? []).map(convert);
-  const { title, ...rest } = (page.root ?? {}) as Record<string, unknown>;
+  // Either stored shape: flat, or nested under `props` as current Puck writes.
+  const storedRoot = (page.root ?? {}) as Record<string, unknown>;
+  const { props: nestedRoot, ...flatRoot } = storedRoot;
+  const { title, ...rest } = {
+    ...flatRoot,
+    ...(nestedRoot && typeof nestedRoot === "object" ? (nestedRoot as Record<string, unknown>) : {}),
+  } as Record<string, unknown>;
   return {
     root: { props: { title: typeof title === "string" ? title : "", ...rest } },
     content,
@@ -73,8 +79,17 @@ export function storedToPuck(page: StoredPage): PuckData {
   };
 }
 
-/** Puck data → the page JSON the kernel stores. */
-export function puckToStored(data: PuckData): StoredPage {
+/**
+ * Puck data → the page JSON the kernel stores.
+ *
+ * The root is stored flat, `{ title, ...root fields }`, whichever shape Puck
+ * kept it in. Given `rootFields` (the page root field names the enabled
+ * plugins declare), any other root key is left out: the kernel refuses a
+ * root key no enabled plugin declares, and the editor has no form in which
+ * one could be removed, so a value for a disabled plugin is dropped here
+ * rather than making the page unsaveable.
+ */
+export function puckToStored(data: PuckData, rootFields?: string[]): StoredPage {
   const zones = data.zones ?? {};
   const convert = (component: PuckComponentData): StoredComponent => {
     const prefix = `${component.props.id}:`;
@@ -88,8 +103,19 @@ export function puckToStored(data: PuckData): StoredPage {
     if (Object.keys(own).length > 0) stored.zones = own;
     return stored;
   };
+  // Puck 0.20 keeps the root's values under `root.props`; older versions
+  // kept them directly under `root`, beside nothing else.
+  const rootData = (data.root ?? {}) as Record<string, unknown>;
+  const { props: nested, ...flat } = rootData;
+  const merged: Record<string, unknown> =
+    nested && typeof nested === "object" ? { ...(nested as Record<string, unknown>) } : flat;
+  const root = rootFields
+    ? Object.fromEntries(
+        Object.entries(merged).filter(([key]) => key === "title" || rootFields.includes(key)),
+      )
+    : merged;
   return {
-    root: { ...(data.root?.props ?? {}) },
+    root,
     content: (data.content ?? []).map(convert),
   };
 }
