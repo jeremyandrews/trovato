@@ -812,6 +812,18 @@ jobs:
             exit 1
           }
 
+  # The kernel's own browser scripts under static/js: their tests run on
+  # Node's built-in runner, with no packages to install.
+  static-js:
+    name: Static JavaScript
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - run: node --test static/js/test/*.test.js
+
   terminology:
     name: Terminology Check
     runs-on: ubuntu-latest

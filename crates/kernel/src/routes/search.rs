@@ -48,6 +48,10 @@ pub fn api() -> super::api::ApiRoutes {
         )
 }
 
+/// The permission both search routes ask for (B160). Drupal's name for it, so
+/// a migrated role keeps or lacks it as it did.
+pub const SEARCH_PERMISSION: &str = "search content";
+
 /// Default page size of the JSON search.
 const SEARCH_PER_PAGE: i64 = 10;
 
@@ -142,6 +146,9 @@ async fn search_html(
     // Live, or the session's stage with Live beneath it for a holder of
     // `use stages`: the one resolver every read path uses.
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
+    if !viewer.can(SEARCH_PERMISSION) {
+        return super::helpers::render_forbidden("You are not allowed to search this site.");
+    }
     // The signed-in user's id, from the viewer the guards loaded: a deleted
     // or blocked account is nobody here too.
     let user_id = viewer.authenticated.then_some(viewer.id);
@@ -182,6 +189,9 @@ async fn search_html(
     context.insert("results", &results.results);
     let total = results.total;
     context.insert("total", &total);
+    // A query with no word left to search for (`a`, `it's`, `&`): the page
+    // says so instead of only "no results".
+    context.insert("no_terms", &(results.no_terms && !query.trim().is_empty()));
     context.insert("page", &page);
     context.insert("limit", &limit);
     context.insert("total_pages", &total_pages);
@@ -240,6 +250,13 @@ async fn search_json(
     // Live, or the session's stage with Live beneath it for a holder of
     // `use stages`: the one resolver every read path uses.
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
+    if !viewer.can(SEARCH_PERMISSION) {
+        return super::helpers::refusal_for(
+            &viewer,
+            format!("Permission required: {SEARCH_PERMISSION}"),
+        )
+        .into_response();
+    }
     // The signed-in user's id, from the viewer the guards loaded: a deleted
     // or blocked account is nobody here too.
     let user_id = viewer.authenticated.then_some(viewer.id);

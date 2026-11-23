@@ -50,6 +50,11 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     // permission.
     "access administration pages",
     "access content",
+    // `/search` and the JSON search (B160). Drupal's permission of the same
+    // name, so a migrated site can withhold search from a role. A migration
+    // grants it to every role that held `access content`, so an existing site
+    // searches as before.
+    "search content",
     "create content",
     "edit own content",
     "edit any content",
