@@ -621,6 +621,7 @@ fn a_gather_filters_on_promote_and_sorts_sticky_first() {
                 enabled: true,
                 style: PagerStyle::Full,
                 show_count: true,
+                zero_based: false,
             },
             empty_text: None,
             header: None,

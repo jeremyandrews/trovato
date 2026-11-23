@@ -54,7 +54,7 @@
     var display = {
         format: 'table',
         items_per_page: 10,
-        pager: { enabled: true, show_count: false, style: 'full' },
+        pager: { enabled: true, show_count: false, style: 'full', zero_based: false },
         empty_text: '',
         canonical_url: ''
     };
@@ -79,6 +79,7 @@
     var canonicalUrlInput;
     var pagerEnabledCheckbox;
     var pagerShowCountCheckbox;
+    var pagerZeroBasedCheckbox;
 
     // Preview debounce timer
     var previewTimer = null;
@@ -108,6 +109,7 @@
         canonicalUrlInput      = document.getElementById('canonical_url');
         pagerEnabledCheckbox   = document.getElementById('pager_enabled');
         pagerShowCountCheckbox = document.getElementById('pager_show_count');
+        pagerZeroBasedCheckbox = document.getElementById('pager_zero_based');
 
         // Bail if the form is not present on this page
         if (!definitionInput || !displayInput) return;
@@ -167,6 +169,7 @@
                     display.pager.enabled    = parsed.pager.enabled !== undefined ? parsed.pager.enabled : display.pager.enabled;
                     display.pager.show_count = parsed.pager.show_count !== undefined ? parsed.pager.show_count : display.pager.show_count;
                     display.pager.style      = parsed.pager.style || display.pager.style;
+                    display.pager.zero_based = parsed.pager.zero_based === true;
                 }
             }
         } catch (e) {
@@ -185,6 +188,7 @@
         if (canonicalUrlInput)      canonicalUrlInput.value      = display.canonical_url;
         if (pagerEnabledCheckbox)   pagerEnabledCheckbox.checked = display.pager.enabled;
         if (pagerShowCountCheckbox) pagerShowCountCheckbox.checked = display.pager.show_count;
+        if (pagerZeroBasedCheckbox) pagerZeroBasedCheckbox.checked = display.pager.zero_based;
         if (baseTableSelect)        baseTableSelect.value        = definition.base_table;
     }
 
@@ -751,6 +755,13 @@
         if (pagerShowCountCheckbox) {
             pagerShowCountCheckbox.addEventListener('change', function () {
                 display.pager.show_count = pagerShowCountCheckbox.checked;
+                syncToHiddenInputs();
+            });
+        }
+
+        if (pagerZeroBasedCheckbox) {
+            pagerZeroBasedCheckbox.addEventListener('change', function () {
+                display.pager.zero_based = pagerZeroBasedCheckbox.checked;
                 syncToHiddenInputs();
             });
         }

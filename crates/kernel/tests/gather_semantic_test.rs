@@ -34,6 +34,7 @@ fn test_display() -> QueryDisplay {
             enabled: true,
             style: PagerStyle::Full,
             show_count: true,
+            zero_based: false,
         },
         empty_text: None,
         header: None,

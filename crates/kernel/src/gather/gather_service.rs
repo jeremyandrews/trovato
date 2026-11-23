@@ -2094,6 +2094,7 @@ impl GatherService {
                         enabled: true,
                         style: PagerStyle::Full,
                         show_count: true,
+                        zero_based: false,
                     },
                     empty_text: Some("No published content.".to_string()),
                     ..Default::default()
@@ -2139,6 +2140,7 @@ impl GatherService {
                         enabled: true,
                         style: PagerStyle::Full,
                         show_count: true,
+                        zero_based: false,
                     },
                     empty_text: Some("No items of this type.".to_string()),
                     ..Default::default()
@@ -2206,6 +2208,7 @@ impl GatherService {
                         enabled: true,
                         style: PagerStyle::Full,
                         show_count: true,
+                        zero_based: false,
                     },
                     empty_text: Some("No content items.".to_string()),
                     ..Default::default()
@@ -2974,6 +2977,7 @@ mod tests {
                     enabled: true,
                     style: PagerStyle::Full,
                     show_count: true,
+                    zero_based: false,
                 },
                 ..Default::default()
             },
