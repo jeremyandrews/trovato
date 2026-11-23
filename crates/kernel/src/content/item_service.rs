@@ -198,6 +198,8 @@ struct ItemServiceInner {
     /// What item writes are audited through. Set once by `AppState`; a
     /// service built without it records nothing.
     audit: std::sync::OnceLock<crate::services::audit::AuditTrail>,
+    /// The item view counter (B160), with its cached on/off setting.
+    view_counter: crate::content::view_counter::ViewCounter,
 }
 
 /// A translation record for an item in a specific language.
@@ -620,8 +622,23 @@ impl ItemService {
                 vector_store,
                 page_builder_components: std::sync::OnceLock::new(),
                 audit: std::sync::OnceLock::new(),
+                view_counter: crate::content::view_counter::ViewCounter::default(),
             }),
         }
+    }
+
+    /// The item view counter (B160).
+    pub fn view_counter(&self) -> &crate::content::view_counter::ViewCounter {
+        &self.inner.view_counter
+    }
+
+    /// Count one view of `item_id`, returning its total, or `None` when the
+    /// site does not count views (see [`crate::content::view_counter`]).
+    pub async fn record_view(&self, item_id: Uuid) -> anyhow::Result<Option<i64>> {
+        self.inner
+            .view_counter
+            .record(&self.inner.pool, item_id)
+            .await
     }
 
     /// Validate saved pages against `components` (the standard set plus the

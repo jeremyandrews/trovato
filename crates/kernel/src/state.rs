@@ -1404,7 +1404,11 @@ impl AppState {
                 }
             }
             CacheKind::Menus => crate::menu::clear_local_config_menus(),
-            CacheKind::SiteConfig => self.front_page().clear(),
+            CacheKind::SiteConfig => {
+                self.front_page().clear();
+                self.gather().clear_site_settings();
+                self.items().view_counter().clear();
+            }
             CacheKind::Themes => {
                 crate::theme::registry::load_active(self.db(), self.theme()).await;
             }

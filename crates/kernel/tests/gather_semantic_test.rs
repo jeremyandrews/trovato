@@ -29,7 +29,7 @@ use uuid::Uuid;
 fn test_display() -> QueryDisplay {
     QueryDisplay {
         format: DisplayFormat::Table,
-        items_per_page: 25,
+        items_per_page: Some(25),
         pager: PagerConfig {
             enabled: true,
             style: PagerStyle::Full,

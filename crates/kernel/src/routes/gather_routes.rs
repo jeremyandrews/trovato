@@ -143,7 +143,28 @@ pub(crate) async fn resolve_route_params(
     mappings: &[GatherRouteParam],
     segments: &HashMap<String, String>,
 ) -> Result<HashMap<String, String>, RouteParamError> {
+    resolve_route_args(state, mappings, segments)
+        .await
+        .map(|route| route.params)
+}
+
+/// What a route's path segments resolve to: the gather's URL arguments, and
+/// the term the first `tag_category` segment named, if any.
+pub(crate) struct ResolvedRoute {
+    pub params: HashMap<String, String>,
+    /// The tag a term page is about, as the lookup found it: the page is titled
+    /// by it (B160). No second query: it is the row the slug lookup returned.
+    pub term: Option<Tag>,
+}
+
+/// [`resolve_route_params`], keeping the tag a `tag_category` segment named.
+pub(crate) async fn resolve_route_args(
+    state: &AppState,
+    mappings: &[GatherRouteParam],
+    segments: &HashMap<String, String>,
+) -> Result<ResolvedRoute, RouteParamError> {
     let mut resolved = HashMap::new();
+    let mut term: Option<Tag> = None;
 
     for mapping in mappings {
         // Path segment not present — should not happen with correct route
@@ -160,6 +181,9 @@ pub(crate) async fn resolve_route_params(
             match Tag::find_by_slug(state.db(), category_id, raw_value).await {
                 Ok(Some(tag)) => {
                     resolved.insert(mapping.param.clone(), tag.id.to_string());
+                    if term.is_none() {
+                        term = Some(tag);
+                    }
                 }
                 Ok(None) => return Err(RouteParamError::NotFound),
                 Err(_) => return Err(RouteParamError::Failed),
@@ -187,7 +211,10 @@ pub(crate) async fn resolve_route_params(
         }
     }
 
-    Ok(resolved)
+    Ok(ResolvedRoute {
+        params: resolved,
+        term,
+    })
 }
 
 /// Handle a gather route alias request.
@@ -204,8 +231,9 @@ async fn handle_gather_route(
     Query(extra_params): Query<HashMap<String, String>>,
     config: &RouteConfig,
 ) -> Response {
-    let resolved_params = match resolve_route_params(&state, &config.params, &segments).await {
-        Ok(resolved) => resolved,
+    let (resolved_params, term) = match resolve_route_args(&state, &config.params, &segments).await
+    {
+        Ok(resolved) => (resolved.params, resolved.term),
         Err(RouteParamError::NotFound) => return render_not_found(),
         Err(RouteParamError::Failed) => {
             return render_server_error("Failed to resolve the address");
@@ -245,7 +273,9 @@ async fn handle_gather_route(
     let feeds = query
         .map(|query| crate::routes::feed::argument_feed_links(&query, &segments))
         .unwrap_or_default();
-    let params = ExecuteParams::new(page, stage, all_filters).with_feeds(feeds);
+    let params = ExecuteParams::new(page, stage, all_filters)
+        .with_feeds(feeds)
+        .with_term(term.as_ref());
 
     // Use the request path (without query string) as the base path so that
     // pager links and form actions stay on the pretty URL.

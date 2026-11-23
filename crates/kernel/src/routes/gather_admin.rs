@@ -201,8 +201,11 @@ async fn create_submit(
 
     // Cap items_per_page
     let mut display = display;
-    if display.items_per_page > MAX_ITEMS_PER_PAGE {
-        display.items_per_page = MAX_ITEMS_PER_PAGE;
+    if display
+        .items_per_page
+        .is_some_and(|n| n > MAX_ITEMS_PER_PAGE)
+    {
+        display.items_per_page = Some(MAX_ITEMS_PER_PAGE);
     }
 
     if !errors.is_empty() {
@@ -377,8 +380,11 @@ async fn save_submit(
 
     // Cap items_per_page
     let mut display = display;
-    if display.items_per_page > MAX_ITEMS_PER_PAGE {
-        display.items_per_page = MAX_ITEMS_PER_PAGE;
+    if display
+        .items_per_page
+        .is_some_and(|n| n > MAX_ITEMS_PER_PAGE)
+    {
+        display.items_per_page = Some(MAX_ITEMS_PER_PAGE);
     }
 
     if !errors.is_empty() {

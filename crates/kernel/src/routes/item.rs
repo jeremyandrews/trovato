@@ -648,6 +648,15 @@ async fn view_item(
     context.insert("reverse_references", &reverse_references);
     context.insert("safe_urls", &safe_urls);
     context.insert("active_language", &active_language);
+    // The view counter (B160): this view is counted when the site counts
+    // views, and the total shown to a role holding `view post access counter`.
+    match state.items().record_view(item.id).await {
+        Ok(Some(total)) if user.can(crate::content::view_counter::VIEW_COUNT_PERMISSION) => {
+            context.insert("view_count", &total);
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, item = %item.id, "failed to count an item view"),
+    }
     context.insert(
         "text_direction",
         crate::middleware::language::text_direction_for_language(&active_language),
