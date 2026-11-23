@@ -448,6 +448,10 @@ impl TestApp {
             // Middleware layers (must match main.rs ordering):
             // MockConnectInfo → resolve_client_ip → TraceLayer → session →
             // bearer_auth → api_token → negotiate_language → routes
+            // The audit actor, innermost as in `main.rs`.
+            .layer(axum::middleware::from_fn(
+                trovato_kernel::middleware::scope_audit_actor,
+            ))
             // FR-7b: maintain the per-user session index. Inside the session
             // layer so it can read the session the handler just wrote.
             .layer(axum::middleware::from_fn_with_state(

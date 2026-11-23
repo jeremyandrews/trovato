@@ -358,12 +358,37 @@ impl Default for PublishPhases<'_> {
 pub struct StageService {
     pool: PgPool,
     cache: CacheLayer,
+    audit: crate::services::audit::AuditTrail,
 }
 
 impl StageService {
     /// Create a new stage service.
     pub fn new(pool: PgPool, cache: CacheLayer) -> Self {
-        Self { pool, cache }
+        Self {
+            pool,
+            cache,
+            audit: crate::services::audit::AuditTrail::disabled(),
+        }
+    }
+
+    /// Record stage writes through `audit`.
+    #[must_use]
+    pub fn with_audit_trail(mut self, audit: crate::services::audit::AuditTrail) -> Self {
+        self.audit = audit;
+        self
+    }
+
+    /// Record one stage write in the audit log.
+    async fn audit_stage(&self, action: &str, stage: &Stage) {
+        self.audit
+            .record(
+                action,
+                "stage",
+                stage.id,
+                None,
+                serde_json::json!({ "machine_name": stage.machine_name, "label": stage.label }),
+            )
+            .await;
     }
 
     /// Publish a stage to live using default phases.
@@ -386,20 +411,32 @@ impl StageService {
     /// visibility change holds on the next request. The kernel defines no
     /// stage taps.
     pub async fn create_stage(&self, input: CreateStage) -> Result<Stage> {
-        Stage::create(&self.pool, input).await
+        let stage = Stage::create(&self.pool, input).await?;
+        self.audit_stage("create", &stage).await;
+        Ok(stage)
     }
 
     /// Update a stage. `None` when there is no such stage; the model's
     /// refusals (the live stage staying public, the last default staying set)
     /// are errors whose message is meant for the operator.
     pub async fn update_stage(&self, id: Uuid, input: UpdateStage) -> Result<Option<Stage>> {
-        Stage::update(&self.pool, id, input).await
+        let stage = Stage::update(&self.pool, id, input).await?;
+        if let Some(stage) = &stage {
+            self.audit_stage("update", stage).await;
+        }
+        Ok(stage)
     }
 
     /// Delete a stage. `false` when there is no such stage; a stage that may
     /// not go (live, the default, one with content) is an error naming why.
     pub async fn delete_stage(&self, id: Uuid) -> Result<bool> {
-        Stage::delete(&self.pool, id).await
+        let deleted = Stage::delete(&self.pool, id).await?;
+        if deleted {
+            self.audit
+                .record("delete", "stage", id, None, serde_json::json!({}))
+                .await;
+        }
+        Ok(deleted)
     }
 
     /// Get a stage by UUID.
@@ -631,6 +668,30 @@ impl StageService {
     /// If conflicts are detected and resolution is Cancel, the publish is aborted.
     /// Otherwise, entities are published according to the resolution strategy.
     pub async fn publish_with_resolution(
+        &self,
+        stage_id: Uuid,
+        resolution: ConflictResolution,
+    ) -> Result<PublishResult> {
+        let result = self.publish_resolved(stage_id, resolution).await?;
+        if result.success {
+            self.audit
+                .record(
+                    "publish",
+                    "stage",
+                    stage_id,
+                    None,
+                    serde_json::json!({
+                        "items_published": result.items_published,
+                        "items_deleted": result.items_deleted,
+                    }),
+                )
+                .await;
+        }
+        Ok(result)
+    }
+
+    /// [`Self::publish_with_resolution`] without the audit row.
+    async fn publish_resolved(
         &self,
         stage_id: Uuid,
         resolution: ConflictResolution,

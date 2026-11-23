@@ -80,7 +80,12 @@ struct AppStateInner {
     /// Uses `parking_lot::RwLock` rather than `std::sync::RwLock` because:
     /// - No poisoning: a panic in a writer won't permanently wedge every reader.
     /// - Shorter critical sections avoid blocking Tokio worker threads.
-    enabled_plugins: parking_lot::RwLock<std::collections::HashSet<String>>,
+    ///
+    /// Behind an `Arc` so the audit trail sees the same set.
+    enabled_plugins: Arc<parking_lot::RwLock<std::collections::HashSet<String>>>,
+
+    /// The one audit helper the write services record through.
+    audit_trail: services::audit::AuditTrail,
 
     /// Redis client for sessions and caching.
     redis: RedisClient,
@@ -470,6 +475,15 @@ impl AppState {
             .await
             .context("failed to get enabled plugins")?;
         let enabled_set: std::collections::HashSet<String> = enabled_names.into_iter().collect();
+        let enabled_plugins = Arc::new(parking_lot::RwLock::new(enabled_set.clone()));
+        // What every write service audits through: a content row when
+        // `trovato_audit_log` is enabled (read from the shared set at each
+        // write), a security event always.
+        let audit_trail = services::audit::AuditTrail::new(
+            db.clone(),
+            config.runtime.client_ip_storage,
+            enabled_plugins.clone(),
+        );
 
         // Create plugin runtime and load only enabled plugins. Resource bounds
         // (pool sizing + per-Store limiter + optional fuel, WASM-4) come from the
@@ -801,6 +815,7 @@ impl AppState {
         // Create category service
         let categories =
             CategoryService::new(db.clone(), cache_config.ttl_categories, metrics.clone());
+        categories.set_audit_trail(audit_trail.clone());
 
         // Build Gather extension registry from plugin tap_gather_extend declarations
         let gather_extensions = {
@@ -1013,6 +1028,7 @@ impl AppState {
             metrics.clone(),
         ));
         items.set_page_builder_components(page_builder_components.clone());
+        items.set_audit_trail(audit_trail.clone());
 
         // Late-bind the item-access seam into the tap services template, so
         // the `item-api` host functions can decide a request-scoped call as the
@@ -1050,7 +1066,9 @@ impl AppState {
         let batch = Arc::new(BatchService::new(redis.clone()));
 
         // Create stage service
-        let stage = Arc::new(StageService::new(db.clone(), cache.clone()));
+        let stage = Arc::new(
+            StageService::new(db.clone(), cache.clone()).with_audit_trail(audit_trail.clone()),
+        );
 
         // Create user service
         let users = Arc::new(services::user::UserService::new(
@@ -1059,18 +1077,29 @@ impl AppState {
             tap_services.clone(),
             cache_config.ttl_users,
             metrics.clone(),
+            audit_trail.clone(),
         ));
 
         // Create role service (depends on permission service for cache invalidation)
         let roles = Arc::new(services::role::RoleService::new(
             db.clone(),
             permissions.clone(),
+            audit_trail.clone(),
         ));
 
         // Create tile service
-        let tiles = Arc::new(services::tile::TileService::new(db.clone()));
-        let aliases = Arc::new(services::url_alias::UrlAliasService::new(db.clone()));
-        let menu_links = Arc::new(services::menu_link::MenuLinkService::new(db.clone()));
+        let tiles = Arc::new(services::tile::TileService::new(
+            db.clone(),
+            audit_trail.clone(),
+        ));
+        let aliases = Arc::new(services::url_alias::UrlAliasService::new(
+            db.clone(),
+            audit_trail.clone(),
+        ));
+        let menu_links = Arc::new(services::menu_link::MenuLinkService::new(
+            db.clone(),
+            audit_trail.clone(),
+        ));
 
         // Build language negotiator chain (languages were loaded earlier for locale)
         let mut language_negotiators: Vec<Arc<dyn LanguageNegotiator>> = vec![
@@ -1188,6 +1217,7 @@ impl AppState {
                 db.clone(),
                 tap_dispatcher.clone(),
                 tap_services.clone(),
+                audit_trail.clone(),
             )));
         }
 
@@ -1251,7 +1281,8 @@ impl AppState {
                 plugins_dirs: config.plugins_dirs.clone(),
                 page_builder_components,
                 plugin_static_dirs,
-                enabled_plugins: parking_lot::RwLock::new(enabled_set.clone()),
+                enabled_plugins,
+                audit_trail: audit_trail.clone(),
                 redis,
                 cache,
                 config_storage,
@@ -1706,6 +1737,11 @@ impl AppState {
         &self.inner.recovery_providers
     }
 
+    /// The audit helper every write service records through.
+    pub fn audit_trail(&self) -> &services::audit::AuditTrail {
+        &self.inner.audit_trail
+    }
+
     /// Get the audit service (if audit_log plugin is enabled).
     pub fn audit(&self) -> Option<&Arc<services::audit::AuditService>> {
         self.inner.audit.as_ref()
@@ -1783,6 +1819,7 @@ impl AppState {
                 self.inner.db.clone(),
                 self.inner.tap_dispatcher.clone(),
                 self.inner.tap_services.clone(),
+                self.inner.audit_trail.clone(),
             )));
     }
 

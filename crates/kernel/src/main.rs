@@ -416,6 +416,11 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
             state.clone(),
             crate::middleware::check_redirect,
         ))
+        // Who is acting and from where, for the audit rows the write services
+        // record. Inside the session and API token layers, which it reads.
+        .layer(axum::middleware::from_fn(
+            crate::middleware::scope_audit_actor,
+        ))
         // FR-7b: maintain the per-user session index. Inside the session layer
         // so it can read the session the handler just wrote (a login, or a
         // cycle_id), which is exactly what it needs to observe.
@@ -725,7 +730,7 @@ async fn run_user_command(action: UserAction) -> Result<()> {
                 .await?
                 .context(format!("User '{username}' not found."))?;
 
-            let updated = models::User::update_password(&pool, user.id, &password).await?;
+            let updated = services::user::reset_password_offline(&pool, user.id, &password).await?;
             if updated {
                 println!("Password updated for user '{username}'.");
             } else {
@@ -752,6 +757,8 @@ async fn run_user_command(action: UserAction) -> Result<()> {
             if already {
                 println!("User '{username}' already had role '{}'.", role.name);
             } else {
+                let audit = services::audit::AuditTrail::offline(pool.clone()).await;
+                services::role::audit_membership(&audit, &pool, user.id, role.id, "added").await?;
                 println!("User '{username}' now has role '{}'.", role.name);
                 println!(
                     "{}",
@@ -762,6 +769,8 @@ async fn run_user_command(action: UserAction) -> Result<()> {
         UserAction::RoleRemove { username, role } => {
             let (user, role) = find_user_and_role(&pool, &username, &role).await?;
             models::Role::remove_from_user(&pool, user.id, role.id).await?;
+            let audit = services::audit::AuditTrail::offline(pool.clone()).await;
+            services::role::audit_membership(&audit, &pool, user.id, role.id, "removed").await?;
             println!("User '{username}' no longer has role '{}'.", role.name);
             println!(
                 "{}",

@@ -8,6 +8,7 @@ pub mod admin_ai_chat;
 pub mod admin_ai_provider;
 pub mod admin_alias;
 pub mod admin_appearance;
+pub mod admin_audit;
 pub mod admin_config;
 pub mod admin_content;
 pub mod admin_content_type;
@@ -101,6 +102,7 @@ plugin_gate!(gate_content_translation, "trovato_content_translation");
 plugin_gate!(gate_image_styles, "trovato_image_styles");
 plugin_gate!(gate_oauth2, "trovato_oauth2");
 plugin_gate!(gate_block_editor, "trovato_block_editor");
+plugin_gate!(gate_audit_log, "trovato_audit_log");
 
 /// Plugin names that are runtime-gated in [`gated_plugin_routes`].
 ///
@@ -114,6 +116,7 @@ pub(crate) const RUNTIME_GATED_NAMES: &[&str] = &[
     "trovato_image_styles",
     "trovato_oauth2",
     "trovato_block_editor",
+    "trovato_audit_log",
 ];
 
 /// Build the router fragment for plugin-gated routes.
@@ -172,6 +175,12 @@ pub fn gated_plugin_routes(state: &AppState) -> Router<AppState> {
             file::block_editor_router().route_layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 gate_block_editor,
+            )),
+        )
+        .merge(
+            admin_audit::router().route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                gate_audit_log,
             )),
         )
 }

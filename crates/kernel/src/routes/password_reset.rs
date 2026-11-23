@@ -420,7 +420,7 @@ async fn reset_password(state: &AppState, token: &str, password: &str) -> Result
     let anon = UserContext::anonymous();
     state
         .users()
-        .update_password(user_id, password, &anon)
+        .update_password(user_id, password, &anon, "password_reset")
         .await
         .map_err(|e| AppError::internal_ctx(e, "update password"))?;
 

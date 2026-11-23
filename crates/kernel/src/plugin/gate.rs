@@ -56,6 +56,10 @@ pub const GATED_ROUTE_PLUGINS: &[GatedPlugin] = &[
         name: "trovato_block_editor",
         description: "Block editor upload and preview API routes",
     },
+    GatedPlugin {
+        name: "trovato_audit_log",
+        description: "Audit log report",
+    },
 ];
 
 /// A plugin whose kernel routes are runtime-gated.

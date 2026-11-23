@@ -68,6 +68,8 @@ use Gate::{Administrator, Permission};
 const COMMENTS: &str = "trovato_comments";
 /// The categories plugin, as [`COMMENTS`].
 const CATEGORIES: &str = "trovato_categories";
+/// The audit log plugin, as [`COMMENTS`].
+const AUDIT_LOG: &str = "trovato_audit_log";
 
 /// The sidebar, in display order.
 pub const LINKS: &[Link] = &[
@@ -218,6 +220,15 @@ pub const LINKS: &[Link] = &[
         "/admin/reports/log",
         Permission("administer site"),
     ),
+    Link {
+        plugin: Some(AUDIT_LOG),
+        ..link(
+            "System",
+            "Audit log",
+            "/admin/reports/audit",
+            Permission("view audit log"),
+        )
+    },
     link(
         "System",
         "Cron",
@@ -354,6 +365,7 @@ pub const CARDS: &[Card] = &[
         description: "What the site has been doing.",
         links: &[
             ("Site log", "/admin/reports/log"),
+            ("Audit log", "/admin/reports/audit"),
             ("Cron", "/admin/reports/cron"),
             ("Search report", "/admin/reports/search"),
             ("AI Budgets", "/admin/system/ai-budgets"),

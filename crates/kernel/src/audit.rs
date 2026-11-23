@@ -140,6 +140,23 @@ pub enum SecurityEventKind {
     /// A deletion was refused because it would have left the site with no active
     /// administrator.
     AccountDeletionBlocked,
+    /// An account's roles changed: a role assigned or removed, or the
+    /// administrator flag set or cleared. `details` names what changed.
+    UserRolesChanged,
+    /// An account was blocked or unblocked. `details.from` and `details.to`
+    /// are the status before and after (`0` blocked, `1` active).
+    UserStatusChanged,
+
+    // ── Roles and permissions ───────────────────────────────────────────────
+    /// A role was created.
+    RoleCreated,
+    /// A role was renamed.
+    RoleChanged,
+    /// A role was deleted (its assignments go with it).
+    RoleDeleted,
+    /// A role's permission grants changed. `details.granted` and
+    /// `details.revoked` list what changed.
+    RolePermissionsChanged,
 }
 
 impl SecurityEventKind {
@@ -170,6 +187,12 @@ impl SecurityEventKind {
             Self::RecoveryFoldWrongShape => "recovery.fold_wrong_shape",
             Self::AccountDeleted => "account.deleted",
             Self::AccountDeletionBlocked => "account.deletion_blocked",
+            Self::UserRolesChanged => "user.roles_changed",
+            Self::UserStatusChanged => "user.status_changed",
+            Self::RoleCreated => "role.created",
+            Self::RoleChanged => "role.changed",
+            Self::RoleDeleted => "role.deleted",
+            Self::RolePermissionsChanged => "role.permissions_changed",
         }
     }
 }
@@ -274,6 +297,13 @@ impl SecurityEvent {
         self
     }
 
+    /// The actor who caused the event, when it may be unknown.
+    #[must_use]
+    pub fn maybe_actor(mut self, actor_id: Option<Uuid>) -> Self {
+        self.actor_id = actor_id;
+        self
+    }
+
     /// The opaque identifier this event is about (session id, credential id,
     /// recovery flow nonce). **Hashed here**; the raw value is never stored.
     #[must_use]
@@ -311,6 +341,23 @@ impl SecurityEvent {
         let encoded = serde_json::to_value(value).unwrap_or(serde_json::Value::Null);
         if let Some(obj) = self.details.as_object_mut() {
             obj.insert(key.to_string(), encoded);
+        }
+        self
+    }
+
+    /// Fill in, from the request the event belongs to, the actor, address and
+    /// `User-Agent` the event does not already carry. The actor is set only
+    /// when it is someone other than the account the event is about.
+    #[must_use]
+    pub fn with_request_context(mut self, request: &crate::services::audit::AuditActor) -> Self {
+        if self.actor_id.is_none() {
+            self.actor_id = request.user_id.filter(|id| Some(*id) != self.user_id);
+        }
+        if self.ip_address.is_none() && !request.ip.is_empty() {
+            self = self.ip(request.ip.clone());
+        }
+        if self.user_agent.is_none() && !request.user_agent.is_empty() {
+            self = self.user_agent(request.user_agent.clone());
         }
         self
     }
@@ -400,8 +447,8 @@ impl SecurityAudit {
         sqlx::query(
             r#"
             INSERT INTO security_audit_log
-                (kind, user_id, actor_id, subject_hash, outcome, ip_address, user_agent, details)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                (kind, user_id, actor_id, subject_hash, outcome, ip_address, user_agent, details, id)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             "#,
         )
         .bind(event.kind.as_str())
@@ -412,6 +459,9 @@ impl SecurityAudit {
         .bind(&ip)
         .bind(&event.user_agent)
         .bind(&event.details)
+        // A v7 id, so events in the same second read back in the order they
+        // happened (`created` is whole seconds).
+        .bind(Uuid::now_v7())
         .execute(&self.pool)
         .await
         .context("failed to append security audit event")?;
@@ -566,6 +616,14 @@ mod tests {
             SecurityEventKind::RecoveryRateLimited,
             SecurityEventKind::RecoveryFoldEscalationAttempt,
             SecurityEventKind::RecoveryFoldWrongShape,
+            SecurityEventKind::AccountDeleted,
+            SecurityEventKind::AccountDeletionBlocked,
+            SecurityEventKind::UserRolesChanged,
+            SecurityEventKind::UserStatusChanged,
+            SecurityEventKind::RoleCreated,
+            SecurityEventKind::RoleChanged,
+            SecurityEventKind::RoleDeleted,
+            SecurityEventKind::RolePermissionsChanged,
         ];
         let mut seen = std::collections::HashSet::new();
         for k in kinds {

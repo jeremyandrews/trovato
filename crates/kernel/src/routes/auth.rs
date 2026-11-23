@@ -145,6 +145,7 @@ async fn login_form_submit(
     State(state): State<AppState>,
     session: Session,
     axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
+    headers: axum::http::HeaderMap,
     Form(form): Form<LoginFormRequest>,
 ) -> Response {
     // The `login` bucket is counted once, per client IP, by the rate-limit
@@ -166,7 +167,7 @@ async fn login_form_submit(
     };
 
     // Perform login
-    match do_login(&state, &session, &request, &client_id).await {
+    match do_login(&state, &session, &request, &client_id, user_agent(&headers)).await {
         Ok(_) => Redirect::to("/").into_response(),
         Err(e) => render_login_error(&state, &session, e.message()).await,
     }
@@ -258,14 +259,18 @@ pub(crate) async fn setup_session(
 
 /// Perform login and return typed error on failure, and record the attempt
 /// in the site log (`log_type = "user"`): the username and the outcome, never
-/// the password.
+/// the password. The attempt is also a security event, `auth.login_succeeded`
+/// or `auth.login_failed` with `details.method = "password"`, emitted the way
+/// a passkey login emits its own.
 async fn do_login(
     state: &AppState,
     session: &Session,
     request: &LoginRequest,
     client_ip: &str,
+    user_agent: &str,
 ) -> Result<(), LoginError> {
     let result = attempt_login(state, session, request, client_ip).await;
+    audit_password_login(state, session, request, client_ip, user_agent, &result).await;
     match &result {
         Ok(()) => info!(
             log_type = "user",
@@ -290,6 +295,63 @@ async fn do_login(
         Err(LoginError::Internal(_)) => {}
     }
     result
+}
+
+/// The request's `User-Agent`, or empty.
+fn user_agent(headers: &axum::http::HeaderMap) -> &str {
+    headers
+        .get(axum::http::header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+}
+
+/// The security event for one password login attempt.
+async fn audit_password_login(
+    state: &AppState,
+    session: &Session,
+    request: &LoginRequest,
+    client_ip: &str,
+    user_agent: &str,
+    result: &Result<(), LoginError>,
+) {
+    use crate::audit::{SecurityEvent, SecurityEventKind};
+
+    let event = match result {
+        Ok(()) => {
+            let user_id = session
+                .get::<uuid::Uuid>(SESSION_USER_ID)
+                .await
+                .ok()
+                .flatten();
+            SecurityEvent::new(SecurityEventKind::LoginSucceeded).maybe_user(user_id)
+        }
+        Err(e) => {
+            let reason = match e {
+                LoginError::InvalidCredentials => "invalid_credentials",
+                LoginError::Locked(_) => "locked",
+                LoginError::Blocked(_) => "access_rule",
+                LoginError::Internal(_) => "internal_error",
+            };
+            // The account the attempt named, when there is one. The username
+            // itself is not recorded: an unknown one is often a password typed
+            // into the wrong field.
+            let user_id = state
+                .users()
+                .find_by_name(&request.username)
+                .await
+                .ok()
+                .flatten()
+                .map(|u| u.id);
+            SecurityEvent::failure(SecurityEventKind::LoginFailed)
+                .maybe_user(user_id)
+                .detail("reason", reason)
+        }
+    };
+    let mut event = event.ip(client_ip).detail("method", "password");
+    if !user_agent.is_empty() {
+        event = event.user_agent(user_agent);
+    }
+    state.security_audit().emit(event).await;
 }
 
 /// [`do_login`] without the log entry.
@@ -431,6 +493,7 @@ async fn login(
     State(state): State<AppState>,
     session: Session,
     axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
+    headers: axum::http::HeaderMap,
     Json(request): Json<LoginRequest>,
 ) -> Result<Json<JsonSuccess>, AppError> {
     // The `login` bucket is counted once, per client IP, by the rate-limit
@@ -439,7 +502,7 @@ async fn login(
     // lockout's key.
     let client_id = client_ip.0;
 
-    match do_login(&state, &session, &request, &client_id).await {
+    match do_login(&state, &session, &request, &client_id, user_agent(&headers)).await {
         Ok(()) => Ok(Json(JsonSuccess {
             success: true,
             message: "Login successful".to_string(),
@@ -1776,7 +1839,7 @@ async fn password_change(
     let user_ctx = super::helpers::user_context_for(&state, &user).await;
     match state
         .users()
-        .update_password(user.id, &form.new_password, &user_ctx)
+        .update_password(user.id, &form.new_password, &user_ctx, "self_service")
         .await
     {
         Ok(true) => {
@@ -1805,24 +1868,9 @@ async fn password_change(
 
             info!(user_id = %user.id, "password changed via self-service");
 
-            // Password lifecycle emitter (Story 4.3). An account whose `pass`
-            // was empty is *setting* a password (it may have been passwordless,
-            // or come in via OAuth); one that had a hash is *changing* it. The
-            // distinction matters to an investigator: "set" on an account that
-            // had none is a change in the account's access posture.
-            let kind = if user.pass.is_empty() {
-                crate::audit::SecurityEventKind::PasswordSet
-            } else {
-                crate::audit::SecurityEventKind::PasswordChanged
-            };
-            state
-                .security_audit()
-                .emit(
-                    crate::audit::SecurityEvent::new(kind)
-                        .user(user.id)
-                        .detail("via", "self_service"),
-                )
-                .await;
+            // The `password.set` / `password.changed` security event is
+            // `UserService::update_password`'s, as it is for every other path
+            // that sets a password.
 
             let pwc = generate_csrf_token(&session).await;
             render_profile(

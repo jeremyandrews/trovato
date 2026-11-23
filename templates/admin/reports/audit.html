@@ -1,0 +1,44 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+{% import "macros/pager.html" as pager %}
+
+{% block content %}
+{{ list::header(title="Audit log") }}
+
+<div class="admin-card">
+    {% if entries %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Time (UTC)</th>
+                <th>User</th>
+                <th>Action</th>
+                <th>Type</th>
+                <th>ID</th>
+                <th>Address</th>
+                <th>Details</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for entry in entries %}
+            <tr>
+                <td class="log-time">{{ entry.created | format_date(format="%Y-%m-%d %H:%M:%S") }}</td>
+                <td>{% if entry.user_name %}{{ entry.user_name }}{% elif entry.user_id %}{{ entry.user_id }}{% else %}-{% endif %}</td>
+                <td>{{ entry.action }}</td>
+                <td>{{ entry.entity_type }}</td>
+                <td>{% if entry.entity_type == "item" %}<a href="/item/{{ entry.entity_id }}">{{ entry.entity_id }}</a>{% else %}{{ entry.entity_id }}{% endif %}</td>
+                <td>{{ entry.ip_address }}</td>
+                <td class="log-context">
+                    {% for key, value in entry.details %}<span class="log-context__pair">{{ key }}={{ value }}</span> {% endfor %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <p class="pagination-info">{{ total }} entries</p>
+    {{ pager::pager(current_page=page, total_pages=total_pages, base_url="/admin/reports/audit") }}
+    {% else %}
+    {{ list::empty(message="Nothing has been recorded yet.") }}
+    {% endif %}
+</div>
+{% endblock %}

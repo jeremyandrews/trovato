@@ -13,9 +13,11 @@ use sqlx::PgPool;
 use tracing::info;
 use uuid::Uuid;
 
+use crate::audit::{SecurityEvent, SecurityEventKind};
 use crate::cache::generation::{CacheKind, bump};
 use crate::metrics::{CacheName, Metrics};
 use crate::models::{CreateUser, UpdateUser, User};
+use crate::services::audit::AuditTrail;
 use crate::tap::{RequestServices, RequestState, TapDispatcher, UserContext};
 
 /// Maximum entries in the user cache.
@@ -42,6 +44,44 @@ struct UserServiceInner {
     cache: Cache<Uuid, User>,
     /// Counts `cache` hits and misses.
     metrics: Arc<Metrics>,
+    audit: AuditTrail,
+}
+
+/// Set `user_id`'s password from the command line, where no site is running,
+/// and audit it as every other password change is: `password.changed` (or
+/// `password.set`) with `details.via = "cli"`, and a content audit row when
+/// `trovato_audit_log` is enabled.
+pub async fn reset_password_offline(pool: &PgPool, user_id: Uuid, password: &str) -> Result<bool> {
+    let had_password = User::find_by_id(pool, user_id)
+        .await?
+        .is_some_and(|u| !u.pass.is_empty());
+    let updated = User::update_password(pool, user_id, password).await?;
+    if updated {
+        let audit = AuditTrail::offline(pool.clone()).await;
+        audit
+            .record(
+                "password",
+                "user",
+                user_id,
+                None,
+                serde_json::json!({ "via": "cli" }),
+            )
+            .await;
+        let kind = if had_password {
+            SecurityEventKind::PasswordChanged
+        } else {
+            SecurityEventKind::PasswordSet
+        };
+        audit
+            .security(SecurityEvent::new(kind).user(user_id).detail("via", "cli"))
+            .await;
+    }
+    Ok(updated)
+}
+
+/// The actor a `UserContext` names, for an audit row: `None` for anonymous.
+fn actor_of(acting_user: &UserContext) -> Option<Uuid> {
+    acting_user.authenticated.then_some(acting_user.id)
 }
 
 impl UserService {
@@ -52,6 +92,7 @@ impl UserService {
         tap_services: RequestServices,
         ttl: Duration,
         metrics: Arc<Metrics>,
+        audit: AuditTrail,
     ) -> Self {
         Self {
             inner: Arc::new(UserServiceInner {
@@ -63,6 +104,7 @@ impl UserService {
                     .time_to_live(ttl)
                     .build(),
                 metrics,
+                audit,
             }),
         }
     }
@@ -116,6 +158,7 @@ impl UserService {
         self.dispatch_tap("tap_user_register", user.id, acting_user)
             .await;
         info!(user_id = %user.id, name = %user.name, "user created");
+        self.audit_created(&user, acting_user).await;
         Ok(user)
     }
 
@@ -133,6 +176,7 @@ impl UserService {
         self.dispatch_tap("tap_user_register", user.id, acting_user)
             .await;
         info!(user_id = %user.id, name = %user.name, status, "user created with status");
+        self.audit_created(&user, acting_user).await;
         Ok(user)
     }
 
@@ -157,12 +201,14 @@ impl UserService {
         input: UpdateUser,
         acting_user: &UserContext,
     ) -> Result<Option<User>> {
+        let before = User::find_by_id(&self.inner.pool, id).await?;
         let user = User::update(&self.inner.pool, id, input).await?;
 
         if let Some(ref u) = user {
             self.inner.cache.insert(id, u.clone());
             self.dispatch_tap("tap_user_update", id, acting_user).await;
             info!(user_id = %id, "user updated");
+            self.audit_updated(before.as_ref(), u, acting_user).await;
         }
 
         Ok(user)
@@ -174,18 +220,49 @@ impl UserService {
     /// not an authorization subject: this method authorizes nothing, and the
     /// caller (password change past a verified current password, or a spent
     /// recovery grant) is what gates it.
+    ///
+    /// Emits `password.set` when the account had no password and
+    /// `password.changed` when it had one, with `via` (`self_service`,
+    /// `password_reset`, `recovery`, `admin`) as the event's `details.via`.
     pub async fn update_password(
         &self,
         id: Uuid,
         new_password: &str,
         acting_user: &UserContext,
+        via: &str,
     ) -> Result<bool> {
+        let had_password = User::find_by_id(&self.inner.pool, id)
+            .await?
+            .is_some_and(|u| !u.pass.is_empty());
         let updated = User::update_password(&self.inner.pool, id, new_password).await?;
 
         if updated {
             self.invalidate(id);
             self.dispatch_tap("tap_user_update", id, acting_user).await;
             info!(user_id = %id, "user password updated");
+            let kind = if had_password {
+                SecurityEventKind::PasswordChanged
+            } else {
+                SecurityEventKind::PasswordSet
+            };
+            let audit = &self.inner.audit;
+            audit
+                .record(
+                    "password",
+                    "user",
+                    id,
+                    actor_of(acting_user),
+                    serde_json::json!({ "via": via }),
+                )
+                .await;
+            audit
+                .security(
+                    SecurityEvent::new(kind)
+                        .user(id)
+                        .maybe_actor(actor_of(acting_user).filter(|a| *a != id))
+                        .detail("via", via),
+                )
+                .await;
         }
 
         Ok(updated)
@@ -203,6 +280,16 @@ impl UserService {
             self.invalidate(id);
             self.dispatch_tap("tap_user_update", id, acting_user).await;
             info!(user_id = %id, "user password removed");
+            self.inner
+                .audit
+                .record(
+                    "password_removed",
+                    "user",
+                    id,
+                    actor_of(acting_user),
+                    serde_json::json!({}),
+                )
+                .await;
         }
 
         Ok(removed)
@@ -228,6 +315,16 @@ impl UserService {
             // The delete gave the account's items to the anonymous author.
             bump(CacheKind::Items);
             info!(user_id = %id, "user deleted");
+            self.inner
+                .audit
+                .record(
+                    "delete",
+                    "user",
+                    id,
+                    actor_of(acting_user),
+                    serde_json::json!({}),
+                )
+                .await;
         }
 
         Ok(deleted)
@@ -317,6 +414,76 @@ impl UserService {
     }
 
     /// Dispatch a user tap hook with standard `{ "user_id": "..." }` payload.
+    /// Record an account created.
+    async fn audit_created(&self, user: &User, acting_user: &UserContext) {
+        self.inner
+            .audit
+            .record(
+                "create",
+                "user",
+                user.id,
+                actor_of(acting_user),
+                serde_json::json!({ "name": user.name, "status": user.status }),
+            )
+            .await;
+    }
+
+    /// Record an account updated, and, as security events, a change to its
+    /// blocked state or its administrator flag.
+    async fn audit_updated(&self, before: Option<&User>, after: &User, acting_user: &UserContext) {
+        let actor = actor_of(acting_user);
+        let mut changed = Vec::new();
+        if let Some(before) = before {
+            if before.name != after.name {
+                changed.push("name");
+            }
+            if before.mail != after.mail {
+                changed.push("mail");
+            }
+            if before.status != after.status {
+                changed.push("status");
+            }
+            if before.is_admin != after.is_admin {
+                changed.push("is_admin");
+            }
+        }
+        let audit = &self.inner.audit;
+        audit
+            .record(
+                "update",
+                "user",
+                after.id,
+                actor,
+                serde_json::json!({ "name": after.name, "changed": changed }),
+            )
+            .await;
+        let Some(before) = before else { return };
+        let other_actor = actor.filter(|a| *a != after.id);
+        if before.status != after.status {
+            audit
+                .security(
+                    SecurityEvent::new(SecurityEventKind::UserStatusChanged)
+                        .user(after.id)
+                        .maybe_actor(other_actor)
+                        .detail("from", before.status)
+                        .detail("to", after.status)
+                        .detail("blocked", after.status == 0),
+                )
+                .await;
+        }
+        if before.is_admin != after.is_admin {
+            audit
+                .security(
+                    SecurityEvent::new(SecurityEventKind::UserRolesChanged)
+                        .user(after.id)
+                        .maybe_actor(other_actor)
+                        .detail("change", if after.is_admin { "added" } else { "removed" })
+                        .detail("role", "administrator"),
+                )
+                .await;
+        }
+    }
+
     async fn dispatch_tap(&self, tap_name: &str, user_id: Uuid, acting_user: &UserContext) {
         let json = serde_json::json!({ "user_id": user_id.to_string() });
         let state = RequestState::new(acting_user.clone(), self.inner.tap_services.clone());

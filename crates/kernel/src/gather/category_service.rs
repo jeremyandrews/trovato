@@ -27,6 +27,8 @@ pub struct CategoryService {
     category_cache: Cache<String, Category>,
     /// Counts hits and misses in both caches.
     metrics: Arc<Metrics>,
+    /// Set once by `AppState`; a service built without it records nothing.
+    audit: std::sync::OnceLock<crate::services::audit::AuditTrail>,
 }
 
 impl CategoryService {
@@ -43,7 +45,26 @@ impl CategoryService {
                 .time_to_live(ttl)
                 .build(),
             metrics,
+            audit: std::sync::OnceLock::new(),
         })
+    }
+
+    /// Record category and tag writes through `audit`. Set once, at startup.
+    pub fn set_audit_trail(&self, audit: crate::services::audit::AuditTrail) {
+        let _ = self.audit.set(audit);
+    }
+
+    /// Record one category or tag write in the audit log.
+    async fn audit(
+        &self,
+        action: &str,
+        entity_type: &str,
+        id: impl std::fmt::Display,
+        details: serde_json::Value,
+    ) {
+        if let Some(audit) = self.audit.get() {
+            audit.record(action, entity_type, id, None, details).await;
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -82,6 +103,13 @@ impl CategoryService {
         self.category_cache
             .insert(category.id.clone(), category.clone());
         bump(CacheKind::Categories);
+        self.audit(
+            "create",
+            "category",
+            &category.id,
+            serde_json::json!({ "label": category.label }),
+        )
+        .await;
         Ok(category)
     }
 
@@ -95,6 +123,13 @@ impl CategoryService {
         if let Some(ref c) = category {
             self.category_cache.insert(id.to_string(), c.clone());
             bump(CacheKind::Categories);
+            self.audit(
+                "update",
+                "category",
+                id,
+                serde_json::json!({ "label": c.label }),
+            )
+            .await;
         }
         Ok(category)
     }
@@ -106,6 +141,8 @@ impl CategoryService {
             self.category_cache.invalidate(id);
             self.tag_cache.invalidate(id);
             bump(CacheKind::Categories);
+            self.audit("delete", "category", id, serde_json::json!({}))
+                .await;
         }
         Ok(deleted)
     }
@@ -183,6 +220,13 @@ impl CategoryService {
         let category_id = input.category_id.clone();
         let tag = Tag::create(&self.pool, input).await?;
         self.invalidate_cache(&category_id);
+        self.audit(
+            "create",
+            "tag",
+            tag.id,
+            serde_json::json!({ "category": category_id, "label": tag.label }),
+        )
+        .await;
         Ok(tag)
     }
 
@@ -194,6 +238,15 @@ impl CategoryService {
 
         if let Some(ref c) = current {
             self.invalidate_cache(&c.category_id);
+        }
+        if let Some(ref t) = tag {
+            self.audit(
+                "update",
+                "tag",
+                id,
+                serde_json::json!({ "category": t.category_id, "label": t.label }),
+            )
+            .await;
         }
 
         Ok(tag)
@@ -207,6 +260,15 @@ impl CategoryService {
 
         if let Some(t) = tag {
             self.invalidate_cache(&t.category_id);
+            if deleted {
+                self.audit(
+                    "delete",
+                    "tag",
+                    id,
+                    serde_json::json!({ "category": t.category_id, "label": t.label }),
+                )
+                .await;
+            }
         }
 
         Ok(deleted)

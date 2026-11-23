@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use crate::models::Item;
 use crate::models::url_alias::{CreateUrlAlias, UpdateUrlAlias, UrlAlias};
+use crate::services::audit::AuditTrail;
 
 /// A path as aliases store it: with its leading slash.
 pub fn normalize_path(path: &str) -> String {
@@ -29,37 +30,63 @@ pub fn normalize_path(path: &str) -> String {
 #[derive(Clone)]
 pub struct UrlAliasService {
     pool: PgPool,
+    audit: AuditTrail,
 }
 
 impl UrlAliasService {
     /// Create the service.
-    pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: PgPool, audit: AuditTrail) -> Self {
+        Self { pool, audit }
+    }
+
+    /// Record one alias write in the audit log.
+    async fn audit(&self, action: &str, alias: &UrlAlias) {
+        self.audit
+            .record(
+                action,
+                "url_alias",
+                alias.id,
+                None,
+                serde_json::json!({ "source": alias.source, "alias": alias.alias }),
+            )
+            .await;
     }
 
     /// Create an alias. Both paths are stored with their leading slash.
     pub async fn create(&self, mut input: CreateUrlAlias) -> Result<UrlAlias> {
         input.source = normalize_path(&input.source);
         input.alias = normalize_path(&input.alias);
-        UrlAlias::create(&self.pool, input).await
+        let alias = UrlAlias::create(&self.pool, input).await?;
+        self.audit("create", &alias).await;
+        Ok(alias)
     }
 
     /// Update an alias. `None` when there is no such alias.
     pub async fn update(&self, id: Uuid, mut input: UpdateUrlAlias) -> Result<Option<UrlAlias>> {
         input.source = input.source.as_deref().map(normalize_path);
         input.alias = input.alias.as_deref().map(normalize_path);
-        UrlAlias::update(&self.pool, id, input).await
+        let alias = UrlAlias::update(&self.pool, id, input).await?;
+        if let Some(alias) = &alias {
+            self.audit("update", alias).await;
+        }
+        Ok(alias)
     }
 
     /// Delete an alias. `false` when there is no such alias.
     pub async fn delete(&self, id: Uuid) -> Result<bool> {
-        UrlAlias::delete(&self.pool, id).await
+        let deleted = UrlAlias::delete(&self.pool, id).await?;
+        if deleted {
+            self.audit
+                .record("delete", "url_alias", id, None, serde_json::json!({}))
+                .await;
+        }
+        Ok(deleted)
     }
 
     /// Set `item`'s alias to `alias`, on the item's stage and in its language,
     /// replacing the one it has there.
     pub async fn set_for_item(&self, item: &Item, alias: &str) -> Result<UrlAlias> {
-        UrlAlias::upsert_for_source(
+        let alias = UrlAlias::upsert_for_source(
             &self.pool,
             &format!("/item/{}", item.id),
             &normalize_path(alias),
@@ -67,12 +94,27 @@ impl UrlAliasService {
             &item.language,
         )
         .await
-        .context("failed to set the item's alias")
+        .context("failed to set the item's alias")?;
+        self.audit("update", &alias).await;
+        Ok(alias)
     }
 
     /// Remove every alias of `item`. Returns how many there were.
     pub async fn clear_for_item(&self, item: &Item) -> Result<u64> {
-        UrlAlias::delete_by_source(&self.pool, &format!("/item/{}", item.id)).await
+        let source = format!("/item/{}", item.id);
+        let removed = UrlAlias::delete_by_source(&self.pool, &source).await?;
+        if removed > 0 {
+            self.audit
+                .record(
+                    "delete",
+                    "url_alias",
+                    &source,
+                    None,
+                    serde_json::json!({ "source": source, "count": removed }),
+                )
+                .await;
+        }
+        Ok(removed)
     }
 }
 
