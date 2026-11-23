@@ -399,3 +399,138 @@ fn item_views_are_counted_and_shown_to_the_permission() {
         assert_eq!(total().await, Some(2));
     });
 }
+
+/// [`get_route`] as the signed-in session `cookies`.
+async fn get_route_as(
+    app: &TestApp,
+    query: &GatherQuery,
+    path: &str,
+    cookies: &str,
+) -> (StatusCode, String) {
+    let session_layer = trovato_kernel::session::create_session_layer(
+        &trovato_test_utils::env::redis_url(),
+        tower_sessions::cookie::SameSite::Strict,
+        trovato_kernel::session::CookieSecure::Always,
+    )
+    .await
+    .expect("create session layer");
+    let router = trovato_kernel::routes::gather_routes::build_gather_route_router(
+        std::slice::from_ref(query),
+    )
+    .with_state(app.state.clone())
+    .layer(axum::Extension(ResolvedLanguage("en".to_string())))
+    .layer(session_layer);
+    let response = router
+        .oneshot(
+            Request::get(path)
+                .header("cookie", cookies)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .expect("serve");
+    let status = response.status();
+    (status, body_of(response).await)
+}
+
+/// A gather term page and an exposed category filter over an owned
+/// vocabulary show its terms only to someone who may see the owner (B189):
+/// anonymous gets 404 for the term page and no options in the filter, an
+/// administrator gets both. The owner type is one no plugin declares, so only
+/// `administer categories` and the site administrator may see it.
+#[test]
+fn an_owned_vocabularys_term_page_and_filter_are_hidden() {
+    run_test(async {
+        let app = shared_app().await;
+        let s = stamp();
+        let category = format!("b189_owned_{s}");
+        sqlx::query(
+            "INSERT INTO category (id, label, owner_type, owner_id) \
+             VALUES ($1, 'Owned', 'b189_nobody', 'o1')",
+        )
+        .bind(&category)
+        .execute(&app.db)
+        .await
+        .expect("create owned category");
+        let tag = Tag::create(
+            &app.db,
+            CreateTag {
+                category_id: category.clone(),
+                label: format!("Secret {s}"),
+                description: None,
+                slug: Some(format!("secret-{s}")),
+                weight: Some(0),
+                parent_ids: None,
+            },
+        )
+        .await
+        .expect("create tag");
+        let pool = app.db.clone();
+        let (tag_id, cat_id) = (tag.id, category.clone());
+        defer_cleanup(move || async move {
+            let _ = Tag::delete(&pool, tag_id).await;
+            let _ = Category::delete(&pool, &cat_id).await;
+        });
+        item(app, &format!("OV{s} entry")).await;
+
+        let route = format!("/b189-owned-{s}/{{slug}}");
+        let query: GatherQuery = serde_json::from_value(serde_json::json!({
+            "query_id": format!("b189_ov_{s}"),
+            "label": "Owned terms",
+            "definition": {
+                "base_table": "item",
+                "item_type": "conference",
+                "filters": [
+                    { "field": "title", "operator": "contains", "value": format!("OV{s}") },
+                    {
+                        "field": "fields.field_b189_terms",
+                        "operator": "has_tag",
+                        "value": null,
+                        "exposed": true,
+                        "exposed_label": "Term",
+                        "widget": { "type": "category_select", "category": category }
+                    }
+                ],
+                "sorts": [{ "field": "title", "direction": "asc", "nulls": null }]
+            },
+            "display": {
+                "format": "list",
+                "items_per_page": 10,
+                "routes": [{
+                    "path": route,
+                    "params": [{ "segment": "slug", "param": "tag", "tag_category": category }]
+                }]
+            },
+            "plugin": "core"
+        }))
+        .expect("gather deserializes");
+        register(app, &query).await;
+        let term_page = format!("/b189-owned-{s}/secret-{s}");
+        let listing = format!("/gather/b189_ov_{s}");
+        let secret = format!("Secret {s}");
+
+        let (status, html) = get_route(app, &query, &term_page).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "anonymous term page");
+        assert!(!html.contains(&secret), "the 404 names no term");
+        let (status, html) = get(app, &listing, "").await;
+        assert_eq!(status, StatusCode::OK, "{html}");
+        assert!(
+            !html.contains(&secret),
+            "anonymous is offered no owned term in the filter"
+        );
+
+        let name = format!("b189_ls_admin_{s}");
+        let admin_cookies = app
+            .create_and_login_admin(&name, "correct-horse-battery", &format!("{name}@test.local"))
+            .await;
+        let (status, html) = get_route_as(app, &query, &term_page, &admin_cookies).await;
+        assert_eq!(status, StatusCode::OK, "administrator term page: {html}");
+        assert!(html.contains(&secret));
+        let (status, html) = get(app, &listing, &admin_cookies).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            html.contains(&secret),
+            "the administrator is offered the owned term"
+        );
+    });
+}
