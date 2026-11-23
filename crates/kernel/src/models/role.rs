@@ -67,6 +67,10 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     "administer content",
     "delete own content",
     "delete any content",
+    // An author reads their own unpublished items (Drupal's permission of
+    // the same name). Granted by no migration; an administrator holds it
+    // implicitly. See `content::item_service::VIEW_OWN_UNPUBLISHED`.
+    "view own unpublished content",
     // Read a stage other than Live: switch the session's active stage, and see
     // it (with Live beneath it) in search, gathers and aliases. Granted to no
     // role by any migration; an administrator holds it implicitly. See

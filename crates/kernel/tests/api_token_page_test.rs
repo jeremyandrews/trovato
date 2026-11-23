@@ -227,19 +227,10 @@ fn the_token_page_requires_sign_in() {
                     .unwrap(),
             )
             .await;
-        assert!(
-            response.status().is_redirection(),
-            "an anonymous visitor is redirected to sign in, got {}",
-            response.status()
-        );
-        let location = response
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        assert!(
-            location.starts_with("/user/login"),
-            "redirected to {location}"
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "an anonymous visitor is refused as nobody signed in"
         );
     });
 }

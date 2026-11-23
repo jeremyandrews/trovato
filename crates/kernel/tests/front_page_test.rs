@@ -444,7 +444,7 @@ fn a_target_the_visitor_may_not_see_is_refused_as_at_the_target() {
         let target_status = target.status();
         let target_location = location(&target);
         assert!(
-            target_status.is_redirection() || target_status == StatusCode::FORBIDDEN,
+            target_status == StatusCode::UNAUTHORIZED || target_status == StatusCode::FORBIDDEN,
             "the target refuses anonymous, got {target_status}"
         );
 

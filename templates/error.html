@@ -7,11 +7,32 @@
   Context: `status` (number), `error_title`, `message` (safe to show, escaped
   here; left out when it only repeats the title), `admin_path` (whether the
   request was for an admin page), `home` and `home_label` (`/` from the front
-  end, `/admin` from an admin path), plus the site context every page has.
+  end, `/admin` from an admin path), `login` (on a 403 to nobody signed in:
+  `csrf_token` and `destination` for the login form), plus the site context
+  every page has.
 #}
 <section class="error-page error-page--{{ status }}">
   <h1 class="error-page__title">{{ error_title }}</h1>
   {% if message != error_title %}<p class="error-page__message">{{ message }}</p>{% endif %}
+  {% if login %}
+  {# Nobody signed in, refused: the login form, which lands back on this page.
+     `login.destination` is the page asked for (a local path, checked by
+     `routes::auth::is_safe_destination`), or absent. #}
+  <form method="post" action="/user/login" class="error-page__login login-form">
+    <input type="hidden" name="_token" value="{{ login.csrf_token }}">
+    {% if login.destination %}<input type="hidden" name="destination" value="{{ login.destination }}">{% endif %}
+    <div class="login-form__field">
+      <label for="error-login-username" class="login-form__label">Username</label>
+      <input type="text" id="error-login-username" name="username" class="login-form__input" required autocomplete="username">
+    </div>
+    <div class="login-form__field">
+      <label for="error-login-password" class="login-form__label">Password</label>
+      <input type="password" id="error-login-password" name="password" class="login-form__input" required autocomplete="current-password">
+    </div>
+    <button type="submit" class="login-form__submit">Log in</button>
+    <p class="error-page__login-links"><a href="/user/password-reset">Forgot password?</a></p>
+  </form>
+  {% endif %}
   <p class="error-page__status">Error {{ status }}</p>
   <p class="error-page__home"><a href="{{ home | safe }}">{{ home_label }}</a></p> {# SAFE: `home` is the constant "/" or "/admin", set by middleware::error_page, never user text #}
 </section>

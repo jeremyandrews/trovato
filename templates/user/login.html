@@ -20,6 +20,7 @@
 
         <form method="post" action="/user/login" class="login-form">
             <input type="hidden" name="_token" value="{{ csrf_token }}">
+            {% if destination %}<input type="hidden" name="destination" value="{{ destination }}">{% endif %}
 
             <div class="login-form__field">
                 <label for="username" class="login-form__label">Username</label>

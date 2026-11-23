@@ -374,6 +374,11 @@ pub const ADMINISTER_CONTENT: &str = "administer content";
 /// (`routes::helpers::read_stages`).
 pub const USE_STAGES: &str = "use stages";
 
+/// The permission that lets an author read their own unpublished items, as
+/// Drupal's permission of the same name does. Granted by no migration; a
+/// site imported from Drupal keeps it on the roles that held it there.
+pub const VIEW_OWN_UNPUBLISHED: &str = "view own unpublished content";
+
 /// A write refused by one of the two item write gates.
 ///
 /// Returned inside `anyhow::Error` so every caller finds it the same way —
@@ -2067,6 +2072,18 @@ impl ItemService {
                 if user.has_permission(perm) {
                     return Ok(true);
                 }
+            }
+            // An author may read their own unpublished item with Drupal's
+            // `view own unpublished content`. Without it the item answered
+            // its own author 404 while they could still open its edit form.
+            // Only for a signed-in author: the anonymous viewer is nobody's
+            // author, whatever `author_id` a migrated item carries.
+            if operation == "view"
+                && user.authenticated
+                && !item.is_published()
+                && user.has_permission(VIEW_OWN_UNPUBLISHED)
+            {
+                return Ok(true);
             }
         }
         Ok(false)

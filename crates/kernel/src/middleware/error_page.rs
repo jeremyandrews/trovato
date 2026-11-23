@@ -8,8 +8,9 @@
 //! - a caller whose `Accept` names `text/html` (a browser) gets the site's
 //!   themed `error.html`, with `error--{status}.html` tried first, inside the
 //!   normal page wrapper (`page--admin.html` on an admin path), and a link to
-//!   `/` or `/admin`. Nobody signed in (`401`) is sent to `/user/login` with a
-//!   `303` instead, the HTML half of the refusal rule;
+//!   `/` or `/admin`. Nobody signed in (`401`) is shown the same page as
+//!   `403` "Access denied", with the login form on it carrying the page asked
+//!   for as its destination: the HTML half of the refusal rule;
 //! - every other caller gets the [`AppError`] JSON body.
 //!
 //! Status codes and other headers are kept. A response that is already JSON
@@ -28,7 +29,7 @@ use axum::body::{Body, to_bytes};
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::Next;
-use axum::response::{IntoResponse, Redirect, Response};
+use axum::response::Response;
 use tower_sessions::Session;
 
 use crate::error::AppError;
@@ -70,6 +71,17 @@ pub async fn render_error_pages(
 ) -> Response {
     let wants_html = accepts_html(request.headers());
     let path = request.uri().path().to_string();
+    // Where the login form on an access-denied page sends the visitor once
+    // they are signed in: the page they asked for, query and all. Only a GET
+    // is a page to return to; a refused POST has nothing to replay.
+    let destination = (request.method() == axum::http::Method::GET)
+        .then(|| {
+            request
+                .uri()
+                .path_and_query()
+                .map(|pq| pq.as_str().to_string())
+        })
+        .flatten();
 
     let response = next.run(request).await;
     if !response.status().is_client_error() && !response.status().is_server_error() {
@@ -88,10 +100,23 @@ pub async fn render_error_pages(
     };
 
     if wants_html {
-        if marker.status == StatusCode::UNAUTHORIZED {
-            return Redirect::to("/user/login").into_response();
-        }
-        let html = themed_page(&state, &session, &path, &marker)
+        // Nobody signed in is refused as a page that needs a sign in should
+        // refuse them: `403` "Access denied", with the login form on the page.
+        // It was a redirect to `/user/login`, which lost the page asked for and
+        // answered a crawler or an old link `200`.
+        let (response, marker) = if marker.status == StatusCode::UNAUTHORIZED {
+            let (mut parts, body) = response.into_parts();
+            parts.status = StatusCode::FORBIDDEN;
+            parts.headers.remove(header::WWW_AUTHENTICATE);
+            let marker = ErrorPage {
+                status: StatusCode::FORBIDDEN,
+                message: crate::routes::helpers::LOGIN_REQUIRED_MESSAGE.to_string(),
+            };
+            (Response::from_parts(parts, body), marker)
+        } else {
+            (response, marker)
+        };
+        let html = themed_page(&state, &session, &path, destination.as_deref(), &marker)
             .await
             .unwrap_or_else(|| fallback_page(&marker, home_for(&path)));
         return replace_body(response, "text/html; charset=utf-8", html);
@@ -198,6 +223,7 @@ async fn themed_page(
     state: &AppState,
     session: &Session,
     path: &str,
+    destination: Option<&str>,
     marker: &ErrorPage,
 ) -> Option<String> {
     let viewer = crate::routes::helpers::get_user_context(session, state).await;
@@ -210,6 +236,18 @@ async fn themed_page(
     context.insert("message", &marker.message);
     context.insert("home", home);
     context.insert("home_label", home_label);
+    // An access-denied page offers nobody signed in the login form, posting to
+    // `/user/login` with the page they asked for as its destination.
+    if marker.status == StatusCode::FORBIDDEN && !viewer.authenticated {
+        let destination = destination.filter(|d| crate::routes::auth::is_safe_destination(d));
+        context.insert(
+            "login",
+            &serde_json::json!({
+                "csrf_token": crate::form::csrf::generate_csrf_token(session).await,
+                "destination": destination,
+            }),
+        );
+    }
     let admin_path = crate::theme::ThemeEngine::is_admin_path(path);
     context.insert("admin_path", &admin_path);
     crate::routes::helpers::inject_site_context_for(state, session, &viewer, &mut context, path)

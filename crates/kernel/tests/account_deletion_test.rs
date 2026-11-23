@@ -560,7 +560,7 @@ fn the_deleted_accounts_session_stops_working() {
             .await;
         assert_eq!(
             response.status(),
-            StatusCode::SEE_OTHER,
+            StatusCode::UNAUTHORIZED,
             "the old session must not still be signed in"
         );
 

@@ -411,3 +411,16 @@
     overflow-wrap: anywhere;
     font-size: 0.75rem;
 }
+
+/* The login form on the access-denied page shown to a visitor who is not
+   signed in on an admin path (templates/error.html). */
+.error-page__login {
+    max-width: 24rem;
+    margin: 1.5rem 0;
+}
+.error-page__login .login-form__field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin-bottom: 1rem;
+}

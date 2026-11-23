@@ -615,19 +615,10 @@ fn preview_and_compare_are_held_to_view_then_edit_and_to_the_item() {
                         .unwrap(),
                 )
                 .await;
-            assert!(
-                response.status().is_redirection(),
-                "{path} for anonymous must redirect, got {}",
-                response.status()
-            );
-            let location = response
-                .headers()
-                .get("location")
-                .and_then(|l| l.to_str().ok())
-                .unwrap_or_default();
-            assert!(
-                location.starts_with("/user/login"),
-                "{path} for anonymous must go to login, went to {location}"
+            assert_eq!(
+                response.status(),
+                axum::http::StatusCode::UNAUTHORIZED,
+                "{path} for anonymous must be refused as nobody signed in"
             );
         }
     });

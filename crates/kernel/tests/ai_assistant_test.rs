@@ -472,19 +472,25 @@ fn an_anonymous_visitor_is_sent_to_the_login_form() {
         let response = app
             .request(
                 Request::get(format!("/ai/assistant/{SCOPE}/w1"))
+                    .header(header::ACCEPT, "text/html")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await;
 
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        assert_eq!(
-            response
-                .headers()
-                .get(header::LOCATION)
-                .and_then(|v| v.to_str().ok()),
-            Some("/user/login"),
-            "the bare login form, with no destination parameter to read"
+        // The access-denied page with the login form, which returns here.
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(response.headers().get(header::LOCATION).is_none());
+        let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .unwrap();
+        let page = String::from_utf8_lossy(&bytes).replace("&#x2F;", "/");
+        assert!(page.contains(r#"action="/user/login""#), "{page}");
+        assert!(
+            page.contains(&format!(
+                r#"name="destination" value="/ai/assistant/{SCOPE}/w1""#
+            )),
+            "the form returns to the assistant: {page}"
         );
     });
 }

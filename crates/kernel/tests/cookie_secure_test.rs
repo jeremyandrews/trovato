@@ -186,7 +186,7 @@ async fn sign_in_see_profile_sign_out(app: &TestApp, prefix: &str) -> Vec<String
         )
         .await;
     assert!(
-        after.status().is_redirection(),
+        after.status() == StatusCode::UNAUTHORIZED,
         "signed out after logout (status {})",
         after.status()
     );

@@ -167,7 +167,7 @@ fn the_comment_settings_address_answers_a_get() {
 
         let (status, _) = get(app, "", "/admin/content/comments/settings").await;
         assert!(
-            status.is_redirection() || status == StatusCode::FORBIDDEN,
+            status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN,
             "anonymous: {status}"
         );
         let (_id, plain) = common::user_holding(app, "b107csetplain", &[]).await;

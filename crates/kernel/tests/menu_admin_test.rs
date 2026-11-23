@@ -204,9 +204,10 @@ fn a_non_admin_is_refused_every_menu_screen() {
     });
 }
 
-/// An anonymous visitor is sent to log in rather than shown the screen.
+/// An anonymous visitor is refused (a browser is shown the login form)
+/// rather than shown the screen.
 #[test]
-fn an_anonymous_visitor_is_redirected_to_login() {
+fn an_anonymous_visitor_is_refused() {
     run_test(async {
         let app = shared_app().await;
         let response = app
@@ -216,16 +217,7 @@ fn an_anonymous_visitor_is_redirected_to_login() {
                     .unwrap(),
             )
             .await;
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        let location = response
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or_default();
-        assert!(
-            location.contains("/user/login"),
-            "expected a login redirect, got {location}"
-        );
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     });
 }
 

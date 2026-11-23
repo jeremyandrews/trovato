@@ -225,16 +225,15 @@ async fn get_startup_routes(
     (status, location, body_of(response).await)
 }
 
+/// Nobody signed in is refused with 401 (a browser is shown the 403
+/// access-denied page with the login form, `access_denied_page_test`).
 fn assert_login_redirect(status: StatusCode, location: Option<&str>, body: &str, what: &str) {
-    assert!(
-        status.is_redirection(),
-        "{what}: an anonymous visitor is sent to log in, got {status}: {body}"
-    );
     assert_eq!(
-        location,
-        Some("/user/login"),
-        "{what}: the redirect is the login page"
+        status,
+        StatusCode::UNAUTHORIZED,
+        "{what}: an anonymous visitor is refused as nobody, got {status}: {body}"
     );
+    assert_eq!(location, None, "{what}: no redirect");
 }
 
 // =============================================================================
