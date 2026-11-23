@@ -99,7 +99,7 @@ impl std::fmt::Display for LoginError {
 
 /// Whether `destination` is a page on this site that a sign in may land on.
 ///
-/// A local absolute path ([`super::front::is_local_path`]: no scheme, no host,
+/// A local absolute path (`routes::front::is_local_path`: no scheme, no host,
 /// no `//` or `/\` that a browser reads as another host), and not the login
 /// form itself, which would only show the form again. Anything else is
 /// dropped and the sign in lands on `/`, so the parameter can never be used to
