@@ -464,6 +464,31 @@ pub struct OwnerLimit {
     pub owner_field: String,
 }
 
+impl OwnerLimit {
+    /// The item's owner as a write sees it: the value of `owner_field` in what
+    /// the write stores, else in the stored item. `None` when it has none.
+    pub fn item_owner(
+        &self,
+        fields: Option<&serde_json::Value>,
+        existing: Option<&serde_json::Value>,
+    ) -> Option<String> {
+        fields
+            .and_then(|f| f.get(&self.owner_field))
+            .or_else(|| existing.and_then(|e| e.get(&self.owner_field)))
+            .and_then(id_of)
+    }
+
+    /// Whether an item owned by `item_owner` may hold a term from a vocabulary
+    /// owned by `vocabulary_owner` (`Category::owner`): only when the
+    /// vocabulary belongs to that very owner. The one rule the save check and
+    /// the term autocomplete both apply.
+    pub fn admits(&self, item_owner: &str, vocabulary_owner: Option<(&str, &str)>) -> bool {
+        vocabulary_owner.is_some_and(|(owner_type, owner_id)| {
+            owner_type == self.owner_type && owner_id == item_owner
+        })
+    }
+}
+
 /// The limit on `field`, if it has one.
 pub fn limit_of(settings: &serde_json::Value) -> Option<OwnerLimit> {
     serde_json::from_value(settings.get("vocabulary_owner")?.clone()).ok()
@@ -528,6 +553,7 @@ pub async fn check_item_terms(
     fields: Option<&serde_json::Value>,
     existing: Option<&serde_json::Value>,
 ) -> Result<()> {
+    let written = fields;
     let Some(fields) = fields.and_then(|f| f.as_object()) else {
         return Ok(());
     };
@@ -555,7 +581,7 @@ pub async fn check_item_terms(
         if terms.is_empty() {
             continue;
         }
-        let owner = owner_value.and_then(id_of);
+        let owner = limit.item_owner(written, existing);
         wanted.push((def.field_name.clone(), limit, owner, terms));
     }
     if wanted.is_empty() {
@@ -595,10 +621,10 @@ pub async fn check_item_terms(
             let Ok(id) = Uuid::parse_str(term) else {
                 return true;
             };
-            match owners.get(&id) {
-                Some((Some(t), Some(o))) => *t != limit.owner_type || *o != owner,
-                _ => true,
-            }
+            let vocabulary_owner = owners
+                .get(&id)
+                .and_then(|(t, o)| Some((t.as_deref()?, o.as_deref()?)));
+            !limit.admits(&owner, vocabulary_owner)
         });
         if foreign {
             refused.push((
@@ -740,5 +766,29 @@ mod tests {
             vec!["a".to_string(), "b".to_string()]
         );
         assert_eq!(id_of(&serde_json::json!(7)), Some("7".to_string()));
+    }
+
+    #[test]
+    fn a_limit_admits_only_the_items_owners_vocabularies() {
+        let limit = OwnerLimit {
+            owner_type: "club".into(),
+            owner_field: "field_club".into(),
+        };
+        assert!(limit.admits("c1", Some(("club", "c1"))));
+        assert!(!limit.admits("c1", Some(("club", "c2"))));
+        assert!(!limit.admits("c1", Some(("group", "c1"))));
+        assert!(!limit.admits("c1", None), "a site-wide vocabulary");
+
+        let posted = serde_json::json!({"field_club": {"target_id": "c2"}});
+        let stored = serde_json::json!({"field_club": "c1"});
+        assert_eq!(
+            limit.item_owner(Some(&posted), Some(&stored)),
+            Some("c2".into())
+        );
+        assert_eq!(
+            limit.item_owner(Some(&serde_json::json!({})), Some(&stored)),
+            Some("c1".into())
+        );
+        assert_eq!(limit.item_owner(None, None), None);
     }
 }

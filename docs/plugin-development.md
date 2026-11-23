@@ -1570,6 +1570,12 @@ and any term at all on an item with no owner. A form shows the refusal at the
 field; the API answers 422. A value the save does not change is not checked
 again.
 
+The field's autocomplete offers the same terms the save accepts: only the
+vocabularies of the owner named in the form's `owner_field` (or stored on the
+item, when the editor may not change that field). An unlimited term field offers
+terms from site-wide vocabularies only. Either way, suggestions go only to a user
+who may edit the field.
+
 ---
 
 ## Page builder components

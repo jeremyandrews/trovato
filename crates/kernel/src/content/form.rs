@@ -67,6 +67,11 @@ pub struct FormBuilder {
     /// survives, and the editor could not see what the field points at. The
     /// route resolves the titles and passes them here.
     reference_titles: std::collections::HashMap<String, String>,
+    /// The item the form edits, if any. A category term reference widget
+    /// sends it with its searches, so the autocomplete can decide the search
+    /// as the edit form is decided: edit access to this item, and the owner
+    /// stored on it.
+    item_id: Option<uuid::Uuid>,
     /// Per-field render mode, keyed by field name. A field with no entry is
     /// [`FieldMode::Editable`].
     field_modes: std::collections::HashMap<String, FieldMode>,
@@ -95,6 +100,7 @@ impl FormBuilder {
             content_type,
             permitted_formats: Vec::new(),
             reference_titles: std::collections::HashMap::new(),
+            item_id: None,
             field_modes: std::collections::HashMap::new(),
             publish_allowed: false,
         }
@@ -131,6 +137,12 @@ impl FormBuilder {
         titles: std::collections::HashMap<String, String>,
     ) -> Self {
         self.reference_titles = titles;
+        self
+    }
+
+    /// Name the item the form edits (see the `item_id` field).
+    pub fn with_item_id(mut self, item_id: Option<uuid::Uuid>) -> Self {
+        self.item_id = item_id;
         self
     }
 
@@ -373,10 +385,25 @@ impl FormBuilder {
                     .map(str::to_string)
                     .or_else(|| self.reference_titles.get(&id).cloned())
                     .unwrap_or_default();
-                FormElement::widget("record_reference")
+                let mut element = FormElement::widget("record_reference")
                     .attribute("data-target-type", target_type.clone())
-                    .attribute("data-display", display)
-                    .default_value(id)
+                    .attribute("data-display", display);
+                // A term search is decided per field: which field of which
+                // type, on which item, and — for a field limited to the item's
+                // owner — the form's owner field. The widget sends these.
+                if target_type == "category_term" {
+                    element = element
+                        .attribute("data-item-type", self.content_type.machine_name.clone())
+                        .attribute("data-field", field.field_name.clone());
+                    if let Some(item_id) = self.item_id {
+                        element = element.attribute("data-item", item_id.to_string());
+                    }
+                    if let Some(limit) = crate::content::owned_vocabulary::limit_of(&field.settings)
+                    {
+                        element = element.attribute("data-owner-field", limit.owner_field);
+                    }
+                }
+                element.default_value(id)
             }
             FieldType::File => FormElement::widget("file").default_value(text),
             FieldType::Blocks => FormElement::widget("blocks").default_value(text),
@@ -711,5 +738,46 @@ mod tests {
         item.fields = serde_json::json!({"field_online": true});
         let html = render(&FormBuilder::new(ct).build_edit_form(&item, "/x"));
         assert!(!html.contains(r#"hidden="hidden""#));
+    }
+    #[test]
+    fn a_term_reference_carries_its_field_context_and_the_terms_name() {
+        let mut boats = FieldDefinition::new(
+            "field_boats",
+            FieldType::RecordReference("category_term".into()),
+        );
+        boats.settings = serde_json::json!({
+            "vocabulary_owner": {"owner_type": "club", "owner_field": "field_club"}
+        });
+        let ct = ContentTypeDefinition {
+            machine_name: "club_post".to_string(),
+            label: "Club post".to_string(),
+            description: String::new(),
+            title_label: None,
+            fields: vec![
+                FieldDefinition::new("field_club", FieldType::Text { max_length: None }),
+                boats,
+            ],
+        };
+        let term = uuid::Uuid::now_v7().to_string();
+        let item = item(serde_json::json!({"field_club": "c1", "field_boats": term}));
+        let html = render(
+            &FormBuilder::new(ct)
+                .with_item_id(Some(item.id))
+                .with_reference_titles([(term.clone(), "Sailboat".to_string())].into())
+                .build_edit_form(&item, "/x"),
+        );
+        let at = html.find(r#"id="field_boats_autocomplete""#).expect(&html);
+        let input = &html[at..at + html[at..].find('>').unwrap()];
+        assert!(input.contains(r#"value="Sailboat""#), "{input}");
+        assert!(input.contains(r#"data-item-type="club_post""#), "{input}");
+        assert!(input.contains(r#"data-field="field_boats""#), "{input}");
+        assert!(
+            input.contains(&format!(r#"data-item="{}""#, item.id)),
+            "{input}"
+        );
+        assert!(
+            input.contains(r#"data-owner-field="field_club""#),
+            "{input}"
+        );
     }
 }
