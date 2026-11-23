@@ -244,14 +244,23 @@ compiled default stands.
 | `search_followup` | 5 / minute | `POST /api/v1/search/followup` |
 | `login` | 5 / minute | `POST /user/login` |
 | `register` | 3 / hour | `POST /user/register` |
-| `uploads` | 10 / minute | `/file/upload` |
+| `uploads` | 10 / minute | `/file/upload` and `POST /api/v1/block-editor/upload` |
 | `verify_email` | 10 / minute | Email verification token attempts |
 | `profile` | 10 / minute | Profile update submissions |
 | `password` | 5 / minute | Password change submissions |
 | `recovery` | 5 / 15 minutes | Account recovery, per IP and per account |
 | `comment` | 4 / minute | Comment writes |
 | `data_export` | 1 / hour | Personal-data export downloads |
-| `mail` | 100 / hour | Mail a plugin sends through the `mail` host interface. Keyed **per plugin**, not per client, and checked on every path — a request, `tap_cron`, `tap_queue_worker`, `tap_install` — because the mailbox being protected is the site's own. |
+| `mail` | 100 / hour | Mail a plugin sends through the `mail` host interface. Keyed **per plugin**, not per client, and checked on every path — a request, `tap_cron`, `tap_queue_worker`, `tap_install` — because the mailbox being protected is the site's own. Also bounds `POST /admin/config/site/test-email` per client, which mails the same address. |
+
+Every kernel route that writes a file, sends mail or calls an AI provider has
+a named bucket, listed with it in the `SENSITIVE_ROUTES` test in
+`crates/kernel/src/middleware/rate_limit.rs`. Some are checked by the route
+itself rather than by path: password reset (`recovery` per client and
+`reset_mail` per address), account recovery, profile updates, the data export,
+and the AI chat and assistant, whose hourly limits are set on their admin
+pages. `POST /api/v1/ai/assist` is still counted in `api` and bounded by the AI
+token budget.
 
 For example, to serve a site whose pages carry an unusual number of assets:
 
