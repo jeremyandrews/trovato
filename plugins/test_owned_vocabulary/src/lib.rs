@@ -52,8 +52,20 @@ pub fn tap_api(request: ApiRequest) -> ApiResponse {
 }
 
 /// Which club a route's `{owner}` names, and whether this user manages it.
+///
+/// For the read operation, `view`, the key is the club's id rather than its
+/// slug, and a club's managers may read its vocabularies; nobody else is
+/// granted, so the kernel hides them from everyone else (B189).
 #[plugin_tap]
 pub fn tap_vocabulary_owner_access(request: VocabularyOwnerAccessRequest) -> VocabularyOwnerAccess {
+    if request.operation == "view" {
+        let club_id = request.owner_key;
+        return if request.authenticated && manages(&club_id, &request.user_id) {
+            VocabularyOwnerAccess::grant(club_id)
+        } else {
+            VocabularyOwnerAccess::neutral(club_id)
+        };
+    }
     let Some(club_id) = club_id_of(&request.owner_key) else {
         return VocabularyOwnerAccess::not_found();
     };

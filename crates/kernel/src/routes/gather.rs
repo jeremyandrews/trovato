@@ -629,7 +629,13 @@ pub async fn execute_and_render(
 
     // Pre-fetch widget data before executing — borrows exposed_filters for faceted
     // scoping, then releases the borrow so execute() can take ownership.
-    let preload = preload_widget_data(state, &gather_query, &exposed_filters).await;
+    let preload = preload_widget_data(
+        state,
+        query_context.viewer.as_ref(),
+        &gather_query,
+        &exposed_filters,
+    )
+    .await;
 
     let result = state
         .gather()
@@ -866,6 +872,7 @@ struct WidgetPreloadData {
 /// template path and the fallback HTML path share the same data.
 async fn preload_widget_data(
     state: &AppState,
+    viewer: Option<&UserContext>,
     query: &GatherQuery,
     active_filters: &HashMap<String, FilterValue>,
 ) -> WidgetPreloadData {
@@ -878,6 +885,28 @@ async fn preload_widget_data(
         match &filter.widget {
             ExposedWidget::CategorySelect { category } => {
                 if !category_options.contains_key(category) {
+                    // No options from a vocabulary the viewer may not read
+                    // (B189); a site-wide one always reads.
+                    let hidden = match state.categories().get_category(category).await {
+                        Ok(Some(vocabulary)) => match viewer {
+                            Some(viewer) => {
+                                !crate::content::owned_vocabulary::may_view(
+                                    state,
+                                    viewer,
+                                    &vocabulary,
+                                )
+                                .await
+                            }
+                            None => vocabulary.owner().is_some(),
+                        },
+                        // Missing: the lookup below answers as before.
+                        Ok(None) => false,
+                        Err(_) => true,
+                    };
+                    if hidden {
+                        category_options.insert(category.clone(), Vec::new());
+                        continue;
+                    }
                     let all_tags = state
                         .categories()
                         .list_tags_with_depth(category)
