@@ -1561,18 +1561,30 @@ html {
     display: none;
 }
 
-/* Logout button/form reset (used in nav header) */
+/* Logout in the nav header. It is a POST form (CSRF), so a <button>, not a
+   link; the button also carries .site-nav__link, which gives it the links'
+   size, weight, colour, padding and hover. This rule only takes away what a
+   browser gives a button and does not give a link, and sets nothing that
+   .site-nav__link sets: a `font` shorthand or `color` or `padding` here, which
+   comes later in the sheet at the same specificity, would win over the link
+   style and leave Logout larger than its neighbours. The focus ring is the
+   global :focus-visible one, the same as the links'. */
 .site-nav__logout-form {
     display: inline;
 }
 
 .site-nav__logout {
+    appearance: none;
+    margin: 0;
+    border: 0;
     background: none;
-    border: none;
+    font-family: inherit;
+    font-style: inherit;
+    line-height: inherit;
+    letter-spacing: inherit;
+    text-transform: inherit;
+    text-align: inherit;
     cursor: pointer;
-    font: inherit;
-    color: inherit;
-    padding: 0;
 }
 
 /* ═══════════════════════════════════════════════════════════════
