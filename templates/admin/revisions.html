@@ -40,18 +40,27 @@
                 </td>
                 <td>
                     {{ rev.date }}
-                    {% if rev.is_current %}<span class="badge badge--success">current</span>{% endif %}
                 </td>
                 <td>{{ rev.author }}</td>
                 <td>{{ rev.title }}</td>
                 <td>{{ rev.log | default(value="-") }}</td>
                 <td>
-                    <a href="/item/{{ item_id }}/revisions/{{ rev.id }}" class="button button--small">Preview</a>
-                    {% if not rev.is_current %}
+                    <a href="/item/{{ item_id }}/revisions/{{ rev.id }}" class="button button--small">View</a>
+                    {% if rev.is_current %}
+                    <em class="revision-current">Current revision</em>
+                    {% else %}
+                    {% if may_revert %}
                     <form method="post" action="/item/{{ item_id }}/revert/{{ rev.id }}" style="display:inline">
                         <input type="hidden" name="_token" value="{{ csrf_token }}">
                         <button type="submit" class="button button--small">Revert</button>
                     </form>
+                    {% endif %}
+                    {% if may_delete %}
+                    <form method="post" action="/item/{{ item_id }}/revisions/{{ rev.id }}/delete" style="display:inline">
+                        <input type="hidden" name="_token" value="{{ csrf_token }}">
+                        <button type="submit" class="button button--small button--danger">Delete</button>
+                    </form>
+                    {% endif %}
                     {% endif %}
                 </td>
             </tr>

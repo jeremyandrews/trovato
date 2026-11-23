@@ -67,6 +67,14 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     "administer content",
     "delete own content",
     "delete any content",
+    // An item's revision history, its past revisions and a comparison of two,
+    // for a user who may view the item but not edit it (an editor sees the
+    // history through their edit access already). Drupal's permission of the
+    // same name, so a migrated role keeps it. Granted by no migration.
+    "view revisions",
+    // Delete a past revision of an item the user may delete. The current
+    // revision is never deleted. Granted by no migration.
+    "delete revisions",
     // Read a stage other than Live: switch the session's active stage, and see
     // it (with Live beneath it) in search, gathers and aliases. Granted to no
     // role by any migration; an administrator holds it implicitly. See
