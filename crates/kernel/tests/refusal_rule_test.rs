@@ -70,7 +70,7 @@ const LOCK: &str = r#"{"entity_type":"item","entity_id":"x"}"#;
 /// The routes, one per family. `{item}` is replaced with a real item id.
 const ROUTES: &[Row] = &[
     // The JSON permission helpers.
-    row("GET", "/admin/queue/dlq", Kind::Json),
+    row("GET", "/api/v1/queue/dlq", Kind::Json),
     // The admin AJAX callback's own trigger.
     json(
         "POST",
@@ -82,7 +82,6 @@ const ROUTES: &[Row] = &[
     json("POST", "/api/lock/break", LOCK, Kind::Json),
     json("POST", "/api/lock/heartbeat", LOCK, Kind::JsonLoginOnly),
     row("GET", "/api/tokens", Kind::JsonLoginOnly),
-    row("GET", "/api/v1/user/export", Kind::JsonLoginOnly),
     row("GET", "/api/v1/media/browse", Kind::JsonLoginOnly),
     json(
         "POST",

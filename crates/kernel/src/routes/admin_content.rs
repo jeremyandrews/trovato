@@ -208,6 +208,17 @@ async fn render_content_form(
     context.insert("content_type", content_type);
     context.insert("form_html", &form_html);
     context.insert("path", &path);
+    if let Some(item) = item
+        && let Some(lock) = super::item::take_edit_lock(state, user_ctx, item.id).await
+    {
+        context.insert("content_lock", &lock);
+        // The token the lock script's first request sends (`<meta
+        // name="csrf-token">`); each answer carries the next.
+        context.insert(
+            "csrf_token",
+            &crate::form::csrf::generate_csrf_token(session).await,
+        );
+    }
     if let Some(item) = item {
         let item_id = item.id;
         // Local task tabs for item edit pages (hardcoded + plugin-registered)
@@ -554,8 +565,27 @@ async fn edit_content_submit(
         log: Some("Updated via admin UI".to_string()),
     };
 
+    // Another editor's lock refuses the save, on the form.
+    if super::item::locked_by_other(&state, &user_ctx, item_id).await {
+        let mut response = render_content_form(
+            &state,
+            &session,
+            &user_ctx,
+            &content_type,
+            Some(&item),
+            Some(&posted),
+            &[crate::form::ValidationError::form(
+                super::item::LOCKED_MESSAGE.to_string(),
+            )],
+        )
+        .await;
+        *response.status_mut() = axum::http::StatusCode::CONFLICT;
+        return response;
+    }
+
     match state.items().update(item_id, input, &user_ctx).await {
         Ok(updated) => {
+            super::item::release_edit_lock(&state, &user_ctx, item_id).await;
             state
                 .forms()
                 .submitted(

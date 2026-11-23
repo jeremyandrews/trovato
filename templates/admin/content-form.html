@@ -8,6 +8,8 @@
 
 {% if local_tasks is defined %}{{ tabs::tab_bar(local_tasks=local_tasks) }}{% endif %}
 
+{% if content_lock is defined %}{% include "elements/content-lock.html" %}{% endif %}
+
 <div class="admin-card">
     {# The form, its errors and the scripts its widgets need come from the one
        form renderer (`ThemeEngine::render_form_with_errors`), after

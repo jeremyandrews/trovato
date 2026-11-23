@@ -13,8 +13,9 @@ use trovato_kernel::tap::UserContext;
 use crate::server::SearchParams;
 use crate::tools::{internal_err, require_mcp_permission, to_json};
 
-/// Maximum allowed search query length in characters.
-const MAX_QUERY_LENGTH: usize = 1000;
+/// Maximum allowed search query length: the kernel's, which the HTTP search
+/// enforces too.
+use trovato_kernel::search::MAX_QUERY_LENGTH;
 
 /// Search published content.
 pub async fn search(

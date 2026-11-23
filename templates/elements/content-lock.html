@@ -1,0 +1,15 @@
+{# The item's edit lock (trovato_content_locking), on its edit forms: nothing
+   visible while the viewer holds it (content-lock.js keeps it alive), a notice
+   naming the other editor otherwise, with a button for a viewer who may break
+   it. Included where `content_lock` is defined. #}
+{% if content_lock.mine %}
+<div class="content-lock" data-content-lock data-entity-type="item" data-entity-id="{{ content_lock.entity_id }}" hidden></div>
+{% else %}
+<div class="message message--warning content-lock content-lock--held" role="alert" data-content-lock-held data-entity-type="item" data-entity-id="{{ content_lock.entity_id }}">
+    <p><strong>{{ content_lock.holder }}</strong> is editing this item. A save made now is refused until they finish or their lock lapses (at <time datetime="{{ content_lock.expires_at | date(format="%Y-%m-%dT%H:%M:%SZ") }}">{{ content_lock.expires_at | date(format="%H:%M UTC") }}</time> unless they keep editing).</p>
+    {% if content_lock.can_break %}
+    <p><button type="button" class="button button--danger" data-content-lock-break>Break the lock and edit</button></p>
+    {% endif %}
+</div>
+{% endif %}
+<script src="/static/js/content-lock.js" defer></script>

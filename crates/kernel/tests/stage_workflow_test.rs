@@ -741,6 +741,14 @@ fn with_no_workflow_only_an_administrator_moves_items() {
         assert_eq!(status, StatusCode::FORBIDDEN, "no workflow, no move");
         assert_eq!(stage_of(app, item.id).await, from.id);
 
+        // Opening the form took the edit lock for the editor; it lapses once
+        // they leave it. Let it go here rather than wait for it.
+        sqlx::query("DELETE FROM editing_lock WHERE entity_type = 'item' AND entity_id = $1")
+            .bind(item.id.to_string())
+            .execute(&app.db)
+            .await
+            .expect("release the editor's lock");
+
         let name = common::username("b69adm");
         let admin_cookies = app
             .create_and_login_admin(&name, "test-password-123", &format!("{name}@example.com"))

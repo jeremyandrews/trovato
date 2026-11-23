@@ -1162,13 +1162,14 @@ impl AppState {
             None
         };
 
-        let content_lock = if enabled_set.contains("trovato_content_locking") {
-            Some(Arc::new(services::content_lock::ContentLockService::new(
-                db.clone(),
-            )))
-        } else {
-            None
-        };
+        // Always built: it is a handle on the pool, and its callers ask
+        // whether `trovato_content_locking` is enabled when they use it, so a
+        // plugin enabled after boot locks without a restart. The cron cleanup
+        // below runs only for a plugin enabled at boot, whose table exists.
+        let content_lock_enabled = enabled_set.contains("trovato_content_locking");
+        let content_lock = Some(Arc::new(services::content_lock::ContentLockService::new(
+            db.clone(),
+        )));
 
         let image_styles = if enabled_set.contains("trovato_image_styles") {
             Some(Arc::new(services::image_style::ImageStyleService::new(
@@ -1222,7 +1223,10 @@ impl AppState {
         }
 
         // Wire plugin services into cron
-        cron.set_plugin_services(content_lock.clone(), audit.clone());
+        cron.set_plugin_services(
+            content_lock.clone().filter(|_| content_lock_enabled),
+            audit.clone(),
+        );
         cron.set_email_service(email.clone());
         // The per-plugin `mail` bucket has to apply from `tap_cron` and
         // `tap_queue_worker`, not only from a request.
@@ -1747,7 +1751,9 @@ impl AppState {
         self.inner.audit.as_ref()
     }
 
-    /// Get the content lock service (if content_locking plugin is enabled).
+    /// The content lock service. Always present; a caller asks whether
+    /// `trovato_content_locking` is enabled before using it, as the routes
+    /// gated on the plugin and the item edit form do.
     pub fn content_lock(&self) -> Option<&Arc<services::content_lock::ContentLockService>> {
         self.inner.content_lock.as_ref()
     }

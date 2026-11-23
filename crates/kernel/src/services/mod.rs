@@ -12,6 +12,7 @@ pub mod ai_chat;
 pub mod ai_provider;
 pub mod ai_token_budget;
 pub mod ai_tools;
+pub mod api_token;
 pub mod audit;
 pub mod comment;
 pub mod content_lock;

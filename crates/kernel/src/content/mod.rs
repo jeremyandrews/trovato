@@ -8,6 +8,10 @@
 //! - BlockTypeRegistry: Block type definitions and validation for block editor
 //! - BlockRenderer: Server-side block rendering for Editor.js content
 
+/// The longest item title any write path accepts, in bytes: the item form,
+/// the JSON API and the MCP tools refuse a longer one alike.
+pub const MAX_TITLE_LENGTH: usize = 1000;
+
 pub mod block_render;
 pub mod block_types;
 pub mod body_field;

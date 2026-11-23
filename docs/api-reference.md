@@ -154,6 +154,12 @@ Most resource IDs are UUIDv7. Categories and queries use string identifiers.
 
 ## Items
 
+The item reads require `access content` (401 anonymous, 403 signed in), as
+the MCP tools do. A caller who is not the site administrator lists published
+items only, whatever `status` they ask for; an unpublished item they may see is
+reached by its id. A title longer than 1000 bytes is refused on every write
+path, and so is a search or autocomplete `q` longer than 1000 bytes.
+
 ### List Items
 
 ```
@@ -705,6 +711,42 @@ GET /api/v1/media/browse?page=1&per_page=24&type=image&q=logo&sort=newest
 
 A page of the media library: `id`, `filename`, `mime_type`, `size`, `url`,
 `thumbnail_url`, `created`. Requires a signed-in caller.
+
+---
+
+## Content locking
+
+Served while `trovato_content_locking` is enabled (it is by default). The item
+edit forms take the lock when they open, show another editor's lock, refuse a
+save under it (409), and release it after a save; these two endpoints are what
+the form's script calls.
+
+```
+POST /api/v1/lock/heartbeat
+POST /api/v1/lock/break
+X-CSRF-Token: <token>
+Content-Type: application/json
+
+{"entity_type": "item", "entity_id": "<uuid>"}
+```
+
+Heartbeat extends the caller's own lock by 15 minutes (409 if they do not hold
+it); break needs `break content lock`. Both answer
+`{"lock": "extended" | "broken", "csrf_token": "<next token>"}`: CSRF tokens
+are single use, so the answer carries the token for the next request.
+
+---
+
+## Dead-letter queue
+
+```
+GET  /api/v1/queue/dlq?page=1&per_page=50
+POST /api/v1/queue/dlq/{id}/requeue
+POST /api/v1/queue/dlq/{id}/delete
+```
+
+Requires `administer site`; the two writes also `X-CSRF-Token`. See
+[plugin-queue.md](plugin-queue.md#dead-letter-queue-dlq-observability).
 
 ---
 

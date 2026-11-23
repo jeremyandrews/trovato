@@ -9,6 +9,29 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### One path per JSON capability; the item API takes `access content`
+
+**Who is affected:** API clients of `/api/v1/user/export`, `/admin/queue/dlq`
+or the item list; anyone relying on anonymous or role-less item reads.
+
+**What changed.**
+
+- `GET /api/v1/user/export` is removed. Use `GET /user/data-export`, the
+  signed-in account's own export (once an hour).
+- The dead-letter queue endpoints move from `/admin/queue/dlq...` to
+  `/api/v1/queue/dlq...`, require `administer site`, and the list answers a
+  page (`data`, `total`, `page`, `per_page`) instead of `{count, jobs}`.
+- `/api/v1/items`, `/api/v1/items/{type}` and `/api/v1/item/{id}` require
+  `access content`. For anyone but the site administrator the lists hold
+  published items only, whatever `status` asks for.
+- A title over 1000 bytes is refused on the item write paths, and a search or
+  autocomplete `q` over 1000 bytes with 400.
+- The item edit forms take the content lock while `trovato_content_locking` is
+  enabled; a save under another editor's lock answers 409.
+
+**How to find out.** Search clients for `user/export` and `admin/queue`, and
+check that the role your API token's account holds grants `access content`.
+
 ### The JSON API is under `/api/v1`, and every list is `{data, total, page, per_page}`
 
 **Who is affected:** any client of the kernel's JSON API or the MCP server: a
