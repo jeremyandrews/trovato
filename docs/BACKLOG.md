@@ -524,6 +524,31 @@ one row, BL-129.
 | BL-152 (G-NO-UPLOAD-QUOTA) | Uploads are limited per file (`MAX_FILE_SIZE`, 10 MiB, not configurable) and by the `uploads` rate bucket, but not by a total per user. Placement: kernel (file service). | `crates/kernel/src/file/service.rs` (`MAX_FILE_SIZE`); `crates/kernel/src/middleware/rate_limit.rs` (`uploads`) | open | post | additive |
 | BL-153 (G-NO-HTML-PAGE-CACHE) | Anonymous HTML pages carry no `Cache-Control`, `ETag` or `Last-Modified`, and there is no page cache, so every anonymous page view renders. Feeds already answer with `ETag`, `304` and `public, max-age=300`. The tagged Redis `CacheLayer` exists but pages do not use it. Placement: kernel. | `crates/kernel/src/routes/feed.rs` (`ANONYMOUS_MAX_AGE_SECS`); `crates/kernel/src/cache/mod.rs` (`CacheLayer`, `invalidate_tag`); `crates/kernel/src/routes/front.rs`, `routes/item.rs` (no cache headers) | open | post | additive |
 
+## From the Rules architecture reversal (BG12)
+
+[gap-analysis.md](alignment/gap-analysis.md) #11 and [roadmap.md](alignment/roadmap.md)
+said the tap system plus webhooks cover the same ground as an actions/triggers
+layer and skipped it. [rules.md](design/rules.md) reverses that for a hosted
+network of blog owners who cannot write a tap, and lays out the build in ten
+parts, each ending at one merged pull request, in the dependency order the rows
+below repeat. Every row is additive and `post` by this page's own test (a
+capability, not a defect); none blocks 1.0. Sizes are the design doc's own
+estimate, not a line count. These ten rows are new since the 2026-09-17
+verification this page's [Tally](#tally) counts from and are not folded into it.
+
+| ID | Finding | Where | Status | Class | Surface |
+|---|---|---|---|---|---|
+| BL-154 (G-RULES-NO-EVENT-CATALOGUE) | No events/conditions/actions layer exists; automation is Rust taps a blog owner on a hosted network cannot write. Part 1 (size: M): the kernel-only event catalogue and the `TapDispatcher` forward to a new `tap_rules_event`, with a test plugin proving the zero-listener path stays one `HashSet` lookup. Placement: kernel. Depends on nothing. | `docs/design/rules.md` sections 4, 13; `crates/kernel/src/tap/dispatcher.rs`; `crates/kernel/src/plugin/info_parser.rs`; `crates/wit/kernel.wit` | open | post | additive |
+| BL-155 (G-RULES-NO-STORAGE) | Rules plugin skeleton: Part 2 (size: M): the `rule` config entity and its table, the per-blog least-privilege service account and its role-grant screen, and bare list/enable/disable/delete with no builder yet. Placement: plugin (`trovato_rules`, new). Depends on BL-154. | `docs/design/rules.md` section 9, 13 | open | post | additive |
+| BL-156 (G-RULES-NO-BUILDER) | No form-based when/if/then builder for the core condition and inline-safe action set. Part 3 (size: L): field comparisons (including `LinkCount`), role/type/stage/moderation conditions, and the inline-safe set-a-field/move-a-stage/deny-access actions, on the existing `FormService` pipeline. Placement: plugin. Depends on BL-155. | `docs/design/rules.md` sections 5, 6, 11 | open | post | additive |
+| BL-157 (G-RULES-NO-QUEUE-ACTIONS) | No queued action execution, run log, idempotency or budgets. Part 4 (size: L): every non-inline-safe action (create-an-item, send-mail, publish/unpublish, hold-for-moderation, refresh-cache, and add/remove-a-role guarded by a single-blog check until BL-132), the per-rule run log, the retry idempotency key, and the per-rule/per-blog/network budgets. Placement: plugin, on the existing `plugin_queue`. Depends on BL-156. | `docs/design/rules.md` sections 6, 7, 10 | open | post | additive |
+| BL-158 (G-RULES-NO-WEBHOOK-ACTION) | No outgoing-webhook action. Part 5 (size: M): HMAC signing and retry on the kernel's hardened `http` interface, a new `rules_webhook` rate bucket, and `crypto-api`-backed secret storage. Placement: plugin. Depends on BL-157. | `docs/design/rules.md` section 6 | open | post | additive |
+| BL-159 (G-RULES-NO-GATHER-CONDITION) | No Gather-backed conditions (named count templates, or "item matches a saved view" as a fan-out for itemless events), recursion guard, or "start another rule set" action. Part 6 (size: M): both async-only Gather condition types, the `rules_depth` guard and cycle auto-disable. Placement: plugin. Depends on BL-157. | `docs/design/rules.md` sections 5, 7 | open | post | additive |
+| BL-160 (G-RULES-NO-DRY-RUN) | No dry run or run-log viewer. Part 7 (size: S): the `describe`/`execute` split on every action, the dry-run picker, and the admin run-log screen. Placement: plugin. Depends on BL-157. | `docs/design/rules.md` section 10 | open | post | additive |
+| BL-161 (G-RULES-NO-NETWORK-SCOPE) | No network-scoped rule category. Part 8 (size: M): `administer network rules`, the network sentinel tenant, and the builder's blog-vs-network switch. Placement: plugin. Depends on BL-129/BL-130/BL-132 (the tenant contract) landing first, and on BL-155. | `docs/design/rules.md` section 8 | open | post | additive, once BL-129 is decided |
+| BL-162 (G-RULES-NO-INBOUND-WEBHOOK) | No `webhook.received` event: no inbound webhook receiver exists anywhere in the kernel or in `plugins/trovato_webhooks` today. Part 9 (size: S, once the receiver exists): add the catalogue row and worked example 10. Placement: kernel/plugin seam first, then this row. Depends on an inbound webhook receiver being built (not this plan). | `docs/design/rules.md` sections 4, 14 | open | post | additive |
+| BL-163 (G-RULES-NO-BILLING-EVENT) | No `billing.payment_succeeded` event: BG5 billing does not exist in any form. Part 10 (size: S, once BG5 exists): add the catalogue row and worked example 4. Placement: this row only; BG5 itself is separate work. Depends on BG5 existing. | `docs/design/rules.md` sections 4, 14 | open | post | additive |
+
 ## The fix series against this page
 
 Eleven of the twelve pull requests that were open against rows on this page have

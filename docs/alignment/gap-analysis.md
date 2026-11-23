@@ -131,9 +131,9 @@ Gaps between Trovato and Drupal 6 + CCK + Views, sorted by priority. Each gap in
 
 **D6 equivalent:** Actions defined reusable operations (send email, publish node, etc.). Triggers associated actions with events (on node insert, on comment post, etc.).
 
-**Impact:** Low. Webhooks provide the event notification mechanism. Custom actions can be implemented as plugins responding to taps.
+**Impact:** Low for a single-operator install, where whoever can write a tap already has shell access to add one. Not low for a hosted network of blog owners who are not developers: "write a WASM plugin" is not an answer for that audience at all.
 
-**Resolution:** Skip. The tap system + webhooks cover the same use cases more cleanly.
+**Resolution (2026-11-23): Reversed for the hosted case.** Webhooks and the tap system remain the right answer for a plugin author. They are not an answer for a blog owner on trovato.blog who writes no code, so this gap is no longer skipped for that audience. [docs/design/rules.md](../design/rules.md) designs the events/conditions/actions layer (an additive kernel event catalogue, a fixed closed condition and action set, no expression language) and the ten build parts that follow it, tracked as [BACKLOG.md](../BACKLOG.md#from-the-rules-architecture-reversal-bg12) BL-154 through BL-163.
 
 ---
 
