@@ -1062,11 +1062,23 @@ async fn add_item_form(
         .get(&item_type)
         .ok_or_else(|| AppError::not_found("content type"))?;
 
-    item_form_page(&state, &session, &user, &content_type, None, None, &[]).await
+    item_form_page(
+        &state,
+        &session,
+        &user,
+        &content_type,
+        None,
+        None,
+        &[],
+        None,
+    )
+    .await
 }
 
 /// The item form page, inside the site theme: the form built through the
-/// pipeline, showing `posted` and `errors` when a submission failed (422).
+/// pipeline, showing `posted` and `errors` when a submission failed (422),
+/// or `posted` under `preview_html` when it asked for a preview.
+#[allow(clippy::too_many_arguments)]
 async fn item_form_page(
     state: &AppState,
     session: &Session,
@@ -1075,6 +1087,7 @@ async fn item_form_page(
     item: Option<&crate::models::Item>,
     posted: Option<&crate::content::submission::PostedForm>,
     errors: &[crate::form::ValidationError],
+    preview_html: Option<String>,
 ) -> Result<Response, AppError> {
     let (action, heading, extra) = match item {
         Some(item) => {
@@ -1107,10 +1120,18 @@ async fn item_form_page(
         ),
     };
 
-    let mut form =
-        super::item_form::build(state, session, user, content_type, item, &action, extra)
-            .await
-            .map_err(|e| AppError::internal_ctx(e, "build item form"))?;
+    let mut form = super::item_form::build(
+        state,
+        session,
+        user,
+        content_type,
+        item,
+        &action,
+        extra,
+        preview_html.is_some(),
+    )
+    .await
+    .map_err(|e| AppError::internal_ctx(e, "build item form"))?;
     if let Some(posted) = posted {
         super::item_form::redisplay(&mut form, posted);
     }
@@ -1122,6 +1143,9 @@ async fn item_form_page(
     let mut context = tera::Context::new();
     context.insert("title", &heading);
     context.insert("form_html", &form_html);
+    if let Some(preview_html) = &preview_html {
+        context.insert("preview_html", preview_html);
+    }
     if let Some(item) = item
         && let Some(lock) = take_edit_lock(state, user, item.id).await
     {
@@ -1151,7 +1175,8 @@ async fn item_form_page(
 enum Submitted {
     /// Save this, then (for a form) dispatch `tap_form_submit` for this state.
     Fields(Option<serde_json::Value>, Option<crate::form::FormState>),
-    /// The form, re-rendered with what refused it.
+    /// The form, re-rendered with what refused it, or under a preview of
+    /// what was submitted: a page to answer with, and nothing to save.
     Refused(Response),
 }
 
@@ -1172,6 +1197,26 @@ async fn submitted_fields(
         return Ok(Submitted::Fields(request.fields.clone(), None));
     };
     match super::item_form::process(state, session, user, content_type, item, posted).await {
+        // A preview: the submission rendered above the form shown again,
+        // and nothing saved.
+        Ok((_, fields)) if super::item_form::wants_preview(posted) => {
+            let title = posted.get("title").unwrap_or_default().trim().to_string();
+            let preview =
+                super::item_form::render_preview(state, user, content_type, &title, &fields).await;
+            Ok(Submitted::Refused(
+                item_form_page(
+                    state,
+                    session,
+                    user,
+                    content_type,
+                    item,
+                    Some(posted),
+                    &[],
+                    Some(preview),
+                )
+                .await?,
+            ))
+        }
         Ok((form_state, fields)) => Ok(Submitted::Fields(
             Some(serde_json::Value::Object(fields)),
             Some(form_state),
@@ -1188,6 +1233,7 @@ async fn submitted_fields(
                 item,
                 Some(posted),
                 &errors,
+                None,
             )
             .await?,
         )),
@@ -1527,6 +1573,7 @@ async fn edit_item_form(
         Some(&item),
         None,
         &[],
+        None,
     )
     .await
 }

@@ -4,6 +4,7 @@
 <div class="item-form">
     <h1>{{ title }}</h1>
     {% if content_lock is defined %}{% include "elements/content-lock.html" %}{% endif %}
+    {% if preview_html is defined %}{{ preview_html | safe }}{% endif %} {# SAFE: item_form::render_preview escapes the title; the fields are the item page renderer output #}
     {{ form_html | safe }} {# SAFE: kernel form renderer output — every value in it is escaped by the form templates #}
 </div>
 {% endblock %}

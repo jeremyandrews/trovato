@@ -26,6 +26,7 @@ pub mod owned_vocabulary;
 pub mod page_builder;
 pub mod page_builder_components;
 pub mod page_meta;
+pub mod preview;
 mod record_type;
 pub mod reentry;
 pub mod revision_compare;

@@ -15,6 +15,7 @@ use tower_sessions::Session;
 use trovato_sdk::types::{ContentTypeDefinition, FieldType};
 use uuid::Uuid;
 
+use crate::content::preview::{self, PreviewMode};
 use crate::content::submission::{PostedForm, build_item_fields, permitted_text_formats};
 use crate::content::{FieldMode, FormBuilder, PUBLISH_CONTENT};
 use crate::form::{ElementType, Form, FormElement, FormState, ProcessError, ValidationError};
@@ -30,6 +31,10 @@ pub(crate) fn tap_state(state: &AppState, user: &UserContext) -> RequestState {
 
 /// Build the item form for `item` (or a new item of `content_type`), with the
 /// route's own `extra` elements, through `FormService::build`.
+///
+/// `previewed` says the form is shown again under a preview of what was
+/// submitted, which is what lets a type whose preview is required offer Save.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn build(
     state: &AppState,
     session: &Session,
@@ -38,6 +43,7 @@ pub(crate) async fn build(
     item: Option<&Item>,
     action: &str,
     extra: Vec<(String, FormElement)>,
+    previewed: bool,
 ) -> anyhow::Result<Form> {
     let type_name = &content_type.machine_name;
     // On a moderated type the form edits the latest revision, which can be a
@@ -63,13 +69,26 @@ pub(crate) async fn build(
         extra.push(moderation_element(user, moderation.state));
     }
     extra.extend(publishing_element(state, user, type_name, item).await);
-    let form = match item {
+    let mode = preview_mode(state, type_name).await;
+    if mode != PreviewMode::Disabled {
+        extra.push(preview_button());
+    }
+    let mut form = match item {
         Some(item) => builder.build_edit_form(item, action),
         None => builder.build_add_form(action),
     }
     .elements(extra);
+    // A type that must be previewed offers Save only under a preview.
+    if mode == PreviewMode::Required && !previewed {
+        form.elements.remove("op");
+    }
 
     let mut form_state = FormState::new(form.form_id.clone(), form.form_build_id.clone());
+    if previewed {
+        form_state
+            .extra
+            .insert(preview::PREVIEWED.to_string(), Value::Bool(true));
+    }
     form_state.user_id = Some(user.id);
     form_state.item_id = item.map(|i| i.id);
     form_state.item_type = Some(type_name.clone());
@@ -77,6 +96,60 @@ pub(crate) async fn build(
         .forms()
         .build(form, session, &tap_state(state, user), form_state)
         .await
+}
+
+/// The preview mode of `type_name`: its `preview_mode` setting, or the
+/// default when the type cannot be read.
+pub(crate) async fn preview_mode(state: &AppState, type_name: &str) -> PreviewMode {
+    match crate::models::ItemType::find_by_type(state.db(), type_name).await {
+        Ok(row) => PreviewMode::of(row.as_ref().map(|r| &r.settings)),
+        Err(e) => {
+            tracing::warn!(error = %e, type_name, "reading the type's preview mode failed");
+            PreviewMode::default()
+        }
+    }
+}
+
+/// The Preview button. A `<button>` the form submits like Save, by name: the
+/// routes see `preview` in the submission and render it instead of saving.
+fn preview_button() -> (String, FormElement) {
+    (
+        preview::BUTTON.to_string(),
+        FormElement::markup(format!(
+            r#"<div class="form-actions form-actions--preview"><button name="{}" value="1" class="button button--secondary">Preview</button></div>"#,
+            preview::BUTTON
+        ))
+        .weight(crate::content::SUBMIT_WEIGHT),
+    )
+}
+
+/// Whether a submission asks for a preview rather than a save.
+pub(crate) fn wants_preview(posted: &PostedForm) -> bool {
+    posted.contains(preview::BUTTON)
+}
+
+/// The preview of a submission: its title and fields rendered as the item
+/// page renders them, above the form shown again. Nothing is saved.
+pub(crate) async fn render_preview(
+    state: &AppState,
+    user: &UserContext,
+    content_type: &ContentTypeDefinition,
+    title: &str,
+    fields: &Map<String, Value>,
+) -> String {
+    let (fields_html, _stylesheets) = super::item::render_item_fields(
+        state,
+        user,
+        &Value::Object(fields.clone()),
+        &content_type.fields,
+    )
+    .await;
+    format!(
+        r#"<section class="item-preview" aria-label="Preview"><p class="item-preview__notice">This is a preview. It has not been saved.</p><article class="item item--preview item--{}"><h1 class="item__title">{}</h1>{}</article></section>"#,
+        super::helpers::html_escape(&content_type.machine_name),
+        super::helpers::html_escape(title),
+        fields_html
+    )
 }
 
 /// The display title of every `RecordReference` target the item points at,
@@ -286,6 +359,10 @@ pub(crate) async fn process(
         None => None,
     };
     let item = working.as_ref().or(item);
+    // A save of a type that must be previewed needs a form built under a
+    // preview. A preview itself is always allowed.
+    let must_preview = !wants_preview(posted)
+        && preview_mode(state, &content_type.machine_name).await == PreviewMode::Required;
     state
         .forms()
         .process(
@@ -300,6 +377,11 @@ pub(crate) async fn process(
                     return Err(vec![ValidationError::form(crate::form::FORM_EXPIRED)]);
                 }
                 let mut errors = Vec::new();
+                if must_preview
+                    && form_state.extra.get(preview::PREVIEWED) != Some(&Value::Bool(true))
+                {
+                    errors.push(ValidationError::form("Preview this item before saving it."));
+                }
                 if posted.get("title").is_none_or(|t| t.trim().is_empty()) {
                     errors.push(ValidationError::field("title", "Title is required."));
                 }

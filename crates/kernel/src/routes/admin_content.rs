@@ -256,6 +256,59 @@ async fn render_content_form(
     posted: Option<&PostedForm>,
     errors: &[crate::form::ValidationError],
 ) -> Response {
+    render_content_form_page(
+        state,
+        session,
+        user_ctx,
+        content_type,
+        item,
+        posted,
+        errors,
+        None,
+    )
+    .await
+}
+
+/// The preview of a submission, above the admin content form shown again
+/// with what was posted. Nothing is saved.
+async fn render_content_preview(
+    state: &AppState,
+    session: &Session,
+    user_ctx: &crate::tap::UserContext,
+    content_type: &trovato_sdk::types::ContentTypeDefinition,
+    item: Option<&crate::models::Item>,
+    posted: &PostedForm,
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> Response {
+    let title = posted.get("title").unwrap_or_default().trim().to_string();
+    let preview =
+        super::item_form::render_preview(state, user_ctx, content_type, &title, fields).await;
+    render_content_form_page(
+        state,
+        session,
+        user_ctx,
+        content_type,
+        item,
+        Some(posted),
+        &[],
+        Some(preview),
+    )
+    .await
+}
+
+/// [`render_content_form`], under `preview_html` when the page answers a
+/// preview.
+#[allow(clippy::too_many_arguments)]
+async fn render_content_form_page(
+    state: &AppState,
+    session: &Session,
+    user_ctx: &crate::tap::UserContext,
+    content_type: &trovato_sdk::types::ContentTypeDefinition,
+    item: Option<&crate::models::Item>,
+    posted: Option<&PostedForm>,
+    errors: &[crate::form::ValidationError],
+    preview_html: Option<String>,
+) -> Response {
     let type_name = &content_type.machine_name;
     let path = match item {
         Some(item) => format!("/admin/content/{}/edit", item.id),
@@ -271,16 +324,24 @@ async fn render_content_form(
     if let Some(item) = item {
         extra.extend(super::item_form::stage_element(state, user_ctx, item).await);
     }
-    let mut form =
-        match super::item_form::build(state, session, user_ctx, content_type, item, &path, extra)
-            .await
-        {
-            Ok(form) => form,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to build the content form");
-                return render_server_error("Failed to build the form.");
-            }
-        };
+    let mut form = match super::item_form::build(
+        state,
+        session,
+        user_ctx,
+        content_type,
+        item,
+        &path,
+        extra,
+        preview_html.is_some(),
+    )
+    .await
+    {
+        Ok(form) => form,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to build the content form");
+            return render_server_error("Failed to build the form.");
+        }
+    };
     if let Some(posted) = posted {
         super::item_form::redisplay(&mut form, posted);
     }
@@ -296,6 +357,9 @@ async fn render_content_form(
     context.insert("editing", &item.is_some());
     context.insert("content_type", content_type);
     context.insert("form_html", &form_html);
+    if let Some(preview_html) = &preview_html {
+        context.insert("preview_html", preview_html);
+    }
     context.insert("path", &path);
     if let Some(item) = item
         && let Some(lock) = super::item::take_edit_lock(state, user_ctx, item.id).await
@@ -364,6 +428,18 @@ async fn add_content_submit(
         match super::item_form::process(&state, &session, &user_ctx, &content_type, None, &posted)
             .await
         {
+            Ok((_, fields)) if super::item_form::wants_preview(&posted) => {
+                return render_content_preview(
+                    &state,
+                    &session,
+                    &user_ctx,
+                    &content_type,
+                    None,
+                    &posted,
+                    &fields,
+                )
+                .await;
+            }
             Ok(processed) => processed,
             Err(crate::form::ProcessError::Csrf) => {
                 return render_error("Invalid or expired form token. Please try again.");
@@ -616,6 +692,18 @@ async fn edit_content_submit(
     )
     .await
     {
+        Ok((_, fields)) if super::item_form::wants_preview(&posted) => {
+            return render_content_preview(
+                &state,
+                &session,
+                &user_ctx,
+                &content_type,
+                Some(&item),
+                &posted,
+                &fields,
+            )
+            .await;
+        }
         Ok(processed) => processed,
         Err(crate::form::ProcessError::Csrf) => {
             return render_error("Invalid or expired form token. Please try again.");
