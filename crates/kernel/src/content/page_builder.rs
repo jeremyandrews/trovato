@@ -1247,7 +1247,10 @@ type = "url"
         let registry = root_registry();
         // No value: the declared default.
         assert_eq!(
-            root_of(json!({ "root": { "title": "T" }, "content": [] }), &registry),
+            root_of(
+                json!({ "root": { "title": "T" }, "content": [] }),
+                &registry
+            ),
             json!({ "title": "T", "footer_mode": "default", "variant_classes": "" })
         );
         // A chosen option adds its declared class.
@@ -1273,7 +1276,10 @@ type = "url"
         assert_eq!(root["footer_mode"], "custom");
         let html = root["footer_text_html"].as_str().unwrap();
         assert!(html.contains("<h2>Call us</h2>"), "{html}");
-        assert!(html.contains("<strong>now</strong>") && !html.contains("<script"), "{html}");
+        assert!(
+            html.contains("<strong>now</strong>") && !html.contains("<script"),
+            "{html}"
+        );
         assert!(root.get("footer_link").is_none(), "{root}");
         assert!(root.get("colour").is_none(), "{root}");
         let root = root_of(

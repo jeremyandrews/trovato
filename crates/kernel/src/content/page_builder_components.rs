@@ -911,7 +911,11 @@ max_length = 20
             assert_eq!(errors[0].component, "");
             assert_eq!(errors[0].field, field);
             assert!(errors[0].message.contains(needle), "{errors:?}");
-            assert!(errors[0].to_string().starts_with(&format!("root: {field}: ")));
+            assert!(
+                errors[0]
+                    .to_string()
+                    .starts_with(&format!("root: {field}: "))
+            );
         }
         std::fs::remove_dir_all(dir).ok();
     }
@@ -971,7 +975,10 @@ max_length = 20
         }])
         .unwrap_err();
         let msg = format!("{err:#}");
-        assert!(msg.contains("reserved") && msg.contains("plugin 'site'"), "{msg}");
+        assert!(
+            msg.contains("reserved") && msg.contains("plugin 'site'"),
+            "{msg}"
+        );
         std::fs::remove_dir_all(dir).ok();
 
         let dir = plugin_dir(
@@ -993,7 +1000,8 @@ max_length = 20
 
     #[test]
     fn root_values_read_both_shapes_props_first() {
-        let values = root_values(&json!({ "title": "flat", "a": 1, "props": { "title": "nested" } }));
+        let values =
+            root_values(&json!({ "title": "flat", "a": 1, "props": { "title": "nested" } }));
         assert_eq!(values["title"], "nested");
         assert_eq!(values["a"], 1);
         assert!(!values.contains_key("props"));
