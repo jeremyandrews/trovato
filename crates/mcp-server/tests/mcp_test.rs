@@ -1037,7 +1037,10 @@ fn list_items_hides_what_get_item_would_refuse() {
 fn the_category_tools_hide_an_owned_vocabulary() {
     run_test(async {
         let ctx = shared_app().await;
-        let id = format!("b189_mcp_{}", &uuid::Uuid::now_v7().simple().to_string()[20..]);
+        let id = format!(
+            "b189_mcp_{}",
+            &uuid::Uuid::now_v7().simple().to_string()[20..]
+        );
         sqlx::query(
             "INSERT INTO category (id, label, owner_type, owner_id) \
              VALUES ($1, 'Owned', 'b189_nobody', 'o1')",
@@ -1073,8 +1076,7 @@ fn the_category_tools_hide_an_owned_vocabulary() {
             let state = ctx.state.clone();
             async move {
                 let params: trovato_mcp::server::ListTagsParams =
-                    serde_json::from_value(serde_json::json!({ "category_id": category }))
-                        .unwrap();
+                    serde_json::from_value(serde_json::json!({ "category_id": category })).unwrap();
                 let result = trovato_mcp::tools::categories::list_tags(&state, &user, params)
                     .await
                     .unwrap();

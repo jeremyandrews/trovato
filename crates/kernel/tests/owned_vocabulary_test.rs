@@ -897,10 +897,7 @@ async fn listed_vocabularies(app: &TestApp, cookies: &str) -> Vec<String> {
         if data.is_empty() {
             break;
         }
-        ids.extend(
-            data.iter()
-                .map(|c| c["id"].as_str().unwrap().to_string()),
-        );
+        ids.extend(data.iter().map(|c| c["id"].as_str().unwrap().to_string()));
         let total = json["total"].as_u64().unwrap() as usize;
         if ids.len() >= total {
             break;
@@ -1013,8 +1010,18 @@ fn owned_vocabularies_are_hidden_from_public_category_reads() {
             ("anonymous", "", false, false),
             ("a plain user", &plain, false, false),
             ("club A's manager", &manager_a, true, false),
-            ("a holder of the declared permission", &every_club, true, true),
-            ("a holder of administer categories", &categories_admin, true, true),
+            (
+                "a holder of the declared permission",
+                &every_club,
+                true,
+                true,
+            ),
+            (
+                "a holder of administer categories",
+                &categories_admin,
+                true,
+                true,
+            ),
             ("the site administrator", &admin, true, true),
         ];
 
@@ -1027,11 +1034,15 @@ fn owned_vocabularies_are_hidden_from_public_category_reads() {
              \"description\":null,\"weight\":0,\"created\":{},\"changed\":{}}}",
             site_term.id, site_term.created, site_term.changed
         );
-        let site_tags = format!("{{\"data\":[{site_tag}],\"total\":1,\"page\":1,\"per_page\":100}}");
+        let site_tags =
+            format!("{{\"data\":[{site_tag}],\"total\":1,\"page\":1,\"per_page\":100}}");
 
         for (who, cookies, sees_a, sees_b) in callers {
             let listed = listed_vocabularies(app, cookies).await;
-            assert!(listed.contains(&site), "{who} lists the site-wide vocabulary");
+            assert!(
+                listed.contains(&site),
+                "{who} lists the site-wide vocabulary"
+            );
             assert!(listed.contains(&"tags".to_string()), "{who} lists tags");
             assert_eq!(listed.contains(&vocab_a), sees_a, "{who} lists club A's");
             assert_eq!(listed.contains(&vocab_b), sees_b, "{who} lists club B's");
@@ -1058,8 +1069,12 @@ fn owned_vocabularies_are_hidden_from_public_category_reads() {
                 }
             }
             if sees_a {
-                let (_, body) = get(app, cookies, &format!("/api/v1/category/{vocab_a}/tags")).await;
-                assert!(body.contains("Sculls root") && body.contains("Sculls child"), "{body}");
+                let (_, body) =
+                    get(app, cookies, &format!("/api/v1/category/{vocab_a}/tags")).await;
+                assert!(
+                    body.contains("Sculls root") && body.contains("Sculls child"),
+                    "{body}"
+                );
                 let (_, body) =
                     get(app, cookies, &format!("/api/v1/tag/{child_a}/breadcrumb")).await;
                 assert!(body.contains("Sculls root"), "{who}: {body}");
@@ -1094,7 +1109,10 @@ fn owned_vocabularies_are_hidden_from_public_category_reads() {
         let (_, body) = get(app, "", "/api/v1/categories?per_page=1").await;
         let json: serde_json::Value = serde_json::from_str(&body).unwrap();
         let anonymous_listed = listed_vocabularies(app, "").await;
-        assert_eq!(json["total"].as_u64().unwrap() as usize, anonymous_listed.len());
+        assert_eq!(
+            json["total"].as_u64().unwrap() as usize,
+            anonymous_listed.len()
+        );
 
         sqlx::query("DELETE FROM category WHERE id = $1")
             .bind(&site)

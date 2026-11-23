@@ -521,7 +521,11 @@ fn an_owned_vocabularys_term_page_and_filter_are_hidden() {
 
         let name = format!("b189_ls_admin_{s}");
         let admin_cookies = app
-            .create_and_login_admin(&name, "correct-horse-battery", &format!("{name}@test.local"))
+            .create_and_login_admin(
+                &name,
+                "correct-horse-battery",
+                &format!("{name}@test.local"),
+            )
             .await;
         let (status, html) = get_route_as(app, &query, &term_page, &admin_cookies).await;
         assert_eq!(status, StatusCode::OK, "administrator term page: {html}");

@@ -235,6 +235,39 @@ impl Category {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Every distinct `(owner_type, owner_id)` that owns a vocabulary.
+    pub async fn owners(pool: &PgPool) -> Result<Vec<(String, String)>> {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT DISTINCT owner_type, owner_id FROM category \
+             WHERE owner_type IS NOT NULL AND owner_id IS NOT NULL",
+        )
+        .fetch_all(pool)
+        .await
+        .context("failed to list vocabulary owners")
+    }
+
+    /// The site-wide vocabularies and those of the owners named by the
+    /// parallel arrays `owner_types` / `owner_ids`, in [`Self::list`]'s order.
+    pub async fn list_visible(
+        pool: &PgPool,
+        owner_types: &[String],
+        owner_ids: &[String],
+    ) -> Result<Vec<Self>> {
+        sqlx::query_as::<_, Self>(
+            "SELECT id, label, description, hierarchy, weight, owner_type, owner_id \
+             FROM category \
+             WHERE owner_type IS NULL \
+                OR (owner_type, owner_id) IN \
+                   (SELECT * FROM unnest($1::text[], $2::text[])) \
+             ORDER BY weight, label",
+        )
+        .bind(owner_types)
+        .bind(owner_ids)
+        .fetch_all(pool)
+        .await
+        .context("failed to list visible categories")
+    }
+
     /// Every vocabulary `owner_type` / `owner_id` owns, ordered by weight.
     pub async fn list_owned(pool: &PgPool, owner_type: &str, owner_id: &str) -> Result<Vec<Self>> {
         sqlx::query_as::<_, Self>(
