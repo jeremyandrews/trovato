@@ -108,6 +108,7 @@ async fn login_form(State(state): State<AppState>, session: Session) -> Response
     // Render login form
     let mut context = tera::Context::new();
     context.insert("csrf_token", &csrf_token);
+    context.insert("webauthn_available", &state.webauthn().is_some());
     if let Some(notice) = session
         .remove::<String>(SESSION_LOGIN_NOTICE)
         .await
@@ -180,6 +181,7 @@ async fn render_login_error(state: &AppState, session: &Session, error: &str) ->
     let mut context = tera::Context::new();
     context.insert("csrf_token", &csrf_token);
     context.insert("error", error);
+    context.insert("webauthn_available", &state.webauthn().is_some());
     super::helpers::inject_site_context(state, session, &mut context, "/user/login").await;
 
     match state.theme().tera().render("user/login.html", &context) {

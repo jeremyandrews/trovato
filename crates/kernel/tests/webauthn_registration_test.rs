@@ -70,6 +70,7 @@ async fn csrf_token(app: &TestApp, cookies: &str) -> String {
 fn rp_origin(app: &TestApp) -> url::Url {
     app.state
         .webauthn()
+        .expect("this app's SITE_URL is a hostname, so WebAuthn must be configured")
         .get_allowed_origins()
         .first()
         .expect("the relying party must have an origin")
@@ -292,7 +293,10 @@ fn register_finish_without_a_ceremony_is_rejected_and_audited() {
         // A syntactically valid but unsolicited credential: there is no
         // ceremony in the session, so this must be refused before verification.
         let mut authenticator = WebauthnAuthenticator::new(SoftPasskey::new(true));
-        let webauthn = app.state.webauthn();
+        let webauthn = app
+            .state
+            .webauthn()
+            .expect("this app's SITE_URL is a hostname, so WebAuthn must be configured");
         let (challenge, _discarded_state) = webauthn
             .start_passkey_registration(uuid::Uuid::now_v7(), "someone", "Someone", None)
             .unwrap();
