@@ -139,7 +139,7 @@ curl -s -b /tmp/trovato-admin.txt http://localhost:3000/admin/content/add/confer
 
 ```bash
 # Without auth, should get 403
-curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:3000/api/block-editor/upload
+curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:3000/api/v1/block-editor/upload
 # Expect: 403
 ```
 
@@ -151,7 +151,7 @@ curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:3000/api/block-e
 # Preview with test block data (requires auth)
 curl -s -b /tmp/trovato-admin.txt \
   -H "Content-Type: application/json" \
-  -X POST http://localhost:3000/api/block-editor/preview \
+  -X POST http://localhost:3000/api/v1/block-editor/preview \
   -d '{"blocks":[{"type":"paragraph","data":{"text":"Hello from preview"}}]}' | grep -o 'Hello from preview'
 # Expect: Hello from preview
 ```
@@ -197,7 +197,7 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
 # Create a preview with a code block
 curl -s -b /tmp/trovato-admin.txt \
   -H "Content-Type: application/json" \
-  -X POST http://localhost:3000/api/block-editor/preview \
+  -X POST http://localhost:3000/api/v1/block-editor/preview \
   -d '{"blocks":[{"type":"code","data":{"code":"fn main() {}","language":"rust"}}]}' | grep -c 'language-rust'
 # Expect: 1
 ```
@@ -210,14 +210,14 @@ curl -s -b /tmp/trovato-admin.txt \
 # Whitelisted source (YouTube) should produce iframe
 curl -s -b /tmp/trovato-admin.txt \
   -H "Content-Type: application/json" \
-  -X POST http://localhost:3000/api/block-editor/preview \
+  -X POST http://localhost:3000/api/v1/block-editor/preview \
   -d '{"blocks":[{"type":"embed","data":{"service":"youtube","source":"https://youtube.com/watch?v=test","embed":"https://youtube.com/watch?v=test"}}]}' | grep -c 'iframe'
 # Expect: 1
 
 # Non-whitelisted source should not produce iframe
 curl -s -b /tmp/trovato-admin.txt \
   -H "Content-Type: application/json" \
-  -X POST http://localhost:3000/api/block-editor/preview \
+  -X POST http://localhost:3000/api/v1/block-editor/preview \
   -d '{"blocks":[{"type":"embed","data":{"service":"evil","source":"https://evil.com/payload","embed":"https://evil.com/payload"}}]}' | grep -c 'iframe'
 # Expect: 0
 ```
@@ -280,7 +280,7 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
 - `FileService` in `crates/kernel/src/file/` handles uploads: sanitize filename, validate MIME type and magic bytes, store to local disk
 - Temporary uploads (status 0) promoted to permanent (status 1) on save
 - Cron cleans orphaned temp files after 6 hours
-- Block editor uploads via `/api/block-editor/upload` restricted to image types (jpeg, png, gif, webp)
+- Block editor uploads via `/api/v1/block-editor/upload` restricted to image types (jpeg, png, gif, webp)
 - Upload endpoint returns Editor.js-compatible response: `{ success: 1, file: { url: "..." } }`
 
 ### 6.2 Verify File Upload Security

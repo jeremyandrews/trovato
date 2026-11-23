@@ -10,6 +10,7 @@ use uuid::Uuid;
 
 use trovato_kernel::models::Item;
 use trovato_kernel::models::item::{CreateItem, UpdateItem};
+use trovato_kernel::pagination::Page;
 use trovato_kernel::state::AppState;
 use trovato_kernel::tap::UserContext;
 
@@ -76,9 +77,7 @@ pub async fn list_items(
 ) -> Result<CallToolResult, McpError> {
     require_mcp_permission(user_ctx, "access content")?;
 
-    let per_page = i64::from(params.per_page.unwrap_or(20).clamp(1, 100));
-    let page = i64::from(params.page.unwrap_or(1).max(1));
-    let offset = (page - 1) * per_page;
+    let window = crate::tools::window(params.page, params.per_page, params.limit, params.offset);
 
     let author_id = params.author_id.as_deref().map(parse_uuid).transpose()?;
 
@@ -96,24 +95,23 @@ pub async fn list_items(
             params.content_type.as_deref(),
             status,
             author_id,
-            per_page,
-            offset,
+            window.per_page,
+            window.offset,
         )
         .await
         .map_err(internal_err)?;
 
-    let page_size = usize::try_from(per_page).unwrap_or(0);
+    let page_size = usize::try_from(window.per_page).unwrap_or(0);
     let visible = state
         .items()
         .filter_page_for_view(items, user_ctx, "view", page_size)
         .await;
 
-    let result = serde_json::json!({
-        "items": visible.iter().map(item_summary).collect::<Vec<_>>(),
-        "total": total,
-        "page": page,
-        "per_page": per_page,
-    });
+    let result = Page::new(
+        visible.iter().map(item_summary).collect::<Vec<_>>(),
+        u64::try_from(total).unwrap_or(0),
+        window,
+    );
 
     Ok(CallToolResult::success(vec![ContentBlock::text(to_json(
         &result,

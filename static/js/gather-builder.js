@@ -4,7 +4,7 @@
  * Manages filter, sort, and relationship blocks on the gather admin
  * form, syncing state to hidden JSON inputs (#definition_json and
  * #display_json) for server-side persistence. Provides live preview
- * via AJAX POST to /api/gather/query.
+ * via AJAX POST to /api/v1/gather/query.
  */
 (function () {
     'use strict';
@@ -812,7 +812,7 @@
         });
 
         var xhr = new XMLHttpRequest();
-        xhr.open('POST', '/api/gather/query', true);
+        xhr.open('POST', '/api/v1/gather/query', true);
         xhr.setRequestHeader('Content-Type', 'application/json');
 
         xhr.addEventListener('load', function () {

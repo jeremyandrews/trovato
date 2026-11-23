@@ -228,7 +228,7 @@ curl -s http://localhost:3000/it/conferenze | grep -c 'conferenza'
 
 ## Step 5: REST API
 
-> **Note:** The `/api/v1/` versioned endpoints below are not yet implemented. Existing API endpoints are at `/api/` (without version prefix). These steps describe the planned versioned API design. To test existing endpoints now, use `/api/items`, `/api/item/{id}`, `/api/search`, `/api/categories`, etc.
+> **Note:** The kernel's JSON API is under `/api/v1` (`/api/v1/items`, `/api/v1/item/{id}`, `/api/v1/search`, `/api/v1/categories`, ...), and every list answers `{data, total, page, per_page}`. The conference-specific endpoints below (`/api/v1/conferences`, `/api/v1/topics`, `/api/v1/speakers`) are the planned design and are not yet implemented; `/api/v1/items?type=conference` lists conferences today.
 
 ### 5.1 Test Read Endpoints
 
@@ -365,7 +365,7 @@ echo -n "1. Languages configured: "; $(brew --prefix libpq)/bin/psql -t postgres
 echo -n "2. Italian conferences: "; $(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato -c "SELECT COUNT(*) FROM item WHERE type = 'conference' AND data->>'primary_language' = 'it';" | tr -d ' '
 echo -n "3. ritrovo_translate: "; $(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato -c "SELECT COALESCE((SELECT status::text FROM plugins WHERE name = 'ritrovo_translate'), 'not installed');" | tr -d ' '
 echo -n "4. All 5 plugins: "; $(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato -c "SELECT COUNT(*) FROM plugins WHERE name IN ('ritrovo_importer', 'ritrovo_cfp', 'ritrovo_access', 'ritrovo_notify', 'ritrovo_translate') AND status = 1;" | tr -d ' '
-echo -n "5. API conferences: "; curl -s http://localhost:3000/api/items?type=conference | jq -r '.total // "error"'
+echo -n "5. API conferences: "; curl -s http://localhost:3000/api/v1/items?type=conference | jq -r '.total // "error"'
 echo -n "6. API tokens table: "; $(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato -c "SELECT CASE WHEN EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'api_tokens') THEN 'yes' ELSE 'no' END;" | tr -d ' '
 echo ""
 ```

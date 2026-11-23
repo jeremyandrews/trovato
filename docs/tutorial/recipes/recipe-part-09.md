@@ -98,7 +98,7 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/search?q=rust
 # Expect: 200
 
 # Verify search returns results
-curl -s http://localhost:3000/api/search?q=rust | jq '.total'
+curl -s http://localhost:3000/api/v1/search?q=rust | jq '.total'
 # Expect: > 0
 ```
 
@@ -112,6 +112,6 @@ curl -s http://localhost:3000/api/search?q=rust | jq '.total'
 echo "=== Part 9 Completion Checklist ==="
 echo -n "1. trovato_ai enabled: "; curl -s http://localhost:3000/admin/plugins 2>/dev/null | grep -c "trovato_ai" || echo "check manually"
 echo -n "2. AI assist works: "; curl -s -b /tmp/trovato-cookies.txt -X POST http://localhost:3000/api/v1/ai/assist -H "Content-Type: application/json" -H "X-CSRF-Token: $CSRF" -d '{"text":"test","operation":"rewrite"}' 2>/dev/null | python3 -c "import sys,json; print('yes' if json.load(sys.stdin).get('result') else 'no')" 2>/dev/null || echo "no"
-echo -n "3. Search works: "; curl -s http://localhost:3000/api/search?q=rust 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'{d[\"total\"]} results')" 2>/dev/null || echo "check"
+echo -n "3. Search works: "; curl -s http://localhost:3000/api/v1/search?q=rust 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(f'{d[\"total\"]} results')" 2>/dev/null || echo "check"
 echo -n "4. Pagefind index: "; ls static/pagefind/pagefind-entry.json 2>/dev/null && echo "built" || echo "not built"
 ```

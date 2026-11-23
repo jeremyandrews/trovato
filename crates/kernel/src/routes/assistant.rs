@@ -1140,30 +1140,45 @@ async fn run_reset(
 
 /// Build the assistant's page and API routes.
 pub fn router() -> Router<AppState> {
-    let message_route = post(post_message).layer(DefaultBodyLimit::max(MAX_BODY_BYTES));
-
     Router::new()
         .route("/ai/assistant/{scope}", get(conversation_page_no_id))
         .route(
             "/ai/assistant/{scope}/{scope_id}",
             get(conversation_page_with_id),
         )
-        .route(
-            "/api/v1/assistant/{conversation_id}",
-            get(conversation_json),
+}
+
+/// The assistant's JSON API, under `/api/v1` ([`super::api`]). The form posts
+/// of the conversation page land here too and are answered with a redirect.
+pub fn api() -> super::api::ApiRoutes {
+    use super::api::doc;
+    let message_route = post(post_message).layer(DefaultBodyLimit::max(MAX_BODY_BYTES));
+    super::api::ApiRoutes::new("assistant")
+        .get(
+            "/assistant/{conversation_id}",
+            conversation_json,
+            doc("An assistant conversation"),
         )
-        .route("/api/v1/assistant/{conversation_id}/message", message_route)
         .route(
-            "/api/v1/assistant/{conversation_id}/proposals/{proposal_id}/apply",
-            post(apply_proposal),
+            axum::http::Method::POST,
+            "/assistant/{conversation_id}/message",
+            message_route,
+            doc("Send the assistant a message"),
         )
-        .route(
-            "/api/v1/assistant/{conversation_id}/proposals/{proposal_id}/discard",
-            post(discard_proposal),
+        .post(
+            "/assistant/{conversation_id}/proposals/{proposal_id}/apply",
+            apply_proposal,
+            doc("Apply a change the assistant proposed"),
         )
-        .route(
-            "/api/v1/assistant/{conversation_id}/reset",
-            post(reset_conversation),
+        .post(
+            "/assistant/{conversation_id}/proposals/{proposal_id}/discard",
+            discard_proposal,
+            doc("Discard a change the assistant proposed"),
+        )
+        .post(
+            "/assistant/{conversation_id}/reset",
+            reset_conversation,
+            doc("Start the conversation over"),
         )
 }
 

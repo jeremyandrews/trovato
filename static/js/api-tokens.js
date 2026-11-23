@@ -1,7 +1,7 @@
 // The API token page, /user/tokens.
 //
 // Creating and revoking call the same JSON endpoints an API client does
-// (POST /api/tokens, DELETE /api/tokens/{id}) with the page's CSRF token from
+// (POST /api/v1/tokens, DELETE /api/v1/tokens/{id}) with the page's CSRF token from
 // the csrf-token meta tag. The raw token is in the create response only: it is
 // shown once, here, and the server never renders it.
 //
@@ -48,7 +48,7 @@
         return;
       }
       el.disabled = true;
-      window.fetch("/api/tokens/" + encodeURIComponent(el.dataset.id), {
+      window.fetch("/api/v1/tokens/" + encodeURIComponent(el.dataset.id), {
         method: "DELETE",
         credentials: "same-origin",
         headers: { "X-CSRF-Token": csrf }
@@ -71,7 +71,7 @@
       if (days !== "") { body.expires_in_days = parseInt(days, 10); }
       disablePage();
 
-      window.fetch("/api/tokens", {
+      window.fetch("/api/v1/tokens", {
         method: "POST",
         credentials: "same-origin",
         headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },

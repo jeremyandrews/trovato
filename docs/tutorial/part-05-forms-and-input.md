@@ -220,8 +220,8 @@ After installation, the plugin gates two API routes via the `plugin_gate!` macro
 
 | Route | Method | Purpose |
 |---|---|---|
-| `/api/block-editor/upload` | POST | Image upload for the editor |
-| `/api/block-editor/preview` | POST | Server-side block rendering preview |
+| `/api/v1/block-editor/upload` | POST | Image upload for the editor |
+| `/api/v1/block-editor/preview` | POST | Server-side block rendering preview |
 
 These routes return 404 when the plugin is not installed. When it is installed, they require authentication and the `use block editor` permission.
 
@@ -281,9 +281,9 @@ If Editor.js fails to load (CDN unavailable, JavaScript disabled), the script fa
 
 ### 2.6: Image Upload via Blocks
 
-The image block tool uses the `/api/block-editor/upload` endpoint. When a user adds an image block and selects a file:
+The image block tool uses the `/api/v1/block-editor/upload` endpoint. When a user adds an image block and selects a file:
 
-1. Editor.js calls `POST /api/block-editor/upload` with `multipart/form-data`.
+1. Editor.js calls `POST /api/v1/block-editor/upload` with `multipart/form-data`.
 2. The server validates: authentication, file size, MIME type (JPEG, PNG, GIF, WebP only), and magic bytes.
 3. On success, the server returns Editor.js's expected format:
 
@@ -301,11 +301,11 @@ const BLOCK_EDITOR_IMAGE_TYPES: &[&str] = &["image/jpeg", "image/png", "image/gi
 
 ### 2.7: Server-Side Preview
 
-The `/api/block-editor/preview` endpoint accepts a JSON body with a `blocks` array and returns rendered HTML:
+The `/api/v1/block-editor/preview` endpoint accepts a JSON body with a `blocks` array and returns rendered HTML:
 
 ```bash
 curl -s -b /tmp/trovato-cookies.txt \
-  -X POST http://localhost:3000/api/block-editor/preview \
+  -X POST http://localhost:3000/api/v1/block-editor/preview \
   -H "Content-Type: application/json" \
   -d '{"blocks": [{"type": "paragraph", "weight": 0, "data": {"text": "Hello world"}}]}' \
   | jq '.html'
@@ -420,7 +420,7 @@ Non-whitelisted HTTP(S) URLs become clickable links. Non-HTTP URLs (like `javasc
 ```bash
 # Render a test block array via the preview endpoint
 curl -s -b /tmp/trovato-cookies.txt \
-  -X POST http://localhost:3000/api/block-editor/preview \
+  -X POST http://localhost:3000/api/v1/block-editor/preview \
   -H "Content-Type: application/json" \
   -d '{"blocks": [
     {"type": "heading", "weight": 0, "data": {"text": "Test", "level": 2}},
@@ -578,7 +578,7 @@ The current architecture loads tool scripts from CDN in the template. A future p
 # The standard block types are registered
 # (This is a code-level check; verify by creating a conference with blocks)
 curl -s -b /tmp/trovato-cookies.txt \
-  -X POST http://localhost:3000/api/block-editor/preview \
+  -X POST http://localhost:3000/api/v1/block-editor/preview \
   -H "Content-Type: application/json" \
   -d '{"blocks": [{"type": "unknown_type", "weight": 0, "data": {}}]}' \
   | jq -r '.html'
@@ -593,7 +593,7 @@ Files uploaded through the block editor or the file field widget go through the 
 
 ### Upload Flow
 
-1. **Receive** -- The file arrives as `multipart/form-data` via `POST /file/upload` (general) or `POST /api/block-editor/upload` (block editor images).
+1. **Receive** -- The file arrives as `multipart/form-data` via `POST /file/upload` (general) or `POST /api/v1/block-editor/upload` (block editor images).
 
 2. **Authenticate** -- Both endpoints require a logged-in user. The block editor endpoint additionally requires the `use block editor` permission.
 
@@ -628,7 +628,7 @@ Orphaned temporary files (uploaded but never attached to an item) are cleaned up
 ```bash
 # Upload an image via the block editor endpoint (requires auth + block editor permission)
 curl -s -b /tmp/trovato-cookies.txt \
-  -X POST http://localhost:3000/api/block-editor/upload \
+  -X POST http://localhost:3000/api/v1/block-editor/upload \
   -F "image=@/path/to/test-image.jpg" \
   | jq '.success'
 # Expect: 1 (if authenticated with 'use block editor' permission)

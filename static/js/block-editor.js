@@ -15,8 +15,8 @@
     // Configuration
     // -------------------------------------------------------------------------
 
-    var UPLOAD_ENDPOINT = '/api/block-editor/upload';
-    var PREVIEW_ENDPOINT = '/api/block-editor/preview';
+    var UPLOAD_ENDPOINT = '/api/v1/block-editor/upload';
+    var PREVIEW_ENDPOINT = '/api/v1/block-editor/preview';
 
     // -------------------------------------------------------------------------
     // Trovato <-> Editor.js format mapping

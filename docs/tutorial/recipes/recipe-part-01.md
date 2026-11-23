@@ -139,7 +139,7 @@ Record the config import command in `TOOLS.md -> Config`.
 
 ```bash
 sleep 5
-curl -s http://localhost:3000/api/content-types | jq '.[] | select(. == "conference")'
+curl -s http://localhost:3000/api/v1/content-types | jq '.data[] | select(. == "conference")'
 # Expect: "conference"
 ```
 
@@ -323,7 +323,7 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/conferences
 # Expect: 200
 
 # The tutorial gather also works at its direct URL
-curl -s http://localhost:3000/api/query/upcoming_conferences/execute | jq '.total'
+curl -s http://localhost:3000/api/v1/query/upcoming_conferences/execute | jq '.total'
 # Expect: 3
 ```
 
@@ -402,7 +402,7 @@ $(brew --prefix libpq)/bin/psql postgres://trovato:trovato@localhost:5432/trovat
 ```bash
 echo "=== Part 1 Completion Checklist ==="
 echo -n "1. Server healthy: "; curl -s http://localhost:3000/health | jq -r '.status'
-echo -n "2. Conference type: "; curl -s http://localhost:3000/api/content-types | jq -r '.[] | select(. == "conference")'
+echo -n "2. Conference type: "; curl -s http://localhost:3000/api/v1/content-types | jq -r '.data[] | select(. == "conference")'
 echo -n "3. Conference count: "; $(brew --prefix libpq)/bin/psql -t postgres://trovato:trovato@localhost:5432/trovato -c "SELECT COUNT(*) FROM item WHERE type = 'conference';" | tr -d ' '
 echo -n "4. /conferences: "; curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/conferences
 echo -n "5. Aliases: "

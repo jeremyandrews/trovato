@@ -128,7 +128,7 @@ async fn search(app: &TestApp, cookies: &str, q: &str) -> (Vec<String>, i64) {
     let (status, body) = get(app, &format!("/api/search?q={q}"), cookies).await;
     assert_eq!(status, StatusCode::OK, "search answers: {body}");
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
-    let ids = json["results"]
+    let ids = json["data"]
         .as_array()
         .unwrap()
         .iter()
@@ -190,7 +190,7 @@ async fn execute(
 }
 
 fn row_ids(result: &serde_json::Value) -> Vec<String> {
-    result["items"]
+    result["data"]
         .as_array()
         .unwrap()
         .iter()
@@ -439,10 +439,10 @@ fn a_gathers_total_and_pager_count_only_visible_rows() {
 
         let first = execute(app, &query_id, &cookies, None, 1).await;
         assert_eq!(first["total"], 3, "only the published pages are counted");
-        assert_eq!(first["total_pages"], 2);
-        assert_eq!(first["has_next"], true);
+        assert_eq!(first["per_page"], 2, "two to a page: two pages");
+        assert_eq!(first["page"], 1);
         let second = execute(app, &query_id, &cookies, None, 2).await;
-        assert_eq!(second["has_next"], false);
+        assert_eq!(second["page"], 2);
 
         let mut seen = row_ids(&first);
         seen.extend(row_ids(&second));

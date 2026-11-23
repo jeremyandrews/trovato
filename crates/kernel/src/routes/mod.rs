@@ -27,6 +27,7 @@ pub mod admin_taxonomy;
 pub mod admin_text_format;
 pub mod admin_translation;
 pub mod admin_user;
+pub mod api;
 pub mod api_ai_assist;
 pub mod api_chat;
 pub mod api_search;
@@ -97,14 +98,13 @@ macro_rules! plugin_gate {
 
 plugin_gate!(gate_categories, "trovato_categories");
 plugin_gate!(gate_comments, "trovato_comments");
-plugin_gate!(gate_content_locking, "trovato_content_locking");
 plugin_gate!(gate_content_translation, "trovato_content_translation");
 plugin_gate!(gate_image_styles, "trovato_image_styles");
 plugin_gate!(gate_oauth2, "trovato_oauth2");
-plugin_gate!(gate_block_editor, "trovato_block_editor");
 plugin_gate!(gate_audit_log, "trovato_audit_log");
 
-/// Plugin names that are runtime-gated in [`gated_plugin_routes`].
+/// Plugin names that are runtime-gated in [`gated_plugin_routes`], or, for
+/// their JSON routes, by [`api::ApiRoutes::plugin`].
 ///
 /// Must be kept in sync with [`crate::plugin::gate::GATED_ROUTE_PLUGINS`].
 /// A unit test in `plugin::gate` enforces this invariant.
@@ -140,17 +140,9 @@ pub fn gated_plugin_routes(state: &AppState) -> Router<AppState> {
                 )),
         )
         .merge(
-            admin::comment_admin_router()
-                .merge(comment::router())
-                .route_layer(axum::middleware::from_fn_with_state(
-                    state.clone(),
-                    gate_comments,
-                )),
-        )
-        .merge(
-            lock::router().route_layer(axum::middleware::from_fn_with_state(
+            admin::comment_admin_router().route_layer(axum::middleware::from_fn_with_state(
                 state.clone(),
-                gate_content_locking,
+                gate_comments,
             )),
         )
         .merge(
@@ -169,12 +161,6 @@ pub fn gated_plugin_routes(state: &AppState) -> Router<AppState> {
             oauth::router().route_layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 gate_oauth2,
-            )),
-        )
-        .merge(
-            file::block_editor_router().route_layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                gate_block_editor,
             )),
         )
         .merge(

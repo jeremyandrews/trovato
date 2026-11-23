@@ -124,6 +124,8 @@ fn list_items_returns_paginated_results() {
                 author_id: None,
                 page: Some(1),
                 per_page: Some(5),
+                limit: None,
+                offset: None,
             },
         )
         .await
@@ -131,7 +133,7 @@ fn list_items_returns_paginated_results() {
 
         let text = extract_text(&result);
         let json: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
-        assert!(json["items"].is_array(), "response should have items array");
+        assert!(json["data"].is_array(), "response should have a data array");
         assert!(json["total"].is_number(), "response should have total");
         assert_eq!(json["page"], 1);
         assert_eq!(json["per_page"], 5);
@@ -240,6 +242,8 @@ fn search_returns_results() {
             &ctx.admin_user_ctx,
             SearchParams {
                 query: "test".to_string(),
+                page: None,
+                per_page: None,
                 limit: Some(5),
                 offset: None,
             },
@@ -249,7 +253,8 @@ fn search_returns_results() {
 
         let text = extract_text(&result);
         let json: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
-        assert!(json["results"].is_array());
+        assert!(json["data"].is_array());
+        assert_eq!(json["per_page"], 5, "limit is an alias of per_page");
     });
 }
 
@@ -269,7 +274,10 @@ fn list_content_types_returns_schema() {
 
         let text = extract_text(&result);
         let json: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
-        assert!(json.is_array(), "should return array of content types");
+        assert!(
+            json["data"].is_array(),
+            "should return a page of content types"
+        );
     });
 }
 
@@ -285,7 +293,7 @@ fn list_categories_returns_data() {
 
         let text = extract_text(&result);
         let json: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
-        assert!(json.is_array());
+        assert!(json["data"].is_array());
     });
 }
 
@@ -971,6 +979,8 @@ fn list_items_hides_what_get_item_would_refuse() {
                 author_id: None,
                 page: Some(1),
                 per_page: Some(50),
+                limit: None,
+                offset: None,
             },
         )
         .await
@@ -1002,6 +1012,8 @@ fn list_items_hides_what_get_item_would_refuse() {
                 author_id: None,
                 page: Some(1),
                 per_page: Some(50),
+                limit: None,
+                offset: None,
             },
         )
         .await

@@ -51,7 +51,7 @@ The block editor auto-initializes on elements with `data-block-editor`:
 
 ## Upload Endpoint
 
-Image blocks use `POST /api/block-editor/upload` for file uploads. The endpoint:
+Image blocks use `POST /api/v1/block-editor/upload` for file uploads. The endpoint:
 - Requires authentication (returns 403 otherwise)
 - Accepts `multipart/form-data` with field name `image` or `file`
 - Validates MIME type (JPEG, PNG, GIF, WebP only)
@@ -60,7 +60,7 @@ Image blocks use `POST /api/block-editor/upload` for file uploads. The endpoint:
 
 ## Preview Endpoint
 
-Content preview uses `POST /api/block-editor/preview`:
+Content preview uses `POST /api/v1/block-editor/preview`:
 - Requires authentication
 - Accepts `{ "blocks": [...] }` JSON body
 - Returns `{ "html": "..." }` with server-rendered HTML

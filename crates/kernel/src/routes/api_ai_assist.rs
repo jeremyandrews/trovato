@@ -7,11 +7,10 @@
 
 use std::time::Instant;
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
-use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
@@ -48,8 +47,12 @@ pub struct AiAssistResponse {
 }
 
 /// Build the AI assist router.
-pub fn router() -> Router<AppState> {
-    Router::new().route("/api/v1/ai/assist", post(ai_assist_handler))
+pub fn api() -> super::api::ApiRoutes {
+    super::api::ApiRoutes::new("ai").post(
+        "/ai/assist",
+        ai_assist_handler,
+        super::api::doc("AI text transformation (rewrite, expand, shorten, translate, tone)"),
+    )
 }
 
 /// Handle AI text assist requests.

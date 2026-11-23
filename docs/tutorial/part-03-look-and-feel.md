@@ -102,7 +102,7 @@ Visit any conference detail page. You should see a styled layout with header met
 
 ```bash
 # Pick a conference ID
-ID=$(curl -s http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | jq -r '.items[0].id')
+ID=$(curl -s http://localhost:3000/api/v1/query/ritrovo.upcoming_conferences/execute | jq -r '.data[0].id')
 
 # View the detail page
 curl -s http://localhost:3000/item/$ID | grep -o 'class="conf-detail[^"]*"' | head -5
@@ -303,7 +303,7 @@ The kernel discovers these by scanning the `speaker` content type's RecordRefere
 
 ```bash
 # Confirm speaker type exists
-curl -s http://localhost:3000/api/content-types | jq '.[] | select(. == "speaker")'
+curl -s http://localhost:3000/api/v1/content-types | jq '.data[] | select(. == "speaker")'
 # "speaker"
 
 # Check a speaker's detail page (after creating one)
@@ -437,7 +437,7 @@ curl -s http://localhost:3000/ | grep -o 'class="site-header[^"]*"' | head -1
 curl -s http://localhost:3000/conferences | grep -o 'class="site-nav[^"]*"' | head -3
 
 # Check for breadcrumbs on a conference detail page
-ID=$(curl -s http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | jq -r '.items[0].id')
+ID=$(curl -s http://localhost:3000/api/v1/query/ritrovo.upcoming_conferences/execute | jq -r '.data[0].id')
 curl -s http://localhost:3000/item/$ID | grep -o 'class="breadcrumb[^"]*"' | head -1
 
 # Check for sidebar (only appears if tiles are configured)
@@ -505,10 +505,10 @@ The search results page at `/search?q={query}` shows:
 
 ### Search API
 
-The JSON search API is available at `/api/search?q={query}`:
+The JSON search API is available at `/api/v1/search?q={query}`:
 
 ```bash
-curl -s 'http://localhost:3000/api/search?q=rust' | jq '{total: .total, first_title: .items[0].title}'
+curl -s 'http://localhost:3000/api/v1/search?q=rust' | jq '{total: .total, first_title: .data[0].title}'
 ```
 
 ### Verify Search Weighting
@@ -517,11 +517,11 @@ Search for "rust" -- RustConf (title match, weight A) should appear near the top
 
 ```bash
 # Title match should rank high
-curl -s 'http://localhost:3000/api/search?q=rust' | jq '.items[0].title'
+curl -s 'http://localhost:3000/api/v1/search?q=rust' | jq '.data[0].title'
 # Should be "RustConf 2026" or similar
 
 # City match
-curl -s 'http://localhost:3000/api/search?q=berlin' | jq '.items | length'
+curl -s 'http://localhost:3000/api/v1/search?q=berlin' | jq '.data | length'
 # Should return > 0
 ```
 

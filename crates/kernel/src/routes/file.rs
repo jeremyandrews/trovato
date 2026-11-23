@@ -33,13 +33,21 @@ pub fn router() -> Router<AppState> {
 }
 
 /// Create the block editor API router (gated by `block_editor` plugin).
-pub fn block_editor_router() -> Router<AppState> {
-    Router::new()
+pub fn block_editor_api() -> super::api::ApiRoutes {
+    use super::api::doc;
+    super::api::ApiRoutes::new("block-editor")
         .route(
-            "/api/block-editor/upload",
+            axum::http::Method::POST,
+            "/block-editor/upload",
             post(block_editor_upload).layer(DefaultBodyLimit::max(MAX_UPLOAD_BODY_SIZE)),
+            doc("Upload an image from the block editor (multipart; `X-CSRF-Token`)").alias(),
         )
-        .route("/api/block-editor/preview", post(block_editor_preview))
+        .post(
+            "/block-editor/preview",
+            block_editor_preview,
+            doc("Render blocks as the page will").alias(),
+        )
+        .plugin("trovato_block_editor")
 }
 
 /// Upload response.

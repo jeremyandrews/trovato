@@ -9,6 +9,7 @@ use rmcp::model::*;
 
 use trovato_kernel::LIVE_STAGE_ID;
 use trovato_kernel::gather::types::{FilterValue, QueryContext};
+use trovato_kernel::pagination::Page;
 use trovato_kernel::state::AppState;
 use trovato_kernel::tap::UserContext;
 
@@ -63,7 +64,13 @@ pub async fn run_gather(
         .await
         .map_err(internal_err)?;
 
-    let json = to_json(&result)?;
+    let page = Page {
+        data: result.items,
+        total: result.total,
+        page: i64::from(result.page),
+        per_page: i64::from(result.per_page),
+    };
+    let json = to_json(&page)?;
     Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
 }
 

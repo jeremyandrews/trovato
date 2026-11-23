@@ -18,6 +18,6 @@ pub async fn list_content_types(
     require_mcp_permission(user_ctx, "access content")?;
 
     let types = state.content_types().list();
-    let json = to_json(&types)?;
+    let json = to_json(&trovato_kernel::pagination::Page::all(types))?;
     Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
 }

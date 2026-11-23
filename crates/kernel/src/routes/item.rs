@@ -18,6 +18,7 @@ use crate::error::AppError;
 use crate::form::csrf::generate_csrf_token;
 use crate::middleware::language::ResolvedLanguage;
 use crate::models::{CreateItem, UpdateItem, UrlAlias};
+use crate::pagination::{Page, PageParams};
 use crate::state::AppState;
 use crate::tap::UserContext;
 
@@ -60,22 +61,6 @@ pub struct AuthorResponse {
     pub name: String,
 }
 
-/// Paginated list response.
-#[derive(Debug, Serialize)]
-pub struct PaginatedResponse<T> {
-    pub items: Vec<T>,
-    pub pagination: PaginationMeta,
-}
-
-/// Pagination metadata.
-#[derive(Debug, Serialize)]
-pub struct PaginationMeta {
-    pub total: i64,
-    pub page: i64,
-    pub per_page: i64,
-    pub total_pages: i64,
-}
-
 /// Query parameters for listing items.
 #[derive(Debug, Deserialize)]
 pub struct ListItemsQuery {
@@ -83,8 +68,6 @@ pub struct ListItemsQuery {
     pub item_type: Option<String>,
     pub status: Option<i16>,
     pub author_id: Option<Uuid>,
-    pub page: Option<i64>,
-    pub per_page: Option<i64>,
     pub include: Option<String>,
 }
 
@@ -341,12 +324,44 @@ pub fn router() -> Router<AppState> {
         .route("/item/{id}/revisions/compare", get(compare_revisions))
         .route("/item/{id}/revisions/{rev_id}", get(preview_revision))
         .route("/item/{id}/revert/{rev_id}", post(revert_revision))
-        // API endpoints
-        .route("/api/content-types", get(list_content_types))
-        .route("/api/items/{type}", get(list_items_by_type))
-        // JSON API endpoints
-        .route("/api/item/{id}", get(get_item_api))
-        .route("/api/items", get(list_items_api))
+}
+
+/// The item JSON API, under `/api/v1` ([`super::api`]).
+pub fn api() -> super::api::ApiRoutes {
+    use super::api::doc;
+    super::api::ApiRoutes::new("content")
+        .get(
+            "/content-types",
+            list_content_types,
+            doc("List content type machine names")
+                .paged(100, 100)
+                .alias(),
+        )
+        .get(
+            "/items",
+            list_items_api,
+            doc("List content items with filters and pagination")
+                .query("type", "Content type filter")
+                .query("status", "Status filter: 1 published, 0 unpublished")
+                .query("author_id", "Author UUID filter")
+                .query("include", "`author` to embed each item's author")
+                .paged(20, 100)
+                .alias(),
+        )
+        .get(
+            "/items/{type}",
+            list_items_by_type,
+            doc("List the items of one content type")
+                .paged(20, 100)
+                .alias(),
+        )
+        .get(
+            "/item/{id}",
+            get_item_api,
+            doc("Get a single content item by ID")
+                .query("include", "`author` to embed the item's author")
+                .alias(),
+        )
 }
 
 // The session-derived loader lives in `routes::helpers` alongside its sibling
@@ -1745,8 +1760,14 @@ async fn revert_revision(
 }
 
 /// List all content types (API endpoint).
-async fn list_content_types(State(state): State<AppState>) -> Json<Vec<String>> {
-    Json(state.content_types().type_names())
+async fn list_content_types(
+    State(state): State<AppState>,
+    Query(paging): Query<PageParams>,
+) -> Json<Page<String>> {
+    Json(Page::slice(
+        state.content_types().type_names(),
+        paging.window(100, 100),
+    ))
 }
 
 /// List items by type (API endpoint).
@@ -1754,7 +1775,8 @@ async fn list_items_by_type(
     State(state): State<AppState>,
     session: Session,
     Path(item_type): Path<String>,
-) -> Result<Json<Vec<ItemResponse>>, AppError> {
+    Query(paging): Query<PageParams>,
+) -> Result<Json<Page<ItemResponse>>, AppError> {
     let items = state
         .items()
         .list_by_type(&item_type)
@@ -1770,17 +1792,14 @@ async fn list_items_by_type(
         .filter_page_for_view(items, &user, "view", count)
         .await;
 
-    Ok(Json(
-        items
-            .into_iter()
-            .map(|i| ItemResponse {
-                id: i.id,
-                title: i.title,
-                item_type: i.item_type,
-                status: i.status,
-            })
-            .collect(),
-    ))
+    Ok(Json(Page::slice(items, paging.window(20, 100)).map(|i| {
+        ItemResponse {
+            id: i.id,
+            title: i.title,
+            item_type: i.item_type,
+            status: i.status,
+        }
+    })))
 }
 
 // =============================================================================
@@ -1789,7 +1808,7 @@ async fn list_items_by_type(
 
 /// Get a single item by ID (JSON API).
 ///
-/// GET /api/item/{id}?include=author
+/// GET /api/v1/item/{id}?include=author
 async fn get_item_api(
     State(state): State<AppState>,
     session: Session,
@@ -1844,15 +1863,14 @@ async fn get_item_api(
 
 /// List items with filtering and pagination (JSON API).
 ///
-/// GET /api/items?type=article&status=1&page=1&per_page=20&include=author
+/// GET /api/v1/items?type=article&status=1&page=1&per_page=20&include=author
 async fn list_items_api(
     State(state): State<AppState>,
     session: Session,
     Query(query): Query<ListItemsQuery>,
-) -> Result<Json<PaginatedResponse<ItemApiResponse>>, AppError> {
-    let page = query.page.unwrap_or(1).max(1);
-    let per_page = query.per_page.unwrap_or(20).clamp(1, 100);
-    let offset = (page - 1) * per_page;
+    Query(paging): Query<PageParams>,
+) -> Result<Json<Page<ItemApiResponse>>, AppError> {
+    let window = paging.window(20, 100);
 
     // Check if we should include author
     let include_author = query
@@ -1868,8 +1886,8 @@ async fn list_items_api(
             query.item_type.as_deref(),
             query.status,
             query.author_id,
-            per_page,
-            offset,
+            window.per_page,
+            window.offset,
         )
         .await
         .map_err(|e| AppError::internal_ctx(e, "list items"))?;
@@ -1905,8 +1923,6 @@ async fn list_items_api(
         }
     }
 
-    let total_pages = (total as f64 / per_page as f64).ceil() as i64;
-
     let items_response: Vec<ItemApiResponse> = items
         .into_iter()
         .map(|item| {
@@ -1933,13 +1949,9 @@ async fn list_items_api(
         })
         .collect();
 
-    Ok(Json(PaginatedResponse {
-        items: items_response,
-        pagination: PaginationMeta {
-            total,
-            page,
-            per_page,
-            total_pages,
-        },
-    }))
+    Ok(Json(Page::new(
+        items_response,
+        u64::try_from(total).unwrap_or(0),
+        window,
+    )))
 }

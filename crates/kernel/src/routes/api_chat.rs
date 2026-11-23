@@ -7,12 +7,12 @@
 use std::convert::Infallible;
 use std::time::{Duration, Instant};
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
-use axum::{Json, Router};
 use serde::Deserialize;
 use tower_sessions::Session;
 
@@ -394,12 +394,17 @@ async fn chat_handler(
 // =============================================================================
 
 /// Build the chat API router.
-pub fn router() -> Router<AppState> {
+pub fn api() -> super::api::ApiRoutes {
     use axum::extract::DefaultBodyLimit;
 
     // The chat endpoint receives a JSON message (max 4096 chars) plus JSON
     // overhead. Cap at 8 KiB to prevent abuse while allowing legitimate payloads.
     let chat_route = post(chat_handler).layer(DefaultBodyLimit::max(8 * 1024));
 
-    Router::new().route("/api/v1/chat", chat_route)
+    super::api::ApiRoutes::new("ai").route(
+        axum::http::Method::POST,
+        "/chat",
+        chat_route,
+        super::api::doc("AI chatbot with SSE streaming response").stream(),
+    )
 }

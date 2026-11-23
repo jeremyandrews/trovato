@@ -4,7 +4,7 @@
 //! Editor.js block editing system. When enabled, it:
 //!
 //! - Provides the `"use block editor"` permission
-//! - Gates the `/api/block-editor/upload` and `/api/block-editor/preview` routes
+//! - Gates the `/api/v1/block-editor/upload` and `/api/v1/block-editor/preview` routes
 //! - Enables the block editor widget in content forms for `FieldType::Blocks` fields
 //!
 //! The kernel provides all infrastructure (block rendering, upload handling,

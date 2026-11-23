@@ -3,11 +3,9 @@
 //! Provides API endpoints for content lock heartbeat and break operations.
 
 use axum::{
-    Router,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
-    routing::post,
 };
 use serde::Deserialize;
 
@@ -30,11 +28,22 @@ const ALLOWED_ENTITY_TYPES: &[&str] = &["item", "category", "comment", "media"];
 /// Maximum length for entity_id to prevent storage abuse.
 const MAX_ENTITY_ID_LENGTH: usize = 200;
 
-/// Create the lock routes.
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/api/lock/heartbeat", post(heartbeat))
-        .route("/api/lock/break", post(break_lock))
+/// The content lock JSON API, under `/api/v1` ([`super::api`]), served while
+/// `trovato_content_locking` is enabled.
+pub fn api() -> super::api::ApiRoutes {
+    use super::api::doc;
+    super::api::ApiRoutes::new("locking")
+        .post(
+            "/lock/heartbeat",
+            heartbeat,
+            doc("Extend the caller's edit lock (`X-CSRF-Token`)").alias(),
+        )
+        .post(
+            "/lock/break",
+            break_lock,
+            doc("Break another user's edit lock (`break content lock`; `X-CSRF-Token`)").alias(),
+        )
+        .plugin("trovato_content_locking")
 }
 
 /// POST /api/lock/heartbeat — extend lock expiration.

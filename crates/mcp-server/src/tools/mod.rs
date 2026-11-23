@@ -10,6 +10,7 @@ pub mod items;
 pub mod search;
 
 use rmcp::ErrorData as McpError;
+use trovato_kernel::pagination::{PageParams, Window};
 use trovato_kernel::tap::UserContext;
 
 /// Error substring used by `ItemService` for access denied.
@@ -25,6 +26,23 @@ pub fn to_json(value: &impl serde::Serialize) -> Result<String, McpError> {
         tracing::error!(error = %e, "JSON serialization failed");
         McpError::internal_error("serialization error".to_string(), None)
     })
+}
+
+/// The page a tool's `page`/`per_page` (or `limit`/`offset`) asks for, by
+/// the kernel's one rule ([`PageParams::window`]).
+pub fn window(
+    page: Option<u32>,
+    per_page: Option<u32>,
+    limit: Option<u32>,
+    offset: Option<u32>,
+) -> Window {
+    PageParams {
+        page: page.map(i64::from),
+        per_page: per_page.map(i64::from),
+        limit: limit.map(i64::from),
+        offset: offset.map(i64::from),
+    }
+    .window(20, 100)
 }
 
 /// Convert an anyhow error into an MCP internal error.

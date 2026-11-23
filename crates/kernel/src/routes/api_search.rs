@@ -16,12 +16,11 @@
 use std::convert::Infallible;
 use std::time::Duration;
 
+use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
-use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
@@ -34,11 +33,24 @@ use crate::services::ai_provider::{
 use crate::state::AppState;
 
 /// Build the Scolta search API router.
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/search/expand", post(expand_query))
-        .route("/api/v1/search/summarize", post(summarize))
-        .route("/api/v1/search/followup", post(followup))
+pub fn api() -> super::api::ApiRoutes {
+    use super::api::doc;
+    super::api::ApiRoutes::new("search")
+        .post(
+            "/search/expand",
+            expand_query,
+            doc("AI query expansion — returns alternative search terms"),
+        )
+        .post(
+            "/search/summarize",
+            summarize,
+            doc("AI summary of search results (SSE stream)").stream(),
+        )
+        .post(
+            "/search/followup",
+            followup,
+            doc("Follow-up conversation about search results (SSE stream)").stream(),
+        )
 }
 
 // ============================================================================

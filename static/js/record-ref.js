@@ -64,7 +64,7 @@
 
     fetch(url, { credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
-      .then(callback)
+      .then(function (page) { callback((page && page.data) || []); })
       .catch(function () { callback([]); });
   }
 

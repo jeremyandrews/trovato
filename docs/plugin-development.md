@@ -277,9 +277,9 @@ What the kernel then does for a viewer without it, before the query runs:
 | Path | Anonymous visitor | Signed-in user without it |
 |------|-------------------|---------------------------|
 | `/gather/{query_id}`, its `canonical_url` or a URL alias to it, each `display.routes` path | redirect to `/user/login` | 403 |
-| `display.routes` path with `?format=json`, `/api/query/{query_id}`, `/api/query/{query_id}/execute` | 403, JSON `error` | 403, JSON `error` |
+| `display.routes` path with `?format=json`, `/api/v1/query/{query_id}`, `/api/v1/query/{query_id}/execute` | 403, JSON `error` | 403, JSON `error` |
 | `display.feed` path | 403 | 403 |
-| `/api/queries` | the gather is left out | the gather is left out |
+| `/api/v1/queries` | the gather is left out | the gather is left out |
 | `menu_link` rows pointing at any of the addresses above | not drawn | not drawn |
 
 Administrators pass, as they do everywhere, and an anonymous visitor passes if

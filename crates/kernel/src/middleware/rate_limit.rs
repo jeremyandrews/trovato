@@ -744,6 +744,10 @@ pub fn categorize_path_with<S: AsRef<str>>(
     method: &str,
     static_prefixes: &[S],
 ) -> &'static str {
+    // A deprecated `/api/...` alias is the same route as its `/api/v1/...`
+    // path, so it is counted in the same bucket.
+    let versioned = versioned_api_path(path);
+    let path = versioned.as_deref().unwrap_or(path);
     if is_static_asset(path, method, static_prefixes) {
         "static"
     } else if path.starts_with("/user/login") && method == "POST" {
@@ -757,7 +761,12 @@ pub fn categorize_path_with<S: AsRef<str>>(
         category
     } else if is_comment_write(path, method) {
         "comment"
-    } else if path.starts_with("/search") || path.starts_with("/api/search") {
+    } else if path.starts_with("/search")
+        || matches!(
+            path.trim_end_matches('/'),
+            "/api/v1/search" | "/api/v1/search/log"
+        )
+    {
         "search"
     } else if path.starts_with("/api/") {
         "api"
@@ -769,6 +778,16 @@ pub fn categorize_path_with<S: AsRef<str>>(
     } else {
         "api"
     }
+}
+
+/// The `/api/v1` path a deprecated unversioned `/api/...` alias stands for,
+/// or `None` for any other path (a `/api/v1` path included).
+fn versioned_api_path(path: &str) -> Option<String> {
+    let rest = path.strip_prefix(crate::routes::api::LEGACY_PREFIX)?;
+    if !rest.starts_with('/') || rest == "/v1" || rest.starts_with("/v1/") {
+        return None;
+    }
+    Some(format!("{}{rest}", crate::routes::api::PREFIX))
 }
 
 /// The rate-limit category for an AI search endpoint, or `None` for any other
@@ -788,8 +807,9 @@ fn ai_search_category(path: &str) -> Option<&'static str> {
 
 /// Whether this request writes a comment.
 ///
-/// Covers both shapes the comment routes take: `POST /api/item/{id}/comments`
-/// and a write to `/api/comment/{id}`. Reads are left in the `api` bucket — it
+/// Covers both shapes the comment routes take: `POST /api/v1/item/{id}/comments`
+/// and a write to `/api/v1/comment/{id}` (and their unversioned aliases, which
+/// the caller has already mapped onto these). Reads are left in the `api` bucket — it
 /// is the writes that cost moderation attention.
 fn is_comment_write(path: &str, method: &str) -> bool {
     let writes = matches!(method, "POST" | "PUT" | "PATCH" | "DELETE");
@@ -798,8 +818,8 @@ fn is_comment_write(path: &str, method: &str) -> bool {
     }
 
     let path = path.trim_end_matches('/');
-    (path.starts_with("/api/item/") && path.ends_with("/comments"))
-        || path.starts_with("/api/comment/")
+    (path.starts_with("/api/v1/item/") && path.ends_with("/comments"))
+        || path.starts_with("/api/v1/comment/")
 }
 
 /// Middleware that resolves the vetted client IP once and stores it as a
@@ -996,6 +1016,28 @@ mod tests {
     fn categorize_search_paths() {
         assert_eq!(categorize_path("/search", "GET"), "search");
         assert_eq!(categorize_path("/api/search", "GET"), "search");
+        assert_eq!(categorize_path("/api/v1/search", "GET"), "search");
+        assert_eq!(categorize_path("/api/v1/search/log", "POST"), "search");
+        assert_eq!(categorize_path("/api/search/log", "POST"), "search");
+    }
+
+    /// A deprecated alias is counted in its `/api/v1` route's bucket.
+    #[test]
+    fn an_alias_is_bucketed_as_its_versioned_route() {
+        for (alias, versioned, method) in [
+            ("/api/items", "/api/v1/items", "GET"),
+            ("/api/comment/x", "/api/v1/comment/x", "PUT"),
+            ("/api/item/x/comments", "/api/v1/item/x/comments", "POST"),
+        ] {
+            assert_eq!(
+                categorize_path(alias, method),
+                categorize_path(versioned, method),
+                "{alias}"
+            );
+        }
+        assert_eq!(versioned_api_path("/api/v1/items"), None);
+        assert_eq!(versioned_api_path("/apiary"), None);
+        assert_eq!(versioned_api_path("/api/v1"), None);
     }
 
     #[test]

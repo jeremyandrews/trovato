@@ -9,6 +9,7 @@ use crate::gather::{
 use crate::middleware::language::ResolvedLanguage;
 use crate::models::TagWithDepth;
 use crate::models::stage::LIVE_STAGE_ID;
+use crate::pagination::{Page, PageParams};
 use crate::state::AppState;
 use crate::tap::UserContext;
 use axum::{
@@ -16,7 +17,7 @@ use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Json, Redirect, Response},
-    routing::{get, post},
+    routing::get,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
@@ -43,12 +44,39 @@ pub fn query_language(language: &str, default: &str) -> Option<String> {
 
 /// Create the gather router.
 pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/api/queries", get(list_queries))
-        .route("/api/query/{query_id}", get(get_query))
-        .route("/api/query/{query_id}/execute", get(execute_query))
-        .route("/api/gather/query", post(execute_adhoc_query))
-        .route("/gather/{query_id}", get(render_query_html))
+    Router::new().route("/gather/{query_id}", get(render_query_html))
+}
+
+/// The gather JSON API, under `/api/v1` ([`super::api`]).
+pub fn api() -> super::api::ApiRoutes {
+    use super::api::doc;
+    super::api::ApiRoutes::new("gather")
+        .get(
+            "/queries",
+            list_queries,
+            doc("List the gathers the caller may run")
+                .paged(100, 500)
+                .alias(),
+        )
+        .get(
+            "/query/{query_id}",
+            get_query,
+            doc("Get a gather's definition").alias(),
+        )
+        .get(
+            "/query/{query_id}/execute",
+            execute_query,
+            doc("Run a gather")
+                .query("page", "Page number, from 1; the gather sets the page size")
+                .query("stage", "Stage UUID, for a holder of `use stages`")
+                .describe("Other query parameters are the gather's exposed filters.")
+                .alias(),
+        )
+        .post(
+            "/gather/query",
+            execute_adhoc_query,
+            doc("Run an unsaved gather definition (`administer site`)").alias(),
+        )
 }
 
 // -------------------------------------------------------------------------
@@ -75,15 +103,14 @@ struct QueryResponse {
     changed: i64,
 }
 
-#[derive(Serialize)]
-struct GatherResultResponse {
-    items: Vec<serde_json::Value>,
-    total: u64,
-    page: u32,
-    per_page: u32,
-    total_pages: u32,
-    has_next: bool,
-    has_prev: bool,
+/// A gather's page of results in the API's one list shape.
+fn result_page(result: crate::gather::types::GatherResult) -> Page<serde_json::Value> {
+    Page {
+        data: result.items,
+        total: result.total,
+        page: i64::from(result.page),
+        per_page: i64::from(result.per_page),
+    }
 }
 
 // -------------------------------------------------------------------------
@@ -190,22 +217,22 @@ pub fn gather_denied_json(denied: &GatherDenied) -> Response {
 async fn list_queries(
     State(state): State<AppState>,
     session: Session,
-) -> Result<Json<Vec<QuerySummary>>, AppError> {
+    Query(paging): Query<PageParams>,
+) -> Result<Json<Page<QuerySummary>>, AppError> {
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
     let queries = state.gather().list_queries();
 
-    Ok(Json(
-        queries
-            .into_iter()
-            .filter(|q| authorize_gather(&viewer, q).is_ok())
-            .map(|q| QuerySummary {
-                query_id: q.query_id,
-                label: q.label,
-                description: q.description,
-                plugin: q.plugin,
-            })
-            .collect(),
-    ))
+    let summaries: Vec<QuerySummary> = queries
+        .into_iter()
+        .filter(|q| authorize_gather(&viewer, q).is_ok())
+        .map(|q| QuerySummary {
+            query_id: q.query_id,
+            label: q.label,
+            description: q.description,
+            plugin: q.plugin,
+        })
+        .collect();
+    Ok(Json(Page::slice(summaries, paging.window(100, 500))))
 }
 
 async fn get_query(
@@ -280,16 +307,7 @@ async fn execute_query(
         .await
         .map_err(|e| AppError::internal_ctx(e, "execute gather query"))?;
 
-    Ok(Json(GatherResultResponse {
-        items: result.items,
-        total: result.total,
-        page: result.page,
-        per_page: result.per_page,
-        total_pages: result.total_pages,
-        has_next: result.has_next,
-        has_prev: result.has_prev,
-    })
-    .into_response())
+    Ok(Json(result_page(result)).into_response())
 }
 
 async fn execute_adhoc_query(
@@ -344,16 +362,7 @@ async fn execute_adhoc_query(
         .await
         .map_err(|e| AppError::internal_ctx(e, "execute adhoc gather query"))?;
 
-    Ok(Json(GatherResultResponse {
-        items: result.items,
-        total: result.total,
-        page: result.page,
-        per_page: result.per_page,
-        total_pages: result.total_pages,
-        has_next: result.has_next,
-        has_prev: result.has_prev,
-    })
-    .into_response())
+    Ok(Json(result_page(result)).into_response())
 }
 
 async fn render_query_html(

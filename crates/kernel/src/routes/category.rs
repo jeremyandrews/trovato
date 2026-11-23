@@ -5,14 +5,15 @@
 
 use crate::error::AppError;
 use crate::models::{CreateCategory, CreateTag, UpdateCategory, UpdateTag};
+use crate::pagination::{Page, PageParams};
 use crate::routes::helpers::{inject_site_context, require_csrf_header, require_permission_json};
 use crate::state::AppState;
 use axum::{
     Router,
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
     response::{Html, Json},
-    routing::{delete, get, post, put},
+    routing::get,
 };
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
@@ -21,6 +22,12 @@ use uuid::Uuid;
 /// Permission required to mutate the taxonomy (create/update/delete/reparent
 /// categories and tags).
 const ADMINISTER_CATEGORIES: &str = "administer categories";
+
+/// Default page size of a category or tag list.
+const LIST_DEFAULT: i64 = 100;
+
+/// Largest page size of a category or tag list.
+const LIST_MAX: i64 = 500;
 
 /// Authorize a state-changing taxonomy request: the session user must hold
 /// `administer categories` (admins implicitly do) **and** present a valid CSRF
@@ -45,25 +52,81 @@ pub fn router() -> Router<AppState> {
     Router::new()
         // HTML browse page for topics
         .route("/topics", get(browse_topics))
-        // Category routes
-        .route("/api/categories", get(list_categories))
-        .route("/api/category", post(create_category))
-        .route("/api/category/{id}", get(get_category))
-        .route("/api/category/{id}", put(update_category))
-        .route("/api/category/{id}", delete(delete_category))
-        .route("/api/category/{id}/tags", get(list_tags))
-        .route("/api/category/{id}/roots", get(get_root_tags))
-        // Tag routes
-        .route("/api/tag", post(create_tag))
-        .route("/api/tag/{id}", get(get_tag))
-        .route("/api/tag/{id}", put(update_tag))
-        .route("/api/tag/{id}", delete(delete_tag))
-        .route("/api/tag/{id}/parents", get(get_parents))
-        .route("/api/tag/{id}/parents", put(set_parents))
-        .route("/api/tag/{id}/children", get(get_children))
-        .route("/api/tag/{id}/ancestors", get(get_ancestors))
-        .route("/api/tag/{id}/descendants", get(get_descendants))
-        .route("/api/tag/{id}/breadcrumb", get(get_breadcrumb))
+}
+
+/// The category and tag JSON API, under `/api/v1` ([`super::api`]), served
+/// while `trovato_categories` is enabled. Writes take `administer categories`
+/// and the `X-CSRF-Token` header.
+pub fn api() -> super::api::ApiRoutes {
+    use super::api::doc;
+    let list = |summary: &str| doc(summary).paged(LIST_DEFAULT, LIST_MAX).alias();
+    super::api::ApiRoutes::new("categories")
+        .get("/categories", list_categories, list("List categories"))
+        .post(
+            "/category",
+            create_category,
+            doc("Create a category").alias(),
+        )
+        .get(
+            "/category/{id}",
+            get_category,
+            doc("Get a category").alias(),
+        )
+        .put(
+            "/category/{id}",
+            update_category,
+            doc("Update a category").alias(),
+        )
+        .delete(
+            "/category/{id}",
+            delete_category,
+            doc("Delete a category").alias(),
+        )
+        .get(
+            "/category/{id}/tags",
+            list_tags,
+            list("List a category's tags"),
+        )
+        .get(
+            "/category/{id}/roots",
+            get_root_tags,
+            list("List a category's top-level tags"),
+        )
+        .post("/tag", create_tag, doc("Create a tag").alias())
+        .get("/tag/{id}", get_tag, doc("Get a tag").alias())
+        .put("/tag/{id}", update_tag, doc("Update a tag").alias())
+        .delete("/tag/{id}", delete_tag, doc("Delete a tag").alias())
+        .get(
+            "/tag/{id}/parents",
+            get_parents,
+            list("List a tag's parents"),
+        )
+        .put(
+            "/tag/{id}/parents",
+            set_parents,
+            doc("Set a tag's parents").alias(),
+        )
+        .get(
+            "/tag/{id}/children",
+            get_children,
+            list("List a tag's children"),
+        )
+        .get(
+            "/tag/{id}/ancestors",
+            get_ancestors,
+            list("List a tag's ancestors, with depth"),
+        )
+        .get(
+            "/tag/{id}/descendants",
+            get_descendants,
+            list("List a tag's descendants, with depth"),
+        )
+        .get(
+            "/tag/{id}/breadcrumb",
+            get_breadcrumb,
+            list("A tag's breadcrumb, root first"),
+        )
+        .plugin("trovato_categories")
 }
 
 // -------------------------------------------------------------------------
@@ -111,14 +174,15 @@ struct SetParentsRequest {
 
 async fn list_categories(
     State(state): State<AppState>,
-) -> Result<Json<Vec<CategoryResponse>>, AppError> {
+    Query(paging): Query<PageParams>,
+) -> Result<Json<Page<CategoryResponse>>, AppError> {
     let categories = state
         .categories()
         .list_categories()
         .await
         .map_err(AppError::internal)?;
 
-    Ok(Json(
+    Ok(Json(Page::slice(
         categories
             .into_iter()
             .map(|c| CategoryResponse {
@@ -128,8 +192,9 @@ async fn list_categories(
                 hierarchy: c.hierarchy,
                 weight: c.weight,
             })
-            .collect(),
-    ))
+            .collect::<Vec<_>>(),
+        paging.window(LIST_DEFAULT, LIST_MAX),
+    )))
 }
 
 async fn get_category(
@@ -234,14 +299,15 @@ async fn delete_category(
 async fn list_tags(
     State(state): State<AppState>,
     Path(category_id): Path<String>,
-) -> Result<Json<Vec<TagResponse>>, AppError> {
+    Query(paging): Query<PageParams>,
+) -> Result<Json<Page<TagResponse>>, AppError> {
     let tags = state
         .categories()
         .list_tags(&category_id)
         .await
         .map_err(AppError::internal)?;
 
-    Ok(Json(
+    Ok(Json(Page::slice(
         tags.into_iter()
             .map(|t| TagResponse {
                 id: t.id,
@@ -252,21 +318,23 @@ async fn list_tags(
                 created: t.created,
                 changed: t.changed,
             })
-            .collect(),
-    ))
+            .collect::<Vec<_>>(),
+        paging.window(LIST_DEFAULT, LIST_MAX),
+    )))
 }
 
 async fn get_root_tags(
     State(state): State<AppState>,
     Path(category_id): Path<String>,
-) -> Result<Json<Vec<TagResponse>>, AppError> {
+    Query(paging): Query<PageParams>,
+) -> Result<Json<Page<TagResponse>>, AppError> {
     let tags = state
         .categories()
         .get_root_tags(&category_id)
         .await
         .map_err(AppError::internal)?;
 
-    Ok(Json(
+    Ok(Json(Page::slice(
         tags.into_iter()
             .map(|t| TagResponse {
                 id: t.id,
@@ -277,8 +345,9 @@ async fn get_root_tags(
                 created: t.created,
                 changed: t.changed,
             })
-            .collect(),
-    ))
+            .collect::<Vec<_>>(),
+        paging.window(LIST_DEFAULT, LIST_MAX),
+    )))
 }
 
 async fn get_tag(
@@ -389,14 +458,15 @@ async fn delete_tag(
 async fn get_parents(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<TagResponse>>, AppError> {
+    Query(paging): Query<PageParams>,
+) -> Result<Json<Page<TagResponse>>, AppError> {
     let parents = state
         .categories()
         .get_parents(id)
         .await
         .map_err(AppError::internal)?;
 
-    Ok(Json(
+    Ok(Json(Page::slice(
         parents
             .into_iter()
             .map(|t| TagResponse {
@@ -408,8 +478,9 @@ async fn get_parents(
                 created: t.created,
                 changed: t.changed,
             })
-            .collect(),
-    ))
+            .collect::<Vec<_>>(),
+        paging.window(LIST_DEFAULT, LIST_MAX),
+    )))
 }
 
 async fn set_parents(
@@ -433,14 +504,15 @@ async fn set_parents(
 async fn get_children(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<TagResponse>>, AppError> {
+    Query(paging): Query<PageParams>,
+) -> Result<Json<Page<TagResponse>>, AppError> {
     let children = state
         .categories()
         .get_children(id)
         .await
         .map_err(AppError::internal)?;
 
-    Ok(Json(
+    Ok(Json(Page::slice(
         children
             .into_iter()
             .map(|t| TagResponse {
@@ -452,21 +524,23 @@ async fn get_children(
                 created: t.created,
                 changed: t.changed,
             })
-            .collect(),
-    ))
+            .collect::<Vec<_>>(),
+        paging.window(LIST_DEFAULT, LIST_MAX),
+    )))
 }
 
 async fn get_ancestors(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<TagWithDepthResponse>>, AppError> {
+    Query(paging): Query<PageParams>,
+) -> Result<Json<Page<TagWithDepthResponse>>, AppError> {
     let ancestors = state
         .categories()
         .get_ancestors(id)
         .await
         .map_err(AppError::internal)?;
 
-    Ok(Json(
+    Ok(Json(Page::slice(
         ancestors
             .into_iter()
             .map(|a| TagWithDepthResponse {
@@ -481,21 +555,23 @@ async fn get_ancestors(
                 },
                 depth: a.depth,
             })
-            .collect(),
-    ))
+            .collect::<Vec<_>>(),
+        paging.window(LIST_DEFAULT, LIST_MAX),
+    )))
 }
 
 async fn get_descendants(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<TagWithDepthResponse>>, AppError> {
+    Query(paging): Query<PageParams>,
+) -> Result<Json<Page<TagWithDepthResponse>>, AppError> {
     let descendants = state
         .categories()
         .get_descendants(id)
         .await
         .map_err(AppError::internal)?;
 
-    Ok(Json(
+    Ok(Json(Page::slice(
         descendants
             .into_iter()
             .map(|d| TagWithDepthResponse {
@@ -510,21 +586,23 @@ async fn get_descendants(
                 },
                 depth: d.depth,
             })
-            .collect(),
-    ))
+            .collect::<Vec<_>>(),
+        paging.window(LIST_DEFAULT, LIST_MAX),
+    )))
 }
 
 async fn get_breadcrumb(
     State(state): State<AppState>,
     Path(id): Path<Uuid>,
-) -> Result<Json<Vec<TagResponse>>, AppError> {
+    Query(paging): Query<PageParams>,
+) -> Result<Json<Page<TagResponse>>, AppError> {
     let breadcrumb = state
         .categories()
         .get_breadcrumb(id)
         .await
         .map_err(AppError::internal)?;
 
-    Ok(Json(
+    Ok(Json(Page::slice(
         breadcrumb
             .into_iter()
             .map(|t| TagResponse {
@@ -536,8 +614,9 @@ async fn get_breadcrumb(
                 created: t.created,
                 changed: t.changed,
             })
-            .collect(),
-    ))
+            .collect::<Vec<_>>(),
+        paging.window(LIST_DEFAULT, LIST_MAX),
+    )))
 }
 
 // -------------------------------------------------------------------------

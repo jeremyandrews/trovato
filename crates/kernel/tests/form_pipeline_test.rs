@@ -887,7 +887,7 @@ fn record_autocomplete_works_from_the_item_form_and_only_offers_viewable_targets
             .await;
         assert_eq!(response.status(), StatusCode::OK);
         let found: Value = serde_json::from_str(&body_string(response).await).unwrap();
-        let ids: Vec<&str> = found
+        let ids: Vec<&str> = found["data"]
             .as_array()
             .unwrap()
             .iter()

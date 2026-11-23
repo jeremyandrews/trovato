@@ -341,7 +341,7 @@ The five Gather queries from Part 2 all have `stage_aware: true`. Demonstrate th
 
 ```bash
 # Anonymous sees only Live conferences
-curl -s http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | jq '.total'
+curl -s http://localhost:3000/api/v1/query/ritrovo.upcoming_conferences/execute | jq '.total'
 
 # An editor would see more results (Incoming + Curated + Live)
 # depending on their session and permissions

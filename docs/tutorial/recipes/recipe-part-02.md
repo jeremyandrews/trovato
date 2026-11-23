@@ -262,7 +262,7 @@ curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/conferences
 
 `[CLI]` Verify the API returns results:
 ```
-curl http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | jq '.total'
+curl http://localhost:3000/api/v1/query/ritrovo.upcoming_conferences/execute | jq '.total'
 ```
 
 **Verify:** Returns a positive number (upcoming conferences from the imported dataset).
