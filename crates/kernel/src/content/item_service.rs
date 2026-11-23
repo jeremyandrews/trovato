@@ -818,6 +818,14 @@ impl ItemService {
             .gate_field_writes(user, &input.item_type, input.fields.as_ref(), None)
             .await?;
         input.fields = gated_fields;
+        // A create that says nothing about promote or sticky takes the type's
+        // defaults, whoever makes it: the default is the site's decision, not
+        // the user's, so the promotion gate above does not apply to it.
+        if input.promote.is_none() || input.sticky.is_none() {
+            let (promote, sticky) = self.publishing_defaults(&input.item_type).await;
+            input.promote.get_or_insert(promote);
+            input.sticky.get_or_insert(sticky);
+        }
 
         // Invoke tap_item_presave — plugins can modify fields before save.
         // Serialize the input as a JSON object so plugins can read/modify fields.
@@ -887,6 +895,30 @@ impl ItemService {
         self.audit("create", item.id, Some(user), Self::audit_details(&item))
             .await;
         Ok(item)
+    }
+
+    /// A content type's promote and sticky defaults for a new item, from its
+    /// `promote_default` and `sticky_default` settings: off when unset, or
+    /// when the type cannot be read.
+    pub async fn publishing_defaults(&self, item_type: &str) -> (i16, i16) {
+        let settings =
+            match crate::models::ItemType::find_by_type(&self.inner.pool, item_type).await {
+                Ok(Some(row)) => row.settings,
+                Ok(None) => return (0, 0),
+                Err(e) => {
+                    warn!(error = %e, item_type, "reading the type's publishing defaults failed");
+                    return (0, 0);
+                }
+            };
+        let flag = |key: &str| {
+            i16::from(
+                settings
+                    .get(key)
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            )
+        };
+        (flag("promote_default"), flag("sticky_default"))
     }
 
     /// Ask for a public search index rebuild when a write changed what it may

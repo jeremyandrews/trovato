@@ -34,6 +34,64 @@ struct ContentTypeFormData {
     title_label: Option<String>,
     published_default: Option<String>,
     revision_default: Option<String>,
+    promote_default: Option<String>,
+    sticky_default: Option<String>,
+}
+
+/// The per-type defaults the content type form edits, by settings key. Each
+/// is a checkbox, stored as a boolean in the type's `settings`.
+const DEFAULT_SWITCHES: &[&str] = &[
+    "published_default",
+    "revision_default",
+    "promote_default",
+    "sticky_default",
+];
+
+impl ContentTypeFormData {
+    /// Whether the checkbox for settings key `key` was checked.
+    fn switch(&self, key: &str) -> bool {
+        match key {
+            "published_default" => self.published_default.is_some(),
+            "revision_default" => self.revision_default.is_some(),
+            "promote_default" => self.promote_default.is_some(),
+            "sticky_default" => self.sticky_default.is_some(),
+            _ => false,
+        }
+    }
+
+    /// The settings this submission stores, merged into what the type holds.
+    fn settings(&self) -> serde_json::Value {
+        let mut settings = serde_json::Map::new();
+        settings.insert(
+            "title_label".to_string(),
+            serde_json::Value::from(
+                self.title_label
+                    .clone()
+                    .unwrap_or_else(|| "Title".to_string()),
+            ),
+        );
+        for key in DEFAULT_SWITCHES {
+            settings.insert(
+                (*key).to_string(),
+                serde_json::Value::Bool(self.switch(key)),
+            );
+        }
+        serde_json::Value::Object(settings)
+    }
+
+    /// The values to show this submission again with.
+    fn values(&self) -> serde_json::Value {
+        let mut values = serde_json::json!({
+            "label": self.label,
+            "machine_name": self.machine_name,
+            "description": self.description,
+            "title_label": self.title_label,
+        });
+        for key in DEFAULT_SWITCHES {
+            values[*key] = serde_json::Value::Bool(self.switch(key));
+        }
+        values
+    }
 }
 
 /// Field form data.
@@ -160,11 +218,7 @@ async fn add_content_type_submit(
     }
 
     // Create the content type
-    let settings = serde_json::json!({
-        "title_label": form.title_label.clone().unwrap_or_else(|| "Title".to_string()),
-        "published_default": form.published_default.is_some(),
-        "revision_default": form.revision_default.is_some(),
-    });
+    let settings = form.settings();
 
     match state
         .content_types()
@@ -207,17 +261,7 @@ async fn render_add_form_with_errors(
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &false);
     context.insert("errors", &errors);
-    context.insert(
-        "values",
-        &serde_json::json!({
-            "label": form.label,
-            "machine_name": form.machine_name,
-            "description": form.description,
-            "title_label": form.title_label,
-            "published_default": form.published_default.is_some(),
-            "revision_default": form.revision_default.is_some(),
-        }),
-    );
+    context.insert("values", &form.values());
     context.insert("path", "/admin/structure/types/add");
 
     render_admin_template(
@@ -261,32 +305,26 @@ async fn edit_content_type_form(
         .await
         .ok()
         .flatten();
-    let (title_label, published_default, revision_default) = match &db_type {
-        Some(it) => (
-            it.title_label.as_deref().unwrap_or("Title"),
-            it.settings
-                .get("published_default")
-                .and_then(|v| v.as_bool())
+    let title_label = db_type
+        .as_ref()
+        .and_then(|it| it.title_label.as_deref())
+        .unwrap_or("Title");
+    let mut values = serde_json::json!({
+        "label": content_type.label,
+        "machine_name": content_type.machine_name,
+        "description": content_type.description,
+        "title_label": title_label,
+    });
+    for key in DEFAULT_SWITCHES {
+        values[*key] = serde_json::Value::Bool(
+            db_type
+                .as_ref()
+                .and_then(|it| it.settings.get(*key))
+                .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false),
-            it.settings
-                .get("revision_default")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-        ),
-        None => ("Title", false, false),
-    };
-
-    context.insert(
-        "values",
-        &serde_json::json!({
-            "label": content_type.label,
-            "machine_name": content_type.machine_name,
-            "description": content_type.description,
-            "title_label": title_label,
-            "published_default": published_default,
-            "revision_default": revision_default,
-        }),
-    );
+        );
+    }
+    context.insert("values", &values);
     context.insert("path", &format!("/admin/structure/types/{type_name}/edit"));
 
     render_admin_template(
@@ -340,17 +378,7 @@ async fn edit_content_type_submit(
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &true);
         context.insert("errors", &errors);
-        context.insert(
-            "values",
-            &serde_json::json!({
-                "label": form.label,
-                "machine_name": form.machine_name,
-                "description": form.description,
-                "title_label": form.title_label,
-                "published_default": form.published_default.is_some(),
-                "revision_default": form.revision_default.is_some(),
-            }),
-        );
+        context.insert("values", &form.values());
         context.insert("path", &format!("/admin/structure/types/{type_name}/edit"));
 
         return render_admin_template(
@@ -363,11 +391,7 @@ async fn edit_content_type_submit(
     }
 
     // Update the content type
-    let settings = serde_json::json!({
-        "title_label": form.title_label.unwrap_or_else(|| "Title".to_string()),
-        "published_default": form.published_default.is_some(),
-        "revision_default": form.revision_default.is_some(),
-    });
+    let settings = form.settings();
 
     match state
         .content_types()
