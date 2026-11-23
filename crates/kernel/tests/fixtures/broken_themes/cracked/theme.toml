@@ -1,0 +1,2 @@
+name = "Cracked"
+description = "A test theme whose base.html does not parse (B138): it must be refused, never activated."

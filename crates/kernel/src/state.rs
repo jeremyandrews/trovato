@@ -915,16 +915,23 @@ impl AppState {
         info!(template_dirs = ?template_dirs, "loading templates from search path");
         let themes = crate::theme::registry::discover(&config.themes_dirs);
         info!(themes = themes.len(), themes_dirs = ?config.themes_dirs, "discovered themes");
-        let theme = match ThemeEngine::new(&template_dirs, locale.clone(), metrics.clone()) {
-            Ok(engine) => engine
-                .with_components(page_builder_components.clone())
-                .context("failed to load page builder components")?
-                .with_themes(themes, &template_dirs, locale.clone()),
-            Err(e) => {
-                tracing::warn!(error = ?e, "failed to load templates, using empty engine");
-                ThemeEngine::empty(metrics.clone()).context("failed to create theme engine")?
-            }
-        };
+        // A kernel, plugin or app template that does not parse stops startup
+        // with an error naming each broken file and Tera's message (B138). It
+        // used to log a warning and carry on with an empty engine, so every
+        // page rendered untemplated and the cause was one warning line. A
+        // deployment theme that does not parse is refused instead, in
+        // `with_themes`, and the site keeps the stock theme.
+        let theme = ThemeEngine::new(&template_dirs, locale.clone(), metrics.clone())
+            .inspect_err(|e| {
+                tracing::error!(
+                    error = %e,
+                    "templates on the search path do not load; the server cannot start"
+                );
+            })
+            .context("failed to load templates from the search path")?
+            .with_components(page_builder_components.clone())
+            .context("failed to load page builder components")?
+            .with_themes(themes, &template_dirs, locale.clone());
         let theme = Arc::new(theme);
 
         // Create form service

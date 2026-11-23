@@ -405,3 +405,9 @@
     background: #d1ecf1;
     color: #0c5460;
 }
+.theme-card__refusal {
+    margin: 0.5rem 0 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font-size: 0.75rem;
+}
