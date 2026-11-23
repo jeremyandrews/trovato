@@ -349,15 +349,32 @@ impl Comment {
         Ok(comment)
     }
 
-    /// List comments for an item (threaded order).
+    /// List comments for an item (threaded order, oldest thread first).
     pub async fn list_for_item(pool: &PgPool, item_id: Uuid) -> Result<Vec<Self>> {
-        // Order by: top-level first by created, then children nested
+        Self::list_for_item_ordered(pool, item_id, false).await
+    }
+
+    /// List an item's published comments in thread order: each reply under its
+    /// parent, replies in the order they were written, and the threads oldest
+    /// first or, with `newest_first`, newest first.
+    ///
+    /// Newest first reverses the threads, not the thread: Drupal 6 sorted its
+    /// thread path descending, which put every reply above the comment it
+    /// answers. Ties on the second are broken by id, so the order is stable.
+    pub async fn list_for_item_ordered(
+        pool: &PgPool,
+        item_id: Uuid,
+        newest_first: bool,
+    ) -> Result<Vec<Self>> {
         let comments = sqlx::query_as::<_, Comment>(
             r#"
             WITH RECURSIVE comment_tree AS (
                 -- Base case: top-level comments
                 SELECT id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth,
-                       ARRAY[created, EXTRACT(EPOCH FROM NOW())::BIGINT - created] AS sort_path
+                       -- One key per level: the time, zero-padded so text order is
+                       -- time order, then the id to break a tie. The top level
+                       -- counts down from a far future instant when newest first.
+                       ARRAY[lpad((CASE WHEN $3 THEN 99999999999 - created ELSE created END)::text, 12, '0') || id::text] AS sort_path
                 FROM comment
                 WHERE item_id = $1 AND parent_id IS NULL AND status = $2
 
@@ -365,18 +382,19 @@ impl Comment {
 
                 -- Recursive case: replies
                 SELECT c.id, c.item_id, c.parent_id, c.author_id, c.subject, c.body, c.body_format, c.status, c.created, c.changed, c.depth,
-                       ct.sort_path || c.created
+                       ct.sort_path || (lpad(c.created::text, 12, '0') || c.id::text)
                 FROM comment c
                 JOIN comment_tree ct ON c.parent_id = ct.id
                 WHERE c.status = $2
             )
             SELECT id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth
             FROM comment_tree
-            ORDER BY sort_path
+            ORDER BY sort_path COLLATE "C"
             "#,
         )
         .bind(item_id)
         .bind(CommentStatus::Published.as_i16())
+        .bind(newest_first)
         .fetch_all(pool)
         .await
         .context("failed to list comments for item")?;
