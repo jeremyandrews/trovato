@@ -92,8 +92,9 @@ async fn list_with_token(app: &TestApp, raw: &str, ip: &str) -> axum::response::
 }
 
 fn token_names(body: &serde_json::Value) -> Vec<String> {
-    body.as_array()
-        .unwrap_or_else(|| panic!("expected a token list, got {body}"))
+    body["data"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected a page of tokens, got {body}"))
         .iter()
         .filter_map(|t| t["name"].as_str().map(str::to_string))
         .collect()

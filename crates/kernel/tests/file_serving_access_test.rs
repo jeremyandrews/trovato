@@ -734,7 +734,7 @@ fn media_browse_is_scoped_to_the_viewer() {
                 assert_eq!(resp.status(), StatusCode::OK);
                 let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
                 let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-                let names: Vec<String> = json["items"]
+                let names: Vec<String> = json["data"]
                     .as_array()
                     .unwrap()
                     .iter()

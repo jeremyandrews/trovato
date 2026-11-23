@@ -29,6 +29,7 @@ mod metrics;
 mod middleware;
 mod models;
 mod net_policy;
+mod pagination;
 mod permissions;
 mod plugin;
 mod recovery;
@@ -359,14 +360,11 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         .merge(routes::cron::router())
         .merge(routes::file::router())
         .merge(routes::metrics::router())
-        .merge(routes::batch::router())
         .merge(routes::api_token::router())
-        .merge(routes::api_ai_assist::router())
-        .merge(routes::api_chat::router())
-        // The AI Assistant: its themed page and its four API routes.
+        // The AI Assistant's themed page (its API routes are in api_v1).
         .merge(routes::assistant::router())
-        .merge(routes::api_search::router())
-        .merge(routes::api_v1::router())
+        // Every kernel JSON route, under /api/v1, with the deprecated aliases.
+        .merge(routes::api_v1::router(&state))
         .merge(routes::tile_admin::router())
         .merge(routes::static_files::router())
         .merge(routes::sitemap::router())

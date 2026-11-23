@@ -5,7 +5,7 @@ use axum::{
     extract::{Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Response},
-    routing::{get, post},
+    routing::get,
 };
 use serde::{Deserialize, Serialize};
 use tera::Context;
@@ -13,16 +13,46 @@ use uuid::Uuid;
 
 use tower_sessions::Session;
 
+use crate::pagination::{Page, PageParams};
 use crate::routes::helpers::{read_stages, session_stage};
 use crate::state::AppState;
 
 /// Create the search router.
 pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/search", get(search_html))
-        .route("/api/search", get(search_json))
-        .route("/api/search/log", post(log_browser_search))
+    Router::new().route("/search", get(search_html))
 }
+
+/// The search JSON API, under `/api/v1` ([`super::api`]).
+///
+/// `GET /api/v1/search` is the one JSON search: the unversioned
+/// `/api/search` is its deprecated alias, answered by the same handler.
+pub fn api() -> super::api::ApiRoutes {
+    use super::api::doc;
+    super::api::ApiRoutes::new("search")
+        .get(
+            "/search",
+            search_json,
+            doc("Full-text search across content")
+                .query("q", "Search query; an empty one answers an empty page")
+                .paged(SEARCH_PER_PAGE, SEARCH_MAX_PER_PAGE)
+                .describe(
+                    "Searches Live, or for a holder of `use stages` the session's stage \
+                     with Live beneath it, and returns only what the caller may view.",
+                )
+                .alias(),
+        )
+        .post(
+            "/search/log",
+            log_browser_search,
+            doc("Count a search the browser ran in Pagefind (analytics beacon)").alias(),
+        )
+}
+
+/// Default page size of the JSON search.
+const SEARCH_PER_PAGE: i64 = 10;
+
+/// Largest page size of the JSON search.
+const SEARCH_MAX_PER_PAGE: i64 = 50;
 
 /// Longest query the beacon accepts, in bytes, before normalization.
 const MAX_BEACON_QUERY_BYTES: usize = 500;
@@ -37,7 +67,7 @@ struct SearchLog {
     results: i64,
 }
 
-/// `POST /api/search/log`: count a browser search.
+/// `POST /api/v1/search/log`: count a browser search.
 ///
 /// Browser searches run entirely in Pagefind and never reach the server, so
 /// `scolta.js` reports each one here with `navigator.sendBeacon`, once, after
@@ -84,17 +114,6 @@ fn default_page() -> i64 {
 
 fn default_limit() -> i64 {
     10
-}
-
-/// JSON search response.
-#[derive(Debug, Serialize)]
-pub struct SearchJsonResponse {
-    pub query: String,
-    pub results: Vec<SearchResultJson>,
-    pub total: i64,
-    pub page: i64,
-    pub limit: i64,
-    pub total_pages: i64,
 }
 
 /// Single search result in JSON format.
@@ -195,16 +214,21 @@ async fn search_html(
     }
 }
 
-/// JSON search endpoint.
+/// JSON search endpoint: `GET /api/v1/search?q=…&page=…&per_page=…`.
+///
+/// One page of [`SearchResultJson`] in the API's list shape. An empty `q`
+/// answers an empty page without searching.
 async fn search_json(
     State(state): State<AppState>,
     session: Session,
-    Query(params): Query<SearchQuery>,
+    Query(params): Query<SearchJsonQuery>,
+    Query(paging): Query<PageParams>,
 ) -> Response {
-    let query = params.q.clone().unwrap_or_default();
-    let page = params.page.max(1);
-    let limit = params.limit.clamp(1, 50);
-    let offset = (page - 1) * limit;
+    let window = paging.window(SEARCH_PER_PAGE, SEARCH_MAX_PER_PAGE);
+    let query = params.q.unwrap_or_default();
+    if query.trim().is_empty() {
+        return Json(Page::<SearchResultJson>::empty(window)).into_response();
+    }
 
     // Live, or the session's stage with Live beneath it for a holder of
     // `use stages`: the one resolver every read path uses.
@@ -217,7 +241,7 @@ async fn search_json(
     // Execute search
     let mut results = match state
         .search()
-        .search(&query, &stage_ids, user_id, limit, offset)
+        .search(&query, &stage_ids, user_id, window.per_page, window.offset)
         .await
     {
         Ok(r) => r,
@@ -237,30 +261,30 @@ async fn search_json(
         .filter_search_results(results.results, &viewer)
         .await;
 
-    // Calculate pagination
-    let total_pages = (results.total + limit - 1) / limit;
+    // A snippet is HTML (text escaped once, `<mark>` around the matches),
+    // built by `crate::search::snippet::render`.
+    let data = results
+        .results
+        .into_iter()
+        .map(|r| SearchResultJson {
+            url: format!("/item/{}", r.id),
+            id: r.id,
+            item_type: r.item_type,
+            title: r.title,
+            rank: r.rank,
+            snippet: r.snippet,
+        })
+        .collect();
+    Json(Page::new(
+        data,
+        u64::try_from(results.total).unwrap_or(0),
+        window,
+    ))
+    .into_response()
+}
 
-    // Build response. A snippet is HTML (text escaped once, `<mark>` around
-    // the matches), built by `crate::search::snippet::render`.
-    let response = SearchJsonResponse {
-        query,
-        results: results
-            .results
-            .into_iter()
-            .map(|r| SearchResultJson {
-                url: format!("/item/{}", r.id),
-                id: r.id,
-                item_type: r.item_type,
-                title: r.title,
-                rank: r.rank,
-                snippet: r.snippet,
-            })
-            .collect(),
-        total: results.total,
-        page,
-        limit,
-        total_pages,
-    };
-
-    Json(response).into_response()
+/// The JSON search's own parameter; the page comes from [`PageParams`].
+#[derive(Debug, Deserialize)]
+struct SearchJsonQuery {
+    q: Option<String>,
 }

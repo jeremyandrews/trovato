@@ -44,7 +44,7 @@
            JavaScript at all; comment-post.js upgrades it to a JSON post with the
            X-CSRF-Token header and updates the page in place. The route accepts
            both encodings. #}
-        <form class="comment-form" method="post" action="/api/item/{{ item_id }}/comments" data-comment-form>
+        <form class="comment-form" method="post" action="/api/v1/item/{{ item_id }}/comments" data-comment-form>
             <input type="hidden" name="_csrf" value="{{ csrf_token }}">
             <input type="hidden" name="parent_id" id="comment-parent-id" value="">
 

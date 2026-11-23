@@ -184,9 +184,9 @@ async fn suggest(app: &TestApp, cookies: &str, query: &str) -> Vec<(String, Stri
     let body = body_of(response).await;
     let value: serde_json::Value =
         serde_json::from_str(&body).unwrap_or_else(|e| panic!("not JSON ({e}): {body}"));
-    value
+    value["data"]
         .as_array()
-        .unwrap_or_else(|| panic!("not an array: {body}"))
+        .unwrap_or_else(|| panic!("not a page: {body}"))
         .iter()
         .map(|v| {
             (

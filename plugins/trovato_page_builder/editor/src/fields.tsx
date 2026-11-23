@@ -323,10 +323,10 @@ function ReferenceField(props: {
 
   useEffect(() => {
     if (target === "gather") {
-      fetch("/api/queries", { credentials: "same-origin" })
-        .then((r) => (r.ok ? r.json() : []))
-        .then((rows: Array<{ query_id: string; label: string }>) =>
-          setChoices(rows.map((q) => ({ id: q.query_id, title: q.label }))),
+      fetch("/api/v1/queries?per_page=500", { credentials: "same-origin" })
+        .then((r) => (r.ok ? r.json() : { data: [] }))
+        .then((page: { data: Array<{ query_id: string; label: string }> }) =>
+          setChoices(page.data.map((q) => ({ id: q.query_id, title: q.label }))),
         )
         .catch(() => setChoices([]));
     }
@@ -335,10 +335,10 @@ function ReferenceField(props: {
   useEffect(() => {
     if (target !== "item" || !itemType || query.length < 2) return;
     const timer = setTimeout(() => {
-      const params = new URLSearchParams({ type: itemType, q: query, limit: "10" });
+      const params = new URLSearchParams({ type: itemType, q: query, per_page: "10" });
       fetch(`/api/v1/items/autocomplete?${params}`, { credentials: "same-origin" })
-        .then((r) => (r.ok ? r.json() : []))
-        .then((rows: Choice[]) => setChoices(rows))
+        .then((r) => (r.ok ? r.json() : { data: [] }))
+        .then((page: { data: Choice[] }) => setChoices(page.data))
         .catch(() => setChoices([]));
     }, 200);
     return () => clearTimeout(timer);

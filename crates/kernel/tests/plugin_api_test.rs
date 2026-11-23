@@ -858,15 +858,19 @@ fn a_token_minted_for_one_session_does_not_verify_in_another() {
     });
 }
 
-/// `/api/openapi.json` describes the routes the server really serves.
+/// `/api/v1/openapi.json` describes the routes the server really serves.
 ///
 /// It was a hand-written list built per request: no plugin route ever entered
-/// it, and three of its paths (`/api/v1/items`, `/api/v1/items/{id}`,
-/// `/api/v1/categories`) were served by no router at all. This asks for the
-/// document from an app with `test_plugin_api` enabled, checks the plugin's
-/// `api` entries are in it and its page entry is not, and then requests every
-/// path the document lists, with the method it lists, and requires an answer
-/// other than 404 or 405, so the list cannot drift from the router again.
+/// it, and three of its paths were served by no router at all. The kernel half
+/// is now generated from the declarations the router is built from
+/// (`api_v1::kernel_api`); a unit test there holds that no `/api` route is
+/// registered any other way. This asks for the document from an app with
+/// `test_plugin_api` enabled, checks the plugin's `api` entries are in it and
+/// its page entry is not, and then requests every path the document lists,
+/// with the method it lists. A kernel path must reach its route: answered
+/// with the `x-api-version` header (or, for a deprecated alias, the
+/// `Deprecation` header) that only a matched route is given, and not 405. A
+/// plugin path must answer other than 404 or 405.
 #[test]
 fn openapi_lists_plugin_routes_and_every_listed_path_is_served() {
     common::run_test(async {
@@ -874,7 +878,7 @@ fn openapi_lists_plugin_routes_and_every_listed_path_is_served() {
 
         let response = app
             .request(
-                Request::get("/api/openapi.json")
+                Request::get("/api/v1/openapi.json")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -900,13 +904,17 @@ fn openapi_lists_plugin_routes_and_every_listed_path_is_served() {
             "a page entry is not an api"
         );
 
-        // The three paths that were never served are listed as the routed ones.
-        for listed in ["/api/items", "/api/item/{id}", "/api/categories"] {
-            assert!(paths.contains_key(listed), "{listed} is listed");
+        // Every kernel route under /api/v1, the old paths as deprecated aliases.
+        for listed in ["/api/v1/items", "/api/v1/item/{id}", "/api/v1/categories"] {
+            assert_eq!(
+                paths[listed]["get"]["deprecated"],
+                serde_json::Value::Null,
+                "{listed}"
+            );
+            let alias = listed.replace("/api/v1/", "/api/");
+            assert_eq!(paths[&alias]["get"]["deprecated"], true, "{alias}");
         }
-        for unserved in ["/api/v1/items", "/api/v1/items/{id}", "/api/v1/categories"] {
-            assert!(!paths.contains_key(unserved), "{unserved} is not listed");
-        }
+        assert!(!paths.contains_key("/api/v1/items/{id}"), "never served");
 
         // A real item, so `/api/item/{id}` answers for the route, not for a
         // missing row.
@@ -943,15 +951,23 @@ fn openapi_lists_plugin_routes_and_every_listed_path_is_served() {
                 })
                 .collect::<Vec<_>>()
                 .join("/");
-            for method in operations.as_object().expect("operations").keys() {
+            for (method, operation) in operations.as_object().expect("operations") {
                 let request = Request::builder()
                     .method(method.to_uppercase().as_str())
                     .uri(&concrete)
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from("{}"))
                     .unwrap();
-                let status = app.request(request).await.status();
-                if status == StatusCode::NOT_FOUND || status == StatusCode::METHOD_NOT_ALLOWED {
+                let response = app.request(request).await;
+                let status = response.status();
+                let routed = if operation["deprecated"] == true {
+                    response.headers().get("deprecation").is_some()
+                } else if path.starts_with("/api/v1/") {
+                    response.headers().get("x-api-version").is_some()
+                } else {
+                    status != StatusCode::NOT_FOUND
+                };
+                if !routed || status == StatusCode::METHOD_NOT_ALLOWED {
                     unanswered.push(format!("{method} {path} -> {status}"));
                 }
             }
@@ -963,7 +979,7 @@ fn openapi_lists_plugin_routes_and_every_listed_path_is_served() {
             .ok();
         assert!(
             unanswered.is_empty(),
-            "every path in /api/openapi.json must be served: {unanswered:?}"
+            "every path in /api/v1/openapi.json must be served: {unanswered:?}"
         );
         disable_plugin(app).await;
     });

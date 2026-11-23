@@ -9,6 +9,52 @@ is you **before** you upgrade.
 
 ## Unreleased
 
+### The JSON API is under `/api/v1`, and every list is `{data, total, page, per_page}`
+
+**Who is affected:** any client of the kernel's JSON API or the MCP server: a
+headless front end, a script, an integration. Not plugin routes, which keep
+their paths, and not the site's own pages and scripts, which are updated.
+
+**What changed.**
+
+- Every kernel JSON endpoint is served under `/api/v1`: `/api/items` is
+  `/api/v1/items`, `/api/tokens` is `/api/v1/tokens`, and so on, the rest of
+  the path unchanged. The old unversioned paths still answer, from the same
+  handlers, with a `Deprecation: true` header; they are removed at 2.0. The
+  OpenAPI document is at `/api/v1/openapi.json` (the old path is an alias).
+- `/api/search` and `/api/v1/search` are one search. It takes `q`, `page` and
+  `per_page` (`limit` is an alias), searches the caller's stages as
+  `/api/search` did, and answers `id`, `type`, `title`, `rank`, `snippet`,
+  `url` per result.
+- Every list answers `{"data": [...], "total": n, "page": p, "per_page": k}`
+  and takes `page` and `per_page`, with `limit` and `offset` as aliases. That
+  changes the body of:
+  - `/api/v1/items`: `items` → `data`; `pagination.{total,page,per_page}` move
+    to the top level; `total_pages` is gone (`ceil(total / per_page)`).
+  - `/api/v1/search`: `results` → `data`; `limit`, `query`, `total_pages` gone.
+  - `/api/v1/item/{id}/comments`: `comments` → `data`.
+  - `/api/v1/query/{id}/execute`, `/api/v1/gather/query`: `items` → `data`;
+    `total_pages`, `has_next`, `has_prev` gone.
+  - `/api/v1/media/browse`: `items` → `data`, `page_size` → `per_page` (in
+    the request too).
+  - Bare arrays become pages: `/api/v1/items/autocomplete`,
+    `/api/v1/items/{type}`, `/api/v1/content-types`, `/api/v1/queries`,
+    `/api/v1/tokens`, `/api/v1/categories` and every tag list. A list that
+    returned everything now returns its first page: 20 items of a type, 100
+    categories, tags, gathers, tokens or content types, 50 comments; ask for
+    more with `per_page` (up to each list's maximum) or `page`.
+  - MCP: `list_items`, `search`, `run_gather`, `list_categories`, `list_tags`
+    and `list_content_types` answer the same shape; `search` takes `page` and
+    `per_page` beside `limit` and `offset`.
+
+The deprecated aliases answer in the new shapes too: an alias keeps a path
+working, not an old body.
+
+**How to find out.** Search the client for `/api/` and for `.items`,
+`.pagination`, `.results`, `.comments` and `page_size` read from an API
+response. A request to an unversioned path in the server's access log, or a
+`Deprecation` header in the client's, is a call to move.
+
 ### A config export never contains a secret; plugin API 0.107
 
 **Who is affected:** anyone who moves a site with `trovato config export` and

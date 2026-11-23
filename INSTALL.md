@@ -104,7 +104,7 @@ and `X-Content-Type-Options: nosniff`; a proxy must pass `Content-Type` through
 unchanged. Uploads are limited to 10 MB, and the upload routes accept request
 bodies of up to 10 MB plus 64 KiB of multipart framing. A proxy with a smaller
 body limit (nginx defaults to 1 MB) must allow at least that on `/file/upload`
-and `/api/block-editor/upload`, for example `client_max_body_size 11m;`, or
+and `/api/v1/block-editor/upload`, for example `client_max_body_size 11m;`, or
 editors get the proxy's error instead of the kernel's.
 
 ### Behind a reverse proxy
@@ -238,7 +238,7 @@ compiled default stands.
 | `page` | 600 / minute | Page views: a `GET` or `HEAD` outside `/api/` that no bucket above claims |
 | `api` | 100 / minute | `/api/` endpoints, and any other request no bucket claims |
 | `forms` | 30 / minute | Any other POST |
-| `search` | 20 / minute | `/search` and `/api/search` |
+| `search` | 20 / minute | `/search` and `/api/v1/search` |
 | `search_expand` | 30 / minute | `POST /api/v1/search/expand` |
 | `search_summarize` | 10 / minute | `POST /api/v1/search/summarize` |
 | `search_followup` | 5 / minute | `POST /api/v1/search/followup` |

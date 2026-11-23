@@ -5,6 +5,7 @@
 use rmcp::ErrorData as McpError;
 use rmcp::model::*;
 
+use trovato_kernel::pagination::Page;
 use trovato_kernel::state::AppState;
 use trovato_kernel::tap::UserContext;
 
@@ -24,7 +25,7 @@ pub async fn list_categories(
         .await
         .map_err(internal_err)?;
 
-    let json = to_json(&categories)?;
+    let json = to_json(&Page::all(categories))?;
     Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
 }
 
@@ -43,6 +44,6 @@ pub async fn list_tags(
         .await
         .map_err(internal_err)?;
 
-    let json = to_json(&tags)?;
+    let json = to_json(&Page::all(tags))?;
     Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
 }

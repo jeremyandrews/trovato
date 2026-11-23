@@ -187,7 +187,7 @@ The importer plugin (installed in Part 2) will automatically add three more fiel
 Confirm the type exists via the API:
 
 ```bash
-curl http://localhost:3000/api/content-types | jq '.[] | select(. == "conference")'
+curl http://localhost:3000/api/v1/content-types | jq '.data[] | select(. == "conference")'
 ```
 
 > **Checkpoint:** You should see `"conference"` in the output. The content type is ready.
@@ -357,10 +357,10 @@ The default template renders all fields with their labels. In Part 3 we will cre
 
 [<img src="images/part-01/conference-detail.png" width="600" alt="Conference detail page showing the default field rendering for a conference item">](images/part-01/conference-detail.png)
 
-There is also a JSON API at `/api/item/{id}` for programmatic access:
+There is also a JSON API at `/api/v1/item/{id}` for programmatic access:
 
 ```bash
-curl http://localhost:3000/api/item/YOUR-ITEM-UUID | jq .
+curl http://localhost:3000/api/v1/item/YOUR-ITEM-UUID | jq .
 ```
 
 ### Inspecting the Database Row
@@ -522,7 +522,7 @@ Click a title through to confirm the detail page renders correctly before moving
 The Gather is also available as JSON via the REST API:
 
 ```bash
-curl http://localhost:3000/api/query/upcoming_conferences/execute
+curl http://localhost:3000/api/v1/query/upcoming_conferences/execute
 ```
 
 This returns a JSON response with the query results, pagination info, and total count -- useful for building custom front ends or feeding data to other services.

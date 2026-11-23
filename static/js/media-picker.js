@@ -173,7 +173,7 @@
 
     var params = new URLSearchParams();
     params.set('page', currentPage);
-    params.set('page_size', '24');
+    params.set('per_page', '24');
     if (currentType) params.set('type', currentType);
     if (currentSearch) params.set('q', currentSearch);
 
@@ -182,13 +182,13 @@
       .then(function(data) {
         if (replace) grid.innerHTML = '';
 
-        if (data.items.length === 0 && currentPage === 1) {
+        if (data.data.length === 0 && currentPage === 1) {
           grid.innerHTML =
             '<p style="text-align:center;padding:2rem;color:#999;">No media found.</p>';
           return;
         }
 
-        data.items.forEach(function(item) {
+        data.data.forEach(function(item) {
           var card = document.createElement('div');
           card.className = 'media-picker-item';
           card.dataset.id = item.id;
@@ -224,7 +224,7 @@
 
         // Show/hide "Load more" button
         var loadMore = modal.querySelector('.media-picker-load-more');
-        loadMore.style.display = data.items.length >= 24 ? '' : 'none';
+        loadMore.style.display = data.data.length >= 24 ? '' : 'none';
       })
       .catch(function() {
         if (replace) {

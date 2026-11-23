@@ -3,10 +3,9 @@
 //! Provides REST endpoints for managing long-running batch operations
 //! with progress polling support.
 
+use axum::Json;
 use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::{delete, get, post};
-use axum::{Json, Router};
 use serde::Serialize;
 use tower_sessions::Session;
 use uuid::Uuid;
@@ -219,12 +218,29 @@ fn operation_to_response(op: BatchOperation) -> BatchStatusResponse {
 }
 
 /// Create the batch operations router.
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/api/batch", post(create_batch))
-        .route("/api/batch/{id}", get(get_batch))
-        .route("/api/batch/{id}/cancel", post(cancel_batch))
-        .route("/api/batch/{id}", delete(delete_batch))
+pub fn api() -> super::api::ApiRoutes {
+    use super::api::doc;
+    super::api::ApiRoutes::new("batch")
+        .post(
+            "/batch",
+            create_batch,
+            doc("Start a batch operation").alias(),
+        )
+        .get(
+            "/batch/{id}",
+            get_batch,
+            doc("A batch operation's progress").alias(),
+        )
+        .post(
+            "/batch/{id}/cancel",
+            cancel_batch,
+            doc("Cancel a batch operation").alias(),
+        )
+        .delete(
+            "/batch/{id}",
+            delete_batch,
+            doc("Delete a batch operation").alias(),
+        )
 }
 
 #[cfg(test)]

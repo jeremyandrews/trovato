@@ -1,90 +1,107 @@
-//! Versioned REST API (v1) for content management.
+//! The versioned JSON API (v1): every kernel JSON route, under `/api/v1`.
 //!
-//! Provides a stable, paginated JSON API with envelope responses.
-//! All list endpoints return `{ data, total, page, per_page }`.
-//! Single-resource endpoints return `{ data }`.
-//! Error endpoints return `{ error, status }`.
+//! [`kernel_api`] is the list; the routes themselves are declared beside
+//! their handlers, in their modules, through [`super::api::ApiRoutes`]. Every
+//! list answers with [`Page`] (`{ data, total, page, per_page }`) and every
+//! error with an [`AppError`](crate::error::AppError) body.
 
 use axum::{
     Json, Router,
-    body::Body,
     extract::{Query, State},
     http::StatusCode,
     response::IntoResponse,
-    routing::get,
 };
 use serde::Serialize;
 use std::collections::HashMap;
 use tower_sessions::Session;
 use uuid::Uuid;
 
+use super::api::{ApiRoutes, doc};
 use crate::file::service::{FileStatus, MediaScope};
-use crate::models::stage::LIVE_STAGE_ID;
+use crate::pagination::{Page, PageParams};
 use crate::state::AppState;
 
-// -------------------------------------------------------------------------
-// Response envelope types
-// -------------------------------------------------------------------------
-
-/// Paginated list envelope.
-#[derive(Debug, Serialize)]
-struct ListEnvelope<T: Serialize> {
-    data: Vec<T>,
-    total: u64,
-    page: i64,
-    per_page: i64,
-}
-
-// -------------------------------------------------------------------------
-// Query parameter types
-// -------------------------------------------------------------------------
-
-/// Common query params for list endpoints.
-#[derive(Debug, serde::Deserialize)]
-struct ListParams {
-    #[serde(default = "default_page")]
-    page: i64,
-    #[serde(default = "default_per_page")]
-    per_page: i64,
-    q: Option<String>,
-}
-
-fn default_page() -> i64 {
-    1
-}
-
-fn default_per_page() -> i64 {
-    25
-}
-
-/// Create the v1 API router.
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/api/v1/search", get(search))
-        .route("/api/v1/user/export", get(export_user_data))
-        .route("/api/v1/items/autocomplete", get(autocomplete_items))
-        .route("/api/v1/media/browse", get(browse_media))
-        .route("/api/openapi.json", get(openapi_spec))
-        .route(
-            "/api/v1/page-builder/components",
-            get(list_page_builder_components),
+/// Every kernel JSON route, declared with its OpenAPI description.
+///
+/// The one list both the router ([`router`]) and the document
+/// ([`crate::routes::route_metadata::RouteRegistry`]) are built from, so the
+/// document lists exactly what is served.
+pub fn kernel_api() -> ApiRoutes {
+    ApiRoutes::new("api")
+        .get(
+            "/openapi.json",
+            openapi_spec,
+            doc("This document: the kernel's API and every enabled plugin's").alias(),
         )
-        .route(
-            "/api/v1/page-builder/preview",
-            axum::routing::post(preview_page_builder_component),
+        .get(
+            "/user/export",
+            export_user_data,
+            doc("Export user data (GDPR Article 20)")
+                .query("user_id", "User UUID (admin only, defaults to self)"),
         )
-        .layer(axum::middleware::from_fn(inject_api_version))
+        .get(
+            "/items/autocomplete",
+            autocomplete_items,
+            doc("Search items by type and title for autocomplete; the first page only")
+                .required("type", "Content type machine name, or `category_term`")
+                .required("q", "Title prefix search query")
+                .paged(10, 50)
+                .query(
+                    "item_type",
+                    "With type=category_term: the content type whose field is being filled in",
+                )
+                .query(
+                    "field",
+                    "With type=category_term: the term reference field being filled in",
+                )
+                .query(
+                    "item",
+                    "With type=category_term: the item being edited, if any",
+                )
+                .query(
+                    "owner",
+                    "With type=category_term: the form's value of the field's owner field, \
+                     for a field limited to the item's owner",
+                ),
+        )
+        .get(
+            "/media/browse",
+            browse_media,
+            doc("Browse the media library")
+                .query("type", "`image`, `document` or `all` (default)")
+                .query("q", "Case-insensitive filename search")
+                .query("sort", "`newest` (default), `oldest`, `name` or `size`")
+                .paged(24, 100),
+        )
+        .get(
+            "/page-builder/components",
+            list_page_builder_components,
+            doc("The page builder component registry"),
+        )
+        .post(
+            "/page-builder/preview",
+            preview_page_builder_component,
+            doc("Render one page builder component as a page would (`use page builder`)"),
+        )
+        .merge(super::item::api())
+        .merge(super::search::api())
+        .merge(super::api_search::api())
+        .merge(super::gather::api())
+        .merge(super::batch::api())
+        .merge(super::api_token::api())
+        .merge(super::api_ai_assist::api())
+        .merge(super::api_chat::api())
+        .merge(super::assistant::api())
+        .merge(super::category::api())
+        .merge(super::comment::api())
+        .merge(super::lock::api())
+        .merge(super::file::block_editor_api())
 }
 
-/// Middleware that adds API versioning headers to all responses.
-async fn inject_api_version(
-    request: axum::http::Request<Body>,
-    next: axum::middleware::Next,
-) -> axum::response::Response {
-    let mut response = next.run(request).await;
-    let headers = response.headers_mut();
-    headers.insert("x-api-version", axum::http::HeaderValue::from_static("1"));
-    response
+/// Create the v1 API router: [`kernel_api`] under `/api/v1`, with the
+/// deprecated unversioned aliases.
+pub fn router(state: &AppState) -> Router<AppState> {
+    kernel_api().into_router(state)
 }
 
 // -------------------------------------------------------------------------
@@ -96,83 +113,6 @@ async fn openapi_spec(State(state): State<AppState>) -> impl IntoResponse {
         [(axum::http::header::CONTENT_TYPE, "application/json")],
         state.openapi().to_string(),
     )
-}
-
-// Helper functions
-// -------------------------------------------------------------------------
-
-/// Clamp per_page to a sane range.
-fn clamp_per_page(per_page: i64) -> i64 {
-    per_page.clamp(1, 100)
-}
-
-// -------------------------------------------------------------------------
-// Search endpoint
-// -------------------------------------------------------------------------
-
-/// Search across all content.
-///
-/// `GET /api/v1/search?q=rust&page=1&per_page=25`
-async fn search(
-    State(state): State<AppState>,
-    session: Session,
-    Query(params): Query<ListParams>,
-) -> impl IntoResponse {
-    let per_page = clamp_per_page(params.per_page);
-    let page = params.page.max(1);
-
-    let query = params.q.as_deref().unwrap_or("");
-    if query.is_empty() {
-        return Json(ListEnvelope {
-            data: Vec::<serde_json::Value>::new(),
-            total: 0,
-            page,
-            per_page,
-        })
-        .into_response();
-    }
-
-    let viewer = crate::routes::item::get_user_context(&session, &state).await;
-    let user_id = viewer.authenticated.then_some(viewer.id);
-    let offset = (page - 1) * per_page;
-    match state
-        .search()
-        .search(query, &[LIVE_STAGE_ID], user_id, per_page, offset)
-        .await
-    {
-        Ok(mut results) => {
-            // FR-8 Story 3.7 — route result rows through the shared access seam.
-            results.results = state
-                .items()
-                .filter_search_results(results.results, &viewer)
-                .await;
-            let data: Vec<serde_json::Value> = results
-                .results
-                .into_iter()
-                .map(|item| {
-                    serde_json::json!({
-                        "id": item.id,
-                        "title": item.title,
-                        "type": item.item_type,
-                        "snippet": item.snippet,
-                    })
-                })
-                .collect();
-
-            Json(ListEnvelope {
-                data,
-                total: results.total as u64,
-                page,
-                per_page,
-            })
-            .into_response()
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "search failed");
-            crate::error::AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, "Search failed")
-                .into_response()
-        }
-    }
 }
 
 // -------------------------------------------------------------------------
@@ -330,9 +270,10 @@ async fn export_user_data(
 
 /// Autocomplete endpoint for RecordReference fields.
 ///
-/// `GET /api/v1/items/autocomplete?type=article&q=rust&limit=10`
+/// `GET /api/v1/items/autocomplete?type=article&q=rust&per_page=10`
 ///
-/// Returns `[{"id": "uuid", "title": "..."}]` for items matching the query.
+/// Returns a page of `{"id": "uuid", "title": "..."}` for items matching the
+/// query.
 /// For `type=category_term` the answer is category terms instead, in the same
 /// shape, decided by `autocomplete_terms`.
 ///
@@ -347,17 +288,25 @@ async fn autocomplete_items(
     State(state): State<AppState>,
     session: Session,
     Query(params): Query<HashMap<String, String>>,
+    Query(paging): Query<PageParams>,
 ) -> impl IntoResponse {
     let item_type = params.get("type").map(String::as_str).unwrap_or("");
     let query = params.get("q").map(String::as_str).unwrap_or("");
-    let limit = params
-        .get("limit")
-        .and_then(|v| v.parse::<i64>().ok())
-        .unwrap_or(10)
-        .min(50);
+    // Suggestions are the first page only: a widget narrows by typing more.
+    let window = PageParams {
+        page: None,
+        offset: None,
+        ..paging
+    }
+    .window(10, 50);
+    let limit = window.per_page;
+    let answer = |data: Vec<serde_json::Value>| {
+        let total = data.len() as u64;
+        Json(Page::new(data, total, window)).into_response()
+    };
 
     if item_type.is_empty() || query.is_empty() {
-        return Json(serde_json::json!([])).into_response();
+        return answer(Vec::new());
     }
 
     // Category terms are not items: a term reference field is answered from
@@ -365,7 +314,7 @@ async fn autocomplete_items(
     if item_type == TERM_TARGET {
         let user = crate::routes::item::get_user_context(&session, &state).await;
         let results = autocomplete_terms(&state, &user, &params, query, limit).await;
-        return Json(serde_json::Value::Array(results)).into_response();
+        return answer(results);
     }
 
     // Search by title using ILIKE for case-insensitive prefix matching
@@ -403,11 +352,11 @@ async fn autocomplete_items(
                     })
                 })
                 .collect();
-            Json(serde_json::Value::Array(results)).into_response()
+            answer(results)
         }
         Err(e) => {
             tracing::warn!(error = %e, "autocomplete query failed");
-            Json(serde_json::json!([])).into_response()
+            answer(Vec::new())
         }
     }
 }
@@ -558,19 +507,6 @@ async fn autocomplete_terms(
 // Media browse endpoint
 // -------------------------------------------------------------------------
 
-/// Response envelope for the media browse API.
-#[derive(Debug, Serialize)]
-struct MediaBrowseResponse {
-    /// Media items for the current page.
-    items: Vec<MediaItem>,
-    /// Total number of matching files.
-    total: i64,
-    /// Current page number (1-based).
-    page: i64,
-    /// Items per page.
-    page_size: i64,
-}
-
 /// A single media file in browse results.
 #[derive(Debug, Serialize)]
 struct MediaItem {
@@ -592,11 +528,10 @@ struct MediaItem {
 
 /// Browse the media library with filtering, search, and pagination.
 ///
-/// `GET /api/v1/media/browse?page=1&page_size=24&type=image&q=logo&sort=newest`
+/// `GET /api/v1/media/browse?page=1&per_page=24&type=image&q=logo&sort=newest`
 ///
 /// Query parameters:
-/// - `page` — page number (default 1)
-/// - `page_size` — items per page (default 24, max 100)
+/// - `page`, `per_page` — the page ([`PageParams`]; default 24, max 100)
 /// - `type` — MIME type prefix filter: `image`, `document`, or `all` (default)
 /// - `q` — case-insensitive filename search
 /// - `sort` — `newest` (default), `oldest`, `name`, `size`
@@ -604,6 +539,7 @@ async fn browse_media(
     State(state): State<AppState>,
     session: Session,
     Query(params): Query<HashMap<String, String>>,
+    Query(paging): Query<PageParams>,
 ) -> impl IntoResponse {
     // Require authentication
     let user_id = match crate::routes::helpers::require_login_json(&state, &session).await {
@@ -620,16 +556,7 @@ async fn browse_media(
         MediaScope::VisibleTo(user_id)
     };
 
-    let page: i64 = params
-        .get("page")
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(1)
-        .max(1);
-    let page_size: i64 = params
-        .get("page_size")
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(24)
-        .clamp(1, 100);
+    let window = paging.window(24, 100);
     let sort = params.get("sort").map(String::as_str).unwrap_or("newest");
     let search = params.get("q").map(String::as_str);
 
@@ -639,8 +566,6 @@ async fn browse_media(
         Some("document") => Some("application/"),
         _ => None,
     };
-
-    let offset = (page - 1) * page_size;
 
     let total = match state
         .files()
@@ -666,8 +591,8 @@ async fn browse_media(
             search,
             scope,
             sort,
-            page_size,
-            offset,
+            window.per_page,
+            window.offset,
         )
         .await
     {
@@ -707,13 +632,7 @@ async fn browse_media(
         })
         .collect();
 
-    Json(MediaBrowseResponse {
-        items,
-        total,
-        page,
-        page_size,
-    })
-    .into_response()
+    Json(Page::new(items, u64::try_from(total).unwrap_or(0), window)).into_response()
 }
 
 /// Get field names marked `personal_data: true` for a content type.
@@ -795,5 +714,88 @@ async fn preview_page_builder_component(
         }))
         .into_response(),
         Err(e) => crate::error::AppError::bad_request(format!("{e:#}")).into_response(),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    /// Every JSON route the kernel serves is listed in the OpenAPI document.
+    ///
+    /// The document is built from [`super::kernel_api`], the same declarations
+    /// the router is built from, so a route registered through them cannot be
+    /// missing from it. What could still be missing is a route registered some
+    /// other way. So: no file under `src/routes` registers an `/api` path with
+    /// `.route(`, and every `api()` a route module declares is merged into
+    /// [`super::kernel_api`].
+    #[test]
+    fn every_served_api_route_is_listed() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/routes");
+        let kernel_api = std::fs::read_to_string(dir.join("api_v1.rs")).unwrap();
+        let mut bypassing = Vec::new();
+        let mut unmerged = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_stem().unwrap().to_str().unwrap().to_string();
+            let text = std::fs::read_to_string(&path).unwrap();
+            let compact: String = text.chars().filter(|c| !c.is_whitespace()).collect();
+            if compact.contains(".route(\"/api") {
+                bypassing.push(name.clone());
+            }
+            if name == "api_v1" {
+                continue; // this test's own text names the declarations
+            }
+            for (decl, call) in [
+                ("pub fn api() -> super::api::ApiRoutes", "api()"),
+                (
+                    "pub fn block_editor_api() -> super::api::ApiRoutes",
+                    "block_editor_api()",
+                ),
+            ] {
+                if text.contains(decl) && !kernel_api.contains(&format!("super::{name}::{call}")) {
+                    unmerged.push(format!("{name}::{call}"));
+                }
+            }
+        }
+        assert!(
+            bypassing.is_empty(),
+            "declare /api routes through ApiRoutes, not .route(): {bypassing:?}"
+        );
+        assert!(
+            unmerged.is_empty(),
+            "merge these into kernel_api(): {unmerged:?}"
+        );
+    }
+
+    /// Each method and path is declared once, every route is under
+    /// `/api/v1`, and every alias is the `/api` spelling of a versioned path.
+    #[test]
+    fn the_document_lists_each_route_once_under_the_prefix() {
+        let docs = super::kernel_api().docs();
+        let mut seen = BTreeSet::new();
+        for doc in &docs {
+            assert!(
+                seen.insert((doc.method.clone(), doc.path.clone())),
+                "declared twice: {} {}",
+                doc.method,
+                doc.path
+            );
+            if doc.deprecated {
+                let versioned = doc.path.replacen("/api/", "/api/v1/", 1);
+                assert!(
+                    docs.iter()
+                        .any(|d| !d.deprecated && d.path == versioned && d.method == doc.method),
+                    "{} is an alias of nothing",
+                    doc.path
+                );
+            } else {
+                assert!(doc.path.starts_with("/api/v1/"), "{}", doc.path);
+            }
+        }
+        // The old unversioned search is folded into the one search.
+        assert!(seen.contains(&("GET".to_string(), "/api/v1/search".to_string())));
+        assert!(seen.contains(&("GET".to_string(), "/api/search".to_string())));
     }
 }

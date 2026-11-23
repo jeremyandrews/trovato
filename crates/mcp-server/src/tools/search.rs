@@ -6,6 +6,7 @@ use rmcp::ErrorData as McpError;
 use rmcp::model::*;
 
 use trovato_kernel::LIVE_STAGE_ID;
+use trovato_kernel::pagination::Page;
 use trovato_kernel::state::AppState;
 use trovato_kernel::tap::UserContext;
 
@@ -37,14 +38,19 @@ pub async fn search(
         ));
     }
 
-    let limit = i64::from(params.limit.unwrap_or(20).clamp(1, 100));
-    let offset = i64::from(params.offset.unwrap_or(0));
+    let window = crate::tools::window(params.page, params.per_page, params.limit, params.offset);
 
     // Unrecorded: search analytics counts what visitors type into the site's
     // search, and a tool call from an MCP client is not that.
     let mut results = state
         .search()
-        .search_unrecorded(query, &[LIVE_STAGE_ID], Some(user_ctx.id), limit, offset)
+        .search_unrecorded(
+            query,
+            &[LIVE_STAGE_ID],
+            Some(user_ctx.id),
+            window.per_page,
+            window.offset,
+        )
         .await
         .map_err(internal_err)?;
 
@@ -55,7 +61,12 @@ pub async fn search(
         .filter_search_results(results.results, user_ctx)
         .await;
 
-    let json = to_json(&results)?;
+    let page = Page::new(
+        results.results,
+        u64::try_from(results.total).unwrap_or(0),
+        window,
+    );
+    let json = to_json(&page)?;
     Ok(CallToolResult::success(vec![ContentBlock::text(json)]))
 }
 

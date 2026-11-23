@@ -3,10 +3,9 @@
 //! Provides endpoints for viewing, creating, and moderating comments on content items.
 
 use axum::{
-    Json, Router,
+    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    routing::{delete, get, post, put},
 };
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
@@ -15,6 +14,7 @@ use uuid::Uuid;
 use crate::content::FilterPipeline;
 use crate::error::AppError;
 use crate::models::{Comment, CommentStatus, CreateComment, UpdateComment};
+use crate::pagination::{Page, PageParams};
 use crate::routes::helpers::{require_csrf_header, require_login_json, user_context_for};
 use crate::state::AppState;
 
@@ -47,12 +47,6 @@ pub struct CommentResponse {
 pub struct AuthorInfo {
     pub id: Uuid,
     pub name: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct CommentListResponse {
-    pub comments: Vec<CommentResponse>,
-    pub total: i64,
 }
 
 // =============================================================================
@@ -165,8 +159,6 @@ impl<S: Send + Sync> axum::extract::FromRequest<S> for CommentSubmission {
 
 #[derive(Debug, Deserialize)]
 pub struct ListCommentsQuery {
-    pub page: Option<i64>,
-    pub per_page: Option<i64>,
     pub include: Option<String>,
 }
 
@@ -182,7 +174,8 @@ async fn list_item_comments(
     session: Session,
     Path(item_id): Path<Uuid>,
     Query(query): Query<ListCommentsQuery>,
-) -> Result<Json<CommentListResponse>, AppError> {
+    Query(paging): Query<PageParams>,
+) -> Result<Json<Page<CommentResponse>>, AppError> {
     // Verify item exists and is viewable by this user (FR-8 Story 3.3): comments
     // on an item the viewer cannot see must not leak. Denied access returns 404
     // (same as missing) so item existence is not disclosed.
@@ -218,14 +211,16 @@ async fn list_item_comments(
         AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
     })?;
 
-    let total = comments.len() as i64;
+    // The window of the thread, in thread order.
+    let page = Page::slice(comments, paging.window(50, 100));
 
     // Build response with optional author info
-    let mut comment_responses = Vec::with_capacity(comments.len());
+    let mut comment_responses = Vec::with_capacity(page.data.len());
     let mut author_cache: std::collections::HashMap<Uuid, AuthorInfo> =
         std::collections::HashMap::new();
 
-    for comment in comments {
+    let (total, window) = (page.total, (page.page, page.per_page));
+    for comment in page.data {
         let author = if include_author {
             if let Some(cached) = author_cache.get(&comment.author_id) {
                 Some(cached.clone())
@@ -260,9 +255,11 @@ async fn list_item_comments(
         });
     }
 
-    Ok(Json(CommentListResponse {
-        comments: comment_responses,
+    Ok(Json(Page {
+        data: comment_responses,
         total,
+        page: window.0,
+        per_page: window.1,
     }))
 }
 
@@ -979,15 +976,36 @@ async fn send_comment_notification(
 // Router
 // =============================================================================
 
-/// Create the comment router.
-pub fn router() -> Router<AppState> {
-    Router::new()
-        // Public API
-        .route("/api/item/{id}/comments", get(list_item_comments))
-        .route("/api/item/{id}/comments", post(create_comment))
-        .route("/api/comment/{id}", get(get_comment))
-        .route("/api/comment/{id}", put(update_comment))
-        .route("/api/comment/{id}", delete(delete_comment))
+/// The comment JSON API, under `/api/v1` ([`super::api`]), served while
+/// `trovato_comments` is enabled.
+pub fn api() -> super::api::ApiRoutes {
+    use super::api::doc;
+    super::api::ApiRoutes::new("comments")
+        .get(
+            "/item/{id}/comments",
+            list_item_comments,
+            doc("List an item's comments in thread order")
+                .query("include", "`author` to embed each comment's author")
+                .paged(50, 100)
+                .alias(),
+        )
+        .post(
+            "/item/{id}/comments",
+            create_comment,
+            doc("Post a comment on an item (JSON or form body; CSRF token)").alias(),
+        )
+        .get("/comment/{id}", get_comment, doc("Get a comment").alias())
+        .put(
+            "/comment/{id}",
+            update_comment,
+            doc("Edit a comment").alias(),
+        )
+        .delete(
+            "/comment/{id}",
+            delete_comment,
+            doc("Delete a comment").alias(),
+        )
+        .plugin("trovato_comments")
 }
 
 #[cfg(test)]

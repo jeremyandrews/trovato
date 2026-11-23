@@ -761,14 +761,13 @@ fn e2e_search_returns_results() {
         assert_eq!(response.status(), StatusCode::OK);
 
         let body = response_json(response).await;
-        assert_eq!(body["query"], search_term);
         assert!(
             body["total"].as_i64().unwrap_or(0) >= 1,
             "Should find at least one result"
         );
 
         // Verify the result contains our item
-        let results = body["results"].as_array().expect("results should be array");
+        let results = body["data"].as_array().expect("data should be an array");
         let found = results
             .iter()
             .any(|r| r["id"].as_str() == Some(&item_id.to_string()));
@@ -827,7 +826,7 @@ fn e2e_search_empty_query_returns_no_results() {
 
         let body = response_json(response).await;
         assert_eq!(body["total"], 0);
-        assert_eq!(body["results"].as_array().map(|a| a.len()).unwrap_or(0), 0);
+        assert_eq!(body["data"].as_array().map(|a| a.len()), Some(0));
     });
 }
 
@@ -3727,12 +3726,10 @@ fn e2e_api_list_items_returns_paginated() {
         assert_eq!(response.status(), StatusCode::OK);
 
         let body = response_json(response).await;
-        assert!(body["items"].is_array());
-        assert!(body["pagination"].is_object());
-        assert!(body["pagination"]["total"].is_number());
-        assert!(body["pagination"]["page"].is_number());
-        assert!(body["pagination"]["per_page"].is_number());
-        assert!(body["pagination"]["total_pages"].is_number());
+        assert!(body["data"].is_array());
+        assert!(body["total"].is_number());
+        assert!(body["page"].is_number());
+        assert!(body["per_page"].is_number());
     });
 }
 
@@ -3752,9 +3749,9 @@ fn e2e_api_list_items_filters_by_type() {
         assert_eq!(response.status(), StatusCode::OK);
 
         let body = response_json(response).await;
-        assert!(body["items"].is_array());
+        assert!(body["data"].is_array());
         // All items should be of type article (or empty if none exist)
-        for item in body["items"].as_array().unwrap() {
+        for item in body["data"].as_array().unwrap() {
             assert_eq!(item["type"], "article");
         }
     });
@@ -3776,9 +3773,9 @@ fn e2e_api_list_items_filters_by_status() {
         assert_eq!(response.status(), StatusCode::OK);
 
         let body = response_json(response).await;
-        assert!(body["items"].is_array());
+        assert!(body["data"].is_array());
         // All items should have status 1
-        for item in body["items"].as_array().unwrap() {
+        for item in body["data"].as_array().unwrap() {
             assert_eq!(item["status"], 1);
         }
     });
@@ -3946,7 +3943,7 @@ fn e2e_api_comment_crud() {
         assert_eq!(list_response.status(), StatusCode::OK);
         let body = response_json(list_response).await;
         assert_eq!(body["total"], 0);
-        assert!(body["comments"].as_array().unwrap().is_empty());
+        assert!(body["data"].as_array().unwrap().is_empty());
 
         // Fetch CSRF token for API requests
         let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/").await;
@@ -7047,7 +7044,7 @@ fn e2e_search_filters_by_stage_live() {
 
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
-        let results = body["results"].as_array().expect("results array");
+        let results = body["data"].as_array().expect("data array");
 
         let found_live = results
             .iter()

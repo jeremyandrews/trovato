@@ -13,7 +13,7 @@ use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{Html, IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::get,
 };
 use chrono::{Duration, Utc};
 use serde::{Deserialize, Serialize};
@@ -102,7 +102,8 @@ async fn create_token(
 async fn list_tokens(
     State(state): State<AppState>,
     session: Session,
-) -> Result<Json<Vec<TokenListItem>>, AppError> {
+    axum::extract::Query(paging): axum::extract::Query<crate::pagination::PageParams>,
+) -> Result<Json<crate::pagination::Page<TokenListItem>>, AppError> {
     let user_id = require_login_json(&state, &session).await?.id;
 
     let tokens = ApiToken::list_for_user(state.db(), user_id)
@@ -120,7 +121,10 @@ async fn list_tokens(
         })
         .collect();
 
-    Ok(Json(items))
+    Ok(Json(crate::pagination::Page::slice(
+        items,
+        paging.window(100, 100),
+    )))
 }
 
 /// DELETE /api/tokens/{id} — Revoke a token.
@@ -207,8 +211,26 @@ async fn tokens_page(State(state): State<AppState>, session: Session) -> Respons
 }
 
 pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/user/tokens", get(tokens_page))
-        .route("/api/tokens", post(create_token).get(list_tokens))
-        .route("/api/tokens/{id}", delete(delete_token))
+    Router::new().route("/user/tokens", get(tokens_page))
+}
+
+/// The API token JSON API, under `/api/v1` ([`super::api`]).
+pub fn api() -> super::api::ApiRoutes {
+    use super::api::doc;
+    super::api::ApiRoutes::new("tokens")
+        .post(
+            "/tokens",
+            create_token,
+            doc("Create an API token for the caller (`X-CSRF-Token`)").alias(),
+        )
+        .get(
+            "/tokens",
+            list_tokens,
+            doc("List the caller's API tokens").paged(100, 100).alias(),
+        )
+        .delete(
+            "/tokens/{id}",
+            delete_token,
+            doc("Revoke one of the caller's API tokens (`X-CSRF-Token`)").alias(),
+        )
 }

@@ -873,7 +873,7 @@
   function logSearch(query, results) {
     if (!(global.scolta && global.scolta.analytics) || !navigator.sendBeacon) return;
     const body = new Blob([JSON.stringify({ query, results })], { type: 'application/json' });
-    navigator.sendBeacon('/api/search/log', body);
+    navigator.sendBeacon('/api/v1/search/log', body);
   }
 
   // `preserveFilters` is true for a filter toggle, which is not a new search.

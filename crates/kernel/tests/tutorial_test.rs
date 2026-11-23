@@ -200,7 +200,7 @@ fn test_part01_step02_conference_type_in_api() {
 
         let response = app
             .request(
-                Request::get("/api/content-types")
+                Request::get("/api/v1/content-types")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -208,9 +208,10 @@ fn test_part01_step02_conference_type_in_api() {
 
         assert_eq!(response.status(), StatusCode::OK);
 
-        let types: Vec<String> =
+        let page: serde_json::Value =
             serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
                 .unwrap();
+        let types: Vec<String> = serde_json::from_value(page["data"].clone()).unwrap();
 
         assert!(
             types.contains(&"conference".to_string()),
@@ -634,7 +635,7 @@ fn test_part01_step04_gather_returns_conferences() {
             "gather should return at least 3 conferences, got {total}"
         );
 
-        let items = body["items"].as_array().expect("items must be an array");
+        let items = body["data"].as_array().expect("data must be an array");
         assert!(!items.is_empty(), "gather items array should not be empty");
     });
 }
@@ -728,7 +729,7 @@ fn test_part01_step04_sorted_by_start_date() {
             .await;
 
         let body = response_json(response).await;
-        let items = body["items"].as_array().unwrap();
+        let items = body["data"].as_array().unwrap();
 
         // Verify items are sorted by start_date ascending
         let dates: Vec<&str> = items

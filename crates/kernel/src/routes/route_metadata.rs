@@ -1,10 +1,12 @@
 //! Route metadata for API documentation and versioning.
 //!
-//! Builds `/api/openapi.json` from the kernel's API routes and every enabled
-//! plugin's `api` menu entries. The plugin half is read through
-//! [`served_api_entries`], the same rule the plugin router mounts from, so the
-//! document lists exactly the plugin routes the server serves; a test requests
-//! every listed path and requires the router to answer it.
+//! Builds `/api/v1/openapi.json` from the kernel's API routes and every
+//! enabled plugin's `api` menu entries. The kernel half is read from
+//! [`kernel_api`](crate::routes::api_v1::kernel_api), the declarations the
+//! kernel router is built from; the plugin half through
+//! [`served_api_entries`], the same rule the plugin router mounts from. So the
+//! document lists exactly the routes the server serves; a test requests every
+//! listed path and requires the router to answer it.
 
 use axum::http::Method;
 use serde::Serialize;
@@ -18,7 +20,7 @@ pub struct RouteMetadata {
     /// HTTP method.
     pub method: String,
 
-    /// Route path pattern (e.g., "/api/item/{id}").
+    /// Route path pattern (e.g., "/api/v1/item/{id}").
     pub path: String,
 
     /// Short summary of the route's purpose.
@@ -68,208 +70,12 @@ impl RouteRegistry {
         Self::default()
     }
 
-    /// Register kernel API route metadata.
+    /// Register the kernel's API routes: every route of
+    /// [`kernel_api`](crate::routes::api_v1::kernel_api), its versioned path
+    /// and any deprecated alias, plus the health check.
     pub fn register_kernel_routes(&mut self) {
-        // Register the core API v1 routes
-        self.routes.push(RouteMetadata {
-            method: Method::GET.to_string(),
-            path: "/api/items".to_string(),
-            summary: "List content items with filters and pagination".to_string(),
-            parameters: vec![
-                ParamMeta {
-                    name: "type".to_string(),
-                    location: "query".to_string(),
-                    required: false,
-                    description: "Content type filter".to_string(),
-                },
-                ParamMeta {
-                    name: "page".to_string(),
-                    location: "query".to_string(),
-                    required: false,
-                    description: "Page number (default 1)".to_string(),
-                },
-                ParamMeta {
-                    name: "per_page".to_string(),
-                    location: "query".to_string(),
-                    required: false,
-                    description: "Items per page (default 20, max 100)".to_string(),
-                },
-            ],
-            response_type: "application/json".to_string(),
-            tags: vec!["content".to_string()],
-            deprecated: false,
-            description: None,
-        });
-
-        self.routes.push(RouteMetadata {
-            method: Method::GET.to_string(),
-            path: "/api/item/{id}".to_string(),
-            summary: "Get a single content item by ID".to_string(),
-            parameters: vec![ParamMeta {
-                name: "id".to_string(),
-                location: "path".to_string(),
-                required: true,
-                description: "Item UUID".to_string(),
-            }],
-            response_type: "application/json".to_string(),
-            tags: vec!["content".to_string()],
-            deprecated: false,
-            description: None,
-        });
-
-        self.routes.push(RouteMetadata {
-            method: Method::GET.to_string(),
-            path: "/api/v1/search".to_string(),
-            summary: "Full-text search across content".to_string(),
-            parameters: vec![ParamMeta {
-                name: "q".to_string(),
-                location: "query".to_string(),
-                required: true,
-                description: "Search query string".to_string(),
-            }],
-            response_type: "application/json".to_string(),
-            tags: vec!["search".to_string()],
-            deprecated: false,
-            description: None,
-        });
-
-        self.routes.push(RouteMetadata {
-            method: Method::GET.to_string(),
-            path: "/api/v1/user/export".to_string(),
-            summary: "Export user data (GDPR Article 20)".to_string(),
-            parameters: vec![ParamMeta {
-                name: "user_id".to_string(),
-                location: "query".to_string(),
-                required: false,
-                description: "User UUID (admin only, defaults to self)".to_string(),
-            }],
-            response_type: "application/json".to_string(),
-            tags: vec!["user".to_string()],
-            deprecated: false,
-            description: None,
-        });
-
-        self.routes.push(RouteMetadata {
-            method: Method::GET.to_string(),
-            path: "/api/categories".to_string(),
-            summary: "List categories".to_string(),
-            parameters: vec![],
-            response_type: "application/json".to_string(),
-            tags: vec!["categories".to_string()],
-            deprecated: false,
-            description: None,
-        });
-
-        self.routes.push(RouteMetadata {
-            method: Method::GET.to_string(),
-            path: "/api/v1/items/autocomplete".to_string(),
-            summary: "Search items by type and title for autocomplete".to_string(),
-            parameters: vec![
-                ParamMeta {
-                    name: "type".to_string(),
-                    location: "query".to_string(),
-                    required: true,
-                    description: "Content type machine name".to_string(),
-                },
-                ParamMeta {
-                    name: "q".to_string(),
-                    location: "query".to_string(),
-                    required: true,
-                    description: "Title prefix search query".to_string(),
-                },
-                ParamMeta {
-                    name: "limit".to_string(),
-                    location: "query".to_string(),
-                    required: false,
-                    description: "Max results (default 10, max 50)".to_string(),
-                },
-                ParamMeta {
-                    name: "item_type".to_string(),
-                    location: "query".to_string(),
-                    required: false,
-                    description: "With type=category_term: the content type whose field is being filled in".to_string(),
-                },
-                ParamMeta {
-                    name: "field".to_string(),
-                    location: "query".to_string(),
-                    required: false,
-                    description: "With type=category_term: the term reference field being filled in".to_string(),
-                },
-                ParamMeta {
-                    name: "item".to_string(),
-                    location: "query".to_string(),
-                    required: false,
-                    description: "With type=category_term: the item being edited, if any".to_string(),
-                },
-                ParamMeta {
-                    name: "owner".to_string(),
-                    location: "query".to_string(),
-                    required: false,
-                    description: "With type=category_term: the form's value of the field's owner field, for a field limited to the item's owner".to_string(),
-                },
-            ],
-            response_type: "application/json".to_string(),
-            tags: vec!["content".to_string()],
-            deprecated: false,
-            description: None,
-        });
-
-        self.routes.push(RouteMetadata {
-            method: Method::POST.to_string(),
-            path: "/api/v1/ai/assist".to_string(),
-            summary: "AI text transformation (rewrite, expand, shorten, translate, tone)"
-                .to_string(),
-            parameters: vec![],
-            response_type: "application/json".to_string(),
-            tags: vec!["ai".to_string()],
-            deprecated: false,
-            description: None,
-        });
-
-        self.routes.push(RouteMetadata {
-            method: Method::POST.to_string(),
-            path: "/api/v1/chat".to_string(),
-            summary: "AI chatbot with SSE streaming response".to_string(),
-            parameters: vec![],
-            response_type: "text/event-stream".to_string(),
-            tags: vec!["ai".to_string()],
-            deprecated: false,
-            description: None,
-        });
-
-        self.routes.push(RouteMetadata {
-            method: Method::POST.to_string(),
-            path: "/api/v1/search/expand".to_string(),
-            summary: "AI query expansion — returns alternative search terms".to_string(),
-            parameters: vec![],
-            response_type: "application/json".to_string(),
-            tags: vec!["search".to_string(), "ai".to_string()],
-            deprecated: false,
-            description: None,
-        });
-
-        self.routes.push(RouteMetadata {
-            method: Method::POST.to_string(),
-            path: "/api/v1/search/summarize".to_string(),
-            summary: "AI summary of search results (SSE stream)".to_string(),
-            parameters: vec![],
-            response_type: "text/event-stream".to_string(),
-            tags: vec!["search".to_string(), "ai".to_string()],
-            deprecated: false,
-            description: None,
-        });
-
-        self.routes.push(RouteMetadata {
-            method: Method::POST.to_string(),
-            path: "/api/v1/search/followup".to_string(),
-            summary: "Follow-up conversation about search results (SSE stream)".to_string(),
-            parameters: vec![],
-            response_type: "text/event-stream".to_string(),
-            tags: vec!["search".to_string(), "ai".to_string()],
-            deprecated: false,
-            description: None,
-        });
-
+        self.routes
+            .extend(crate::routes::api_v1::kernel_api().docs());
         self.routes.push(RouteMetadata {
             method: Method::GET.to_string(),
             path: "/health".to_string(),

@@ -354,7 +354,7 @@ The workflow defines four transitions:
 
 ```bash
 # Anonymous query
-curl -s http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | jq '.total'
+curl -s http://localhost:3000/api/v1/query/ritrovo.upcoming_conferences/execute | jq '.total'
 # Returns count of Live conferences
 ```
 
@@ -364,7 +364,7 @@ curl -s http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | j
 
 ```bash
 # Anonymous search — only Live results
-curl -s 'http://localhost:3000/api/search?q=conference' | jq '.total'
+curl -s 'http://localhost:3000/api/v1/search?q=conference' | jq '.total'
 ```
 
 ### 3.7 Extensibility Demo: Legal Review Stage

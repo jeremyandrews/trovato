@@ -57,7 +57,7 @@ grep -c 'safe_urls' templates/elements/item--conference.html
 `[CLI]` Pick a conference and check the detail page renders with the new template:
 
 ```bash
-ID=$(curl -s http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | jq -r '.items[0].id')
+ID=$(curl -s http://localhost:3000/api/v1/query/ritrovo.upcoming_conferences/execute | jq -r '.data[0].id')
 curl -s http://localhost:3000/item/$ID | grep -o 'class="conf-detail[^"]*"' | head -5
 ```
 
@@ -194,7 +194,7 @@ cat docs/tutorial/config/item_type.speaker.yml | head -5
 cargo run --release --bin trovato -- config import docs/tutorial/config
 sleep 5
 
-curl -s http://localhost:3000/api/content-types | jq '.[] | select(. == "speaker")'
+curl -s http://localhost:3000/api/v1/content-types | jq '.data[] | select(. == "speaker")'
 # Expect: "speaker"
 ```
 
@@ -375,7 +375,7 @@ SQL
 `[CLI]`
 
 ```bash
-ID=$(curl -s http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | jq -r '.items[0].id')
+ID=$(curl -s http://localhost:3000/api/v1/query/ritrovo.upcoming_conferences/execute | jq -r '.data[0].id')
 curl -s http://localhost:3000/item/$ID | grep -o 'class="breadcrumb[^"]*"' | head -1
 ```
 
@@ -456,7 +456,7 @@ curl -s -b /tmp/trovato-cookies.txt -c /tmp/trovato-cookies.txt \
 `[CLI]`
 
 ```bash
-curl -s 'http://localhost:3000/api/search?q=rust' | jq '{total: .total, first: .results[0].title}'
+curl -s 'http://localhost:3000/api/v1/search?q=rust' | jq '{total: .total, first: .data[0].title}'
 ```
 
 **Verify:** Returns results with conference titles matching "rust".
@@ -467,11 +467,11 @@ curl -s 'http://localhost:3000/api/search?q=rust' | jq '{total: .total, first: .
 
 ```bash
 # Title match (weight A) should rank high
-curl -s 'http://localhost:3000/api/search?q=rust' | jq '.results[0].title'
+curl -s 'http://localhost:3000/api/v1/search?q=rust' | jq '.data[0].title'
 # Expect: Something with "Rust" in the title (e.g., "Rust Belt Rust")
 
 # City match (weight C)
-curl -s 'http://localhost:3000/api/search?q=berlin' | jq '.results | length'
+curl -s 'http://localhost:3000/api/v1/search?q=berlin' | jq '.data | length'
 # Expect: > 0
 ```
 
@@ -599,7 +599,7 @@ curl -s http://localhost:3000/topics/rust | grep -c 'card--conf'
 
 ```bash
 # Raw fields exist in HTML but are hidden by CSS
-ID=$(curl -s http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | jq -r '.items[0].id')
+ID=$(curl -s http://localhost:3000/api/v1/query/ritrovo.upcoming_conferences/execute | jq -r '.data[0].id')
 curl -s http://localhost:3000/item/$ID | grep -c 'class="field '
 # Expect: > 0 (fields present in DOM, hidden by CSS rule)
 ```
@@ -627,13 +627,13 @@ Record the visual state in `TOOLS.md -> Theme`.
 
 ```bash
 echo "=== Part 3 Completion Checklist ==="
-echo -n "1. Conference template: "; curl -s http://localhost:3000/item/$(curl -s http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | jq -r '.items[0].id') | grep -c 'conf-detail'
+echo -n "1. Conference template: "; curl -s http://localhost:3000/item/$(curl -s http://localhost:3000/api/v1/query/ritrovo.upcoming_conferences/execute | jq -r '.data[0].id') | grep -c 'conf-detail'
 echo -n "2. CFP template: "; curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/cfps
-echo -n "3. Speaker type: "; curl -s http://localhost:3000/api/content-types | jq -r '.[] | select(. == "speaker")'
+echo -n "3. Speaker type: "; curl -s http://localhost:3000/api/v1/content-types | jq -r '.data[] | select(. == "speaker")'
 echo -n "4. File endpoint: "; curl -s -o /dev/null -w "%{http_code}" -X POST http://localhost:3000/file/upload -F "dummy=test"
 echo -n "5. Page layout: "; curl -s http://localhost:3000/ | grep -c 'site-header\|page-sidebar\|page-footer'
-echo -n "6. Breadcrumbs: "; curl -s http://localhost:3000/item/$(curl -s http://localhost:3000/api/query/ritrovo.upcoming_conferences/execute | jq -r '.items[0].id') | grep -c 'breadcrumb'
-echo -n "7. Search API: "; curl -s 'http://localhost:3000/api/search?q=conference' | jq -r '.total'
+echo -n "6. Breadcrumbs: "; curl -s http://localhost:3000/item/$(curl -s http://localhost:3000/api/v1/query/ritrovo.upcoming_conferences/execute | jq -r '.data[0].id') | grep -c 'breadcrumb'
+echo -n "7. Search API: "; curl -s 'http://localhost:3000/api/v1/search?q=conference' | jq -r '.total'
 echo -n "8. Hero front page: "; curl -s http://localhost:3000/ | grep -c 'hero__title'
 echo -n "9. About page: "; curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/about
 echo -n "10. Topics inline: "; curl -s -o /dev/null -w "%{http_code}" http://localhost:3000/topics/rust

@@ -3,6 +3,30 @@
 Trovato exposes a JSON API suitable for headless CMS usage. All endpoints
 accept and return `application/json` unless otherwise noted.
 
+## Conventions
+
+- **One prefix.** Every kernel JSON endpoint is under `/api/v1` and answers
+  with the `x-api-version: 1` header. The paths served before 1.x without the
+  version (`/api/items`, `/api/search`, `/api/tokens`, ...) still answer, as
+  deprecated aliases of the same handlers: each carries a `Deprecation: true`
+  header, is marked `deprecated` in the OpenAPI document, and is removed at
+  2.0. Plugin routes keep the paths their plugins declare.
+- **One list shape.** Every list is a page:
+
+  ```json
+  {"data": [...], "total": 42, "page": 1, "per_page": 20}
+  ```
+
+  and takes `page` (from 1) and `per_page`; `limit` and `offset` are accepted
+  as their aliases. `per_page` is clamped to each list's maximum. `total` is
+  the size of the matching set; on a list an access check thins after the
+  query, a page may hold fewer entries than `per_page`.
+- **One error shape.** Every error is an `AppError` body (`message`, and
+  `errors` for a validation failure).
+- **One document.** `GET /api/v1/openapi.json` is the OpenAPI 3.0 document,
+  generated from the router: every kernel route, every alias (deprecated) and
+  every enabled plugin's `api` routes.
+
 ---
 
 ## Authentication
@@ -33,7 +57,7 @@ For external frontends, Bearer tokens avoid cookie/CORS complexity.
 **Create a token** (requires session auth):
 
 ```
-POST /api/tokens
+POST /api/v1/tokens
 Content-Type: application/json
 Cookie: <session>
 
@@ -50,7 +74,7 @@ Save the `token` value — it is shown only once.
 **Use the token** on any request:
 
 ```
-GET /api/items
+GET /api/v1/items
 Authorization: Bearer <raw-token>
 ```
 
@@ -133,7 +157,7 @@ Most resource IDs are UUIDv7. Categories and queries use string identifiers.
 ### List Items
 
 ```
-GET /api/items?page=1&per_page=20&include=author
+GET /api/v1/items?page=1&per_page=20&include=author
 ```
 
 | Query Param | Type   | Description                     |
@@ -148,7 +172,7 @@ GET /api/items?page=1&per_page=20&include=author
 **Response (200):**
 ```json
 {
-  "items": [
+  "data": [
     {
       "id": "<uuid>",
       "type": "blog",
@@ -164,19 +188,16 @@ GET /api/items?page=1&per_page=20&include=author
       "stage_id": "live"
     }
   ],
-  "pagination": {
-    "total": 1,
-    "page": 1,
-    "per_page": 20,
-    "total_pages": 1
-  }
+  "total": 1,
+  "page": 1,
+  "per_page": 20
 }
 ```
 
 ### Get Item
 
 ```
-GET /api/item/{id}?include=author
+GET /api/v1/item/{id}?include=author
 ```
 
 Returns a single item object (same shape as list items).
@@ -184,18 +205,19 @@ Returns a single item object (same shape as list items).
 ### List Content Types
 
 ```
-GET /api/content-types
+GET /api/v1/content-types
 ```
 
-Returns an array of content type machine names.
+Returns a page of content type machine names.
 
 ### List Items by Type
 
 ```
-GET /api/items/{type}
+GET /api/v1/items/{type}
 ```
 
-Returns all items of the given content type.
+Returns a page of the items of the given content type (`id`, `title`,
+`item_type`, `status`).
 
 ---
 
@@ -204,13 +226,13 @@ Returns all items of the given content type.
 ### List Comments
 
 ```
-GET /api/item/{item_id}/comments?page=1&per_page=20&include=author
+GET /api/v1/item/{item_id}/comments?page=1&per_page=20&include=author
 ```
 
 **Response (200):**
 ```json
 {
-  "comments": [
+  "data": [
     {
       "id": "<uuid>",
       "item_id": "<uuid>",
@@ -225,7 +247,9 @@ GET /api/item/{item_id}/comments?page=1&per_page=20&include=author
       "depth": 0
     }
   ],
-  "total": 1
+  "total": 1,
+  "page": 1,
+  "per_page": 20
 }
 ```
 
@@ -234,7 +258,7 @@ GET /api/item/{item_id}/comments?page=1&per_page=20&include=author
 Requires authentication.
 
 ```
-POST /api/item/{item_id}/comments
+POST /api/v1/item/{item_id}/comments
 Content-Type: application/json
 
 {"body": "Nice article!", "parent_id": null}
@@ -245,7 +269,7 @@ Content-Type: application/json
 ### Get Comment
 
 ```
-GET /api/comment/{id}?include=author
+GET /api/v1/comment/{id}?include=author
 ```
 
 ### Update Comment
@@ -253,7 +277,7 @@ GET /api/comment/{id}?include=author
 Requires authentication. Must be comment author or admin.
 
 ```
-PUT /api/comment/{id}
+PUT /api/v1/comment/{id}
 Content-Type: application/json
 
 {"body": "Updated text"}
@@ -264,7 +288,7 @@ Content-Type: application/json
 Requires authentication. Must be comment author or admin.
 
 ```
-DELETE /api/comment/{id}
+DELETE /api/v1/comment/{id}
 ```
 
 **Response:** `{"deleted": true}`
@@ -274,20 +298,22 @@ DELETE /api/comment/{id}
 ## Search
 
 ```
-GET /api/search?q=hello&page=1&limit=10
+GET /api/v1/search?q=hello&page=1&per_page=10
 ```
 
 | Query Param | Default | Range | Description        |
 |-------------|--------:|------:|--------------------|
 | `q`         |         |       | Search query       |
 | `page`      |       1 |   1+  | Page number        |
-| `limit`     |      10 | 1–50  | Results per page   |
+| `per_page`  |      10 | 1–50  | Results per page (`limit` is an alias) |
+
+The one JSON search: `/api/search` is its deprecated alias. An empty `q`
+answers an empty page.
 
 **Response (200):**
 ```json
 {
-  "query": "hello",
-  "results": [
+  "data": [
     {
       "id": "<uuid>",
       "type": "blog",
@@ -299,8 +325,7 @@ GET /api/search?q=hello&page=1&limit=10
   ],
   "total": 1,
   "page": 1,
-  "limit": 10,
-  "total_pages": 1
+  "per_page": 10
 }
 ```
 
@@ -310,7 +335,7 @@ GET /api/search?q=hello&page=1&limit=10
 
 A gather may declare the permission a viewer needs to run it, in its definition:
 `"access": { "permission": "..." }`. Every endpoint below checks it before the
-query runs: `/api/queries` leaves out a gather the caller may not run, and the
+query runs: `/api/v1/queries` leaves out a gather the caller may not run, and the
 other two answer 403 with a JSON `error` body (`Permission required: ...`).
 Administrators pass. A lightweight-record gather (`record_type`) that declares
 none requires `access content`. [Gathers that require a
@@ -320,27 +345,32 @@ HTML pages, route aliases, feeds and menu links.
 ### List Queries
 
 ```
-GET /api/queries
+GET /api/v1/queries
 ```
 
 Lists the gathers the caller may run.
 
 **Response (200):**
 ```json
-[
-  {
-    "query_id": "blog_listing",
-    "label": "Blog",
-    "description": "Recent blog posts",
-    "plugin": "core"
-  }
-]
+{
+  "data": [
+    {
+      "query_id": "blog_listing",
+      "label": "Blog",
+      "description": "Recent blog posts",
+      "plugin": "core"
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "per_page": 100
+}
 ```
 
 ### Get Query Definition
 
 ```
-GET /api/query/{query_id}
+GET /api/v1/query/{query_id}
 ```
 
 Returns full query configuration including definition, display settings, filters,
@@ -349,28 +379,26 @@ and sorts.
 ### Execute Query
 
 ```
-GET /api/query/{query_id}/execute?page=1&stage=live
+GET /api/v1/query/{query_id}/execute?page=1&stage=live
 ```
 
-Exposed filters can be passed as query parameters.
+Exposed filters can be passed as query parameters. The gather sets the page
+size; `page` picks the page.
 
 **Response (200):**
 ```json
 {
-  "items": [ ... ],
+  "data": [ ... ],
   "total": 42,
   "page": 1,
-  "per_page": 10,
-  "total_pages": 5,
-  "has_next": true,
-  "has_prev": false
+  "per_page": 10
 }
 ```
 
 ### Ad-Hoc Query
 
 ```
-POST /api/gather/query
+POST /api/v1/gather/query
 Content-Type: application/json
 
 {
@@ -412,11 +440,11 @@ same rules, and a definition that breaks them is refused before any SQL runs.
 
 | Method   | Path                  | Description        |
 |----------|-----------------------|--------------------|
-| `GET`    | `/api/categories`     | List all           |
-| `POST`   | `/api/category`       | Create             |
-| `GET`    | `/api/category/{id}`  | Get one            |
-| `PUT`    | `/api/category/{id}`  | Update             |
-| `DELETE` | `/api/category/{id}`  | Delete (204)       |
+| `GET`    | `/api/v1/categories`     | List all           |
+| `POST`   | `/api/v1/category`       | Create             |
+| `GET`    | `/api/v1/category/{id}`  | Get one            |
+| `PUT`    | `/api/v1/category/{id}`  | Update             |
+| `DELETE` | `/api/v1/category/{id}`  | Delete (204)       |
 
 Category object:
 ```json
@@ -433,12 +461,12 @@ Category object:
 
 | Method   | Path                                | Description              |
 |----------|-------------------------------------|--------------------------|
-| `GET`    | `/api/category/{cat_id}/tags`       | List tags in category    |
-| `GET`    | `/api/category/{cat_id}/roots`      | Root-level tags only     |
-| `POST`   | `/api/tag`                          | Create tag               |
-| `GET`    | `/api/tag/{id}`                     | Get tag                  |
-| `PUT`    | `/api/tag/{id}`                     | Update tag               |
-| `DELETE` | `/api/tag/{id}`                     | Delete tag (204)         |
+| `GET`    | `/api/v1/category/{cat_id}/tags`       | List tags in category    |
+| `GET`    | `/api/v1/category/{cat_id}/roots`      | Root-level tags only     |
+| `POST`   | `/api/v1/tag`                          | Create tag               |
+| `GET`    | `/api/v1/tag/{id}`                     | Get tag                  |
+| `PUT`    | `/api/v1/tag/{id}`                     | Update tag               |
+| `DELETE` | `/api/v1/tag/{id}`                     | Delete tag (204)         |
 
 Tag object:
 ```json
@@ -457,12 +485,16 @@ Tag object:
 
 | Method | Path                        | Description                    |
 |--------|-----------------------------|--------------------------------|
-| `GET`  | `/api/tag/{id}/parents`     | Parent tags                    |
-| `PUT`  | `/api/tag/{id}/parents`     | Set parents (`{parent_ids:[]}`) |
-| `GET`  | `/api/tag/{id}/children`    | Direct children                |
-| `GET`  | `/api/tag/{id}/ancestors`   | All ancestors with depth       |
-| `GET`  | `/api/tag/{id}/descendants` | All descendants with depth     |
-| `GET`  | `/api/tag/{id}/breadcrumb`  | Root-to-current path           |
+| `GET`  | `/api/v1/tag/{id}/parents`     | Parent tags                    |
+| `PUT`  | `/api/v1/tag/{id}/parents`     | Set parents (`{parent_ids:[]}`) |
+| `GET`  | `/api/v1/tag/{id}/children`    | Direct children                |
+| `GET`  | `/api/v1/tag/{id}/ancestors`   | All ancestors with depth       |
+| `GET`  | `/api/v1/tag/{id}/descendants` | All descendants with depth     |
+| `GET`  | `/api/v1/tag/{id}/breadcrumb`  | Root-to-current path           |
+
+Every `GET` above that answers more than one category or tag answers a page
+(`data`, `total`, `page`, `per_page`; default 100, max 500), the breadcrumb and
+the ancestors in their order.
 
 ---
 
@@ -471,7 +503,7 @@ Tag object:
 ### Create Batch
 
 ```
-POST /api/batch
+POST /api/v1/batch
 Content-Type: application/json
 
 {"operation_type": "export", "params": { ... }}
@@ -485,7 +517,7 @@ Content-Type: application/json
 ### Get Status
 
 ```
-GET /api/batch/{id}
+GET /api/v1/batch/{id}
 ```
 
 **Response (200):**
@@ -512,7 +544,7 @@ Status values: `Pending`, `Running`, `Completed`, `Failed`, `Cancelled`.
 ### Cancel Batch
 
 ```
-POST /api/batch/{id}/cancel
+POST /api/v1/batch/{id}/cancel
 ```
 
 Returns 409 if the operation already finished.
@@ -520,7 +552,7 @@ Returns 409 if the operation already finished.
 ### Delete Batch
 
 ```
-DELETE /api/batch/{id}
+DELETE /api/v1/batch/{id}
 ```
 
 **Response:** 204 No Content.
@@ -543,7 +575,7 @@ user's role (see "Rate Limits" in `INSTALL.md`).
 ### Create Token
 
 ```
-POST /api/tokens
+POST /api/v1/tokens
 Content-Type: application/json
 
 {"name": "My Frontend", "expires_in_days": 90}
@@ -570,26 +602,31 @@ retrieved again. A maximum of 25 tokens per user is enforced.
 ### List Tokens
 
 ```
-GET /api/tokens
+GET /api/v1/tokens
 ```
 
 **Response (200):**
 ```json
-[
-  {
-    "id": "<uuid>",
-    "name": "My Frontend",
-    "created": 1708000000,
-    "last_used": 1708001000,
-    "expires_at": 1715000000
-  }
-]
+{
+  "data": [
+    {
+      "id": "<uuid>",
+      "name": "My Frontend",
+      "created": 1708000000,
+      "last_used": 1708001000,
+      "expires_at": 1715000000
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "per_page": 100
+}
 ```
 
 ### Revoke Token
 
 ```
-DELETE /api/tokens/{id}
+DELETE /api/v1/tokens/{id}
 ```
 
 **Response:** 204 No Content.
@@ -649,6 +686,25 @@ POST /api/v1/assistant/{conversation_id}/reset
 
 Closes the conversation, discards its outstanding proposals, and opens a fresh
 one with a new snapshot. Same two token paths, same two response shapes.
+
+---
+
+## Autocomplete and media
+
+```
+GET /api/v1/items/autocomplete?type=article&q=ru&per_page=10
+```
+
+Suggestions for a reference field: a page (the first only; at most 50) of
+`{"id", "title"}`. `type=category_term` answers category terms for a term
+reference field and takes `item_type`, `field`, `item` and `owner`.
+
+```
+GET /api/v1/media/browse?page=1&per_page=24&type=image&q=logo&sort=newest
+```
+
+A page of the media library: `id`, `filename`, `mime_type`, `size`, `url`,
+`thumbnail_url`, `created`. Requires a signed-in caller.
 
 ---
 

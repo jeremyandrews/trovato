@@ -36,6 +36,10 @@ pub struct ListItemsParams {
     pub page: Option<u32>,
     /// Items per page (max 100, default: 20).
     pub per_page: Option<u32>,
+    /// Alias of `per_page`.
+    pub limit: Option<u32>,
+    /// Items to skip; alias of `page`.
+    pub offset: Option<u32>,
 }
 
 /// Parameters for getting a single item.
@@ -86,9 +90,13 @@ pub struct SearchParams {
     /// Search query string (max 1000 characters).
     #[schemars(length(max = 1000))]
     pub query: String,
-    /// Maximum results to return (default: 20, max: 100).
+    /// Page number (1-indexed, default: 1).
+    pub page: Option<u32>,
+    /// Results per page (default: 20, max: 100).
+    pub per_page: Option<u32>,
+    /// Alias of `per_page`.
     pub limit: Option<u32>,
-    /// Number of results to skip for pagination (default: 0).
+    /// Results to skip; alias of `page`.
     pub offset: Option<u32>,
 }
 
