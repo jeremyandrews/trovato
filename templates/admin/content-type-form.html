@@ -49,6 +49,22 @@
         </fieldset>
 
         <fieldset class="fieldset">
+            <legend>Preview before submitting</legend>
+            <div class="fieldset__content">
+                <div class="form-item">
+                    <label for="preview_mode" class="form-item__label">Preview</label>
+                    <select id="preview_mode" name="preview_mode" class="form-select">
+                        {% set preview_mode = values.preview_mode | default(value="optional") %}
+                        <option value="disabled" {% if preview_mode == "disabled" %}selected{% endif %}>Disabled</option>
+                        <option value="optional" {% if preview_mode == "optional" %}selected{% endif %}>Optional</option>
+                        <option value="required" {% if preview_mode == "required" %}selected{% endif %}>Required</option>
+                    </select>
+                    <p class="form-item__description">Whether the item form offers a Preview button, and whether an item must be previewed before it can be saved.</p>
+                </div>
+            </div>
+        </fieldset>
+
+        <fieldset class="fieldset">
             <legend>Publishing options</legend>
             <div class="fieldset__content">
                 <div class="form-item form-item--checkbox">

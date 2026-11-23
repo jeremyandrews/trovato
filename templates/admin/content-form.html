@@ -10,6 +10,12 @@
 
 {% if content_lock is defined %}{% include "elements/content-lock.html" %}{% endif %}
 
+{% if preview_html is defined %}
+<div class="admin-card">
+    {{ preview_html | safe }} {# SAFE: item_form::render_preview escapes the title; the fields are the item page renderer's output #}
+</div>
+{% endif %}
+
 <div class="admin-card">
     {# The form, its errors and the scripts its widgets need come from the one
        form renderer (`ThemeEngine::render_form_with_errors`), after

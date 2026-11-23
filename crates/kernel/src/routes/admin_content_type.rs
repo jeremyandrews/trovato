@@ -37,6 +37,7 @@ struct ContentTypeFormData {
     promote_default: Option<String>,
     sticky_default: Option<String>,
     moderation: Option<String>,
+    preview_mode: Option<String>,
 }
 
 /// The per-type defaults the content type form edits, by settings key. Each
@@ -81,7 +82,17 @@ impl ContentTypeFormData {
                 serde_json::Value::Bool(self.switch(key)),
             );
         }
+        settings.insert(
+            crate::content::preview::SETTING.to_string(),
+            serde_json::Value::from(self.preview_mode().as_str()),
+        );
         serde_json::Value::Object(settings)
+    }
+
+    /// The preview mode this submission asks for; an unknown value is the
+    /// default.
+    fn preview_mode(&self) -> crate::content::preview::PreviewMode {
+        crate::content::preview::PreviewMode::parse(self.preview_mode.as_deref())
     }
 
     /// The values to show this submission again with.
@@ -95,6 +106,8 @@ impl ContentTypeFormData {
         for key in DEFAULT_SWITCHES {
             values[*key] = serde_json::Value::Bool(self.switch(key));
         }
+        values[crate::content::preview::SETTING] =
+            serde_json::Value::from(self.preview_mode().as_str());
         values
     }
 }
@@ -329,6 +342,9 @@ async fn edit_content_type_form(
                 .unwrap_or(false),
         );
     }
+    values[crate::content::preview::SETTING] = serde_json::Value::from(
+        crate::content::preview::PreviewMode::of(db_type.as_ref().map(|it| &it.settings)).as_str(),
+    );
     context.insert("values", &values);
     context.insert("path", &format!("/admin/structure/types/{type_name}/edit"));
 
