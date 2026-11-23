@@ -19,8 +19,9 @@ use crate::server::{
 };
 use crate::tools::{ACCESS_DENIED_MSG, internal_err, require_mcp_permission, to_json};
 
-/// Maximum allowed length for item titles.
-const MAX_TITLE_LENGTH: usize = 1000;
+/// Maximum allowed length for item titles: the kernel's, which the HTTP
+/// write paths enforce too.
+use trovato_kernel::content::MAX_TITLE_LENGTH;
 
 /// Parse a UUID string, returning an MCP invalid-params error on failure.
 fn parse_uuid(s: &str) -> Result<Uuid, McpError> {

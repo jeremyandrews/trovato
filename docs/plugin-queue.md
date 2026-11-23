@@ -231,12 +231,14 @@ An absent or empty `embed_policy` means every type embeds asynchronously.
 
 Dead-lettered jobs are inspectable and recoverable two ways.
 
-**Admin API (admin session + `X-CSRF-Token` header on mutations):**
+**JSON API (`administer site`, and the `X-CSRF-Token` header on mutations):**
 
-- `GET  /admin/queue/dlq` — list dead jobs with reason, attempts, and last error.
-- `POST /admin/queue/dlq/{id}/requeue` — reset a dead job to `ready` (attempts
-  cleared) for another run.
-- `POST /admin/queue/dlq/{id}/delete` — discard a dead job.
+- `GET  /api/v1/queue/dlq` — a page (`data`, `total`, `page`, `per_page`;
+  default 50, max 500) of dead jobs with reason, attempts, and last error,
+  newest first.
+- `POST /api/v1/queue/dlq/{id}/requeue` — reset a dead job to `ready`
+  (attempts cleared) for another run.
+- `POST /api/v1/queue/dlq/{id}/delete` — discard a dead job.
 
 **SQL / CLI (operators):**
 

@@ -34,12 +34,6 @@ pub fn kernel_api() -> ApiRoutes {
             doc("This document: the kernel's API and every enabled plugin's").alias(),
         )
         .get(
-            "/user/export",
-            export_user_data,
-            doc("Export user data (GDPR Article 20)")
-                .query("user_id", "User UUID (admin only, defaults to self)"),
-        )
-        .get(
             "/items/autocomplete",
             autocomplete_items,
             doc("Search items by type and title for autocomplete; the first page only")
@@ -84,6 +78,7 @@ pub fn kernel_api() -> ApiRoutes {
             doc("Render one page builder component as a page would (`use page builder`)"),
         )
         .merge(super::item::api())
+        .merge(super::admin_queue::api())
         .merge(super::search::api())
         .merge(super::api_search::api())
         .merge(super::gather::api())
@@ -113,159 +108,6 @@ async fn openapi_spec(State(state): State<AppState>) -> impl IntoResponse {
         [(axum::http::header::CONTENT_TYPE, "application/json")],
         state.openapi().to_string(),
     )
-}
-
-// -------------------------------------------------------------------------
-// User data export (GDPR Article 20)
-// -------------------------------------------------------------------------
-
-/// Export the authenticated user's data as JSON.
-///
-/// Returns user profile, authored items (PII fields only), comments,
-/// and file uploads. Admin users can export any user's data by
-/// providing a `user_id` query parameter.
-async fn export_user_data(
-    State(state): State<AppState>,
-    session: Session,
-    Query(params): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
-    // Require authentication
-    let requester = match crate::routes::helpers::require_login_json(&state, &session).await {
-        Ok(user) => user,
-        Err(refusal) => return refusal.into_response(),
-    };
-    let requester_id = requester.id;
-
-    // Determine which user to export
-    let target_user_id = if let Some(uid_str) = params.get("user_id") {
-        let Ok(uid) = Uuid::parse_str(uid_str) else {
-            return crate::error::AppError::with_status(StatusCode::BAD_REQUEST, "Invalid user_id")
-                .into_response();
-        };
-
-        // Only admins can export other users' data
-        if uid != requester_id && !requester.is_admin {
-            return crate::error::AppError::forbidden("Admin access required").into_response();
-        }
-        uid
-    } else {
-        requester_id
-    };
-
-    // Load user profile
-    let user = match crate::models::User::find_by_id(state.db(), target_user_id).await {
-        Ok(Some(u)) => u,
-        Ok(None) => {
-            return crate::error::AppError::with_status(StatusCode::NOT_FOUND, "User not found")
-                .into_response();
-        }
-        Err(_) => {
-            return crate::error::AppError::with_status(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Database error",
-            )
-            .into_response();
-        }
-    };
-
-    // Collect user-authored items with only personal_data fields
-    let items = match crate::models::Item::list_by_author(state.db(), target_user_id).await {
-        Ok(items) => {
-            let mut filtered = Vec::new();
-            for item in items {
-                // Load content type to filter personal_data fields
-                let personal_fields = get_personal_fields(state.db(), &item.item_type).await;
-                let mut item_data = serde_json::json!({
-                    "id": item.id,
-                    "type": item.item_type,
-                    "title": item.title,
-                    "created": item.created,
-                    "changed": item.changed,
-                });
-                if !personal_fields.is_empty() {
-                    let mut pii_fields = serde_json::Map::new();
-                    if let Some(obj) = item.fields.as_object() {
-                        for name in &personal_fields {
-                            if let Some(val) = obj.get(name) {
-                                pii_fields.insert(name.clone(), val.clone());
-                            }
-                        }
-                    }
-                    item_data["personal_fields"] = serde_json::Value::Object(pii_fields);
-                }
-                filtered.push(item_data);
-            }
-            serde_json::Value::Array(filtered)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to load user items for export");
-            serde_json::json!([])
-        }
-    };
-
-    // Collect user-authored comments
-    let comments = match sqlx::query_as::<_, crate::models::Comment>(
-        "SELECT * FROM comment WHERE author_id = $1 ORDER BY created DESC",
-    )
-    .bind(target_user_id)
-    .fetch_all(state.db())
-    .await
-    {
-        Ok(rows) => serde_json::to_value(&rows).unwrap_or(serde_json::json!([])),
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to load user comments for export");
-            serde_json::json!([])
-        }
-    };
-
-    // Collect user-uploaded files (filename, size, type — no content)
-    let files: serde_json::Value = match sqlx::query(
-        "SELECT id, filename, filemime, filesize, created FROM file_managed WHERE owner_id = $1 ORDER BY created DESC",
-    )
-    .bind(target_user_id)
-    .fetch_all(state.db())
-    .await
-    {
-        Ok(rows) => {
-            let entries: Vec<serde_json::Value> = rows
-                .iter()
-                .map(|r| {
-                    use sqlx::Row;
-                    serde_json::json!({
-                        "id": r.get::<Uuid, _>("id"),
-                        "filename": r.get::<String, _>("filename"),
-                        "filemime": r.get::<String, _>("filemime"),
-                        "filesize": r.get::<i64, _>("filesize"),
-                        "created": r.get::<i64, _>("created"),
-                    })
-                })
-                .collect();
-            serde_json::Value::Array(entries)
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to load user files for export");
-            serde_json::json!([])
-        }
-    };
-
-    // Build export payload
-    let export = serde_json::json!({
-        "user": {
-            "id": user.id,
-            "name": user.name,
-            "mail": user.mail,
-            "created": user.created,
-            "language": user.language,
-            "consent_given": user.consent_given,
-            "consent_date": user.consent_date,
-            "consent_version": user.consent_version,
-        },
-        "items": items,
-        "comments": comments,
-        "files": files,
-    });
-
-    (StatusCode::OK, Json(export)).into_response()
 }
 
 /// Autocomplete endpoint for RecordReference fields.
@@ -305,6 +147,13 @@ async fn autocomplete_items(
         Json(Page::new(data, total, window)).into_response()
     };
 
+    if query.len() > crate::search::MAX_QUERY_LENGTH {
+        return crate::error::AppError::bad_request(format!(
+            "q exceeds maximum length of {} characters",
+            crate::search::MAX_QUERY_LENGTH
+        ))
+        .into_response();
+    }
     if item_type.is_empty() || query.is_empty() {
         return answer(Vec::new());
     }
@@ -317,25 +166,16 @@ async fn autocomplete_items(
         return answer(results);
     }
 
-    // Search by title using ILIKE for case-insensitive prefix matching
-    let pattern = format!("{}%", query.replace('%', "\\%").replace('_', "\\_"));
-
     // Over-fetch, bounded, so a page the seam thins out still has something in
     // it. Three times the asked-for page, capped: the cost of an access
     // decision is paid per candidate, and this is a keystroke-rate endpoint.
     let candidate_limit = (limit * 3).min(150);
     let user = crate::routes::item::get_user_context(&session, &state).await;
 
-    match sqlx::query_as::<_, crate::models::Item>(
-        "SELECT id, current_revision_id, type, title, author_id, status, created, changed, \
-         promote, sticky, fields, stage_id, language, item_group_id, retention_days \
-         FROM item WHERE type = $1 AND title ILIKE $2 AND status = 1 ORDER BY title LIMIT $3",
-    )
-    .bind(item_type)
-    .bind(&pattern)
-    .bind(candidate_limit)
-    .fetch_all(state.db())
-    .await
+    match state
+        .items()
+        .title_prefix_candidates(item_type, query, candidate_limit)
+        .await
     {
         Ok(candidates) => {
             let page_size = usize::try_from(limit).unwrap_or(0);
@@ -633,27 +473,6 @@ async fn browse_media(
         .collect();
 
     Json(Page::new(items, u64::try_from(total).unwrap_or(0), window)).into_response()
-}
-
-/// Get field names marked `personal_data: true` for a content type.
-///
-/// Returns an empty vec if the type is not found or has no PII fields.
-async fn get_personal_fields(pool: &sqlx::PgPool, item_type: &str) -> Vec<String> {
-    let Ok(Some(db_type)) = crate::models::ItemType::find_by_type(pool, item_type).await else {
-        return Vec::new();
-    };
-
-    let fields: Vec<trovato_sdk::types::FieldDefinition> = db_type
-        .settings
-        .get("fields")
-        .and_then(|v| serde_json::from_value(v.clone()).ok())
-        .unwrap_or_default();
-
-    fields
-        .into_iter()
-        .filter(|f| f.personal_data)
-        .map(|f| f.field_name)
-        .collect()
 }
 
 // -------------------------------------------------------------------------

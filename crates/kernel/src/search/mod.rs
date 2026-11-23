@@ -3,6 +3,10 @@
 //! Uses PostgreSQL tsvector columns with GIN indexes for efficient
 //! full-text search across content items.
 
+/// The longest search or autocomplete query any API accepts, in bytes: the
+/// JSON API and the MCP tools refuse a longer one alike.
+pub const MAX_QUERY_LENGTH: usize = 1000;
+
 pub mod analytics;
 pub mod prompts;
 pub mod sentiment;

@@ -69,7 +69,7 @@ fn dlq_list_requires_admin() {
         let app = shared_app().await;
         let response = app
             .request(
-                Request::get("/admin/queue/dlq")
+                Request::get("/api/v1/queue/dlq")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -91,7 +91,7 @@ fn dlq_list_shows_dead_jobs_for_admin() {
 
         let response = app
             .request_with_cookies(
-                Request::get("/admin/queue/dlq")
+                Request::get("/api/v1/queue/dlq")
                     .body(Body::empty())
                     .unwrap(),
                 &cookies,
@@ -102,7 +102,7 @@ fn dlq_list_shows_dead_jobs_for_admin() {
             .await
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        let jobs = json["jobs"].as_array().unwrap();
+        let jobs = json["data"].as_array().unwrap();
         let found = jobs.iter().any(|j| j["id"].as_i64() == Some(id));
         assert!(found, "inserted dead job should be listed");
 
@@ -128,7 +128,7 @@ fn dlq_requeue_resets_job_to_ready() {
         // Without CSRF → forbidden.
         let no_csrf = app
             .request_with_cookies(
-                Request::post(format!("/admin/queue/dlq/{id}/requeue"))
+                Request::post(format!("/api/v1/queue/dlq/{id}/requeue"))
                     .body(Body::empty())
                     .unwrap(),
                 &cookies,
@@ -140,7 +140,7 @@ fn dlq_requeue_resets_job_to_ready() {
         // With CSRF → requeued.
         let ok = app
             .request_with_cookies(
-                Request::post(format!("/admin/queue/dlq/{id}/requeue"))
+                Request::post(format!("/api/v1/queue/dlq/{id}/requeue"))
                     .header("x-csrf-token", &csrf)
                     .body(Body::empty())
                     .unwrap(),
@@ -181,7 +181,7 @@ fn dlq_delete_removes_job() {
 
         let ok = app
             .request_with_cookies(
-                Request::post(format!("/admin/queue/dlq/{id}/delete"))
+                Request::post(format!("/api/v1/queue/dlq/{id}/delete"))
                     .header("x-csrf-token", &csrf)
                     .body(Body::empty())
                     .unwrap(),

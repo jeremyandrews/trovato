@@ -1107,6 +1107,11 @@ async fn item_form_page(
     let mut context = tera::Context::new();
     context.insert("title", &heading);
     context.insert("form_html", &form_html);
+    if let Some(item) = item
+        && let Some(lock) = take_edit_lock(state, user, item.id).await
+    {
+        context.insert("content_lock", &lock);
+    }
     super::helpers::inject_site_context(state, session, &mut context, &action).await;
     let html = state
         .theme()
@@ -1251,6 +1256,7 @@ async fn create_item(
         .map(|t| t.trim().to_string())
         .filter(|t| !t.is_empty())
         .ok_or_else(|| AppError::bad_request("Title is required"))?;
+    check_title_length(&title)?;
 
     let publishing = form_publishing(&state, &request).await?;
     let input = CreateItem {
@@ -1291,6 +1297,147 @@ async fn create_item(
         status: item.status,
     })
     .into_response())
+}
+
+/// The entity type an item's edit lock is taken on.
+const LOCK_ENTITY: &str = "item";
+
+/// The edit lock service, while `trovato_content_locking` is enabled.
+fn edit_locks(state: &AppState) -> Option<&crate::services::content_lock::ContentLockService> {
+    state
+        .content_lock()
+        .filter(|_| state.is_plugin_enabled("trovato_content_locking"))
+        .map(AsRef::as_ref)
+}
+
+/// The edit lock on an item, as its edit form shows it.
+#[derive(Debug, Serialize)]
+pub(crate) struct EditLockView {
+    /// The item's id, the lock's `entity_id`.
+    entity_id: String,
+    /// The viewer holds it (the form keeps it alive); otherwise another
+    /// editor does.
+    mine: bool,
+    /// The other editor's name.
+    holder: Option<String>,
+    /// When the other editor's lock lapses unless they keep editing.
+    expires_at: Option<i64>,
+    /// The viewer may break the other editor's lock.
+    can_break: bool,
+}
+
+/// Take, or report, the edit lock on `item_id` for the edit form: the viewer
+/// gets it unless another editor holds it. `None` without content locking.
+pub(crate) async fn take_edit_lock(
+    state: &AppState,
+    user: &UserContext,
+    item_id: Uuid,
+) -> Option<EditLockView> {
+    let locks = edit_locks(state)?;
+    let entity_id = item_id.to_string();
+    match locks.acquire(LOCK_ENTITY, &entity_id, user.id).await {
+        Ok(true) => Some(EditLockView {
+            entity_id,
+            mine: true,
+            holder: None,
+            expires_at: None,
+            can_break: false,
+        }),
+        Ok(false) => {
+            let lock = locks.check(LOCK_ENTITY, &entity_id).await.ok().flatten()?;
+            let holder = match state.users().find_by_id(lock.user_id).await {
+                Ok(Some(holder)) => holder.name,
+                _ => "another editor".to_string(),
+            };
+            Some(EditLockView {
+                entity_id,
+                mine: false,
+                holder: Some(holder),
+                expires_at: Some(lock.expires_at),
+                can_break: user.can("break content lock"),
+            })
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to take an edit lock");
+            None
+        }
+    }
+}
+
+/// What a save refused by another editor's lock is told.
+pub(crate) const LOCKED_MESSAGE: &str = "Another editor is editing this item. Your changes \
+     were not saved; try again when they have finished, or break their lock.";
+
+/// A 409 when another editor holds a live lock on an item this caller may
+/// edit; `None` when the save may go ahead. A caller who may not edit the item
+/// is told nothing here: the save refuses them as it always has.
+async fn lock_conflict(state: &AppState, user: &UserContext, item_id: Uuid) -> Option<AppError> {
+    locked_by_other(state, user, item_id)
+        .await
+        .then(|| AppError::with_status(StatusCode::CONFLICT, LOCKED_MESSAGE))
+}
+
+/// Release the caller's edit lock on an item after a save.
+pub(crate) async fn release_edit_lock(state: &AppState, user: &UserContext, item_id: Uuid) {
+    if let Some(locks) = edit_locks(state)
+        && let Err(e) = locks
+            .release(LOCK_ENTITY, &item_id.to_string(), user.id)
+            .await
+    {
+        tracing::warn!(error = %e, "failed to release the edit lock after a save");
+    }
+}
+
+/// Whether another editor holds a live lock on an item this caller may edit.
+pub(crate) async fn locked_by_other(state: &AppState, user: &UserContext, item_id: Uuid) -> bool {
+    locked_by_other_inner(state, user, item_id).await.is_some()
+}
+
+async fn locked_by_other_inner(state: &AppState, user: &UserContext, item_id: Uuid) -> Option<()> {
+    let locks = edit_locks(state)?;
+    let lock = locks
+        .check(LOCK_ENTITY, &item_id.to_string())
+        .await
+        .ok()
+        .flatten()?;
+    if lock.user_id == user.id {
+        return None;
+    }
+    let item = state.items().load(item_id).await.ok().flatten()?;
+    if !state
+        .items()
+        .check_access(&item, "edit", user)
+        .await
+        .unwrap_or(false)
+    {
+        return None;
+    }
+    Some(())
+}
+
+/// Refuse a title longer than [`crate::content::MAX_TITLE_LENGTH`], as the
+/// MCP tools do.
+pub(crate) fn check_title_length(title: &str) -> Result<(), AppError> {
+    if title.len() > crate::content::MAX_TITLE_LENGTH {
+        return Err(AppError::bad_request(format!(
+            "Title exceeds maximum length of {} characters",
+            crate::content::MAX_TITLE_LENGTH
+        )));
+    }
+    Ok(())
+}
+
+/// The JSON API's read gate, the MCP tools' too: `access content`, refused
+/// 401 to an anonymous caller and 403 to a signed-in one.
+fn require_access_content(user: &UserContext) -> Result<(), AppError> {
+    if user.can("access content") {
+        Ok(())
+    } else {
+        Err(super::helpers::refusal_for(
+            user,
+            "Permission required: access content",
+        ))
+    }
 }
 
 /// The publishing options a form submission asked for; nothing for a JSON
@@ -1423,6 +1570,9 @@ async fn update_item(
     };
     let stage_id = request.requested_stage()?;
     let publishing = form_publishing(&state, &request).await?;
+    if let Some(title) = &request.title {
+        check_title_length(title)?;
+    }
 
     let input = UpdateItem {
         author_id: publishing.author_id,
@@ -1436,8 +1586,15 @@ async fn update_item(
         log: request.log.clone(),
     };
 
+    // Another editor's lock refuses the save; the caller's own is let go once
+    // the save lands.
+    if let Some(refusal) = lock_conflict(&state, &user, id).await {
+        return Err(refusal);
+    }
+
     match state.items().update(id, input, &user).await {
         Ok(Some(item)) => {
+            release_edit_lock(&state, &user, id).await;
             // An alias the form names replaces the one `update` derived from
             // the pathauto pattern, if any, on the item's stage and in its
             // language.
@@ -1777,15 +1934,22 @@ async fn list_items_by_type(
     Path(item_type): Path<String>,
     Query(paging): Query<PageParams>,
 ) -> Result<Json<Page<ItemResponse>>, AppError> {
+    let user = get_user_context(&session, &state).await;
+    require_access_content(&user)?;
     let items = state
         .items()
         .list_by_type(&item_type)
         .await
         .map_err(|e| AppError::internal_ctx(e, "list items by type"))?;
+    // Published only, unless the caller is a site administrator, as
+    // `list_items_api` and the MCP tools decide it.
+    let items: Vec<_> = items
+        .into_iter()
+        .filter(|i| user.is_admin() || i.status >= 1)
+        .collect();
 
     // Enforce item-level access via the seam (FR-8 Story 3.3). `ItemResponse`
     // omits fields, so this drops inaccessible items (field-filtering is moot).
-    let user = get_user_context(&session, &state).await;
     let count = items.len();
     let items = state
         .items()
@@ -1818,6 +1982,7 @@ async fn get_item_api(
     // Load item through the shared access-aware seam (FR-8 Story 3.3): enforces
     // item-level access (absent ⇒ 404) and drops fields this viewer may not see.
     let user = get_user_context(&session, &state).await;
+    require_access_content(&user)?;
     let item = state
         .items()
         .load_for_view_filtered(id, &user, "view")
@@ -1871,6 +2036,16 @@ async fn list_items_api(
     Query(paging): Query<PageParams>,
 ) -> Result<Json<Page<ItemApiResponse>>, AppError> {
     let window = paging.window(20, 100);
+    let user = get_user_context(&session, &state).await;
+    require_access_content(&user)?;
+    // Published only, unless the caller is a site administrator: the rule the
+    // MCP `list_items` tool applies. An unpublished item a caller may still
+    // see (their own draft) is reached by its id.
+    let status = if user.is_admin() {
+        query.status
+    } else {
+        Some(query.status.unwrap_or(1).max(1))
+    };
 
     // Check if we should include author
     let include_author = query
@@ -1884,7 +2059,7 @@ async fn list_items_api(
         .items()
         .list_filtered(
             query.item_type.as_deref(),
-            query.status,
+            status,
             query.author_id,
             window.per_page,
             window.offset,
@@ -1896,7 +2071,6 @@ async fn list_items_api(
     // drop items this viewer cannot see and fields they may not see. `total`
     // remains the pre-filter count (accurate access-aware totals are the gather
     // over-fetch layer's concern, Story 3.4).
-    let user = get_user_context(&session, &state).await;
     let page_len = items.len();
     let items = state
         .items()
@@ -1954,4 +2128,54 @@ async fn list_items_api(
         u64::try_from(total).unwrap_or(0),
         window,
     )))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod api_gate_tests {
+    use super::*;
+
+    /// The JSON item reads take `access content`, as the MCP tools do: 401
+    /// for an anonymous caller without it, 403 for a signed-in one, and the
+    /// site administrator passes.
+    #[test]
+    fn item_reads_require_access_content() {
+        let status = |user: &UserContext| {
+            require_access_content(user)
+                .err()
+                .map(|e| e.into_response().status())
+        };
+        assert_eq!(
+            status(&UserContext::anonymous()),
+            Some(StatusCode::UNAUTHORIZED)
+        );
+        let id = Uuid::now_v7();
+        assert_eq!(
+            status(&UserContext::authenticated(id, vec![])),
+            Some(StatusCode::FORBIDDEN)
+        );
+        assert_eq!(
+            status(&UserContext::authenticated(
+                id,
+                vec!["access content".to_string()]
+            )),
+            None
+        );
+        assert_eq!(status(&UserContext::administrator(id, vec![])), None);
+    }
+
+    /// The title limit is the MCP tools' limit.
+    #[test]
+    fn titles_are_capped_as_mcp_caps_them() {
+        let limit = crate::content::MAX_TITLE_LENGTH;
+        assert_eq!(limit, 1000);
+        assert!(check_title_length(&"t".repeat(limit)).is_ok());
+        assert_eq!(
+            check_title_length(&"t".repeat(limit + 1))
+                .unwrap_err()
+                .into_response()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+    }
 }

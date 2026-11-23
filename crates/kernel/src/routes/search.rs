@@ -226,6 +226,13 @@ async fn search_json(
 ) -> Response {
     let window = paging.window(SEARCH_PER_PAGE, SEARCH_MAX_PER_PAGE);
     let query = params.q.unwrap_or_default();
+    if query.len() > crate::search::MAX_QUERY_LENGTH {
+        return crate::error::AppError::bad_request(format!(
+            "q exceeds maximum length of {} characters",
+            crate::search::MAX_QUERY_LENGTH
+        ))
+        .into_response();
+    }
     if query.trim().is_empty() {
         return Json(Page::<SearchResultJson>::empty(window)).into_response();
     }

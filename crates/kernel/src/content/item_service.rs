@@ -2615,6 +2615,36 @@ impl ItemService {
         Ok((items, total))
     }
 
+    /// Published items of `item_type` whose title starts with `prefix`
+    /// (case-insensitive, `%` and `_` taken literally), by title, at most
+    /// `limit`: the candidates an autocomplete shows, before the caller's
+    /// access decides which of them it may (see [`Self::filter_page_for_view`]).
+    pub async fn title_prefix_candidates(
+        &self,
+        item_type: &str,
+        prefix: &str,
+        limit: i64,
+    ) -> Result<Vec<Item>> {
+        let pattern = format!(
+            "{}%",
+            prefix
+                .replace('\\', "\\\\")
+                .replace('%', "\\%")
+                .replace('_', "\\_")
+        );
+        sqlx::query_as::<_, Item>(
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, \
+             promote, sticky, fields, stage_id, language, item_group_id, retention_days \
+             FROM item WHERE type = $1 AND title ILIKE $2 AND status = 1 ORDER BY title LIMIT $3",
+        )
+        .bind(item_type)
+        .bind(&pattern)
+        .bind(limit)
+        .fetch_all(&self.inner.pool)
+        .await
+        .context("autocomplete candidates")
+    }
+
     /// Find items that reference `target_id` in the `field_name` RecordReference
     /// field, via GIN-indexed JSONB containment (P11g / D-57).
     ///

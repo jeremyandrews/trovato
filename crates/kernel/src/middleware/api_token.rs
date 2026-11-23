@@ -34,16 +34,16 @@ use tower_sessions::{MemoryStore, Session};
 use uuid::Uuid;
 
 use crate::middleware::bearer_auth::BearerAuth;
-use crate::models::api_token::ApiToken;
 use crate::routes::auth::SESSION_USER_ID;
 use crate::state::AppState;
 
 /// Middleware that authenticates via Bearer token.
 ///
 /// If an `Authorization: Bearer <token>` header is present:
-/// - Valid token -> the rest of this request sees an ephemeral session holding
-///   the token's user (see the module docs), [`ApiTokenAuth`] is inserted, and
-///   `touch_last_used` fires in the background
+/// - Valid token (decided by [`crate::services::api_token::resolve`], the one
+///   resolver the MCP server shares) -> the rest of this request sees an
+///   ephemeral session holding the token's user (see the module docs), and
+///   [`ApiTokenAuth`] is inserted
 /// - Invalid/expired, or the token's user is blocked -> returns 401 JSON error
 /// - No header -> passes through (session auth may still work)
 ///
@@ -77,8 +77,8 @@ pub async fn authenticate_api_token(
         return next.run(request).await;
     }
 
-    let token = match ApiToken::find_by_token(state.db(), raw_token).await {
-        Ok(Some(t)) => t,
+    let token = match crate::services::api_token::resolve(&state, raw_token).await {
+        Ok(Some(holder)) => holder,
         Ok(None) => return invalid_token(),
         Err(e) => {
             tracing::error!(error = %e, "failed to look up API token");
@@ -89,26 +89,18 @@ pub async fn authenticate_api_token(
             .into_response();
         }
     };
+    let user_id = token.user.id;
 
     // An ephemeral session for the rest of this request, holding the token's
     // user, in place of the cookie session the session layer created. The
     // layer's own session object is left untouched, so it is not saved and no
     // cookie is sent.
     let ephemeral = Session::new(None, Arc::new(MemoryStore::default()), None);
-    if let Err(e) = ephemeral.insert(SESSION_USER_ID, token.user_id).await {
+    if let Err(e) = ephemeral.insert(SESSION_USER_ID, user_id).await {
         tracing::error!(error = %e, "failed to build the request session for an API token");
         return AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error")
             .into_response();
     }
-
-    // Update last_used in background
-    let pool = state.db().clone();
-    let token_id = token.id;
-    tokio::spawn(async move {
-        if let Err(e) = ApiToken::touch_last_used(&pool, token_id).await {
-            tracing::warn!(error = %e, "failed to update API token last_used");
-        }
-    });
 
     // Mark the request as bearer-authenticated so a downstream handler can tell
     // "this caller presented a token" from "this caller had a session cookie".
@@ -119,9 +111,7 @@ pub async fn authenticate_api_token(
     // See `routes::plugin_api` (G-CSRF-NO-BEARER-BYPASS).
     let mut request = request;
     request.extensions_mut().insert(ephemeral);
-    request.extensions_mut().insert(ApiTokenAuth {
-        user_id: token.user_id,
-    });
+    request.extensions_mut().insert(ApiTokenAuth { user_id });
 
     // The same fact, for code that only has the session and the headers to go
     // on (`routes::helpers::require_csrf_header`). A task-local rather than a

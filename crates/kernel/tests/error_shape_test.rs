@@ -71,13 +71,13 @@ const ROWS: &[Row] = &[
     row(
         "api_v1",
         "GET",
-        "/api/v1/user/export",
+        "/api/v1/media/browse",
         StatusCode::UNAUTHORIZED,
     ),
     row(
         "admin_queue",
         "GET",
-        "/admin/queue/dlq",
+        "/api/v1/queue/dlq",
         StatusCode::UNAUTHORIZED,
     ),
     row(

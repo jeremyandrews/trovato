@@ -46,7 +46,16 @@ pub fn api() -> super::api::ApiRoutes {
         .plugin("trovato_content_locking")
 }
 
-/// POST /api/lock/heartbeat — extend lock expiration.
+/// The answer to a heartbeat or a break: what happened, and a fresh CSRF
+/// token for the next request. Tokens are single use, and the edit form beats
+/// every minute for as long as it is open, so each answer carries the next
+/// one.
+async fn answer(session: &tower_sessions::Session, lock: &str) -> axum::response::Response {
+    let csrf_token = crate::form::csrf::generate_csrf_token(session).await;
+    axum::Json(serde_json::json!({ "lock": lock, "csrf_token": csrf_token })).into_response()
+}
+
+/// POST /api/v1/lock/heartbeat — extend lock expiration.
 async fn heartbeat(
     State(state): State<AppState>,
     session: tower_sessions::Session,
@@ -84,7 +93,7 @@ async fn heartbeat(
         .heartbeat(&payload.entity_type, &payload.entity_id, user_id)
         .await
     {
-        Ok(true) => (StatusCode::OK, "Lock extended").into_response(),
+        Ok(true) => answer(&session, "extended").await,
         Ok(false) => {
             AppError::with_status(StatusCode::CONFLICT, "Lock not held by you").into_response()
         }
@@ -96,7 +105,7 @@ async fn heartbeat(
     }
 }
 
-/// POST /api/lock/break — break a lock (requires permission).
+/// POST /api/v1/lock/break — break a lock (requires permission).
 async fn break_lock(
     State(state): State<AppState>,
     session: tower_sessions::Session,
@@ -136,7 +145,7 @@ async fn break_lock(
         .break_lock(&payload.entity_type, &payload.entity_id)
         .await
     {
-        Ok(true) => (StatusCode::OK, "Lock broken").into_response(),
+        Ok(true) => answer(&session, "broken").await,
         Ok(false) => AppError::with_status(StatusCode::NOT_FOUND, "No lock found").into_response(),
         Err(e) => {
             tracing::warn!(error = %e, "break lock failed");
