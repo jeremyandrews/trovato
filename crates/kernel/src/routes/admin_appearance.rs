@@ -47,14 +47,25 @@ struct ThemeCard {
     has_screenshot: bool,
     is_default: bool,
     is_admin: bool,
+    /// Why the theme cannot be activated, for a theme whose templates do not
+    /// load (B138).
+    refused: Option<String>,
 }
 
 fn appearance_form(state: &AppState, active: &ActiveThemes) -> crate::form::Form {
+    // A refused theme is offered too, marked, so choosing it is answered with
+    // why it cannot be activated rather than "there is no theme".
     let options: Vec<(String, String)> = state
         .theme()
         .themes()
         .into_iter()
         .map(|t| (t.machine_name, t.name))
+        .chain(state.theme().refused_themes().iter().map(|(t, _)| {
+            (
+                t.machine_name.clone(),
+                format!("{} (cannot be activated)", t.name),
+            )
+        }))
         .collect();
     crate::form::Form::new(FORM_ID)
         .action(BASE)
@@ -98,10 +109,26 @@ async fn render(
             has_screenshot: t.screenshot_path().is_some(),
             is_default: t.machine_name == active.default,
             is_admin: t.machine_name == active.admin,
+            refused: None,
             machine_name: t.machine_name,
             name: t.name,
             description: t.description,
         })
+        .chain(
+            state
+                .theme()
+                .refused_themes()
+                .iter()
+                .map(|(t, reason)| ThemeCard {
+                    has_screenshot: t.screenshot_path().is_some(),
+                    is_default: false,
+                    is_admin: false,
+                    refused: Some(reason.clone()),
+                    machine_name: t.machine_name.clone(),
+                    name: t.name.clone(),
+                    description: t.description.clone(),
+                }),
+        )
         .collect();
     let form_html =
         match admin_form::render(state, session, user, appearance_form(state, shown), errors).await
@@ -149,7 +176,19 @@ async fn appearance_submit(
         ("default_theme", &wanted.default),
         ("admin_theme", &wanted.admin),
     ] {
-        if state.theme().theme(name).is_none() {
+        if let Some((theme, reason)) = state
+            .theme()
+            .refused_themes()
+            .iter()
+            .find(|(t, _)| t.machine_name == *name)
+        {
+            // B138: refused at start because its templates do not load.
+            // Nothing is saved, so the active theme stays as it was.
+            errors.push(ValidationError::field(
+                field,
+                format!("The theme {} cannot be activated: {reason}", theme.name),
+            ));
+        } else if state.theme().theme(name).is_none() {
             errors.push(ValidationError::field(
                 field,
                 format!("There is no theme named {name}."),

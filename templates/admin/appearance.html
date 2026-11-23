@@ -23,6 +23,12 @@
                 {% if theme.is_default %}<span class="theme-card__badge">Default theme</span>{% endif %}
                 {% if theme.is_admin %}<span class="theme-card__badge theme-card__badge--admin">Administration theme</span>{% endif %}
                 <p>{{ theme.description }}</p>
+                {% if theme.refused %}
+                <div class="message message--error" role="status">
+                    <p>This theme cannot be activated: its templates do not load. The site uses the stock theme in its place until they are fixed and the server is restarted.</p>
+                    <pre class="theme-card__refusal">{{ theme.refused }}</pre>
+                </div>
+                {% endif %}
             </div>
         </li>
         {% endfor %}

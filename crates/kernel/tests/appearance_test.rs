@@ -26,6 +26,12 @@ fn themes_dir() -> std::path::PathBuf {
     common::project_root().join("crates/kernel/tests/fixtures/themes")
 }
 
+/// A second theme root holding `cracked`, whose `base.html` does not parse
+/// (B138).
+fn broken_themes_dir() -> std::path::PathBuf {
+    common::project_root().join("crates/kernel/tests/fixtures/broken_themes")
+}
+
 /// Theme settings are site-wide, so the tests that change them take turns.
 static THEMES: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
@@ -40,7 +46,7 @@ fn themed_app() -> &'static TestApp {
                 let root = common::project_root();
                 TestApp::with_config(|config| {
                     config.templates_dirs = vec![root.join("templates")];
-                    config.themes_dirs = vec![themes_dir()];
+                    config.themes_dirs = vec![themes_dir(), broken_themes_dir()];
                 })
                 .await
             })
@@ -394,5 +400,72 @@ fn the_stored_theme_is_read_at_start_and_a_missing_one_is_stock() {
             active.admin, "stock",
             "an uninstalled theme is the stock one"
         );
+    });
+}
+
+/// B138: a theme whose templates do not parse is refused when the server
+/// starts. The appearance screen says so and why, choosing it is refused with
+/// the reason, and the theme that was active stays active.
+#[test]
+fn a_theme_that_does_not_parse_cannot_be_activated() {
+    run_test(async {
+        let app = themed_app();
+        let _guard = THEMES.lock().await;
+        restore_stock_on_exit(app);
+        let (_, cookies) = user_holding(app, "b138cracked", &["administer themes"]).await;
+
+        // Lakeside is the default before the attempt, so "the previous theme
+        // stays active" is a real theme and not just the fallback.
+        app.state.theme().set_active(ActiveThemes {
+            default: "lakeside".into(),
+            admin: "stock".into(),
+        });
+
+        let (status, html) = get(app, &cookies, "/admin/appearance").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains("Cracked"), "the broken theme is listed");
+        assert!(
+            html.contains("cannot be activated"),
+            "and marked as unusable"
+        );
+        assert!(
+            html.contains("templates/base.html"),
+            "naming the file that does not parse"
+        );
+
+        let pairs = form_pairs(&html, "/admin/appearance");
+        let response = post_form(
+            app,
+            &cookies,
+            "/admin/appearance",
+            format!("{pairs}&default_theme=cracked&admin_theme=stock"),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "refused, not saved");
+        let body = body_string(response).await;
+        assert!(
+            body.contains("The theme Cracked cannot be activated"),
+            "the page says it cannot be activated"
+        );
+        assert!(
+            body.contains("templates/base.html"),
+            "and why: the file that does not parse"
+        );
+        assert_eq!(
+            app.state.theme().active().default,
+            "lakeside",
+            "the previous theme stays active"
+        );
+        assert_eq!(
+            SiteConfig::get(&app.db, DEFAULT_THEME_KEY).await.unwrap(),
+            None,
+            "nothing is stored"
+        );
+
+        // The site still renders, on the theme that was active.
+        let (status, front) = get(app, "", "/user/login").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(front.contains(LAKESIDE_CSS));
+        assert!(!front.contains("theme-cracked"));
     });
 }

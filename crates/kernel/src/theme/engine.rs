@@ -389,6 +389,108 @@ fn format_date_localized(dt: &chrono::DateTime<chrono::Utc>, locale: &str) -> St
 use trovato_sdk::render::RenderElement;
 use trovato_sdk::types::Item;
 
+/// One template file that does not parse (B138).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BrokenTemplate {
+    /// The file on disk.
+    pub path: PathBuf,
+    /// Tera's parse message, with the line and column it points at.
+    pub message: String,
+}
+
+/// Every template on a search path that does not parse (B138).
+///
+/// Building the engine used to fail with "failed to load templates from the
+/// search path" and nothing else in the error's own message, so a log line
+/// formatted with `%` did not say which file was at fault. This names every
+/// broken file, by path, with Tera's message, so an operator fixes them all in
+/// one pass.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TemplateParseError {
+    pub broken: Vec<BrokenTemplate>,
+}
+
+impl TemplateParseError {
+    /// The same report with each path shown relative to `base` where it lies
+    /// under it: what the appearance screen shows for a theme, so a theme's
+    /// error names `templates/base.html` and not the server's directory tree.
+    pub fn relative_to(&self, base: &Path) -> String {
+        self.describe(|path| {
+            path.strip_prefix(base)
+                .unwrap_or(path)
+                .display()
+                .to_string()
+        })
+    }
+
+    fn describe(&self, show: impl Fn(&Path) -> String) -> String {
+        match self.broken.as_slice() {
+            [one] => format!(
+                "template {} does not parse: {}",
+                show(&one.path),
+                one.message
+            ),
+            many => {
+                let mut out = format!("{} templates do not parse:", many.len());
+                for b in many {
+                    out.push_str(&format!("\n{}: {}", show(&b.path), b.message));
+                }
+                out
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for TemplateParseError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.describe(|path| path.display().to_string()))
+    }
+}
+
+impl std::error::Error for TemplateParseError {}
+
+/// A Tera error and every error under it, as one string: Tera puts the
+/// parse message with its line in a source error, under a generic one.
+fn tera_error_text(e: &tera::Error) -> String {
+    let mut text = e.to_string();
+    let mut source = std::error::Error::source(e);
+    while let Some(inner) = source {
+        text.push_str(": ");
+        text.push_str(&inner.to_string());
+        source = inner.source();
+    }
+    text.trim().to_string()
+}
+
+/// Parse each file on its own, before Tera loads them together, so a syntax
+/// error is reported against its file and every broken file is found, not
+/// only the first. Only the templates that will be loaded are checked: one a
+/// later root replaces is never parsed, as before.
+fn check_templates_parse(files: &[(PathBuf, Option<String>)]) -> Result<(), TemplateParseError> {
+    let mut broken = Vec::new();
+    for (path, name) in files {
+        let name = name.as_deref().unwrap_or_default();
+        let message = match std::fs::read_to_string(path) {
+            Ok(source) => {
+                match tera::Template::new(name, Some(path.display().to_string()), &source) {
+                    Ok(_) => continue,
+                    Err(e) => tera_error_text(&e),
+                }
+            }
+            Err(e) => format!("cannot be read: {e}"),
+        };
+        broken.push(BrokenTemplate {
+            path: path.clone(),
+            message,
+        });
+    }
+    if broken.is_empty() {
+        Ok(())
+    } else {
+        Err(TemplateParseError { broken })
+    }
+}
+
 /// Theme engine for rendering templates.
 pub struct ThemeEngine {
     /// Tera template engine instance: the stock theme.
@@ -396,6 +498,10 @@ pub struct ThemeEngine {
     /// The deployment's themes, each the stock search path with the theme's
     /// templates laid over it (`theme::registry`).
     themes: Vec<(super::registry::ThemeInfo, Tera)>,
+    /// The deployment's themes whose templates did not load, each with the
+    /// reason, paths relative to the theme directory (B138). Listed on the
+    /// appearance screen as unusable; never active.
+    refused: Vec<(super::registry::ThemeInfo, String)>,
     /// The default and admin themes in use.
     active: std::sync::RwLock<ActiveThemes>,
     /// Cache mapping suggestion lists to resolved template names.
@@ -453,9 +559,18 @@ impl ThemeEngine {
             .filter_map(|name| by_name.get(&name).map(|p| (p.clone(), Some(name))))
             .collect();
 
+        // A syntax error is named with its file and Tera's message (B138).
+        check_templates_parse(&files)?;
+
         let mut tera = Tera::default();
-        tera.add_template_files(files)
-            .context("failed to load templates from the search path")?;
+        tera.add_template_files(files).map_err(|e| {
+            // Every file parsed, so this is how they fit together: an
+            // `extends` or macro import naming a template that is not loaded.
+            anyhow::anyhow!(
+                "templates on the search path do not load together: {}",
+                tera_error_text(&e)
+            )
+        })?;
 
         // Register custom filters
         Self::register_filters(&mut tera, locale);
@@ -479,6 +594,7 @@ impl ThemeEngine {
         Ok(Self {
             tera,
             themes: Vec::new(),
+            refused: Vec::new(),
             active: std::sync::RwLock::new(ActiveThemes::default()),
             suggestion_cache: DashMap::new(),
             metrics,
@@ -529,12 +645,14 @@ impl ThemeEngine {
         out
     }
 
-    /// Create a theme engine with no templates (for testing).
+    /// Create a theme engine with no templates, for tests only. The server never
+    /// falls back to it: a template that does not parse stops startup (B138).
     pub fn empty(metrics: Arc<Metrics>) -> Result<Self> {
         let tera = Tera::default();
         Ok(Self {
             tera,
             themes: Vec::new(),
+            refused: Vec::new(),
             active: std::sync::RwLock::new(ActiveThemes::default()),
             suggestion_cache: DashMap::new(),
             metrics,
@@ -850,8 +968,13 @@ impl ThemeEngine {
 
     /// Load each of `themes` (the stock theme is skipped) as `base_dirs`
     /// with the theme's `templates/` laid over them, so a template the theme
-    /// does not provide is the stock one. A theme whose templates do not load
-    /// is left out with a warning; the site keeps the stock theme for it.
+    /// does not provide is the stock one.
+    ///
+    /// A theme whose templates do not load is refused (B138): logged once at
+    /// `error`, with each file that does not parse and Tera's message, and
+    /// kept in [`Self::refused_themes`] so the appearance screen can say why it
+    /// cannot be activated. It is never active; the site keeps the stock theme
+    /// for it.
     pub fn with_themes(
         mut self,
         themes: Vec<super::registry::ThemeInfo>,
@@ -867,11 +990,34 @@ impl ThemeEngine {
             match Self::build_tera(&dirs, locale.clone()) {
                 Ok(tera) => self.themes.push((info, tera)),
                 Err(e) => {
-                    tracing::warn!(theme = %info.machine_name, error = ?e, "failed to load a theme's templates; it is not offered");
+                    tracing::error!(
+                        theme = %info.machine_name,
+                        error = %e,
+                        "a theme's templates do not load; the theme is refused and cannot be activated"
+                    );
+                    let reason = match (e.downcast_ref::<TemplateParseError>(), info.dir.as_ref()) {
+                        (Some(parse), Some(dir)) => parse.relative_to(dir),
+                        _ => e.to_string(),
+                    };
+                    self.refused.push((info, reason));
                 }
             }
         }
         self
+    }
+
+    /// The deployment's themes that were refused because their templates do
+    /// not load, each with the reason.
+    pub fn refused_themes(&self) -> &[(super::registry::ThemeInfo, String)] {
+        &self.refused
+    }
+
+    /// Why `machine_name` cannot be activated, if it is a refused theme.
+    pub fn refusal(&self, machine_name: &str) -> Option<&str> {
+        self.refused
+            .iter()
+            .find(|(info, _)| info.machine_name == machine_name)
+            .map(|(_, reason)| reason.as_str())
     }
 
     /// Get a mutable reference to Tera (for adding templates at runtime).
@@ -1814,6 +1960,142 @@ mod tests {
     #[test]
     fn empty_search_path_is_rejected() {
         assert!(ThemeEngine::new(&[], None, Default::default()).is_err());
+    }
+
+    // --- B138: a template that does not parse is named, not swallowed ---
+
+    /// A search path with one good template and one with a syntax error
+    /// fails to build, and the error's own message (what a one-line log
+    /// shows) names the broken file's path and carries Tera's parse message,
+    /// with the line.
+    #[test]
+    fn a_template_that_does_not_parse_is_named_with_its_path_and_line() {
+        let root = scratch_root("b138_broken");
+        write_template(&root, "page.html", "GOOD {{ title }}");
+        write_template(
+            &root,
+            "elements/broken.html",
+            "line one\n{% if x %}\nno endif",
+        );
+
+        let err = ThemeEngine::new(std::slice::from_ref(&root), None, Default::default())
+            .expect_err("a template that does not parse fails the build");
+        let message = err.to_string();
+        let path = root.join("elements/broken.html");
+        assert!(
+            message.contains(&path.display().to_string()),
+            "the error names the file: {message}"
+        );
+        assert!(
+            message.contains("3:"),
+            "the error carries Tera's parse message with the line: {message}"
+        );
+        assert!(
+            !message.contains("page.html"),
+            "the good template is not blamed: {message}"
+        );
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// Every broken template is named at once, so an operator fixes them in
+    /// one pass rather than one restart per file.
+    #[test]
+    fn every_template_that_does_not_parse_is_named() {
+        let kernel = scratch_root("b138_kernel");
+        let app = scratch_root("b138_app");
+        write_template(&kernel, "a.html", "{{ unclosed ");
+        write_template(&kernel, "b.html", "fine");
+        write_template(&app, "c.html", "{% block x %}no end");
+
+        let err = ThemeEngine::new(&[kernel.clone(), app.clone()], None, Default::default())
+            .expect_err("broken templates fail the build");
+        let message = err.to_string();
+        for broken in [kernel.join("a.html"), app.join("c.html")] {
+            assert!(
+                message.contains(&broken.display().to_string()),
+                "{} is named: {message}",
+                broken.display()
+            );
+        }
+
+        std::fs::remove_dir_all(&kernel).ok();
+        std::fs::remove_dir_all(&app).ok();
+    }
+
+    /// A broken template that a later root replaces is never loaded, so it
+    /// does not fail the build: override rules are unchanged.
+    #[test]
+    fn a_broken_template_overridden_by_a_later_root_is_not_loaded() {
+        let kernel = scratch_root("b138_shadowed_kernel");
+        let app = scratch_root("b138_shadowed_app");
+        write_template(&kernel, "page.html", "{% if broken %}");
+        write_template(&app, "page.html", "APP");
+
+        let engine = ThemeEngine::new(&[kernel.clone(), app.clone()], None, Default::default())
+            .expect("the overridden template is not parsed");
+        assert_eq!(
+            engine
+                .tera
+                .render("page.html", &tera::Context::new())
+                .unwrap(),
+            "APP"
+        );
+
+        std::fs::remove_dir_all(&kernel).ok();
+        std::fs::remove_dir_all(&app).ok();
+    }
+
+    /// A deployment theme whose template does not parse is refused: it is
+    /// not offered as a theme, the reason names its file relative to the
+    /// theme directory with Tera's message, choosing it leaves the stock
+    /// theme active, and the stock theme still renders.
+    #[test]
+    fn a_theme_that_does_not_parse_is_refused_and_the_stock_theme_renders() {
+        let stock = scratch_root("b138_stock");
+        let themes_root = scratch_root("b138_themes");
+        write_template(&stock, "base.html", "STOCK");
+        let dir = themes_root.join("cracked");
+        write_template(&dir, "templates/base.html", "{% if title %}CRACKED");
+
+        let info = super::super::registry::ThemeInfo {
+            machine_name: "cracked".into(),
+            name: "Cracked".into(),
+            description: String::new(),
+            screenshot: None,
+            dir: Some(dir.clone()),
+        };
+        let engine = ThemeEngine::new(std::slice::from_ref(&stock), None, Default::default())
+            .expect("the stock theme builds")
+            .with_themes(vec![info], std::slice::from_ref(&stock), None);
+
+        assert!(engine.theme("cracked").is_none(), "not offered as a theme");
+        let reason = engine.refusal("cracked").expect("refused, with a reason");
+        assert!(
+            reason.starts_with("template templates/base.html does not parse"),
+            "names the file relative to the theme: {reason}"
+        );
+        assert!(reason.contains("1:"), "with Tera's line: {reason}");
+        assert!(
+            !reason.contains(&themes_root.display().to_string()),
+            "no server path: {reason}"
+        );
+
+        engine.set_active(ActiveThemes {
+            default: "cracked".into(),
+            admin: "stock".into(),
+        });
+        assert_eq!(engine.active().default, "stock");
+        assert_eq!(
+            engine
+                .tera()
+                .render("base.html", &tera::Context::new())
+                .unwrap(),
+            "STOCK"
+        );
+
+        std::fs::remove_dir_all(&stock).ok();
+        std::fs::remove_dir_all(&themes_root).ok();
     }
 
     /// B123: a stored HTML body through `plain_text` is its text, escaped
