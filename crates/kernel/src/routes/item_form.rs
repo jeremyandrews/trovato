@@ -53,7 +53,7 @@ pub(crate) async fn build(
         .with_field_modes(modes)
         .with_publish_allowed(user.can(PUBLISH_CONTENT));
     let mut extra = extra;
-    extra.extend(publishing_element(state, user, item).await);
+    extra.extend(publishing_element(state, user, type_name, item).await);
     let form = match item {
         Some(item) => builder.build_edit_form(item, action),
         None => builder.build_add_form(action),
@@ -460,6 +460,7 @@ const AUTHORED_ON_SECONDS_FORMAT: &str = "%Y-%m-%dT%H:%M:%S";
 pub(crate) async fn publishing_element(
     state: &AppState,
     user: &UserContext,
+    item_type: &str,
     item: Option<&Item>,
 ) -> Vec<(String, FormElement)> {
     use crate::content::ADMINISTER_CONTENT;
@@ -470,6 +471,16 @@ pub(crate) async fn publishing_element(
         return Vec::new();
     }
 
+    // A new item starts from its type's defaults, an existing one from what
+    // it holds.
+    let (promoted, sticky) = match item {
+        Some(item) => (item.is_promoted(), item.is_sticky()),
+        None => {
+            let (promote, sticky) = state.items().publishing_defaults(item_type).await;
+            (promote == 1, sticky == 1)
+        }
+    };
+
     let mut fieldset = FormElement::fieldset()
         .title("Publishing options")
         .weight(crate::content::STATUS_WEIGHT + 5)
@@ -478,14 +489,14 @@ pub(crate) async fn publishing_element(
             "promote",
             FormElement::checkbox()
                 .title("Promoted to front page")
-                .default_value(item.is_some_and(Item::is_promoted))
+                .default_value(promoted)
                 .weight(0),
         )
         .child(
             "sticky",
             FormElement::checkbox()
                 .title("Sticky at top of lists")
-                .default_value(item.is_some_and(Item::is_sticky))
+                .default_value(sticky)
                 .weight(1),
         )
         .child(

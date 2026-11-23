@@ -66,6 +66,22 @@
                         <label for="revision_default">Create new revision by default</label>
                     </div>
                 </div>
+
+                <div class="form-item form-item--checkbox">
+                    <div class="form-checkbox-wrapper">
+                        <input type="checkbox" id="promote_default" name="promote_default" value="1"
+                               {% if values.promote_default %}checked{% endif %}>
+                        <label for="promote_default">Promoted to front page by default</label>
+                    </div>
+                </div>
+
+                <div class="form-item form-item--checkbox">
+                    <div class="form-checkbox-wrapper">
+                        <input type="checkbox" id="sticky_default" name="sticky_default" value="1"
+                               {% if values.sticky_default %}checked{% endif %}>
+                        <label for="sticky_default">Sticky at top of lists by default</label>
+                    </div>
+                </div>
             </div>
         </fieldset>
 

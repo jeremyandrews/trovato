@@ -784,6 +784,9 @@ impl BulkActionForm {
     }
 }
 
+/// The bulk actions that set an item's promote or sticky flag.
+const PROMOTION_ACTIONS: &[&str] = &["promote", "demote", "sticky", "unsticky"];
+
 /// Bulk operations on content items.
 ///
 /// POST /admin/content/bulk
@@ -846,6 +849,17 @@ async fn bulk_content_action(
         // Unreachable: every arm above names at least one permission.
         return render_server_error("No permission to check for this action.");
     };
+    // Promote and sticky are set by a holder of `publish content` or
+    // `administer content`, the answer `ItemService::gate_promotion` gives one
+    // item at a time, asked once here for the same reason as publish above.
+    if PROMOTION_ACTIONS.contains(&form.action.as_str()) {
+        let ctx = admin_user_context(&state, &user).await;
+        if !(ctx.can(crate::content::PUBLISH_CONTENT)
+            || ctx.can(crate::content::ADMINISTER_CONTENT))
+        {
+            return render_forbidden("You may not promote items or make them sticky.");
+        }
+    }
     if let Err(resp) = require_csrf(&session, &form.token).await {
         return resp;
     }
@@ -854,7 +868,8 @@ async fn bulk_content_action(
     if !matches!(
         form.action.as_str(),
         "publish" | "unpublish" | "delete" | "move_to_stage"
-    ) {
+    ) && !PROMOTION_ACTIONS.contains(&form.action.as_str())
+    {
         if let Err(e) = session
             .insert(
                 CONTENT_FLASH_KEY,
@@ -951,6 +966,35 @@ async fn bulk_content_action(
                 }
             }
         }
+        "promote" | "demote" | "sticky" | "unsticky" => {
+            let (promote, sticky) = match form.action.as_str() {
+                "promote" => (Some(1), None),
+                "demote" => (Some(0), None),
+                "sticky" => (None, Some(1)),
+                _ => (None, Some(0)),
+            };
+            for id in &form.ids {
+                let update = crate::models::UpdateItem {
+                    author_id: None,
+                    created: None,
+                    stage_id: None,
+                    title: None,
+                    status: None,
+                    fields: None,
+                    promote,
+                    sticky,
+                    log: Some(format!("Bulk {}", form.action)),
+                };
+                match state.items().update(*id, update, &user_ctx).await {
+                    Ok(Some(_)) => success_count += 1,
+                    Ok(None) => fail_count += 1,
+                    Err(e) => {
+                        tracing::warn!(item_id = %id, error = %e, "bulk action failed");
+                        fail_count += 1;
+                    }
+                }
+            }
+        }
         "move_to_stage" => {
             for id in &form.ids {
                 let update = crate::models::UpdateItem {
@@ -994,6 +1038,10 @@ async fn bulk_content_action(
         "unpublish" => "unpublished",
         "delete" => "deleted",
         "move_to_stage" => "moved",
+        "promote" => "promoted to the front page",
+        "demote" => "removed from the front page",
+        "sticky" => "made sticky",
+        "unsticky" => "made not sticky",
         _ => unreachable!(),
     };
     let msg = if fail_count > 0 {
