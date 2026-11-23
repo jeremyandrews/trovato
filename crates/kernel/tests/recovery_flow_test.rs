@@ -198,7 +198,7 @@ fn the_full_recovery_flow_grants_only_a_scoped_reset_then_a_session() {
             .await;
         assert_eq!(
             not_logged_in.status(),
-            StatusCode::SEE_OTHER,
+            StatusCode::UNAUTHORIZED,
             "a verified recovery must NOT be a standing authenticated session"
         );
 

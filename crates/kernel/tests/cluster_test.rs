@@ -681,7 +681,8 @@ async fn s02_user_blocked_on_a_is_refused_on_b() {
 
     let refused = eventually(CURRENT_WITHIN, || async {
         let page = user.get(On::B, "/user/profile").await;
-        page.status.is_redirection() && page.location().starts_with("/user/login")
+        // Signed out by the block: the access-denied page, with the login form.
+        page.status == StatusCode::FORBIDDEN && page.body.contains("/user/login")
     })
     .await;
     assert!(refused, "a user blocked on A kept a session on B");

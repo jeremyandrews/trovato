@@ -330,7 +330,7 @@ fn a_second_export_inside_the_hour_is_refused() {
     });
 }
 
-/// An anonymous visitor is sent to log in rather than handed a document.
+/// An anonymous visitor is refused rather than handed a document.
 #[test]
 fn an_anonymous_visitor_cannot_download_an_export() {
     run_test(async {
@@ -344,16 +344,10 @@ fn an_anonymous_visitor_cannot_download_an_export() {
             )
             .await;
 
-        assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        let location = response
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or_default();
-        assert!(
-            location.contains("/user/login"),
-            "expected a login redirect, got {location}"
-        );
+        // Refused as nobody: `401` to a script (a browser is shown the
+        // access-denied page with the login form), and no document.
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert!(response.headers().get("content-disposition").is_none());
     });
 }
 

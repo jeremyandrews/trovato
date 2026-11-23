@@ -305,7 +305,7 @@ fn a_recovery_plugin_drives_the_full_kernel_flow_and_a_rogue_cannot_escalate() {
             .await;
         assert_eq!(
             not_logged_in.status(),
-            StatusCode::SEE_OTHER,
+            StatusCode::UNAUTHORIZED,
             "a plugin-verified recovery is still only a scoped credential reset"
         );
 
