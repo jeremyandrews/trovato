@@ -59,6 +59,23 @@ on an export made before this release: every file it lists holds a secret in
 the clear. Remove that directory from any repository it was committed to,
 rotate the webhook secrets and OAuth client secrets it held, and export again.
 
+### HSTS behind a TLS proxy needs the proxy in `TRUSTED_PROXIES`
+
+**Who is affected:** a site served over HTTPS through a proxy that terminates
+TLS (nginx, Caddy, a load balancer, a Kubernetes ingress, a CDN) and does not
+list that proxy in `TRUSTED_PROXIES`. Find out with
+`curl -sI https://your.site/ | grep -i strict-transport-security`: after the
+upgrade it prints nothing unless the proxy is listed (or the proxy adds the
+header itself).
+
+**What changed.** `Strict-Transport-Security` is sent when the request arrived
+over HTTPS, which behind a proxy is known only from its `X-Forwarded-Proto`.
+That header used to be believed from any peer. It is now believed only from a
+peer in `TRUSTED_PROXIES`, the same rule `X-Forwarded-For` follows. List the
+proxy (see "Behind a reverse proxy" in `INSTALL.md`), which also gives each
+visitor their own address for rate limiting and sign-in lockout. `COOKIE_SECURE`
+is unchanged.
+
 ### A bad `TRUSTED_PROXIES` entry stops startup
 
 **Who is affected:** a site that sets `TRUSTED_PROXIES`. Check that every entry

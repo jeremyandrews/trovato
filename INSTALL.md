@@ -77,7 +77,7 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 | `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated allowed origins |
 | `COOKIE_SAME_SITE` | `strict` | Cookie SameSite policy (`strict`, `lax`, `none`) |
 | `COOKIE_SECURE` | `always` | Whether the session cookie is `Secure`: `always` or `never`. Leave it at `always` for any site reached over HTTPS. `never` is for a plain HTTP LAN or development site only. See "Serving over plain HTTP" below. |
-| `TRUSTED_PROXIES` | *(empty: trust none)* | Reverse proxies whose `X-Forwarded-For` is believed, as comma-separated addresses and CIDR ranges. See "Behind a reverse proxy" below. |
+| `TRUSTED_PROXIES` | *(empty: trust none)* | Reverse proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed, as comma-separated addresses and CIDR ranges. See "Behind a reverse proxy" below. |
 | `CLIENT_IP_STORAGE` | `full` | How much of a client address is stored: `full`, `truncated` or `none`. See "Client addresses and privacy" below. |
 | `CRON_KEY` | *(none)* | Shared secret in the cron URL, `POST /cron/<CRON_KEY>`. Change it before exposing the server. |
 | `JWT_SECRET` | *(none)* | Required for OAuth2 plugin (min 32 bytes) |
@@ -130,6 +130,15 @@ send `X-Real-IP` instead. A connection from anywhere else is the client, and
 its forwarding headers are ignored, so a visitor who connects directly cannot
 choose their own address by sending one. The RFC 7239 `Forwarded` header is not
 read; every common proxy writes `X-Forwarded-For`.
+
+`X-Forwarded-Proto` is believed only from the same listed proxies. It is how
+Trovato learns that the visitor connected over HTTPS, and only then does a
+response carry `Strict-Transport-Security`. A site behind a TLS-terminating
+proxy must list that proxy in `TRUSTED_PROXIES` to send HSTS at all; with
+`TRUSTED_PROXIES` unset, no response carries it, whatever the proxy sends. A
+visitor who connects directly cannot ask for HSTS by sending the header.
+`COOKIE_SECURE` does not depend on it: the session cookie is `Secure` by
+setting, not by header (see "Serving over plain HTTP" below).
 
 The proxy must append to `X-Forwarded-For`, not pass the client's value through
 unchanged. For nginx:

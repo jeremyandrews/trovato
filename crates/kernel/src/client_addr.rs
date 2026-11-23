@@ -14,6 +14,11 @@
 //! any other peer is ignored, whatever it says: whoever sends it would
 //! otherwise pick their own address.
 //!
+//! `X-Forwarded-Proto` goes through the same gate: [`forwarded_https`] believes
+//! it only from a trusted proxy, and it is what decides whether a response
+//! carries `Strict-Transport-Security`. A direct client's claim to have
+//! connected over HTTPS is ignored.
+//!
 //! The RFC 7239 `Forwarded` header is not read. Every proxy a Trovato site is
 //! deployed behind (nginx, HAProxy, Caddy, Traefik, the Kubernetes ingress
 //! controllers, Cloudflare) writes `X-Forwarded-For`; `Forwarded` needs a
@@ -219,6 +224,37 @@ pub fn resolve_client_addr(
         return real_ip.to_string();
     }
     client.to_string()
+}
+
+/// Whether a trusted proxy says the client connected over HTTPS.
+///
+/// The same gate as [`resolve_client_addr`]: `X-Forwarded-Proto` is read only
+/// when the socket peer is a trusted proxy. From any other peer (or with no
+/// peer) the answer is `false`, whatever the header says, because a direct
+/// client would otherwise choose the scheme its own response is built for.
+///
+/// When the header carries several values (a comma list, or several header
+/// lines, as a chain of proxies may send), the rightmost is the one the trusted
+/// peer itself wrote, and it alone decides. It must be `https`
+/// (case-insensitive); anything else, junk included, is `false`.
+pub fn forwarded_https(
+    peer: Option<IpAddr>,
+    headers: &axum::http::HeaderMap,
+    trusted: &TrustedProxies,
+) -> bool {
+    let Some(peer) = peer else {
+        return false;
+    };
+    if !trusted.contains(peer) {
+        return false;
+    }
+    headers
+        .get_all("x-forwarded-proto")
+        .iter()
+        .next_back()
+        .and_then(|v| v.to_str().ok())
+        .and_then(|line| line.rsplit(',').next())
+        .is_some_and(|proto| proto.trim().eq_ignore_ascii_case("https"))
 }
 
 /// What of a client address may be kept (`CLIENT_IP_STORAGE`).
@@ -437,6 +473,110 @@ mod tests {
             resolve_client_addr(None, &xff("1.2.3.4"), &trusted(PROXY)),
             "unknown"
         );
+    }
+
+    fn proto(value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-proto", value.parse().unwrap());
+        h
+    }
+
+    /// The spoofing case: a direct client claims HTTPS. Not believed.
+    #[test]
+    fn forwarded_https_from_an_untrusted_peer_is_false() {
+        assert!(!forwarded_https(
+            peer("203.0.113.9"),
+            &proto("https"),
+            &trusted(PROXY)
+        ));
+        assert!(!forwarded_https(None, &proto("https"), &trusted(PROXY)));
+    }
+
+    #[test]
+    fn forwarded_https_from_a_trusted_peer() {
+        assert!(forwarded_https(
+            peer(PROXY),
+            &proto("https"),
+            &trusted(PROXY)
+        ));
+        assert!(forwarded_https(
+            peer(PROXY),
+            &proto("HTTPS"),
+            &trusted(PROXY)
+        ));
+        assert!(forwarded_https(
+            peer(PROXY),
+            &proto(" https "),
+            &trusted(PROXY)
+        ));
+        assert!(!forwarded_https(
+            peer(PROXY),
+            &proto("http"),
+            &trusted(PROXY)
+        ));
+        // A trusted proxy that sends no header says nothing about the scheme.
+        assert!(!forwarded_https(
+            peer(PROXY),
+            &HeaderMap::new(),
+            &trusted(PROXY)
+        ));
+    }
+
+    /// The default: nothing trusted, so even the loopback peer is a client.
+    #[test]
+    fn forwarded_https_with_no_trusted_proxies_is_false() {
+        assert!(!forwarded_https(
+            peer("127.0.0.1"),
+            &proto("https"),
+            &TrustedProxies::default()
+        ));
+    }
+
+    #[test]
+    fn forwarded_https_from_a_peer_inside_a_trusted_range() {
+        let range = trusted("10.9.8.0/24, fd00::/8");
+        assert!(forwarded_https(peer("10.9.8.200"), &proto("https"), &range));
+        assert!(forwarded_https(peer("fd12::1"), &proto("https"), &range));
+        assert!(forwarded_https(
+            peer("::ffff:10.9.8.7"),
+            &proto("https"),
+            &range
+        ));
+        assert!(!forwarded_https(peer("10.9.9.1"), &proto("https"), &range));
+    }
+
+    /// Several values: the rightmost, the one the trusted peer wrote, decides.
+    #[test]
+    fn forwarded_https_takes_the_value_nearest_the_trusted_hop() {
+        let t = trusted(PROXY);
+        assert!(forwarded_https(peer(PROXY), &proto("http, https"), &t));
+        assert!(!forwarded_https(peer(PROXY), &proto("https, http"), &t));
+        assert!(!forwarded_https(peer(PROXY), &proto("https,"), &t));
+        let mut lines = HeaderMap::new();
+        lines.append("x-forwarded-proto", "https".parse().unwrap());
+        lines.append("x-forwarded-proto", "http".parse().unwrap());
+        assert!(!forwarded_https(peer(PROXY), &lines, &t));
+        let mut lines = HeaderMap::new();
+        lines.append("x-forwarded-proto", "http".parse().unwrap());
+        lines.append("x-forwarded-proto", "https".parse().unwrap());
+        assert!(forwarded_https(peer(PROXY), &lines, &t));
+    }
+
+    #[test]
+    fn forwarded_https_junk_is_false() {
+        let t = trusted(PROXY);
+        for junk in ["", "httpsx", "https;", "ftp", "<script>", "1"] {
+            assert!(
+                !forwarded_https(peer(PROXY), &proto(junk), &t),
+                "{junk:?} must not mean https"
+            );
+        }
+        let mut bytes = HeaderMap::new();
+        bytes.insert(
+            "x-forwarded-proto",
+            axum::http::HeaderValue::from_bytes(b"https\xff").unwrap(),
+        );
+        assert!(!forwarded_https(peer(PROXY), &bytes, &t));
     }
 
     #[test]
