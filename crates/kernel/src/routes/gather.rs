@@ -180,7 +180,7 @@ struct RawPage {
 /// The 1-based page a request's `?page=` names in a listing with this pager.
 ///
 /// Counted from 1, as Trovato always has (`?page=2` is the second page), or,
-/// for a gather that replaces a Drupal listing ([`PagerConfig::zero_based`]),
+/// for a gather that replaces a Drupal listing ([`crate::gather::types::PagerConfig::zero_based`]),
 /// from 0 as Drupal did (`?page=1` is the second page). Absent or unreadable,
 /// it is the first page.
 pub(crate) fn requested_page(pager: &crate::gather::types::PagerConfig, raw: Option<&str>) -> u32 {
