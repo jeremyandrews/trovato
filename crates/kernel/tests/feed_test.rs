@@ -1202,6 +1202,198 @@ fn isolate(query: &mut GatherQuery, stamp: &str) {
 }
 
 // ---------------------------------------------------------------------------
+// B172: the ETag covers every printed value, not only entry ids and dates.
+// ---------------------------------------------------------------------------
+
+/// The defect: an account rename left every entry's id, `changed` and link
+/// untouched, so a cached `ETag` kept matching and a conditional poll never
+/// saw the new `dc:creator` the feed now prints.
+#[test]
+fn renaming_the_author_invalidates_a_cached_etag() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_item_type(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let path = format!("/rss/feed-rename-{stamp}.xml");
+        let mut query = feed_query(&format!("feed_rename_{stamp}"), &path);
+        isolate(&mut query, &stamp);
+
+        let before_name = format!("before_{}", &stamp[stamp.len() - 12..]);
+        let after_name = format!("after_{}", &stamp[stamp.len() - 12..]);
+        let author = create_user(app, &before_name).await;
+        let id = create_item_with(
+            app,
+            &format!("Byline {stamp}"),
+            1,
+            chrono::Utc::now().timestamp(),
+            author,
+            serde_json::json!({}),
+        )
+        .await;
+        register(app, &query).await;
+
+        let (status, headers, body) = send(
+            app,
+            &query,
+            Request::get(&path).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains(&before_name), "{body}");
+        let etag = headers.get("etag").unwrap().to_str().unwrap().to_string();
+
+        // Sanity: the same byline still matches the cached ETag.
+        let (status, _, _) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-none-match", &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED, "before the rename");
+
+        sqlx::query("UPDATE users SET name = $1 WHERE id = $2")
+            .bind(&after_name)
+            .bind(author)
+            .execute(&app.db)
+            .await
+            .expect("rename author");
+
+        let (status, headers, body) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-none-match", &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a renamed author must not be served as 304: {body}"
+        );
+        assert!(
+            body.contains(&after_name),
+            "the new name must be in the body: {body}"
+        );
+        assert!(!body.contains(&before_name), "{body}");
+        assert_ne!(headers.get("etag").unwrap().to_str().unwrap(), etag);
+
+        delete_items(app, &[id]).await;
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(author)
+            .execute(&app.db)
+            .await
+            .ok();
+        unregister(app, &query).await;
+    });
+}
+
+/// The defect: relabelling a tag left every entry's id, `changed` and link
+/// untouched too, so a cached `ETag` kept matching a document whose
+/// `<category>` now reads differently.
+#[test]
+fn relabelling_a_tag_invalidates_a_cached_etag() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_item_type(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let path = format!("/rss/feed-relabel-{stamp}.xml");
+        let mut query = feed_query(&format!("feed_relabel_{stamp}"), &path);
+        isolate(&mut query, &stamp);
+
+        let (category, terms) = create_terms(app, &stamp, ["Before", "Unused"]).await;
+        let tag = terms[0];
+        let id = create_item_with(
+            app,
+            &format!("Tagged {stamp}"),
+            1,
+            chrono::Utc::now().timestamp(),
+            Uuid::nil(),
+            serde_json::json!({ "field_tags": [tag.to_string()] }),
+        )
+        .await;
+        register(app, &query).await;
+
+        let (status, headers, body) = send(
+            app,
+            &query,
+            Request::get(&path).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("<category>Before</category>"), "{body}");
+        let etag = headers.get("etag").unwrap().to_str().unwrap().to_string();
+
+        // Sanity: the same label still matches the cached ETag.
+        let (status, _, _) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-none-match", &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED, "before the relabel");
+
+        sqlx::query("UPDATE category_tag SET label = 'After' WHERE id = $1")
+            .bind(tag)
+            .execute(&app.db)
+            .await
+            .expect("relabel tag");
+        // The admin path bumps this through `CategoryService::update_tag`
+        // (fire-and-forget); awaited directly here so the next request cannot
+        // race the write reaching Redis.
+        trovato_kernel::cache::generation::bump_now(
+            app.state.redis(),
+            &[trovato_kernel::cache::generation::CacheKind::Categories],
+        )
+        .await
+        .expect("bump categories generation");
+
+        let (status, headers, body) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-none-match", &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a relabelled tag must not be served as 304: {body}"
+        );
+        assert!(
+            body.contains("<category>After</category>"),
+            "the new label must be in the body: {body}"
+        );
+        assert!(!body.contains("Before</category>"), "{body}");
+        assert_ne!(headers.get("etag").unwrap().to_str().unwrap(), etag);
+
+        delete_items(app, &[id]).await;
+        sqlx::query("DELETE FROM category_tag WHERE id = ANY($1)")
+            .bind(&terms)
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM category WHERE id = $1")
+            .bind(&category)
+            .execute(&app.db)
+            .await
+            .ok();
+        unregister(app, &query).await;
+    });
+}
+
+// ---------------------------------------------------------------------------
 // B127 part two: feeds with a path argument.
 // ---------------------------------------------------------------------------
 

@@ -166,6 +166,17 @@ pub async fn bump_now(redis: &redis::Client, kinds: &[CacheKind]) -> anyhow::Res
     increment(redis, kinds).await
 }
 
+/// `kind`'s current counter, for a caller that wants a cheap stand-in for "has
+/// anything of this kind changed" without reading the rows themselves — a
+/// feed's `ETag` folds in the categories counter rather than re-querying every
+/// tag's label on every poll. `None` when Redis cannot be reached or the
+/// counter has never been bumped; a caller that cannot tell those apart from
+/// "unchanged" is already relying on `changed` timestamps for its exactness.
+pub async fn current(redis: &redis::Client, kind: CacheKind) -> Option<i64> {
+    let mut conn = redis.get_multiplexed_async_connection().await.ok()?;
+    conn.hget(GENERATION_KEY, kind.as_str()).await.ok()
+}
+
 async fn increment(redis: &redis::Client, kinds: &[CacheKind]) -> anyhow::Result<()> {
     let mut conn = redis.get_multiplexed_async_connection().await?;
     for kind in kinds {

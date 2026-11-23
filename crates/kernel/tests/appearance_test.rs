@@ -15,6 +15,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use common::{TestApp, run_test, shared_app, user_holding};
 use trovato_kernel::models::SiteConfig;
+use trovato_kernel::routes::feed::FeedLink;
 use trovato_kernel::theme::registry::{self, ADMIN_THEME_KEY, DEFAULT_THEME_KEY};
 use trovato_kernel::theme::{ActiveThemes, ThemeEngine, scope_request};
 
@@ -221,6 +222,59 @@ fn the_engine_renders_the_active_theme_and_falls_back_to_stock() {
             .await
             .unwrap();
         assert!(!html.contains(LAKESIDE_CSS));
+    });
+}
+
+/// B173: lakeside's `base.html` carried only the RSS autodiscovery link, so a
+/// reader whose theme was lakeside never saw the Atom alternative stock pages
+/// advertise. Both `<link rel="alternate">` tags a feed declares must survive
+/// a theme that only overrides `base.html` to add its stylesheet.
+#[test]
+fn a_themes_base_html_carries_both_feed_autodiscovery_links() {
+    run_test(async {
+        let root = common::project_root();
+        let stock_dirs = vec![root.join("templates")];
+        let themes = registry::discover(&[themes_dir()]);
+        let engine = ThemeEngine::new(&stock_dirs, None, Default::default())
+            .unwrap()
+            .with_themes(themes, &stock_dirs, None);
+
+        let render = || {
+            let mut context = tera::Context::new();
+            context.insert("title", "Probe");
+            context.insert("content", "<p>probe</p>");
+            context.insert(
+                "feeds",
+                &vec![FeedLink {
+                    path: "/blog/feed.xml".to_string(),
+                    atom_path: "/blog/feed.atom".to_string(),
+                    title: "Blog".to_string(),
+                }],
+            );
+            engine.tera().render("base.html", &context)
+        };
+
+        let rss = r#"<link rel="alternate" type="application/rss+xml" title="Blog" href="/blog/feed.xml">"#;
+        let atom = r#"<link rel="alternate" type="application/atom+xml" title="Blog" href="/blog/feed.atom">"#;
+
+        let stock_html = scope_request("/", async { render() }).await.unwrap();
+        assert!(stock_html.contains(rss), "{stock_html}");
+        assert!(stock_html.contains(atom), "{stock_html}");
+
+        engine.set_active(ActiveThemes {
+            default: "lakeside".into(),
+            admin: "stock".into(),
+        });
+        let lakeside_html = scope_request("/", async { render() }).await.unwrap();
+        assert!(lakeside_html.contains(LAKESIDE_CSS), "drawn by lakeside");
+        assert!(
+            lakeside_html.contains(rss),
+            "lakeside's base.html: {lakeside_html}"
+        );
+        assert!(
+            lakeside_html.contains(atom),
+            "lakeside's base.html must carry the Atom link too: {lakeside_html}"
+        );
     });
 }
 

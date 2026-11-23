@@ -67,7 +67,8 @@
 //! # Polling
 //!
 //! Every response carries an `ETag` and a `Last-Modified`. The `ETag` hashes
-//! the entries' ids, their `changed` timestamps and links, the resolved
+//! the entries' ids, their `changed` timestamps, links and author names, a
+//! stamp for the taxonomy terms the entries carry (B172), the resolved
 //! channel link, and the feed's config. `Last-Modified` is the latest of the
 //! newest entry's `changed` (or `created`), the gather's own `changed` (so a
 //! title, description or other config edit moves it, not only the `ETag`),
@@ -76,6 +77,18 @@
 //! too). A request whose `If-None-Match` (or, with none, `If-Modified-Since`)
 //! still matches is answered `304` before terms are loaded or anything is
 //! rendered.
+//!
+//! An item's title, summary and body are not hashed directly: they can only
+//! change through an edit to the item, which is the same write that bumps
+//! `changed`, so `changed` already stands in for them exactly. An author's
+//! account name and a term's label are edited on a different row (`users`,
+//! `category_tag`) that an entry's `changed` knows nothing about, which is
+//! what B172 fixed: the author name actually fetched for the entry goes into
+//! the hash, and the terms are covered by their ids (free: already read off
+//! the row) plus the `Categories` [`crate::cache::generation`] counter — one
+//! cheap read, shared by the whole response, exact because any tag or
+//! category write bumps it, and never a per-entry or even a per-poll query
+//! against `category_tag`.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -664,6 +677,13 @@ async fn serve_feed(
     let rows: Vec<&serde_json::Value> = result.items.iter().take(config.items as usize).collect();
     let item_ids: Vec<Uuid> = rows.iter().filter_map(|row| row_uuid(row)).collect();
     let meta = load_entry_meta(&state, &item_ids).await;
+    // One cheap Redis read, shared by the whole response: see "Polling" above
+    // for why this stands in for a term-label query.
+    let categories_generation = crate::cache::generation::current(
+        state.redis(),
+        crate::cache::generation::CacheKind::Categories,
+    )
+    .await;
 
     let rss_path = filled(&config.path);
     // Resolved before the validators, not after: the channel link is part of
@@ -679,6 +699,7 @@ async fn serve_feed(
         home_path_changed,
         &rows,
         &meta,
+        categories_generation,
     );
     let cache_headers = validators.headers(&cache_control);
     if validators.matches(&headers) {
@@ -1028,17 +1049,23 @@ struct Validators {
 
 impl Validators {
     /// Hash everything the document is a function of that can change between
-    /// polls without a restart: each entry's id, `changed` and link, in order,
-    /// the site URL, and the resolved channel link — a `HomePath::GatherDefault`
-    /// feed's is a `url_alias` row the query's own `changed` knows nothing
-    /// about, so it must be hashed as given, already resolved, rather than
-    /// recomputed from `config`. The feed's config is in too, with its query's
-    /// `changed`, so editing the feed declaration invalidates old copies.
+    /// polls without a restart: each entry's id, `changed`, link and author
+    /// name, in order, the terms it carries, the site URL, and the resolved
+    /// channel link — a `HomePath::GatherDefault` feed's is a `url_alias` row
+    /// the query's own `changed` knows nothing about, so it must be hashed as
+    /// given, already resolved, rather than recomputed from `config`. The
+    /// feed's config is in too, with its query's `changed`, so editing the
+    /// feed declaration invalidates old copies.
     ///
     /// `home_path_changed` is `home_path`'s own change time when it came from
     /// a `url_alias` row (`None` for a `Fixed` link, whose edits already move
     /// `config.query_changed`); it folds into `last_modified` only, since the
     /// resolved `home_path` string is already in the `ETag` hash.
+    ///
+    /// `categories_generation` is the `Categories` [`crate::cache::generation`]
+    /// counter, read once by the caller: it stands in for every term's label
+    /// without a query, at the cost of invalidating every feed's `ETag` on any
+    /// tag or category write, not only ones naming a term an entry carries.
     fn compute(
         config: &FeedConfig,
         format: FeedFormat,
@@ -1048,6 +1075,7 @@ impl Validators {
         home_path_changed: Option<i64>,
         rows: &[&serde_json::Value],
         meta: &HashMap<Uuid, EntryMeta>,
+        categories_generation: Option<i64>,
     ) -> Self {
         let mut hasher = Sha256::new();
         let mut line = |s: &str| {
@@ -1066,6 +1094,11 @@ impl Validators {
         line(&config.items.to_string());
         line(&config.full_content.to_string());
         line(&config.query_changed.to_string());
+        line(
+            &categories_generation
+                .map(|g| g.to_string())
+                .unwrap_or_default(),
+        );
 
         // The channel's own floor: always a real timestamp, so a feed with no
         // entries still gets a `Last-Modified`.
@@ -1075,8 +1108,8 @@ impl Validators {
         }
         for row in rows {
             let uuid = row_uuid(row);
-            let changed = uuid
-                .and_then(|u| meta.get(&u))
+            let entry_meta = uuid.and_then(|u| meta.get(&u));
+            let changed = entry_meta
                 .map(|m| m.changed)
                 .or_else(|| row.get("changed").and_then(|v| v.as_i64()))
                 .or_else(|| row.get("created").and_then(|v| v.as_i64()));
@@ -1086,6 +1119,16 @@ impl Validators {
             line(&row_id(row).unwrap_or_default());
             line(&changed.unwrap_or_default().to_string());
             line(row.get("url").and_then(|v| v.as_str()).unwrap_or_default());
+            // The author's account name, not an id: a feed never prints the
+            // id, so an id-only change (impossible) must not matter and a
+            // name-only change (an account rename) must.
+            line(entry_meta.and_then(|m| m.author.as_deref()).unwrap_or(""));
+            // The entry's own term ids, free (already parsed off the row):
+            // catches a tag added or removed by some path that does not bump
+            // the item's `changed`, which `categories_generation` alone would
+            // miss since it is not scoped to any one entry.
+            let terms: Vec<String> = row_term_ids(row).iter().map(Uuid::to_string).collect();
+            line(&terms.join(","));
         }
         let digest = hasher.finalize();
         let hex: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
@@ -1723,11 +1766,36 @@ mod tests {
         );
     }
 
+    /// [`Validators::compute`] with a fixed `categories_generation`, for tests
+    /// not about the generation stamp itself.
+    fn compute(
+        config: &FeedConfig,
+        format: FeedFormat,
+        site_url: &str,
+        request_path: &str,
+        home_path: &str,
+        home_path_changed: Option<i64>,
+        rows: &[&serde_json::Value],
+        meta: &HashMap<Uuid, EntryMeta>,
+    ) -> Validators {
+        Validators::compute(
+            config,
+            format,
+            site_url,
+            request_path,
+            home_path,
+            home_path_changed,
+            rows,
+            meta,
+            Some(0),
+        )
+    }
+
     #[test]
     fn the_etag_follows_the_entries_and_the_config() {
         let row = blog_row();
         let rows = vec![&row];
-        let base = Validators::compute(
+        let base = compute(
             &config(),
             FeedFormat::Rss,
             "https://e",
@@ -1740,7 +1808,7 @@ mod tests {
 
         assert_eq!(
             base,
-            Validators::compute(
+            compute(
                 &config(),
                 FeedFormat::Rss,
                 "https://e",
@@ -1755,7 +1823,7 @@ mod tests {
         assert_eq!(base.last_modified, Some(10));
         assert_ne!(
             base.etag,
-            Validators::compute(
+            compute(
                 &config(),
                 FeedFormat::Rss,
                 "https://e",
@@ -1770,7 +1838,7 @@ mod tests {
         );
         assert_ne!(
             base.etag,
-            Validators::compute(
+            compute(
                 &config(),
                 FeedFormat::Atom,
                 "https://e",
@@ -1787,7 +1855,7 @@ mod tests {
         edited.full_content = true;
         assert_ne!(
             base.etag,
-            Validators::compute(
+            compute(
                 &edited,
                 FeedFormat::Rss,
                 "https://e",
@@ -1804,7 +1872,7 @@ mod tests {
         // `query.changed`, so without this the ETag would not follow it.
         assert_ne!(
             base.etag,
-            Validators::compute(
+            compute(
                 &config(),
                 FeedFormat::Rss,
                 "https://e",
@@ -1824,7 +1892,7 @@ mod tests {
         let mut config_edited = config();
         config_edited.query_changed = 20;
         assert_eq!(
-            Validators::compute(
+            compute(
                 &config_edited,
                 FeedFormat::Rss,
                 "https://e",
@@ -1839,7 +1907,7 @@ mod tests {
             "a config edit newer than the entries moves Last-Modified"
         );
         assert_eq!(
-            Validators::compute(
+            compute(
                 &config(),
                 FeedFormat::Rss,
                 "https://e",
@@ -1853,6 +1921,150 @@ mod tests {
             Some(30),
             "an alias edit newer than the entries moves Last-Modified"
         );
+    }
+
+    /// B172: an account rename or a tag relabel leaves every entry's id,
+    /// `changed` and link untouched, so the hash must carry the printed name
+    /// and a stamp for the printed labels directly, not only derive them from
+    /// `changed`.
+    #[test]
+    fn a_renamed_author_changes_the_etag_though_nothing_else_moved() {
+        let row = blog_row();
+        let rows = vec![&row];
+
+        let before = compute(
+            &config(),
+            FeedFormat::Rss,
+            "https://e",
+            "/rss/q.xml",
+            "/blog",
+            None,
+            &rows,
+            &meta(Some("jeremy"), 10),
+        );
+        let renamed = compute(
+            &config(),
+            FeedFormat::Rss,
+            "https://e",
+            "/rss/q.xml",
+            "/blog",
+            None,
+            &rows,
+            &meta(Some("jeremy-dev"), 10),
+        );
+        assert_ne!(
+            before.etag, renamed.etag,
+            "the account name changed, so the document now reads differently"
+        );
+        assert_eq!(
+            before.last_modified, renamed.last_modified,
+            "a rename is not an edit to the item"
+        );
+
+        let no_name = compute(
+            &config(),
+            FeedFormat::Rss,
+            "https://e",
+            "/rss/q.xml",
+            "/blog",
+            None,
+            &rows,
+            &meta(None, 10),
+        );
+        assert_ne!(
+            before.etag, no_name.etag,
+            "an author gaining or losing a publishable name changes the document"
+        );
+    }
+
+    /// The `categories_generation` stamp — the `Categories` cache counter the
+    /// kernel already bumps on every term write — is what catches a tag's
+    /// label changing without touching any entry's `changed` or term ids.
+    #[test]
+    fn a_categories_generation_bump_changes_the_etag_though_the_terms_are_the_same() {
+        let row = blog_row();
+        let rows = vec![&row];
+
+        let before = Validators::compute(
+            &config(),
+            FeedFormat::Rss,
+            "https://e",
+            "/rss/q.xml",
+            "/blog",
+            None,
+            &rows,
+            &meta(None, 10),
+            Some(5),
+        );
+        let after = Validators::compute(
+            &config(),
+            FeedFormat::Rss,
+            "https://e",
+            "/rss/q.xml",
+            "/blog",
+            None,
+            &rows,
+            &meta(None, 10),
+            Some(6),
+        );
+        assert_ne!(
+            before.etag, after.etag,
+            "a bumped categories generation means some label may have changed"
+        );
+        assert_eq!(
+            before.last_modified, after.last_modified,
+            "relabelling a term is not an edit to the item"
+        );
+
+        let redis_unreachable = Validators::compute(
+            &config(),
+            FeedFormat::Rss,
+            "https://e",
+            "/rss/q.xml",
+            "/blog",
+            None,
+            &rows,
+            &meta(None, 10),
+            None,
+        );
+        assert_ne!(
+            before.etag, redis_unreachable.etag,
+            "a missing stamp must not collide with a real one"
+        );
+    }
+
+    /// An entry's own term ids are hashed directly (free: already parsed off
+    /// the row), so gaining or losing a tag changes the `ETag` even if nothing
+    /// ever bumps the categories generation for it.
+    #[test]
+    fn an_entrys_changed_term_ids_change_the_etag() {
+        let with_both = blog_row();
+        let mut one_tag = blog_row();
+        one_tag["fields"]["field_tags"] = serde_json::json!([TAG_A]);
+
+        let rows_both = vec![&with_both];
+        let rows_one = vec![&one_tag];
+        let before = compute(
+            &config(),
+            FeedFormat::Rss,
+            "https://e",
+            "/rss/q.xml",
+            "/blog",
+            None,
+            &rows_both,
+            &meta(None, 10),
+        );
+        let after = compute(
+            &config(),
+            FeedFormat::Rss,
+            "https://e",
+            "/rss/q.xml",
+            "/blog",
+            None,
+            &rows_one,
+            &meta(None, 10),
+        );
+        assert_ne!(before.etag, after.etag);
     }
 
     #[test]

@@ -376,20 +376,32 @@ see, and a gather that requires a permission answers 403 (see the table above).
 Nothing is cached on the server between viewers.
 
 **Polling.** Each response carries an `ETag` and a `Last-Modified`. The `ETag`
-hashes the entries' ids, `changed` timestamps and links, the resolved channel
-link, and the feed's config, so it moves on any of those. `Last-Modified` is
-the latest of: the newest entry's `changed` (or `created`); the gather's own
-`changed`, so editing the feed's title, description or other config moves it
-too, not only the `ETag`; and, when the channel link resolves through a
-`url_alias` row rather than a fixed path (tier 3 above), that row's own
-`changed`, so repointing the link moves it as well. A request whose
-`If-None-Match` (or, without one, `If-Modified-Since`) still matches gets
-`304 Not Modified` before anything is rendered. The query itself still runs, as
-the viewer, because that is what decides what the viewer may see. An anonymous
-response is `Cache-Control: public, max-age=300`; a response to a signed-in
-session is `private, no-cache`, since it ran with that viewer's access. An
-author's renamed account or a relabelled term reaches readers with the entry's
-next edit, not before, since neither changes the validators.
+hashes the entries' ids, `changed` timestamps, links and author names, the
+terms each entry carries, the resolved channel link, and the feed's config, so
+it moves on any of those. `Last-Modified` is the latest of: the newest entry's
+`changed` (or `created`); the gather's own `changed`, so editing the feed's
+title, description or other config moves it too, not only the `ETag`; and,
+when the channel link resolves through a `url_alias` row rather than a fixed
+path (tier 3 above), that row's own `changed`, so repointing the link moves it
+as well. A request whose `If-None-Match` (or, without one, `If-Modified-Since`)
+still matches gets `304 Not Modified` before terms are loaded or anything is
+rendered. The query itself still runs, as the viewer, because that is what
+decides what the viewer may see. An anonymous response is
+`Cache-Control: public, max-age=300`; a response to a signed-in session is
+`private, no-cache`, since it ran with that viewer's access.
+
+An item's title, summary and body are not hashed directly — they can only
+change through an edit to the item, the same write that bumps `changed` — but
+an author's account name and a term's label are edited on a different row, so
+they are hashed explicitly: the account name actually fetched for the entry
+(already loaded for `dc:creator` / `<author><name>`), and, for terms, each
+entry's term ids (free — already read off the row) plus the `Categories` cache
+generation counter the kernel already bumps on every tag or category write.
+That counter is one cheap read, shared by the whole response rather than
+queried per entry or per term, so a renamed account or a relabelled term
+invalidates the `ETag` immediately rather than waiting for the entry's next
+edit — at the cost of also invalidating every feed's `ETag` on any tag or
+category write, not only ones naming a term the response actually carries.
 
 #### A feed per author, per tag, per anything the gather takes
 
