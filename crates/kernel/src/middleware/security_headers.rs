@@ -5,14 +5,17 @@
 //! sanitization is bypassed. Other headers protect against clickjacking,
 //! MIME sniffing, and downgrade attacks.
 
+use std::net::SocketAddr;
+
 use axum::{
     body::Body,
-    extract::State,
+    extract::{ConnectInfo, State},
     http::{HeaderMap, HeaderValue, Request},
     middleware::Next,
     response::Response,
 };
 
+use crate::client_addr::forwarded_https;
 use crate::state::AppState;
 
 /// Static header values — constructed at compile time from string literals.
@@ -132,7 +135,9 @@ impl Default for SecurityHeaders {
 /// - `Referrer-Policy: strict-origin-when-cross-origin`, unless the route set
 ///   `no-referrer`
 /// - `Permissions-Policy: camera=(), microphone=(), geolocation=()`
-/// - `Strict-Transport-Security` (only when request arrived via HTTPS)
+/// - `Strict-Transport-Security`, only when the request arrived over HTTPS, which
+///   is known from `X-Forwarded-Proto` sent by a trusted proxy
+///   ([`forwarded_https`]); the header from any other peer is ignored
 ///
 /// The CSP comes from [`SecurityHeaders`] on the application state, resolved at
 /// startup. script-src does not include 'unsafe-inline', so an inline script is
@@ -143,11 +148,17 @@ pub async fn inject_security_headers(
     request: Request<Body>,
     next: Next,
 ) -> Response {
-    let is_https = request
-        .headers()
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|proto| proto == "https");
+    // `X-Forwarded-Proto` only from a trusted proxy, the gate
+    // `X-Forwarded-For` goes through (see `client_addr`).
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip());
+    let is_https = forwarded_https(
+        peer,
+        request.headers(),
+        state.rate_limiter().trusted_proxies(),
+    );
 
     let mut response = next.run(request).await;
     apply(
@@ -345,27 +356,8 @@ mod tests {
         );
     }
 
-    /// The middleware is layered with state in `main.rs`; the routing wrapper
-    /// itself carries no logic beyond reading `x-forwarded-proto`.
-    #[test]
-    fn forwarded_proto_decides_https() {
-        for (value, expected) in [
-            (Some("https"), true),
-            (Some("http"), false),
-            (Some("HTTPS"), false),
-            (None, false),
-        ] {
-            let mut builder = Request::builder().uri("/");
-            if let Some(value) = value {
-                builder = builder.header("x-forwarded-proto", value);
-            }
-            let request = builder.body(Body::empty()).unwrap();
-            let is_https = request
-                .headers()
-                .get("x-forwarded-proto")
-                .and_then(|v| v.to_str().ok())
-                .is_some_and(|proto| proto == "https");
-            assert_eq!(is_https, expected, "x-forwarded-proto: {value:?}");
-        }
-    }
+    // Whether `X-Forwarded-Proto` earns HSTS is decided by
+    // `client_addr::forwarded_https` (unit tested there) and exercised through
+    // the real middleware, with a trusted and an untrusted socket peer, in
+    // `tests/forwarded_proto_hsts_test.rs`.
 }

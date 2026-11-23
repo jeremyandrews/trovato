@@ -515,8 +515,10 @@ pub struct Config {
     /// the same name. See `theme::registry`.
     pub themes_dirs: Vec<PathBuf>,
 
-    /// Proxies whose `X-Forwarded-For` header is believed (`TRUSTED_PROXIES`:
-    /// comma-separated addresses and CIDR ranges).
+    /// Proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` headers are
+    /// believed (`TRUSTED_PROXIES`: comma-separated addresses and CIDR ranges).
+    /// `X-Forwarded-Proto` from one of them is the only way a response gets
+    /// `Strict-Transport-Security`.
     ///
     /// Empty means trust none, which is the safe default: an unset
     /// `TRUSTED_PROXIES` must not let any client spoof its own address. An entry
