@@ -137,7 +137,7 @@ pub(crate) async fn render_preview(
     title: &str,
     fields: &Map<String, Value>,
 ) -> String {
-    let (fields_html, _stylesheets) = super::item::render_item_fields(
+    let (fields_html, _stylesheets, _page_root) = super::item::render_item_fields(
         state,
         user,
         &Value::Object(fields.clone()),

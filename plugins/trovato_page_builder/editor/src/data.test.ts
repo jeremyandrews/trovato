@@ -37,6 +37,27 @@ describe("stored page ↔ Puck data", () => {
     expect(data.content[0].props.id).toMatch(/^Hero-/);
   });
 
+  it("stores the page root flat, from either shape, keeping declared root fields only", () => {
+    // Puck 0.20 keeps root values under root.props.
+    const data = storedToPuck({ root: { title: "T", footer_cta_mode: "hide", stale: 1 }, content: [] });
+    expect(data.root).toEqual({ props: { title: "T", footer_cta_mode: "hide", stale: 1 } });
+    expect(puckToStored(data, ["footer_cta_mode"]).root).toEqual({ title: "T", footer_cta_mode: "hide" });
+    // Without the declared names nothing is dropped.
+    expect(puckToStored(data).root).toEqual({ title: "T", footer_cta_mode: "hide", stale: 1 });
+    // An older Puck's flat root, and a page stored with root.props, read the same.
+    expect(
+      puckToStored({ root: { title: "Old", footer_cta_mode: "custom" }, content: [] }, ["footer_cta_mode"]).root,
+    ).toEqual({ title: "Old", footer_cta_mode: "custom" });
+    expect(storedToPuck({ root: { props: { title: "N", footer_cta_mode: "hide" } } }).root).toEqual({
+      props: { title: "N", footer_cta_mode: "hide" },
+    });
+  });
+
+  it("round-trips the v0.106 page with root fields declared", () => {
+    const page = fixture("standard-page-v0.106.json");
+    expect(puckToStored(storedToPuck(page), ["footer_cta_mode"])).toEqual(page);
+  });
+
   it("reads an empty or broken hidden input as an empty page", () => {
     expect(parseStored("")).toEqual({ root: { title: "" }, content: [] });
     expect(parseStored("{not json")).toEqual({ root: { title: "" }, content: [] });

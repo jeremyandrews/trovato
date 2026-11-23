@@ -1775,7 +1775,142 @@ row) and `FeatureBanner` (a select of tone and image position, an image, a
 title, rich text and a call to action). Its integration test,
 `crates/kernel/tests/page_builder_components_test.rs`, shows the registry
 listing them, a valid page saving and rendering, and an invalid one refused
-with an error at each field.
+with an error at each field. The same plugin declares the two root fields
+above in `components/page.root.toml` and ships the footer call to action tile
+template, and the same test file renders a page in each footer mode.
+
+### Page root fields
+
+A page builder page has one built in page level field, its `title`. A plugin
+can declare more, for settings that belong to the page rather than to any one
+component: whether the site's footer call to action shows on this page, a
+page's accent, a campaign code. They are declared in the same field format as
+component fields, edited in the editor's page settings form, checked on every
+save by the same rules, and handed to page, region and tile templates.
+
+#### The file
+
+Root fields live in `components/<name>.root.toml`, beside the components. A
+plugin may ship more than one such file; they are read in file name order
+after its components. The file holds only what a root field needs: a list of
+`[[fields]]` and, optionally, `classes`.
+
+```toml
+# components/page.root.toml
+classes = ["page--quiet"]        # optional: every class a root select may add
+
+[[fields]]
+name = "footer_cta_mode"
+type = "select"
+label = "Footer call to action"
+help = "Keep the site's call to action, hide it on this page, or replace it."
+default = "default"
+options = [
+  { value = "default", label = "Site default" },
+  { value = "hide", label = "Hide", class = "page--quiet" },
+  { value = "custom", label = "Custom" },
+]
+
+[[fields]]
+name = "footer_cta_content"
+type = "rich_text"
+label = "Custom call to action"
+max_length = 280
+```
+
+It is a file of its own, not a `[page_root]` table in a component file,
+because a root field belongs to no component: it has no type name, template,
+category or stylesheet, a component file must have most of those, and a page
+needs its root fields whether or not that component is on it. The file is the
+component format with everything but the fields taken away, so the parser,
+the field types and their keys, limits and checks are the ones above, and it
+is read with unknown keys refused in the same way.
+
+Every field type is allowed, with the same keys. Three names are reserved:
+`title` (built in), `props` (where current Puck versions nest root values) and
+`variant_classes` (see below). A root field name is unique across the site:
+two enabled plugins declaring the same one stop the server at boot, with an
+error naming both plugins and both files, as a duplicate component type does.
+A `default` the field's own rules refuse (a select default that is not one of
+its options) is an error at boot too.
+
+#### Defaults
+
+Unlike a component field's, a root field's `default` is applied when the page
+renders: a page with no value for the field (absent, `null` or empty text),
+and every page with no page builder content at all, gets the declared default.
+A theme or tile template can therefore rely on `page_root.footer_cta_mode`
+always having a value when the field declares a default. The editor also
+starts a new page's settings at the defaults.
+
+#### Validation
+
+On every create and update through the item service, a page builder field's
+root is checked like a component's props: each declared root field by its
+type and limits, `title` as text. An error is reported at
+`<item field>.root.<field>`, for example
+`field_layout.root.footer_cta_mode: 'blink' is not one of: default, hide, custom`,
+on the item form and as a 422 from the JSON API.
+
+A root key that no enabled plugin declares is refused on save, so a misspelt
+name, or a value meant for a plugin that is now disabled, is not stored
+silently. A stored page is never validated to render: such a key is simply
+not passed to templates, and the page renders as before. The editor drops
+undeclared root keys when it writes the page, since it offers no form in which
+one could be removed.
+
+Puck keeps the root's values under `root.props` in current versions and
+directly under `root` in older ones. The editor stores them flat,
+`{ "root": { "title": "…", "footer_cta_mode": "hide" } }`; the kernel reads
+either shape, and a key in both takes the value under `props`.
+
+#### Templates: `page_root`
+
+Every page template (`page.html` and its suggestions), the item template, and
+every tile template rendered on the same request receive `page_root`:
+
+- `page_root.title`, the root title, when it is text;
+- one key per declared root field: the page's value or the declared default,
+  normalized as a component prop is (a value outside a select's options, an
+  unsafe URL or a value of the wrong type is left out), and for a `rich_text`
+  field `<name>_html`, the kernel's sanitized rendering;
+- `page_root.variant_classes`, the classes the chosen select options add,
+  each one listed in a root file's `classes`. As for components, a root value
+  never becomes inline CSS: a variant is a declared class.
+
+A page with no page builder field, or a request that is not an item at all,
+gets the defaults. Region templates are tiles: a `menu` or `gather_query`
+tile's template gets `page_root` beside its own variables, and a
+`custom_html` tile is rendered through `elements/tile--custom_html--<machine
+name>` or `elements/tile--custom_html` when either template exists, with
+`tile`, `body` (its filtered HTML) and `page_root`. A tile whose template
+renders nothing but whitespace is left off the page, wrapper and all.
+
+A sitewide footer call to action that a page can keep, hide or replace, as a
+custom HTML tile named `pb_footer_cta` in the `footer` region and this
+template in the plugin's `templates/elements/tile--custom_html--pb_footer_cta.html`:
+
+```html+jinja
+{%- set mode = "default" -%}
+{%- if page_root.footer_cta_mode is defined %}{% set mode = page_root.footer_cta_mode %}{% endif -%}
+{%- if mode == "hide" -%}
+{%- elif mode == "custom" and page_root.footer_cta_content_html is defined -%}
+{# SAFE: footer_cta_content_html is the kernel's sanitized Markdown rendering of a rich_text root field. #}
+<div class="footer-cta footer-cta--custom">{{ page_root.footer_cta_content_html | safe }}</div>
+{%- else -%}
+{# SAFE: body is the tile's body, already through its text format's filter pipeline. #}
+<div class="footer-cta footer-cta--default">{{ body | safe }}</div>
+{%- endif -%}
+```
+
+#### In the editor
+
+`GET /api/v1/page-builder/components` serves the root fields beside the
+components, as `root_fields`: each in the component field format plus its
+`source`. The editor builds its page settings form (Puck's root fields, shown
+under "Page" when no component is selected) from them: the title first, then
+each declared root field in load order, with the same control per type as a
+component field.
 
 ---
 
