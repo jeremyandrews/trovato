@@ -232,27 +232,47 @@ impl CommentService {
             return Ok(true);
         }
 
-        // Permission fallback
-        let is_own = comment.author_id == user.id;
-        match operation {
-            "view" => Ok(user.has_permission("access content")),
-            "create" => Ok(user.has_permission("post comments")),
-            "edit" => {
-                if is_own && user.has_permission("edit own comments") {
-                    Ok(true)
-                } else {
-                    Ok(user.has_permission("edit any comment"))
-                }
-            }
-            "delete" => {
-                if is_own && user.has_permission("delete own comments") {
-                    Ok(true)
-                } else {
-                    Ok(user.has_permission("delete any comment"))
-                }
-            }
-            _ => Ok(false),
+        Ok(permission_allows(comment, operation, user))
+    }
+}
+
+/// The permission rule for one operation on one comment, with no tap asked.
+///
+/// The fallback [`CommentService::check_access`] ends on, and what the comment
+/// thread asks to decide which Edit and Delete links to show, so a link is
+/// offered exactly where the page behind it would let the viewer in (a plugin
+/// grant through `tap_comment_access` aside).
+///
+/// Editing or deleting someone else's comment is `administer comments`, the
+/// permission the moderation screens and the `trovato_comments` plugin
+/// declare. It used to be `edit any comment` and `delete any comment`, which
+/// nothing declares and so no role could be granted from the permissions page:
+/// a moderator holding `administer comments` who was not the site
+/// administrator got 403 from the comment API's PUT and DELETE. Those two
+/// names are still honoured, for a site that granted them by hand.
+///
+/// A comment is the viewer's own only when the viewer is signed in: an
+/// anonymous visitor and an imported anonymous comment can share the nil id.
+pub fn permission_allows(comment: &Comment, operation: &str, user: &UserContext) -> bool {
+    if user.is_admin() {
+        return true;
+    }
+    let is_own = user.authenticated && comment.author_id == user.id;
+    let moderates = user.has_permission("administer comments");
+    match operation {
+        "view" => user.has_permission("access content"),
+        "create" => user.has_permission("post comments"),
+        "edit" => {
+            (is_own && user.has_permission("edit own comments"))
+                || moderates
+                || user.has_permission("edit any comment")
         }
+        "delete" => {
+            (is_own && user.has_permission("delete own comments"))
+                || moderates
+                || user.has_permission("delete any comment")
+        }
+        _ => false,
     }
 }
 
@@ -377,5 +397,77 @@ mod tests {
         );
         // Unknown operations should be denied (the match falls through to Ok(false))
         assert!(!user.has_permission("unknown_operation"));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod permission_tests {
+    use super::*;
+
+    fn comment_by(author_id: Uuid) -> Comment {
+        Comment {
+            id: Uuid::now_v7(),
+            item_id: Uuid::now_v7(),
+            parent_id: None,
+            author_id,
+            body: "test".to_string(),
+            body_format: "plain_text".to_string(),
+            status: 1,
+            created: 0,
+            changed: 0,
+            depth: 0,
+        }
+    }
+
+    fn holding(id: Uuid, permissions: &[&str]) -> UserContext {
+        UserContext::authenticated(id, permissions.iter().map(|p| p.to_string()).collect())
+    }
+
+    /// The jibnotes 403: a moderator who is not the site administrator could
+    /// not edit or delete through the API, because the rule asked for two
+    /// permissions nothing declares.
+    #[test]
+    fn administer_comments_edits_and_deletes_any_comment() {
+        let moderator = holding(Uuid::now_v7(), &["administer comments"]);
+        let theirs = comment_by(Uuid::now_v7());
+        assert!(permission_allows(&theirs, "edit", &moderator));
+        assert!(permission_allows(&theirs, "delete", &moderator));
+    }
+
+    /// Own comments, each operation gated by its own permission.
+    #[test]
+    fn own_comments_need_their_own_permission() {
+        let me = Uuid::now_v7();
+        let mine = comment_by(me);
+        let theirs = comment_by(Uuid::now_v7());
+
+        let editor = holding(me, &["edit own comments"]);
+        assert!(permission_allows(&mine, "edit", &editor));
+        assert!(!permission_allows(&mine, "delete", &editor));
+        assert!(!permission_allows(&theirs, "edit", &editor));
+
+        let deleter = holding(me, &["delete own comments"]);
+        assert!(permission_allows(&mine, "delete", &deleter));
+        assert!(!permission_allows(&mine, "edit", &deleter));
+        assert!(!permission_allows(&theirs, "delete", &deleter));
+    }
+
+    /// Anonymous visitors share the nil id with an imported anonymous comment;
+    /// that does not make the comment theirs.
+    #[test]
+    fn an_anonymous_visitor_owns_no_comment() {
+        let mut anonymous = UserContext::anonymous();
+        anonymous.permissions = vec!["edit own comments".into(), "delete own comments".into()];
+        let anonymous_comment = comment_by(Uuid::nil());
+        assert!(!permission_allows(&anonymous_comment, "edit", &anonymous));
+        assert!(!permission_allows(&anonymous_comment, "delete", &anonymous));
+    }
+
+    #[test]
+    fn an_unknown_operation_is_refused() {
+        let me = Uuid::now_v7();
+        let user = holding(me, &["administer comments", "edit own comments"]);
+        assert!(!permission_allows(&comment_by(me), "publish", &user));
     }
 }

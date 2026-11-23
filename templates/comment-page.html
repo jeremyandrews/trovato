@@ -1,0 +1,67 @@
+{% extends "page.html" %}
+
+{# The comment pages: reply (/comment/reply/{item}[/{parent}]), edit
+   (/comment/{id}/edit) and the delete confirmation (/comment/{id}/delete).
+   Rendered by routes::comment; `mode` says which. A theme overrides all three
+   with one comment-page.html. #}
+
+{% block content %}
+<div class="comment-page comment-page--{{ mode }}">
+    <h1>{{ page_title }}</h1>
+    <p class="comment-page__item">On <a href="{{ item_path }}">{{ item_title }}</a></p>
+
+    {% if comment %}
+    <article class="comment" id="comment-{{ comment.id }}">
+        <header class="comment__header">
+            <span class="comment__author">{{ comment.author_name | default(value="Anonymous") }}</span>
+            <time class="comment__date" datetime="{{ comment.created }}">{{ comment.created | date(format="%B %d, %Y at %H:%M") }}</time>
+        </header>
+        <div class="comment__body">
+            {{ comment.body_html | safe }} {# SAFE: FilterPipeline::for_format_safe output — render_comment_body sanitizes by the comment's text format #}
+        </div>
+    </article>
+    {% endif %}
+
+    {% if errors %}
+    <div class="messages messages--error" role="alert">
+        {% for error in errors %}<p>{{ error }}</p>{% endfor %}
+    </div>
+    {% endif %}
+
+    {% if mode == "reply" %}
+    <form class="comment-form" method="post" action="/api/v1/item/{{ item_id }}/comments">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <input type="hidden" name="parent_id" value="{{ parent_id | default(value='') }}">
+        <div class="form-group">
+            <label for="comment-body">Comment</label>
+            <textarea id="comment-body" name="body" rows="8" required></textarea>
+        </div>
+        <div class="form-actions">
+            <button type="submit" class="button button--primary">Save</button>
+            <a href="{{ item_path }}#comments" class="button">Cancel</a>
+        </div>
+    </form>
+    {% elif mode == "edit" %}
+    <form class="comment-form" method="post" action="/comment/{{ comment.id }}/edit">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <div class="form-group">
+            <label for="comment-body">Comment</label>
+            <textarea id="comment-body" name="body" rows="8" required>{{ body }}</textarea>
+        </div>
+        <div class="form-actions">
+            <button type="submit" class="button button--primary">Save</button>
+            <a href="{{ item_path }}#comment-{{ comment.id }}" class="button">Cancel</a>
+        </div>
+    </form>
+    {% elif mode == "delete" %}
+    <form class="comment-delete-form" method="post" action="/comment/{{ comment.id }}/delete">
+        <input type="hidden" name="_csrf" value="{{ csrf_token }}">
+        <p>Are you sure you want to delete this comment? Any replies to it will be deleted too. This action cannot be undone.</p>
+        <div class="form-actions">
+            <button type="submit" class="button button--danger">Delete</button>
+            <a href="{{ item_path }}#comment-{{ comment.id }}" class="button">Cancel</a>
+        </div>
+    </form>
+    {% endif %}
+</div>
+{% endblock %}

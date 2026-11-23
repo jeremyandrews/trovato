@@ -3,7 +3,7 @@
 //! Provides endpoints for viewing, creating, and moderating comments on content items.
 
 use axum::{
-    Json,
+    Json, Router,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
 };
@@ -780,6 +780,8 @@ pub(crate) async fn render_thread(
         }
     }
 
+    // Edit and Delete links where the pages behind them would let the viewer
+    // in, decided from the permissions already loaded: no query per comment.
     let rendered: Vec<serde_json::Value> = thread
         .iter()
         .map(|comment| {
@@ -789,6 +791,8 @@ pub(crate) async fn render_thread(
                 "created": comment.created,
                 "author_name": names.get(&comment.author_id),
                 "body_html": render_comment_body(comment),
+                "can_edit": crate::services::comment::permission_allows(comment, "edit", viewer),
+                "can_delete": crate::services::comment::permission_allows(comment, "delete", viewer),
             })
         })
         .collect();
@@ -826,6 +830,427 @@ pub(crate) async fn render_thread(
             tracing::warn!(error = %e, "failed to render the comment thread");
             String::new()
         })
+}
+
+// =============================================================================
+// Comment pages: reply, edit own, delete own
+// =============================================================================
+
+/// The form body of the edit and delete pages.
+#[derive(Debug, Deserialize)]
+pub struct CommentPageForm {
+    /// CSRF token, from the hidden `_csrf` input.
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+    /// The new comment text (the edit page only).
+    #[serde(default)]
+    pub body: String,
+}
+
+/// What a comment page is about: the item, and the address it is read at.
+struct PageTarget {
+    item: crate::models::Item,
+    item_path: String,
+}
+
+/// Load an item the viewer may see, or the 404 a missing one gets.
+///
+/// Denied and missing answer alike, as the item page does, so a comment page
+/// cannot be used to learn that an unpublished item exists.
+async fn viewable_item(
+    state: &AppState,
+    viewer: &crate::tap::UserContext,
+    item_id: Uuid,
+) -> Result<PageTarget, axum::response::Response> {
+    use crate::routes::helpers::{render_not_found, render_server_error};
+    let item = match state.items().load(item_id).await {
+        Ok(Some(item)) => item,
+        Ok(None) => return Err(render_not_found()),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load item for a comment page");
+            return Err(render_server_error("Failed to load the item"));
+        }
+    };
+    if !state
+        .items()
+        .check_access(&item, "view", viewer)
+        .await
+        .unwrap_or(false)
+    {
+        return Err(render_not_found());
+    }
+    let item_path = item_path_for(state, item.id).await;
+    Ok(PageTarget { item, item_path })
+}
+
+/// Load a comment the viewer may see on an item they may see.
+///
+/// A comment that is not published is seen only by its author and a
+/// moderator, the rule [`get_comment`] applies.
+async fn viewable_comment(
+    state: &AppState,
+    viewer: &crate::tap::UserContext,
+    id: Uuid,
+) -> Result<(Comment, PageTarget), axum::response::Response> {
+    use crate::routes::helpers::{render_not_found, render_server_error};
+    let comment = match state.comments().load(id).await {
+        Ok(Some(comment)) => comment,
+        Ok(None) => return Err(render_not_found()),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load comment for a comment page");
+            return Err(render_server_error("Failed to load the comment"));
+        }
+    };
+    let target = viewable_item(state, viewer, comment.item_id).await?;
+    if comment.status != CommentStatus::Published.as_i16() {
+        let is_author = viewer.authenticated && viewer.id == comment.author_id;
+        if !is_author && !viewer.can("administer comments") {
+            return Err(render_not_found());
+        }
+    }
+    Ok((comment, target))
+}
+
+/// A comment as the comment pages show it: author, date and rendered body.
+async fn comment_for_page(state: &AppState, comment: &Comment) -> serde_json::Value {
+    let author_name = state
+        .users()
+        .find_by_id(comment.author_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.name);
+    serde_json::json!({
+        "id": comment.id,
+        "created": comment.created,
+        "author_name": author_name,
+        "body_html": render_comment_body(comment),
+    })
+}
+
+/// Render `comment-page.html` inside the site theme.
+///
+/// One template for the three pages, switched on `mode`, so a theme overrides
+/// all three in one place.
+async fn render_comment_page(
+    state: &AppState,
+    session: &Session,
+    path: &str,
+    status: StatusCode,
+    mut context: tera::Context,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    crate::routes::helpers::inject_site_context(state, session, &mut context, path).await;
+    let template = state
+        .theme()
+        .resolve_template(&["comment-page"])
+        .unwrap_or_else(|| "comment-page.html".to_string());
+    match state.theme().tera().render(&template, &context) {
+        Ok(html) => (status, axum::response::Html(html)).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to render a comment page");
+            crate::routes::helpers::render_server_error("Failed to render the page")
+        }
+    }
+}
+
+/// The refusal a signed-in viewer gets for a comment page they may not use.
+fn comment_page_forbidden(message: &str) -> axum::response::Response {
+    crate::routes::helpers::render_forbidden(message)
+}
+
+/// The reply form for an item, or for one comment on it.
+///
+/// GET /comment/reply/{item_id} and GET /comment/reply/{item_id}/{parent_id}
+///
+/// A page of its own, as Drupal's `comment/reply/<nid>` is: the item page's
+/// Reply link leads here, so replying works without JavaScript and an old
+/// link to the reply form still has somewhere to go. The form posts to the
+/// comment route, which redirects back to the item.
+async fn reply_page(
+    state: &AppState,
+    session: &Session,
+    item_id: Uuid,
+    parent_id: Option<Uuid>,
+) -> axum::response::Response {
+    let viewer = crate::routes::item::get_user_context(session, state).await;
+    let path = match parent_id {
+        Some(parent) => format!("/comment/reply/{item_id}/{parent}"),
+        None => format!("/comment/reply/{item_id}"),
+    };
+    if !viewer.authenticated {
+        // Signed out: the login form, which brings the visitor back here.
+        return axum::response::IntoResponse::into_response(axum::response::Redirect::to(
+            &format!("/user/login?destination={}", urlencoding::encode(&path)),
+        ));
+    }
+    let target = match viewable_item(state, &viewer, item_id).await {
+        Ok(target) => target,
+        Err(refusal) => return refusal,
+    };
+    if !viewer.can("post comments") {
+        return comment_page_forbidden("You are not authorized to post comments.");
+    }
+    let parent = match parent_id {
+        Some(parent_id) => match viewable_comment(state, &viewer, parent_id).await {
+            Ok((parent, _)) if parent.item_id == item_id => Some(parent),
+            Ok(_) => return crate::routes::helpers::render_not_found(),
+            Err(refusal) => return refusal,
+        },
+        None => None,
+    };
+
+    let mut context = tera::Context::new();
+    context.insert("mode", "reply");
+    context.insert(
+        "page_title",
+        if parent.is_some() {
+            "Reply to comment"
+        } else {
+            "Add new comment"
+        },
+    );
+    if let Some(parent) = &parent {
+        context.insert("comment", &comment_for_page(state, parent).await);
+    }
+    if let Some(parent_id) = parent_id {
+        context.insert("parent_id", &parent_id);
+    }
+    context.insert("item_id", &item_id);
+    context.insert("item_title", &target.item.title);
+    context.insert("item_path", &target.item_path);
+    context.insert(
+        "csrf_token",
+        &crate::form::csrf::generate_csrf_token(session).await,
+    );
+    render_comment_page(state, session, &path, StatusCode::OK, context).await
+}
+
+async fn reply_to_item(
+    State(state): State<AppState>,
+    session: Session,
+    Path(item_id): Path<Uuid>,
+) -> axum::response::Response {
+    reply_page(&state, &session, item_id, None).await
+}
+
+async fn reply_to_comment(
+    State(state): State<AppState>,
+    session: Session,
+    Path((item_id, parent_id)): Path<(Uuid, Uuid)>,
+) -> axum::response::Response {
+    reply_page(&state, &session, item_id, Some(parent_id)).await
+}
+
+/// The signed-in viewer and a comment they may perform `operation` on, or the
+/// page that refuses them.
+async fn comment_for_operation(
+    state: &AppState,
+    session: &Session,
+    id: Uuid,
+    operation: &str,
+) -> Result<(crate::tap::UserContext, Comment, PageTarget), axum::response::Response> {
+    let user = crate::routes::helpers::require_login(state, session).await?;
+    let viewer = user_context_for(state, &user).await;
+    let (comment, target) = viewable_comment(state, &viewer, id).await?;
+    let allowed = state
+        .comments()
+        .check_access(&comment, operation, &viewer)
+        .await
+        .unwrap_or(false);
+    if !allowed {
+        return Err(comment_page_forbidden(match operation {
+            "edit" => "You are not authorized to edit this comment.",
+            _ => "You are not authorized to delete this comment.",
+        }));
+    }
+    Ok((viewer, comment, target))
+}
+
+/// The edit page context, showing `body` in the form.
+async fn edit_context(
+    state: &AppState,
+    session: &Session,
+    comment: &Comment,
+    target: &PageTarget,
+    body: &str,
+    errors: &[&str],
+) -> tera::Context {
+    let mut context = tera::Context::new();
+    context.insert("mode", "edit");
+    context.insert("page_title", "Edit comment");
+    context.insert("comment", &comment_for_page(state, comment).await);
+    context.insert("body", body);
+    context.insert("errors", errors);
+    context.insert("item_title", &target.item.title);
+    context.insert("item_path", &target.item_path);
+    context.insert(
+        "csrf_token",
+        &crate::form::csrf::generate_csrf_token(session).await,
+    );
+    context
+}
+
+/// The edit form for a comment.
+///
+/// GET /comment/{id}/edit
+///
+/// For the comment's author with `edit own comments`, and for anyone with
+/// `administer comments`. The moderation screen's edit form, with its status
+/// control, stays the administrator's; this one edits the text only.
+async fn edit_page(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<Uuid>,
+) -> axum::response::Response {
+    let (_, comment, target) = match comment_for_operation(&state, &session, id, "edit").await {
+        Ok(found) => found,
+        Err(refusal) => return refusal,
+    };
+    let context = edit_context(&state, &session, &comment, &target, &comment.body, &[]).await;
+    render_comment_page(
+        &state,
+        &session,
+        &format!("/comment/{id}/edit"),
+        StatusCode::OK,
+        context,
+    )
+    .await
+}
+
+/// Save an edited comment.
+///
+/// POST /comment/{id}/edit
+async fn edit_submit(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<Uuid>,
+    axum::Form(form): axum::Form<CommentPageForm>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let (viewer, comment, target) = match comment_for_operation(&state, &session, id, "edit").await
+    {
+        Ok(found) => found,
+        Err(refusal) => return refusal,
+    };
+    if let Err(refusal) = crate::routes::helpers::require_csrf(&session, &form.csrf).await {
+        return refusal;
+    }
+    if form.body.trim().is_empty() {
+        let context = edit_context(
+            &state,
+            &session,
+            &comment,
+            &target,
+            &form.body,
+            &["Comment body cannot be empty."],
+        )
+        .await;
+        return render_comment_page(
+            &state,
+            &session,
+            &format!("/comment/{id}/edit"),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            context,
+        )
+        .await;
+    }
+    let input = UpdateComment {
+        body: Some(form.body),
+        body_format: None,
+        status: None,
+    };
+    match state.comments().update(id, input, &viewer).await {
+        Ok(Some(_)) => axum::response::Redirect::to(&format!(
+            "{}?comment=updated#comment-{id}",
+            target.item_path
+        ))
+        .into_response(),
+        Ok(None) => crate::routes::helpers::render_not_found(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to update comment");
+            crate::routes::helpers::render_server_error("Failed to update the comment")
+        }
+    }
+}
+
+/// The confirmation page before a comment is deleted.
+///
+/// GET /comment/{id}/delete
+///
+/// For the comment's author with `delete own comments`, and for anyone with
+/// `administer comments`. Deleting takes the comment's replies with it, as
+/// Drupal's does, and the page says so.
+async fn delete_page(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<Uuid>,
+) -> axum::response::Response {
+    let (_, comment, target) = match comment_for_operation(&state, &session, id, "delete").await {
+        Ok(found) => found,
+        Err(refusal) => return refusal,
+    };
+    let mut context = tera::Context::new();
+    context.insert("mode", "delete");
+    context.insert("page_title", "Delete comment");
+    context.insert("comment", &comment_for_page(&state, &comment).await);
+    context.insert("item_title", &target.item.title);
+    context.insert("item_path", &target.item_path);
+    context.insert(
+        "csrf_token",
+        &crate::form::csrf::generate_csrf_token(&session).await,
+    );
+    render_comment_page(
+        &state,
+        &session,
+        &format!("/comment/{id}/delete"),
+        StatusCode::OK,
+        context,
+    )
+    .await
+}
+
+/// Delete a comment, once confirmed.
+///
+/// POST /comment/{id}/delete
+async fn delete_submit(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<Uuid>,
+    axum::Form(form): axum::Form<CommentPageForm>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let (viewer, _, target) = match comment_for_operation(&state, &session, id, "delete").await {
+        Ok(found) => found,
+        Err(refusal) => return refusal,
+    };
+    if let Err(refusal) = crate::routes::helpers::require_csrf(&session, &form.csrf).await {
+        return refusal;
+    }
+    match state.comments().delete(id, &viewer).await {
+        Ok(true) => {
+            axum::response::Redirect::to(&format!("{}?comment=deleted#comments", target.item_path))
+                .into_response()
+        }
+        Ok(false) => crate::routes::helpers::render_not_found(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to delete comment");
+            crate::routes::helpers::render_server_error("Failed to delete the comment")
+        }
+    }
+}
+
+/// The comment pages, served while `trovato_comments` is enabled.
+pub fn router() -> Router<AppState> {
+    use axum::routing::get;
+    Router::new()
+        .route("/comment/reply/{item_id}", get(reply_to_item))
+        .route(
+            "/comment/reply/{item_id}/{parent_id}",
+            get(reply_to_comment),
+        )
+        .route("/comment/{id}/edit", get(edit_page).post(edit_submit))
+        .route("/comment/{id}/delete", get(delete_page).post(delete_submit))
 }
 
 // =============================================================================

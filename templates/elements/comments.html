@@ -10,6 +10,10 @@
     <p class="message message--warning comments__notice">Your comment was submitted and is awaiting review.</p>
     {% elif comment_outcome == "posted" %}
     <p class="message message--success comments__notice">Your comment was posted.</p>
+    {% elif comment_outcome == "updated" %}
+    <p class="message message--success comments__notice">Your comment has been updated.</p>
+    {% elif comment_outcome == "deleted" %}
+    <p class="message message--success comments__notice">The comment and all its replies have been deleted.</p>
     {% elif comment_outcome == "error" %}
     <p class="message message--error comments__notice">Your comment could not be posted. Please try again.</p>
     {% endif %}
@@ -26,9 +30,19 @@
                 {{ comment.body_html | safe }} {# SAFE: FilterPipeline::for_format_safe output — render_comment_body sanitizes by the comment's text format before it reaches here #}
             </div>
             <footer class="comment__footer">
+                {# Each link is a page of its own, so it works without JavaScript;
+                   comment-reply.js turns Reply into the form below instead. #}
+                <ul class="comment__links links inline">
                 {% if can_reply %}
-                <a href="#comment-form" class="comment__reply-link" data-parent-id="{{ comment.id }}">Reply</a>
+                <li><a href="/comment/reply/{{ item_id }}/{{ comment.id }}" class="comment__reply-link" data-parent-id="{{ comment.id }}">Reply</a></li>
                 {% endif %}
+                {% if comment.can_edit %}
+                <li><a href="/comment/{{ comment.id }}/edit" class="comment__edit-link">Edit</a></li>
+                {% endif %}
+                {% if comment.can_delete %}
+                <li><a href="/comment/{{ comment.id }}/delete" class="comment__delete-link">Delete</a></li>
+                {% endif %}
+                </ul>
             </footer>
         </article>
         {% endfor %}

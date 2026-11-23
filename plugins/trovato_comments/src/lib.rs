@@ -11,6 +11,7 @@ pub fn tap_perm() -> Vec<PermissionDefinition> {
         PermissionDefinition::new("administer comments", "Administer comments"),
         PermissionDefinition::new("post comments", "Post comments"),
         PermissionDefinition::new("edit own comments", "Edit own comments"),
+        PermissionDefinition::new("delete own comments", "Delete own comments"),
         PermissionDefinition::new("skip comment approval", "Skip comment approval"),
     ]
 }
@@ -31,9 +32,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn perm_returns_four_permissions() {
+    fn perm_returns_five_permissions() {
         let perms = __inner_tap_perm();
-        assert_eq!(perms.len(), 4);
+        assert_eq!(perms.len(), 5);
     }
 
     #[test]
