@@ -866,6 +866,16 @@ pub struct PagerConfig {
     /// Whether to show total count.
     #[serde(default = "default_true")]
     pub show_count: bool,
+
+    /// Count `?page=` from 0, the way Drupal's pager did: `?page=1` is the
+    /// second page and the first page's link carries no `?page=` at all.
+    ///
+    /// For a gather that replaces a Drupal listing, so every paged link the old
+    /// site published lands on the same items. Off by default, and nothing
+    /// turns it on but the gather's own definition: a gather that has always
+    /// counted from 1 keeps its links (B160).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub zero_based: bool,
 }
 
 fn default_true() -> bool {
@@ -878,6 +888,7 @@ impl Default for PagerConfig {
             enabled: true,
             style: PagerStyle::default(),
             show_count: true,
+            zero_based: false,
         }
     }
 }

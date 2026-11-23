@@ -116,6 +116,7 @@ async fn seed_tutorial_data(app: &'static common::TestApp) {
                                 enabled: true,
                                 style: PagerStyle::Full,
                                 show_count: true,
+                                zero_based: false,
                             },
                             empty_text: Some("No conferences found.".to_string()),
                             header: None,

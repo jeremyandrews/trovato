@@ -135,6 +135,11 @@ pub struct ExecuteParams {
     /// request.
     #[serde(skip)]
     feeds: Vec<crate::routes::feed::FeedLink>,
+    /// Where pager links and the filter form point, when that is not the
+    /// `base_path` the page is rendered at: the alias a visitor reached a
+    /// gather with no `canonical_url` by. Never from the request.
+    #[serde(skip)]
+    link_base: Option<String>,
 }
 
 impl ExecuteParams {
@@ -148,6 +153,7 @@ impl ExecuteParams {
             stage,
             filters,
             feeds: Vec::new(),
+            link_base: None,
         }
     }
 
@@ -156,6 +162,84 @@ impl ExecuteParams {
         self.feeds = feeds;
         self
     }
+
+    /// Point pager links and the filter form at `path` (see `link_base`).
+    pub fn with_link_base(mut self, path: Option<String>) -> Self {
+        self.link_base = path;
+        self
+    }
+}
+
+/// `?page=` as the request gave it, before any default: whether it was given
+/// at all decides the page of a zero-based pager.
+#[derive(Deserialize)]
+struct RawPage {
+    page: Option<String>,
+}
+
+/// The 1-based page a request's `?page=` names in a listing with this pager.
+///
+/// Counted from 1, as Trovato always has (`?page=2` is the second page), or,
+/// for a gather that replaces a Drupal listing ([`PagerConfig::zero_based`]),
+/// from 0 as Drupal did (`?page=1` is the second page). Absent or unreadable,
+/// it is the first page.
+pub(crate) fn requested_page(pager: &crate::gather::types::PagerConfig, raw: Option<&str>) -> u32 {
+    let given = raw.and_then(|v| v.trim().parse::<u32>().ok());
+    if pager.zero_based {
+        given.map_or(1, |n| n.saturating_add(1))
+    } else {
+        given.unwrap_or(1).max(1)
+    }
+}
+
+/// The address of page `page` (1-based) of a listing whose links start with
+/// `prefix` (from [`build_page_url_prefix`], ending in `?` or `&`).
+///
+/// Counted from 1 this is `prefix` + `page=N`, exactly what Trovato has always
+/// published. Zero-based, it is the Drupal address: the first page carries no
+/// `?page=`, page N is `page=N-1`.
+fn page_href(prefix: &str, page: u32, zero_based: bool) -> String {
+    if !zero_based {
+        return format!("{prefix}page={page}");
+    }
+    if page <= 1 {
+        prefix.trim_end_matches(['?', '&']).to_string()
+    } else {
+        format!("{prefix}page={}", page - 1)
+    }
+}
+
+/// The `pager` a gather template reads.
+///
+/// `pages` (numbers and `"..."`) and `page_url_prefix` are kept for templates
+/// written against them; the URLs beside them (`links`, `first_url`,
+/// `prev_url`, `next_url`, `last_url`) are the ones to link with, because only
+/// they know whether the pager counts from 0.
+fn pager_context(prefix: &str, current: u32, total: u32, zero_based: bool) -> serde_json::Value {
+    let pages = compute_page_list(current, total);
+    let links: Vec<serde_json::Value> = pages
+        .iter()
+        .map(|p| match p.as_u64().and_then(|n| u32::try_from(n).ok()) {
+            Some(n) => serde_json::json!({
+                "page": n,
+                "url": page_href(prefix, n, zero_based),
+                "current": n == current,
+            }),
+            None => serde_json::json!({ "page": "...", "ellipsis": true }),
+        })
+        .collect();
+    serde_json::json!({
+        "current_page": current,
+        "total_pages": total,
+        "page_url_prefix": prefix,
+        "pages": pages,
+        "links": links,
+        "zero_based": zero_based,
+        "first_url": page_href(prefix, 1, zero_based),
+        "last_url": page_href(prefix, total, zero_based),
+        "prev_url": (current > 1).then(|| page_href(prefix, current - 1, zero_based)),
+        "next_url": (current < total).then(|| page_href(prefix, current + 1, zero_based)),
+    })
 }
 
 fn default_page() -> u32 {
@@ -371,18 +455,26 @@ async fn render_query_html(
     Extension(resolved_lang): Extension<ResolvedLanguage>,
     requested: Option<Extension<crate::middleware::RequestedPath>>,
     Path(query_id): Path<String>,
-    Query(params): Query<ExecuteParams>,
+    Query(mut params): Query<ExecuteParams>,
+    Query(raw_page): Query<RawPage>,
 ) -> Response {
+    let query = state.gather().get_query(&query_id);
+    if let Some(ref query) = query {
+        params.page = requested_page(&query.display.pager, raw_page.page.as_deref());
+    }
     // Use canonical_url from the query definition when available so that pager
     // links and filter form actions stay on the friendly URL (e.g. /conferences)
     // rather than /gather/{query_id}.
-    let canonical = state
-        .gather()
-        .get_query(&query_id)
-        .and_then(|q| q.display.canonical_url);
+    let canonical = query.and_then(|q| q.display.canonical_url);
+    let requested_path = requested.map(|Extension(r)| r.0);
+    // Without one, they stay on the address the visitor used: a gather reached
+    // at its alias `/blog` pages to `/blog?page=2`, not to
+    // `/gather/blog_listing?page=2` (B160).
+    if canonical.is_none() {
+        params = params.with_link_base(requested_path.clone());
+    }
     let base_path = canonical.unwrap_or_else(|| format!("/gather/{query_id}"));
     let language = language_for_context(&resolved_lang, state.default_language());
-    let requested_path = requested.map(|Extension(r)| r.0);
     match execute_and_render(
         &state,
         &session,
@@ -399,6 +491,7 @@ async fn render_query_html(
         Err(GatherPageError::NotFound) => {
             AppError::with_status(StatusCode::NOT_FOUND, "query not found").into_response()
         }
+        Err(GatherPageError::PastTheEnd) => super::helpers::render_not_found(),
         Err(GatherPageError::Failed(error)) => {
             AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, error).into_response()
         }
@@ -414,6 +507,10 @@ pub enum GatherPageError {
     Denied(GatherDenied),
     /// The query failed; the message says why.
     Failed(String),
+    /// The page asked for is past the listing's last page: a `404`, because
+    /// the page does not exist, and an empty `200` would be a soft 404 to a
+    /// search engine (B160).
+    PastTheEnd,
 }
 
 /// Execute a gather query and render it as an HTML page.
@@ -527,6 +624,13 @@ pub async fn execute_and_render(
         .await
         .map_err(|e| GatherPageError::Failed(e.to_string()))?;
 
+    // A page past the last one does not exist. Not on the front page, whose
+    // 404 would fall back to the stock front page instead.
+    if result.page > 1 && result.page > result.total_pages && !super::front::is_front_page_request()
+    {
+        return Err(GatherPageError::PastTheEnd);
+    }
+
     // Collect filter values for template context
     let filter_values: HashMap<String, String> = params
         .filters
@@ -541,7 +645,7 @@ pub async fn execute_and_render(
     let link_base = if super::front::is_front_page_request() {
         requested_path.unwrap_or("/")
     } else {
-        base_path
+        params.link_base.as_deref().unwrap_or(base_path)
     };
 
     // Render gather content (either via theme template or fallback HTML)
@@ -677,15 +781,14 @@ fn render_gather_with_theme(
 
     // Pager info
     if query.display.pager.enabled && result.total_pages > 1 {
-        let page_url_prefix = build_page_url_prefix(base_path, filter_values);
         context.insert(
             "pager",
-            &serde_json::json!({
-                "current_page": result.page,
-                "total_pages": result.total_pages,
-                "page_url_prefix": page_url_prefix,
-                "pages": compute_page_list(result.page, result.total_pages),
-            }),
+            &pager_context(
+                &build_page_url_prefix(base_path, filter_values),
+                result.page,
+                result.total_pages,
+                query.display.pager.zero_based,
+            ),
         );
     }
 
@@ -885,7 +988,10 @@ fn build_page_url_prefix(base_path: &str, filter_values: &HashMap<String, String
         .iter()
         .filter(|(k, v)| !["page", "stage"].contains(&k.as_str()) && !v.is_empty())
         .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
-        .collect();
+        .collect::<Vec<_>>();
+    // Sorted, so the same listing always links to the same address.
+    let mut active = active;
+    active.sort();
 
     let joined = active.join("&");
     if active.is_empty() {
@@ -1221,19 +1327,18 @@ fn render_gather_content_html(
         }
 
         let prefix = build_page_url_prefix(base_path, filter_values);
+        let zero_based = query.display.pager.zero_based;
         if result.has_prev {
             html.push_str(&format!(
-                "<a href=\"{}page={}\">Previous</a>\n",
-                prefix,
-                result.page - 1
+                "<a href=\"{}\">Previous</a>\n",
+                escape_html(&page_href(&prefix, result.page - 1, zero_based))
             ));
         }
 
         if result.has_next {
             html.push_str(&format!(
-                "<a href=\"{}page={}\">Next</a>\n",
-                prefix,
-                result.page + 1
+                "<a href=\"{}\">Next</a>\n",
+                escape_html(&page_href(&prefix, result.page + 1, zero_based))
             ));
         }
 

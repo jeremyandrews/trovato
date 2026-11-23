@@ -220,13 +220,19 @@ async fn handle_gather_route(
     let mut all_filters: HashMap<String, String> = extra_params;
     all_filters.extend(resolved_params);
     all_filters.remove("format"); // Don't pass format to the query engine
-
-    // Extract page from query params, clamping to minimum 1.
-    let page = all_filters
-        .remove("page")
-        .and_then(|v| v.parse::<u32>().ok())
-        .unwrap_or(1)
-        .max(1);
+    // The page, counted as the gather's pager counts (from 0 for a gather
+    // that replaces a Drupal listing). The JSON form is the API's, from 1.
+    let query = state.gather().get_query(&config.query_id);
+    let raw_page = all_filters.remove("page");
+    let page = match (&query, wants_json) {
+        (Some(query), false) => {
+            super::gather::requested_page(&query.display.pager, raw_page.as_deref())
+        }
+        _ => raw_page
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(1)
+            .max(1),
+    };
 
     // Gather route aliases always show Live content — ignore any user-supplied
     // stage parameter to prevent anonymous access to internal stages.
@@ -236,9 +242,7 @@ async fn handle_gather_route(
     // The page advertises the feeds of this gather that take the same
     // argument it was reached with (`/blog/author/jeremy` →
     // `/blog/author/jeremy/feed.xml`).
-    let feeds = state
-        .gather()
-        .get_query(&config.query_id)
+    let feeds = query
         .map(|query| crate::routes::feed::argument_feed_links(&query, &segments))
         .unwrap_or_default();
     let params = ExecuteParams::new(page, stage, all_filters).with_feeds(feeds);
@@ -304,7 +308,7 @@ async fn handle_gather_route(
         {
             Ok(Html(html)) => Html(html).into_response(),
             Err(GatherPageError::Denied(denied)) => super::gather::gather_denied_html(&denied),
-            Err(GatherPageError::NotFound) => render_not_found(),
+            Err(GatherPageError::NotFound | GatherPageError::PastTheEnd) => render_not_found(),
             Err(GatherPageError::Failed(error)) => render_server_error(&error),
         }
     } // end else (HTML branch)
