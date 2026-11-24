@@ -350,6 +350,16 @@ fn no_secret_reaches_any_telemetry() {
             metrics_body.contains("method=\"_OTHER\""),
             "the invented method was not counted as _OTHER"
         );
+        // And it was logged and exported, as `_OTHER`, so the checks below
+        // that its own text is absent are not vacuous.
+        assert!(
+            output.contains("method=_OTHER"),
+            "no log line for the invented method"
+        );
+        assert!(
+            spans.iter().any(|s| s.name.starts_with("_OTHER ")),
+            "no exported span for the invented method"
+        );
 
         // The capture is not vacuous: it saw the request spans, the slow
         // request lines with their breakdown, and real counts.

@@ -61,7 +61,7 @@ accept. There is no gRPC.
 
 | Variable | Default | What it does |
 |---|---|---|
-| `TRACING_EXPORT` | `off` | `otlp` to export. Anything else stops the server at startup, so a typo does not quietly leave export off. |
+| `TRACING_EXPORT` | `off` | `otlp` to export. Anything else stops every `trovato` command at startup (the server and the others alike), so a typo does not quietly leave export off. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://localhost:4318` | The collector's base URL; `/v1/traces` is added. |
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | | The full traces URL, when it is not `<base>/v1/traces`. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | | Headers for every export, `key=value,key=value`: a hosted backend's API key goes here. |
@@ -118,8 +118,8 @@ Export off is the same as before, within the noise between two sets. Export
 on, tracing everything, costs at most a couple of milliseconds a request and
 often nothing measurable: the spans are built on the request's thread and
 encoded and sent on the batch thread. With sampling, a request left out
-builds its spans but records nothing in them, and its statements are not
-normalised, so most of the cost goes with the share left out.
+builds its spans and their first fields but records nothing after that, and
+its statements are not normalised, so most of the cost goes with the share left out.
 
 ## Metrics
 

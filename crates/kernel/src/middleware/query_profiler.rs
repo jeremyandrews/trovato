@@ -155,7 +155,7 @@ pub async fn track_request_timing(
     next: Next,
 ) -> Response {
     let start = Instant::now();
-    let method = request.method().clone();
+    let method = method_label(request.method());
     // The router has matched by the time a `Router::layer` middleware runs, so
     // the template is already in the extensions.
     let route = request
@@ -175,9 +175,9 @@ pub async fn track_request_timing(
         "http.request",
         // A backend's name for the span (`GET /item/{id}`); field values are
         // only evaluated when the span is enabled.
-        otel.name = %format_args!("{} {route_label}", method_label(&method)),
+        otel.name = %format_args!("{} {route_label}", method),
         otel.kind = "server",
-        http.request.method = method_label(&method),
+        http.request.method = method,
         http.route = route_label,
         http.response.status_code = Empty,
         trovato.db.queries = Empty,
@@ -200,12 +200,7 @@ pub async fn track_request_timing(
     span.record("trovato.plugin.calls", snapshot.plugin_calls);
 
     let metrics = state.metrics();
-    metrics.record_request(
-        method_label(&method),
-        route_label,
-        status,
-        elapsed.as_secs_f64(),
-    );
+    metrics.record_request(method, route_label, status, elapsed.as_secs_f64());
     metrics.record_request_queries(route_label, snapshot.queries);
 
     let detail = shows_detail(&state, &profile).await;

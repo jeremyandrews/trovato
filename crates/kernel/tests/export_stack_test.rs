@@ -69,8 +69,10 @@ fn a_statement_is_exported_under_its_request_and_only_when_sampled() {
     );
 
     tracing::dispatcher::with_default(&dispatch, || {
-        // Outside any request there is no trace to join.
+        // Outside any request there is no trace to join: a statement there
+        // is not exported as a stray root of its own.
         assert!(export::sampled_parent().is_none());
+        in_a_request(sqlx_reports_the_statement);
 
         // A sampled request, with a span only the log sees inside it (as
         // `tower_http`'s is): the statement still finds the request.
@@ -88,7 +90,8 @@ fn a_statement_is_exported_under_its_request_and_only_when_sampled() {
     tracing::dispatcher::with_default(&dispatch, || {
         // A request sampling left out (here because its parent says so; the
         // ratio sampler's own decision is in `export`'s unit tests): a
-        // statement in it finds no parent, so it is not exported.
+        // statement in it finds no parent and is not exported. (That its text
+        // is then not even copied is not measured here.)
         let request = tracing::trace_span!(target: TARGET, "http.request", otel.name = "GET /y");
         let unsampled = SpanContext::new(
             TraceId::from(7_u128),

@@ -91,14 +91,13 @@ impl ExportSettings {
     }
 }
 
-/// The tracer the exporting layer and [`db_query`] share, once export is on.
-static TRACER: OnceLock<SdkTracer> = OnceLock::new();
-/// Its provider, kept to flush on shutdown.
-static PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
+/// The tracer the exporting layer and [`db_query`] share, and its provider,
+/// kept to flush on shutdown: set together, once export is on.
+static EXPORT: OnceLock<(SdkTracer, SdkTracerProvider)> = OnceLock::new();
 
 /// Whether spans are being exported.
 pub fn active() -> bool {
-    TRACER.get().is_some()
+    EXPORT.get().is_some()
 }
 
 /// Build the OTLP exporter `OTEL_EXPORTER_OTLP_ENDPOINT` (default
@@ -149,7 +148,7 @@ where
 {
     let tracer = provider.tracer("trovato");
     assert!(
-        TRACER.set(tracer.clone()).is_ok() && PROVIDER.set(provider).is_ok(),
+        EXPORT.set((tracer.clone(), provider)).is_ok(),
         "trace export is installed once"
     );
     tracing_opentelemetry::layer()
@@ -166,7 +165,7 @@ where
 /// collector takes them within `limit`, and dropped otherwise. Blocks; call
 /// it outside the async runtime's worker threads.
 pub fn shutdown(limit: Duration) {
-    if let Some(provider) = PROVIDER.get()
+    if let Some((_, provider)) = EXPORT.get()
         && let Err(e) = provider.shutdown_with_timeout(limit)
     {
         tracing::warn!(error = %e, "trace export did not shut down cleanly");
@@ -196,7 +195,7 @@ pub fn sampled_parent() -> Option<opentelemetry::Context> {
 /// fingerprint (`db.query.summary`), so no literal a `format!` put into the
 /// SQL reaches the backend. Does nothing with export off.
 pub fn db_query(parent: &opentelemetry::Context, elapsed: Duration, sql: &str, rows: Option<u64>) {
-    let Some(tracer) = TRACER.get() else {
+    let Some((tracer, _)) = EXPORT.get() else {
         return;
     };
     let end = SystemTime::now();
@@ -310,6 +309,8 @@ mod tests {
         assert_eq!(exported_at(1.0), 20, "ratio 1 must export every span");
     }
 
+    // No lib test may install export: it is set once per process, and this
+    // one relies on it being absent.
     #[test]
     fn a_statement_outside_export_is_not_exported() {
         // Export not installed in the lib tests: nothing to do, nothing panics.

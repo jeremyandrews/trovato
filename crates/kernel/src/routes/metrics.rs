@@ -24,7 +24,12 @@ async fn metrics(State(state): State<AppState>, request: Request) -> Response {
     if !crate::routes::health::is_operator(&request, state.runtime().metrics_token.as_deref()) {
         // Never stored: a cache in front must not hand an operator's answer
         // to the next caller, nor remember a refusal.
-        return (StatusCode::NOT_FOUND, [("cache-control", "no-store")]).into_response();
+        let mut refused = crate::routes::helpers::render_not_found();
+        refused.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
+        );
+        return refused;
     }
     // Update database pool gauges before encoding
     let pool = state.db();

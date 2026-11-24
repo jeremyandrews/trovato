@@ -88,6 +88,7 @@ pub fn outgoing_span(method: &str, url: &str) -> tracing::Span {
     tracing::trace_span!(
         target: TARGET,
         "http.client",
+        otel.kind = "client",
         http.request.method = method,
         server.address = %server_address(url),
         http.response.status_code = tracing::field::Empty,
@@ -167,7 +168,8 @@ pub fn http_trace_span<B>(request: &axum::http::Request<B>) -> tracing::Span {
     tracing::debug_span!(
         target: "tower_http::trace::make_span",
         "request",
-        method = method_label(request.method()),
+        // Displayed, as before, so the log still reads `method=GET`.
+        method = %method_label(request.method()),
         route = route,
         version = ?request.version(),
     )

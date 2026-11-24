@@ -70,6 +70,31 @@ fn metrics_answer_an_operator_and_nobody_else() {
         let (status, _) = scrape(&app, &[("forwarded", "for=203.0.113.9")]).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
 
+        // The refusal reads like any page that does not exist, so a prober
+        // cannot tell that `/metrics` is there.
+        let (_, refused) = scrape(&app, &[("x-forwarded-for", "203.0.113.9")]).await;
+        let missing = app
+            .request(
+                Request::get("/no-such-page-metrics-access-test")
+                    .header("x-forwarded-for", "203.0.113.9")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        let missing = to_bytes(missing.into_body(), usize::MAX).await.unwrap();
+        // Each answer carries its own request id; nothing else may differ.
+        let without_id = |body: &str| {
+            let mut json: serde_json::Value = serde_json::from_str(body).unwrap();
+            json.as_object_mut().unwrap().remove("request_id");
+            json
+        };
+        assert_eq!(
+            without_id(&refused),
+            without_id(&String::from_utf8_lossy(&missing)),
+            "the refusal stands out"
+        );
+
         // The token holder, from anywhere.
         let bearer = format!("Bearer {TOKEN}");
         let (status, body) = scrape(
