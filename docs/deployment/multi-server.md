@@ -50,6 +50,21 @@ changed. So a role revoked, a user blocked or an item edited on one server
 holds on every server within about 250 ms, plus the request that was already
 running.
 
+A write that does not go through a server (SQL run by hand, a restore, a
+script) bumps nothing, so servers keep serving their cached copies until each
+cache's time limit (`CACHE_TTL`, and five minutes for users, items and
+categories). To have them serve it at once, without a restart:
+
+```sh
+trovato cache clear                 # every kind
+trovato cache clear --kind items    # or only the ones the write touched
+```
+
+It runs anywhere with the site's `REDIS_URL`, and returns once every server
+has had time to clear (one second) ([command line reference](../cli-reference.md#trovato-cache-clear)).
+`trovato config import` and the other commands that write end with the same
+clear.
+
 If Redis cannot be read, each server logs one warning and its caches fall back
 to their own time limits until Redis answers again. When Redis restarts the
 hash starts again from nothing, which every server reads as a change and

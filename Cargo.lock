@@ -5584,6 +5584,7 @@ dependencies = [
  "regex",
  "reqwest 0.12.28",
  "reqwest 0.13.5",
+ "rustix",
  "sea-query",
  "serde",
  "serde_json",

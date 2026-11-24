@@ -15,8 +15,10 @@ and `trovato <command> --help` print the same, from the binary.
 | `trovato plugin enable <name>` / `disable <name>` | Change a plugin's stored status (servers apply it on restart). |
 | `trovato config export [<dir>] [--clean]` | Export configuration to YAML. |
 | `trovato config import [<dir>] [--dry-run]` | Import configuration from YAML. |
+| `trovato user create <user> --mail <address> [--role <role>]... [--blocked] [--no-password]` | Create an account, as the admin "Add user" form does; the password is read from stdin. |
 | `trovato user reset-password <user> [<password>]` | Set a password (read from stdin if omitted) and end the user's sessions. |
 | `trovato user role-add <user> <role>` / `role-remove <user> <role>` / `roles <user>` | Manage a user's roles. |
+| `trovato cache clear [--kind <kind>]...` | Tell every running server to drop its in-memory caches (all kinds, or the ones named). |
 | `trovato generate --items <N> --admin-password <PASSWORD>` | Write a deterministic test site of a given size (for performance tests and benchmarks). |
 
 ## `trovato migrate`
@@ -74,6 +76,75 @@ afterwards not ready until `trovato migrate` runs. Run it right after the
 enable.
 
 See [docs/deployment/upgrades.md](deployment/upgrades.md).
+
+## `trovato user create`
+
+```
+trovato user create <user> --mail <address> [--role <role>]... [--blocked] [--no-password]
+```
+
+Creates an account with the checks the admin "Add user" form makes, and writes
+it the way that form does: through the site's user service, so the enabled
+plugins see `tap_user_register` and the audit trail records the account, and
+each `--role` grant is audited as the form's role checkboxes are. The command
+builds the full server state to do that, the way `serve` starts, so it takes as
+long as a server's start.
+
+The password is read from one line of stdin, never from the command line:
+
+```sh
+printf '%s\n' "$NEW_PASSWORD" | trovato user create ada --mail ada@example.com --role editor
+```
+
+It must be 12 to 128 characters, as on the form. With `--no-password` nothing
+is read and the account has no password: it cannot sign in until
+`trovato user reset-password <user>` or a password reset sets one.
+`--blocked` creates the account blocked. The command never creates a superuser.
+
+At a terminal the password is not shown as it is typed.
+
+`--mail` is required and may not be empty, as on the form. The command exits 1
+and creates nothing when the name is empty, the address is missing or empty,
+either already belongs to an account (compared case-insensitively), the
+password is too short or too long, or a role does not exist; it prints every
+problem at once, in the form's words. Leaving out the name altogether is a usage
+error, which exits 2 as every command's usage errors do. An access rule blocking
+the name or address is a warning, as on the form, not a refusal.
+
+The account is written before its roles. If a role cannot be granted after all
+(it was deleted in between, or the database refused), the command still grants
+the others, then exits 1, saying the account exists and printing the
+`trovato user role-add` command for each role it is missing. Running
+`user create` again would only be refused, since the name is now taken.
+
+## `trovato cache clear`
+
+```
+trovato cache clear [--kind <kind>]...
+```
+
+Tells every running server to drop its in-memory caches, so a change written
+straight to the database (SQL, a restore, a script) is served on the next
+request instead of after the cache's time limit or a restart. With no `--kind`
+it clears every kind; `--kind` may be given more than once. The kinds are the
+fields of the Redis hash `cache:gen`: `permissions`, `users`, `items`,
+`field_access`, `content_types`, `categories`, `gather`, `redirects`,
+`locale`, `menus`, `text_formats`, `themes` and `site_config`. Clearing
+`site_config` also drops the search settings' copy in Redis.
+
+It adds one to each kind's counter in `cache:gen`; every server reads the hash
+every 250 ms and clears the caches whose counter changed
+([multi-server](deployment/multi-server.md#how-a-change-on-one-server-reaches-the-others)).
+The command then waits one second, four of those reads, before it returns, so
+a request made after it reads the database. A server that cannot reach Redis
+misses the bump and keeps its copies until their time limits.
+It connects only to Redis (`DATABASE_URL` must still be set, as for every
+command), and exits 1 when Redis cannot be reached. `config import`, `generate`
+and the `plugin` and `user` commands that write end with the same clear, of the
+kinds they may have written.
+
+Which plugins run is not a cache: enabling or disabling one still takes a
+restart.
 
 ## `trovato generate`
 
