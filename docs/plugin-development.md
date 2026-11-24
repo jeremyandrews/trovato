@@ -846,9 +846,37 @@ for user in users.iter().filter(|u| u.status == "active") {
 
 Look a digest's recipients up in batches of 100, not one at a time.
 
-ABI: a new function, `load-users`, in the existing `user-api` interface and a
-new manifest capability, `user_directory` (B73, after 0.104.0). No existing
-signature changed.
+`host::find_user_by_name` and `host::find_users_by_name_prefix` answer the
+same shape, by name instead of by id, so a plugin can resolve a name a person
+typed to the account it names — the groups plugin's "add member by name"
+could not do this before B179: it could only match names it had already seen
+in its own tables, so an account created straight on the site answered "no
+such user". Both need the same capability as `load_users`; no new manifest key.
+
+```rust
+// Exact match, case-insensitive the same way login matches a name.
+match host::find_user_by_name("jsmith") {
+    Ok(Some(user)) => { /* user.id, user.name, ... */ }
+    Ok(None) => { /* no such user */ }
+    Err(code) => { /* refused; see plugin-error-codes.md */ }
+}
+
+// A short, sorted list for an autocomplete widget as the plugin's user
+// types; at most 10 results, not caller-configurable.
+let matches = host::find_users_by_name_prefix("js")?;
+```
+
+Neither call filters a blocked account or the anonymous account out of its
+answer: the visibility rule is the one `load_users` already has — nothing
+beyond the `user_directory` capability gate itself, the same rule the
+kernel's own `/admin/people` listing uses for an administrator. A plugin that
+only wants to offer active accounts checks `user.status == "active"` itself,
+the same way the `load_users` example above does.
+
+ABI: `load-users` is in the existing `user-api` interface, with a new
+manifest capability, `user_directory` (B73, after 0.104.0). `find-user-by-name`
+and `find-users-by-name-prefix` are two more functions in the same interface,
+sharing that capability (B179, after 0.107.0). No existing signature changed.
 
 ### Mailing a Member
 

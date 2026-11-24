@@ -124,14 +124,18 @@ write or read fails and `-14` for a request that is not valid JSON.
 
 ## User Directory Errors
 
-Returned by `host::load_users` (`trovato:kernel/user-api` `load-users`, added by
-B73).
+Returned by `host::load_users`, `host::find_user_by_name` and
+`host::find_users_by_name_prefix` (`trovato:kernel/user-api` `load-users`,
+`find-user-by-name` and `find-users-by-name-prefix`; the first added by B73,
+the other two by B179).
 
 | Code | Constant | Meaning | Recovery |
 |------|----------|---------|----------|
 | -73 | `ERR_USER_DIRECTORY_DENIED` | The plugin does not declare `user_directory = true` under `[capabilities]` | Declare it, if the plugin needs to read about users it is not serving |
 | -74 | `ERR_USER_IDS_INVALID` | An id is not a user id (a UUID) | Pass user ids as the kernel gave them |
 | -75 | `ERR_USER_IDS_TOO_MANY` | More than 100 ids in one call | Split the batch |
+| -76 | `ERR_USER_NAME_INVALID` | `find-user-by-name`'s name was empty or longer than 255 characters | Pass a name within that range |
+| -77 | `ERR_USER_NAME_PREFIX_INVALID` | `find-users-by-name-prefix`'s prefix was empty or longer than 255 characters | Pass a prefix within that range |
 
 ## Mail to Member Errors
 

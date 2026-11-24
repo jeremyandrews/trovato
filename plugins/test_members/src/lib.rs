@@ -16,6 +16,16 @@ pub fn tap_menu() -> Vec<MenuRoute> {
     vec![
         // Public facts about users by id: `?ids=a,b,c`.
         MenuRoute::api("GET", "/test-members/users", "load_users").title("Load users"),
+        // The one account named `?name=`, or null.
+        MenuRoute::api("GET", "/test-members/find-by-name", "find_by_name")
+            .title("Find a user by name"),
+        // Up to 10 accounts whose name starts with `?prefix=`.
+        MenuRoute::api(
+            "GET",
+            "/test-members/find-by-name-prefix",
+            "find_by_name_prefix",
+        )
+        .title("Find users by name prefix"),
         // Mail one member: `?user_id=&subject=&body=`, or `&body_len=N` for a
         // body of N bytes too long to put in a URL. A GET with a side effect,
         // which only a test fixture may have: it keeps the test free of a
@@ -29,6 +39,8 @@ pub fn tap_menu() -> Vec<MenuRoute> {
 pub fn tap_api(request: ApiRequest) -> ApiResponse {
     match request.callback.as_str() {
         "load_users" => load_users(&request),
+        "find_by_name" => find_by_name(&request),
+        "find_by_name_prefix" => find_by_name_prefix(&request),
         "mail_user" => mail_user(&request),
         other => ApiResponse::error(404, &format!("no such callback: {other}")),
     }
@@ -40,6 +52,28 @@ fn load_users(request: &ApiRequest) -> ApiResponse {
     let ids = request.query.get("ids").cloned().unwrap_or_default();
     let ids: Vec<&str> = ids.split(',').filter(|id| !id.is_empty()).collect();
     let answer = match host::load_users(&ids) {
+        Ok(users) => serde_json::json!({ "users": users }),
+        Err(code) => serde_json::json!({ "code": code }),
+    };
+    ApiResponse::json(&answer).unwrap_or_else(|_| ApiResponse::error(500, "serialize failed"))
+}
+
+/// Look up the user named `?name=` and answer `{user}` (`null` for no match)
+/// or `{code}`.
+fn find_by_name(request: &ApiRequest) -> ApiResponse {
+    let name = request.query.get("name").cloned().unwrap_or_default();
+    let answer = match host::find_user_by_name(&name) {
+        Ok(user) => serde_json::json!({ "user": user }),
+        Err(code) => serde_json::json!({ "code": code }),
+    };
+    ApiResponse::json(&answer).unwrap_or_else(|_| ApiResponse::error(500, "serialize failed"))
+}
+
+/// Look up users whose name starts with `?prefix=` and answer `{users}` or
+/// `{code}`.
+fn find_by_name_prefix(request: &ApiRequest) -> ApiResponse {
+    let prefix = request.query.get("prefix").cloned().unwrap_or_default();
+    let answer = match host::find_users_by_name_prefix(&prefix) {
         Ok(users) => serde_json::json!({ "users": users }),
         Err(code) => serde_json::json!({ "code": code }),
     };

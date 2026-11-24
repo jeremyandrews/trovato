@@ -170,6 +170,36 @@ interface user-api {
     /// Added by B73, after 0.104.0: a new function in an existing interface
     /// and a new manifest capability; no existing signature changed.
     load-users: func(user-ids: list<string>) -> result<string, string>;
+
+    /// The one account named `name`, for a plugin that declares
+    /// `user_directory = true` under `[capabilities]` (the same grant
+    /// `load-users` needs; declaring `user-api` alone does not grant it).
+    ///
+    /// Answers the same `{id, name, status, timezone, language, created}`
+    /// shape as `load-users`, for the account whose name matches `name`
+    /// case-insensitively — the same match the kernel's own login makes — or
+    /// JSON `null` when no account has that name. `name` must be 1 to 255
+    /// characters.
+    ///
+    /// No status or identity filter beyond the capability gate: a blocked
+    /// account or the anonymous account answers like any other.
+    ///
+    /// Added by B179, after 0.107.0: a new function in an existing interface
+    /// and no new manifest capability; no existing signature changed.
+    find-user-by-name: func(name: string) -> result<string, string>;
+
+    /// Up to 10 accounts whose name starts with `prefix`, for a plugin that
+    /// declares `user_directory = true` under `[capabilities]`: a short list
+    /// an autocomplete widget can offer as a person types, not a directory
+    /// dump.
+    ///
+    /// Answers a JSON array in the same shape as `load-users`, sorted by
+    /// name, matching case-insensitively. `prefix` must be 1 to 255
+    /// characters; the same visibility rule as `find-user-by-name` applies.
+    ///
+    /// Added by B179, after 0.107.0: a new function in an existing interface
+    /// and no new manifest capability; no existing signature changed.
+    find-users-by-name-prefix: func(prefix: string) -> result<string, string>;
 }
 
 /// Cache operations with tag-based invalidation.

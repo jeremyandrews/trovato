@@ -593,14 +593,17 @@ pub const ERR_MAIL_RECIPIENT_UNAVAILABLE: i32 = -57;
 pub const ERR_MAIL_OPTED_OUT: i32 = -58;
 
 // =============================================================================
-// User directory errors (`trovato:kernel/user-api` `load-users`) — added by B73
+// User directory errors (`trovato:kernel/user-api` `load-users`,
+// `find-user-by-name`, `find-users-by-name-prefix`) — added by B73, extended
+// by B179
 // =============================================================================
 
 /// The plugin did not declare `user_directory = true` under `[capabilities]`.
 ///
-/// `load-users` answers about users the plugin is not serving, so it is a
-/// separate grant from `user-api`, visible in the manifest and reviewable at
-/// install time.
+/// Shared by `load-users`, `find-user-by-name` and `find-users-by-name-prefix`:
+/// all three answer about users the plugin is not serving, so the grant is
+/// separate from `user-api`, visible in the manifest and reviewable at install
+/// time.
 pub const ERR_USER_DIRECTORY_DENIED: i32 = -73;
 
 /// An id was not a user id (a UUID), or the list was not a JSON array of
@@ -609,6 +612,14 @@ pub const ERR_USER_IDS_INVALID: i32 = -74;
 
 /// More than 100 ids in one call. Nothing was looked up; split the batch.
 pub const ERR_USER_IDS_TOO_MANY: i32 = -75;
+
+/// `find-user-by-name`'s name was empty or longer than 255 characters (the
+/// width of `users.name`). Nothing was looked up. Added by B179.
+pub const ERR_USER_NAME_INVALID: i32 = -76;
+
+/// `find-users-by-name-prefix`'s prefix was empty or longer than 255
+/// characters. Nothing was looked up. Added by B179.
+pub const ERR_USER_NAME_PREFIX_INVALID: i32 = -77;
 
 // =============================================================================
 // SDK-side errors (client-side, before/after crossing WASM boundary)

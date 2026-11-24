@@ -237,6 +237,10 @@ let has_perm = host::user::has_permission("permission name");
 // Other users' public facts, by id (≤ 100 a call). Needs `user-api` and
 // `user_directory = true` under [capabilities]; never an address.
 let users = host::load_users(&[id_a, id_b])?;   // Vec<UserSummary>
+// By exact name (case-insensitive, like login) or by a name prefix (≤ 10
+// results, sorted). Same capability, same never-an-address rule.
+let user = host::find_user_by_name("jsmith")?;           // Option<UserSummary>
+let matches = host::find_users_by_name_prefix("js")?;    // Vec<UserSummary>
 ```
 
 ### Mail
