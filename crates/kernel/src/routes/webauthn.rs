@@ -233,9 +233,7 @@ async fn register_finish(
         .into_response();
     }
 
-    let passkey = match webauthn
-        .finish_passkey_registration(&body.credential, &pending.state)
-    {
+    let passkey = match webauthn.finish_passkey_registration(&body.credential, &pending.state) {
         Ok(pk) => pk,
         Err(e) => {
             warn!(error = %e, user_id = %user.id, "passkey registration verification failed");
@@ -489,8 +487,7 @@ async fn login_finish(
         // belongs to someone else must not be usable to complete this flow.
         .filter(|c| c.user_id == pending.user_id);
 
-    let auth_result = match webauthn
-        .finish_passkey_authentication(&body.credential, &pending.state)
+    let auth_result = match webauthn.finish_passkey_authentication(&body.credential, &pending.state)
     {
         Ok(r) => r,
         Err(e) => {

@@ -22,8 +22,8 @@ use tower::ServiceExt;
 use trovato_kernel::gather::types::{
     GatherQuery, QueryDefinition, QueryDisplay, QuerySort, SortDirection,
 };
-use trovato_kernel::models::stage::LIVE_STAGE_ID;
 use trovato_kernel::models::CreateItem;
+use trovato_kernel::models::stage::LIVE_STAGE_ID;
 use trovato_kernel::routes::feed::build_feed_router;
 use trovato_kernel::tap::UserContext;
 use uuid::Uuid;
@@ -114,7 +114,11 @@ fn password_login_still_works_under_an_ip_site_url() {
         let app = &fixture().app;
         let name = common::username("b144-login");
         let cookies = app
-            .create_and_login_user(&name, "b144-test-password-1", &format!("{name}@example.com"))
+            .create_and_login_user(
+                &name,
+                "b144-test-password-1",
+                &format!("{name}@example.com"),
+            )
             .await;
         assert!(cookies.starts_with("id="), "password login still works");
     });
@@ -194,14 +198,19 @@ fn a_reset_mail_carries_the_ip_absolute_link() {
             .reset("recovery", &format!("password-reset:{ip}"))
             .await
             .ok();
-        limiter.reset("reset_mail", &email.to_lowercase()).await.ok();
+        limiter
+            .reset("reset_mail", &email.to_lowercase())
+            .await
+            .ok();
 
         let response = app
             .request(
                 Request::post("/user/password-reset")
                     .header(header::CONTENT_TYPE, "application/json")
                     .header("x-forwarded-for", &ip)
-                    .body(Body::from(serde_json::json!({ "email": email }).to_string()))
+                    .body(Body::from(
+                        serde_json::json!({ "email": email }).to_string(),
+                    ))
                     .unwrap(),
             )
             .await;
