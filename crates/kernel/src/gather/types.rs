@@ -502,6 +502,17 @@ pub enum FilterValue {
     /// Boolean value.
     Boolean(bool),
     /// UUID value.
+    ///
+    /// Only the canonical lowercase hyphenated spelling (`Uuid`'s own
+    /// `Display`) deserializes here. `uuid::Uuid`'s `Deserialize` impl
+    /// otherwise also accepts the simple (no hyphens), braced, URN and
+    /// uppercase spellings, which would make this variant swallow a value a
+    /// writer meant as plain text. Anything not already in that one spelling
+    /// falls through to [`FilterValue::String`] unchanged — a filter value
+    /// spelled that way compares as the exact text it was written as, which
+    /// is what a JSONB text column storing that same spelling needs to match
+    /// against.
+    #[serde(deserialize_with = "deserialize_canonical_uuid")]
     Uuid(Uuid),
     /// List of values (for In/NotIn operators).
     List(Vec<FilterValue>),
@@ -509,6 +520,23 @@ pub enum FilterValue {
     Contextual(ContextualValue),
     /// String value (catch-all for remaining string values).
     String(String),
+}
+
+/// Accepts only a string holding the canonical lowercase hyphenated spelling
+/// of a UUID. Any other spelling (unhyphenated, braced, URN, uppercase) is a
+/// deserialization error here, which — inside the `FilterValue` untagged
+/// enum — makes serde fall through to [`FilterValue::String`] instead.
+fn deserialize_canonical_uuid<'de, D>(deserializer: D) -> Result<Uuid, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    let parsed = Uuid::parse_str(&s).map_err(serde::de::Error::custom)?;
+    if parsed.to_string() == s {
+        Ok(parsed)
+    } else {
+        Err(serde::de::Error::custom("not the canonical UUID spelling"))
+    }
 }
 
 impl FilterValue {
@@ -1260,6 +1288,46 @@ mod tests {
 
         let list = FilterValue::List(vec![FilterValue::Uuid(uuid1), FilterValue::Uuid(uuid2)]);
         assert_eq!(list.as_uuid_list().len(), 2);
+    }
+
+    #[test]
+    fn filter_value_uuid_only_accepts_canonical_spelling() {
+        // Must contain hex letters so the uppercase spelling actually
+        // differs from the canonical one (unlike `Uuid::nil()`, all zeros).
+        let uuid = Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap();
+
+        // Canonical lowercase hyphenated spelling deserializes as `Uuid`.
+        let canonical = serde_json::json!(uuid.to_string());
+        match serde_json::from_value::<FilterValue>(canonical).unwrap() {
+            FilterValue::Uuid(parsed) => assert_eq!(parsed, uuid),
+            other => panic!("expected Uuid, got {other:?}"),
+        }
+
+        // Every other spelling falls through to `String`, holding the exact
+        // text it was written as.
+        let unhyphenated = uuid.simple().to_string();
+        match serde_json::from_value::<FilterValue>(serde_json::json!(unhyphenated)).unwrap() {
+            FilterValue::String(s) => assert_eq!(s, unhyphenated),
+            other => panic!("expected String, got {other:?}"),
+        }
+
+        let uppercase = uuid.to_string().to_uppercase();
+        match serde_json::from_value::<FilterValue>(serde_json::json!(uppercase)).unwrap() {
+            FilterValue::String(s) => assert_eq!(s, uppercase),
+            other => panic!("expected String, got {other:?}"),
+        }
+
+        let braced = format!("{{{uuid}}}");
+        match serde_json::from_value::<FilterValue>(serde_json::json!(braced)).unwrap() {
+            FilterValue::String(s) => assert_eq!(s, braced),
+            other => panic!("expected String, got {other:?}"),
+        }
+
+        let urn = format!("urn:uuid:{uuid}");
+        match serde_json::from_value::<FilterValue>(serde_json::json!(urn)).unwrap() {
+            FilterValue::String(s) => assert_eq!(s, urn),
+            other => panic!("expected String, got {other:?}"),
+        }
     }
 
     #[test]

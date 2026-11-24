@@ -811,7 +811,7 @@ impl GatherQueryBuilder {
         }
     }
 
-    /// Extract a value from a JSONB column.
+    /// Extract a value from a JSONB column, as text.
     ///
     /// Validates table and path components against SQL identifier rules
     /// (defense-in-depth). Returns NULL expression if validation fails.
@@ -825,10 +825,12 @@ impl GatherQueryBuilder {
             return Expr::cust("NULL");
         }
 
-        // Use ->> for text extraction from JSONB
-        // e.g., fields->>'body' for fields.body
+        // The last hop reads through `field_value_text_sql`, which unwraps a
+        // `{"value": …}` wrapper the way `scalar_of` does. Earlier hops stay
+        // plain `->` — they are always objects to descend into, never a
+        // scalar that might be wrapped.
         if path.contains('.') {
-            // Nested path: fields->'nested'->>'field'
+            // Nested path: fields->'nested'->(text of last hop)
             let parts: Vec<&str> = path.split('.').collect();
             for part in &parts {
                 if !is_safe_identifier(part) {
@@ -842,7 +844,7 @@ impl GatherQueryBuilder {
             let mut expr = format!("{table}.fields");
             for (i, part) in parts.iter().enumerate() {
                 if i == parts.len() - 1 {
-                    expr = format!("({expr}->>'{part}')");
+                    expr = field_value_text_sql(&expr, &format!("'{part}'"));
                 } else {
                     expr = format!("({expr}->'{part}')");
                 }
@@ -856,7 +858,10 @@ impl GatherQueryBuilder {
                 );
                 return Expr::cust("NULL");
             }
-            Expr::cust(format!("{table}.fields->>'{path}'"))
+            Expr::cust(field_value_text_sql(
+                &format!("{table}.fields"),
+                &format!("'{path}'"),
+            ))
         }
     }
 
@@ -900,7 +905,7 @@ impl GatherQueryBuilder {
         }
 
         if path.contains('.') {
-            // Nested path: fields->'nested'->'field'
+            // Nested path: fields->'nested'->(jsonb of last hop)
             let parts: Vec<&str> = path.split('.').collect();
             for part in &parts {
                 if !is_safe_identifier(part) {
@@ -912,8 +917,12 @@ impl GatherQueryBuilder {
                 }
             }
             let mut expr = format!("{table}.fields");
-            for part in &parts {
-                expr = format!("({expr}->'{part}')");
+            for (i, part) in parts.iter().enumerate() {
+                if i == parts.len() - 1 {
+                    expr = field_value_jsonb_sql(&expr, &format!("'{part}'"));
+                } else {
+                    expr = format!("({expr}->'{part}')");
+                }
             }
             Expr::cust(expr)
         } else {
@@ -924,7 +933,10 @@ impl GatherQueryBuilder {
                 );
                 return Expr::cust("NULL");
             }
-            Expr::cust(format!("{table}.fields->'{path}'"))
+            Expr::cust(field_value_jsonb_sql(
+                &format!("{table}.fields"),
+                &format!("'{path}'"),
+            ))
         }
     }
 
@@ -1156,6 +1168,35 @@ impl GatherQueryBuilder {
     }
 }
 
+/// Reads a `fields` JSONB value as SQL text: the payload of a `{"value": …}`
+/// wrapper when the value carries one, otherwise the bare value itself.
+///
+/// Mirrors `scalar_of` in `crates/kernel/src/content/field_value.rs` — the
+/// one place that owns a field value's shapes — and the `item_search_vector`
+/// SQL function (`crates/kernel/migrations/20261125000002_search_switches.sql`),
+/// which reads the same shape for full-text indexing. Importers and plugins
+/// legitimately store either shape, so one reader has to understand both:
+/// `column->key->'value'` is `NULL` on a bare scalar (it is not an object),
+/// so `COALESCE` falls through to `column->>key`; on a wrapper it is the
+/// wrapped payload.
+///
+/// `column` is the JSONB column expression (e.g. `"item.fields"`), already
+/// built from components that passed [`is_safe_identifier`]. `key` is the
+/// key to look up: a quoted literal (`"'city'"`) for a config-supplied field
+/// name already validated the same way, or a bind placeholder (`"$1"`) for a
+/// key supplied at query time — PostgreSQL accepts either as the right-hand
+/// side of `->`/`->>`.
+pub(super) fn field_value_text_sql(column: &str, key: &str) -> String {
+    format!("COALESCE({column}->{key}->>'value', {column}->>{key})")
+}
+
+/// The `jsonb` twin of [`field_value_text_sql`], for `ORDER BY`: reads the
+/// same payload but as `jsonb` rather than text, so a wrapped number still
+/// sorts numerically.
+fn field_value_jsonb_sql(column: &str, key: &str) -> String {
+    format!("COALESCE({column}->{key}->'value', {column}->{key})")
+}
+
 /// Escape SQL LIKE wildcard characters (`%`, `_`, `\`) in a value.
 fn escape_like_wildcards(value: &str) -> String {
     value
@@ -1253,7 +1294,8 @@ mod tests {
             .build(1, 10);
         assert_eq!(
             sql,
-            "SELECT \"item\".* FROM \"item\" WHERE (item.fields->>'city') = 'Barga' \
+            "SELECT \"item\".* FROM \"item\" WHERE \
+             (COALESCE(item.fields->'city'->>'value', item.fields->>'city')) = 'Barga' \
              AND \"item\".\"status\" = 1 AND \"item\".\"stage_id\" = \
              '0193a5a0-0000-7000-8000-000000000001' AND \"item\".\"type\" = 'blog' \
              ORDER BY \"item\".\"created\" DESC LIMIT 10 OFFSET 0"
@@ -2023,7 +2065,9 @@ mod tests {
         let sql = GatherQueryBuilder::new(def, LIVE_STAGE_ID).build(1, 10);
 
         assert!(
-            sql.contains("((item.fields->'meta')->'order')"),
+            sql.contains(
+                "COALESCE((item.fields->'meta')->'order'->'value', (item.fields->'meta')->'order')"
+            ),
             "nested ORDER BY must stay jsonb throughout: {sql}"
         );
         assert!(!sql.contains("->>'order'"), "{sql}");

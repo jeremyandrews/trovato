@@ -10,7 +10,7 @@ use super::access;
 use super::access::GatherAccessConfig;
 use super::category_service::CategoryService;
 use super::extension::GatherExtensionRegistry;
-use super::query_builder::GatherQueryBuilder;
+use super::query_builder::{GatherQueryBuilder, field_value_text_sql};
 use super::types::{
     AggregateFunction, ContextualValue, FilterOperator, FilterValue, GatherQuery, GatherResult,
     MAX_GROUP_DEPTH, QueryContext, QueryDefinition, QueryDisplay, QueryFilter,
@@ -518,22 +518,24 @@ impl GatherService {
             return Ok(Vec::new());
         }
 
-        let values: Vec<String> = sqlx::query_scalar(
-            "SELECT DISTINCT fields->>$1 \
+        let reader = field_value_text_sql("fields", "$1");
+        let sql = format!(
+            "SELECT DISTINCT {reader} \
              FROM item \
              WHERE type = $2 \
                AND status = 1 \
-               AND fields->>$1 IS NOT NULL \
-               AND fields->>$1 <> '' \
+               AND {reader} IS NOT NULL \
+               AND {reader} <> '' \
              ORDER BY 1 \
-             LIMIT $3",
-        )
-        .bind(jsonb_key)
-        .bind(item_type)
-        .bind(Self::DISTINCT_VALUES_LIMIT)
-        .fetch_all(&self.pool)
-        .await
-        .context("failed to fetch distinct field values")?;
+             LIMIT $3"
+        );
+        let values: Vec<String> = sqlx::query_scalar(AssertSqlSafe(sql))
+            .bind(jsonb_key)
+            .bind(item_type)
+            .bind(Self::DISTINCT_VALUES_LIMIT)
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to fetch distinct field values")?;
 
         self.distinct_values_cache.insert(cache_key, values.clone());
 
@@ -632,17 +634,20 @@ impl GatherService {
         }
 
         // Build SQL with validated scope conditions interpolated as key names.
-        let mut sql = "SELECT DISTINCT fields->>$1 \
+        let reader = field_value_text_sql("fields", "$1");
+        let mut sql = format!(
+            "SELECT DISTINCT {reader} \
              FROM item \
              WHERE type = $2 \
                AND status = 1 \
-               AND fields->>$1 IS NOT NULL \
-               AND fields->>$1 <> ''"
-            .to_string();
+               AND {reader} IS NOT NULL \
+               AND {reader} <> ''"
+        );
         let mut param_idx = 3i32;
         for (key, _) in &eq_scope {
             // key validated by is_valid_field_name above
-            sql.push_str(&format!(" AND fields->>'{key}' = ${param_idx}"));
+            let eq_reader = field_value_text_sql("fields", &format!("'{key}'"));
+            sql.push_str(&format!(" AND {eq_reader} = ${param_idx}"));
             param_idx += 1;
         }
         for (key, _) in &tag_scope {
@@ -717,7 +722,8 @@ impl GatherService {
         let mut param_idx = 2i32;
         for (key, _) in &eq_scope {
             // key validated by is_valid_field_name above
-            sql.push_str(&format!(" AND fields->>'{key}' = ${param_idx}"));
+            let eq_reader = field_value_text_sql("fields", &format!("'{key}'"));
+            sql.push_str(&format!(" AND {eq_reader} = ${param_idx}"));
             param_idx += 1;
         }
         for (key, _) in &tag_scope {
