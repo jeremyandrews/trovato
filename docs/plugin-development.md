@@ -1312,6 +1312,73 @@ plugin, gets the sidebar; a plugin page elsewhere does not.
 
 ---
 
+### Serving a Request Directly (`tap_api`), and Accepting a File
+
+A `MenuRoute` with `handler_type = "api"` and a `callback` is not a page the
+theme renders — it is a request the kernel dispatches straight to your
+plugin's `tap_api`, with the method, path, query, params, body and caller
+already resolved:
+
+```rust
+#[plugin_tap]
+fn tap_menu() -> Vec<MenuRoute> {
+    vec![
+        MenuRoute::api("POST", "/my-plugin/upload", "upload_logo")
+            .title("Upload a logo")
+            .permission("create my_article content"),
+    ]
+}
+
+#[plugin_tap]
+fn tap_api(request: ApiRequest) -> ApiResponse {
+    match request.callback.as_str() {
+        "upload_logo" => upload_logo(&request),
+        other => ApiResponse::error(404, &format!("no such callback: {other}")),
+    }
+}
+```
+
+CSRF is already enforced before your tap runs: a state-changing method needs
+an `X-CSRF-Token` header or a `_token` field (multipart or form-urlencoded),
+unless the caller authenticated with an `Authorization: Bearer` token. The
+body size cap (`MAX_REQUEST_BODY`, the 8 MiB plugin I/O ceiling) applies to
+this case exactly as it always has, because `request.body` still crosses the
+WASM boundary.
+
+**A file in the form is different.** When the request's `Content-Type` is
+`multipart/form-data`, the kernel parses it itself before dispatch: every part
+carrying a filename is stored through the same `FileService` `/file/upload`
+uses — the same size limit, MIME allowlist and magic-byte check — and handed
+to you in `request.files: Vec<UploadedFile>` as an id and metadata, never raw
+bytes. The form's other fields arrive in `request.body`, re-encoded as a JSON
+object, so `request.json::<T>()` works the same whether the caller posted JSON
+or a multipart form.
+
+```rust
+fn upload_logo(request: &ApiRequest) -> ApiResponse {
+    let Some(upload) = request.files.first() else {
+        return ApiResponse::error(400, "no file uploaded");
+    };
+    // The id is what a File field holds. Attaching it through `save-item` is
+    // what promotes the file out of `Temporary` — do not touch file storage
+    // yourself, there is no host call for it and this is why.
+    match host::save_item(&serde_json::json!({
+        "id": request.params.get("id"),
+        "fields": { "field_logo": upload.id },
+    })) {
+        Ok(Some(item)) => ApiResponse::json(&serde_json::json!({ "item_id": item.id })).unwrap(),
+        Ok(None) => ApiResponse::error(404, "item not found"),
+        Err(code) => ApiResponse::error(500, &format!("save failed: {code}")),
+    }
+}
+```
+
+A file your route stores but never references from an item stays `Temporary`
+and is removed by the kernel's temporary-file cleanup — a plugin cannot leak
+storage by accepting an upload nobody attaches.
+
+---
+
 ## Database Operations
 
 The `db` calls work on the plugin's own tables: the ones its migrations

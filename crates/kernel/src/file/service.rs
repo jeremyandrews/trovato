@@ -60,6 +60,18 @@ pub fn mime_for_filename(filename: &str) -> Option<&'static str> {
         .map(|(_, mime)| *mime)
 }
 
+/// The type an upload is stored under: the multipart part's declared
+/// `Content-Type`, or the one [`mime_for_filename`] gives its name, or
+/// `application/octet-stream` when neither says. [`FileService::validate_file`]
+/// is the check that answers for whether this guess is accepted — this just
+/// picks what gets checked.
+pub fn resolve_mime_type(content_type: Option<&str>, filename: &str) -> String {
+    content_type
+        .map(str::to_string)
+        .or_else(|| mime_for_filename(filename).map(str::to_string))
+        .unwrap_or_else(|| "application/octet-stream".to_string())
+}
+
 /// Why an upload was refused: the file, not the server, was at fault. The
 /// upload routes answer 413 or 415 with the message; any other error from
 /// [`FileService::upload`] is a server error.
