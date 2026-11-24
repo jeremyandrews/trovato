@@ -147,6 +147,10 @@ async fn backdate_lock(app: &TestApp, item_id: Uuid, locked_at: i64, expires_at:
 /// A fresh conference item plus two logged-in admins, A and B, for a lock test.
 async fn two_editors(app: &TestApp, label: &str) -> (Uuid, String, Uuid, String, Uuid) {
     app.ensure_plugin_enabled("trovato_content_locking").await;
+    // The shared app's plugin directory does not discover real plugins (see
+    // `common::ensure_plugin_tables`), so `editing_lock` otherwise exists only
+    // by luck of shard order; apply its migration directly, idempotently.
+    common::ensure_plugin_tables(app, "trovato_content_locking");
     app.ensure_conference_type().await;
 
     let a_name = common::username(&format!("{label}_a"));
@@ -191,6 +195,7 @@ fn the_edit_form_takes_shows_keeps_and_breaks_the_lock() {
     run_test(async {
         let app = shared_app().await;
         app.ensure_plugin_enabled("trovato_content_locking").await;
+        common::ensure_plugin_tables(app, "trovato_content_locking");
         app.ensure_conference_type().await;
 
         let a_name = common::username("lock_a");
