@@ -142,7 +142,9 @@ The webhook has its own rate limit bucket, `mail_webhook`, 600 requests a
 minute per client IP (`TROVATO_RATE_LIMIT_MAIL_WEBHOOK` changes it), so a
 burst of bounces after a large send is not refused as form spam.
 
-A permanent failure fails the message it names, by its `Message-ID`
+A permanent failure (except Mailgun's reasons `suppress-unsubscribe`, `old`
+and `espblock`, which are ignored, and `suppress-complaint`, which counts as a
+complaint) fails the message it names, by its `Message-ID`
 (`outbox-<id>@<sending domain>`) and only when it was sent to the reported
 address, with "hard bounce: <code> <reason>". A complaint stamps the message
 and leaves it sent. Both put the address on the suppression list; a hard
@@ -178,8 +180,10 @@ Under **System** in the admin menu:
 
   An administrator passes both checks. Until BG4 tags mail with its blog,
   every message is the default blog's, so an owner of the default blog sees
-  the whole network's account mail (recipients, subjects, errors): grant it
-  to network staff only.
+  the whole network's account mail (recipients, subjects, errors), and every
+  account that existed when the `user_tenant` table was created is already
+  an active member of the default blog. Grant `view own blog mail` to network
+  staff only.
 
 Screenshots: `docs/images/bg18/`.
 

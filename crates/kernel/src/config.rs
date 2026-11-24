@@ -1100,6 +1100,34 @@ mod config_tests {
         config_from(&pairs).expect("config resolves")
     }
 
+    /// A blank signing key is no key: the webhook stays off (404) rather than
+    /// accepting HMACs under "", which anyone can compute. The key is trimmed,
+    /// and `Debug` never prints it.
+    #[test]
+    fn the_webhook_signing_key_is_trimmed_and_a_blank_one_is_unset() {
+        assert_eq!(with_db(&[]).mail.webhook_signing_key, None);
+        for blank in ["", "   ", "\t\n"] {
+            assert_eq!(
+                with_db(&[("MAIL_WEBHOOK_SIGNING_KEY", blank)])
+                    .mail
+                    .webhook_signing_key,
+                None,
+                "a blank key {blank:?} must leave the webhook off"
+            );
+        }
+        let config = with_db(&[("MAIL_WEBHOOK_SIGNING_KEY", "  key-abc-123 \n")]);
+        assert_eq!(
+            config.mail.webhook_signing_key,
+            Some(WebhookKey("key-abc-123".to_string()))
+        );
+        let debug = format!("{:?}", config.mail);
+        assert!(
+            !debug.contains("key-abc-123"),
+            "Debug printed the key: {debug}"
+        );
+        assert!(debug.contains("WebhookKey(..)"), "{debug}");
+    }
+
     /// The drain defaults to a Kubernetes endpoint update only under Kubernetes;
     /// an explicit value wins either way. `MIGRATE_ON_START` reads strictly:
     /// a value that is not a boolean fails startup.

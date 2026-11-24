@@ -123,9 +123,18 @@ fn timestamp_fresh(timestamp: &str, now: i64) -> bool {
 }
 
 /// What an event asks the kernel to record, if anything.
+/// Mailgun also reports a permanent failure for an address it suppressed
+/// itself (`suppress-complaint` is an earlier complaint; `suppress-unsubscribe`
+/// an unsubscribe from Mailgun's own list, not a dead address), for a message
+/// it gave up retrying (`old`), and for a block by the receiving provider
+/// (`espblock`). None of the last three says the address does not exist.
 fn feedback_of(event: &EventData) -> Option<Feedback> {
     match event.event.as_str() {
-        "failed" if event.severity == "permanent" => Some(Feedback::HardBounce),
+        "failed" if event.severity == "permanent" => match event.reason.as_str() {
+            "suppress-complaint" => Some(Feedback::Complaint),
+            "suppress-unsubscribe" | "old" | "espblock" => None,
+            _ => Some(Feedback::HardBounce),
+        },
         "complained" => Some(Feedback::Complaint),
         _ => None,
     }
@@ -312,6 +321,25 @@ mod tests {
         );
         assert_eq!(feedback_of(&event("delivered", "")), None);
         assert_eq!(feedback_of(&event("unsubscribed", "")), None);
+        let permanent = |reason: &str| EventData {
+            reason: reason.to_string(),
+            ..event("failed", "permanent")
+        };
+        assert_eq!(
+            feedback_of(&permanent("bounce")),
+            Some(Feedback::HardBounce)
+        );
+        assert_eq!(
+            feedback_of(&permanent("suppress-bounce")),
+            Some(Feedback::HardBounce)
+        );
+        assert_eq!(
+            feedback_of(&permanent("suppress-complaint")),
+            Some(Feedback::Complaint)
+        );
+        for reason in ["suppress-unsubscribe", "old", "espblock"] {
+            assert_eq!(feedback_of(&permanent(reason)), None, "{reason}");
+        }
     }
 
     #[test]

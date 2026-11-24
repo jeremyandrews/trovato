@@ -384,7 +384,14 @@ is lost: the address is still mailed, bounces again and is recorded then. The ke
 `WebhookKey`, whose `Debug` prints no secret, and is read through the email
 service: no mail configured means no webhook.
 
-**Recording** (`services/mail_log.rs::record_feedback`, one transaction). The
+**Recording** (`services/mail_log.rs::record_feedback`, one transaction). A permanent failure is a hard
+bounce unless Mailgun's reason says otherwise: `suppress-complaint` is
+recorded as a complaint, and `suppress-unsubscribe`, `old` (Mailgun gave up
+retrying) and `espblock` (the receiving provider blocked the sender) are
+ignored, since none says the address does not exist. Retry is the one
+transition from finished back to queued, so the retention purge now repeats
+its age condition on the row it locks, not only in its id subquery: a row
+requeued while the purge waited is no longer cleared or deleted. The
 outbox row is matched by the id in `outbox-<id>@domain` *and* the reported
 recipient, so a Message-ID from another install on the same sending domain
 cannot fail someone else's message. A hard bounce moves a `sent` or `failed`

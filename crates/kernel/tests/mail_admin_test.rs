@@ -456,7 +456,9 @@ fn without_a_key_the_webhook_does_not_exist() {
         );
         assert_eq!(post_webhook(plain, &body).await, StatusCode::NOT_FOUND);
 
-        // Mail configured, no key: still no webhook, whatever signs the request.
+        // Mail configured, no key: still no webhook, even for a request signed
+        // with the empty key. (A blank `MAIL_WEBHOOK_SIGNING_KEY` resolving to no
+        // key is pinned in `config_tests`.)
         let keyless = TestApp::with_config(|config| {
             config.smtp_host = Some("127.0.0.1".to_string());
             config.smtp_port = 2525;
