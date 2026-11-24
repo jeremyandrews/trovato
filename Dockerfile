@@ -21,6 +21,12 @@ FROM rust:1-bookworm AS chef
 
 WORKDIR /usr/src/trovato
 
+# The pinned toolchain, before anything is built. Without it here the cooked
+# dependencies were built by the image's own stable Rust, the `COPY . .` below
+# then brought in rust-toolchain.toml, rustup switched to the pinned version,
+# and every crate was compiled again by the other compiler.
+COPY rust-toolchain.toml .
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev \
     && rm -rf /var/lib/apt/lists/*
