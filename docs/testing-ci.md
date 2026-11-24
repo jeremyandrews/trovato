@@ -124,7 +124,7 @@ plugin enabled, enable it; never rely on a target that sorts before it.
 | One test | 30 s, else on the allowlist with its time and reason | `scripts/ci-slow-tests.sh`, `.config/slow-tests.txt` |
 | An allowlisted test | twice its recorded time | the same |
 | A Test shard | 30 minutes: expected 20, plus half | `timeout-minutes` on the Test job |
-| Cluster | 36 minutes: expected 24 (a pull request that changes `Cargo.lock`), plus half | `timeout-minutes` on the Cluster job |
+| Cluster | 40 minutes: expected 27 (a pull request that changes `Cargo.lock`: 24 and 30 in two runs), plus half | `timeout-minutes` on the Cluster job |
 
 nextest marks a test SLOW in the log after 10 s (`slow-timeout` in the `ci`
 profile, `.config/nextest.toml`). That is a warning; the 30 s line is the gate.
