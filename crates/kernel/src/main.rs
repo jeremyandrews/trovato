@@ -1330,18 +1330,57 @@ async fn run_user_command(action: UserAction) -> Result<()> {
 /// Read one line from stdin as a password, prompting on stderr: how
 /// `user create` and `user reset-password` take one, so it never appears in
 /// argv, the shell history or the output.
+///
+/// From a terminal the password is read with echo off, so what is typed is
+/// not shown, and the prompt comes only then: a person typing gets one, piped
+/// input does not, so it does not run into the command's own output.
 fn read_password_from_stdin(prompt: &str) -> Result<String> {
     use std::io::IsTerminal;
-    // A prompt only for a person typing; piped input gets none, so it does
-    // not run into the command's own output.
-    if std::io::stdin().is_terminal() {
-        eprint!("{prompt}");
-    }
+    let line = if std::io::stdin().is_terminal() {
+        read_line_unechoed(prompt)
+    } else {
+        read_line()
+    };
+    Ok(line
+        .context("failed to read password from stdin")?
+        .trim()
+        .to_string())
+}
+
+fn read_line() -> std::io::Result<String> {
     let mut buf = String::new();
-    std::io::stdin()
-        .read_line(&mut buf)
-        .context("failed to read password from stdin")?;
-    Ok(buf.trim().to_string())
+    std::io::stdin().read_line(&mut buf)?;
+    Ok(buf)
+}
+
+/// Prompt on stderr and read one line from the terminal on stdin with echo
+/// off, putting the terminal back as it was whatever the read did. The line
+/// end is still echoed (`ECHONL`), so the output after it starts on a new line.
+#[cfg(unix)]
+fn read_line_unechoed(prompt: &str) -> std::io::Result<String> {
+    use rustix::termios::{LocalModes, OptionalActions, tcgetattr, tcsetattr};
+    let stdin = std::io::stdin();
+    let saved = tcgetattr(&stdin)?;
+    let mut quiet = saved.clone();
+    quiet.local_modes.remove(LocalModes::ECHO);
+    quiet.local_modes.insert(LocalModes::ECHONL);
+    // Echo goes off before the prompt appears, so nothing typed in answer to
+    // the prompt is ever shown.
+    tcsetattr(&stdin, OptionalActions::Flush, &quiet)?;
+    eprint!("{prompt}");
+    let line = read_line();
+    let restored = tcsetattr(&stdin, OptionalActions::Now, &saved);
+    let line = line?;
+    restored?;
+    Ok(line)
+}
+
+/// Without termios the prompt says the input will be shown, so nobody types
+/// a password at it believing otherwise.
+#[cfg(not(unix))]
+fn read_line_unechoed(prompt: &str) -> std::io::Result<String> {
+    eprint!("{prompt}(shown as typed; pipe it in to hide it) ");
+    read_line()
 }
 
 /// What `trovato user create` was asked for, short of the password.
@@ -1401,8 +1440,36 @@ async fn create_user_from_cli(
     } else {
         state.users().create(input, &nobody).await?
     };
+    // The account is committed before its roles, one grant at a time, as on
+    // the form. A grant that fails (a role deleted since it was looked up, a
+    // database error) cannot be undone by running the command again, which
+    // would now refuse the taken name; so every grant is still tried, and the
+    // failure names what is missing and the commands that add it.
+    let mut missing = Vec::new();
     for role in &roles {
-        state.roles().assign_to_user(user.id, role.id).await?;
+        if let Err(e) = state.roles().assign_to_user(user.id, role.id).await {
+            missing.push((role.name.as_str(), e));
+        }
+    }
+    if !missing.is_empty() {
+        println!(
+            "{}",
+            bump_from_cli(config, &[CacheKind::Users, CacheKind::Permissions]).await
+        );
+        let mut message = format!(
+            "User '{}' ({}) was created, but {} of its roles could not be granted:",
+            user.name,
+            user.id,
+            missing.len()
+        );
+        for (name, e) in &missing {
+            message.push_str(&format!("\n  {name}: {e:#}"));
+        }
+        message.push_str("\nTo finish, run:");
+        for (name, _) in &missing {
+            message.push_str(&format!("\n  trovato user role-add {} {name}", user.name));
+        }
+        anyhow::bail!(message);
     }
 
     let status = if account.blocked { "blocked" } else { "active" };
@@ -1470,7 +1537,9 @@ async fn run_cache_command(action: CacheAction) -> Result<()> {
                 .context("running servers were NOT told: Redis could not be reached")?;
             let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
             println!("Cleared: {}.", names.join(", "));
-            println!("Running servers drop their cached copies within a second.");
+            println!(
+                "Running servers have dropped their cached copies; the next request reads the database."
+            );
         }
     }
     Ok(())
@@ -1491,7 +1560,10 @@ async fn clear_caches(config: &Config, kinds: &[CacheKind]) -> Result<()> {
 /// cannot be reached is reported rather than turned into a failure.
 async fn bump_from_cli(config: &Config, kinds: &[CacheKind]) -> String {
     match clear_caches(config, kinds).await {
-        Ok(()) => "Running servers drop their cached copies within a second.".to_string(),
+        Ok(()) => {
+            "Running servers have dropped their cached copies; the next request reads the database."
+                .to_string()
+        }
         Err(e) => format!(
             "Running servers were NOT told: Redis could not be reached ({e:#}). \
              They see this change when their caches expire."

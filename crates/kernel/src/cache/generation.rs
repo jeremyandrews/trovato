@@ -25,6 +25,12 @@ const GENERATION_KEY: &str = "cache:gen";
 /// How often each server reads the counters.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
+/// How long a process that bumped waits before it says the servers have
+/// cleared: four polls, so a server whose poll runs a little late under load
+/// has still read the new counters. A bound, not a handshake: a server whose
+/// poller is stalled (Redis unreachable from it) still falls back to its TTLs.
+pub const SETTLE: Duration = POLL_INTERVAL.saturating_mul(4);
+
 /// The Redis this process bumps, set once when the server's state is built.
 static REDIS: OnceLock<redis::Client> = OnceLock::new();
 

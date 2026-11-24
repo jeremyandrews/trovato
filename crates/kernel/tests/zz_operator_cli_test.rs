@@ -469,20 +469,15 @@ async fn retitle(pool: &PgPool, id: Uuid, title: &str) {
         .unwrap();
 }
 
-/// Wait until `path` shows `needle`, or panic after `within`.
-async fn wait_for_text(server: &Server, path: &str, needle: &str, within: Duration) {
-    let deadline = Instant::now() + within;
-    loop {
-        let body = server.page(path).await;
-        if body.contains(needle) {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "{path} still does not show {needle:?} after {within:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+/// The first request made after a command has returned shows `needle`. Not
+/// retried: a command that returned while a server still held a copy one poll
+/// from being dropped fails here.
+async fn first_request_shows(server: &Server, path: &str, needle: &str) {
+    let body = server.page(path).await;
+    assert!(
+        body.contains(needle),
+        "the first request after the command must show {needle:?}"
+    );
 }
 
 #[tokio::test]
@@ -514,7 +509,6 @@ async fn cache_clear_makes_a_running_server_serve_a_direct_write() {
     // A kind other than items leaves the item cached.
     let other = run(&db.url(), &["cache", "clear", "--kind", "menus"], "").await;
     assert_eq!(other.code, Some(0), "{}", other.all());
-    tokio::time::sleep(Duration::from_secs(1)).await;
     assert!(
         server.page(&path).await.contains("Title before the write"),
         "--kind menus must not clear items"
@@ -522,25 +516,13 @@ async fn cache_clear_makes_a_running_server_serve_a_direct_write() {
 
     let ran = run(&db.url(), &["cache", "clear"], "").await;
     assert_eq!(ran.code, Some(0), "{}", ran.all());
-    wait_for_text(
-        &server,
-        &path,
-        "Title after the write",
-        Duration::from_secs(5),
-    )
-    .await;
+    first_request_shows(&server, &path, "Title after the write").await;
 
     // Naming the kind does it too.
     retitle(db.pool(), id, "Title after the second write").await;
     let named = run(&db.url(), &["cache", "clear", "--kind", "items"], "").await;
     assert_eq!(named.code, Some(0), "{}", named.all());
-    wait_for_text(
-        &server,
-        &path,
-        "Title after the second write",
-        Duration::from_secs(5),
-    )
-    .await;
+    first_request_shows(&server, &path, "Title after the second write").await;
 
     server.stop().await;
 }
@@ -627,4 +609,177 @@ async fn cache_clear_drops_the_shared_search_settings() {
     // Leave no copy of this scratch site's settings for another test to read.
     let ran = run(&db.url(), &["cache", "clear", "--kind", "site_config"], "").await;
     assert_eq!(ran.code, Some(0), "{}", ran.all());
+}
+
+/// A grant that fails after the account is written (here a trigger refusing one
+/// role; in life a role deleted between lookup and grant) cannot be retried by
+/// running the command again, which now refuses the taken name. The command
+/// grants what it can, exits 1, and prints the commands that finish the job.
+#[tokio::test]
+async fn user_create_says_how_to_finish_a_failed_role_grant() {
+    let db = migrated("cli_user_grant").await;
+    for name in ["cli_good", "cli_refused"] {
+        sqlx::query("INSERT INTO roles (id, name) VALUES ($1, $2)")
+            .bind(Uuid::now_v7())
+            .bind(name)
+            .execute(db.pool())
+            .await
+            .unwrap();
+    }
+    sqlx::raw_sql(
+        "CREATE FUNCTION refuse_cli_refused() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN \
+           IF (SELECT name FROM roles WHERE id = NEW.role_id) = 'cli_refused' THEN \
+             RAISE EXCEPTION 'grant refused for this test'; \
+           END IF; \
+           RETURN NEW; \
+         END $$; \
+         CREATE TRIGGER refuse_cli_refused BEFORE INSERT ON user_roles \
+           FOR EACH ROW EXECUTE FUNCTION refuse_cli_refused();",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    let ran = run(
+        &db.url(),
+        &[
+            "user",
+            "create",
+            "cli_erin",
+            "--mail",
+            "erin@example.com",
+            "--role",
+            "cli_refused",
+            "--role",
+            "cli_good",
+        ],
+        &format!("{PASSWORD}\n"),
+    )
+    .await;
+    assert_eq!(ran.code, Some(1), "{}", ran.all());
+    assert!(
+        ran.stderr.contains("User 'cli_erin'")
+            && ran.stderr.contains("was created")
+            && ran
+                .stderr
+                .contains("trovato user role-add cli_erin cli_refused"),
+        "says what exists and how to finish:\n{}",
+        ran.all()
+    );
+    assert!(
+        !ran.stderr.contains("role-add cli_erin cli_good"),
+        "a role that was granted is not listed as missing:\n{}",
+        ran.all()
+    );
+
+    // The grant after the failed one was still made.
+    let erin = account(db.pool(), "cli_erin")
+        .await
+        .expect("account exists");
+    let roles: Vec<String> = sqlx::query_scalar(
+        "SELECT r.name FROM roles r JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = $1",
+    )
+    .bind(erin.id)
+    .fetch_all(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(roles, vec!["cli_good".to_string()]);
+
+    // And the printed command finishes it.
+    sqlx::raw_sql("DROP TRIGGER refuse_cli_refused ON user_roles")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let finish = run(
+        &db.url(),
+        &["user", "role-add", "cli_erin", "cli_refused"],
+        "",
+    )
+    .await;
+    assert_eq!(finish.code, Some(0), "{}", finish.all());
+}
+
+/// A password typed at a terminal is not shown on it.
+///
+/// The command runs on a pseudo-terminal with echo on, as a shell leaves it;
+/// the test waits for the prompt, types the password, and reads back
+/// everything the terminal displayed.
+#[cfg(unix)]
+#[tokio::test]
+async fn user_create_does_not_echo_a_typed_password() {
+    use std::io::{Read, Write};
+    use std::sync::{Arc, Mutex};
+
+    let db = migrated("cli_user_tty").await;
+    let master =
+        rustix::pty::openpt(rustix::pty::OpenptFlags::RDWR | rustix::pty::OpenptFlags::NOCTTY)
+            .unwrap();
+    rustix::pty::grantpt(&master).unwrap();
+    rustix::pty::unlockpt(&master).unwrap();
+    let slave_path = rustix::pty::ptsname(&master, Vec::new()).unwrap();
+    let slave = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(slave_path.to_str().unwrap())
+        .unwrap();
+    let attrs = rustix::termios::tcgetattr(&slave).unwrap();
+    assert!(
+        attrs
+            .local_modes
+            .contains(rustix::termios::LocalModes::ECHO),
+        "the terminal starts with echo on"
+    );
+
+    let work = TempDir::new("cli-tty");
+    let mut child = command(&db.url(), &work)
+        .args(["user", "create", "cli_tty", "--mail", "tty@example.com"])
+        .stdin(Stdio::from(slave.try_clone().unwrap()))
+        .stdout(Stdio::from(slave.try_clone().unwrap()))
+        .stderr(Stdio::from(slave.try_clone().unwrap()))
+        .spawn()
+        .expect("spawn trovato");
+    drop(slave);
+
+    let mut master = std::fs::File::from(master);
+    let mut writer = master.try_clone().unwrap();
+    let transcript = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let sink = transcript.clone();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = master.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            sink.lock().unwrap().extend_from_slice(&buf[..n]);
+        }
+    });
+    let shown = || String::from_utf8_lossy(&transcript.lock().unwrap()).to_string();
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    while !shown().contains("Password:") {
+        assert!(
+            Instant::now() < deadline,
+            "no password prompt on the terminal:\n{}",
+            shown()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    writer
+        .write_all(format!("{PASSWORD}\n").as_bytes())
+        .unwrap();
+
+    let status = tokio::time::timeout(Duration::from_secs(120), child.wait())
+        .await
+        .expect("the command finishes")
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let shown = shown();
+    assert!(status.success(), "{status}:\n{shown}");
+    assert!(
+        !shown.contains(PASSWORD),
+        "the typed password was shown on the terminal:\n{shown}"
+    );
+    assert!(shown.contains("Created active user 'cli_tty'"), "{shown}");
+    assert!(password_verifies(db.pool(), "cli_tty", PASSWORD).await);
 }

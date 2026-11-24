@@ -60,8 +60,8 @@ trovato cache clear                 # every kind
 trovato cache clear --kind items    # or only the ones the write touched
 ```
 
-It runs anywhere with the site's `REDIS_URL`, and every server clears within
-about 250 ms ([command line reference](../cli-reference.md#trovato-cache-clear)).
+It runs anywhere with the site's `REDIS_URL`, and returns once every server
+has had time to clear (one second) ([command line reference](../cli-reference.md#trovato-cache-clear)).
 `trovato config import` and the other commands that write end with the same
 clear.
 

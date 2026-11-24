@@ -22,10 +22,12 @@ const DEFAULT_TTL_SECS: u64 = 300;
 /// and nothing else; every other command that writes behind the servers'
 /// backs (`config import`, `plugin ...`, `user ...`, `generate`) ends with it.
 ///
-/// Bumps each kind's generation ([`generation`]) and waits for Redis to
-/// answer; every server clears those caches within one poll. Clearing
-/// [`CacheKind::SiteConfig`] also drops the search settings' copy in the shared
-/// tier ([`crate::search::settings::SETTINGS_CACHE_KEY`]): the one value read
+/// Bumps each kind's generation ([`generation`]), waits for Redis to answer,
+/// then waits [`generation::SETTLE`], so that by the time it returns every
+/// running server has read the new counters and cleared those caches: the
+/// request after the command reads the database, not a copy one poll from
+/// being dropped. Clearing [`CacheKind::SiteConfig`] also drops the search
+/// settings' copy in the shared tier ([`crate::search::settings::SETTINGS_CACHE_KEY`]): the one value read
 /// from `site_config` that is held in Redis rather than in a server's memory,
 /// so no generation reaches it and it would otherwise wait out its TTL.
 pub async fn clear_everywhere(redis: &RedisClient, kinds: &[CacheKind]) -> anyhow::Result<()> {
@@ -35,6 +37,7 @@ pub async fn clear_everywhere(redis: &RedisClient, kinds: &[CacheKind]) -> anyho
         conn.del::<_, ()>(crate::search::settings::SETTINGS_CACHE_KEY)
             .await?;
     }
+    tokio::time::sleep(generation::SETTLE).await;
     Ok(())
 }
 
