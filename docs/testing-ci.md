@@ -72,6 +72,13 @@ parallel tests have to be right for that lock to work:
   do, and a concurrent test's request refills the cache in between. Invalidate
   it (`menu::navigation::invalidate_config_menus()`), or wait for the
   generations with `common::settle_cache_generations()`.
+- **An invalidation is not enough for a cache read back at once.** A render
+  that began reading the menus before your write can fill the cache after
+  your invalidation, without your link, for the cache's whole TTL. A test
+  that writes a menu link and then reads it off a page holds a lock that the
+  other renders in its file respect (`MENUS` in `nav_landmarks_test`,
+  `gather_permission_test` and `language_navigation_test`, `MENU_CACHE` in
+  `menu_tree_test`).
 
 A test that captures one request's events with `.with_subscriber(..)` must call
 `common::scoped_subscribers_see_every_callsite()` first. Without it a
