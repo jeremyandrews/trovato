@@ -1050,8 +1050,7 @@ jobs:
       # another gigabyte against the 10 GB the repository's caches share, for
       # each pull request. So a pull request skips this step.
       - name: Build the dependency layer
-        # TEMP-B212: this pull request writes too, to measure the warm path. Remove.
-        if: github.event_name == 'push' || github.head_ref == 'b212-faster-ci-gate-wall-clock-from-42-min-co'
+        if: github.event_name == 'push'
         uses: docker/build-push-action@v6
         with:
           context: .
