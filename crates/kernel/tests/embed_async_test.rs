@@ -482,3 +482,114 @@ fn backfill_enqueues_jobs_for_gap_items() {
         clear_ai_config(&pool).await;
     });
 }
+
+// ── B188: deleting an item drops its queued embed job ────────────────────────
+
+#[test]
+fn deleting_an_item_removes_its_queued_embed_jobs() {
+    serial(async {
+        let pool = fresh_pool().await;
+        clean(&pool).await;
+        clear_ai_config(&pool).await;
+        set_failing_embed_provider(&pool).await;
+        let items = wired_items(pool.clone()).await;
+
+        // Save on the default (async) policy: one embed job is queued.
+        let created = items
+            .create(
+                CreateItem {
+                    item_type: "page".to_string(),
+                    title: "B188 delete drops embed job".to_string(),
+                    author_id: Uuid::nil(),
+                    status: Some(1),
+                    promote: None,
+                    sticky: None,
+                    fields: Some(serde_json::json!({ "body": { "value": "doomed" } })),
+                    stage_id: Some(LIVE_STAGE_ID),
+                    language: None,
+                    log: None,
+                },
+                &admin(),
+            )
+            .await
+            .expect("create");
+        assert_eq!(embed_jobs_for(&pool, created.id).await, 1);
+
+        // Another item's embed job and another plugin's row must survive.
+        let other = seed_item(&pool, "B188 bystander", "stays").await;
+        let other_job = insert_embed_job(&pool, other.id, "h", 5).await;
+        let payload = serde_json::json!({ "item_id": created.id });
+        let foreign_job = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO plugin_queue (plugin_name, queue_name, payload, created_at) \
+             VALUES ('b188_other_plugin', 'q', $1, 0) RETURNING id",
+        )
+        .bind(&payload)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(items.delete(created.id, &admin()).await.expect("delete"));
+
+        assert_eq!(
+            embed_jobs_for(&pool, created.id).await,
+            0,
+            "deleting an item must leave no __kernel_embed row for it"
+        );
+        let survivors =
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM plugin_queue WHERE id = ANY($1)")
+                .bind(vec![other_job, foreign_job])
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            survivors, 2,
+            "other items' and other plugins' rows are untouched"
+        );
+
+        sqlx::query("DELETE FROM plugin_queue WHERE id = $1")
+            .bind(foreign_job)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let _ = Item::delete(&pool, other.id).await;
+        clean(&pool).await;
+        clear_ai_config(&pool).await;
+    });
+}
+
+#[test]
+fn drain_drops_a_job_whose_item_is_gone() {
+    serial(async {
+        let pool = fresh_pool().await;
+        clean(&pool).await;
+        // A job left behind for an item that no longer exists (e.g. queued
+        // before the delete-path fix, or raced with a delete).
+        let missing = Uuid::new_v4();
+        let id = insert_embed_job(&pool, missing, "whatever", 5).await;
+
+        let stats = embed_cron(pool.clone())
+            .await
+            .drain_embed_jobs()
+            .await
+            .unwrap();
+
+        // Treated as done: removed, never retried or dead-lettered, no error.
+        assert_eq!(stats.errors, 0);
+        assert_eq!(stats.retried, 0);
+        assert_eq!(stats.dead_lettered, 0);
+        let gone = sqlx::query("SELECT id FROM plugin_queue WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+        assert!(gone.is_none(), "a job for a missing item must be removed");
+        assert!(
+            embed_index::embed_status(&pool, missing)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        clean(&pool).await;
+    });
+}
