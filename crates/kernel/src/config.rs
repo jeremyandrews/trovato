@@ -534,6 +534,22 @@ pub struct Config {
     /// How long graceful shutdown waits for in-flight work (default: 30s).
     pub shutdown_timeout: Duration,
 
+    /// Whether `serve` and the other subcommands apply pending migrations when
+    /// they start (`MIGRATE_ON_START`, default true). Off, they never change the
+    /// schema: `trovato migrate` does, as its own step, and `serve` waits, not
+    /// ready, until the schema it needs is there.
+    pub migrate_on_start: bool,
+
+    /// How long the server keeps serving, reporting not ready, after SIGTERM
+    /// and before it stops accepting (`SHUTDOWN_DRAIN_SECS`). Defaults to 5
+    /// seconds under Kubernetes (`KUBERNETES_SERVICE_HOST` set) and 0 elsewhere,
+    /// so a single server stops exactly as fast as it always has.
+    pub shutdown_drain: Duration,
+
+    /// Bearer token that sees the health details (pool statistics, services)
+    /// from any address (`HEALTH_TOKEN`). Unset: only a loopback caller does.
+    pub health_token: Option<String>,
+
     /// The configuration request handling reads. See [`RuntimeConfig`].
     pub runtime: RuntimeConfig,
 }
@@ -770,6 +786,15 @@ impl Config {
         let jwt_secret = get("JWT_SECRET");
 
         let shutdown_timeout = Duration::from_secs(parse_or(get, "SHUTDOWN_TIMEOUT_SECS", 30));
+        let migrate_on_start = parse_bool_or(get, "MIGRATE_ON_START", true);
+        let default_drain = if get("KUBERNETES_SERVICE_HOST").is_some() {
+            5
+        } else {
+            0
+        };
+        let shutdown_drain =
+            Duration::from_secs(parse_or(get, "SHUTDOWN_DRAIN_SECS", default_drain));
+        let health_token = get("HEALTH_TOKEN").filter(|t| !t.trim().is_empty());
 
         let runtime = RuntimeConfig {
             static_dirs,
@@ -834,6 +859,9 @@ impl Config {
             trusted_proxies,
             jwt_secret,
             shutdown_timeout,
+            migrate_on_start,
+            shutdown_drain,
+            health_token,
             runtime,
         })
     }
@@ -933,6 +961,32 @@ mod config_tests {
         let mut pairs = vec![("DATABASE_URL", "postgres://localhost/x")];
         pairs.extend_from_slice(extra);
         config_from(&pairs).expect("config resolves")
+    }
+
+    /// The drain defaults to a Kubernetes endpoint update only under Kubernetes;
+    /// an explicit value wins either way. `MIGRATE_ON_START` reads like any
+    /// other boolean setting.
+    #[test]
+    fn drain_and_migrate_on_start_settings() {
+        let k8s = ("KUBERNETES_SERVICE_HOST", "10.0.0.1");
+        assert_eq!(with_db(&[k8s]).shutdown_drain, Duration::from_secs(5));
+        assert_eq!(
+            with_db(&[k8s, ("SHUTDOWN_DRAIN_SECS", "0")]).shutdown_drain,
+            Duration::ZERO
+        );
+        assert_eq!(
+            with_db(&[("SHUTDOWN_DRAIN_SECS", "7")]).shutdown_drain,
+            Duration::from_secs(7)
+        );
+        assert!(!with_db(&[("MIGRATE_ON_START", "false")]).migrate_on_start);
+        assert!(with_db(&[("MIGRATE_ON_START", "true")]).migrate_on_start);
+        assert_eq!(
+            with_db(&[("HEALTH_TOKEN", "t0ken")])
+                .health_token
+                .as_deref(),
+            Some("t0ken")
+        );
+        assert!(with_db(&[("HEALTH_TOKEN", " ")]).health_token.is_none());
     }
 
     /// A bad `TRUSTED_PROXIES` entry or `CLIENT_IP_STORAGE` value refuses to
@@ -1074,6 +1128,16 @@ mod config_tests {
             vec!["url_prefix".to_string(), "accept_header".to_string()]
         );
         assert_eq!(config.shutdown_timeout, Duration::from_secs(30));
+        assert!(
+            config.migrate_on_start,
+            "unset MIGRATE_ON_START keeps migrating at start"
+        );
+        assert_eq!(
+            config.shutdown_drain,
+            Duration::ZERO,
+            "no drain outside Kubernetes"
+        );
+        assert!(config.health_token.is_none());
         assert!(config.jwt_secret.is_none());
         // Unset TRUSTED_PROXIES must trust nothing (RATE-1), not everything.
         assert!(config.trusted_proxies.is_empty());

@@ -49,7 +49,10 @@ pub fn is_exempt(path: &str) -> bool {
                 .strip_prefix(prefix)
                 .is_some_and(|rest| rest.starts_with('/'))
     };
-    under("/user/login") || under("/static") || path == "/health" || under("/cron")
+    under("/user/login")
+        || under("/static")
+        || crate::routes::health::is_probe_path(path)
+        || under("/cron")
 }
 
 /// Whether maintenance mode is on, and its message.

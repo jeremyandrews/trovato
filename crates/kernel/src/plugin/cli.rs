@@ -474,7 +474,9 @@ pub async fn cmd_plugin_migrate(
         }
     } else {
         // All plugins
-        let results = migration::run_all_pending_migrations(pool, &discovered).await?;
+        let mut lock = crate::migrate::MigrationLock::acquire(pool).await?;
+        let results = migration::run_all_pending_migrations(lock.conn(), &discovered).await?;
+        lock.release().await?;
         if results.is_empty() {
             println!("No pending migrations.");
         } else {

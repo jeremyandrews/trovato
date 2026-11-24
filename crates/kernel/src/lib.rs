@@ -26,6 +26,8 @@ pub mod lockout;
 pub mod menu;
 pub mod metrics;
 pub mod middleware;
+pub mod migrate;
+pub mod migration_rule;
 pub mod models;
 pub(crate) mod net_policy;
 pub mod pagination;

@@ -1,0 +1,791 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+//! Upgrades with no downtime (`docs/design/upgrades-and-probes.md`).
+//!
+//! Every test here drives the real `trovato` binary as a child process, against
+//! a scratch database of its own, because what is under test is process
+//! behaviour: two migrators racing, a server that waits for its schema instead
+//! of exiting, an old binary on a newer schema, and what a pod does between
+//! SIGTERM and exit.
+//!
+//! The file is named to sort after every other kernel test target, so adding it
+//! does not move any existing target to a different CI shard
+//! (`scripts/ci-test-shard.sh` partitions by sorted index).
+//!
+//! `previous_release_serves_on_this_schema` is the CI `rollback` job's driver
+//! and skips itself unless `TROVATO_PREVIOUS_BIN` names the previous binary.
+//!
+//! Requires Postgres and Redis; runs in CI.
+
+use std::net::TcpListener as StdListener;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::{Duration, Instant};
+
+use serde_json::Value;
+use sqlx::PgPool;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::process::{Child, Command};
+use trovato_test_utils::ScratchDb;
+
+/// The binary this branch builds.
+fn this_bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_trovato"))
+}
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// How many kernel migrations this binary embeds.
+fn kernel_migration_count() -> i64 {
+    std::fs::read_dir(repo_root().join("crates/kernel/migrations"))
+        .unwrap()
+        .filter(|e| {
+            e.as_ref()
+                .unwrap()
+                .path()
+                .extension()
+                .is_some_and(|x| x == "sql")
+        })
+        .count() as i64
+}
+
+fn free_port() -> u16 {
+    StdListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// A directory under the system temp directory, removed on drop.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(label: &str) -> Self {
+        let dir =
+            std::env::temp_dir().join(format!("trovato-{label}-{}", uuid::Uuid::now_v7().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A command for `bin` with a clean environment: only what is set here, so the
+/// developer's `.env` and the suite's shared `DATABASE_URL` cannot leak in.
+fn command(bin: &Path, database_url: &str, work: &TempDir) -> Command {
+    let mut cmd = Command::new(bin);
+    cmd.env_clear()
+        .current_dir(&work.0)
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("DATABASE_URL", database_url)
+        .env("REDIS_URL", trovato_test_utils::env::redis_url())
+        .env("DATABASE_MAX_CONNECTIONS", "5")
+        .env("RUST_LOG", "warn")
+        .env("TEMPLATES_DIR", repo_root().join("templates"))
+        .env("STATIC_DIR", repo_root().join("static"))
+        .env("UPLOADS_DIR", work.0.join("uploads"))
+        .env("THEMES_DIR", work.0.join("themes"))
+        // No plugins by default: these tests are about the kernel's process
+        // behaviour, and compiling plugin modules would only slow them down.
+        .env("PLUGINS_DIR", work.0.join("plugins"))
+        .env("COOKIE_SECURE", "never")
+        .kill_on_drop(true);
+    cmd
+}
+
+/// A running `trovato serve`.
+struct Server {
+    child: Child,
+    base: String,
+    _work: TempDir,
+}
+
+impl Server {
+    async fn start(bin: &Path, database_url: &str, env: &[(&str, &str)]) -> Self {
+        let work = TempDir::new("serve");
+        let port = free_port();
+        let mut cmd = command(bin, database_url, &work);
+        cmd.arg("serve")
+            .env("PORT", port.to_string())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit());
+        for (k, v) in env {
+            cmd.env(k, v);
+        }
+        let child = cmd.spawn().expect("spawn trovato serve");
+        Self {
+            child,
+            base: format!("http://127.0.0.1:{port}"),
+            _work: work,
+        }
+    }
+
+    /// Status of `GET path`, or `None` when nothing answers.
+    async fn status(&self, path: &str) -> Option<u16> {
+        self.get(path, &[]).await.map(|(s, _)| s)
+    }
+
+    async fn get(&self, path: &str, headers: &[(&str, &str)]) -> Option<(u16, String)> {
+        let mut request = http().get(format!("{}{path}", self.base));
+        for (k, v) in headers {
+            request = request.header(*k, *v);
+        }
+        let response = request.send().await.ok()?;
+        let status = response.status().as_u16();
+        Some((status, response.text().await.unwrap_or_default()))
+    }
+
+    /// Wait until `path` answers `status`, or panic after `within`.
+    async fn wait_for(&mut self, path: &str, status: u16, within: Duration) {
+        let deadline = Instant::now() + within;
+        loop {
+            if self.status(path).await == Some(status) {
+                return;
+            }
+            if let Ok(Some(exit)) = self.child.try_wait() {
+                panic!("trovato serve exited ({exit}) before {path} answered {status}");
+            }
+            assert!(
+                Instant::now() < deadline,
+                "{path} did not answer {status} within {within:?} (last: {:?})",
+                self.status(path).await
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    fn sigterm(&self) {
+        let pid = self.child.id().expect("server still running");
+        let ok = std::process::Command::new("kill")
+            .args(["-TERM", &pid.to_string()])
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "kill -TERM {pid}");
+    }
+
+    async fn stop(mut self) {
+        self.sigterm();
+        let _ = tokio::time::timeout(Duration::from_secs(60), self.child.wait()).await;
+    }
+}
+
+fn http() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(10))
+        .build()
+        .unwrap()
+}
+
+/// Run `trovato migrate <args>` to completion: (success, stdout).
+async fn migrate(
+    bin: &Path,
+    database_url: &str,
+    args: &[&str],
+    plugins: Option<&Path>,
+) -> (bool, String) {
+    let work = TempDir::new("migrate");
+    let mut cmd = command(bin, database_url, &work);
+    cmd.arg("migrate").args(args);
+    if let Some(dir) = plugins {
+        cmd.env("PLUGINS_DIR", dir);
+    }
+    let out = cmd.output().await.expect("run trovato migrate");
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    if !out.status.success() {
+        eprintln!(
+            "trovato migrate {args:?} failed ({}):\n{stdout}\n{}",
+            out.status,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    (out.status.success(), stdout)
+}
+
+async fn applied_versions(pool: &PgPool) -> Option<i64> {
+    let exists: Option<String> = sqlx::query_scalar("SELECT to_regclass('_sqlx_migrations')::text")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    exists?;
+    Some(
+        sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations")
+            .fetch_one(pool)
+            .await
+            .unwrap(),
+    )
+}
+
+/// The full kernel schema, migrated through the library, so a test about the
+/// server does not depend on `trovato migrate`.
+async fn migrated(db: &ScratchDb) {
+    trovato_kernel::db::run_migrations(db.pool())
+        .await
+        .expect("migrate the scratch database");
+}
+
+/// Record a kernel migration this binary does not know, as a newer release's
+/// `trovato migrate` would.
+async fn add_unknown_migration(pool: &PgPool, description: &str) {
+    sqlx::query(
+        "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) \
+         VALUES (29991231000001, $1, true, '\\x00'::bytea, 0)",
+    )
+    .bind(description)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// The numbers in `Applied <k> kernel and <p> plugin migration(s).`.
+fn applied_counts(stdout: &str) -> (i64, i64) {
+    let line = stdout
+        .lines()
+        .find(|l| l.starts_with("Applied "))
+        .unwrap_or_else(|| panic!("no summary line in:\n{stdout}"));
+    let words: Vec<&str> = line.split_whitespace().collect();
+    (words[1].parse().unwrap(), words[4].parse().unwrap())
+}
+
+// =============================================================================
+// trovato migrate
+// =============================================================================
+
+/// Two migrators started together, as two Jobs or a Job and a pod with
+/// `MIGRATE_ON_START` left on would be: both succeed, and between them every
+/// kernel and plugin migration is applied exactly once.
+#[tokio::test(flavor = "multi_thread")]
+async fn two_migrators_at_once_both_succeed_and_apply_each_migration_once() {
+    let db = ScratchDb::create("bg10_race").await;
+    let url = db.url();
+    let plugins = repo_root().join("plugins");
+
+    let bin = this_bin();
+    let (a, b) = tokio::join!(
+        migrate(&bin, &url, &[], Some(&plugins)),
+        migrate(&bin, &url, &[], Some(&plugins)),
+    );
+    assert!(a.0 && b.0, "both migrators must succeed");
+
+    let (ka, pa) = applied_counts(&a.1);
+    let (kb, pb) = applied_counts(&b.1);
+    assert_eq!(
+        ka + kb,
+        kernel_migration_count(),
+        "each kernel migration applied by exactly one of the two"
+    );
+    let plugin_rows: i64 = sqlx::query_scalar("SELECT count(*) FROM plugin_migration")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert!(plugin_rows > 0, "the in-tree plugins have migrations");
+    assert_eq!(pa + pb, plugin_rows, "each plugin migration applied once");
+    assert!(
+        (ka == 0 && pa == 0) || (kb == 0 && pb == 0),
+        "the lock serializes the two runs: one finds nothing to do ({a:?} / {b:?})"
+    );
+
+    // Idempotent: a third run applies nothing and succeeds.
+    let c = migrate(&this_bin(), &url, &[], Some(&plugins)).await;
+    assert!(c.0);
+    assert_eq!(applied_counts(&c.1), (0, 0));
+
+    // And `--status` reports nothing pending.
+    let status = migrate(&this_bin(), &url, &["--status"], Some(&plugins)).await;
+    assert!(status.0);
+    assert!(
+        status.1.contains("Pending: 0"),
+        "status after a full run:\n{}",
+        status.1
+    );
+}
+
+/// `--dry-run` and `--status` change nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn dry_run_and_status_change_nothing() {
+    let db = ScratchDb::create("bg10_dry").await;
+    let url = db.url();
+
+    let dry = migrate(&this_bin(), &url, &["--dry-run"], None).await;
+    assert!(dry.0);
+    assert!(dry.1.contains("Would apply"), "dry run output:\n{}", dry.1);
+    let status = migrate(&this_bin(), &url, &["--status"], None).await;
+    assert!(status.0);
+    assert!(
+        status
+            .1
+            .contains(&format!("Pending: {}", kernel_migration_count())),
+        "status output:\n{}",
+        status.1
+    );
+    assert_eq!(applied_versions(db.pool()).await.unwrap_or(0), 0);
+}
+
+// =============================================================================
+// MIGRATE_ON_START=false
+// =============================================================================
+
+/// With `MIGRATE_ON_START=false`, a server on a schema that is behind waits:
+/// alive, not ready, schema untouched. It does not exit (no crash loop), and it
+/// becomes ready by itself once `trovato migrate` has run.
+#[tokio::test(flavor = "multi_thread")]
+async fn serve_waits_for_pending_migrations_without_changing_the_schema() {
+    let db = ScratchDb::create("bg10_wait").await;
+    let url = db.url();
+
+    let mut server = Server::start(&this_bin(), &url, &[("MIGRATE_ON_START", "false")]).await;
+    server
+        .wait_for("/health/live", 200, Duration::from_secs(60))
+        .await;
+    assert_eq!(server.status("/health/ready").await, Some(503));
+    assert_eq!(server.status("/health").await, Some(503));
+
+    // Long enough for several of the waiting server's checks.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert!(
+        server.child.try_wait().unwrap().is_none(),
+        "serve must wait, not exit"
+    );
+    assert_eq!(server.status("/health/live").await, Some(200));
+    assert_eq!(server.status("/health/ready").await, Some(503));
+    assert_eq!(
+        applied_versions(db.pool()).await.unwrap_or(0),
+        0,
+        "serve with MIGRATE_ON_START=false must not migrate"
+    );
+
+    // The migration Job runs; the waiting pod becomes ready on its own.
+    assert!(migrate(&this_bin(), &url, &[], None).await.0);
+    server
+        .wait_for("/health/ready", 200, Duration::from_secs(60))
+        .await;
+    assert_eq!(server.status("/health").await, Some(200));
+    server.stop().await;
+}
+
+// =============================================================================
+// The previous binary on a newer schema
+// =============================================================================
+
+/// A binary built without the newest migration starts and serves on a schema
+/// that has it, both with `MIGRATE_ON_START` on (a single server rolled back)
+/// and off (the previous image redeployed on Kubernetes).
+#[tokio::test(flavor = "multi_thread")]
+async fn binary_without_newest_migration_serves_on_newer_schema() {
+    let db = ScratchDb::create("bg10_newer").await;
+    let url = db.url();
+    migrated(&db).await;
+    add_unknown_migration(db.pool(), "add item summary column").await;
+
+    for mode in ["true", "false"] {
+        let mut server = Server::start(&this_bin(), &url, &[("MIGRATE_ON_START", mode)]).await;
+        server
+            .wait_for("/health/ready", 200, Duration::from_secs(60))
+            .await;
+        // The site itself answers (the installer, on this fresh database).
+        assert!(server.status("/").await.is_some_and(|s| s < 500));
+        server.stop().await;
+    }
+
+    let still_there: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations WHERE version = 29991231000001")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(still_there, 1, "the newer migration's record is untouched");
+}
+
+/// A newer migration whose name marks it incompatible keeps an older binary
+/// not ready: a rollback across it fails loudly instead of serving on a schema
+/// the old code cannot use.
+#[tokio::test(flavor = "multi_thread")]
+async fn binary_refuses_a_newer_incompatible_migration() {
+    let db = ScratchDb::create("bg10_incompat").await;
+    let url = db.url();
+    migrated(&db).await;
+    add_unknown_migration(db.pool(), "incompatible drop item legacy").await;
+
+    let mut server = Server::start(&this_bin(), &url, &[("MIGRATE_ON_START", "false")]).await;
+    server
+        .wait_for("/health/live", 200, Duration::from_secs(60))
+        .await;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert_eq!(server.status("/health/ready").await, Some(503));
+    server.stop().await;
+
+    // `trovato migrate` refuses it too, with a nonzero exit.
+    assert!(!migrate(&this_bin(), &url, &[], None).await.0);
+}
+
+// =============================================================================
+// Probes
+// =============================================================================
+
+/// A TCP proxy in front of Postgres that the test can cut, which is how a test
+/// "stops Postgres" without touching the server every other test is using.
+struct PgProxy {
+    port: u16,
+    accept: tokio::task::JoinHandle<()>,
+    conns: std::sync::Arc<parking_lot::Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+}
+
+impl PgProxy {
+    async fn start(upstream: String) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let conns = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let tracked = conns.clone();
+        let accept = tokio::spawn(async move {
+            while let Ok((mut inbound, _)) = listener.accept().await {
+                let upstream = upstream.clone();
+                tracked.lock().push(tokio::spawn(async move {
+                    if let Ok(mut outbound) = TcpStream::connect(upstream).await {
+                        let _ = tokio::io::copy_bidirectional(&mut inbound, &mut outbound).await;
+                    }
+                }));
+            }
+        });
+        Self {
+            port,
+            accept,
+            conns,
+        }
+    }
+
+    /// Postgres "goes away": no new connections, existing ones cut.
+    fn cut(&self) {
+        self.accept.abort();
+        for conn in self.conns.lock().drain(..) {
+            conn.abort();
+        }
+    }
+}
+
+/// `postgres://u:p@host:port/db` → (`host:port`, the URL through `proxy_port`).
+fn through_proxy(url: &str, proxy_port: u16) -> (String, String) {
+    let (scheme, rest) = url.split_once("://").unwrap();
+    let (auth, tail) = rest.split_once('@').unwrap();
+    let (host_port, path) = tail.split_once('/').unwrap();
+    (
+        host_port.to_string(),
+        format!("{scheme}://{auth}@127.0.0.1:{proxy_port}/{path}"),
+    )
+}
+
+/// Liveness never looks at a dependency, so a database blip takes a pod out of
+/// rotation (readiness) without Kubernetes restarting it (liveness).
+#[tokio::test(flavor = "multi_thread")]
+async fn liveness_survives_postgres_going_away_and_readiness_does_not() {
+    let db = ScratchDb::create("bg10_pgdown").await;
+    migrated(&db).await;
+
+    let (upstream, _) = through_proxy(&db.url(), 0);
+    let proxy = PgProxy::start(upstream).await;
+    let (_, proxied) = through_proxy(&db.url(), proxy.port);
+
+    let mut server = Server::start(&this_bin(), &proxied, &[]).await;
+    server
+        .wait_for("/health/ready", 200, Duration::from_secs(60))
+        .await;
+    assert_eq!(server.status("/health/live").await, Some(200));
+
+    proxy.cut();
+
+    server
+        .wait_for("/health/ready", 503, Duration::from_secs(15))
+        .await;
+    assert_eq!(server.status("/health").await, Some(503));
+    for _ in 0..10 {
+        assert_eq!(server.status("/health/live").await, Some(200));
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    server.stop().await;
+}
+
+/// The anonymous answer is the status word. Pool statistics and the services
+/// report go only to a loopback caller with no forwarding header (an operator
+/// on the box) or to a caller with the configured token.
+#[tokio::test(flavor = "multi_thread")]
+async fn anonymous_health_reveals_no_pool_statistics() {
+    let db = ScratchDb::create("bg10_leak").await;
+    migrated(&db).await;
+    let token = "health-token-for-the-zero-downtime-test";
+    let mut server = Server::start(&this_bin(), &db.url(), &[("HEALTH_TOKEN", token)]).await;
+    server
+        .wait_for("/health/ready", 200, Duration::from_secs(60))
+        .await;
+
+    // A visitor through a reverse proxy on the same host: loopback peer, but a
+    // forwarding header, so not an operator.
+    for header in [
+        ("x-forwarded-for", "203.0.113.7"),
+        ("forwarded", "for=203.0.113.7"),
+        ("x-real-ip", "203.0.113.7"),
+    ] {
+        for path in ["/health", "/health/ready", "/health/live"] {
+            let (status, body) = server.get(path, &[header]).await.unwrap();
+            assert_eq!(status, 200, "{path} with {header:?}");
+            let json: Value = serde_json::from_str(&body).unwrap();
+            let keys: Vec<&String> = json.as_object().unwrap().keys().collect();
+            assert_eq!(
+                keys,
+                vec!["status"],
+                "{path} with {header:?} leaked: {body}"
+            );
+        }
+    }
+    // A wrong token is anonymous too.
+    let (_, body) = server
+        .get(
+            "/health",
+            &[
+                ("x-forwarded-for", "203.0.113.7"),
+                ("authorization", "Bearer not-the-token"),
+            ],
+        )
+        .await
+        .unwrap();
+    assert!(!body.contains("pool"), "wrong token got details: {body}");
+
+    // The token holder sees the details from anywhere.
+    let bearer = format!("Bearer {token}");
+    let (_, body) = server
+        .get(
+            "/health",
+            &[
+                ("x-forwarded-for", "203.0.113.7"),
+                ("authorization", &bearer),
+            ],
+        )
+        .await
+        .unwrap();
+    let json: Value = serde_json::from_str(&body).unwrap();
+    assert!(json["pool"]["size"].is_number(), "token holder: {body}");
+    assert!(json["services"].is_object(), "token holder: {body}");
+
+    // So does an operator on the box.
+    let (_, body) = server.get("/health", &[]).await.unwrap();
+    let json: Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(json["postgres"], true, "loopback operator: {body}");
+    assert!(json["pool"].is_object(), "loopback operator: {body}");
+
+    // No probe sets a cookie.
+    for path in ["/health", "/health/ready", "/health/live"] {
+        let response = http()
+            .get(format!("{}{path}", server.base))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            response.headers().get("set-cookie").is_none(),
+            "{path} set a cookie"
+        );
+    }
+    server.stop().await;
+}
+
+/// The probes have no rate-limit bucket: far more probes than the visitor
+/// `page` bucket allows in a minute all answer.
+#[tokio::test(flavor = "multi_thread")]
+async fn probes_are_not_rate_limited() {
+    let db = ScratchDb::create("bg10_probe_rl").await;
+    migrated(&db).await;
+    let mut server = Server::start(
+        &this_bin(),
+        &db.url(),
+        &[("TROVATO_RATE_LIMIT_PAGE", "5/60")],
+    )
+    .await;
+    server
+        .wait_for("/health/ready", 200, Duration::from_secs(60))
+        .await;
+    for path in ["/health", "/health/ready", "/health/live"] {
+        for _ in 0..20 {
+            assert_eq!(server.status(path).await, Some(200), "{path}");
+        }
+    }
+    server.stop().await;
+}
+
+// =============================================================================
+// Shutdown
+// =============================================================================
+
+/// After SIGTERM the pod reports not ready at once, keeps serving for the drain
+/// period, and a request already in flight still gets its answer.
+#[tokio::test(flavor = "multi_thread")]
+async fn sigterm_turns_readiness_off_and_finishes_in_flight_requests() {
+    let db = ScratchDb::create("bg10_drain").await;
+    migrated(&db).await;
+    let mut server = Server::start(
+        &this_bin(),
+        &db.url(),
+        &[
+            ("SHUTDOWN_DRAIN_SECS", "3"),
+            ("SHUTDOWN_TIMEOUT_SECS", "20"),
+        ],
+    )
+    .await;
+    server
+        .wait_for("/health/ready", 200, Duration::from_secs(60))
+        .await;
+
+    // A slow request: headers sent, body still to come, so its handler is
+    // waiting on the client when the signal arrives.
+    let addr = server.base.trim_start_matches("http://").to_string();
+    let mut slow = TcpStream::connect(&addr).await.unwrap();
+    let body = "username=x";
+    slow.write_all(
+        format!(
+            "POST /install/admin HTTP/1.1\r\nHost: {addr}\r\n\
+             Content-Type: application/x-www-form-urlencoded\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let signalled = Instant::now();
+    server.sigterm();
+
+    // Not ready within the drain, while still answering.
+    server
+        .wait_for("/health/ready", 503, Duration::from_secs(2))
+        .await;
+    assert!(signalled.elapsed() < Duration::from_secs(3));
+    assert_eq!(server.status("/health/live").await, Some(200));
+
+    // Finish the slow request after the drain has ended.
+    tokio::time::sleep(Duration::from_secs(4).saturating_sub(signalled.elapsed())).await;
+    slow.write_all(body.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    tokio::time::timeout(Duration::from_secs(10), slow.read_to_string(&mut response))
+        .await
+        .expect("the in-flight request must be answered")
+        .unwrap();
+    assert!(
+        response.starts_with("HTTP/1.1 "),
+        "in-flight request got: {response:?}"
+    );
+
+    let exit = tokio::time::timeout(Duration::from_secs(30), server.child.wait())
+        .await
+        .expect("the server exits after the drain")
+        .unwrap();
+    assert!(exit.success(), "clean exit after SIGTERM, got {exit}");
+}
+
+// =============================================================================
+// The CI rollback job
+// =============================================================================
+
+/// The previous binary (`TROVATO_PREVIOUS_BIN`) serves on the schema this
+/// branch's `trovato migrate` produced: ready, an anonymous page, a login.
+///
+/// Skips unless `TROVATO_PREVIOUS_BIN` is set; the CI `rollback` job sets it.
+/// `TROVATO_PREVIOUS_ROOT` points at the previous checkout's templates and
+/// static files (default: this tree's).
+#[tokio::test(flavor = "multi_thread")]
+async fn previous_release_serves_on_this_schema() {
+    let Some(previous) = std::env::var_os("TROVATO_PREVIOUS_BIN").map(PathBuf::from) else {
+        eprintln!("TROVATO_PREVIOUS_BIN not set; skipping the rollback smoke test");
+        return;
+    };
+    let previous_root = std::env::var_os("TROVATO_PREVIOUS_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(repo_root);
+
+    let db = ScratchDb::create("bg10_rollback").await;
+    let url = db.url();
+
+    // This branch migrates and installs the site.
+    let (ok, out) = migrate(&this_bin(), &url, &[], None).await;
+    assert!(ok, "this branch's migrate");
+    println!("this branch's trovato migrate: {}", out.trim());
+    let mut current = Server::start(&this_bin(), &url, &[("MIGRATE_ON_START", "false")]).await;
+    current
+        .wait_for("/health/ready", 200, Duration::from_secs(120))
+        .await;
+    let admin = "rollbackadmin";
+    let password = "rollback-admin-password";
+    install(&current.base, admin, password).await;
+    current.stop().await;
+
+    // The previous binary on that schema.
+    let templates = previous_root.join("templates");
+    let statics = previous_root.join("static");
+    let mut old = Server::start(
+        &previous,
+        &url,
+        &[
+            ("TEMPLATES_DIR", templates.to_str().unwrap()),
+            ("STATIC_DIR", statics.to_str().unwrap()),
+        ],
+    )
+    .await;
+    // A binary from before the probes existed has only `/health`.
+    old.wait_for("/health", 200, Duration::from_secs(120)).await;
+    let ready = old.status("/health/ready").await;
+    assert!(
+        ready == Some(200) || ready == Some(404),
+        "previous binary readiness: {ready:?}"
+    );
+    println!("previous binary: /health 200, /health/ready {ready:?}");
+
+    let front = old.get("/", &[]).await.unwrap();
+    assert_eq!(front.0, 200, "anonymous front page on the previous binary");
+    println!("previous binary: anonymous GET / -> {}", front.0);
+
+    let login = http()
+        .post(format!("{}/user/login/json", old.base))
+        .json(&serde_json::json!({"username": admin, "password": password}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(login.status().as_u16(), 200, "login on the previous binary");
+    println!("previous binary: POST /user/login/json -> 200");
+    old.stop().await;
+}
+
+/// Run the web installer: an administrator, then the site name.
+async fn install(base: &str, admin: &str, password: &str) {
+    let client = http();
+    let response = client
+        .post(format!("{base}/install/admin"))
+        .form(&[
+            ("username", admin),
+            ("email", "admin@rollback.test"),
+            ("password", password),
+            ("password_confirm", password),
+        ])
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        response.status().is_redirection(),
+        "install admin: {}",
+        response.status()
+    );
+    let response = client
+        .post(format!("{base}/install/site"))
+        .form(&[("site_name", "Rollback")])
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        response.status().is_redirection(),
+        "install site: {}",
+        response.status()
+    );
+}

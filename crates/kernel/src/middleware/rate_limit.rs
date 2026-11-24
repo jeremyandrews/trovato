@@ -892,6 +892,11 @@ pub async fn check_rate_limit(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
+    // Probes have no bucket: each costs at most one cached check a second
+    // (`routes::health`), and a kubelet must never be turned away.
+    if crate::routes::health::is_probe_path(request.uri().path()) {
+        return next.run(request).await;
+    }
     let category = categorize_path_with(
         request.uri().path(),
         request.method().as_str(),
@@ -966,6 +971,9 @@ pub async fn check_authenticated_rate_limit(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
+    if crate::routes::health::is_probe_path(request.uri().path()) {
+        return next.run(request).await;
+    }
     let session = request
         .extensions()
         .get::<tower_sessions::Session>()

@@ -8,18 +8,21 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 
 use anyhow::{Result, bail};
-use sqlx::{AssertSqlSafe, PgPool, Row};
+use sqlx::{AssertSqlSafe, Connection, PgConnection, PgPool, Row};
 use tracing::{debug, info, warn};
 
 use super::error::PluginError;
 use super::info_parser::PluginInfo;
 
 /// Get the list of already-applied migration names for a plugin.
-pub async fn get_applied_migrations(pool: &PgPool, plugin_name: &str) -> Result<Vec<String>> {
+pub async fn get_applied_migrations(
+    conn: &mut PgConnection,
+    plugin_name: &str,
+) -> Result<Vec<String>> {
     let rows =
         sqlx::query("SELECT migration FROM plugin_migration WHERE plugin = $1 ORDER BY migration")
             .bind(plugin_name)
-            .fetch_all(pool)
+            .fetch_all(conn)
             .await?;
 
     Ok(rows.iter().map(|r| r.get("migration")).collect())
@@ -32,8 +35,24 @@ pub async fn get_applied_migrations(pool: &PgPool, plugin_name: &str) -> Result<
 /// `plugin_migration`.
 ///
 /// Returns the list of newly applied migration names.
+///
+/// Takes the migration lock ([`crate::migrate::MigrationLock`]) for the run,
+/// so two processes never apply the same file.
 pub async fn run_plugin_migrations(
     pool: &PgPool,
+    plugin_name: &str,
+    info: &PluginInfo,
+    plugin_dir: &Path,
+) -> Result<Vec<String>> {
+    let mut lock = crate::migrate::MigrationLock::acquire(pool).await?;
+    let applied = run_plugin_migrations_on(lock.conn(), plugin_name, info, plugin_dir).await?;
+    lock.release().await?;
+    Ok(applied)
+}
+
+/// [`run_plugin_migrations`] on a connection that already holds the lock.
+pub async fn run_plugin_migrations_on(
+    conn: &mut PgConnection,
     plugin_name: &str,
     info: &PluginInfo,
     plugin_dir: &Path,
@@ -42,7 +61,7 @@ pub async fn run_plugin_migrations(
         return Ok(Vec::new());
     }
 
-    let applied = get_applied_migrations(pool, plugin_name).await?;
+    let applied = get_applied_migrations(conn, plugin_name).await?;
     let applied_set: HashSet<&str> = applied.iter().map(|s| s.as_str()).collect();
 
     // Collect pending migrations
@@ -66,7 +85,7 @@ pub async fn run_plugin_migrations(
     );
 
     // Run all pending migrations in a single transaction (atomic per plugin)
-    let mut tx = pool.begin().await?;
+    let mut tx = conn.begin().await?;
     let now = chrono::Utc::now().timestamp();
     let mut newly_applied = Vec::new();
 
@@ -236,7 +255,7 @@ pub fn resolve_migration_order(plugins: &HashMap<String, PluginInfo>) -> Result<
 
 /// Run all pending migrations for all plugins in dependency order.
 pub async fn run_all_pending_migrations(
-    pool: &PgPool,
+    conn: &mut PgConnection,
     plugins: &HashMap<String, (PluginInfo, std::path::PathBuf)>,
 ) -> Result<HashMap<String, Vec<String>>> {
     // Build a PluginInfo-only map for ordering
@@ -255,7 +274,7 @@ pub async fn run_all_pending_migrations(
                 continue;
             }
 
-            match run_plugin_migrations(pool, plugin_name, info, dir).await {
+            match run_plugin_migrations_on(&mut *conn, plugin_name, info, dir).await {
                 Ok(applied) => {
                     if !applied.is_empty() {
                         results.insert(plugin_name.clone(), applied);

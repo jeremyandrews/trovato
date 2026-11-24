@@ -27,6 +27,8 @@ mod lockout;
 mod menu;
 mod metrics;
 mod middleware;
+mod migrate;
+mod migration_rule;
 mod models;
 mod net_policy;
 mod pagination;
@@ -91,6 +93,22 @@ enum Commands {
     User {
         #[command(subcommand)]
         action: UserAction,
+    },
+    /// Apply pending kernel and plugin migrations, under one lock.
+    ///
+    /// Safe to run from several places at once: a second run waits for the
+    /// first, then finds nothing to do. Exits nonzero on any failure.
+    Migrate {
+        /// List applied, pending and unknown (newer) migrations; change nothing.
+        #[arg(long, conflicts_with = "dry_run")]
+        status: bool,
+        /// List what would be applied; change nothing.
+        #[arg(long)]
+        dry_run: bool,
+        /// Seconds a migration statement may wait for a table lock before it
+        /// fails (and the migration rolls back); 0 waits forever.
+        #[arg(long, default_value_t = 10)]
+        lock_timeout: u64,
     },
 }
 
@@ -193,7 +211,78 @@ async fn main() -> Result<()> {
         Some(Commands::Plugin { action }) => run_plugin_command(action).await,
         Some(Commands::Config { action }) => run_config_command(action).await,
         Some(Commands::User { action }) => run_user_command(action).await,
+        Some(Commands::Migrate {
+            status,
+            dry_run,
+            lock_timeout,
+        }) => run_migrate_command(status, dry_run, lock_timeout).await,
     }
+}
+
+/// `trovato migrate`: the migration step of an upgrade, run before new
+/// servers start (`docs/design/upgrades-and-probes.md` §1).
+async fn run_migrate_command(status: bool, dry_run: bool, lock_timeout: u64) -> Result<()> {
+    let config = Config::from_env().context("failed to load configuration")?;
+
+    if status || dry_run {
+        // No lock and no writes, so a report never waits on, or blocks, a run.
+        let report = migrate::read_report(
+            &config.database_url,
+            db::migrator(),
+            &config.plugins_dirs,
+            &config.disabled_plugins,
+        )
+        .await?;
+        if status {
+            print!("{}", report.render_status());
+        } else {
+            print!("{}", report.render_dry_run());
+        }
+        return Ok(());
+    }
+
+    let mut lock = migrate::MigrationLock::connect(&config.database_url).await?;
+    lock.set_lock_timeout(std::time::Duration::from_secs(lock_timeout))
+        .await?;
+    let applied = migrate::run(
+        &mut lock,
+        db::migrator(),
+        &config.plugins_dirs,
+        &config.disabled_plugins,
+    )
+    .await?;
+    lock.release().await?;
+    println!(
+        "Applied {} kernel and {} plugin migration(s).",
+        applied.kernel, applied.plugins
+    );
+    Ok(())
+}
+
+/// What a subcommand other than `serve` and `migrate` does about the schema
+/// when it starts: migrate it (`MIGRATE_ON_START`, the default), or refuse to
+/// run on a schema that is behind this binary.
+async fn prepare_schema_for_cli(pool: &sqlx::PgPool, config: &Config) -> Result<()> {
+    if config.migrate_on_start {
+        return db::run_migrations(pool)
+            .await
+            .context("failed to run migrations");
+    }
+    let report = migrate::read_report(
+        &config.database_url,
+        db::migrator(),
+        &config.plugins_dirs,
+        &config.disabled_plugins,
+    )
+    .await?;
+    if !report.kernel.pending.is_empty() || !report.kernel.problems.is_empty() {
+        anyhow::bail!(
+            "the database schema is behind this binary (MIGRATE_ON_START=false): \
+             run `trovato migrate` first.\n{}",
+            report.render_status()
+        );
+    }
+    Ok(())
 }
 
 // path_alias_fallback lives in middleware::path_alias and is reused by tests.
@@ -208,6 +297,19 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
 
     // Refuse to start on an uploads directory this server cannot use.
     crate::file::check_writable(&config.uploads_dir).await?;
+
+    // With migrations as their own step, wait (alive, not ready) until the
+    // schema this binary needs is there, rather than exit and crash loop.
+    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+    let early_listener = if config.migrate_on_start {
+        None
+    } else {
+        match wait_for_schema(&config, addr).await? {
+            Some(listener) => Some(listener),
+            // Asked to stop while waiting.
+            None => return Ok(()),
+        }
+    };
 
     // Initialize application state (database connections, etc.)
     let state = AppState::new(&config)
@@ -280,12 +382,21 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
     // enabled in site_config at boot. The default deployment runs no queue
     // scheduler and keeps the external-cron cadence contract; enabling the
     // runner is an explicit, config-gated opt-in for sub-cron latency.
+    //
+    // Its token is cancelled when shutdown begins, not when the server has
+    // stopped: it takes no new batch from SIGTERM on, and a batch it has claimed
+    // finishes or, if the process is gone first, is reclaimed when its lease
+    // expires.
+    let workers_token = tokio_util::sync::CancellationToken::new();
+    let mut queue_runner = None;
     {
         let cron = state.cron().clone();
         let runner_config = cron.queue_runner_config().await;
         if runner_config.enabled {
-            let token = shutdown_token.clone();
-            tokio::spawn(async move { cron.run_queue_runner(token).await });
+            let token = workers_token.clone();
+            queue_runner = Some(tokio::spawn(
+                async move { cron.run_queue_runner(token).await },
+            ));
             info!(
                 poll_interval_secs = runner_config.poll_interval_secs,
                 "Resident plugin-queue runner enabled (cron drain steps aside)"
@@ -497,26 +608,73 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
     // Keep a reference to the DB pool for graceful shutdown cleanup.
     let db_pool = state.db().clone();
 
-    // Start the server
-    let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .context("failed to bind to address")?;
+    // Start the server: on the socket the waiting server holds, if there is
+    // one, handed over only now so the probes answer while the app is built.
+    let listener = match early_listener {
+        Some(waiting) => waiting.hand_over().await?,
+        None => tokio::net::TcpListener::bind(addr)
+            .await
+            .context("failed to bind to address")?,
+    };
 
     info!(%addr, "Server listening");
 
-    axum::serve(
+    // Shutdown (`docs/design/upgrades-and-probes.md` §6). At the signal,
+    // readiness turns false and the queue runner stops taking work; on SIGTERM
+    // the server keeps serving for the drain; then it stops accepting and
+    // finishes in-flight requests, for at most SHUTDOWN_TIMEOUT_SECS.
+    let (stopping_tx, stopping_rx) = tokio::sync::oneshot::channel::<()>();
+    let shutdown = {
+        let probes = state.probes().clone();
+        let workers = workers_token.clone();
+        let drain = config.shutdown_drain;
+        async move {
+            let signal = shutdown_signal().await;
+            probes.start_draining();
+            workers.cancel();
+            if signal == Signal::Terminate && !drain.is_zero() {
+                info!(
+                    drain_secs = drain.as_secs(),
+                    "Draining: reporting not ready, still serving"
+                );
+                tokio::time::sleep(drain).await;
+            }
+            info!("No longer accepting connections; finishing in-flight requests");
+            let _ = stopping_tx.send(());
+        }
+    };
+    let server = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .context("server error")?;
+    .with_graceful_shutdown(shutdown);
+    let in_flight_deadline = async {
+        match stopping_rx.await {
+            Ok(()) => tokio::time::sleep(config.shutdown_timeout).await,
+            Err(_) => std::future::pending().await,
+        }
+    };
+    tokio::select! {
+        result = std::future::IntoFuture::into_future(server) => result.context("server error")?,
+        () = in_flight_deadline => warn!(
+            timeout_secs = config.shutdown_timeout.as_secs(),
+            "In-flight requests did not finish within SHUTDOWN_TIMEOUT_SECS; closing them"
+        ),
+    }
 
     // Server has stopped accepting new connections.
     // Signal all background tasks to stop.
     info!("Signaling background tasks to shut down...");
     shutdown_token.cancel();
+    if let Some(runner) = queue_runner
+        && tokio::time::timeout(config.shutdown_timeout, runner)
+            .await
+            .is_err()
+    {
+        warn!(
+            "The queue runner did not finish its batch; its claims are reclaimed when their leases expire"
+        );
+    }
 
     // Give background tasks a moment to finish their current iteration.
     tokio::time::sleep(std::time::Duration::from_millis(500)).await;
@@ -540,8 +698,110 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
     Ok(())
 }
 
+/// The socket `serve` binds while it waits for its schema
+/// (`MIGRATE_ON_START=false`), and the probe-only server answering on it.
+struct WaitingServer {
+    listener: std::net::TcpListener,
+    stop: tokio::sync::oneshot::Sender<()>,
+    task: tokio::task::JoinHandle<std::io::Result<()>>,
+}
+
+impl WaitingServer {
+    /// Stop answering probes and give the socket to the full server.
+    /// Connections that arrive in between wait in the socket's backlog.
+    async fn hand_over(self) -> Result<tokio::net::TcpListener> {
+        let _ = self.stop.send(());
+        let _ = self.task.await;
+        tokio::net::TcpListener::from_std(self.listener)
+            .context("failed to take over the listening socket")
+    }
+}
+
+/// `serve` with `MIGRATE_ON_START=false`: bind the port and answer the probes
+/// (alive, not ready) until the schema has everything this binary needs,
+/// checking every two seconds, so a pod started before its migration Job has
+/// finished waits instead of crash looping. Changes nothing in the database.
+///
+/// Returns the waiting server, still answering, for the caller to
+/// [`hand_over`](WaitingServer::hand_over) once the application is built; or
+/// `None` when a shutdown signal came first.
+async fn wait_for_schema(config: &Config, addr: SocketAddr) -> Result<Option<WaitingServer>> {
+    let listener = std::net::TcpListener::bind(addr).context("failed to bind to address")?;
+    listener
+        .set_nonblocking(true)
+        .context("failed to configure the listening socket")?;
+    let probe_listener = tokio::net::TcpListener::from_std(
+        listener
+            .try_clone()
+            .context("failed to share the listening socket")?,
+    )?;
+    let (stop, stop_rx) = tokio::sync::oneshot::channel::<()>();
+    let task = tokio::spawn(async move {
+        axum::serve(probe_listener, routes::health::waiting_router())
+            .with_graceful_shutdown(async {
+                let _ = stop_rx.await;
+            })
+            .await
+    });
+    let waiting = WaitingServer {
+        listener,
+        stop,
+        task,
+    };
+    info!(%addr, "MIGRATE_ON_START=false: checking the schema; answering probes only until it is ready");
+
+    let signal = shutdown_signal();
+    tokio::pin!(signal);
+    let mut last_reason = String::new();
+    loop {
+        let report = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            migrate::read_report(
+                &config.database_url,
+                db::migrator(),
+                &config.plugins_dirs,
+                &config.disabled_plugins,
+            ),
+        )
+        .await;
+        let reason = match report {
+            Ok(Ok(report)) if report.ready() => return Ok(Some(waiting)),
+            Ok(Ok(report)) => {
+                let mut reason = format!("{} migration(s) pending", report.pending());
+                for problem in report.problems() {
+                    reason.push_str("; ");
+                    reason.push_str(&problem);
+                }
+                reason
+            }
+            Ok(Err(e)) => format!("{e:#}"),
+            Err(_) => "PostgreSQL did not answer within 5 seconds".to_string(),
+        };
+        if reason != last_reason {
+            warn!(%reason, "Not ready: waiting for `trovato migrate`");
+            last_reason = reason;
+        }
+        tokio::select! {
+            _ = &mut signal => {
+                let _ = waiting.hand_over().await;
+                return Ok(None);
+            }
+            () = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+        }
+    }
+}
+
+/// Which signal asked the process to stop.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Signal {
+    /// SIGINT (Ctrl-C at a terminal): stop without a drain.
+    Interrupt,
+    /// SIGTERM (Kubernetes, systemd, `docker stop`): drain first.
+    Terminate,
+}
+
 /// Wait for a shutdown signal (SIGINT or SIGTERM).
-async fn shutdown_signal() {
+async fn shutdown_signal() -> Signal {
     let ctrl_c = tokio::signal::ctrl_c();
 
     #[cfg(unix)]
@@ -549,14 +809,21 @@ async fn shutdown_signal() {
         match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
             Ok(mut sigterm) => {
                 tokio::select! {
-                    _ = ctrl_c => info!("Received SIGINT, starting graceful shutdown"),
-                    _ = sigterm.recv() => info!("Received SIGTERM, starting graceful shutdown"),
+                    _ = ctrl_c => {
+                        info!("Received SIGINT, starting graceful shutdown");
+                        Signal::Interrupt
+                    }
+                    _ = sigterm.recv() => {
+                        info!("Received SIGTERM, starting graceful shutdown");
+                        Signal::Terminate
+                    }
                 }
             }
             Err(e) => {
                 warn!(error = %e, "Failed to install SIGTERM handler, using SIGINT only");
                 ctrl_c.await.ok();
                 info!("Received SIGINT, starting graceful shutdown");
+                Signal::Interrupt
             }
         }
     }
@@ -565,6 +832,7 @@ async fn shutdown_signal() {
     {
         ctrl_c.await.ok();
         info!("Received SIGINT, starting graceful shutdown");
+        Signal::Interrupt
     }
 }
 
@@ -582,10 +850,8 @@ async fn run_plugin_command(action: PluginAction) -> Result<()> {
         .await
         .context("failed to create database pool")?;
 
-    // Run kernel migrations to ensure plugin_status table exists
-    db::run_migrations(&pool)
-        .await
-        .context("failed to run migrations")?;
+    // The kernel schema has to be current: plugin_status is a kernel table.
+    prepare_schema_for_cli(&pool, &config).await?;
 
     match action {
         PluginAction::New { .. } => unreachable!("handled above"),
@@ -622,9 +888,7 @@ async fn run_config_command(action: ConfigAction) -> Result<()> {
         .await
         .context("failed to create database pool")?;
 
-    db::run_migrations(&pool)
-        .await
-        .context("failed to run migrations")?;
+    prepare_schema_for_cli(&pool, &config).await?;
 
     // `file` config entities carry bytes, which go to the site's file storage.
     let files = std::sync::Arc::new(crate::file::FileService::new(
@@ -702,9 +966,7 @@ async fn run_user_command(action: UserAction) -> Result<()> {
         .await
         .context("failed to create database pool")?;
 
-    db::run_migrations(&pool)
-        .await
-        .context("failed to run migrations")?;
+    prepare_schema_for_cli(&pool, &config).await?;
 
     match action {
         UserAction::ResetPassword { username, password } => {

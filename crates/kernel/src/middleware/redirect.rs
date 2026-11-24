@@ -149,7 +149,7 @@ pub async fn check_redirect(
         || path.starts_with("/file")
         || path.starts_with("/install")
         || path.starts_with("/oauth")
-        || path == "/health"
+        || crate::routes::health::is_probe_path(path)
         || path == "/"
     {
         return next.run(request).await;
