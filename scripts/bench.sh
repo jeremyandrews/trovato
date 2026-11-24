@@ -44,7 +44,7 @@ while [ $# -gt 0 ]; do
     --pages) pages="$2"; shift 2 ;;
     --save) mode=save; shift ;;
     --compare) mode=compare; shift ;;
-    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p;}' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done

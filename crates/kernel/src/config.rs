@@ -834,7 +834,8 @@ impl Config {
         }
 
         let metrics_token = get("METRICS_TOKEN").filter(|t| !t.trim().is_empty());
-        // `/metrics` has no rate limit either.
+        // A token that opens `/metrics` from anywhere must not be guessable:
+        // only the page rate limit stands in the way.
         if let Some(token) = &metrics_token
             && token.len() < MIN_HEALTH_TOKEN_LEN
         {

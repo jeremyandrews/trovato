@@ -5,23 +5,51 @@
 //!
 //! Built with `telemetry::subscriber` and `export::provider`, as `main` builds
 //! them (batch processor, parent-based ratio sampler), with an in-memory
-//! exporter in place of OTLP. The statement is handed to the exporter the way
-//! the query listener hands it over, so no database is needed. Its own test
-//! binary, because export is installed once per process.
+//! exporter in place of OTLP. The statement is sqlx's own event, emitted by
+//! hand inside a request profile, so it goes through the query listener as a
+//! real one does and no database is needed. Fingerprint collection is off, as
+//! on a server by default, so the statement's text is read only because export
+//! wants it. Its own test binary, because export is installed once per process.
 
+use std::sync::Arc;
 use std::time::Duration;
 
-use opentelemetry::trace::{SpanContext, TraceContextExt as _, TraceFlags, TraceState};
+use opentelemetry::trace::{SpanContext, SpanKind, TraceContextExt as _, TraceFlags, TraceState};
 use opentelemetry::trace::{SpanId, TraceId};
 use opentelemetry_sdk::trace::InMemorySpanExporter;
 use tracing_opentelemetry::OpenTelemetrySpanExt as _;
 use tracing_subscriber::EnvFilter;
 use trovato_kernel::system_log::SystemLogLayer;
 use trovato_kernel::telemetry::export::{self, ExportSettings};
+use trovato_kernel::telemetry::profile::{self, RequestProfile};
 use trovato_kernel::telemetry::{TARGET, subscriber};
 
 /// A statement as code built it with `format!`, a literal inside.
 const SQL: &str = "select * from users where mail = 'alice@example.com' and id = $1";
+
+/// What sqlx reports when a statement finishes: its event, with the fields
+/// the query listener reads.
+fn sqlx_reports_the_statement() {
+    tracing::debug!(
+        target: "sqlx::query",
+        summary = "select * from users where …",
+        db.statement = SQL,
+        rows_returned = 1_u64,
+        elapsed_secs = 0.003_f64,
+    );
+}
+
+/// Run `f` as a request does: inside a request profile (no metrics, no
+/// fingerprints), on a runtime of its own.
+fn in_a_request(f: impl FnOnce()) {
+    tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap()
+        .block_on(profile::scope(
+            Arc::new(RequestProfile::new(None, false)),
+            async move { f() },
+        ));
+}
 
 #[test]
 fn a_statement_is_exported_under_its_request_and_only_when_sampled() {
@@ -35,7 +63,7 @@ fn a_statement_is_exported_under_its_request_and_only_when_sampled() {
     let (log, _log_rows) = SystemLogLayer::new();
     let dispatch = subscriber(
         std::io::sink,
-        EnvFilter::new("info,tower_http=debug,sqlx=warn"),
+        EnvFilter::new(trovato_kernel::telemetry::DEFAULT_LOG_FILTER),
         log,
         Some(provider.clone()),
     );
@@ -50,8 +78,11 @@ fn a_statement_is_exported_under_its_request_and_only_when_sampled() {
         let _in_request = request.enter();
         let log_only = tracing::info_span!("request");
         let _in_log_only = log_only.enter();
-        let parent = export::sampled_parent().expect("a sampled request is a parent");
-        export::db_query(&parent, Duration::from_millis(3), SQL, Some(1));
+        assert!(
+            export::sampled_parent().is_some(),
+            "a sampled request is a parent"
+        );
+        in_a_request(sqlx_reports_the_statement);
     });
 
     tracing::dispatcher::with_default(&dispatch, || {
@@ -74,6 +105,7 @@ fn a_statement_is_exported_under_its_request_and_only_when_sampled() {
             export::sampled_parent().is_none(),
             "a statement in an unsampled request found a parent"
         );
+        in_a_request(sqlx_reports_the_statement);
     });
 
     provider.force_flush().unwrap();
@@ -93,6 +125,7 @@ fn a_statement_is_exported_under_its_request_and_only_when_sampled() {
             "{key} was exported on the request span"
         );
     }
+    assert_eq!(query.span_kind, SpanKind::Client);
     assert_eq!(query.parent_span_id, request.span_context.span_id());
     assert_eq!(
         query.span_context.trace_id(),

@@ -78,7 +78,7 @@ fn make_spans(metrics: &trovato_kernel::metrics::Metrics) -> bool {
 }
 
 fn production_filter() -> EnvFilter {
-    EnvFilter::new("info,tower_http=debug,sqlx=warn")
+    EnvFilter::new(trovato_kernel::telemetry::DEFAULT_LOG_FILTER)
 }
 
 #[test]

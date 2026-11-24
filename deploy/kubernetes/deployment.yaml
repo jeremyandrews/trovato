@@ -32,7 +32,8 @@ spec:
         app.kubernetes.io/component: server
     spec:
       # preStop (5) + SHUTDOWN_DRAIN_SECS (5) + SHUTDOWN_TIMEOUT_SECS (30) + 5
-      # of margin. Kubernetes sends SIGKILL when this runs out.
+      # of margin (1.5 s past the budget, and up to 3 s flushing trace export
+      # when TRACING_EXPORT=otlp). Kubernetes sends SIGKILL when this runs out.
       terminationGracePeriodSeconds: 45
       containers:
         - name: trovato

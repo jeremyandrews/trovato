@@ -1356,7 +1356,7 @@ const EXPORT_FLUSH_LIMIT: std::time::Duration = std::time::Duration::from_secs(3
 
 fn init_tracing() -> Result<system_log::SystemLogReceiver> {
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,tower_http=debug,sqlx=warn"));
+        .unwrap_or_else(|_| EnvFilter::new(telemetry::DEFAULT_LOG_FILTER));
     let (log_layer, log_receiver) = system_log::SystemLogLayer::new();
 
     // Trace export, off by default: then no layer wants a Gander span and

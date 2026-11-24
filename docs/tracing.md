@@ -30,7 +30,9 @@ template (`GET /item/{id}`), never its path. Inside it:
 Queue jobs are root spans of their own, `queue.job`, with the plugin, queue,
 attempt and outcome. Any other span that starts outside a request or a job (a
 plugin tap from a cron tick, a Redis call from a background task or at
-startup) is a trace of its own too, one span long, sampled at the same ratio. The request span also carries the request's counts:
+startup) is a trace of its own too, holding only what ran inside it (no
+database statements: those are exported only in requests), sampled at the
+same ratio. The request span also carries the request's counts:
 `trovato.db.queries`, `trovato.cache.gets`, `trovato.cache.misses` and
 `trovato.plugin.calls`.
 

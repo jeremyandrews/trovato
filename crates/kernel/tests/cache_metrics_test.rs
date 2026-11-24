@@ -24,8 +24,8 @@ use uuid::Uuid;
 
 /// Its own client address, so this file does not spend the shared rate-limit
 /// bucket that requests without `X-Forwarded-For` fall into. Not on
-/// `/metrics`, which has no rate limit and answers only the bare loopback
-/// peer (see `scrape`).
+/// `/metrics`, which answers only the bare loopback peer (see `scrape`); its
+/// few requests fit in the shared bucket.
 const CLIENT_IP: &str = "10.76.0.1";
 
 async fn get(app: &TestApp, path: &str) -> (StatusCode, String) {

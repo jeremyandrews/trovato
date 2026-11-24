@@ -23,6 +23,9 @@ pub use profile::{RequestProfile, RequestProfileSnapshot};
 /// The tracing target every Gander span uses (`Design-Web-Layer.md` named it).
 pub const TARGET: &str = "gander";
 
+/// The log filter when `RUST_LOG` is not set.
+pub const DEFAULT_LOG_FILTER: &str = "info,tower_http=debug,sqlx=warn";
+
 /// The server's `tracing` subscriber: the `fmt` log under `filter`, the query
 /// listener, the site log (`log`, at `INFO` and above), and, when `export`
 /// holds a provider, the layer that exports Gander spans through it.

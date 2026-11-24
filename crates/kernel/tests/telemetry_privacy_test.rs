@@ -148,7 +148,9 @@ fn no_secret_reaches_any_telemetry() {
             tracing_subscriber::fmt::layer()
                 .with_ansi(false)
                 .with_writer(move || writer.clone())
-                .with_filter(EnvFilter::new("info,tower_http=debug,sqlx=warn")),
+                .with_filter(EnvFilter::new(
+                    trovato_kernel::telemetry::DEFAULT_LOG_FILTER,
+                )),
         )
         .with(
             CaptureAll(captured.clone())

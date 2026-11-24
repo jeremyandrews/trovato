@@ -255,10 +255,24 @@ mod tests {
     #[allow(clippy::unwrap_used)]
     fn telemetry_names_only_standard_methods() {
         use axum::http::Method;
-        assert_eq!(method_label(&Method::GET), "GET");
-        assert_eq!(method_label(&Method::PATCH), "PATCH");
-        let invented = Method::from_bytes(b"ALICE-AT-EXAMPLE-COM").unwrap();
-        assert_eq!(method_label(&invented), "_OTHER");
+        for method in [
+            Method::GET,
+            Method::HEAD,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::CONNECT,
+            Method::OPTIONS,
+            Method::TRACE,
+            Method::PATCH,
+        ] {
+            assert_eq!(method_label(&method), method.as_str());
+        }
+        // Methods are case sensitive: `get` is not `GET`.
+        for invented in ["ALICE-AT-EXAMPLE-COM", "get"] {
+            let method = Method::from_bytes(invented.as_bytes()).unwrap();
+            assert_eq!(method_label(&method), "_OTHER", "{invented}");
+        }
     }
 
     /// The boundaries are exclusive on both steps, which is what keeps a request
