@@ -284,7 +284,7 @@ fn a_feed_built_under_it_carries_the_ip_absolute_link() {
                 ..Default::default()
             },
             display: QueryDisplay {
-                items_per_page: 10,
+                items_per_page: Some(10),
                 feed: Some(
                     serde_json::from_value(serde_json::json!({
                         "path": path,
