@@ -1,12 +1,16 @@
 #!/usr/bin/env bash
 # Timing benchmark of a running Trovato server: median and p99 per page.
 #
-#   scripts/bench.sh [--base-url URL] [--runs N] [--requests N] [--save | --compare] [--label TEXT]
+#   scripts/bench.sh [--base-url URL] [--runs N] [--requests N] [--pages "front item ..."]
+#                    [--save | --compare] [--label TEXT]
 #
-# Measures five pages of a site made by `trovato generate` (the default seed):
-# the front page, the newest post with its comments, its feed, a search and a
-# tag page. Each page in turn gets a warm-up, then --requests timed requests
-# from 8 workers, --runs times over; the result is the median over the runs.
+# Measures pages of a site made by `trovato generate` (the default seed):
+# `front` (the front page), `item` (the newest post with its comments), `feed`,
+# `category` (a tag page) and `search` (one word). The default is every page
+# but `search`, which takes seconds a request on a 20,000,000 post site; name
+# it in --pages to measure it. Each page in turn gets a warm-up, then
+# --requests timed requests from 8 workers, --runs times over; the result is
+# the median over the runs.
 #
 #   --save      write the result to benchmarks/baseline.json
 #   --compare   show the change against benchmarks/baseline.json
@@ -16,6 +20,7 @@
 # the page rate limit, which a benchmark would otherwise hit:
 #
 #   TROVATO_RATE_LIMIT_PAGE=100000000 TROVATO_RATE_LIMIT_STATIC=100000000 \
+#   TROVATO_RATE_LIMIT_SEARCH=100000000 \
 #     target/release/trovato serve
 #
 # Timings belong to the machine they were taken on, so this is run by hand,
@@ -29,15 +34,17 @@ runs=3
 requests=2000
 label="$(git rev-parse --short HEAD 2>/dev/null || echo local)"
 mode=""
+pages="front item feed category"
 while [ $# -gt 0 ]; do
   case "$1" in
     --base-url) base_url="$2"; shift 2 ;;
     --runs) runs="$2"; shift 2 ;;
     --requests) requests="$2"; shift 2 ;;
     --label) label="$2"; shift 2 ;;
+    --pages) pages="$2"; shift 2 ;;
     --save) mode=save; shift ;;
     --compare) mode=compare; shift ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,27p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -56,14 +63,17 @@ if ! curl -sf "$base_url/health/live" >/dev/null; then
 fi
 
 baseline=benchmarks/baseline.json
-args=(
-  --base-url "$base_url" --label "$label" --runs "$runs" --requests "$requests"
-  --page "front=/"
-  --page "item=/item/$item"
-  --page "feed=/blog/feed.xml"
-  --page "search=/search?q=river"
-  --page "category=/blog/tag/topic-1"
-)
+args=(--base-url "$base_url" --label "$label" --runs "$runs" --requests "$requests")
+for page in $pages; do
+  case "$page" in
+    front) args+=(--page "front=/") ;;
+    item) args+=(--page "item=/item/$item") ;;
+    feed) args+=(--page "feed=/blog/feed.xml") ;;
+    category) args+=(--page "category=/blog/tag/topic-1") ;;
+    search) args+=(--page "search=/search?q=river") ;;
+    *) echo "unknown page: $page (front, item, feed, category, search)" >&2; exit 2 ;;
+  esac
+done
 case "$mode" in
   save) args+=(--out "$baseline") ;;
   compare) args+=(--baseline "$baseline") ;;

@@ -286,8 +286,8 @@
     {
       "id": 6,
       "type": "timeseries",
-      "title": "Database time and pool",
-      "description": "p99 of db_query_duration_seconds (statements run while serving a request), and connections in use.",
+      "title": "Statement time",
+      "description": "Median and p99 of db_query_duration_seconds: the statements run while serving requests.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
