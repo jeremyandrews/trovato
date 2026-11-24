@@ -27,7 +27,7 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::registry::LookupSpan;
 
-use super::TARGET;
+use super::{TARGET, fingerprint};
 
 /// What `TRACING_EXPORT` and the `OTEL_*` variables ask for.
 #[derive(Debug, Clone, PartialEq)]
@@ -36,9 +36,10 @@ pub struct ExportSettings {
     pub otlp: bool,
     /// `OTEL_SERVICE_NAME`, default `trovato`.
     pub service_name: String,
-    /// `OTEL_TRACES_SAMPLER_ARG`: the share of new traces kept, 0 to 1,
-    /// default 1. A request whose caller sent a sampled trace context is
-    /// kept whatever this says (parent based).
+    /// `OTEL_TRACES_SAMPLER_ARG`: the share of requests traced, 0 to 1,
+    /// default 1. Each request is a new trace (no incoming `traceparent` is
+    /// read), and the spans inside a request follow its decision.
+    /// `OTEL_TRACES_SAMPLER` is not read: the sampler is always this ratio.
     pub sample_ratio: f64,
 }
 
@@ -47,8 +48,8 @@ impl ExportSettings {
     ///
     /// # Errors
     ///
-    /// `TRACING_EXPORT` other than `off` or `otlp`, or a sampler ratio that
-    /// is not a number from 0 to 1.
+    /// `TRACING_EXPORT` other than `off` or `otlp`, or, with export on, a
+    /// sampler ratio that is not a number from 0 to 1.
     pub fn from_env() -> Result<Self> {
         Self::from_vars(|name| std::env::var(name).ok())
     }
@@ -68,7 +69,9 @@ impl ExportSettings {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "trovato".to_string());
-        let sample_ratio = match var("OTEL_TRACES_SAMPLER_ARG") {
+        // Read only with export on: other OpenTelemetry tooling on the host
+        // may set it, and export off must not depend on it.
+        let sample_ratio = match var("OTEL_TRACES_SAMPLER_ARG").filter(|_| otlp) {
             None => 1.0,
             Some(raw) => {
                 let ratio: f64 = raw
@@ -179,13 +182,16 @@ pub fn shutdown() {
     }
 }
 
-/// Export one finished statement as a `db.query` span under the current
-/// request's span: started `elapsed` before now, ended now. `summary` is the
-/// fingerprint and `text` the normalised SQL, literals already replaced.
+/// Export one finished statement, `sql` as sqlx ran it, as a `db.query` span
+/// under the current request's span: started `elapsed` before now, ended now.
+/// The span carries the statement only normalised (`db.query.text`, every
+/// literal and parameter replaced) and its fingerprint (`db.query.summary`),
+/// so no literal a `format!` put into the SQL reaches the backend.
 ///
-/// Does nothing unless export is on and the statement ran inside an exported
-/// span (a statement outside any request has no trace to join).
-pub fn db_query(elapsed: Duration, summary: &str, text: &str, rows: Option<u64>) {
+/// Does nothing unless export is on and the statement ran inside a sampled,
+/// exported span: a statement outside any request has no trace to join, and
+/// one in a request sampling left out is not normalised at all.
+pub fn db_query(elapsed: Duration, sql: &str, rows: Option<u64>) {
     let (Some(tracer), Some(dispatch)) =
         (TRACER.get(), DISPATCH.get().and_then(WeakDispatch::upgrade))
     else {
@@ -194,12 +200,19 @@ pub fn db_query(elapsed: Duration, summary: &str, text: &str, rows: Option<u64>)
     let Some(parent) = current_otel_context(&dispatch) else {
         return;
     };
+    if !parent.span().span_context().is_sampled() {
+        return;
+    }
     let end = SystemTime::now();
     let start = end.checked_sub(elapsed).unwrap_or(end);
+    let text = fingerprint::normalize(sql);
     let mut attributes = vec![
         KeyValue::new("db.system.name", "postgresql"),
-        KeyValue::new("db.query.summary", summary.to_string()),
-        KeyValue::new("db.query.text", text.to_string()),
+        KeyValue::new(
+            "db.query.summary",
+            fingerprint::fingerprint_normalized(&text),
+        ),
+        KeyValue::new("db.query.text", text),
     ];
     if let Some(rows) = rows.and_then(|r| i64::try_from(r).ok()) {
         attributes.push(KeyValue::new("db.response.returned_rows", rows));
@@ -221,9 +234,8 @@ fn current_otel_context(dispatch: &tracing::Dispatch) -> Option<opentelemetry::C
     let current = dispatch.current_span();
     let id = current.id()?;
     let registry = dispatch.downcast_ref::<tracing_subscriber::Registry>()?;
-    let scope: Vec<tracing::span::Id> = registry.span(id)?.scope().map(|span| span.id()).collect();
-    scope.iter().find_map(|id| {
-        tracing_opentelemetry::get_otel_context(id, dispatch)
+    registry.span(id)?.scope().find_map(|span| {
+        tracing_opentelemetry::get_otel_context(&span.id(), dispatch)
             .filter(|cx| cx.span().span_context().is_valid())
     })
 }
@@ -261,9 +273,13 @@ mod tests {
     fn a_setting_that_is_not_understood_stops_the_server() {
         // A typo must not quietly leave export off.
         assert!(settings(&[("TRACING_EXPORT", "jaeger")]).is_err());
-        assert!(settings(&[("OTEL_TRACES_SAMPLER_ARG", "half")]).is_err());
-        assert!(settings(&[("OTEL_TRACES_SAMPLER_ARG", "1.5")]).is_err());
-        assert!(settings(&[("OTEL_TRACES_SAMPLER_ARG", "-0.1")]).is_err());
+        for bad in ["half", "1.5", "-0.1"] {
+            assert!(
+                settings(&[("TRACING_EXPORT", "otlp"), ("OTEL_TRACES_SAMPLER_ARG", bad)]).is_err()
+            );
+            // With export off the ratio is not read at all.
+            assert!(settings(&[("OTEL_TRACES_SAMPLER_ARG", bad)]).is_ok());
+        }
     }
 
     #[test]
@@ -284,15 +300,37 @@ mod tests {
         );
     }
 
+    /// How many of 20 new traces the provider exports at `ratio`, through
+    /// its batch processor into an in-memory exporter.
+    fn exported_at(ratio: f64) -> usize {
+        use opentelemetry_sdk::trace::InMemorySpanExporter;
+        let exporter = InMemorySpanExporter::default();
+        let settings = ExportSettings {
+            otlp: true,
+            service_name: "blog-eu".into(),
+            sample_ratio: ratio,
+        };
+        let provider = provider(&settings, exporter.clone());
+        let tracer = provider.tracer("test");
+        for _ in 0..20 {
+            tracer.start("http.request").end();
+        }
+        provider.force_flush().unwrap();
+        let exported = exporter.get_finished_spans().unwrap().len();
+        provider.shutdown().unwrap();
+        exported
+    }
+
+    #[test]
+    fn the_provider_samples_by_the_ratio() {
+        assert_eq!(exported_at(0.0), 0, "ratio 0 exported a span");
+        assert_eq!(exported_at(1.0), 20, "ratio 1 must export every span");
+    }
+
     #[test]
     fn a_statement_outside_export_is_not_exported() {
         // Export not installed in the lib tests: nothing to do, nothing panics.
         assert!(!active());
-        db_query(
-            Duration::from_millis(1),
-            "select:item:00000000",
-            "select ?",
-            Some(1),
-        );
+        db_query(Duration::from_millis(1), "select 1", Some(1));
     }
 }

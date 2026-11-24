@@ -64,7 +64,7 @@ accept. There is no gRPC.
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | `10000` | Milliseconds one export may take. |
 | `OTEL_SERVICE_NAME` | `trovato` | The service name traces are filed under. Give each site or environment its own. |
 | `OTEL_RESOURCE_ATTRIBUTES` | | More resource attributes, `deployment.environment=production,...` |
-| `OTEL_TRACES_SAMPLER_ARG` | `1.0` | The share of requests traced, 0 to 1. A request whose caller sent a sampled trace context is traced whatever this says. |
+| `OTEL_TRACES_SAMPLER_ARG` | `1.0` | The share of requests traced, 0 to 1. Each request starts a trace of its own (an incoming `traceparent` header is not read), and everything inside a request is traced or not with it. `OTEL_TRACES_SAMPLER` is not read. |
 
 Spans are sent by a batch processor on a thread of its own: a request never
 waits on the collector, and a collector that is down costs dropped spans, not
@@ -104,7 +104,9 @@ Jaeger held a trace for every one of them afterwards: nothing was dropped.
 Export off is the same as before, within the noise between two sets. Export
 on, tracing everything, costs at most a couple of milliseconds a request and
 often nothing measurable: the spans are built on the request's thread and
-encoded and sent on the batch thread. Sampling cuts the cost in proportion.
+encoded and sent on the batch thread. With sampling, a request left out
+builds its spans but records nothing in them, and its statements are not
+normalised, so most of the cost goes with the share left out.
 
 ## Metrics
 
@@ -120,9 +122,16 @@ It answers an operator only:
   same host), or
 - a request with `Authorization: Bearer <METRICS_TOKEN>`, from anywhere.
 
-Anything else gets a 404, as if the route did not exist. A reverse proxy on
-the same host adds a forwarding header, so a visitor coming through it is not
-mistaken for a local caller.
+Anything else gets a 404, as if the route did not exist.
+
+A reverse proxy on the same host connects from a loopback address too. It
+must add `X-Forwarded-For`, `X-Real-IP` or `Forwarded` to every request it
+passes on, or a visitor coming through it reads `/metrics` as a local caller.
+Most proxy setups do (Caddy and Traefik by default), but nginx adds nothing
+unless told to: add `proxy_set_header X-Forwarded-For
+$proxy_add_x_forwarded_for;`, or have it refuse the path itself
+(`location = /metrics { return 404; }`). Setting `METRICS_TOKEN` does not
+close the loopback route.
 
 `METRICS_TOKEN` must be at least 32 characters (`openssl rand -hex 32`). A
 Prometheus on another host sends it:
@@ -165,6 +174,9 @@ for this purpose only; Grafana lets anyone in as an administrator; every port
 is bound to `127.0.0.1`. None of it is for a server. The ports can be moved
 with `JAEGER_UI_PORT`, `OTLP_HTTP_PORT`, `PROMETHEUS_PORT` and `GRAFANA_PORT`,
 and the scrape target (`host.docker.internal:3000`) is in the Prometheus file.
+On Linux, `host.docker.internal` comes from the `extra_hosts` entry in the
+compose file (`host-gateway`), and the server must listen on an address the
+containers can reach, not only `127.0.0.1`.
 
 `docker compose -f docker/observability/docker-compose.yml down` stops it.
 

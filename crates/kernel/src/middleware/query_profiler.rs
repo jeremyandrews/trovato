@@ -145,6 +145,25 @@ async fn shows_detail(state: &AppState, profile: &RequestProfile) -> bool {
     }
 }
 
+/// The method as a span names it: one of the standard methods, or `_OTHER`
+/// (the OpenTelemetry convention), so a client cannot put text of its own
+/// into a span with an invented method.
+fn span_method(method: &axum::http::Method) -> &'static str {
+    use axum::http::Method;
+    match *method {
+        Method::GET => "GET",
+        Method::HEAD => "HEAD",
+        Method::POST => "POST",
+        Method::PUT => "PUT",
+        Method::DELETE => "DELETE",
+        Method::CONNECT => "CONNECT",
+        Method::OPTIONS => "OPTIONS",
+        Method::TRACE => "TRACE",
+        Method::PATCH => "PATCH",
+        _ => "_OTHER",
+    }
+}
+
 /// Middleware that profiles the request and reports what it did.
 ///
 /// The threshold comes from the application state, resolved once at startup;
@@ -175,9 +194,9 @@ pub async fn track_request_timing(
         "http.request",
         // A backend's name for the span (`GET /item/{id}`); field values are
         // only evaluated when the span is enabled.
-        otel.name = %format_args!("{method} {route_label}"),
+        otel.name = %format_args!("{} {route_label}", span_method(&method)),
         otel.kind = "server",
-        http.request.method = %method,
+        http.request.method = span_method(&method),
         http.route = route_label,
         http.response.status_code = Empty,
         trovato.db.queries = Empty,
@@ -245,6 +264,16 @@ pub async fn track_request_timing(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn a_span_names_only_standard_methods() {
+        use axum::http::Method;
+        assert_eq!(span_method(&Method::GET), "GET");
+        assert_eq!(span_method(&Method::PATCH), "PATCH");
+        let invented = Method::from_bytes(b"ALICE-AT-EXAMPLE-COM").unwrap();
+        assert_eq!(span_method(&invented), "_OTHER");
+    }
 
     /// The boundaries are exclusive on both steps, which is what keeps a request
     /// exactly at the threshold out of the log.

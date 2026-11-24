@@ -1351,31 +1351,16 @@ fn init_tracing() -> Result<system_log::SystemLogReceiver> {
         .unwrap_or_else(|_| EnvFilter::new("info,tower_http=debug,sqlx=warn"));
     let (log_layer, log_receiver) = system_log::SystemLogLayer::new();
 
-    // Trace export, off by default: then this layer is `None` and no Gander
-    // span is enabled (`docs/tracing.md`).
+    // Trace export, off by default: then no layer wants a Gander span and
+    // none is ever built (`docs/tracing.md`).
     let export = telemetry::export::ExportSettings::from_env()?;
-    let export_layer = if export.otlp {
+    let provider = if export.otlp {
         let exporter = telemetry::export::otlp_exporter()?;
-        Some(telemetry::export::install(telemetry::export::provider(
-            &export, exporter,
-        )))
+        Some(telemetry::export::provider(&export, exporter))
     } else {
         None
     };
-
-    // The site log takes its own level decision (warn and error, and the
-    // allowlisted info events), so it sits beside the `RUST_LOG` filter rather
-    // than under it: a quiet `RUST_LOG=error` must not empty the admin's log.
-    // Its own `INFO` filter keeps debug and trace callsites disabled.
-    let dispatch: tracing::Dispatch = tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().with_filter(filter))
-        .with(export_layer)
-        // Gander: counts every sqlx statement into the request in scope.
-        .with(telemetry::query_listener::query_listener())
-        .with(log_layer.with_filter(tracing_subscriber::filter::LevelFilter::INFO))
-        .into();
-    telemetry::export::set_dispatch(&dispatch);
-    dispatch.init();
+    telemetry::subscriber(std::io::stdout, filter, log_layer, provider).init();
     if export.otlp {
         info!(
             service = %export.service_name,

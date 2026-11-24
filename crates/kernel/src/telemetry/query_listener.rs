@@ -26,7 +26,7 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::filter::Filtered;
 use tracing_subscriber::layer::{Context, Filter};
 
-use super::{export, fingerprint, profile};
+use super::{export, profile};
 
 /// The target sqlx's statement event uses.
 const SQLX_TARGET: &str = "sqlx::query";
@@ -130,15 +130,7 @@ impl<S: Subscriber> Layer<S> for QueryListener {
         } = statement;
         let text = full.or(summary);
         if exporting && let Some(sql) = text.as_deref() {
-            // The span carries the statement only normalised: no literal
-            // `format!` put into the SQL text reaches the backend.
-            let normalized = fingerprint::normalize(sql);
-            export::db_query(
-                elapsed,
-                &fingerprint::fingerprint_normalized(&normalized),
-                &normalized,
-                rows_returned,
-            );
+            export::db_query(elapsed, sql, rows_returned);
         }
         profile::count_query(elapsed, move || text);
     }

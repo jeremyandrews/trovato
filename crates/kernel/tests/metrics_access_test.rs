@@ -13,13 +13,17 @@
 mod common;
 
 use axum::body::{Body, to_bytes};
-use axum::http::{Request, StatusCode};
+use axum::http::{Method, Request, StatusCode};
 use common::{TestApp, run_test};
 
 const TOKEN: &str = "metrics-access-test-token-0123456789abcdef";
 
 async fn scrape(app: &TestApp, headers: &[(&str, &str)]) -> (StatusCode, String) {
-    let mut request = Request::get("/metrics");
+    send(app, Method::GET, headers).await
+}
+
+async fn send(app: &TestApp, method: Method, headers: &[(&str, &str)]) -> (StatusCode, String) {
+    let mut request = Request::builder().method(method).uri("/metrics");
     for (name, value) in headers {
         request = request.header(*name, *value);
     }
@@ -67,6 +71,14 @@ fn metrics_answer_an_operator_and_nobody_else() {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("# TYPE http_requests counter"));
+        let (status, _) = scrape(&app, &[("authorization", bearer.as_str())]).await;
+        assert_eq!(status, StatusCode::OK, "the token alone");
+
+        // HEAD follows the same rule as GET.
+        let (status, _) = send(&app, Method::HEAD, &[]).await;
+        assert_eq!(status, StatusCode::OK, "HEAD from the same host");
+        let (status, _) = send(&app, Method::HEAD, &[("x-forwarded-for", "203.0.113.9")]).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "HEAD through a proxy");
 
         // A wrong token, or the right one with a byte missing, earns nothing.
         let short = format!("Bearer {}", &TOKEN[1..]);

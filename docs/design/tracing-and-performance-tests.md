@@ -241,7 +241,10 @@ They bring three crates outside the family, all theirs to choose: `prost` and
 `prost-derive` (the OTLP protobuf encoding) and `web-time`. They also bring a
 second `reqwest`: `opentelemetry-http` 0.33 depends on `reqwest` 0.13 while
 the kernel is on 0.12. That is a second copy of one crate the kernel already
-trusts, not a new one, and it goes when the kernel moves to 0.13. Writing a
+trusts, not a new one, and it goes when the kernel moves to 0.13. It is given
+the `native-tls` feature, the TLS the kernel's 0.12 already uses, so an
+`https://` collector works; that adds no crate the lock file did not already
+hold (the `reqwest-otlp-tls` entry in the kernel's `Cargo.toml`). Writing a
 client of our own for 0.12 to avoid it would be code to maintain for a build
 time saving.
 
@@ -369,13 +372,19 @@ scheduled job is left for when there is a fixed benchmark host.
 with a token) and Grafana with both as provisioned data sources and one
 committed dashboard (`docker/observability/grafana/dashboards/trovato.json`):
 request rate and p99 by route, queries per request by route, cache hit ratio,
-tap durations. Then `TRACING_EXPORT=otlp cargo run --release` and open
+tap durations. Then `TRACING_EXPORT=otlp
+METRICS_TOKEN=local-observability-token-not-for-production cargo run --release`
+(the token the Prometheus file sends, since its requests come from the
+Docker network, not loopback) and open
 Jaeger at `http://localhost:16686` or Grafana at `http://localhost:3001`.
 
 ## What this does not build
 
-- **No sampling by route or tail sampling.** A parent-based ratio is enough;
-  a Collector does tail sampling better than the kernel would.
+- **No sampling by route or tail sampling, and no incoming trace context.**
+  A ratio per request is enough; a Collector does tail sampling better than
+  the kernel would. An incoming `traceparent` is not read, so every request
+  starts its own trace: a site is usually the first hop, and trusting a
+  visitor's header would let anyone force their requests to be traced.
 - **No OTel metrics or logs export.** Prometheus already carries the metrics,
   and duplicating them through OTLP would mean two metric pipelines.
 - **No per-call-site query names.** The fingerprint names a statement; adding

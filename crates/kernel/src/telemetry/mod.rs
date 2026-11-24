@@ -23,6 +23,50 @@ pub use profile::{RequestProfile, RequestProfileSnapshot};
 /// The tracing target every Gander span uses (`Design-Web-Layer.md` named it).
 pub const TARGET: &str = "gander";
 
+/// The server's `tracing` subscriber: the `fmt` log under `filter`, the query
+/// listener, the site log (`log`, at `INFO` and above), and, when `export`
+/// holds a provider, the layer that exports Gander spans through it.
+///
+/// Built as two different stacks rather than one with an optional layer: an
+/// absent `Option` layer still changes how callsite interest is combined, and
+/// with export off the subscriber must be exactly what it was before export
+/// existed (`tracing_off_test` builds it here too).
+///
+/// The site log takes its own level decision (warn and error, and the
+/// allowlisted info events), so it sits beside `filter` rather than under it:
+/// a quiet `RUST_LOG=error` must not empty the admin's log.
+///
+/// # Panics
+///
+/// If `export` is given twice in one process (see [`export::install`]).
+pub fn subscriber<W>(
+    writer: W,
+    filter: tracing_subscriber::EnvFilter,
+    log: crate::system_log::SystemLogLayer,
+    export: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
+) -> tracing::Dispatch
+where
+    W: for<'w> tracing_subscriber::fmt::MakeWriter<'w> + Send + Sync + 'static,
+{
+    use tracing_subscriber::Layer as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let base = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(writer)
+                .with_filter(filter),
+        )
+        // Counts every sqlx statement into the request in scope.
+        .with(query_listener::query_listener())
+        .with(log.with_filter(tracing_subscriber::filter::LevelFilter::INFO));
+    let dispatch = match export {
+        Some(provider) => tracing::Dispatch::new(base.with(export::install(provider))),
+        None => tracing::Dispatch::new(base),
+    };
+    export::set_dispatch(&dispatch);
+    dispatch
+}
+
 /// Run one template render of `kind` (`page`, `item`, `element`, `admin`)
 /// inside its `template.render` span, counted into the request.
 pub fn render<T>(kind: &'static str, f: impl FnOnce() -> T) -> T {

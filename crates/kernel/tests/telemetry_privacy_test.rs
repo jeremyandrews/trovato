@@ -273,18 +273,38 @@ fn no_secret_reaches_any_telemetry() {
         let spans = exporter.get_finished_spans().unwrap();
         let exported = spans
             .iter()
-            .map(|s| format!("EXPORTED {} {:?} {:?}", s.name, s.attributes, s.events))
+            .map(|s| {
+                format!(
+                    "EXPORTED {} {:?} {:?} {:?} {:?} {:?}",
+                    s.name, s.attributes, s.events, s.status, s.links, s.instrumentation_scope
+                )
+            })
             .collect::<Vec<_>>()
             .join("\n");
         // Not vacuous: the request spans, by method and route template, and
         // the statements, each under a span of its own trace.
-        assert!(
-            spans.iter().any(|s| s.name == "GET /search"),
-            "no exported request span for /search: {:?}",
-            spans.iter().map(|s| s.name.as_ref()).collect::<Vec<_>>()
-        );
+        let search_span = spans
+            .iter()
+            .find(|s| s.name == "GET /search")
+            .unwrap_or_else(|| {
+                panic!(
+                    "no exported request span for /search: {:?}",
+                    spans.iter().map(|s| s.name.as_ref()).collect::<Vec<_>>()
+                )
+            });
         let queries: Vec<_> = spans.iter().filter(|s| s.name == "db.query").collect();
         assert!(!queries.is_empty(), "no db.query span exported");
+        // Every statement the search request counted is in its trace, once.
+        let counted = search.as_ref().expect("the search profile").queries;
+        let traced = queries
+            .iter()
+            .filter(|q| q.span_context.trace_id() == search_span.span_context.trace_id())
+            .count();
+        assert_eq!(
+            u32::try_from(traced).unwrap(),
+            counted,
+            "the /search trace holds {traced} db.query spans; the request counted {counted}"
+        );
         for query in &queries {
             assert!(
                 spans

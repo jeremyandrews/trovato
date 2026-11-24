@@ -1,22 +1,25 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! With tracing off, a Gander span costs no allocation (BG14).
 //!
-//! The production subscriber (the `fmt` layer under the default `RUST_LOG`,
-//! plus the query listener) is installed, which is exactly what a server with
+//! The server's own subscriber (`telemetry::subscriber`, as `main` builds it:
+//! the `fmt` layer under the default `RUST_LOG`, the query listener and the
+//! site log) is installed without export, which is exactly what a server with
 //! `TRACING_EXPORT=off` runs. Then the kernel's span constructors are called
 //! many times on one thread under a counting allocator: none of them may
-//! allocate, and every span must come back disabled. A layer interested in
-//! the `gander` target is then added, to show the same code does allocate
-//! when tracing is on, so the measurement can tell the two apart.
+//! allocate, and every span must come back disabled. The same subscriber with
+//! export on (to an in-memory exporter) is then installed, to show the same
+//! code does allocate when tracing is on, so the measurement can tell the two
+//! apart.
 //!
 //! Its own test binary, because it needs its own global allocator.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
-use tracing_subscriber::Layer;
-use tracing_subscriber::filter::{EnvFilter, Targets};
-use tracing_subscriber::layer::SubscriberExt;
+use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+use tracing_subscriber::filter::EnvFilter;
+use trovato_kernel::system_log::SystemLogLayer;
+use trovato_kernel::telemetry::subscriber;
 
 thread_local! {
     static ALLOCATIONS: Cell<u64> = const { Cell::new(0) };
@@ -82,14 +85,9 @@ fn production_filter() -> EnvFilter {
 fn tracing_off_allocates_nothing_for_a_span_and_tracing_on_does() {
     let metrics = trovato_kernel::metrics::Metrics::new();
     // Tracing off: the production subscriber.
-    let off = tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_writer(std::io::sink)
-                .with_filter(production_filter()),
-        )
-        .with(trovato_kernel::telemetry::query_listener::query_listener());
-    let off_count = tracing::subscriber::with_default(off, || {
+    let (log, _log_rows) = SystemLogLayer::new();
+    let off = subscriber(std::io::sink, production_filter(), log, None);
+    let off_count = tracing::dispatcher::with_default(&off, || {
         // Warm up: the first call registers each callsite's interest.
         make_spans(&metrics);
         let before = allocations();
@@ -106,20 +104,14 @@ fn tracing_off_allocates_nothing_for_a_span_and_tracing_on_does() {
         "10,000 rounds of Gander spans allocated {off_count} times with tracing off"
     );
 
-    // Tracing on: something interested in `gander`. The same calls now make
+    // Tracing on: the same subscriber, exporting. The same calls now make
     // real spans, which the registry stores, so the counter has to move.
-    let on = tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_writer(std::io::sink)
-                .with_filter(production_filter()),
-        )
-        .with(
-            tracing_subscriber::fmt::layer()
-                .with_writer(std::io::sink)
-                .with_filter(Targets::new().with_target("gander", tracing::Level::TRACE)),
-        );
-    let on_count = tracing::subscriber::with_default(on, || {
+    let (log, _log_rows) = SystemLogLayer::new();
+    let provider = SdkTracerProvider::builder()
+        .with_simple_exporter(InMemorySpanExporter::default())
+        .build();
+    let on = subscriber(std::io::sink, production_filter(), log, Some(provider));
+    let on_count = tracing::dispatcher::with_default(&on, || {
         make_spans(&metrics);
         let before = allocations();
         let mut disabled = true;
