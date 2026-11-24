@@ -109,15 +109,23 @@ tracing is off and no span exists. Work a request spawns onto another task
 (a cache generation bump, a search analytics flush) is not counted, which is
 also what keeps the counts deterministic.
 
-The query listener is a per-layer filter that is enabled for the `sqlx::query`
-target **only while a profile is in scope**, so outside requests sqlx does the
-same work it does today. Inside one it costs what sqlx already does when its
-statement log is on: it takes the first four words and formats the SQL. That
-cost is measured in part 3 against `main` and stated in "Measurements" there.
+The query listener is a per-layer filter that passes the `sqlx::query` event
+to the listener only while a profile is in scope. Its presence still changes
+what sqlx does with every statement: sqlx asks `tracing::enabled!` before
+building its event. With the listener interested in the callsite, a registry
+with per-layer filters answers yes even when every filter then declines,
+which is a limit of `tracing-subscriber` and not something a filter can veto.
+So sqlx builds the event for every statement, inside a request or not. It
+takes the first four words and copies the SQL, as it does when its statement
+log is on, and the listener drops the event outside a request. That is a few
+microseconds next to a database round trip, and the log output is unchanged.
+The only alternative, a plain layer that vetoes the event globally, would
+also silence sqlx for the fmt layer and the site log, which is a behaviour
+change. The cost is measured against `main` and stated in "Measurements".
 
 **Fingerprints.** A fingerprint names a statement without its values:
 `<verb>:<first table>:<8 hex of the SHA-256 of the normalised SQL>`, for
-example `select:item:3fa2c1d0`. Normalising lowercases keywords, replaces
+example `select:item:3fa2c1d0`. Normalising lowercases everything outside quoted identifiers, replaces
 string and number literals with `?`, collapses `$1, $2, ...` lists to `$?`
 (so an `IN` list does not change the fingerprint with its length) and squeezes
 whitespace. Fingerprints are only computed when something reads them: the
@@ -129,7 +137,8 @@ variable) or span export.
   `off`. Anonymous visitors and non-administrators get exactly today's header,
   `total;dur=<ms>`. An administrator, or everyone with `all`, also gets
   `db;dur=..;desc="N queries"`, `cache;desc="G gets M misses S sets"`,
-  `plugin;dur=..;desc="P calls"`, `render;dur=..` and `http;desc="H calls"`.
+  `plugin;dur=..;desc="P calls H host calls"`, `render;dur=..;desc="R renders"` and
+  `http;desc="O calls"`.
   Administrators only by default because counts and durations per request are
   a timing oracle for anyone else. The administrator check runs after the
   counters are read, through the cached user, so it never shows in the counts.
@@ -154,7 +163,7 @@ exists:
 |---|---|
 | `http.request` | `http.request.method`, `http.route` (the matched template, `<fallback>` for aliases and 404s, never the path), `http.response.status_code`, and the request's counters at the end. `trovato.tenant` once BG4's resolution is in the request (it is not on `main` today). |
 | `db.query` | `db.system.name=postgresql`, `db.query.summary` (the fingerprint), `db.query.text` (the normalised SQL: literals already replaced), `db.response.returned_rows` |
-| `cache.get` / `cache.set` / `cache.invalidate` | `cache.tier` (`redis`), `cache.bin` (the key's first segment if it is `[a-z_]+`, else `other`), `cache.hit` |
+| `cache` (`otel.name` is `cache.get`, `cache.set`, `cache.invalidate` or `cache.invalidate_tag`) | `cache.tier` (`redis`), `cache.bin` (the key's first segment if it is `[a-z_]+`, else `other`), `cache.hit` |
 | in-process cache lookups | an event `cache.get` on the enclosing span with `cache.tier=memory`, `cache.bin` (the `CacheName`) and `cache.hit` |
 | `plugin.tap` | `trovato.plugin`, `trovato.tap` (the export name) |
 | `plugin.host_call` | `trovato.plugin`, `trovato.host.module`, `trovato.host.function` |

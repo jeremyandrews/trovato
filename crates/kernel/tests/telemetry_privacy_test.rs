@@ -10,6 +10,10 @@
 //! - a `Server-Timing` header, with the detail shown to everyone;
 //! - `/metrics`.
 //!
+//! The signed-in user's id is checked against the spans, the header and
+//! `/metrics` only: the existing login audit line records it for the site
+//! log, as it should.
+//!
 //! Every request is logged as slow (a zero threshold), so the slow request
 //! line with its breakdown is in the captured output too. The test also checks
 //! that the capture saw what it should (spans, slow lines, real query counts),
@@ -165,6 +169,12 @@ fn no_secret_reaches_any_telemetry() {
                     .await;
             });
         }
+        let user_id: uuid::Uuid = sqlx::query_scalar("SELECT id FROM users WHERE name = $1")
+            .bind(&username)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        let user_id = user_id.to_string();
         let cookies = app.login(&username, &password).await;
 
         let mut timings = Vec::new();
@@ -275,10 +285,12 @@ fn no_secret_reaches_any_telemetry() {
             "no request span in the log"
         );
         // The metrics this part feeds are there.
-        assert!(
-            metrics_body.contains("db_query_duration_seconds_count"),
-            "/metrics has no query durations"
-        );
+        let db_count: u64 = metrics_body
+            .lines()
+            .find_map(|l| l.strip_prefix("db_query_duration_seconds_count "))
+            .and_then(|v| v.trim().parse().ok())
+            .expect("a db_query_duration_seconds_count line");
+        assert!(db_count > 0, "/metrics observed no query durations");
         assert!(
             metrics_body
                 .lines()
@@ -300,6 +312,21 @@ fn no_secret_reaches_any_telemetry() {
         assert!(!search.fingerprints.is_empty());
         assert!(timings.iter().any(|t| t.contains("queries")), "{timings:?}");
 
+        // The user id is in the existing login audit line ("user logged in",
+        // for the site log), so it is checked against what this telemetry
+        // adds: the Gander spans and events, Server-Timing and /metrics.
+        let added = output
+            .lines()
+            .filter(|l| {
+                l.starts_with("SPAN ") || l.starts_with("RECORD") || l.starts_with("EVENT ")
+            })
+            .chain(timings.iter().map(String::as_str))
+            .chain(metrics_body.lines())
+            .collect::<Vec<_>>()
+            .join("\n");
+        if let Some(line) = added.lines().find(|l| l.contains(user_id.as_str())) {
+            panic!("the user id reached telemetry:\n{line}");
+        }
         let everything = format!("{output}\n{}\n{metrics_body}", timings.join("\n"));
         for (what, secret) in [
             ("password", password.as_str()),

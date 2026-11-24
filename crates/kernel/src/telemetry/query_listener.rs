@@ -6,11 +6,14 @@
 //! rows and the elapsed time (`sqlx-core/src/logger.rs`). This layer listens
 //! for that event.
 //!
-//! Its filter enables the target **only while a request profile is in scope**
-//! on the current task. Outside one (startup, cron, spawned work) sqlx sees no
-//! one interested at its default `DEBUG` statement level and does no more work
-//! than it does today; inside one it builds the event it would build with its
-//! statement log turned on.
+//! Its filter passes the event to the listener only while a request profile is
+//! in scope on the current task. sqlx builds the event for every statement
+//! either way: it asks `tracing::enabled!` first, and with per-layer filters
+//! the registry says yes once any filter is interested in the callsite, even
+//! if that filter then declines. That is what sqlx does with its statement log
+//! on (the first four words and a copy of the SQL); outside a request the event
+//! is dropped. See "2. Per-request counters" in
+//! `docs/design/tracing-and-performance-tests.md`.
 
 use std::time::Duration;
 
@@ -145,6 +148,9 @@ mod tests {
 
         let profile = Arc::new(RequestProfile::new(None, true));
         scope(profile.clone(), async {
+            // Inside one sqlx must build its statement event, or nothing is
+            // counted.
+            assert!(tracing::enabled!(target: "sqlx::query", tracing::Level::DEBUG));
             emit_like_sqlx("SELECT id FROM item", "");
             emit_like_sqlx(
                 "SELECT id, title FROM …",

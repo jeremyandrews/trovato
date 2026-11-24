@@ -245,16 +245,14 @@ pub(crate) fn render<T>(f: impl FnOnce() -> T) -> T {
     // Undone on drop, so a render that panics does not leave the depth raised
     // for the rest of the request.
     struct Leave {
-        outermost: bool,
+        /// Set for the outermost render only, which alone adds its time.
         started: Option<std::time::Instant>,
     }
     impl Drop for Leave {
         fn drop(&mut self) {
             with(|p| {
                 p.render_depth.fetch_sub(1, Ordering::Relaxed);
-                if self.outermost
-                    && let Some(started) = self.started
-                {
+                if let Some(started) = self.started {
                     p.render_nanos
                         .fetch_add(nanos_of(started.elapsed()), Ordering::Relaxed);
                 }
@@ -262,8 +260,7 @@ pub(crate) fn render<T>(f: impl FnOnce() -> T) -> T {
         }
     }
     let _leave = outer.map(|outermost| Leave {
-        outermost,
-        started: Some(std::time::Instant::now()),
+        started: outermost.then(std::time::Instant::now),
     });
     f()
 }
@@ -291,7 +288,14 @@ mod tests {
             count_host_call();
             count_gather();
             count_outgoing();
-            let v = render(|| render(|| 7));
+            // Only the outermost render adds its time: a nested one counted
+            // too would make the total at least twice the sleep.
+            let v = render(|| {
+                render(|| {
+                    std::thread::sleep(Duration::from_millis(30));
+                    7
+                })
+            });
             assert_eq!(v, 7);
             note_user(Uuid::nil());
         })
@@ -304,6 +308,11 @@ mod tests {
         assert_eq!(s.cache_sets, 1);
         assert_eq!(s.plugin_calls, 1);
         assert_eq!(s.host_calls, 1);
+        assert!(
+            s.render_time >= Duration::from_millis(30) && s.render_time < Duration::from_millis(60),
+            "{:?}",
+            s.render_time
+        );
         assert_eq!(s.gathers, 1);
         assert_eq!(s.outgoing_calls, 1);
         assert_eq!(s.renders, 2);

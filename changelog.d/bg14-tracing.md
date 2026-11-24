@@ -4,7 +4,8 @@ template renders and outgoing HTTP requests, and the kernel has spans at the
 few places all of that passes through: sqlx's own statement event (so no query
 call site is wrapped), `CacheLayer`, the in-process cache counter, the plugin
 export call, the host call wrapper, the gather runner, the theme engine's
-render entry points, the plugin HTTP and AI send sites, and the queue job
+render entry points, every outgoing HTTP call the kernel makes (plugin HTTP and AI calls, search, the
+assistant and the release check), and the queue job
 runner. The spans use the tracing target `gander` at `TRACE`, so with tracing
 off, the default, nothing is interested in them and creating one allocates
 nothing (`tracing_off_test` measures it). The design is
