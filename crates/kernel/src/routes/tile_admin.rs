@@ -156,7 +156,7 @@ async fn add_tile_form(State(state): State<AppState>, session: Session) -> Respo
     context.insert("editing", &false);
     context.insert(
         "values",
-        &serde_json::json!({ "items": GATHER_TILE_DEFAULT_ITEMS }),
+        &serde_json::json!({ "items": GATHER_TILE_DEFAULT_ITEMS, "audience": "" }),
     );
     context.insert("path", "/admin/structure/tiles/add");
 
