@@ -174,7 +174,9 @@ async fn list_moderated(
                 "id": r.id,
                 "title": r.title,
                 "type": labels.get(&r.item_type).unwrap_or(&r.item_type),
-                "author": authors.get(&r.author_id).cloned().unwrap_or_else(|| "anonymous".to_string()),
+                "author": authors.get(&r.author_id).cloned().unwrap_or_else(|| {
+                    crate::models::user::ANONYMOUS_DISPLAY_NAME.to_string()
+                }),
                 "state": moderation::label(&r.state),
                 "ahead": r.ahead,
                 "changed": chrono::DateTime::from_timestamp(r.changed, 0)

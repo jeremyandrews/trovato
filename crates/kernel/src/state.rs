@@ -1077,6 +1077,11 @@ impl AppState {
             audit_trail.clone(),
         ));
 
+        // Late-bind the user service into gather (B166): gather is constructed
+        // before UserService, so it holds a OnceLock this fills, same as the
+        // item-access seam above.
+        gather.set_user_service(users.clone());
+
         // Create role service (depends on permission service for cache invalidation)
         let roles = Arc::new(services::role::RoleService::new(
             db.clone(),

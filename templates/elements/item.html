@@ -9,6 +9,9 @@
             {% if view_count %}
             <span class="item__reads statistics-counter">{{ view_count }} read{% if view_count != 1 %}s{% endif %}</span>
             {% endif %}
+            {% if author %}
+            <span class="item__author">by {% if author.url %}<a href="{{ author.url }}">{{ author.name }}</a>{% else %}{{ author.name }}{% endif %}</span>
+            {% endif %}
         </div>
     </header>
 

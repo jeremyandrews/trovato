@@ -14,6 +14,10 @@
     <time class="gather-row__date" datetime="{{ row.created }}">{{ row.created | format_date }}</time>
     {% endif %}
 
+    {% if row.author %}
+    <p class="gather-row__author">by {% if row.author.url %}<a href="{{ row.author.url }}">{{ row.author.name }}</a>{% else %}{{ row.author.name }}{% endif %}</p>
+    {% endif %}
+
     {% if row.summary %}
     <p class="gather-row__summary">{{ row.summary }}</p>
     {% endif %}

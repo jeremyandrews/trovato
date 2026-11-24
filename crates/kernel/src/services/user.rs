@@ -4,11 +4,13 @@
 //! for plugin taps (register, update, delete, login, logout) and
 //! an in-process cache for `find_by_id` lookups.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use moka::sync::Cache;
+use serde::Serialize;
 use sqlx::PgPool;
 use tracing::info;
 use uuid::Uuid;
@@ -16,9 +18,25 @@ use uuid::Uuid;
 use crate::audit::{SecurityEvent, SecurityEventKind};
 use crate::cache::generation::{CacheKind, bump};
 use crate::metrics::{CacheName, Metrics};
+use crate::models::user::ANONYMOUS_USER_ID;
 use crate::models::{CreateUser, UpdateUser, User};
 use crate::services::audit::AuditTrail;
 use crate::tap::{RequestServices, RequestState, TapDispatcher, UserContext};
+
+/// Permission that gates a profile link beside an author's name (item page,
+/// gather row). Declared in [`crate::models::role`]; granted to no role by
+/// any migration, so until a site grants it nobody gets a link — only a name.
+pub const VIEW_PROFILES_PERMISSION: &str = "access user profiles";
+
+/// An item's author as a template may show it: the display name, and a
+/// profile link only when the viewer may see one. Never carries `mail`,
+/// the account's other fields, or anything beyond what this already is.
+#[derive(Debug, Clone, Serialize)]
+pub struct AuthorView {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
 
 /// Maximum entries in the user cache.
 const MAX_CAPACITY: u64 = 10_000;
@@ -139,6 +157,68 @@ impl UserService {
         ids: &[Uuid],
     ) -> Result<std::collections::HashMap<Uuid, String>> {
         User::names_by_ids(&self.inner.pool, ids).await
+    }
+
+    /// Resolve `ids` to [`AuthorView`]s for a template: the item page and a
+    /// gather row. `/api/item`'s `include=author` resolves the same id
+    /// through the sibling single-id lookup this uses ([`Self::find_by_id`]).
+    ///
+    /// One id goes through the cached [`Self::find_by_id`] — the same lookup
+    /// `/api/item` already pays for, so an item page adds no query beyond a
+    /// cold cache miss any other author lookup would also cost. More than one
+    /// goes through [`Self::names_by_ids`], one query however many ids there
+    /// are — a 20-row gather never queries once per row.
+    ///
+    /// An id with no row (the kernel's own anonymous account normally has
+    /// one — see `20260212000001_create_users.sql` — so this is a genuinely
+    /// unresolvable id, not the common "author deleted their account" case)
+    /// gets [`crate::models::user::ANONYMOUS_DISPLAY_NAME`] and no link. The
+    /// anonymous account itself, and every id when `viewer` may not hold
+    /// [`VIEW_PROFILES_PERMISSION`], gets a name and no link either: there is
+    /// no profile to send a visitor to, and no permission to send them there.
+    pub async fn author_views(
+        &self,
+        ids: &[Uuid],
+        viewer: &UserContext,
+    ) -> HashMap<Uuid, AuthorView> {
+        let mut unique: Vec<Uuid> = ids.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+
+        let found: HashMap<Uuid, String> = match unique.as_slice() {
+            [] => HashMap::new(),
+            [single] => {
+                let mut m = HashMap::new();
+                if let Ok(Some(user)) = self.find_by_id(*single).await {
+                    m.insert(*single, user.name);
+                }
+                m
+            }
+            many => self.names_by_ids(many).await.unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "failed to load author names");
+                HashMap::new()
+            }),
+        };
+
+        let may_link = viewer.can(VIEW_PROFILES_PERMISSION);
+        unique
+            .into_iter()
+            .map(|id| {
+                let view = match found.get(&id) {
+                    Some(name) if id != ANONYMOUS_USER_ID => AuthorView {
+                        name: name.clone(),
+                        url: may_link.then(|| format!("/user/{id}")),
+                    },
+                    other => AuthorView {
+                        name: other.cloned().unwrap_or_else(|| {
+                            crate::models::user::ANONYMOUS_DISPLAY_NAME.to_string()
+                        }),
+                        url: None,
+                    },
+                };
+                (id, view)
+            })
+            .collect()
     }
 
     /// Find a user by username (not cached — used for uniqueness checks).
