@@ -32,7 +32,7 @@
                 {% for section in admin_nav | default(value=[]) %}
                 {% if section.title %}<div class="admin-nav-section">{{ section.title }}</div>{% endif %}
                 {% for link in section.links %}
-                <li><a href="{{ link.href | safe }}"{% if link.active %} class="active" aria-current="page"{% endif %}>{{ link.label }}</a></li> {# SAFE: each href is a constant in `routes::admin_nav::LINKS`, never user text #}
+                <li><a href="{{ link.href | safe }}"{% if link.active %} class="active" aria-current="page"{% endif %}>{{ link.label }}</a></li> {# SAFE: each href is either a constant in `routes::admin_nav::LINKS` or a plugin's own `tap_admin_nav` declaration, validated at boot — never user text #}
                 {% endfor %}
                 {% endfor %}
             </ul>

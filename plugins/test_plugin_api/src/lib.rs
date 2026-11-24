@@ -17,6 +17,11 @@ use trovato_sdk::types::{ApiRequest, ApiResponse, MailAttachment, MenuRoute};
 /// Permission required to write a note. Anonymous callers do not hold it.
 const PERM_WRITE: &str = "write test notes";
 
+/// This plugin's one admin screen, declared to `tap_admin_nav` below
+/// (BL-162): the kernel fixture proving a plugin's own admin page gets the
+/// kernel's sidebar, and that a plugin can add its own link and card to it.
+const ADMIN_DASHBOARD_PATH: &str = "/admin/tpa/dashboard";
+
 /// Declare the permission the menu entries gate on.
 #[plugin_tap]
 pub fn tap_perm() -> Vec<PermissionDefinition> {
@@ -24,6 +29,18 @@ pub fn tap_perm() -> Vec<PermissionDefinition> {
         PERM_WRITE,
         "Write a note through the test plugin API",
     )]
+}
+
+/// Declare this plugin's one admin sidebar link and dashboard card (BL-162).
+///
+/// Gated on the same permission its route checks — [`PERM_WRITE`] — so the
+/// two cannot disagree about who may reach the screen the link points at.
+#[plugin_tap]
+pub fn tap_admin_nav() -> Vec<AdminNavDefinition> {
+    vec![
+        AdminNavDefinition::new("System", "TPA Dashboard", ADMIN_DASHBOARD_PATH, PERM_WRITE)
+            .card("Notes written through the test plugin API."),
+    ]
 }
 
 /// Register the plugin-served routes.
@@ -61,6 +78,11 @@ pub fn tap_menu() -> Vec<MenuRoute> {
         MenuRoute::api("POST", "/tpa/filter", "filter_text").title("Filter text"),
         // A page entry, to prove the kernel routes only `api` entries here.
         MenuRoute::page("/tpa/page", "Not an API"),
+        // This plugin's one admin screen (BL-162): themed, under `/admin`, and
+        // gated on the same permission `tap_admin_nav` declares the link with.
+        MenuRoute::api("GET", ADMIN_DASHBOARD_PATH, "show_admin_dashboard")
+            .title("TPA Dashboard")
+            .permission(PERM_WRITE),
     ]
 }
 
@@ -75,6 +97,7 @@ pub fn tap_api(request: ApiRequest) -> ApiResponse {
         "send_mail" => send_mail(&request),
         "show_themed" => show_themed(),
         "filter_text" => filter_text(&request),
+        "show_admin_dashboard" => show_admin_dashboard(),
         other => ApiResponse::error(404, &format!("no such callback: {other}")),
     }
 }
@@ -122,6 +145,17 @@ fn show_themed() -> ApiResponse {
     ApiResponse::themed(
         "A Themed Plugin Page",
         "<p id=\"plugin-content\">content from the plugin</p>",
+    )
+}
+
+/// This plugin's one admin screen: themed, so it renders inside
+/// `page--admin.html` with the kernel's sidebar (BL-162) — the route itself
+/// still checks [`PERM_WRITE`] before this is ever called, exactly as the
+/// sidebar link's permission says to expect.
+fn show_admin_dashboard() -> ApiResponse {
+    ApiResponse::themed(
+        "TPA Dashboard",
+        "<p id=\"tpa-admin-content\">Notes written through the test plugin API.</p>",
     )
 }
 
@@ -277,10 +311,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_menu_declares_seven_api_routes_with_callbacks() {
+    fn the_menu_declares_eight_api_routes_with_callbacks() {
         let menus = __inner_tap_menu();
         let api: Vec<&MenuRoute> = menus.iter().filter(|m| m.handler_type == "api").collect();
-        assert_eq!(api.len(), 7);
+        assert_eq!(api.len(), 8);
         assert!(api.iter().all(|m| !m.callback.is_empty()));
         assert_eq!(
             api.iter()
@@ -289,6 +323,36 @@ mod tests {
                 .permission,
             PERM_WRITE
         );
+    }
+
+    #[test]
+    fn the_admin_nav_declaration_points_at_the_menu_route_it_gates() {
+        let nav = __inner_tap_admin_nav();
+        assert_eq!(nav.len(), 1);
+        assert_eq!(nav[0].href, ADMIN_DASHBOARD_PATH);
+        assert_eq!(nav[0].permission, PERM_WRITE);
+        assert!(nav[0].card_description.is_some());
+
+        let menus = __inner_tap_menu();
+        let route = menus
+            .iter()
+            .find(|m| m.path == ADMIN_DASHBOARD_PATH)
+            .expect("the admin dashboard is a real menu route");
+        assert_eq!(route.permission, nav[0].permission);
+    }
+
+    #[test]
+    fn the_admin_dashboard_is_themed_and_needs_its_permission() {
+        let response = __inner_tap_api(ApiRequest::new(
+            "show_admin_dashboard",
+            "GET",
+            ADMIN_DASHBOARD_PATH,
+            "",
+            false,
+        ));
+        assert_eq!(response.status, 200);
+        assert!(response.theme, "the admin page must ask for the site theme");
+        assert!(response.body.contains("tpa-admin-content"));
     }
 
     #[test]

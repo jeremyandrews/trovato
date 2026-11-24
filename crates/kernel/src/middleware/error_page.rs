@@ -215,13 +215,7 @@ async fn themed_page(
     crate::routes::helpers::inject_site_context_for(state, session, &viewer, &mut context, path)
         .await;
     if admin_path {
-        let mut enabled: Vec<String> = state.enabled_plugins().into_iter().collect();
-        enabled.sort();
-        context.insert(
-            "admin_nav",
-            &crate::routes::admin_nav::sidebar(&viewer, &enabled, path),
-        );
-        context.insert("enabled_plugins", &enabled);
+        crate::routes::admin_nav::insert_context(state, &viewer, path, &mut context);
     }
 
     let specific = format!("error--{}", marker.status.as_u16());
