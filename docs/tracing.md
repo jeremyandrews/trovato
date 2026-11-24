@@ -89,17 +89,22 @@ TRACING_EXPORT=otlp OTEL_TRACES_SAMPLER_ARG=0.05
 
 ### What it costs
 
-Measured on a 20,000,000 post site on a Mac Studio, median over 3 runs of
-2,000 requests each from 8 clients (`scripts/bench.sh`); the full tables are
-in the BG14 pull requests.
+Measured on a 20,000,000 post site on a Mac Studio: each figure is the median
+over 3 runs of 2,000 requests from 8 clients (`scripts/bench.sh`), and each
+cell gives two such sets, in milliseconds, median / p99. Export on sent every
+request to a Jaeger on the same machine (`OTEL_TRACES_SAMPLER_ARG=1.0`), and
+Jaeger held a trace for every one of them afterwards: nothing was dropped.
 
-| Page | Export off, median / p99 | Export on, every request traced, median / p99 |
-|---|---|---|
-| item | see below | see below |
+| Page | Before BG14 | Export off | Export on, every request |
+|---|---|---|---|
+| item | 10.04 / 14.27, 9.96 / 13.35 | 9.85 / 12.45, 9.92 / 13.38 | 10.01 / 12.45, 11.99 / 15.29 |
+| front | 40.75 / 54.97, 41.63 / 54.33 | 40.24 / 54.92, 40.69 / 54.14 | 42.38 / 56.28, 40.98 / 55.18 |
+| feed | 41.28 / 52.08, 39.43 / 51.47 | 39.69 / 52.81, 39.54 / 51.65 | 40.30 / 52.96, 40.01 / 51.02 |
 
-With export off there is no difference from a build without any of this. With
-export on, the extra time is the spans' bookkeeping and their encoding on the
-batch thread; sampling cuts it in proportion.
+Export off is the same as before, within the noise between two sets. Export
+on, tracing everything, costs at most a couple of milliseconds a request and
+often nothing measurable: the spans are built on the request's thread and
+encoded and sent on the batch thread. Sampling cuts the cost in proportion.
 
 ## Metrics
 

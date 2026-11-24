@@ -249,8 +249,14 @@ The test for export installs the same layer with the SDK's in-memory
 exporter (its `testing` feature, a dev-dependency only) and runs the privacy
 check over everything exported.
 
-Cost with export off, the default: measured against `main` on the same
-machine and data (part 3 adds the numbers here). Target: under 1% at p99.
+Cost, measured on the 20,000,000 post site (three runs of 2,000 requests from
+8 clients, two sets each, median / p99 in ms; the table is in
+[tracing.md](../tracing.md#what-it-costs)): with export off the item page took
+9.85 / 12.45 and 9.92 / 13.38 against 10.04 / 14.27 and 9.96 / 13.35 on
+`main`, the front page and the feed likewise within the noise between sets.
+The target was under 1% at p99, and the two sets on one binary differ by more
+than that, so what can be said is that no difference shows. With export on and
+every request traced, the item page took 10.01 / 12.45 and 11.99 / 15.29.
 
 ### 6. Metrics
 
