@@ -76,8 +76,8 @@ admin page says so, and marks each plugin whose change is still waiting.
 To apply it, restart every server, one at a time:
 
 1. Make the change on any server.
-2. Restart one server and wait until `/health` answers and the load balancer
-   sends it traffic again.
+2. Restart one server and wait until `/health/ready` answers 200 and the load
+   balancer sends it traffic again.
 3. Repeat for each of the others.
 
 Until the last one restarts, servers disagree about that plugin: its routes,

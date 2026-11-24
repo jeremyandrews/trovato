@@ -78,6 +78,6 @@ COPY docs/tutorial/config/ docs/tutorial/config/
 EXPOSE 3000
 
 HEALTHCHECK --interval=10s --timeout=3s --start-period=5s \
-    CMD curl -f http://localhost:3000/health || exit 1
+    CMD curl -f http://localhost:3000/health/live || exit 1
 
 CMD ["./trovato"]
