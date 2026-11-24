@@ -258,9 +258,12 @@ pub fn resolve_migration_order(plugins: &HashMap<String, PluginInfo>) -> Result<
 }
 
 /// Run all pending migrations for all plugins in dependency order.
-pub async fn run_all_pending_migrations(
+///
+/// Only through [`crate::migrate::run_plugins`], on the connection holding the
+/// migration lock: this takes neither the lock nor the incompatible check.
+pub(crate) async fn run_all_pending_migrations(
     conn: &mut PgConnection,
-    plugins: &HashMap<String, (PluginInfo, std::path::PathBuf)>,
+    plugins: &crate::migrate::PluginSet,
 ) -> Result<HashMap<String, Vec<String>>> {
     // Build a PluginInfo-only map for ordering
     let info_map: HashMap<String, PluginInfo> = plugins

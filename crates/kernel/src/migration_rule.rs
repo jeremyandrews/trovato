@@ -5,14 +5,16 @@
 //! rollback redeploys (`docs/design/upgrades-and-probes.md` §3, `UPGRADING.md`).
 //!
 //! [`check`] refuses the statements that can break code which still reads the
-//! old shape: dropping or renaming, retyping a column, `SET NOT NULL`, a
-//! `NOT NULL` column without a default, a new constraint, `TRUNCATE`, and a
-//! plain `CREATE INDEX` on a table the file did not create (it blocks writes
-//! for the whole build; build it `CONCURRENTLY`, alone in a `-- no-transaction`
-//! kernel file, and not `UNIQUE`, which is a new constraint).
+//! old shape: dropping (an index or constraint too) or renaming, retyping a
+//! column, `SET NOT NULL`, `DROP DEFAULT`, a `NOT NULL` column without a
+//! default, a new constraint or unique index, `TRUNCATE`, and a plain
+//! `CREATE INDEX` on a table the file did not create (it blocks writes for the
+//! whole build; build it `CONCURRENTLY`, alone in a `-- no-transaction` kernel
+//! file).
 //!
 //! A refused statement is allowed in a file that names the release whose code
-//! stopped using the object:
+//! stopped using the object. The marker waives these compatibility refusals,
+//! never where a `CONCURRENTLY` statement may run:
 //!
 //! ```sql
 //! -- trovato:contract 0.108.0: item.legacy_flag unread since 0.108.0
@@ -21,6 +23,10 @@
 //! A file named `<version>_incompatible_<desc>.sql` declares that it breaks the
 //! previous release. It is not checked; older binaries refuse to become ready
 //! on a schema holding it, and its release needs planned downtime.
+//!
+//! A table the file creates is exempt from the checks on existing tables, and
+//! `CREATE TABLE IF NOT EXISTS` counts as creating it, so a file must not use
+//! that form for a table that already exists.
 //!
 //! This is a keyword scan, not a parser: comments, string literals and
 //! dollar-quoted bodies are blanked first, then each statement is matched. It
@@ -168,6 +174,14 @@ fn refusal(s: &str, created: &[String]) -> Option<&'static str> {
     {
         return actions.iter().find_map(|a| action_refusal(a));
     }
+    // A marker waives this one; where a concurrent build may run is checked
+    // separately and never waived.
+    if s.starts_with("CREATE UNIQUE INDEX CONCURRENTLY ") {
+        return Some(
+            "adds a uniqueness rule to an existing table, which the previous release's \
+             writes may break, as ADD UNIQUE would, so it needs a contract marker",
+        );
+    }
     if let Some(table) = plain_index_table(s)
         && !created.contains(&table)
     {
@@ -199,12 +213,6 @@ fn concurrent_index_refusal(
     if !s.contains(" CONCURRENTLY ") || !(s.starts_with("CREATE ") || s.starts_with("DROP ")) {
         return None;
     }
-    if s.starts_with("CREATE UNIQUE ") {
-        return Some(
-            "adds a uniqueness rule to an existing table, which the previous release's \
-             writes may break, as ADD UNIQUE would, so it needs a contract marker",
-        );
-    }
     if !no_transaction {
         return Some(
             "uses CONCURRENTLY, which cannot run in a transaction: only a kernel \
@@ -217,7 +225,9 @@ fn concurrent_index_refusal(
              transaction block, where CONCURRENTLY fails; give it a file of its own",
         );
     }
-    if s.starts_with("CREATE INDEX CONCURRENTLY IF NOT EXISTS ") {
+    if s.starts_with("CREATE INDEX CONCURRENTLY IF NOT EXISTS ")
+        || s.starts_with("CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS ")
+    {
         return Some(
             "builds an index CONCURRENTLY IF NOT EXISTS, which would keep the INVALID index \
              a failed build leaves and record the migration as done",
@@ -363,9 +373,17 @@ fn blank_comments_and_literals(sql: &str) -> String {
             out.push(' ');
             i = end;
         } else if rest.starts_with('\'') {
-            // '' is an escaped quote inside a literal.
+            // '' is an escaped quote inside a literal; in an `E'...'` literal, so
+            // is a backslash and whatever follows it.
+            let escapes = i > 0
+                && matches!(bytes[i - 1], b'E' | b'e')
+                && (i < 2 || !(bytes[i - 2].is_ascii_alphanumeric() || bytes[i - 2] == b'_'));
             let mut j = i + 1;
             while j < bytes.len() {
+                if escapes && bytes[j] == b'\\' {
+                    j += 2;
+                    continue;
+                }
                 if bytes[j] == b'\'' {
                     if bytes.get(j + 1) == Some(&b'\'') {
                         j += 2;
@@ -515,6 +533,18 @@ mod tests {
 
     #[test]
     fn keywords_inside_comments_literals_and_bodies_are_ignored() {
+        // A backslash-escaped quote in an E'' literal does not end it early ...
+        assert!(refused(
+            "INSERT INTO t (v) VALUES (E'it\\'s');\nDROP TABLE item;"
+        ));
+        assert_eq!(
+            check(
+                "INSERT INTO t (v) VALUES (E'x\\'; DROP TABLE y');",
+                V,
+                Source::Kernel
+            ),
+            Ok(())
+        );
         for sql in [
             "-- DROP TABLE x;\nCREATE TABLE y (id INT);",
             "/* ALTER TABLE item DROP COLUMN a; */ SELECT 1;",
@@ -556,6 +586,26 @@ mod tests {
             "-- no-transaction\n{marker}\n{drop}\n{build}"
         )));
         assert!(refused(&format!("{marker}\n{drop}")));
+        // A unique concurrent build needs a marker, and with one it runs.
+        let unique = "CREATE UNIQUE INDEX CONCURRENTLY u ON item (slug);";
+        assert!(refused(&format!("-- no-transaction\n{unique}")));
+        assert!(!refused(&format!("-- no-transaction\n{marker}\n{unique}")));
+        assert!(refused(&format!("{marker}\n{unique}")));
+        assert!(refused(&format!(
+            "-- no-transaction\n{marker}\n{unique}\n{build}"
+        )));
+        assert!(refused(&format!(
+            "-- no-transaction\n{marker}\n\
+             CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS u ON item (slug);"
+        )));
+        assert!(
+            check(
+                &format!("-- no-transaction\n{marker}\n{unique}"),
+                V,
+                Source::Plugin
+            )
+            .is_err()
+        );
         // A unique one is a new constraint on existing rows and writes.
         assert!(refused(
             "-- no-transaction\nCREATE UNIQUE INDEX CONCURRENTLY u ON item (slug);"

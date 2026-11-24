@@ -643,10 +643,11 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
 
     // Shutdown (`docs/design/upgrades-and-probes.md` §6). At the signal,
     // readiness turns false and the queue runner stops taking work; on SIGTERM
-    // the server keeps serving for the drain; then it stops accepting and
-    // finishes in-flight requests (bounded by SHUTDOWN_TIMEOUT_SECS when a drain
-    // is configured) and the background work, within SHUTDOWN_TIMEOUT_SECS
-    // counted from when it stops accepting.
+    // the server keeps serving for the drain; then it stops accepting. With a
+    // drain, in-flight requests, the queue runner and the pool close share one
+    // SHUTDOWN_TIMEOUT_SECS from there. Without one, as before, in-flight requests
+    // are not bounded, the queue runner is not waited for, and closing the
+    // pool gets its own SHUTDOWN_TIMEOUT_SECS.
     let stop_signal = stop_signal.unwrap_or_else(listen_for_signal);
     let deadline = Arc::new(std::sync::OnceLock::<tokio::time::Instant>::new());
     let (stopping_tx, stopping_rx) = tokio::sync::oneshot::channel::<()>();

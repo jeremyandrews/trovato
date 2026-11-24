@@ -599,6 +599,121 @@ async fn a_no_transaction_concurrent_index_migration_applies() {
     assert!(valid, "the index is valid");
 }
 
+/// Write `files` to a directory and load them as a migrator.
+async fn temp_migrator(dir: &TempDir, files: &[(&str, &str)]) -> sqlx::migrate::Migrator {
+    for (name, sql) in files {
+        std::fs::write(dir.0.join(name), sql).unwrap();
+    }
+    sqlx::migrate::Migrator::new(dir.0.as_path()).await.unwrap()
+}
+
+/// With a migration of its own pending, a binary still accepts an applied
+/// migration it does not know (a hotfix of the previous line on a schema a
+/// newer release migrated), unless that one is named incompatible.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_pending_migration_runs_past_an_unknown_applied_one() {
+    let db = ScratchDb::create("bg10_unknown_pending").await;
+    let url = db.url();
+    let dir = TempDir::new("unknown-pending");
+    let first = temp_migrator(&dir, &[("1_a.sql", "CREATE TABLE a (x INT);\n")]).await;
+    let mut lock = trovato_kernel::migrate::MigrationLock::connect(&url)
+        .await
+        .unwrap();
+    trovato_kernel::migrate::run_kernel(&mut lock, &first)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) \
+         VALUES (2, 'newer b', true, '\\x00'::bytea, 0)",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+    let later = temp_migrator(&dir, &[("3_c.sql", "CREATE TABLE c (x INT);\n")]).await;
+    assert_eq!(
+        trovato_kernel::migrate::run_kernel(&mut lock, &later)
+            .await
+            .unwrap(),
+        1,
+        "version 3 applies past the unknown version 2"
+    );
+
+    sqlx::query("UPDATE _sqlx_migrations SET description = 'incompatible b' WHERE version = 2")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let more = temp_migrator(&dir, &[("4_d.sql", "CREATE TABLE d (x INT);\n")]).await;
+    let err = trovato_kernel::migrate::run_kernel(&mut lock, &more)
+        .await
+        .expect_err("an incompatible unknown migration is refused");
+    assert!(
+        format!("{err:#}").contains("marked incompatible"),
+        "{err:#}"
+    );
+    let d: Option<String> = sqlx::query_scalar("SELECT to_regclass('d')::text")
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+    assert_eq!(d, None, "nothing applied");
+    lock.release().await.unwrap();
+}
+
+/// The lock timeout stops a migration's own DDL from queueing behind a long
+/// transaction: the `ALTER TABLE` fails fast, rolls back, and is not recorded.
+#[tokio::test(flavor = "multi_thread")]
+async fn lock_timeout_stops_an_alter_stuck_behind_a_long_read() {
+    let db = ScratchDb::create("bg10_alter_timeout").await;
+    let url = db.url();
+    let dir = TempDir::new("alter-timeout");
+    let create = temp_migrator(&dir, &[("1_thing.sql", "CREATE TABLE thing (x INT);\n")]).await;
+    let mut lock = trovato_kernel::migrate::MigrationLock::connect(&url)
+        .await
+        .unwrap();
+    trovato_kernel::migrate::run_kernel(&mut lock, &create)
+        .await
+        .unwrap();
+
+    // A long read holding the table.
+    let mut reader = PgConnection::connect(&url).await.unwrap();
+    let mut tx = reader.begin().await.unwrap();
+    sqlx::query("SELECT count(*) FROM thing")
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+    let alter = temp_migrator(
+        &dir,
+        &[("2_alter.sql", "ALTER TABLE thing ADD COLUMN y INT;\n")],
+    )
+    .await;
+    lock.set_lock_timeout(Duration::from_secs(1)).await.unwrap();
+    let started = Instant::now();
+    let err = tokio::time::timeout(
+        Duration::from_secs(20),
+        trovato_kernel::migrate::run_kernel(&mut lock, &alter),
+    )
+    .await
+    .expect("the ALTER must not wait for the reader")
+    .expect_err("the ALTER fails on the lock timeout");
+    assert!(format!("{err:#}").contains("lock timeout"), "{err:#}");
+    assert!(started.elapsed() < Duration::from_secs(10));
+    tx.rollback().await.unwrap();
+    let recorded: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM _sqlx_migrations WHERE version = 2")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(recorded, 0, "the failed migration is not recorded");
+    let column: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM information_schema.columns WHERE table_name = 'thing' AND column_name = 'y'",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(column, 0, "the ALTER rolled back");
+    drop(lock);
+}
+
 /// `--dry-run` and `--status` change nothing.
 #[tokio::test(flavor = "multi_thread")]
 async fn dry_run_and_status_change_nothing() {
