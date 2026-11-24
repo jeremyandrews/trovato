@@ -42,6 +42,29 @@ impl RedirectCache {
         }
     }
 
+    /// Look up a redirect for a request: the exact path plus its normalized
+    /// query first (when the request carries one), falling back to the path
+    /// alone — the same precedence a path-only redirect already matched
+    /// under, so a site with no query-bearing redirects sees no change
+    /// (B164). Each step is an indexed exact-match lookup through [`find`](Self::find);
+    /// never a scan.
+    pub async fn find_for_request(
+        &self,
+        pool: &PgPool,
+        path: &str,
+        query: Option<&str>,
+        language: &str,
+    ) -> Result<Option<Redirect>> {
+        let with_query = normalize_source(path, query);
+        if with_query != path {
+            let hit = self.find(pool, &with_query, language).await?;
+            if hit.is_some() {
+                return Ok(hit);
+            }
+        }
+        self.find(pool, path, language).await
+    }
+
     /// Look up a redirect, using the cache first, falling back to DB.
     ///
     /// Also tries a language-agnostic lookup (language = "") if the
@@ -141,6 +164,82 @@ pub struct Redirect {
     pub created: i64,
 }
 
+/// Split a redirect source into its path and raw query string.
+///
+/// Rejects a fragment (`#...`): a redirect is matched against a request's
+/// path and query only, so a source that names a fragment could never match
+/// anything and almost certainly means the author pasted a full URL.
+fn split_source(source: &str) -> Result<(&str, Option<&str>)> {
+    if source.contains('#') {
+        anyhow::bail!("redirect source must not include a fragment");
+    }
+    Ok(match source.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (source, None),
+    })
+}
+
+/// Percent-decode one query key or value, treating `+` as a space the way a
+/// form-encoded query does.
+fn decode_component(raw: &str) -> String {
+    let spaced = raw.replace('+', " ");
+    urlencoding::decode(&spaced)
+        .map(|decoded| decoded.into_owned())
+        .unwrap_or(spaced)
+}
+
+/// Canonicalize a raw query string: each key/value percent-decoded then
+/// re-encoded, and the pairs sorted, so two sources that differ only in
+/// parameter order or percent-encoding compare equal.
+///
+/// `None` for an absent or empty query, so a bare path round-trips with no
+/// trailing `?`.
+fn normalize_query(query: Option<&str>) -> Option<String> {
+    let query = query.filter(|q| !q.is_empty())?;
+    let mut pairs: Vec<(String, String)> = query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| {
+            let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+            (decode_component(key), decode_component(value))
+        })
+        .collect();
+    if pairs.is_empty() {
+        return None;
+    }
+    pairs.sort();
+    Some(
+        pairs
+            .into_iter()
+            .map(|(key, value)| {
+                format!(
+                    "{}={}",
+                    urlencoding::encode(&key),
+                    urlencoding::encode(&value)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("&"),
+    )
+}
+
+/// The canonical source a redirect is stored and matched under: `path` alone
+/// when `query` is absent or empty, else `path?normalized_query` with its
+/// parameters sorted and percent-encoding canonical (B164).
+pub fn normalize_source(path: &str, query: Option<&str>) -> String {
+    match normalize_query(query) {
+        Some(q) => format!("{path}?{q}"),
+        None => path.to_string(),
+    }
+}
+
+/// Normalize a redirect source as entered (admin form, API, or any other
+/// writer): split off its query, reject a fragment, and canonicalize.
+pub fn canonicalize_source(source: &str) -> Result<String> {
+    let (path, query) = split_source(source)?;
+    Ok(normalize_source(path, query))
+}
+
 /// Validate that a redirect destination is safe.
 ///
 /// Permits:
@@ -192,7 +291,11 @@ impl Redirect {
 
     /// Create a new redirect.
     ///
-    /// Validates the destination and status code before inserting.
+    /// `source` is canonicalized before it is stored (B164): its query, if
+    /// any, has its parameters sorted and its percent-encoding made
+    /// canonical, so a request matches it regardless of parameter order or
+    /// encoding. A source with a fragment, or an unsafe destination or
+    /// status code, is refused.
     pub async fn create(
         pool: &PgPool,
         source: &str,
@@ -200,6 +303,8 @@ impl Redirect {
         status_code: i16,
         language: &str,
     ) -> Result<Self> {
+        let source = canonicalize_source(source)?;
+
         if !validate_redirect_destination(destination) {
             anyhow::bail!("invalid redirect destination: must be a relative path or http(s) URL");
         }
@@ -222,7 +327,7 @@ impl Redirect {
             "#,
         )
         .bind(id)
-        .bind(source)
+        .bind(&source)
         .bind(destination)
         .bind(status_code)
         .bind(language)
@@ -232,6 +337,77 @@ impl Redirect {
         .context("failed to create redirect")?;
 
         Ok(redirect)
+    }
+
+    /// Update an existing redirect's source, destination, status code and
+    /// language. `source` is canonicalized exactly as [`create`](Self::create) does.
+    ///
+    /// Returns `Ok(None)` when `id` does not name a redirect.
+    pub async fn update(
+        pool: &PgPool,
+        id: Uuid,
+        source: &str,
+        destination: &str,
+        status_code: i16,
+        language: &str,
+    ) -> Result<Option<Self>> {
+        let source = canonicalize_source(source)?;
+
+        if !validate_redirect_destination(destination) {
+            anyhow::bail!("invalid redirect destination: must be a relative path or http(s) URL");
+        }
+
+        if !matches!(status_code, 301 | 302 | 303 | 307 | 308) {
+            anyhow::bail!(
+                "invalid redirect status code {status_code}: must be 301, 302, 303, 307, or 308"
+            );
+        }
+
+        let redirect = sqlx::query_as::<_, Redirect>(
+            r#"
+            UPDATE redirect
+            SET source = $2, destination = $3, status_code = $4, language = $5
+            WHERE id = $1
+            RETURNING id, source, destination, status_code, language, created
+            "#,
+        )
+        .bind(id)
+        .bind(&source)
+        .bind(destination)
+        .bind(status_code)
+        .bind(language)
+        .fetch_optional(pool)
+        .await
+        .context("failed to update redirect")?;
+
+        Ok(redirect)
+    }
+
+    /// Find a redirect by id.
+    pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Self>> {
+        let redirect = sqlx::query_as::<_, Redirect>(
+            r#"
+            SELECT id, source, destination, status_code, language, created
+            FROM redirect
+            WHERE id = $1
+            "#,
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .context("failed to find redirect by id")?;
+
+        Ok(redirect)
+    }
+
+    /// Total number of redirects, for pagination.
+    pub async fn count_all(pool: &PgPool) -> Result<i64> {
+        let count = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM redirect")
+            .fetch_one(pool)
+            .await
+            .context("failed to count redirects")?;
+
+        Ok(count)
     }
 
     /// Detect redirect loops (source -> destination -> ... -> source).
@@ -311,6 +487,57 @@ impl Redirect {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    // -------------------------------------------------------------------------
+    // Query normalization (B164)
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn a_bare_path_normalizes_to_itself() {
+        assert_eq!(normalize_source("/article.php", None), "/article.php");
+        assert_eq!(normalize_source("/article.php", Some("")), "/article.php");
+    }
+
+    #[test]
+    fn a_query_source_sorts_its_parameters() {
+        assert_eq!(
+            normalize_source("/article.php", Some("sid=1")),
+            "/article.php?sid=1"
+        );
+        assert_eq!(
+            normalize_source("/search", Some("b=2&a=1")),
+            normalize_source("/search", Some("a=1&b=2")),
+        );
+        assert_eq!(
+            normalize_source("/search", Some("b=2&a=1")),
+            "/search?a=1&b=2"
+        );
+    }
+
+    #[test]
+    fn percent_encoding_and_plus_normalize_the_same_way() {
+        let encoded = normalize_source("/search", Some("q=a%20b"));
+        let plussed = normalize_source("/search", Some("q=a+b"));
+        let literal = normalize_source("/search", Some("q=a b"));
+        assert_eq!(encoded, plussed);
+        assert_eq!(encoded, literal);
+        assert_eq!(encoded, "/search?q=a%20b");
+    }
+
+    #[test]
+    fn canonicalize_source_splits_path_and_query() {
+        assert_eq!(
+            canonicalize_source("/article.php?sid=1").unwrap(),
+            "/article.php?sid=1"
+        );
+        assert_eq!(canonicalize_source("/old").unwrap(), "/old");
+    }
+
+    #[test]
+    fn canonicalize_source_rejects_a_fragment() {
+        assert!(canonicalize_source("/old#top").is_err());
+        assert!(canonicalize_source("/old?page=2#top").is_err());
+    }
 
     #[test]
     fn redirect_serialization() {
