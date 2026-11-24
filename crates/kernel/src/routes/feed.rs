@@ -163,12 +163,33 @@ struct FeedConfig {
     full_content: bool,
     /// The page the feed is a feed of: for an argument feed, the gather route
     /// with the same argument when there is one; else the query's canonical
-    /// URL; else its `/gather/{query_id}` page. A pattern, like `path`.
-    home_path: String,
+    /// URL; else the outbound URL alias of its `/gather/{query_id}` page, when
+    /// one exists; else that page itself.
+    home_path: HomePath,
     /// The gather query's own `changed`, so a config edit changes the `ETag`.
     query_changed: i64,
     /// The path argument and the `display.routes` mapping that binds it.
     argument: Option<GatherRouteParam>,
+}
+
+/// Where a feed's channel link comes from.
+///
+/// The first two tiers are literal paths, known at registration from the
+/// query's own config (an argument route or `canonical_url`), the same way
+/// `display.routes` and `canonical_url` are already read once at startup
+/// elsewhere in this file — editing either needs a restart to reach a running
+/// feed. The third has no config to read: whether `/gather/{query_id}` has an
+/// outbound alias is a fact of the `url_alias` table, resolved per request
+/// (through [`crate::gather::GatherService::outbound_alias_for_gather`]'s
+/// cache, so this costs no query once warm) so that an alias written after
+/// startup reaches the feed without one.
+#[derive(Debug, Clone)]
+enum HomePath {
+    /// The argument's own route, or the query's `canonical_url`.
+    Fixed(String),
+    /// Neither of the above: resolved at request time to the outbound alias
+    /// of `/gather/{query_id}`, else that path itself.
+    GatherDefault,
 }
 
 /// A feed as a template sees it, for autodiscovery link tags.
@@ -421,7 +442,8 @@ pub fn build_feed_router(queries: &[GatherQuery]) -> Router<AppState> {
                 .as_deref()
                 .and_then(|segment| argument_home_path(query, segment))
                 .or(canonical)
-                .unwrap_or_else(|| format!("/gather/{}", query.query_id));
+                .map(HomePath::Fixed)
+                .unwrap_or(HomePath::GatherDefault);
 
             let config = Arc::new(FeedConfig {
                 query_id: query.query_id.clone(),
@@ -639,7 +661,12 @@ async fn serve_feed(
     let meta = load_entry_meta(&state, &item_ids).await;
 
     let rss_path = filled(&config.path);
-    let validators = Validators::compute(config, format, &site_url, &rss_path, &rows, &meta);
+    // Resolved before the validators, not after: the channel link is part of
+    // the document, so an alias write that changes it must change the ETag.
+    let home_path = resolve_home_path(&state, config, &filled).await;
+    let validators = Validators::compute(
+        config, format, &site_url, &rss_path, &home_path, &rows, &meta,
+    );
     let cache_headers = validators.headers(&cache_control);
     if validators.matches(&headers) {
         return (StatusCode::NOT_MODIFIED, cache_headers).into_response();
@@ -666,7 +693,7 @@ async fn serve_feed(
     let channel = Channel {
         title: &title,
         description: &config.description,
-        home_url: format!("{site_url}{}", filled(&config.home_path)),
+        home_url: format!("{site_url}{home_path}"),
         rss_url: format!("{site_url}{rss_path}"),
         atom_url: format!("{site_url}{}", filled(&config.atom_path)),
         updated: validators.last_modified.unwrap_or(config.query_changed),
@@ -683,6 +710,26 @@ async fn serve_feed(
         HeaderValue::from_static(format.content_type()),
     );
     response
+}
+
+/// The feed's channel link: `config.home_path`, filled with the request's
+/// argument when it has a literal pattern, else the outbound URL alias of
+/// `/gather/{query_id}` (cached — see
+/// [`crate::gather::GatherService::outbound_alias_for_gather`]), else that
+/// path itself.
+async fn resolve_home_path(
+    state: &AppState,
+    config: &FeedConfig,
+    filled: &impl Fn(&str) -> String,
+) -> String {
+    match &config.home_path {
+        HomePath::Fixed(pattern) => filled(pattern),
+        HomePath::GatherDefault => state
+            .gather()
+            .outbound_alias_for_gather(&config.query_id)
+            .await
+            .unwrap_or_else(|| format!("/gather/{}", config.query_id)),
+    }
 }
 
 /// What the feed needs from the `item` table for each entry: what the row may
@@ -956,13 +1003,17 @@ struct Validators {
 impl Validators {
     /// Hash everything the document is a function of that can change between
     /// polls without a restart: each entry's id, `changed` and link, in order,
-    /// and the site URL. The feed's config is in too, with its query's
+    /// the site URL, and the resolved channel link — a `HomePath::GatherDefault`
+    /// feed's is a `url_alias` row the query's own `changed` knows nothing
+    /// about, so it must be hashed as given, already resolved, rather than
+    /// recomputed from `config`. The feed's config is in too, with its query's
     /// `changed`, so editing the feed declaration invalidates old copies.
     fn compute(
         config: &FeedConfig,
         format: FeedFormat,
         site_url: &str,
         request_path: &str,
+        home_path: &str,
         rows: &[&serde_json::Value],
         meta: &HashMap<Uuid, EntryMeta>,
     ) -> Self {
@@ -977,6 +1028,7 @@ impl Validators {
         line(&config.path);
         // The argument's value: two authors' feeds are two documents.
         line(request_path);
+        line(home_path);
         line(&config.title);
         line(&config.description);
         line(&config.items.to_string());
@@ -1311,7 +1363,7 @@ mod tests {
             description: "D".to_string(),
             items: 20,
             full_content: false,
-            home_path: "/".to_string(),
+            home_path: HomePath::Fixed("/".to_string()),
             query_changed: 0,
             argument: None,
         }
@@ -1643,6 +1695,7 @@ mod tests {
             FeedFormat::Rss,
             "https://e",
             "/rss/q.xml",
+            "/blog",
             &rows,
             &meta(None, 10),
         );
@@ -1654,6 +1707,7 @@ mod tests {
                 FeedFormat::Rss,
                 "https://e",
                 "/rss/q.xml",
+                "/blog",
                 &rows,
                 &meta(None, 10)
             ),
@@ -1667,6 +1721,7 @@ mod tests {
                 FeedFormat::Rss,
                 "https://e",
                 "/rss/q.xml",
+                "/blog",
                 &rows,
                 &meta(None, 11)
             )
@@ -1680,6 +1735,7 @@ mod tests {
                 FeedFormat::Atom,
                 "https://e",
                 "/rss/q.xml",
+                "/blog",
                 &rows,
                 &meta(None, 10)
             )
@@ -1695,11 +1751,28 @@ mod tests {
                 FeedFormat::Rss,
                 "https://e",
                 "/rss/q.xml",
+                "/blog",
                 &rows,
                 &meta(None, 10)
             )
             .etag,
             "a config change changes the etag"
+        );
+        // The defect: an alias write that moves the channel link does not touch
+        // `query.changed`, so without this the ETag would not follow it.
+        assert_ne!(
+            base.etag,
+            Validators::compute(
+                &config(),
+                FeedFormat::Rss,
+                "https://e",
+                "/rss/q.xml",
+                "/gather/q",
+                &rows,
+                &meta(None, 10)
+            )
+            .etag,
+            "a changed channel link changes the etag"
         );
     }
 

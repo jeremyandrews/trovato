@@ -330,6 +330,23 @@ no second path to keep unique. Both are advertised on every page with
 `<link rel="alternate">` (the `feeds` template variable: `path`, `atom_path`,
 `title`).
 
+**The channel link.** RSS `<link>` and Atom `<link rel="alternate">` point at
+the page the feed is a feed of — the address a visitor actually uses, not the
+feed's own URL (that is `rel="self"`). It is chosen in this order:
+
+1. For a feed reached with an argument, the `display.routes` path taking that
+   one argument, filled with its value — `/blog/author/{user}/feed.xml` links
+   `/blog/author/jeremy`.
+2. The gather's `canonical_url`, if it has one.
+3. The outbound URL alias of `/gather/{query_id}`, if the `url_alias` table has
+   one — so a gather reachable only through an alias (no `canonical_url`, the
+   way `trovato_blog`'s `blog_listing` ships: `/blog` is a URL alias, not a
+   `canonical_url`, to avoid a redirect from `/gather/blog_listing` back to an
+   alias that already rewrites to it) still links the address visitors use.
+   Resolved per request, cached, and cleared the moment an alias is written —
+   no restart needed, unlike the first two tiers.
+4. `/gather/{query_id}` itself, when none of the above apply.
+
 Every entry carries:
 
 - an id that never changes, `urn:uuid:<item id>` (RSS

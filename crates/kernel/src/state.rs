@@ -1411,7 +1411,10 @@ impl AppState {
                     warn!(error = %e, "failed to reload locale strings after a bump");
                 }
             }
-            CacheKind::Menus => crate::menu::clear_local_config_menus(),
+            CacheKind::Menus => {
+                crate::menu::clear_local_config_menus();
+                self.gather().clear_outbound_alias_cache();
+            }
             CacheKind::SiteConfig => {
                 self.front_page().clear();
                 self.gather().clear_site_settings();
