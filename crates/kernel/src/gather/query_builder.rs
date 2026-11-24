@@ -477,7 +477,10 @@ impl GatherQueryBuilder {
                         "\"_tr\".\"title\"",
                         &format!("\"{table}\".\"title\""),
                     );
-                    query.expr_as(Self::cust_or_null(Some(expr)), Alias::new(field.result_key()));
+                    query.expr_as(
+                        Self::cust_or_null(Some(expr)),
+                        Alias::new(field.result_key()),
+                    );
                 } else {
                     // Regular column
                     query.column((Alias::new(table), Alias::new(&field.field_name)));
