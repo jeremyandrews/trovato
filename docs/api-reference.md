@@ -718,22 +718,30 @@ A page of the media library: `id`, `filename`, `mime_type`, `size`, `url`,
 
 Served while `trovato_content_locking` is enabled (it is by default). The item
 edit forms take the lock when they open, show another editor's lock, refuse a
-save under it (409), and release it after a save; these two endpoints are what
-the form's script calls.
+save under it (409), and release it after a save; these three endpoints are
+what the form's script calls.
 
 ```
 POST /api/v1/lock/heartbeat
 POST /api/v1/lock/break
+POST /api/v1/lock/release
 X-CSRF-Token: <token>
 Content-Type: application/json
 
 {"entity_type": "item", "entity_id": "<uuid>"}
 ```
 
-Heartbeat extends the caller's own lock by 15 minutes (409 if they do not hold
-it); break needs `break content lock`. Both answer
-`{"lock": "extended" | "broken", "csrf_token": "<next token>"}`: CSRF tokens
-are single use, so the answer carries the token for the next request.
+Heartbeat extends the caller's own lock by 3 minutes (409 if they do not hold
+it); break needs `break content lock`; release frees the caller's own lock at
+once and is a no-op, not an error, if they do not hold it (it is what the form
+beacons on `pagehide`, so it fires whether or not a save already released the
+lock). All three answer `{"lock": "extended" | "broken" | "released",
+"csrf_token": "<next token>"}`: CSRF tokens are single use, so the answer
+carries the token for the next request.
+
+`release` alone also accepts a form-urlencoded body with a `_token` field
+instead of the header, because `navigator.sendBeacon` — which is how the form
+sends this one, on `pagehide` — cannot set a custom header.
 
 ---
 
