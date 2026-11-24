@@ -377,7 +377,10 @@ constant time; else 401), timestamp within 300 s (else 401), then the replay
 check (`SET mail_webhook:token:<token> 1 NX EX 600`). A token seen before
 answers 200 and does nothing, so Mailgun stops retrying an event whose first
 answer was lost. If recording fails the token is deleted again and the answer
-is 503, so the retry is taken. The key lives on `MailConfig` as a
+is 503, so the retry is taken. Not confirmed: whether Mailgun signs a retry afresh. If a retry carries
+the first attempt's timestamp, a retry after a 503 (the first comes about ten
+minutes later) is refused as stale and that one bounce is not recorded. Nothing
+is lost: the address is still mailed, bounces again and is recorded then. The key lives on `MailConfig` as a
 `WebhookKey`, whose `Debug` prints no secret, and is read through the email
 service: no mail configured means no webhook.
 
@@ -394,10 +397,13 @@ stopped by the worker's existing suppression check at send.
 
 **Pages** (`routes/admin_mail.rs`, `templates/admin/reports/mail*.html`). The
 list builds one filtered `SELECT ... ORDER BY id DESC LIMIT 50 OFFSET n`
-(`mail_outbox_tenant_newest` serves one blog and the primary key the network; two later migrations build, concurrently, `(status, id DESC)` for the status filter and the counts (an index only scan) and `(lower(recipient), id DESC)` for the recipient filter)
+(`mail_outbox_tenant_newest` serves one blog and the primary key the network)
 and one `count(*) ... GROUP BY status` with the same filters except status;
 the total for the pager is read from those counts, so there is no third
-query. Status and kind are accepted only from their fixed lists. Retry and
+query. Three later migrations build indexes concurrently: `(status, id DESC)`
+serves the network status filter and counts, `(tenant_id, status, id DESC)`
+one blog's, and `(lower(recipient), id DESC)` the recipient filter. The
+counts are index only scans, but still read every matching index entry. Status and kind are accepted only from their fixed lists. Retry and
 Cancel are single guarded `UPDATE`s (`status IN ('failed','cancelled') AND
 text_body IS NOT NULL`, and `status = 'queued'`), so neither can touch a row a
 worker holds as `sending`; Retry wakes the local workers. Every action is a
@@ -422,8 +428,8 @@ theme's indigo `--primary`, used for links and the active sidebar item, is
 4.46:1 on white, so the admin layout uses the next darker step (`#4f46e5`,
 6.3:1); and a link inside a paragraph is underlined.
 
-**Tests.** `tests/mail_admin_test.rs` (10): a hard bounce fails the message and
-suppresses later mail, including account mail; a complaint stops bulk mail
+**Tests.** `tests/mail_admin_test.rs` (11): a hard bounce fails the message and
+suppresses later mail, including account mail, whatever the case of the reported address; a complaint stops bulk mail
 only and a later hard bounce upgrades it; forged, tampered, stale and
 replayed requests change nothing; temporary failures and other events are
 ignored and a bounce naming another recipient's message leaves it alone; no

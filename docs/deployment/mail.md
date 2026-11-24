@@ -176,7 +176,10 @@ Under **System** in the admin menu:
   ON CONFLICT (user_id, tenant_id) DO UPDATE SET is_active = TRUE;
   ```
 
-  An administrator sees every blog's mail, here and on the network page.
+  An administrator passes both checks. Until BG4 tags mail with its blog,
+  every message is the default blog's, so an owner of the default blog sees
+  the whole network's account mail (recipients, subjects, errors): grant it
+  to network staff only.
 
 Screenshots: `docs/images/bg18/`.
 

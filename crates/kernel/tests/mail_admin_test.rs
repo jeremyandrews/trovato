@@ -403,6 +403,47 @@ fn other_events_and_other_rows_are_left_alone() {
     });
 }
 
+/// Suppression is keyed by the lower-cased address: a bounce reported in any
+/// case matches the row and stops later mail to a mixed case recipient.
+#[test]
+fn a_bounce_for_a_mixed_case_address_suppresses_it() {
+    run_test(async {
+        let app = app();
+        let to = address("MixedCase");
+        let lower = to.to_lowercase();
+        clean_up(&app.db, &to);
+        clean_up(&app.db, &lower);
+        let first = sent_to(app, &to).await;
+
+        assert_eq!(
+            post_webhook(app, &hard_bounce(&to.to_uppercase(), first)).await,
+            StatusCode::OK
+        );
+        assert_eq!(row(&app.db, first).await.0, "failed");
+        assert_eq!(
+            suppression(&app.db, &lower).await.as_deref(),
+            Some("hard_bounce")
+        );
+        let second = queue(app, NewMail::account("test", &to, "Again", "Hello")).await;
+        let stats = app.deliver_mail_to(&[&to]).await;
+        assert_eq!((stats.sent, stats.suppressed), (0, 1), "{stats:?}");
+        assert_eq!(row(&app.db, second).await.0, "suppressed");
+
+        // The list's recipient filter is case insensitive too.
+        let cookies = admin(app).await;
+        let (_, html) = get(
+            app,
+            &format!(
+                "/admin/reports/mail?recipient={}",
+                urlencoding::encode(&lower)
+            ),
+            &cookies,
+        )
+        .await;
+        assert!(html.contains(&format!("/admin/reports/mail/{first}\"")));
+    });
+}
+
 /// With no signing key, or no mail at all, there is no webhook.
 #[test]
 fn without_a_key_the_webhook_does_not_exist() {
@@ -540,6 +581,29 @@ fn the_list_and_the_detail_show_what_was_queued() {
             "the status counts took the status filter"
         );
 
+        let filtered = |extra: &str| {
+            format!(
+                "/admin/reports/mail?recipient={}&{extra}",
+                urlencoding::encode(&to)
+            )
+        };
+        let (_, html) = get(app, &filtered("category=password_reset"), &cookies).await;
+        assert!(html.contains(&format!("/admin/reports/mail/{reset}\"")));
+        assert!(!html.contains(&format!("/admin/reports/mail/{sent}\"")));
+        assert!(
+            html.contains("All (1)"),
+            "the counts ignored the category filter"
+        );
+        let (_, html) = get(app, &filtered("kind=bulk"), &cookies).await;
+        assert!(!html.contains(&format!("/admin/reports/mail/{sent}\"")));
+        assert!(!html.contains(&format!("/admin/reports/mail/{reset}\"")));
+        assert!(
+            html.contains("All (0)"),
+            "the counts ignored the kind filter"
+        );
+        let (_, html) = get(app, &filtered("kind=transactional"), &cookies).await;
+        assert!(html.contains("All (2)"));
+
         let (status, html) = get(app, &format!("/admin/reports/mail/{reset}"), &cookies).await;
         assert_eq!(status, StatusCode::OK);
         assert!(html.contains("Reset your password"));
@@ -607,6 +671,19 @@ fn retry_and_cancel_need_a_token_and_the_right_state() {
         assert!(html.contains(">Retry<"));
         // Nothing is sent once cancelled.
         assert_eq!(app.deliver_mail_to(&[&to]).await.sent, 0);
+
+        // Retry takes a cancelled message back too, not only a failed one.
+        assert_eq!(
+            post_form(
+                app,
+                &retry,
+                &cookies,
+                &format!("_token={}", token(app, tokens, &cookies).await)
+            )
+            .await,
+            StatusCode::SEE_OTHER
+        );
+        assert_eq!(row(&app.db, id).await, ("queued".to_string(), 0, None));
 
         // Fail it as a worker would, then retry.
         sqlx::query(

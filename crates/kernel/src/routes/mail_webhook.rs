@@ -119,7 +119,7 @@ fn timestamp_fresh(timestamp: &str, now: i64) -> bool {
     timestamp
         .trim()
         .parse::<i64>()
-        .is_ok_and(|t| (now - t).abs() <= MAX_SKEW_SECS)
+        .is_ok_and(|t| now.abs_diff(t) <= MAX_SKEW_SECS.unsigned_abs())
 }
 
 /// What an event asks the kernel to record, if anything.

@@ -204,6 +204,7 @@ pub async fn retry(pool: &PgPool, id: i64) -> Result<bool> {
     let done = sqlx::query(
         "UPDATE mail_outbox SET status = 'queued', attempts = 0, next_attempt_at = now(), \
              last_error = NULL, held_reason = NULL, finished_at = NULL, \
+             bounced_at = NULL, complained_at = NULL, \
              locked_until = NULL, locked_by = NULL \
          WHERE id = $1 AND status IN ('failed', 'cancelled') AND text_body IS NOT NULL",
     )
