@@ -1371,6 +1371,14 @@ impl AppState {
         Ok(state)
     }
 
+    /// Clear every in-process cache of this server, without bumping: what a
+    /// bump of every kind does here. The performance tests' "cold" start.
+    pub async fn clear_local_caches(&self) {
+        for kind in crate::cache::generation::CacheKind::ALL {
+            self.clear_local_cache(kind).await;
+        }
+    }
+
     /// Clear this server's cache of `kind`, without bumping: what a bump from
     /// any server, this one included, does here.
     async fn clear_local_cache(&self, kind: crate::cache::generation::CacheKind) {

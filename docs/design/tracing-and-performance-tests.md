@@ -258,46 +258,76 @@ today it answers the internet. Nothing in `deploy/` scrapes it.
 
 ### 7. Performance tests
 
-A small API in the kernel's integration tests (`tests/common/perf.rs`):
+A small API in the kernel's integration tests (`tests/common/perf.rs`),
+described for contributors in `docs/performance-tests.md`:
 
 ```rust
-let site = PerfSite::start().await;          // scratch database, own Redis db, fixed fixture
-let run = site.visit(Visitor::Anonymous, Caches::Cold, "/").await;
-run.assert_counts(Counts { queries: 9, cache_gets: 12, cache_misses: 4,
-                           cache_sets: 1, plugin_calls: 2 });
-run.assert_fingerprints(&["select:item:...", ...]);
+let site = shared_site();                       // built once per test binary
+let visit = site.visit("item", Visitor::Anonymous, Caches::Cold, &site.item_path).await;
+check(&visit);                                  // against tests/fixtures/performance_counts.toml
 ```
 
-- **Deterministic.** Each test binary run creates a scratch database
-  (`trovato_test_utils::ScratchDb`), migrates it and seeds a fixed fixture
-  (one type, a fixed number of items, comments, tags, one user, one
-  administrator) with fixed titles. It uses its own Redis database number,
-  flushed at start, so no other test's keys warm it. Cold means every
-  in-process cache cleared (a new `AppState::clear_local_caches`, the same
-  clear a generation bump does) and the Redis cache flushed; warm means the
-  same request made once before. Counts, not timings.
-- **Pages.** Front page, an item page with comments, a category page, a feed,
-  search, the login page and the admin content list; anonymous and logged in
-  where both exist; cold and warm.
-- **Changing a count** means changing the expected number in the same commit,
-  so a regression shows in review as a diff of one number. The assertion
-  message prints the full actual counts and the fingerprints that appeared or
-  vanished.
-- A test proves the harness bites: it adds one query to the item page (a
-  plugin-free kernel hook used only by that test) and asserts the item page's
-  performance test then fails.
+- **Deterministic.** The site is built once per test binary:
+  - a scratch database (`trovato_test_utils::ScratchDb`), migrated;
+  - a plugin directory holding only the blog and search modules, which CI
+    builds, with `trovato_comments` enabled without its module for the
+    kernel's comment threads;
+  - `trovato generate` with a fixed seed: 40 posts, 120 comments (three per post), 6 tags,
+    7 members and an administrator;
+  - a Redis database number of its own, flushed at start.
+
+  Cold means every in-process cache cleared (a new
+  `AppState::clear_local_caches`, the same clear a generation bump does) and
+  every Redis key gone except the sessions, the session index and the
+  generation counters. Warm means the same request made once just before.
+  Visits take turns, and each waits out the generation watcher first. The
+  signed-in sessions are registered by a request before any measurement. The
+  binary installs the query listener as its subscriber, as `init_tracing`
+  does. Counts, not timings.
+- **Pages.** Front page, an item page with comments, a category page (a tag
+  page), a feed, search, the login page and the admin content list. Each is
+  visited anonymous and logged in where both exist, cold and warm.
+- **Expected numbers** live in `tests/fixtures/performance_counts.toml`, one
+  table per `page.visitor.caches`. Each table holds the counts and every
+  distinct statement by fingerprint, with how often it ran and its
+  normalised text, so a change shows in review as the statement it is.
+  `TROVATO_PERF_RECORD=1` rewrites the file. A mismatch names every count and
+  statement that changed.
+- A test proves the harness bites: it adds one `SELECT 1` to the item page
+  (a header only the test router answers) and asserts that the counts go up
+  by one, that the difference names that statement, and that `check` fails.
+- A cold visit that counts no statement fails on its own, so a broken
+  listener cannot pass as a free page.
 
 ### 8. Scale data generator
 
-`trovato generate --items N [--comments-per-item C] [--tags T] [--users U]
-[--seed S]` writes a deterministic site into `DATABASE_URL`: the same
-arguments always produce the same rows (ids, titles, bodies, dates and tag
-assignments derived from the seed and the row number). Set-based SQL,
-`INSERT ... SELECT ... FROM generate_series(lo, hi)` in batches, so Postgres
-does the work and the binary only sends statements; with `--items 20000000`
-it must finish in under an hour on the Mac Studio (measured in part 3). Blogs
-are left out until BG4's tables exist; the flag is reserved. Later runs reuse
-it to seed their benchmarks.
+`trovato generate --items N [--comments C] [--tags T] [--users U] [--seed S]
+[--batch B] [--parallel P] --admin-password PW` writes a deterministic site into `DATABASE_URL`.
+The same arguments always produce the same rows: ids are
+`md5('<seed>:<kind>:<n>')::uuid`, and titles, bodies, dates, tags and comment
+counts are derived from the row number. It writes members (`gen_user_N`, with
+`@example.invalid` addresses), an administrator (`gen_admin`), tags, blog
+posts each with one revision, and comments, newest posts first. It sets the
+front page to `/blog`, then runs `ANALYZE`.
+
+The SQL is set-based: `INSERT ... SELECT ... FROM generate_series(lo, hi)`, one
+statement per batch and `P` batches at once. Postgres does the work and the
+binary only sends statements. Posts get their search vectors from the item
+trigger as they are written. Comments are written with the two comment
+triggers that update their post off: the search one, so comment text is not
+searchable, and the count one, since each post is written with its comment
+count. A database that already holds exactly this generated site is left
+alone; any other database that is not empty (a different generated site, a run
+that did not finish, a real site) is refused. A run that crashed with the
+triggers off has them turned back on by the next run. There is no default
+password, so no generated site has a known administrator login.
+
+With `--items 20000000` (and the default 20,000,000 comments) it took 30
+minutes 27 seconds on the Mac Studio: 1,558 s for the posts and their
+revisions, 266 s for the comments, 2 s for the rest. The data generator lives in the kernel
+binary because it needs the kernel's own `AppState::new` (migrations, plugin
+installation, content types) before it writes. Later runs reuse it to seed
+their benchmarks.
 
 ### 9. Timing benchmarks
 

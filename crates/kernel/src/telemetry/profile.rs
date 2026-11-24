@@ -40,8 +40,9 @@ pub struct RequestProfile {
     /// can decide who sees the detailed `Server-Timing` after the counts are
     /// read.
     user_id: OnceLock<Uuid>,
-    /// Statement fingerprints in the order they ran, when asked for.
-    fingerprints: Option<Mutex<Vec<String>>>,
+    /// Each statement's fingerprint and normalised text (no literals), in
+    /// the order they ran, when asked for.
+    fingerprints: Option<Mutex<Vec<(String, String)>>>,
     /// Where query and tap durations are observed, when the profile belongs
     /// to a server with metrics.
     metrics: Option<Arc<Metrics>>,
@@ -81,6 +82,10 @@ pub struct RequestProfileSnapshot {
     pub outgoing_calls: u32,
     /// Statement fingerprints in the order they ran, when they were collected.
     pub fingerprints: Vec<String>,
+    /// The same statements, normalised (every literal and parameter a `?`),
+    /// so a test can say which statement a fingerprint is. Never leaves the
+    /// process.
+    pub statements: Vec<String>,
 }
 
 impl RequestProfile {
@@ -105,6 +110,13 @@ impl RequestProfile {
 
     /// Read every counter.
     pub fn snapshot(&self) -> RequestProfileSnapshot {
+        let (fingerprints, statements): (Vec<String>, Vec<String>) = self
+            .fingerprints
+            .as_ref()
+            .and_then(|f| f.lock().ok().map(|v| v.clone()))
+            .unwrap_or_default()
+            .into_iter()
+            .unzip();
         let load = |a: &AtomicU32| a.load(Ordering::Relaxed);
         let nanos = |a: &AtomicU64| Duration::from_nanos(a.load(Ordering::Relaxed));
         RequestProfileSnapshot {
@@ -121,11 +133,8 @@ impl RequestProfile {
             renders: load(&self.renders),
             render_time: nanos(&self.render_nanos),
             outgoing_calls: load(&self.outgoing_calls),
-            fingerprints: self
-                .fingerprints
-                .as_ref()
-                .and_then(|f| f.lock().ok().map(|v| v.clone()))
-                .unwrap_or_default(),
+            fingerprints,
+            statements,
         }
     }
 }
@@ -169,7 +178,11 @@ pub(crate) fn count_query(elapsed: Duration, sql: impl FnOnce() -> Option<String
             && let Some(sql) = sql()
             && let Ok(mut list) = list.lock()
         {
-            list.push(super::fingerprint::fingerprint(&sql));
+            let normalized = super::fingerprint::normalize(&sql);
+            list.push((
+                super::fingerprint::fingerprint_normalized(&normalized),
+                normalized,
+            ));
         }
     });
 }
@@ -322,6 +335,10 @@ mod tests {
         assert_eq!(s.renders, 2);
         assert_eq!(s.fingerprints.len(), 1);
         assert!(s.fingerprints[0].starts_with("select:item:"));
+        assert_eq!(
+            s.statements,
+            vec!["select * from item where id = ?".to_string()]
+        );
         assert_eq!(profile.user_id(), Some(Uuid::nil()));
     }
 

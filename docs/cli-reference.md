@@ -17,6 +17,7 @@ and `trovato <command> --help` print the same, from the binary.
 | `trovato config import [<dir>] [--dry-run]` | Import configuration from YAML. |
 | `trovato user reset-password <user> [<password>]` | Set a password (read from stdin if omitted) and end the user's sessions. |
 | `trovato user role-add <user> <role>` / `role-remove <user> <role>` / `roles <user>` | Manage a user's roles. |
+| `trovato generate --items <N> --admin-password <PASSWORD>` | Write a deterministic test site of a given size (for performance tests and benchmarks). |
 
 ## `trovato migrate`
 
@@ -73,3 +74,43 @@ afterwards not ready until `trovato migrate` runs. Run it right after the
 enable.
 
 See [docs/deployment/upgrades.md](deployment/upgrades.md).
+
+## `trovato generate`
+
+```
+trovato generate --items <N> [--comments <N>] [--tags <N>] [--users <N>]
+                 [--seed <N>] [--batch <ROWS>] [--parallel <N>]
+                 --admin-password <PASSWORD>
+```
+
+Writes a deterministic site into `DATABASE_URL` for performance tests and
+benchmarks. It only writes into an empty database (it runs the migrations itself): one with any
+content it did not write (a real site, or a run that did not finish) is
+refused. The same arguments always write the same rows: ids, titles, bodies,
+dates, authors and tags all come from the seed and the row number. It writes:
+
+- members `gen_user_1` to `gen_user_<users>` (default 1000) with addresses
+  under `example.invalid`;
+- an administrator, `gen_admin`;
+- `--tags` terms in the `tags` vocabulary (default 500, an even number, slugs
+  `topic-<n>`), two to a post;
+- `--items` published blog posts with one revision each;
+- `--comments` comments, spread over the newest posts first (default one per
+  post).
+
+It then sets the front page to `/blog` and analyses the tables. Every
+generated account has the `--admin-password` password, at least 12 characters.
+There is no default, so no generated site has a known administrator login. The
+password hash is salted, so it is the one value that differs between two runs
+with the same arguments.
+
+The work is done in Postgres: one `INSERT ... SELECT ... FROM generate_series`
+statement per `--batch` rows (default 20,000), `--parallel` statements at a
+time (default 16). Running it again with the same site arguments does nothing,
+whatever `--batch` and `--parallel` say. Running it with different ones on a
+generated database is refused.
+
+Comment text is not added to search. `--items 20000000`, with the default
+20,000,000 comments, takes about half an hour on a Mac Studio.
+
+The blog plugin must be on the plugin path: the posts are its `blog` type.
