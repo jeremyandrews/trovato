@@ -23,8 +23,8 @@ use trovato_sdk::host_errors;
 /// Returns `Ok(())` on success or `Err(())` if the insert failed (the caller
 /// maps that to its own error code); the plugin name is injected by the caller
 /// so plugins cannot enqueue under another plugin's identity.
-async fn insert_job(
-    db: &sqlx::PgPool,
+async fn insert_job<'e>(
+    db: impl sqlx::PgExecutor<'e>,
     plugin_name: &str,
     queue_name: &str,
     payload: &serde_json::Value,
@@ -60,8 +60,8 @@ async fn insert_job(
 ///
 /// `delay_secs` is clamped to non-negative, so a job can be deferred but never
 /// scheduled into the past.
-pub(crate) async fn enqueue_kernel_job(
-    db: &sqlx::PgPool,
+pub(crate) async fn enqueue_kernel_job<'e>(
+    db: impl sqlx::PgExecutor<'e>,
     plugin_name: &str,
     queue_name: &str,
     payload: &serde_json::Value,
