@@ -52,8 +52,10 @@ impl FilterPipeline {
 
     /// Create pipeline with permission check.
     ///
-    /// If `has_full_html` is false and the format keeps text as written
-    /// (`full_html`), downgrades to filtered_html for safety.
+    /// If `has_full_html` is false and the format is the more permissive,
+    /// unconfigured one (`full_html`), downgrades to `filtered_html`'s
+    /// configured allowlist instead. Both are sanitized either way: this
+    /// gates which allowlist applies, not whether one does.
     pub fn for_format_checked(format: &str, has_full_html: bool) -> Self {
         match super::text_format::get(format) {
             Some(stored)
