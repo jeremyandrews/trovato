@@ -17,6 +17,7 @@ and `trovato <command> --help` print the same, from the binary.
 | `trovato config import [<dir>] [--dry-run]` | Import configuration from YAML. |
 | `trovato user reset-password <user> [<password>]` | Set a password (read from stdin if omitted) and end the user's sessions. |
 | `trovato user role-add <user> <role>` / `role-remove <user> <role>` / `roles <user>` | Manage a user's roles. |
+| `trovato generate --items <N>` | Write a deterministic test site of a given size (for performance tests and benchmarks). |
 
 ## `trovato migrate`
 
@@ -73,3 +74,39 @@ afterwards not ready until `trovato migrate` runs. Run it right after the
 enable.
 
 See [docs/deployment/upgrades.md](deployment/upgrades.md).
+
+## `trovato generate`
+
+```
+trovato generate --items <N> [--comments <N>] [--tags <N>] [--users <N>]
+                 [--seed <N>] [--batch <ROWS>] [--parallel <N>]
+                 [--admin-password <PASSWORD>]
+```
+
+Writes a deterministic site into `DATABASE_URL` for performance tests and
+benchmarks. Never run it against a site with real content. The same
+arguments always write the same rows: ids, titles, bodies, dates, authors and
+tags all come from the seed and the row number. It writes:
+
+- members `gen_user_1` to `gen_user_<users>` (default 1000) with addresses
+  under `example.invalid`;
+- an administrator, `gen_admin`;
+- `--tags` terms in the `tags` vocabulary (default 500, slugs `topic-<n>`);
+- `--items` published blog posts with one revision each;
+- `--comments` comments, spread over the newest posts first (default one per
+  post).
+
+It then sets the front page to `/blog` and analyses the tables. Every
+generated account has the `--admin-password` password (default
+`generated-admin-password`).
+
+The work is done in Postgres: one `INSERT ... SELECT ... FROM generate_series`
+statement per `--batch` rows (default 20,000), `--parallel` statements at a
+time (default 16). Running it again with the same arguments does nothing.
+Running it with different arguments on a generated database is refused.
+
+Comment text is not added to search. With `--items 20000000`, the default
+20,000,000 comments, 500 tags and 1,000 members took 55 minutes on a Mac
+Studio, Postgres 16 in Docker.
+
+The blog plugin must be on the plugin path: the posts are its `blog` type.

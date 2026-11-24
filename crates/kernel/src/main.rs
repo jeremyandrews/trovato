@@ -22,6 +22,7 @@ mod error;
 mod file;
 mod form;
 mod gather;
+mod generate;
 mod host;
 mod lockout;
 mod menu;
@@ -109,6 +110,36 @@ enum Commands {
         /// fails (and the migration rolls back); 0 waits forever.
         #[arg(long, default_value_t = 10)]
         lock_timeout: u64,
+    },
+    /// Write a deterministic generated site of the given size into
+    /// DATABASE_URL, for performance tests and benchmarks (BG14). The same
+    /// options always write the same rows.
+    Generate {
+        /// Blog posts to write.
+        #[arg(long)]
+        items: u64,
+        /// Comments in total, spread over the newest posts first
+        /// (default: one per post).
+        #[arg(long)]
+        comments: Option<u64>,
+        /// Terms in the tags vocabulary.
+        #[arg(long, default_value_t = 500)]
+        tags: u64,
+        /// Members (an administrator, gen_admin, is extra).
+        #[arg(long, default_value_t = 1000)]
+        users: u64,
+        /// The seed every value is derived from.
+        #[arg(long, default_value_t = 1)]
+        seed: u64,
+        /// Rows per statement.
+        #[arg(long, default_value_t = 20_000)]
+        batch: u64,
+        /// Statements in flight at once.
+        #[arg(long, default_value_t = 16)]
+        parallel: usize,
+        /// The password of gen_admin.
+        #[arg(long, default_value = "generated-admin-password")]
+        admin_password: String,
     },
 }
 
@@ -216,11 +247,75 @@ async fn main() -> Result<()> {
             dry_run,
             lock_timeout,
         }) => run_migrate_command(status, dry_run, lock_timeout).await,
+        Some(Commands::Generate {
+            items,
+            comments,
+            tags,
+            users,
+            seed,
+            batch,
+            parallel,
+            admin_password,
+        }) => {
+            let options = generate::GenerateOptions {
+                items,
+                comments: comments.unwrap_or(items),
+                tags,
+                users,
+                seed,
+                batch,
+                parallel,
+            };
+            run_generate_command(options, &admin_password).await
+        }
     }
 }
 
 /// `trovato migrate`: the migration step of an upgrade, run before new
 /// servers start (`docs/design/upgrades-and-probes.md` §1).
+async fn run_generate_command(
+    options: generate::GenerateOptions,
+    admin_password: &str,
+) -> Result<()> {
+    let mut config = Config::from_env().context("failed to load configuration")?;
+    config.database_max_connections = config.database_max_connections.max(
+        u32::try_from(options.parallel)
+            .unwrap_or(u32::MAX)
+            .saturating_add(4),
+    );
+    // The full server state: migrations, plugin discovery (which installs and
+    // enables trovato_blog on a fresh database) and its content types.
+    let state = AppState::new(&config)
+        .await
+        .context("failed to initialize application state")?;
+    if generate::repair_after_crash(state.db()).await? {
+        warn!("re-enabled the comment triggers a crashed generate run left off");
+    }
+    println!("Generating {options:?}");
+    let report = generate::generate(state.db(), &options, admin_password, |line| {
+        println!("  {line}");
+    })
+    .await?;
+    if report.already_present {
+        println!("This database already holds exactly this generated site; nothing written.");
+        return Ok(());
+    }
+    for phase in &report.phases {
+        println!(
+            "{:<34} {:>12} rows {:>10.1} s",
+            phase.name, phase.rows, phase.seconds
+        );
+    }
+    println!(
+        "{:<34} {:>12}      {:>10.1} s",
+        "total",
+        "",
+        report.total_seconds()
+    );
+    println!("{}", bump_from_cli(&config, &CacheKind::ALL).await);
+    Ok(())
+}
+
 async fn run_migrate_command(status: bool, dry_run: bool, lock_timeout: u64) -> Result<()> {
     let config = Config::from_env().context("failed to load configuration")?;
 

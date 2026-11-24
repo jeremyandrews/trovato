@@ -91,7 +91,13 @@ pub fn normalize(sql: &str) -> String {
                 while i < bytes.len() && bytes[i] != b'"' {
                     i += 1;
                 }
-                i = (i + 1).min(bytes.len());
+                if i >= bytes.len() {
+                    // Unterminated: the rest is not an identifier, and may
+                    // hold literals.
+                    push_token(&mut out, &mut pending_space, "?");
+                    continue;
+                }
+                i += 1;
                 push_token(&mut out, &mut pending_space, &sql[start..i]);
             }
             // A placeholder.
@@ -306,6 +312,14 @@ mod tests {
         assert_eq!(
             fingerprint("select  id\n  from item -- note\n where x = $1"),
             fingerprint("SELECT id /* c */ FROM item WHERE x = $1"),
+        );
+    }
+
+    #[test]
+    fn an_unterminated_identifier_keeps_nothing_after_it() {
+        assert_eq!(
+            normalize("SELECT \"a FROM t WHERE x = 'secret'"),
+            "select ?"
         );
     }
 
