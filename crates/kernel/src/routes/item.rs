@@ -688,6 +688,40 @@ async fn view_item(
     if let Some(Extension(crate::middleware::RequestedPath(ref requested_path))) = requested {
         context.insert("requested_path", requested_path);
     }
+
+    // The canonical address, and every language this item can be read in with
+    // its address there, computed before `inject_site_context_for` so that the
+    // tiles it renders (a language switcher among them) see the same facts a
+    // crawler is told below rather than none at all. Served as the front page,
+    // the item's address is `/`: the canonical link and the language
+    // alternates name the front page, not the path it is configured as.
+    let canonical_path = if super::front::is_front_page_request() {
+        "/".to_string()
+    } else {
+        UrlAlias::get_canonical_alias_with_context(
+            state.db(),
+            &item_path,
+            item.stage_id,
+            &active_language,
+        )
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| item_path.clone())
+    };
+    // A theme builds a language switcher out of `available_translations`;
+    // `hreflang_links` is the same facts for a crawler, and is left out
+    // entirely when there is only one language to name, since a lone
+    // self-referential alternate says nothing.
+    let translations = super::helpers::available_translations(&state, id, &canonical_path).await;
+    if translations.len() > 1 {
+        context.insert(
+            "hreflang_links",
+            &super::helpers::build_hreflang_links(&translations, state.default_language()),
+        );
+    }
+    context.insert("available_translations", &translations);
+
     super::helpers::inject_site_context_for(&state, &session, &user, &mut context, &item_path)
         .await;
 
@@ -708,23 +742,7 @@ async fn view_item(
     // here rather than in a plugin because `<head>` is not reachable from one —
     // `tap_item_view` output is appended to the item's body. The canonical URL
     // is the item's alias when it has one, so the address a crawler indexes is
-    // the address the site links to. Served as the front page, the item's
-    // address is `/`: the canonical link and the language alternates name the
-    // front page, not the path it is configured as.
-    let canonical_path = if super::front::is_front_page_request() {
-        "/".to_string()
-    } else {
-        UrlAlias::get_canonical_alias_with_context(
-            state.db(),
-            &item_path,
-            item.stage_id,
-            &active_language,
-        )
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| item_path.clone())
-    };
+    // the address the site links to.
     let site_name = context
         .get("site_name")
         .and_then(|v| v.as_str())
@@ -738,19 +756,6 @@ async fn view_item(
         &content_type_fields,
     );
     context.insert("page_meta", &page_meta);
-
-    // Every language this item can be read in, and where. A theme builds a
-    // language switcher out of `available_translations`; `hreflang_links` is the
-    // same facts for a crawler, and is left out entirely when there is only one
-    // language to name, since a lone self-referential alternate says nothing.
-    let translations = super::helpers::available_translations(&state, id, &canonical_path).await;
-    if translations.len() > 1 {
-        context.insert(
-            "hreflang_links",
-            &super::helpers::build_hreflang_links(&translations, state.default_language()),
-        );
-    }
-    context.insert("available_translations", &translations);
 
     // The AI Assistant's launcher, for every scope that names this item's type.
     //
