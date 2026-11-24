@@ -17,7 +17,7 @@ and `trovato <command> --help` print the same, from the binary.
 | `trovato config import [<dir>] [--dry-run]` | Import configuration from YAML. |
 | `trovato user reset-password <user> [<password>]` | Set a password (read from stdin if omitted) and end the user's sessions. |
 | `trovato user role-add <user> <role>` / `role-remove <user> <role>` / `roles <user>` | Manage a user's roles. |
-| `trovato generate --items <N>` | Write a deterministic test site of a given size (for performance tests and benchmarks). |
+| `trovato generate --items <N> --admin-password <PASSWORD>` | Write a deterministic test site of a given size (for performance tests and benchmarks). |
 
 ## `trovato migrate`
 

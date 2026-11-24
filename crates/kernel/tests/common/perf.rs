@@ -384,10 +384,7 @@ impl PerfSite {
             .await
             .expect("list perf Redis keys");
         for key in keys {
-            if key == "cache:gen"
-                || key.starts_with("user_sessions:")
-                || keep.iter().any(|k| key.contains(k.as_str()))
-            {
+            if key == "cache:gen" || key.starts_with("user_sessions:") || keep.contains(&key) {
                 continue;
             }
             let _: () = redis::cmd("DEL")
@@ -480,15 +477,20 @@ static SITE: OnceLock<PerfSite> = OnceLock::new();
 
 /// The shared [`PerfSite`], built on the shared runtime on first use.
 pub fn shared_site() -> &'static PerfSite {
-    SITE.get_or_init(|| {
-        // Statements are counted by the query listener, as in production
-        // (`init_tracing`). The binary's one global subscriber.
+    // Statements are counted by the query listener, as in production
+    // (`init_tracing`). The binary's one global subscriber, installed once
+    // even when building the site fails, so a second test reports that
+    // failure rather than a second subscriber.
+    static SUBSCRIBER: std::sync::Once = std::sync::Once::new();
+    SUBSCRIBER.call_once(|| {
         use tracing_subscriber::layer::SubscriberExt;
         tracing::subscriber::set_global_default(
             tracing_subscriber::registry()
                 .with(trovato_kernel::telemetry::query_listener::query_listener()),
         )
         .expect("the performance tests install the only subscriber");
+    });
+    SITE.get_or_init(|| {
         let handle = super::SHARED_RT.handle().clone();
         std::thread::spawn(move || handle.block_on(PerfSite::start()))
             .join()

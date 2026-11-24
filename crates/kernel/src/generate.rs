@@ -8,7 +8,7 @@
 //! What it writes into `DATABASE_URL`:
 //!
 //! - `--users` members (`gen_user_<n>`, mail `gen_user_<n>@example.invalid`)
-//!   and one administrator, `gen_admin`, with `--admin-password`;
+//!   and one administrator, `gen_admin`, every one with `--admin-password`;
 //! - `--tags` terms in the kernel's `tags` vocabulary (`topic-<n>`);
 //! - `--items` published `blog` posts (the `trovato_blog` plugin's type), each
 //!   with a body, two tags and one revision, newest first by number;
@@ -33,7 +33,7 @@ use anyhow::{Context, Result, bail};
 use sqlx::PgPool;
 
 /// What to generate.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct GenerateOptions {
     /// Blog posts.
     pub items: u64,

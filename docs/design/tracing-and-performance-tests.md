@@ -302,7 +302,7 @@ check(&visit);                                  // against tests/fixtures/perfor
 ### 8. Scale data generator
 
 `trovato generate --items N [--comments C] [--tags T] [--users U] [--seed S]
-[--batch B] [--parallel P]` writes a deterministic site into `DATABASE_URL`.
+[--batch B] [--parallel P] --admin-password PW` writes a deterministic site into `DATABASE_URL`.
 The same arguments always produce the same rows: ids are
 `md5('<seed>:<kind>:<n>')::uuid`, and titles, bodies, dates, tags and comment
 counts are derived from the row number. It writes members (`gen_user_N`, with

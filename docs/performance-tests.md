@@ -74,7 +74,7 @@ Add a test to `performance_test.rs`:
 fn tag_cloud() {
     run_test(async {
         let site = shared_site();
-        measure(site, "tag_cloud", &[Visitor::Anonymous], "/tags", &["topic-1"]).await;
+        measure(site, "tag_cloud", &[Visitor::Anonymous], "/tags", &["topic-1"], &[]).await;
     });
 }
 ```

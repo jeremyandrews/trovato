@@ -239,11 +239,14 @@ fn the_generated_site_is_what_was_asked_for() {
             items: options.items + 1,
             ..options.clone()
         };
+        let refused = trovato_kernel::generate::generate(db, &other, "unused-password-0", |_| {})
+            .await
+            .expect_err("different options on a generated site were not refused");
         assert!(
-            trovato_kernel::generate::generate(db, &other, "unused-password-0", |_| {})
-                .await
-                .is_err(),
-            "different options on a generated site were not refused"
+            refused
+                .to_string()
+                .contains("already holds a generated site"),
+            "{refused}"
         );
 
         let count = |sql: &'static str| async move {
