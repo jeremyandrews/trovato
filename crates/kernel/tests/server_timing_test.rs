@@ -69,10 +69,8 @@ fn only_an_administrator_sees_the_counts() {
     tracing::subscriber::set_global_default(subscriber).expect("one subscriber per binary");
 
     run_test(async {
-        let app = TestApp::with_config(|c| {
-            assert_eq!(c.runtime.server_timing, ServerTimingDetail::Admin);
-        })
-        .await;
+        let app =
+            TestApp::with_config(|c| c.runtime.server_timing = ServerTimingDetail::Admin).await;
 
         let (header, profile) = front(&app, "").await;
         assert!(is_total_only(&header), "anonymous got {header:?}");

@@ -203,10 +203,13 @@ instead of the URI, which removes the search term, reset token or email
 that a URL carries from every log line. It is the one change to log output
 with tracing off, and it is a privacy fix.
 
-A test seeds a password, an API token, an email and a search term, makes
-requests carrying them with export on and a capturing subscriber, and fails if
-any span, event, log line, `Server-Timing` value or metrics output contains
-any of them.
+A test seeds a password, an email, a password reset token, an API token and a
+search term, makes requests carrying them under a subscriber that captures
+every Gander span and event at `TRACE` and the log at the production default,
+and fails if any span, event, log line, `Server-Timing` value or metrics output
+contains any of them. It also checks the signed-in user's id and name against
+the spans, the header and the metrics (the existing login audit line records
+them for the site log). Part 3 runs the same check with export on.
 
 Nothing here touches the plugin API: no WIT change, no SDK change, no new
 host function. Plugins are observed from the host side only.
