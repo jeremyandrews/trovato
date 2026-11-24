@@ -382,24 +382,40 @@ impl GatherQueryBuilder {
         );
     }
 
+    /// The translation-overlay rule shared by every SQL projection this
+    /// builder emits: the translated expression wins whenever it is
+    /// non-NULL (including a key the translation explicitly set to JSON
+    /// `null`, which the `||` merge below preserves as a present key), and
+    /// the original expression fills the gap only when the translation has
+    /// nothing at all. One textual form, reused for the title column, the
+    /// whole-`fields` object merge, and individual `fields.x` extractions,
+    /// so the three can't drift into different rules.
+    fn coalesce_overlay(preferred_sql: &str, fallback_sql: &str) -> String {
+        format!("COALESCE({preferred_sql}, {fallback_sql})")
+    }
+
     /// Post-process the generated SQL to replace `item.title` and
     /// `item.fields` references with COALESCE expressions that prefer
     /// translated values.
     ///
     /// Strategy: when SELECT uses `item.*`, we append override columns
     /// that shadow the base columns in the `row_to_json(t)` wrapper.
-    /// When specific fields are selected, the COALESCE is applied
-    /// inline by `add_select_fields`.
+    /// When specific fields are selected, the overlay is applied inline by
+    /// `add_select_fields` via [`Self::select_jsonb_extract_expr`].
     ///
     /// For the `SELECT item.*` case we append:
     /// ```sql
     /// , COALESCE(_tr.title, item.title) AS title
-    /// , COALESCE(_tr.fields || item.fields, item.fields) AS fields
+    /// , COALESCE(item.fields || _tr.fields, item.fields) AS fields
     /// ```
     ///
-    /// The `_tr.fields || item.fields` merge uses PostgreSQL's `||`
-    /// operator on JSONB: translated keys override originals, but
-    /// untranslated keys are preserved from the base item.
+    /// The `item.fields || _tr.fields` merge uses PostgreSQL's `||`
+    /// operator on JSONB, where the *right* operand wins on a duplicate
+    /// key: with the translation on the right, its keys override the
+    /// original's, and keys the translation doesn't have fall back to the
+    /// original. (A prior version merged with the translation on the
+    /// left, which let every original key win instead — the translation
+    /// only ever showed through where the original had no key at all.)
     fn apply_translation_coalesce(&self, sql: String) -> String {
         // The SeaQuery output for SELECT item.* produces:
         //   SELECT "item".*
@@ -409,11 +425,12 @@ impl GatherQueryBuilder {
         let select_all = format!("SELECT \"{base}\".*");
 
         if sql.starts_with(&select_all) {
-            let coalesce_cols = format!(
-                "{select_all}, \
-                 COALESCE(\"_tr\".\"title\", \"{base}\".\"title\") AS \"title\", \
-                 COALESCE(\"_tr\".\"fields\" || \"{base}\".\"fields\", \"{base}\".\"fields\") AS \"fields\""
-            );
+            let title =
+                Self::coalesce_overlay("\"_tr\".\"title\"", &format!("\"{base}\".\"title\""));
+            let merged_fields = format!("\"{base}\".\"fields\" || \"_tr\".\"fields\"");
+            let fields = Self::coalesce_overlay(&merged_fields, &format!("\"{base}\".\"fields\""));
+            let coalesce_cols =
+                format!("{select_all}, {title} AS \"title\", {fields} AS \"fields\"");
             sql.replacen(&select_all, &coalesce_cols, 1)
         } else {
             sql
@@ -453,8 +470,14 @@ impl GatherQueryBuilder {
                     // JSONB field extraction, aliased to the key a result row
                     // will carry. `QueryField::result_key` owns that rule so a
                     // reader of the row cannot drift from this projection.
-                    let expr = self.jsonb_extract_expr(table, jsonb_path);
+                    let expr = self.select_jsonb_extract_expr(table, jsonb_path);
                     query.expr_as(expr, Alias::new(field.result_key()));
+                } else if field.field_name == "title" && self.translation_applies_to(table) {
+                    let expr = Self::coalesce_overlay(
+                        "\"_tr\".\"title\"",
+                        &format!("\"{table}\".\"title\""),
+                    );
+                    query.expr_as(Self::cust_or_null(Some(expr)), Alias::new(field.result_key()));
                 } else {
                     // Regular column
                     query.column((Alias::new(table), Alias::new(&field.field_name)));
@@ -816,13 +839,61 @@ impl GatherQueryBuilder {
     /// Validates table and path components against SQL identifier rules
     /// (defense-in-depth). Returns NULL expression if validation fails.
     fn jsonb_extract_expr(&self, table: &str, path: &str) -> SimpleExpr {
+        Self::cust_or_null(self.jsonb_path_sql(table, path))
+    }
+
+    /// The one place raw SQL text (already built from validated identifiers
+    /// elsewhere — never a request value) becomes a [`SimpleExpr`]. `None`
+    /// becomes the literal `NULL`, the fallback every caller here uses for an
+    /// identifier that failed validation.
+    fn cust_or_null(sql: Option<String>) -> SimpleExpr {
+        match sql {
+            Some(sql) => Expr::cust(sql),
+            None => Expr::cust("NULL"),
+        }
+    }
+
+    /// `true` when `table` is the base `item` table and a translation JOIN
+    /// is active, i.e. when a `_tr` overlay is meaningful for an expression
+    /// read from `table`. A joined relationship table has no `item_translation`
+    /// row of its own, so its fields are never overlaid.
+    fn translation_applies_to(&self, table: &str) -> bool {
+        self.language.is_some() && self.is_item_table() && table == self.definition.base_table
+    }
+
+    /// Like [`Self::jsonb_extract_expr`], but when a translation overlay
+    /// applies to `table` ([`Self::translation_applies_to`]), wraps the
+    /// extraction in the same [`Self::coalesce_overlay`] rule
+    /// `apply_translation_coalesce` uses for the `SELECT item.*` case, so an
+    /// explicit `fields.x` projection shows translated content too.
+    ///
+    /// Filters and `ORDER BY` call [`Self::jsonb_extract_expr`] directly and
+    /// are deliberately unaffected — this gather's language overlay is a
+    /// display concern, not a filtering/sorting one.
+    fn select_jsonb_extract_expr(&self, table: &str, path: &str) -> SimpleExpr {
+        let Some(base_sql) = self.jsonb_path_sql(table, path) else {
+            return Self::cust_or_null(None);
+        };
+        if self.translation_applies_to(table)
+            && let Some(tr_sql) = self.jsonb_path_sql("_tr", path)
+        {
+            return Self::cust_or_null(Some(Self::coalesce_overlay(&tr_sql, &base_sql)));
+        }
+        Self::cust_or_null(Some(base_sql))
+    }
+
+    /// Build the raw `table.fields->>'path'` (or nested `->'a'->>'b'`) SQL
+    /// text for a JSONB extraction, validating every identifier component
+    /// first. `None` means an unsafe component was rejected (logged by the
+    /// caller's choice of fallback — `NULL`).
+    fn jsonb_path_sql(&self, table: &str, path: &str) -> Option<String> {
         // Defense-in-depth: validate table name before interpolation
         if !is_safe_identifier(table) {
             tracing::error!(
                 table = &table[..table.len().min(64)],
                 "unsafe table name in JSONB expression; returning NULL"
             );
-            return Expr::cust("NULL");
+            return None;
         }
 
         // The last hop reads through `field_value_text_sql`, which unwraps a
@@ -838,7 +909,7 @@ impl GatherQueryBuilder {
                         path = &path[..path.len().min(64)],
                         "unsafe JSONB path component; returning NULL"
                     );
-                    return Expr::cust("NULL");
+                    return None;
                 }
             }
             let mut expr = format!("{table}.fields");
@@ -849,16 +920,16 @@ impl GatherQueryBuilder {
                     expr = format!("({expr}->'{part}')");
                 }
             }
-            Expr::cust(expr)
+            Some(expr)
         } else {
             if !is_safe_identifier(path) {
                 tracing::error!(
                     path = &path[..path.len().min(64)],
                     "unsafe JSONB path; returning NULL"
                 );
-                return Expr::cust("NULL");
+                return None;
             }
-            Expr::cust(field_value_text_sql(
+            Some(field_value_text_sql(
                 &format!("{table}.fields"),
                 &format!("'{path}'"),
             ))
@@ -2288,8 +2359,9 @@ mod tests {
             "should COALESCE title: {sql}"
         );
         assert!(
-            sql.contains("COALESCE(\"_tr\".\"fields\" || \"item\".\"fields\", \"item\".\"fields\") AS \"fields\""),
-            "should COALESCE fields with JSONB merge: {sql}"
+            sql.contains("COALESCE(\"item\".\"fields\" || \"_tr\".\"fields\", \"item\".\"fields\") AS \"fields\""),
+            "fields merge must put the translation on the right of `||` so its \
+             keys win on collision (Postgres `a || b` lets `b` win): {sql}"
         );
     }
 
