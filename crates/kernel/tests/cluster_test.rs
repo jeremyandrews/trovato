@@ -27,7 +27,7 @@
 //! - `TROVATO_CLUSTER_COMPOSE_FILE`: the compose file (default: the one at the
 //!   repository root).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -325,6 +325,7 @@ async fn cluster() -> Option<Cluster> {
         .unwrap_or_else(|_| "postgres://trovato:trovato@localhost:56432/trovato".to_string());
     wait_healthy(&url, On::A).await;
     wait_healthy(&url, On::B).await;
+    wait_in_rotation(&url).await;
     let db = PgPool::connect(&db_url).await.expect("cluster database");
     let admin = Client::new(&url);
     install(&admin).await;
@@ -364,6 +365,36 @@ async fn install(client: &Client) {
         )
         .await;
     assert!(site.status.is_redirection(), "install site: {}", site.body);
+}
+
+/// Wait until the round robin backend (`On::Any`) has both nodes in rotation.
+///
+/// A healthy node is not yet a node the proxy balances to. The pinned
+/// backends (`On::A`, `On::B`) forward at once, but the round robin one adds a
+/// server only after the proxy's own health checks pass, on its own clock, a
+/// few seconds after the node answers. Until then an `On::Any` request gets
+/// the proxy's 503. Done when an unpinned request has been answered by each
+/// node.
+async fn wait_in_rotation(url: &str) {
+    let client = Client::new(url);
+    let seen = std::sync::Mutex::new(BTreeSet::new());
+    let up = eventually(Duration::from_secs(180), || async {
+        match client.http.get(format!("{url}/health")).send().await {
+            Ok(r) if r.status() == StatusCode::OK => {
+                if let Some(node) = r
+                    .headers()
+                    .get("x-trovato-served-by")
+                    .and_then(|v| v.to_str().ok())
+                {
+                    seen.lock().unwrap().insert(node.to_string());
+                }
+                seen.lock().unwrap().len() == 2
+            }
+            _ => false,
+        }
+    })
+    .await;
+    assert!(up, "the proxy did not put both nodes in rotation");
 }
 
 async fn wait_healthy(url: &str, on: On) {
@@ -410,6 +441,7 @@ fn compose(args: &[&str]) -> String {
 async fn restart_node(url: &str, service: &str, on: On) {
     compose(&["restart", service]);
     wait_healthy(url, on).await;
+    wait_in_rotation(url).await;
 }
 
 /// Make sure a plugin is enabled on both nodes, restarting them if it was not.
