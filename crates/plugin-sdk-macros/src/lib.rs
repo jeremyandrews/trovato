@@ -127,29 +127,19 @@ fn expand_tap(input_fn: ItemFn) -> proc_macro2::TokenStream {
         #[doc(hidden)]
         #[unsafe(no_mangle)]
         #fn_vis extern "C" fn #fn_name(ptr: i32, len: i32) -> i64 {
-            // Helper to write output and return ptr<<32|len.
-            // Errors (UTF-8, deserialization, overflow) are returned through the
-            // normal encoding — the host detects them by parsing for {"error": ...}.
+            // Write output and return ptr<<32|len, the output leaked inside
+            // the plugin's own memory rather than a fixed-size static buffer
+            // (B181). Errors (UTF-8, deserialization, overflow) are returned
+            // through the normal encoding — the host detects them by parsing
+            // for {"error": ...}.
             fn write_output(s: &str) -> i64 {
-                static mut OUTPUT_BUFFER: [u8; 65536] = [0u8; 65536];
                 let bytes = s.as_bytes();
-                if bytes.len() > 65536 {
-                    let error = b"{\"error\": \"output exceeds 64KB buffer\"}";
-                    // SAFETY: WASM is single-threaded; no concurrent access.
-                    // The host reads this buffer synchronously before the next call.
-                    unsafe {
-                        OUTPUT_BUFFER[..error.len()].copy_from_slice(error);
-                        let ptr = OUTPUT_BUFFER.as_ptr() as i64;
-                        return (ptr << 32) | (error.len() as i64);
-                    }
+                if bytes.len() > trovato_sdk::abi::PLUGIN_IO_MAX_BYTES {
+                    return trovato_sdk::abi::leak_output(
+                        b"{\"error\": \"output exceeds plugin I/O limit\"}",
+                    );
                 }
-                // SAFETY: WASM is single-threaded; no concurrent access.
-                // The host reads this buffer synchronously before the next call.
-                unsafe {
-                    OUTPUT_BUFFER[..bytes.len()].copy_from_slice(bytes);
-                    let ptr = OUTPUT_BUFFER.as_ptr() as i64;
-                    (ptr << 32) | (bytes.len() as i64)
-                }
+                trovato_sdk::abi::leak_output(bytes)
             }
 
             #wrapper_body
@@ -248,27 +238,24 @@ fn expand_tap_result(input_fn: ItemFn) -> proc_macro2::TokenStream {
         #[unsafe(no_mangle)]
         #fn_vis extern "C" fn #fn_name(ptr: i32, len: i32) -> i64 {
             // Errors are signaled via negative length encoding (is_error = true).
+            // Output is leaked inside the plugin's own memory rather than a
+            // fixed-size static buffer (B181).
             fn write_output(s: &str, is_error: bool) -> i64 {
-                static mut OUTPUT_BUFFER: [u8; 65536] = [0u8; 65536];
                 let bytes = s.as_bytes();
-                if bytes.len() > 65536 {
-                    let error = b"{\"error\": \"output exceeds 64KB buffer\"}";
-                    // SAFETY: WASM is single-threaded; no concurrent access.
-                    // The host reads this buffer synchronously before the next call.
-                    unsafe {
-                        OUTPUT_BUFFER[..error.len()].copy_from_slice(error);
-                        let ptr = OUTPUT_BUFFER.as_ptr() as i64;
-                        let len = -(error.len() as i64);
-                        return (ptr << 32) | (len & 0xFFFFFFFF);
-                    }
+                if bytes.len() > trovato_sdk::abi::PLUGIN_IO_MAX_BYTES {
+                    let error = b"{\"error\": \"output exceeds plugin I/O limit\"}";
+                    let packed = trovato_sdk::abi::leak_output(error);
+                    let ptr = packed >> 32;
+                    let len = -(error.len() as i64);
+                    return (ptr << 32) | (len & 0xFFFFFFFF);
                 }
-                // SAFETY: WASM is single-threaded; no concurrent access.
-                // The host reads this buffer synchronously before the next call.
-                unsafe {
-                    OUTPUT_BUFFER[..bytes.len()].copy_from_slice(bytes);
-                    let ptr = OUTPUT_BUFFER.as_ptr() as i64;
-                    let len = if is_error { -(bytes.len() as i64) } else { bytes.len() as i64 };
+                let packed = trovato_sdk::abi::leak_output(bytes);
+                if is_error {
+                    let ptr = packed >> 32;
+                    let len = -(bytes.len() as i64);
                     (ptr << 32) | (len & 0xFFFFFFFF)
+                } else {
+                    packed
                 }
             }
 
@@ -337,8 +324,25 @@ mod tests {
     fn tap_generates_overflow_check() {
         let output = expand_tap_str("fn my_tap(input: String) -> String { input }");
         assert!(
-            output.contains("output exceeds 64KB"),
-            "should check for buffer overflow"
+            output.contains("PLUGIN_IO_MAX_BYTES") && output.contains("output exceeds"),
+            "should check output against the shared plugin I/O limit"
+        );
+    }
+
+    #[test]
+    fn tap_generates_no_fixed_size_static_buffer() {
+        // B181: output is leaked via the plugin's own allocator rather than a
+        // compile-time-sized static array, so the limit lives in one place
+        // (trovato_sdk::abi::PLUGIN_IO_MAX_BYTES) instead of being baked into
+        // generated code per tap.
+        let output = expand_tap_str("fn my_tap(input: String) -> String { input }");
+        assert!(
+            !output.contains("OUTPUT_BUFFER"),
+            "should not generate a fixed-size static output buffer"
+        );
+        assert!(
+            output.contains("leak_output"),
+            "should hand output back through the shared leak_output helper"
         );
     }
 
