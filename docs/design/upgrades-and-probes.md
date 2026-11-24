@@ -334,6 +334,9 @@ On **SIGTERM**:
    seconds: half a second for background tasks, then at least a second to
    close the pool, even when the in-flight wait used the whole budget. Without
    one, closing the pool gets its own `SHUTDOWN_TIMEOUT_SECS`, as before.
+   With trace export on (BG14), the spans still in the export batch are then
+   sent for at most 3 more seconds, so the worst case is
+   `SHUTDOWN_TIMEOUT_SECS` + 4.5 seconds.
 
 `SHUTDOWN_DRAIN_SECS` defaults to **5 when running under Kubernetes**
 (`KUBERNETES_SERVICE_HOST` is set, which the kubelet does in every pod), and
@@ -349,7 +352,9 @@ together make it hold for load balancers that watch readiness and for those
 that watch endpoints.
 
 `terminationGracePeriodSeconds` must exceed `preStop` + drain +
-`SHUTDOWN_TIMEOUT_SECS`. The example uses 5 + 5 + 30 + 5 = 45.
+`SHUTDOWN_TIMEOUT_SECS`. The example uses 5 + 5 + 30 + 5 = 45; its 5 of
+margin covers the 1.5 seconds past the budget, and the 3 second export flush
+when trace export is on.
 
 The external cron trigger (`POST /cron/{key}`) is an HTTP request. It is an
 in-flight request like any other, and cron's Redis lock already keeps it to

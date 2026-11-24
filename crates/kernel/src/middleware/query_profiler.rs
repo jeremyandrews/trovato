@@ -35,7 +35,7 @@ use tracing::Instrument;
 use tracing::field::Empty;
 
 use crate::state::AppState;
-use crate::telemetry::{self, RequestProfile, RequestProfileSnapshot};
+use crate::telemetry::{self, RequestProfile, RequestProfileSnapshot, method_label};
 
 /// Who sees the detailed `Server-Timing` header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -155,7 +155,7 @@ pub async fn track_request_timing(
     next: Next,
 ) -> Response {
     let start = Instant::now();
-    let method = request.method().clone();
+    let method = method_label(request.method());
     // The router has matched by the time a `Router::layer` middleware runs, so
     // the template is already in the extensions.
     let route = request
@@ -173,7 +173,11 @@ pub async fn track_request_timing(
     let span = tracing::trace_span!(
         target: telemetry::TARGET,
         "http.request",
-        http.request.method = %method,
+        // A backend's name for the span (`GET /item/{id}`); field values are
+        // only evaluated when the span is enabled.
+        otel.name = %format_args!("{} {route_label}", method),
+        otel.kind = "server",
+        http.request.method = method,
         http.route = route_label,
         http.response.status_code = Empty,
         trovato.db.queries = Empty,
@@ -196,7 +200,7 @@ pub async fn track_request_timing(
     span.record("trovato.plugin.calls", snapshot.plugin_calls);
 
     let metrics = state.metrics();
-    metrics.record_request(method.as_str(), route_label, status, elapsed.as_secs_f64());
+    metrics.record_request(method, route_label, status, elapsed.as_secs_f64());
     metrics.record_request_queries(route_label, snapshot.queries);
 
     let detail = shows_detail(&state, &profile).await;
@@ -241,6 +245,30 @@ pub async fn track_request_timing(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn telemetry_names_only_standard_methods() {
+        use axum::http::Method;
+        for method in [
+            Method::GET,
+            Method::HEAD,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::CONNECT,
+            Method::OPTIONS,
+            Method::TRACE,
+            Method::PATCH,
+        ] {
+            assert_eq!(method_label(&method), method.as_str());
+        }
+        // Methods are case sensitive: `get` is not `GET`.
+        for invented in ["ALICE-AT-EXAMPLE-COM", "get"] {
+            let method = Method::from_bytes(invented.as_bytes()).unwrap();
+            assert_eq!(method_label(&method), "_OTHER", "{invented}");
+        }
+    }
 
     /// The boundaries are exclusive on both steps, which is what keeps a request
     /// exactly at the threshold out of the log.

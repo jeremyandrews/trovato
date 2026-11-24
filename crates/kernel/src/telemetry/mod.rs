@@ -13,6 +13,7 @@
 //! nothing is interested in that target, so every one of those callsites is
 //! disabled once and costs an atomic load afterwards.
 
+pub mod export;
 pub mod fingerprint;
 pub mod profile;
 pub mod query_listener;
@@ -21,6 +22,51 @@ pub use profile::{RequestProfile, RequestProfileSnapshot};
 
 /// The tracing target every Gander span uses (`Design-Web-Layer.md` named it).
 pub const TARGET: &str = "gander";
+
+/// The log filter when `RUST_LOG` is not set.
+pub const DEFAULT_LOG_FILTER: &str = "info,tower_http=debug,sqlx=warn";
+
+/// The server's `tracing` subscriber: the `fmt` log under `filter`, the query
+/// listener, the site log (`log`, at `INFO` and above), and, when `export`
+/// holds a provider, the layer that exports Gander spans through it.
+///
+/// Built as two different stacks rather than one with an optional layer: an
+/// absent `Option` layer still changes how callsite interest is combined, and
+/// with export off the subscriber must be exactly what it was before export
+/// existed (`tracing_off_test` builds it here too).
+///
+/// The site log takes its own level decision (warn and error, and the
+/// allowlisted info events), so it sits beside `filter` rather than under it:
+/// a quiet `RUST_LOG=error` must not empty the admin's log.
+///
+/// # Panics
+///
+/// If `export` is given twice in one process (see [`export::install`]).
+pub fn subscriber<W>(
+    writer: W,
+    filter: tracing_subscriber::EnvFilter,
+    log: crate::system_log::SystemLogLayer,
+    export: Option<opentelemetry_sdk::trace::SdkTracerProvider>,
+) -> tracing::Dispatch
+where
+    W: for<'w> tracing_subscriber::fmt::MakeWriter<'w> + Send + Sync + 'static,
+{
+    use tracing_subscriber::Layer as _;
+    use tracing_subscriber::layer::SubscriberExt as _;
+    let base = tracing_subscriber::registry()
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(writer)
+                .with_filter(filter),
+        )
+        // Counts every sqlx statement into the request in scope.
+        .with(query_listener::query_listener())
+        .with(log.with_filter(tracing_subscriber::filter::LevelFilter::INFO));
+    match export {
+        Some(provider) => tracing::Dispatch::new(base.with(export::install(provider))),
+        None => tracing::Dispatch::new(base),
+    }
+}
 
 /// Run one template render of `kind` (`page`, `item`, `element`, `admin`)
 /// inside its `template.render` span, counted into the request.
@@ -42,6 +88,7 @@ pub fn outgoing_span(method: &str, url: &str) -> tracing::Span {
     tracing::trace_span!(
         target: TARGET,
         "http.client",
+        otel.kind = "client",
         http.request.method = method,
         server.address = %server_address(url),
         http.response.status_code = tracing::field::Empty,
@@ -72,13 +119,35 @@ pub async fn send_with(
 ) -> reqwest::Result<reqwest::Response> {
     let (client, request) = builder.build_split();
     let request = request?;
-    let span = outgoing_span(request.method().as_str(), request.url().as_str());
+    // A plugin chooses the method: only a standard one is named.
+    let span = outgoing_span(method_label(request.method()), request.url().as_str());
     annotate(&span);
     let response = tracing::Instrument::instrument(client.execute(request), span.clone()).await;
     if let Ok(r) = response.as_ref() {
         span.record("http.response.status_code", r.status().as_u16());
     }
     response
+}
+
+/// The method as telemetry names it, in the request spans (Gander's and the
+/// log's) and the `method` label of the request metrics: one of the standard
+/// methods, or `_OTHER` (the OpenTelemetry convention). An invented method is
+/// text the client chose, so it must not reach a span, a log line or a metric,
+/// where it would also add a series per method for the life of the process.
+pub fn method_label(method: &axum::http::Method) -> &'static str {
+    use axum::http::Method;
+    match *method {
+        Method::GET => "GET",
+        Method::HEAD => "HEAD",
+        Method::POST => "POST",
+        Method::PUT => "PUT",
+        Method::DELETE => "DELETE",
+        Method::CONNECT => "CONNECT",
+        Method::OPTIONS => "OPTIONS",
+        Method::TRACE => "TRACE",
+        Method::PATCH => "PATCH",
+        _ => "_OTHER",
+    }
 }
 
 /// The span `TraceLayer` makes for each request: the method and the matched
@@ -99,7 +168,8 @@ pub fn http_trace_span<B>(request: &axum::http::Request<B>) -> tracing::Span {
     tracing::debug_span!(
         target: "tower_http::trace::make_span",
         "request",
-        method = %request.method(),
+        // Displayed, as before, so the log still reads `method=GET`.
+        method = %method_label(request.method()),
         route = route,
         version = ?request.version(),
     )

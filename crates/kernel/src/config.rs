@@ -360,6 +360,11 @@ pub struct RuntimeConfig {
     /// `Config`, and span export reads statements for itself.
     pub profile_fingerprints: bool,
 
+    /// Bearer token that reads `/metrics` from any address (`METRICS_TOKEN`,
+    /// at least 32 characters). Unset: only a loopback caller with no
+    /// forwarding header does; everyone else gets a 404.
+    pub metrics_token: Option<String>,
+
     /// Retention window for the kernel security audit stream, in days.
     pub security_audit_retention_days: i64,
 
@@ -828,6 +833,18 @@ impl Config {
             );
         }
 
+        let metrics_token = get("METRICS_TOKEN").filter(|t| !t.trim().is_empty());
+        // A token that opens `/metrics` from anywhere must not be guessable:
+        // only the page rate limit stands in the way.
+        if let Some(token) = &metrics_token
+            && token.len() < MIN_HEALTH_TOKEN_LEN
+        {
+            anyhow::bail!(
+                "METRICS_TOKEN must be at least {MIN_HEALTH_TOKEN_LEN} characters \
+                 (for example `openssl rand -hex 32`)"
+            );
+        }
+
         let runtime = RuntimeConfig {
             static_dirs,
             pagefind_output_dir,
@@ -839,6 +856,7 @@ impl Config {
                 get("SERVER_TIMING").as_deref(),
             ),
             profile_fingerprints: false,
+            metrics_token,
             security_audit_retention_days: crate::audit::retention_days_from(
                 get("SECURITY_AUDIT_RETENTION_DAYS").as_deref(),
             ),
@@ -1041,6 +1059,28 @@ mod config_tests {
             Some(token)
         );
         assert!(with_db(&[("HEALTH_TOKEN", " ")]).health_token.is_none());
+        let err = config_from(&[
+            ("DATABASE_URL", "postgres://localhost/x"),
+            ("METRICS_TOKEN", &token[1..]),
+        ])
+        .expect_err("a 31 character metrics token is too short");
+        assert!(err.to_string().contains("METRICS_TOKEN"), "{err}");
+        assert_eq!(
+            with_db(&[("METRICS_TOKEN", token)])
+                .runtime
+                .metrics_token
+                .as_deref(),
+            Some(token)
+        );
+        for blank in ["", " "] {
+            assert!(
+                with_db(&[("METRICS_TOKEN", blank)])
+                    .runtime
+                    .metrics_token
+                    .is_none(),
+                "{blank:?}"
+            );
+        }
         let err = config_from(&[
             ("DATABASE_URL", "postgres://localhost/x"),
             ("HEALTH_TOKEN", "t0ken"),

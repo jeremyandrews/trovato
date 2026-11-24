@@ -7,6 +7,9 @@
 //!
 //! - a log line, under the production `RUST_LOG` default;
 //! - any Gander span or event, captured at `TRACE`, fields and all;
+//! - every span exported with trace export on (into an in-memory exporter
+//!   instead of OTLP), its attributes and events, including the `db.query`
+//!   spans made from sqlx's statements;
 //! - a `Server-Timing` header, with the detail shown to everyone;
 //! - `/metrics`.
 //!
@@ -128,19 +131,34 @@ async fn send(
 fn no_secret_reaches_any_telemetry() {
     let captured = Captured::default();
     let writer = captured.clone();
+    // Export on, into memory: a simple exporter and every trace sampled, so
+    // what is exported is complete when a request returns.
+    // The layers are in a different order from production on purpose, with a
+    // capture of every Gander field beside them; `export_stack_test` checks
+    // the production stack itself.
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+    let export_layer = trovato_kernel::telemetry::export::install(
+        opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build(),
+    );
     let subscriber = tracing_subscriber::registry()
+        .with(export_layer)
         .with(
             tracing_subscriber::fmt::layer()
                 .with_ansi(false)
                 .with_writer(move || writer.clone())
-                .with_filter(EnvFilter::new("info,tower_http=debug,sqlx=warn")),
+                .with_filter(EnvFilter::new(
+                    trovato_kernel::telemetry::DEFAULT_LOG_FILTER,
+                )),
         )
         .with(
             CaptureAll(captured.clone())
                 .with_filter(Targets::new().with_target("gander", tracing::Level::TRACE)),
         )
         .with(trovato_kernel::telemetry::query_listener::query_listener());
-    tracing::subscriber::set_global_default(subscriber).expect("one subscriber per test binary");
+    let dispatch = tracing::Dispatch::new(subscriber);
+    tracing::dispatcher::set_global_default(dispatch).expect("one subscriber per test binary");
 
     run_test(async move {
         let app = TestApp::with_config(|c| {
@@ -246,6 +264,19 @@ fn no_secret_reaches_any_telemetry() {
             &mut timings,
         )
         .await;
+        // A method the client made up is text of its own: it must not become
+        // a span name, a log field or a metric label.
+        let invented_method = format!("INVENTED-{tag}");
+        send(
+            &app,
+            Request::builder()
+                .method(invented_method.as_str())
+                .uri("/")
+                .body(Body::empty())
+                .unwrap(),
+            &mut timings,
+        )
+        .await;
         let (metrics_status, metrics_body, _) = send(
             &app,
             Request::get("/metrics").body(Body::empty()).unwrap(),
@@ -255,6 +286,80 @@ fn no_secret_reaches_any_telemetry() {
         assert_eq!(metrics_status, 200);
 
         let output = captured.text();
+
+        // What was exported: every span's name, attributes and events.
+        let spans = exporter.get_finished_spans().unwrap();
+        let exported = spans
+            .iter()
+            .map(|s| {
+                format!(
+                    "EXPORTED {} {:?} {:?} {:?} {:?} {:?}",
+                    s.name, s.attributes, s.events, s.status, s.links, s.instrumentation_scope
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Not vacuous: the request spans, by method and route template, and
+        // the statements, each under a span of its own trace.
+        let search_span = spans
+            .iter()
+            .find(|s| s.name == "GET /search")
+            .unwrap_or_else(|| {
+                panic!(
+                    "no exported request span for /search: {:?}",
+                    spans.iter().map(|s| s.name.as_ref()).collect::<Vec<_>>()
+                )
+            });
+        let queries: Vec<_> = spans.iter().filter(|s| s.name == "db.query").collect();
+        assert!(!queries.is_empty(), "no db.query span exported");
+        // Every statement the search request counted is in its trace, once.
+        let counted = search.as_ref().expect("the search profile").queries;
+        let traced = queries
+            .iter()
+            .filter(|q| q.span_context.trace_id() == search_span.span_context.trace_id())
+            .count();
+        assert_eq!(
+            u32::try_from(traced).unwrap(),
+            counted,
+            "the /search trace holds {traced} db.query spans; the request counted {counted}"
+        );
+        for query in &queries {
+            assert!(
+                spans
+                    .iter()
+                    .any(|s| s.span_context.span_id() == query.parent_span_id
+                        && s.span_context.trace_id() == query.span_context.trace_id()),
+                "a db.query span has no exported parent in its trace: {query:?}"
+            );
+            for key in ["db.query.summary", "db.query.text", "db.system.name"] {
+                assert!(
+                    query.attributes.iter().any(|kv| kv.key.as_str() == key),
+                    "db.query without {key}: {query:?}"
+                );
+            }
+            // Normalised: no string literal survives into the text.
+            let text = query
+                .attributes
+                .iter()
+                .find(|kv| kv.key.as_str() == "db.query.text")
+                .map(|kv| kv.value.to_string())
+                .unwrap_or_default();
+            assert!(!text.contains('\''), "a literal was exported: {text}");
+        }
+        assert!(
+            metrics_body.contains("method=\"_OTHER\""),
+            "the invented method was not counted as _OTHER"
+        );
+        // And it was logged and exported, as `_OTHER`, so the checks below
+        // that its own text is absent are not vacuous.
+        assert!(
+            output.contains("method=_OTHER"),
+            "no log line for the invented method"
+        );
+        assert!(
+            spans.iter().any(|s| s.name.starts_with("_OTHER ")),
+            "no exported span for the invented method"
+        );
 
         // The capture is not vacuous: it saw the request spans, the slow
         // request lines with their breakdown, and real counts.
@@ -317,8 +422,9 @@ fn no_secret_reaches_any_telemetry() {
         assert!(timings.iter().any(|t| t.contains("queries")), "{timings:?}");
 
         // The user id and name are in the existing login audit line ("user
-        // logged in", for the site log), so they are checked against what this telemetry
-        // adds: the Gander spans and events, Server-Timing and /metrics.
+        // logged in", for the site log), so they are checked against what this
+        // telemetry adds: the Gander spans and events, Server-Timing, /metrics
+        // and the exported spans.
         let added = output
             .lines()
             .filter(|l| {
@@ -326,6 +432,7 @@ fn no_secret_reaches_any_telemetry() {
             })
             .chain(timings.iter().map(String::as_str))
             .chain(metrics_body.lines())
+            .chain(exported.lines())
             .collect::<Vec<_>>()
             .join("\n");
         for (what, value) in [
@@ -336,7 +443,10 @@ fn no_secret_reaches_any_telemetry() {
                 panic!("the {what} reached telemetry:\n{line}");
             }
         }
-        let everything = format!("{output}\n{}\n{metrics_body}", timings.join("\n"));
+        let everything = format!(
+            "{output}\n{}\n{metrics_body}\n{exported}",
+            timings.join("\n")
+        );
         for (what, secret) in [
             ("password", password.as_str()),
             ("email", email.as_str()),
@@ -345,6 +455,7 @@ fn no_secret_reaches_any_telemetry() {
             ("reset token", reset_token.as_str()),
             ("API token", api_token.as_str()),
             ("search term", search_term.as_str()),
+            ("invented method", invented_method.as_str()),
         ] {
             if let Some(at) = everything.find(secret) {
                 let start = everything[..at].rfind('\n').map_or(0, |p| p + 1);

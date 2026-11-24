@@ -230,14 +230,36 @@ operator turns export on with a setting, not a rebuild):
 
 - `opentelemetry` and `opentelemetry_sdk` 0.33: the API and the batch span
   processor and sampler.
-- `opentelemetry-otlp` 0.33 with `http-proto` and `reqwest-client` only (no
-  gRPC, so no `tonic`): the exporter, over the `reqwest` the kernel already
-  uses.
+- `opentelemetry-otlp` 0.33 with `http-proto` and `reqwest-blocking-client`
+  only (no gRPC, so no `tonic`): the exporter. The SDK's batch processor runs
+  on a thread of its own, outside the Tokio runtime, so it needs the blocking
+  client; the async one would need the SDK's experimental runtime processor.
 - `tracing-opentelemetry` 0.34: the bridge from `tracing` spans to OTel spans,
   maintained with `tracing` itself.
 
-Cost with export off, the default: measured against `main` on the same
-machine and data (part 3 adds the numbers here). Target: under 1% at p99.
+They bring three crates outside the family, all theirs to choose: `prost` and
+`prost-derive` (the OTLP protobuf encoding) and `web-time`. They also bring a
+second `reqwest`: `opentelemetry-http` 0.33 depends on `reqwest` 0.13 while
+the kernel is on 0.12. That is a second copy of one crate the kernel already
+trusts, not a new one, and it goes when the kernel moves to 0.13. It is given
+the `native-tls` feature, the TLS the kernel's 0.12 already uses, so an
+`https://` collector works; that adds no crate the lock file did not already
+hold (the `reqwest-otlp-tls` entry in the kernel's `Cargo.toml`). Writing a
+client of our own for 0.12 to avoid it would be code to maintain for a build
+time saving.
+
+The test for export installs the same layer with the SDK's in-memory
+exporter (its `testing` feature, a dev-dependency only) and runs the privacy
+check over everything exported.
+
+Cost, measured on the 20,000,000 post site (three runs of 2,000 requests from
+8 clients, two sets each, median / p99 in ms; the table is in
+[tracing.md](../tracing.md#what-it-costs)): with export off the item page took
+9.85 / 12.45 and 9.92 / 13.38 against 10.04 / 14.27 and 9.96 / 13.35 on
+`main`, the front page and the feed likewise within the noise between sets.
+The target was under 1% at p99, and the two sets on one binary differ by more
+than that, so what can be said is that no difference shows. With export on and
+every request traced, the item page took 10.01 / 12.45 and 11.99 / 15.29.
 
 ### 6. Metrics
 
@@ -332,9 +354,13 @@ their benchmarks.
 ### 9. Timing benchmarks
 
 `scripts/bench.sh` starts nothing; it runs `trovato-loadtest`'s new
-`bench` binary against a running server: named scenarios (`front`, `item`,
-`feed`, `search`, `category`), a warm-up, then N sequential requests per
-scenario, printing median and p99 per scenario. `--save` writes
+`bench` binary against a running server: named pages (`front`, `item`,
+`feed`, `category`, and `search` when asked for, since at 20,000,000 posts it
+takes seconds a request), each in turn: a warm-up, then N requests from 8
+clients, three runs, printing the median over the runs of each run's median
+and p99, with every run's figures beside it. Eight clients rather than one,
+so the server's own concurrency (the pool, the caches' locks) is in the
+measurement, as it is in production. `--save` writes
 `benchmarks/baseline.json`; `--compare` prints the change against it. By hand
 only: a GitHub runner is too noisy for timings and has no generated site; a
 scheduled job is left for when there is a fixed benchmark host.
@@ -346,13 +372,19 @@ scheduled job is left for when there is a fixed benchmark host.
 with a token) and Grafana with both as provisioned data sources and one
 committed dashboard (`docker/observability/grafana/dashboards/trovato.json`):
 request rate and p99 by route, queries per request by route, cache hit ratio,
-tap durations. Then `TRACING_EXPORT=otlp cargo run --release` and open
+tap durations. Then `TRACING_EXPORT=otlp
+METRICS_TOKEN=local-observability-token-not-for-production cargo run --release`
+(the token the Prometheus file sends, since its requests come from the
+Docker network, not loopback) and open
 Jaeger at `http://localhost:16686` or Grafana at `http://localhost:3001`.
 
 ## What this does not build
 
-- **No sampling by route or tail sampling.** A parent-based ratio is enough;
-  a Collector does tail sampling better than the kernel would.
+- **No sampling by route or tail sampling, and no incoming trace context.**
+  A ratio per request is enough; a Collector does tail sampling better than
+  the kernel would. An incoming `traceparent` is not read, so every request
+  starts its own trace: a site is usually the first hop, and trusting a
+  visitor's header would let anyone force their requests to be traced.
 - **No OTel metrics or logs export.** Prometheus already carries the metrics,
   and duplicating them through OTLP would mean two metric pipelines.
 - **No per-call-site query names.** The fingerprint names a statement; adding

@@ -44,6 +44,14 @@ pub fn is_probe(method: &axum::http::Method, path: &str) -> bool {
     matches!(*method, axum::http::Method::GET | axum::http::Method::HEAD) && is_probe_path(path)
 }
 
+/// A request whose `Authorization: Bearer` is an operator's token, not a
+/// user's credential: a probe (`HEALTH_TOKEN`) or a read of `/metrics`
+/// (`METRICS_TOKEN`). The API token and JWT middleware leave these alone.
+pub fn carries_operator_token(method: &axum::http::Method, path: &str) -> bool {
+    matches!(*method, axum::http::Method::GET | axum::http::Method::HEAD)
+        && (is_probe_path(path) || path == "/metrics")
+}
+
 /// How long one dependency check is reused.
 const CHECK_TTL: Duration = Duration::from_secs(1);
 
@@ -107,23 +115,32 @@ impl Probes {
     /// Whether the caller may see the details: the token holder, or a loopback
     /// peer that is not a reverse proxy relaying someone else.
     fn is_trusted(&self, request: &Request) -> bool {
-        let headers = request.headers();
-        if let Some(expected) = &self.token
-            && let Some(given) = bearer(headers)
-            // Digests, so the comparison is constant time in the length too.
-            && bool::from(Sha256::digest(given.as_bytes()).ct_eq(&Sha256::digest(expected.as_bytes())))
-        {
-            return true;
-        }
-        let loopback = request
-            .extensions()
-            .get::<ConnectInfo<SocketAddr>>()
-            .is_some_and(|ConnectInfo(addr)| addr.ip().is_loopback());
-        let forwarded = ["x-forwarded-for", "forwarded", "x-real-ip"]
-            .iter()
-            .any(|h| headers.contains_key(*h));
-        loopback && !forwarded
+        is_operator(request, self.token.as_deref())
     }
+}
+
+/// Whether `request` comes from an operator: it carries `token` as its bearer
+/// token (compared in constant time), or it comes from a loopback peer and
+/// is not a reverse proxy on the same host relaying someone else (no
+/// `Forwarded`, `X-Forwarded-For` or `X-Real-IP`). The health details and
+/// `/metrics` both answer only this.
+pub(crate) fn is_operator(request: &Request, token: Option<&str>) -> bool {
+    let headers = request.headers();
+    if let Some(expected) = token
+        && let Some(given) = bearer(headers)
+        // Digests, so the comparison is constant time in the length too.
+        && bool::from(Sha256::digest(given.as_bytes()).ct_eq(&Sha256::digest(expected.as_bytes())))
+    {
+        return true;
+    }
+    let loopback = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .is_some_and(|ConnectInfo(addr)| addr.ip().to_canonical().is_loopback());
+    let forwarded = ["x-forwarded-for", "forwarded", "x-real-ip"]
+        .iter()
+        .any(|h| headers.contains_key(*h));
+    loopback && !forwarded
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
@@ -275,6 +292,13 @@ mod tests {
         let probes = Probes::new(Some("s3cret".to_string()));
         assert!(probes.is_trusted(&request([127, 0, 0, 1], &[])));
         assert!(probes.is_trusted(&request(std::net::Ipv6Addr::LOCALHOST, &[])));
+        // A dual-stack listener sees IPv4 peers as IPv4-mapped IPv6 addresses.
+        let mapped = |v4: std::net::Ipv4Addr| v4.to_ipv6_mapped();
+        assert!(probes.is_trusted(&request(mapped(std::net::Ipv4Addr::LOCALHOST), &[])));
+        assert!(!probes.is_trusted(&request(
+            mapped(std::net::Ipv4Addr::new(203, 0, 113, 9)),
+            &[]
+        )));
         assert!(!probes.is_trusted(&request(
             std::net::Ipv6Addr::LOCALHOST,
             &[("x-forwarded-for", "203.0.113.9")]
@@ -320,5 +344,17 @@ mod tests {
             assert!(!is_probe(&method, "/health"), "{method}");
         }
         assert!(!is_probe(&Method::GET, "/healthz"));
+    }
+
+    #[test]
+    fn probes_and_metrics_reads_carry_an_operator_token() {
+        use axum::http::Method;
+        for method in [Method::GET, Method::HEAD] {
+            assert!(carries_operator_token(&method, "/health"), "{method}");
+            assert!(carries_operator_token(&method, "/metrics"), "{method}");
+        }
+        assert!(!carries_operator_token(&Method::POST, "/metrics"));
+        assert!(!carries_operator_token(&Method::GET, "/metrics/x"));
+        assert!(!carries_operator_token(&Method::GET, "/api/v1/items"));
     }
 }

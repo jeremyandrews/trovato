@@ -235,11 +235,11 @@ async fn main() -> Result<()> {
 
     // Initialize tracing. The site log's rows wait in a channel until the
     // server has a database pool to write them to.
-    let log_receiver = init_tracing();
+    let log_receiver = init_tracing()?;
 
     let cli = Cli::parse();
 
-    match cli.command {
+    let result = match cli.command {
         None | Some(Commands::Serve) => run_server(log_receiver).await,
         Some(Commands::Plugin { action }) => run_plugin_command(action).await,
         Some(Commands::Config { action }) => run_config_command(action).await,
@@ -270,7 +270,18 @@ async fn main() -> Result<()> {
             };
             run_generate_command(options, &admin_password).await
         }
+    };
+    // The spans still waiting in the export batch are sent before the
+    // process ends, for at most a few seconds: a collector that is down must
+    // not hold the shutdown past its budget.
+    if telemetry::export::active() {
+        // The SDK enforces the limit itself: the runtime waits for a
+        // blocking task to finish before the process exits, so a timeout
+        // around this one would not shorten anything.
+        let _ =
+            tokio::task::spawn_blocking(|| telemetry::export::shutdown(EXPORT_FLUSH_LIMIT)).await;
     }
+    result
 }
 
 /// `trovato generate`: write a deterministic site (`generate.rs`).
@@ -1340,20 +1351,30 @@ fn build_cors_layer(config: &Config) -> CorsLayer {
     }
 }
 
-fn init_tracing() -> system_log::SystemLogReceiver {
+/// How long shutdown waits for the last exported spans to be sent.
+const EXPORT_FLUSH_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+fn init_tracing() -> Result<system_log::SystemLogReceiver> {
     let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("info,tower_http=debug,sqlx=warn"));
+        .unwrap_or_else(|_| EnvFilter::new(telemetry::DEFAULT_LOG_FILTER));
     let (log_layer, log_receiver) = system_log::SystemLogLayer::new();
 
-    // The site log takes its own level decision (warn and error, and the
-    // allowlisted info events), so it sits beside the `RUST_LOG` filter rather
-    // than under it: a quiet `RUST_LOG=error` must not empty the admin's log.
-    // Its own `INFO` filter keeps debug and trace callsites disabled.
-    tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer().with_filter(filter))
-        // Gander: counts every sqlx statement into the request in scope.
-        .with(telemetry::query_listener::query_listener())
-        .with(log_layer.with_filter(tracing_subscriber::filter::LevelFilter::INFO))
-        .init();
-    log_receiver
+    // Trace export, off by default: then no layer wants a Gander span and
+    // none is ever built (`docs/tracing.md`).
+    let export = telemetry::export::ExportSettings::from_env()?;
+    let provider = if export.otlp {
+        let exporter = telemetry::export::otlp_exporter()?;
+        Some(telemetry::export::provider(&export, exporter))
+    } else {
+        None
+    };
+    telemetry::subscriber(std::io::stdout, filter, log_layer, provider).init();
+    if export.otlp {
+        info!(
+            service = %export.service_name,
+            sample_ratio = export.sample_ratio,
+            "exporting traces over OTLP"
+        );
+    }
+    Ok(log_receiver)
 }
