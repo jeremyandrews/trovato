@@ -68,6 +68,47 @@ impl ScratchDb {
         }
     }
 
+    /// Drop every database `create(label)` made that nobody is connected to.
+    ///
+    /// For a scratch database held in a `static`, which Rust never drops: the
+    /// next run clears what the last one left. A database in use by a run
+    /// going on now has a connection, so it is left alone.
+    ///
+    /// # Panics
+    ///
+    /// If `DATABASE_URL` is unset or the server cannot be reached.
+    pub async fn drop_stale(label: &str) {
+        let database_url = crate::env::database_url();
+        let without_query = database_url
+            .split_once('?')
+            .map_or(database_url.as_str(), |(base, _)| base);
+        let cut = without_query
+            .rfind('/')
+            .expect("DATABASE_URL must include a database name");
+        let server_url = &without_query[..cut];
+        let mut admin = PgConnection::connect(&format!("{server_url}/postgres"))
+            .await
+            .expect("failed to connect to the postgres maintenance database");
+        let pattern = format!("trovato\\_{}\\_%", label.replace('_', "\\_"));
+        let stale: Vec<String> = sqlx::query_scalar(
+            "SELECT datname FROM pg_database d WHERE datname LIKE $1 \
+             AND NOT EXISTS (SELECT 1 FROM pg_stat_activity a WHERE a.datname = d.datname)",
+        )
+        .bind(&pattern)
+        .fetch_all(&mut admin)
+        .await
+        .expect("list stale scratch databases");
+        // No `FORCE`: a run that connects between the list and the drop keeps
+        // its database, because a plain drop refuses one in use.
+        for name in stale {
+            let _ = admin
+                .execute(AssertSqlSafe(format!(
+                    r#"DROP DATABASE IF EXISTS "{name}""#
+                )))
+                .await;
+        }
+    }
+
     /// The pool connected to this database.
     pub fn pool(&self) -> &PgPool {
         self.pool.as_ref().expect("scratch pool was already closed")

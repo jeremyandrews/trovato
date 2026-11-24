@@ -21,10 +21,20 @@ use common::run_test;
 
 const BOTH: [Caches; 2] = [Caches::Cold, Caches::Warm];
 
-async fn measure(site: &PerfSite, page: &str, visitors: &[Visitor], path: &str) {
+/// Visit `path` as each of `visitors`, cold and warm, check the counts, and
+/// check the page is the real one: it shows every one of `shows`.
+async fn measure(site: &PerfSite, page: &str, visitors: &[Visitor], path: &str, shows: &[&str]) {
     for &visitor in visitors {
         for caches in BOTH {
-            check(&site.visit(page, visitor, caches, path).await);
+            let visit = site.visit(page, visitor, caches, path).await;
+            for wanted in shows {
+                assert!(
+                    visit.body.contains(wanted),
+                    "{} does not show {wanted:?}",
+                    visit.key
+                );
+            }
+            check(&visit);
         }
     }
 }
@@ -33,7 +43,15 @@ async fn measure(site: &PerfSite, page: &str, visitors: &[Visitor], path: &str) 
 fn front_page() {
     run_test(async {
         let site = shared_site();
-        measure(site, "front", &[Visitor::Anonymous, Visitor::User], "/").await;
+        // The front page is the blog listing, newest first.
+        measure(
+            site,
+            "front",
+            &[Visitor::Anonymous, Visitor::User],
+            "/",
+            &["Post 1:"],
+        )
+        .await;
     });
 }
 
@@ -42,7 +60,20 @@ fn item_page_with_comments() {
     run_test(async {
         let site = shared_site();
         let path = site.item_path.clone();
-        measure(site, "item", &[Visitor::Anonymous, Visitor::User], &path).await;
+        // The newest post and its three comments.
+        measure(
+            site,
+            "item",
+            &[Visitor::Anonymous, Visitor::User],
+            &path,
+            &[
+                "Post 1:",
+                "Comment 1 on post 1.",
+                "Comment 41 on post 1.",
+                "Comment 81 on post 1.",
+            ],
+        )
+        .await;
     });
 }
 
@@ -55,6 +86,8 @@ fn category_page() {
             "category",
             &[Visitor::Anonymous, Visitor::User],
             "/blog/tag/topic-1",
+            // The newest post tagged topic-1.
+            &["Post 3:"],
         )
         .await;
     });
@@ -64,7 +97,14 @@ fn category_page() {
 fn feed() {
     run_test(async {
         let site = shared_site();
-        measure(site, "feed", &[Visitor::Anonymous], "/blog/feed.xml").await;
+        measure(
+            site,
+            "feed",
+            &[Visitor::Anonymous],
+            "/blog/feed.xml",
+            &["<item>", "Post 1:"],
+        )
+        .await;
     });
 }
 
@@ -77,6 +117,8 @@ fn search() {
             "search",
             &[Visitor::Anonymous, Visitor::User],
             "/search?q=river",
+            // The one post with "river" in its title.
+            &["Post 39:"],
         )
         .await;
     });
@@ -86,7 +128,14 @@ fn search() {
 fn login_page() {
     run_test(async {
         let site = shared_site();
-        measure(site, "login", &[Visitor::Anonymous], "/user/login").await;
+        measure(
+            site,
+            "login",
+            &[Visitor::Anonymous],
+            "/user/login",
+            &["name=\"password\""],
+        )
+        .await;
     });
 }
 
@@ -94,7 +143,14 @@ fn login_page() {
 fn admin_content_list() {
     run_test(async {
         let site = shared_site();
-        measure(site, "admin_content", &[Visitor::Admin], "/admin/content").await;
+        measure(
+            site,
+            "admin_content",
+            &[Visitor::Admin],
+            "/admin/content",
+            &["Post 1:"],
+        )
+        .await;
     });
 }
 

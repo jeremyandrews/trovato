@@ -21,8 +21,9 @@
 //! comment triggers that update their post off: their text is not in the
 //! posts' search vectors, and each post is written with its comment count.
 //!
-//! It refuses a database that already holds a different generated site, and
-//! does nothing when the same one is already there.
+//! It does nothing when the same site is already there, and refuses any other
+//! database that is not empty: a different generated site, a run that did not
+//! finish, or a real site.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -44,9 +45,11 @@ pub struct GenerateOptions {
     pub users: u64,
     /// The seed every value is derived from.
     pub seed: u64,
-    /// Rows per statement.
+    /// Rows per statement. Shapes no row, so not part of the marker.
+    #[serde(skip)]
     pub batch: u64,
-    /// Statements in flight at once.
+    /// Statements in flight at once. Shapes no row, so not part of the marker.
+    #[serde(skip)]
     pub parallel: usize,
 }
 
@@ -148,6 +151,21 @@ pub async fn generate(
         }
         bail!(
             "this database already holds a generated site ({existing}); generate into an empty one"
+        );
+    }
+    // Anything else in the database is a real site, or a run that did not
+    // finish (the marker is written last): never write into either. The
+    // anonymous user is the one row a migrated database starts with.
+    let has_content: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM item) OR EXISTS (SELECT 1 FROM comment) \
+         OR EXISTS (SELECT 1 FROM users WHERE id <> '00000000-0000-0000-0000-000000000000')",
+    )
+    .fetch_one(pool)
+    .await?;
+    if has_content {
+        bail!(
+            "this database holds content `trovato generate` did not write, or a run that did \
+             not finish; generate into an empty database"
         );
     }
     let blog: bool =
@@ -319,14 +337,23 @@ pub async fn generate(
             vec![now, i64::try_from(items)?],
         )
         .await;
+        // Both, whatever happens to either: a trigger left off is a database
+        // that drifts.
+        let mut enabled = Ok(());
         for trigger in POST_TRIGGERS {
-            sqlx::query(sqlx::AssertSqlSafe(format!(
+            let r = sqlx::query(sqlx::AssertSqlSafe(format!(
                 "ALTER TABLE comment ENABLE TRIGGER {trigger}"
             )))
             .execute(pool)
-            .await?;
+            .await;
+            if let Err(e) = r
+                && enabled.is_ok()
+            {
+                enabled = Err(e);
+            }
         }
         result.context("writing comments")?;
+        enabled.context("re-enabling the comment triggers")?;
         report.phases.push(PhaseReport {
             name: "comments",
             rows: comments,

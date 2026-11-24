@@ -110,11 +110,13 @@ impl RequestProfile {
 
     /// Read every counter.
     pub fn snapshot(&self) -> RequestProfileSnapshot {
-        let statements: Vec<(String, String)> = self
+        let (fingerprints, statements): (Vec<String>, Vec<String>) = self
             .fingerprints
             .as_ref()
             .and_then(|f| f.lock().ok().map(|v| v.clone()))
-            .unwrap_or_default();
+            .unwrap_or_default()
+            .into_iter()
+            .unzip();
         let load = |a: &AtomicU32| a.load(Ordering::Relaxed);
         let nanos = |a: &AtomicU64| Duration::from_nanos(a.load(Ordering::Relaxed));
         RequestProfileSnapshot {
@@ -131,8 +133,8 @@ impl RequestProfile {
             renders: load(&self.renders),
             render_time: nanos(&self.render_nanos),
             outgoing_calls: load(&self.outgoing_calls),
-            fingerprints: statements.iter().map(|(f, _)| f.clone()).collect(),
-            statements: statements.into_iter().map(|(_, s)| s).collect(),
+            fingerprints,
+            statements,
         }
     }
 }

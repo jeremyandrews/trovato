@@ -4,12 +4,14 @@
 # and commit the change with the code that caused it.
 
 ["admin_content.admin.cold"]
-queries = 14
-cache_gets = 6
-cache_misses = 6
+queries = 17
+cache_gets = 9
+cache_misses = 9
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 0
+renders = 1
 
 ["admin_content.admin.cold".statements."select:category_tag:66719876"]
 count = 1
@@ -40,16 +42,18 @@ count = 2
 sql = "select value from site_config where key = $? and tenant_id = $?"
 
 ["admin_content.admin.cold".statements."select:users:37216782"]
-count = 6
+count = 9
 sql = "select * from users where id = $?"
 
 ["admin_content.admin.warm"]
 queries = 6
-cache_gets = 6
+cache_gets = 9
 cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 0
+renders = 1
 
 ["admin_content.admin.warm".statements."select:category_tag:66719876"]
 count = 1
@@ -78,6 +82,8 @@ cache_misses = 7
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 1
+renders = 1
 
 ["category.anonymous.cold".statements."commit:-:9505cacb"]
 count = 1
@@ -138,6 +144,8 @@ cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 1
+renders = 1
 
 ["category.anonymous.warm".statements."commit:-:9505cacb"]
 count = 1
@@ -186,6 +194,8 @@ cache_misses = 7
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 1
+renders = 1
 
 ["category.user.cold".statements."commit:-:9505cacb"]
 count = 1
@@ -254,6 +264,8 @@ cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 1
+renders = 1
 
 ["category.user.warm".statements."commit:-:9505cacb"]
 count = 1
@@ -302,6 +314,8 @@ cache_misses = 3
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 1
+renders = 0
 
 ["feed.anonymous.cold".statements."commit:-:9505cacb"]
 count = 1
@@ -350,6 +364,8 @@ cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 1
+renders = 0
 
 ["feed.anonymous.warm".statements."commit:-:9505cacb"]
 count = 1
@@ -394,6 +410,8 @@ cache_misses = 6
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 1
+renders = 1
 
 ["front.anonymous.cold".statements."commit:-:9505cacb"]
 count = 1
@@ -450,6 +468,8 @@ cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 1
+renders = 1
 
 ["front.anonymous.warm".statements."commit:-:9505cacb"]
 count = 1
@@ -498,6 +518,8 @@ cache_misses = 6
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 1
+renders = 1
 
 ["front.user.cold".statements."commit:-:9505cacb"]
 count = 1
@@ -562,6 +584,8 @@ cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 1
+renders = 1
 
 ["front.user.warm".statements."commit:-:9505cacb"]
 count = 1
@@ -604,12 +628,14 @@ count = 1
 sql = "set local statement_timeout = ?"
 
 ["item.anonymous.cold"]
-queries = 18
-cache_gets = 14
-cache_misses = 11
+queries = 20
+cache_gets = 16
+cache_misses = 13
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 0
+renders = 1
 
 ["item.anonymous.cold".statements."select:item:177d33c0"]
 count = 1
@@ -648,7 +674,7 @@ count = 1
 sql = "select alias from url_alias where source = $? and stage_id = $? order by (language = $?) desc, created desc, id desc limit ?"
 
 ["item.anonymous.cold".statements."select:users:37216782"]
-count = 2
+count = 4
 sql = "select * from users where id = $?"
 
 ["item.anonymous.cold".statements."with:now:b137403c"]
@@ -657,11 +683,13 @@ sql = "with recursive comment_tree as ( select id, item_id, parent_id, author_id
 
 ["item.anonymous.warm"]
 queries = 13
-cache_gets = 14
+cache_gets = 16
 cache_misses = 2
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 0
+renders = 1
 
 ["item.anonymous.warm".statements."select:item:177d33c0"]
 count = 1
@@ -700,12 +728,14 @@ count = 1
 sql = "with recursive comment_tree as ( select id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth, array[created, extract(epoch from now())::bigint - created] as sort_path from comment where item_id = $? and parent_id is null and status = $? union all select c.id, c.item_id, c.parent_id, c.author_id, c.body, c.body_format, c.status, c.created, c.changed, c.depth, ct.sort_path || c.created from comment c join comment_tree ct on c.parent_id = ct.id where c.status = $? ) select id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth from comment_tree order by sort_path"
 
 ["item.user.cold"]
-queries = 20
-cache_gets = 14
-cache_misses = 11
+queries = 22
+cache_gets = 16
+cache_misses = 13
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 0
+renders = 1
 
 ["item.user.cold".statements."select:item:177d33c0"]
 count = 1
@@ -752,7 +782,7 @@ count = 1
 sql = "select alias from url_alias where source = $? and stage_id = $? order by (language = $?) desc, created desc, id desc limit ?"
 
 ["item.user.cold".statements."select:users:37216782"]
-count = 2
+count = 4
 sql = "select * from users where id = $?"
 
 ["item.user.cold".statements."with:now:b137403c"]
@@ -761,11 +791,13 @@ sql = "with recursive comment_tree as ( select id, item_id, parent_id, author_id
 
 ["item.user.warm"]
 queries = 13
-cache_gets = 14
+cache_gets = 16
 cache_misses = 2
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 0
+renders = 1
 
 ["item.user.warm".statements."select:item:177d33c0"]
 count = 1
@@ -810,6 +842,8 @@ cache_misses = 2
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 0
+renders = 0
 
 ["login.anonymous.cold".statements."select:menu_link:17337ab4"]
 count = 1
@@ -838,6 +872,8 @@ cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 0
+renders = 0
 
 ["login.anonymous.warm".statements."select:site_config:51f89970"]
 count = 1
@@ -858,6 +894,8 @@ cache_misses = 6
 cache_sets = 1
 plugin_calls = 0
 host_calls = 0
+gathers = 0
+renders = 0
 
 ["search.anonymous.cold".statements."select:item:24ca5104"]
 count = 1
@@ -902,6 +940,8 @@ cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 0
+renders = 0
 
 ["search.anonymous.warm".statements."select:item:24ca5104"]
 count = 1
@@ -934,6 +974,8 @@ cache_misses = 6
 cache_sets = 1
 plugin_calls = 0
 host_calls = 0
+gathers = 0
+renders = 0
 
 ["search.user.cold".statements."select:item:39a39bd6"]
 count = 1
@@ -986,6 +1028,8 @@ cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
+gathers = 0
+renders = 0
 
 ["search.user.warm".statements."select:item:5b7ac9ec"]
 count = 1

@@ -105,6 +105,10 @@ pub struct Counts {
     pub plugin_calls: u32,
     /// Host functions plugins called.
     pub host_calls: u32,
+    /// Gather queries run.
+    pub gathers: u32,
+    /// Template renders entered.
+    pub renders: u32,
     /// Each distinct statement, by fingerprint: how many times it ran and its
     /// normalised text (every literal and parameter a `?`), so a change to the
     /// file shows in review as the statement it is.
@@ -139,6 +143,8 @@ impl Counts {
             cache_sets: s.cache_sets,
             plugin_calls: s.plugin_calls,
             host_calls: s.host_calls,
+            gathers: s.gathers,
+            renders: s.renders,
             statements,
         }
     }
@@ -156,6 +162,8 @@ impl Counts {
             ("cache_sets", self.cache_sets, actual.cache_sets),
             ("plugin_calls", self.plugin_calls, actual.plugin_calls),
             ("host_calls", self.host_calls, actual.host_calls),
+            ("gathers", self.gathers, actual.gathers),
+            ("renders", self.renders, actual.renders),
         ] {
             if e != a {
                 out.push_str(&format!("  {name}: expected {e}, got {a}\n"));
@@ -190,6 +198,8 @@ pub struct Visit {
     pub counts: Counts,
     /// The key it is recorded under: `page.visitor.caches`.
     pub key: String,
+    /// The page it answered.
+    pub body: String,
 }
 
 /// A site of its own for performance tests.
@@ -199,7 +209,7 @@ pub struct PerfSite {
     /// The scratch database, dropped with the site.
     _db: trovato_test_utils::ScratchDb,
     redis: redis::Client,
-    /// The newest post's page (it has the most comments).
+    /// The newest post's page, with three comments.
     pub item_path: String,
     user_cookies: String,
     admin_cookies: String,
@@ -229,9 +239,11 @@ fn perf_redis_url() -> String {
 pub fn site_options() -> trovato_kernel::generate::GenerateOptions {
     trovato_kernel::generate::GenerateOptions {
         items: 40,
-        comments: 30,
+        // Three on each post, by three different members (`users` shares no
+        // factor with `items`), so a per-comment cost shows on the item page.
+        comments: 120,
         tags: 6,
-        users: 4,
+        users: 7,
         seed: 1,
         batch: 1000,
         parallel: 1,
@@ -240,7 +252,8 @@ pub fn site_options() -> trovato_kernel::generate::GenerateOptions {
 
 /// A directory holding links to the [`SITE_PLUGINS`] directories only.
 fn site_plugins_dir() -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("trovato-perf-plugins-{}", std::process::id()));
+    // A fixed place under `target/`, replaced each run, so runs leave nothing.
+    let dir = std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("perf-plugins");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create the perf plugin directory");
     for name in SITE_PLUGINS {
@@ -259,6 +272,9 @@ impl PerfSite {
     /// Build the site. Slow (a database, migrations, a generated site): one
     /// per test binary, through [`shared_site`].
     pub async fn start() -> Self {
+        // The site lives in a `static`, which is never dropped: clear what
+        // earlier runs left before making this one's.
+        trovato_test_utils::ScratchDb::drop_stale("perf").await;
         let db = trovato_test_utils::ScratchDb::create("perf").await;
         trovato_kernel::db::run_migrations(db.pool())
             .await
@@ -386,7 +402,7 @@ impl PerfSite {
         visitor: Visitor,
         path: &str,
         extra_query: bool,
-    ) -> (u16, RequestProfileSnapshot) {
+    ) -> (u16, RequestProfileSnapshot, String) {
         let mut request = Request::get(path);
         let cookies = self.cookies(visitor);
         if !cookies.is_empty() {
@@ -405,8 +421,11 @@ impl PerfSite {
             .get::<RequestProfileSnapshot>()
             .cloned()
             .expect("the timing layer leaves a profile in every response");
-        let _ = to_bytes(response.into_body(), usize::MAX).await;
-        (status, snapshot)
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default();
+        (status, snapshot, body)
     }
 
     /// Load `path` as `visitor` with `caches`, and say what the request did.
@@ -435,11 +454,22 @@ impl PerfSite {
         // cache generations, and the watcher acts on a bump up to 250 ms
         // later: let it, so it never lands inside the measured request.
         super::settle_cache_generations().await;
-        let (status, snapshot) = self.request(visitor, path, extra_query).await;
+        let (status, snapshot, body) = self.request(visitor, path, extra_query).await;
+        let key = format!("{page}.{}.{}", visitor.key(), caches.key());
+        // The member's visits are signed in and the anonymous ones are not,
+        // or the counts are of the wrong visitor. (The administrator's pages
+        // answer 200 only when signed in.)
+        let signed_in = body.contains("site-nav__logout");
+        match visitor {
+            Visitor::User => assert!(signed_in, "{key}: the member was not signed in"),
+            Visitor::Anonymous => assert!(!signed_in, "{key}: the visitor was signed in"),
+            Visitor::Admin => {}
+        }
         Visit {
             status,
             counts: Counts::of(&snapshot),
-            key: format!("{page}.{}.{}", visitor.key(), caches.key()),
+            key,
+            body,
         }
     }
 }
@@ -475,19 +505,23 @@ fn recording() -> bool {
 /// The expected counts for `key`, or `None` if the file has none.
 pub fn expected(key: &str) -> Option<Counts> {
     let mut guard = EXPECTED.lock().unwrap_or_else(|p| p.into_inner());
-    let map = guard.get_or_insert_with(|| {
-        std::fs::read_to_string(expectations_path())
-            .ok()
-            .and_then(|text| toml::from_str(&text).ok())
-            .unwrap_or_default()
-    });
+    let map = guard.get_or_insert_with(read_expectations);
     map.get(key).cloned()
 }
 
-/// Record `counts` under `key` and rewrite the file (record mode only).
+/// The expectations file, parsed; empty if there is none.
+fn read_expectations() -> BTreeMap<String, Counts> {
+    std::fs::read_to_string(expectations_path())
+        .ok()
+        .and_then(|text| toml::from_str(&text).ok())
+        .unwrap_or_default()
+}
+
+/// Record `counts` under `key` and rewrite the file (record mode only). The
+/// file is read first, so recording one test keeps every other table.
 fn record(key: &str, counts: &Counts) {
     let mut guard = EXPECTED.lock().unwrap_or_else(|p| p.into_inner());
-    let map = guard.get_or_insert_with(BTreeMap::new);
+    let map = guard.get_or_insert_with(read_expectations);
     map.insert(key.to_string(), counts.clone());
     let header = "# Expected work per page, read by tests/performance_test.rs.\n\
                   # One table per page.visitor.caches. Regenerate with\n\

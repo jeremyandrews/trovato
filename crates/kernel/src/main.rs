@@ -137,8 +137,10 @@ enum Commands {
         /// Statements in flight at once.
         #[arg(long, default_value_t = 16)]
         parallel: usize,
-        /// The password of gen_admin.
-        #[arg(long, default_value = "generated-admin-password")]
+        /// The password of every generated account, `gen_admin` included.
+        /// Required: a known default would be a working administrator login
+        /// on any generated site that can be reached.
+        #[arg(long)]
         admin_password: String,
     },
 }
@@ -271,8 +273,7 @@ async fn main() -> Result<()> {
     }
 }
 
-/// `trovato migrate`: the migration step of an upgrade, run before new
-/// servers start (`docs/design/upgrades-and-probes.md` §1).
+/// `trovato generate`: write a deterministic site (`generate.rs`).
 async fn run_generate_command(
     options: generate::GenerateOptions,
     admin_password: &str,
@@ -316,6 +317,8 @@ async fn run_generate_command(
     Ok(())
 }
 
+/// `trovato migrate`: the migration step of an upgrade, run before new
+/// servers start (`docs/design/upgrades-and-probes.md` §1).
 async fn run_migrate_command(status: bool, dry_run: bool, lock_timeout: u64) -> Result<()> {
     let config = Config::from_env().context("failed to load configuration")?;
 

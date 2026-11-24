@@ -6,12 +6,14 @@ request did with a number committed to the repository:
 
 - database statements, and the fingerprint of each one;
 - cache lookups, the lookups that missed, and the values written to Redis;
-- plugin calls, and the host functions those plugins called.
+- plugin calls, and the host functions those plugins called;
+- gather queries run and templates rendered.
 
 Counts are the same on every machine and every run, so the tests run on every
 pull request and fail on the commit that adds a query, not three releases
 later when somebody looks at a graph. Timings belong to the benchmark
-(`scripts/bench.sh`), which is run by hand and never on a pull request.
+(see the timing benchmark in the BG14 design), which is run by hand and never
+on a pull request.
 
 The tests live in `crates/kernel/tests/performance_test.rs`. The harness is
 `crates/kernel/tests/common/perf.rs`. The expected numbers are in
@@ -30,25 +32,33 @@ database of its own. It is built once per test binary:
    depend on which other plugins a machine has built. `trovato_comments` is
    enabled without its module, which turns on the kernel's comment threads.
    Its module only declares permissions and a menu entry.
-3. `trovato generate` fills it with a small fixed site: 40 posts, 30 comments,
-   6 tags (`topic-1` to `topic-6`), 4 members (`gen_user_1` to `gen_user_4`)
-   and an administrator (`gen_admin`). The seed is fixed, so every id, title
+3. `trovato generate` fills it with a small fixed site: 40 posts, 120 comments
+   (three on each post, by three different members), 6 tags (`topic-1` to
+   `topic-6`), 7 members (`gen_user_1` to `gen_user_7`) and an administrator
+   (`gen_admin`). The seed is fixed, so every id, title
    and date is the same on every run.
 4. A member and the administrator sign in.
-5. The site uses Redis database 13 and nothing else does, so emptying it
-   touches no other test.
+5. The site uses Redis database 13, which no other test uses, so emptying it
+   touches no other test. Two performance runs at once against the same Redis
+   would disturb each other, so run one at a time.
 
 `site.visit(page, visitor, caches, path)` loads `path` and returns a `Visit`
 with what the request did:
 
 - `visitor` is `Visitor::Anonymous`, `Visitor::User` or `Visitor::Admin`.
 - `caches` is `Caches::Cold`, which clears every in-process cache and every
-  Redis key except sessions first, or `Caches::Warm`, which makes the same
+  Redis key except sessions and the session index first, or `Caches::Warm`, which makes the same
   request once just before.
 
 Visits run one at a time, even when the tests in the binary run in parallel,
 and each waits for the cache generation watcher to settle first, so nothing
 another test does lands inside the measured request.
+
+Each visit also checks that the visitor is who it says: a member's page shows
+the logout button and an anonymous visitor's does not. `measure` in the test
+file also checks that the page shows what it should, such as the post's
+comments or the one search result, so a page that quietly broke cannot
+record small numbers.
 
 `common::perf::check(&visit)` compares the visit with the expectations file
 under the key `page.visitor.caches` (for example `item.anonymous.warm`) and
@@ -63,7 +73,7 @@ Add a test to `performance_test.rs`:
 fn tag_cloud() {
     run_test(async {
         let site = shared_site();
-        measure(site, "tag_cloud", &[Visitor::Anonymous], "/tags").await;
+        measure(site, "tag_cloud", &[Visitor::Anonymous], "/tags", &["topic-1"]).await;
     });
 }
 ```
@@ -75,7 +85,9 @@ numbers:
 TROVATO_PERF_RECORD=1 cargo test -p trovato-kernel --test performance_test -- --test-threads=1
 ```
 
-Record mode rewrites `performance_counts.toml` from what the pages do now.
+Record mode writes what the pages do now into `performance_counts.toml`. It
+keeps the tables of tests it did not run, so a filtered run records one page.
+Remove a page's tables by hand when you remove its test.
 Read the diff before you commit it. A new page should have new tables and
 nothing else should change.
 

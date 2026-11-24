@@ -272,8 +272,8 @@ check(&visit);                                  // against tests/fixtures/perfor
   - a plugin directory holding only the blog and search modules, which CI
     builds, with `trovato_comments` enabled without its module for the
     kernel's comment threads;
-  - `trovato generate` with a fixed seed: 40 posts, 30 comments, 6 tags,
-    4 members and an administrator;
+  - `trovato generate` with a fixed seed: 40 posts, 120 comments (three per post), 6 tags,
+    7 members and an administrator;
   - a Redis database number of its own, flushed at start.
 
   Cold means every in-process cache cleared (a new
@@ -313,11 +313,14 @@ front page to `/blog`, then runs `ANALYZE`.
 The SQL is set-based: `INSERT ... SELECT ... FROM generate_series(lo, hi)`, one
 statement per batch and `P` batches at once. Postgres does the work and the
 binary only sends statements. Posts get their search vectors from the item
-trigger as they are written. Comments are written with the comment search
-trigger off, so their text is not searchable. A database that already holds
-exactly this generated site is left alone, and one holding a different
-generated site is refused. A run that crashed with the trigger off has it
-turned back on by the next run.
+trigger as they are written. Comments are written with the two comment
+triggers that update their post off: the search one, so comment text is not
+searchable, and the count one, since each post is written with its comment
+count. A database that already holds exactly this generated site is left
+alone; any other database that is not empty (a different generated site, a run
+that did not finish, a real site) is refused. A run that crashed with the
+triggers off has them turned back on by the next run. There is no default
+password, so no generated site has a known administrator login.
 
 With `--items 20000000` it finished in under an hour on the Mac Studio (see
 the measurements in the report). The data generator lives in the kernel

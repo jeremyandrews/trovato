@@ -80,13 +80,14 @@ See [docs/deployment/upgrades.md](deployment/upgrades.md).
 ```
 trovato generate --items <N> [--comments <N>] [--tags <N>] [--users <N>]
                  [--seed <N>] [--batch <ROWS>] [--parallel <N>]
-                 [--admin-password <PASSWORD>]
+                 --admin-password <PASSWORD>
 ```
 
 Writes a deterministic site into `DATABASE_URL` for performance tests and
-benchmarks. Never run it against a site with real content. The same
-arguments always write the same rows: ids, titles, bodies, dates, authors and
-tags all come from the seed and the row number. It writes:
+benchmarks. It only writes into an empty, migrated database: one with any
+content it did not write (a real site, or a run that did not finish) is
+refused. The same arguments always write the same rows: ids, titles, bodies,
+dates, authors and tags all come from the seed and the row number. It writes:
 
 - members `gen_user_1` to `gen_user_<users>` (default 1000) with addresses
   under `example.invalid`;
@@ -97,16 +98,16 @@ tags all come from the seed and the row number. It writes:
   post).
 
 It then sets the front page to `/blog` and analyses the tables. Every
-generated account has the `--admin-password` password (default
-`generated-admin-password`).
+generated account has the `--admin-password` password. There is no default, so
+no generated site has a known administrator login.
 
 The work is done in Postgres: one `INSERT ... SELECT ... FROM generate_series`
 statement per `--batch` rows (default 20,000), `--parallel` statements at a
-time (default 16). Running it again with the same arguments does nothing.
-Running it with different arguments on a generated database is refused.
+time (default 16). Running it again with the same site arguments does nothing,
+whatever `--batch` and `--parallel` say. Running it with different ones on a
+generated database is refused.
 
-Comment text is not added to search. With `--items 20000000`, the default
-20,000,000 comments, 500 tags and 1,000 members took 55 minutes on a Mac
-Studio, Postgres 16 in Docker.
+Comment text is not added to search. See the BG14 measurements for how long
+`--items 20000000` takes on a Mac Studio (under an hour).
 
 The blog plugin must be on the plugin path: the posts are its `blog` type.
