@@ -3,10 +3,12 @@
 #
 #   <name> | <measured seconds on CI> | <why it cannot be faster>
 #
-# <name> is what the guard prints: `<binary id> <test name>` for a test run by
-# nextest, `<package>::<target>` for an integration target run by libtest
-# (timed as a whole; see docs/testing-ci.md). An entry still fails at twice its
-# measured time, so record the CI figure, not a local one.
+# <name> is what the guard prints: `<binary id> <test name>` for a unit test
+# run by nextest, `<package>::<target> <test name>` for an integration test,
+# `doc::<crate>` for a crate's doc tests. A bare `<package>::<target>` covers
+# every test of that target, and is only for a target whose tests queue on one
+# lock by design, where each test is charged its wait (see
+# scripts/ci-slow-tests.sh). An entry still fails at twice its measured time, so
+# record the CI figure, not a local one.
 
-trovato-kernel::plugin_queue_v2_test | 32.4 | 44 tests serialised on one std Mutex by design: the drain claims every row for the one fixture plugin, so concurrent tests would steal each other's jobs (see the file's header). Measured in run 45406677098, before dependencies were optimized.
-trovato-kernel::zero_downtime_test | 30.1 | 8 tests, each driving the real trovato binary as a child process on a scratch database of its own; the time is migrations, SIGTERM drains and readiness waits, which are what it tests. Measured in run 45412845837 (116 s per pass before, serial).
+trovato-kernel::plugin_queue_v2_test | 32.4 | A target entry: its tests queue on one std Mutex by design (the drain claims every row for the one fixture plugin, so concurrent tests would steal each other's jobs; see the file's header), so each is charged its wait and the last in the queue nearly the target's whole time. 32.4 s is the target's time in run 45406677098, before dependencies were optimized.

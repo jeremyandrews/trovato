@@ -126,19 +126,41 @@ plugin enabled, enable it; never rely on a target that sorts before it.
 | A Test shard | 30 minutes: expected 20, plus half | `timeout-minutes` on the Test job |
 | Cluster | 40 minutes: expected 27 (a pull request that changes `Cargo.lock`: 24 and 30 in two runs), plus half | `timeout-minutes` on the Cluster job |
 
-nextest marks a test SLOW in the log after 10 s (`slow-timeout` in the `ci`
-profile, `.config/nextest.toml`). That is a warning; the 30 s line is the gate.
-For integration targets libtest times the whole target, not its tests, so the
-30 s applies to the target, and any one test over 30 s takes its target over too.
+nextest marks a unit test SLOW in the log after 10 s (`slow-timeout` in the
+`ci` profile, `.config/nextest.toml`). That is a warning; the 30 s line is the
+gate, and it applies to each test:
+
+- unit tests, from nextest's JUnit report;
+- integration tests, from libtest's `--report-time`, which a stable toolchain
+  accepts when the test process sees `RUSTC_BOOTSTRAP`. `scripts/ci-test-shard.sh`
+  sets it through a runner, for the test process only: build scripts read it to
+  switch on nightly-only code, so setting it for the build would change what is
+  built;
+- doc tests, one crate at a time (`doc::<crate>`), because rustdoc rejects
+  `--report-time` on a stable toolchain.
+
+libtest times a test from its start, so a test that waits for a lock is charged
+the wait. That is why the allowlist takes a whole target as well as a test: a
+target entry covers each of its tests, and is for a target whose tests queue on
+one lock by design (`plugin_queue_v2_test`), where the last test in the queue
+carries nearly the whole target's time.
 
 An allowlist line is `name | measured seconds | reason`. The name is what the
-guard prints: `<binary id> <test name>` for a nextest test, `<package>::<target>`
-for an integration target.
+guard prints: `<binary id> <test name>` for a unit test, `<package>::<target>
+<test name>` for an integration test, `doc::<crate>` for doc tests, or a bare
+`<package>::<target>` for a target as above.
+
+The budget step of each shard passes every report that shard should have, and
+fails on one that is missing or empty. `scripts/ci-scripts-test.sh` tests the
+parser (`scripts/ci-test-timings.awk`), the guard and the shard script's target
+checks against made-up output; it runs first on shard 1 and in
+`scripts/pre-commit-check.sh`.
 
 ## Remeasuring
 
 Each shard uploads its timings as the `test-timings-shard-N` artifact: one
-line per integration target per pass, and the nextest JUnit report. To
+line per integration target per pass (`pass-N.txt`), one per integration test
+(`pass-N.tests`), the doc tests' (`doc.txt`), and the nextest JUnit report. To
 rebalance, take a recent run's artifacts and set each target's weight to the
 sum of its two passes; set the `@shard` lines to what each shard's unit or doc
 step took, and `@per_target` to what building one test binary costs (pass 1's
