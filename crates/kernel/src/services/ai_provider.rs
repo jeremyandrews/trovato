@@ -851,7 +851,9 @@ impl AiProviderService {
             req = req.bearer_auth(key);
         }
 
-        let resp = req.send().await.context("embedding request failed")?;
+        let resp = crate::telemetry::send(req)
+            .await
+            .context("embedding request failed")?;
         let status = resp.status();
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -963,7 +965,9 @@ impl AiProviderService {
         if let Some(key) = api_key {
             req = req.bearer_auth(key);
         }
-        let resp = req.send().await.context("request failed")?;
+        let resp = crate::telemetry::send(req)
+            .await
+            .context("request failed")?;
         let status = resp.status();
         if status.is_success() {
             Ok(format!("Connected successfully (HTTP {status})"))
@@ -989,7 +993,9 @@ impl AiProviderService {
         if let Some(key) = api_key {
             req = req.header("x-api-key", key);
         }
-        let resp = req.send().await.context("request failed")?;
+        let resp = crate::telemetry::send(req)
+            .await
+            .context("request failed")?;
         let status = resp.status();
         if status.is_success() {
             Ok(format!("Connected successfully (HTTP {status})"))

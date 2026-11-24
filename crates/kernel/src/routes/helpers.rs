@@ -483,7 +483,7 @@ pub async fn render_admin_template(
         let empty: Vec<String> = Vec::new();
         context.insert("errors", &empty);
     }
-    match state.theme().tera().render(template, &context) {
+    match crate::telemetry::render("admin", || state.theme().tera().render(template, &context)) {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
             tracing::error!(error = %e, template = %template, "failed to render template");

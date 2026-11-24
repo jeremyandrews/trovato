@@ -508,15 +508,16 @@ pub(crate) async fn complete(
     let (url, request_body, auth_headers) =
         build_chat_request(resolved, system_prompt, user_prompt);
 
-    let response = match ai_providers
-        .http()
-        .post(&url)
-        .timeout(timeout)
-        .header("content-type", "application/json")
-        .body(request_body)
-        .headers_from_vec(&auth_headers)
-        .send()
-        .await
+    let response = match crate::telemetry::send(
+        ai_providers
+            .http()
+            .post(&url)
+            .timeout(timeout)
+            .header("content-type", "application/json")
+            .body(request_body)
+            .headers_from_vec(&auth_headers),
+    )
+    .await
     {
         Ok(r) if r.status().is_success() => r,
         Ok(r) => {

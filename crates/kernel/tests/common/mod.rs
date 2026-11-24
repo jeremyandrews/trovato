@@ -537,7 +537,7 @@ impl TestApp {
                 state.clone(),
                 trovato_kernel::middleware::track_request_timing,
             ))
-            .layer(tower_http::trace::TraceLayer::new_for_http())
+            .layer(trovato_kernel::telemetry::trace_layer())
             // Supply a loopback peer (outermost, runs first) so
             // `resolve_client_ip` has a trusted socket address — mirroring
             // `into_make_service_with_connect_info` in production. Inserted

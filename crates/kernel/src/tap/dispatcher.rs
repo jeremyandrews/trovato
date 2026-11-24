@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use tracing::{debug, error, warn};
+use tracing::{Instrument, debug, error, warn};
 use wasmtime::{Instance, Store, TypedFunc, UpdateDeadline};
 
 use super::{RequestState, TapHandler, TapRegistry};
@@ -340,6 +340,41 @@ impl std::fmt::Display for ExportCallError {
 /// `wallclock_ceiling` bounds the call's total elapsed time, which the epoch
 /// budget does not, because every second spent inside a host call extends it.
 pub(crate) async fn instantiate_and_call_export(
+    runtime: &PluginRuntime,
+    plugin: &CompiledPlugin,
+    export: &str,
+    input_json: &str,
+    state: RequestState,
+    epoch_deadline: u64,
+    wallclock_ceiling: Duration,
+) -> std::result::Result<String, ExportCallError> {
+    // Gander's plugin choke point: every tap and every plugin-to-plugin call
+    // is one span and one count here, and feeds `tap_duration_seconds`.
+    let span = tracing::trace_span!(
+        target: crate::telemetry::TARGET,
+        "plugin.tap",
+        trovato.plugin = %plugin.info.name,
+        trovato.tap = export,
+    );
+    let started = Instant::now();
+    let result = call_export_in_store(
+        runtime,
+        plugin,
+        export,
+        input_json,
+        state,
+        epoch_deadline,
+        wallclock_ceiling,
+    )
+    .instrument(span)
+    .await;
+    let elapsed = started.elapsed();
+    crate::telemetry::profile::count_plugin_call(&plugin.info.name, export, elapsed);
+    result
+}
+
+/// The body of [`instantiate_and_call_export`], inside its span.
+async fn call_export_in_store(
     runtime: &PluginRuntime,
     plugin: &CompiledPlugin,
     export: &str,

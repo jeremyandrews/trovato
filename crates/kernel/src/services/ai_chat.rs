@@ -474,7 +474,9 @@ impl ChatService {
             req = req.header(key.as_str(), value.as_str());
         }
 
-        let response = req.send().await.context("streaming chat request failed")?;
+        let response = crate::telemetry::send(req)
+            .await
+            .context("streaming chat request failed")?;
 
         let status = response.status();
         if !status.is_success() {

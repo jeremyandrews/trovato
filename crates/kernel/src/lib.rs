@@ -42,6 +42,7 @@ pub mod stage;
 pub mod state;
 pub mod system_log;
 pub mod tap;
+pub mod telemetry;
 pub mod theme;
 pub mod update_status;
 

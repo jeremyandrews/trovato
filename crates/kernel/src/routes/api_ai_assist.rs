@@ -153,7 +153,7 @@ async fn ai_assist_handler(
         req = req.header(key.as_str(), value.as_str());
     }
 
-    let response = match req.send().await {
+    let response = match crate::telemetry::send(req).await {
         Ok(r) => r,
         Err(e) => {
             tracing::error!(error = %e, "AI assist HTTP request failed");
