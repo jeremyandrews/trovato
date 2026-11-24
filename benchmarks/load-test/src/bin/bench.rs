@@ -72,7 +72,7 @@ struct Args {
 }
 
 /// One page's figures for one run, in milliseconds.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Run {
     median_ms: f64,
     p99_ms: f64,
@@ -80,7 +80,7 @@ struct Run {
 }
 
 /// One page over all runs.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Page {
     path: String,
     median_ms: f64,
@@ -88,7 +88,7 @@ struct Page {
     runs: Vec<Run>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 struct Report {
     label: String,
     requests: usize,

@@ -115,7 +115,8 @@ pub async fn send_with(
 ) -> reqwest::Result<reqwest::Response> {
     let (client, request) = builder.build_split();
     let request = request?;
-    let span = outgoing_span(request.method().as_str(), request.url().as_str());
+    // A plugin chooses the method: only a standard one is named.
+    let span = outgoing_span(method_label(request.method()), request.url().as_str());
     annotate(&span);
     let response = tracing::Instrument::instrument(client.execute(request), span.clone()).await;
     if let Ok(r) = response.as_ref() {

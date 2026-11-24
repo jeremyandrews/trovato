@@ -133,7 +133,9 @@ fn no_secret_reaches_any_telemetry() {
     let writer = captured.clone();
     // Export on, into memory: a simple exporter and every trace sampled, so
     // what is exported is complete when a request returns.
-    // `export_stack_test` checks the production stack itself.
+    // The layers are in a different order from production on purpose, with a
+    // capture of every Gander field beside them; `export_stack_test` checks
+    // the production stack itself.
     let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let export_layer = trovato_kernel::telemetry::export::install(
         opentelemetry_sdk::trace::SdkTracerProvider::builder()

@@ -292,6 +292,13 @@ mod tests {
         let probes = Probes::new(Some("s3cret".to_string()));
         assert!(probes.is_trusted(&request([127, 0, 0, 1], &[])));
         assert!(probes.is_trusted(&request(std::net::Ipv6Addr::LOCALHOST, &[])));
+        // A dual-stack listener sees IPv4 peers as IPv4-mapped IPv6 addresses.
+        let mapped = |v4: std::net::Ipv4Addr| v4.to_ipv6_mapped();
+        assert!(probes.is_trusted(&request(mapped(std::net::Ipv4Addr::LOCALHOST), &[])));
+        assert!(!probes.is_trusted(&request(
+            mapped(std::net::Ipv4Addr::new(203, 0, 113, 9)),
+            &[]
+        )));
         assert!(!probes.is_trusted(&request(
             std::net::Ipv6Addr::LOCALHOST,
             &[("x-forwarded-for", "203.0.113.9")]

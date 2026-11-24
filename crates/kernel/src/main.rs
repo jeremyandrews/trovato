@@ -275,13 +275,11 @@ async fn main() -> Result<()> {
     // process ends, for at most a few seconds: a collector that is down must
     // not hold the shutdown past its budget.
     if telemetry::export::active() {
-        let flush = tokio::task::spawn_blocking(telemetry::export::shutdown);
-        if tokio::time::timeout(EXPORT_FLUSH_LIMIT, flush)
-            .await
-            .is_err()
-        {
-            warn!("trace export did not flush in time; its last spans are dropped");
-        }
+        // The SDK enforces the limit itself: the runtime waits for a
+        // blocking task to finish before the process exits, so a timeout
+        // around this one would not shorten anything.
+        let _ =
+            tokio::task::spawn_blocking(|| telemetry::export::shutdown(EXPORT_FLUSH_LIMIT)).await;
     }
     result
 }

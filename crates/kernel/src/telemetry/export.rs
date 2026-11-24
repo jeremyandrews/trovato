@@ -29,7 +29,7 @@ use tracing_subscriber::registry::LookupSpan;
 use super::{TARGET, fingerprint};
 
 /// What `TRACING_EXPORT` and the `OTEL_*` variables ask for.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct ExportSettings {
     /// `TRACING_EXPORT=otlp`.
     pub otlp: bool,
@@ -162,10 +162,12 @@ where
         .with_filter(Targets::new().with_target(TARGET, tracing::Level::TRACE))
 }
 
-/// Flush and stop the exporter: the spans still in the batch are sent.
-pub fn shutdown() {
+/// Flush and stop the exporter: the spans still in the batch are sent if the
+/// collector takes them within `limit`, and dropped otherwise. Blocks; call
+/// it outside the async runtime's worker threads.
+pub fn shutdown(limit: Duration) {
     if let Some(provider) = PROVIDER.get()
-        && let Err(e) = provider.shutdown()
+        && let Err(e) = provider.shutdown_with_timeout(limit)
     {
         tracing::warn!(error = %e, "trace export did not shut down cleanly");
     }

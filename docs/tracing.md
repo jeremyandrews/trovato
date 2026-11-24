@@ -28,7 +28,9 @@ template (`GET /item/{id}`), never its path. Inside it:
 | `http.client` | outgoing HTTP request (AI providers, webhooks) | method, host only, status; for AI calls the provider and model |
 
 Queue jobs are root spans of their own, `queue.job`, with the plugin, queue,
-attempt and outcome. The request span also carries the request's counts:
+attempt and outcome. Any other span that starts outside a request or a job (a
+plugin tap from a cron tick, a Redis call from a background task or at
+startup) is a trace of its own too, one span long, sampled at the same ratio. The request span also carries the request's counts:
 `trovato.db.queries`, `trovato.cache.gets`, `trovato.cache.misses` and
 `trovato.plugin.calls`.
 

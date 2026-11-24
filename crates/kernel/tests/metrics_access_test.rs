@@ -118,12 +118,22 @@ fn metrics_answer_an_operator_and_nobody_else() {
         };
         let detailed = |body: &str| body.contains("\"postgres\"");
         let as_probe = app.request(health(HEALTH_TOKEN)).await;
+        assert!(
+            matches!(as_probe.status().as_u16(), 200 | 503),
+            "{}",
+            as_probe.status()
+        );
         let as_probe = to_bytes(as_probe.into_body(), usize::MAX).await.unwrap();
         assert!(
             detailed(&String::from_utf8_lossy(&as_probe)),
             "the health token does not open the health details: {as_probe:?}"
         );
         let as_metrics = app.request(health(TOKEN)).await;
+        assert!(
+            matches!(as_metrics.status().as_u16(), 200 | 503),
+            "{}",
+            as_metrics.status()
+        );
         let as_metrics = to_bytes(as_metrics.into_body(), usize::MAX).await.unwrap();
         assert!(
             !detailed(&String::from_utf8_lossy(&as_metrics)),
