@@ -89,6 +89,11 @@ pub struct GatherService {
     /// at once on a `url_alias` write ([`Self::clear_outbound_alias_cache`]),
     /// same as [`crate::menu::clear_local_config_menus`].
     outbound_alias_cache: Cache<String, Option<String>>,
+    /// Moves on every clear of `outbound_alias_cache`. A lookup notes it before
+    /// reading `url_alias` and drops what it stored if it moved meanwhile, so a
+    /// read that started before an alias write cannot put the old answer back
+    /// after the write cleared the cache.
+    outbound_alias_generation: std::sync::atomic::AtomicU64,
     /// Maximum per_page for query execution (from `GATHER_MAX_PAGE_SIZE`).
     max_page_size: u32,
     /// D-26 over-fetch and backfill bounds for access-filtered pages. Was a set
@@ -243,6 +248,7 @@ impl GatherService {
                 .max_capacity(OUTBOUND_ALIAS_CAPACITY)
                 .time_to_live(OUTBOUND_ALIAS_TTL)
                 .build(),
+            outbound_alias_generation: std::sync::atomic::AtomicU64::new(0),
             max_page_size: config.max_page_size,
             access: config.access,
             ai_providers,
@@ -382,30 +388,56 @@ impl GatherService {
     /// costs no query beyond the first; a `url_alias` write clears the cache at
     /// once ([`Self::clear_outbound_alias_cache`]), so an alias written after
     /// startup reaches the feed without a restart.
+    ///
+    /// A lookup that fails answers `None` for this request only and is not
+    /// cached: the next request asks the database again rather than serving
+    /// the raw gather path until the TTL runs out.
     pub async fn outbound_alias_for_gather(&self, query_id: &str) -> Option<String> {
         if let Some(cached) = self.outbound_alias_cache.get(query_id) {
             return cached;
         }
+        let generation = self.outbound_alias_generation();
         let source = format!("/gather/{query_id}");
-        let alias = UrlAlias::get_canonical_alias(&self.pool, &source)
-            .await
-            .unwrap_or_else(|e| {
+        match UrlAlias::get_canonical_alias(&self.pool, &source).await {
+            Ok(alias) => {
+                self.remember_outbound_alias(query_id, generation, alias.clone());
+                alias
+            }
+            Err(e) => {
                 tracing::warn!(
                     query_id,
                     error = %e,
                     "failed to resolve the outbound alias of a gather's default URL"
                 );
                 None
-            });
+            }
+        }
+    }
+
+    fn outbound_alias_generation(&self) -> u64 {
+        self.outbound_alias_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Cache `alias` for `query_id`, as read from `url_alias` by a lookup that
+    /// started at `generation`. Stored first and checked after: if the cache
+    /// was cleared since the lookup started, the answer may predate the write
+    /// that cleared it, so it is dropped again. A clear that comes after the
+    /// check removes it anyway.
+    fn remember_outbound_alias(&self, query_id: &str, generation: u64, alias: Option<String>) {
         self.outbound_alias_cache
-            .insert(query_id.to_string(), alias.clone());
-        alias
+            .insert(query_id.to_string(), alias);
+        if self.outbound_alias_generation() != generation {
+            self.outbound_alias_cache.invalidate(query_id);
+        }
     }
 
     /// Drop this server's cache of [`Self::outbound_alias_for_gather`]: what a
     /// `url_alias` write's `CacheKind::Menus` bump does here, alongside
     /// [`crate::menu::clear_local_config_menus`].
     pub fn clear_outbound_alias_cache(&self) {
+        self.outbound_alias_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
         self.outbound_alias_cache.invalidate_all();
     }
 
@@ -3890,5 +3922,67 @@ mod tests {
             local_field: "author_id".to_string(),
             foreign_field: "id".to_string(),
         }
+    }
+
+    /// A service whose database is unreachable: every query fails fast.
+    fn service_without_a_database() -> Arc<GatherService> {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(200))
+            .connect_lazy("postgres://nobody@127.0.0.1:1/none")
+            .expect("a lazy pool");
+        let metrics = Arc::new(Metrics::new());
+        GatherService::new(
+            pool.clone(),
+            CategoryService::new(pool, Duration::from_secs(60), metrics.clone()),
+            Arc::new(GatherExtensionRegistry::new()),
+            GatherConfig {
+                ttl: Duration::from_secs(60),
+                max_page_size: 100,
+                access: GatherAccessConfig::default(),
+            },
+            None,
+            None,
+            metrics,
+        )
+    }
+
+    /// A failed alias lookup is not cached as "no alias": once the database
+    /// answers again, the next feed request must find the alias, not keep
+    /// publishing the raw gather path until the TTL runs out.
+    #[tokio::test]
+    async fn a_failed_outbound_alias_lookup_is_not_cached() {
+        let service = service_without_a_database();
+        assert_eq!(
+            service.outbound_alias_for_gather("blog_listing").await,
+            None
+        );
+        assert!(
+            service.outbound_alias_cache.get("blog_listing").is_none(),
+            "a lookup that failed must leave nothing cached"
+        );
+    }
+
+    /// A lookup that read `url_alias` before a clear must not put its answer
+    /// back after the clear, or the old alias outlives the write that
+    /// replaced it for the full TTL. A lookup with no clear in between is
+    /// cached as before.
+    #[tokio::test]
+    async fn an_outbound_alias_read_before_a_clear_is_not_cached_after_it() {
+        let service = service_without_a_database();
+
+        let started = service.outbound_alias_generation();
+        service.clear_outbound_alias_cache();
+        service.remember_outbound_alias("blog_listing", started, Some("/old".to_string()));
+        assert!(
+            service.outbound_alias_cache.get("blog_listing").is_none(),
+            "an answer read before the clear must not be cached after it"
+        );
+
+        let started = service.outbound_alias_generation();
+        service.remember_outbound_alias("blog_listing", started, Some("/blog".to_string()));
+        assert_eq!(
+            service.outbound_alias_cache.get("blog_listing"),
+            Some(Some("/blog".to_string()))
+        );
     }
 }

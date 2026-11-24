@@ -1463,8 +1463,16 @@ fn the_blog_gather_links_its_url_alias_not_the_raw_gather_path() {
         for path in ["/blog/feed.xml", "/blog/feed.atom"] {
             let (status, body) = get(app, &blog, path).await;
             assert_eq!(status, StatusCode::OK, "{path}: {body}");
+            // The channel's own link, exactly: `{site_url}/blog` alone is a
+            // prefix of the feed's self link (`/blog/feed.xml`), so it would
+            // be found whatever the channel link said.
+            let channel_link = if path.ends_with(".atom") {
+                format!(r#"<link rel="alternate" type="text/html" href="{site_url}/blog"/>"#)
+            } else {
+                format!("<link>{site_url}/blog</link>")
+            };
             assert!(
-                body.contains(&format!("{site_url}/blog")),
+                body.contains(&channel_link),
                 "{path}: the channel link must be the alias, was:\n{body}"
             );
             assert!(
@@ -1648,18 +1656,26 @@ fn an_alias_written_after_startup_reaches_the_feed_and_changes_the_etag() {
         // `UrlAlias::create` bumps `CacheKind::Menus`, which every server
         // (including this one) picks up on its 250ms poll
         // (`cache::generation::spawn_watcher`), the same propagation delay
-        // `cache_test.rs` already waits out for other kinds.
-        tokio::time::sleep(std::time::Duration::from_millis(600)).await;
-
-        let (status, headers, after) = send(
-            app,
-            &query,
-            Request::get(&path).body(Body::empty()).unwrap(),
-        )
-        .await;
+        // `cache_test.rs` already waits out for other kinds. The poll bounds
+        // nothing on a loaded runner, so ask until the alias shows or a
+        // generous deadline passes, rather than once after a fixed sleep.
+        let alias_link = format!("<link>{site_url}{alias_path}</link>");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let (status, headers, after) = loop {
+            let (status, headers, body) = send(
+                app,
+                &query,
+                Request::get(&path).body(Body::empty()).unwrap(),
+            )
+            .await;
+            if body.contains(&alias_link) || std::time::Instant::now() >= deadline {
+                break (status, headers, body);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
         assert_eq!(status, StatusCode::OK, "{after}");
         assert!(
-            after.contains(&format!("<link>{site_url}{alias_path}</link>")),
+            after.contains(&alias_link),
             "the alias must reach the feed without a restart: {after}"
         );
         let etag_after = headers.get("etag").unwrap().to_str().unwrap().to_string();

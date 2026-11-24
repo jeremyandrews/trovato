@@ -443,7 +443,14 @@ impl FormBuilder {
                     if let Some(item_id) = self.item_id {
                         element = element.attribute("data-item", item_id.to_string());
                     }
+                    // The owner field is named only when it is on the form for
+                    // the widget to read. A viewer who may not see it gets no
+                    // control for it, so the widget would take its absence for
+                    // an empty owner and never search; with no `owner` sent,
+                    // the endpoint uses the stored owner, which is what the
+                    // save sees for a field this editor cannot write.
                     if let Some(limit) = crate::content::owned_vocabulary::limit_of(&field.settings)
+                        && self.mode_of(&limit.owner_field) != FieldMode::Hidden
                     {
                         element = element
                             .attribute("data-owner-field", limit.owner_field)
@@ -825,6 +832,54 @@ mod tests {
         assert!(
             input.contains(r#"data-owner-field="field_club""#),
             "{input}"
+        );
+    }
+
+    /// An owner field this viewer may not see is not on the form, so the term
+    /// box must not name it: the widget would read the missing control as an
+    /// empty owner, show "choose the owner first" and never search, though
+    /// the endpoint would offer the stored owner's terms. A read-only owner
+    /// field is on the form, disabled, and is still named.
+    #[test]
+    fn a_term_reference_names_its_owner_field_only_when_the_form_has_it() {
+        let mut boats = FieldDefinition::new(
+            "field_boats",
+            FieldType::RecordReference("category_term".into()),
+        );
+        boats.settings = serde_json::json!({
+            "vocabulary_owner": {"owner_type": "club", "owner_field": "field_club"}
+        });
+        let ct = ContentTypeDefinition {
+            machine_name: "club_post".to_string(),
+            label: "Club post".to_string(),
+            description: String::new(),
+            title_label: None,
+            fields: vec![
+                FieldDefinition::new("field_club", FieldType::Text { max_length: None }),
+                boats,
+            ],
+        };
+        let item = item(serde_json::json!({"field_club": "c1"}));
+        let input_for = |mode: FieldMode| {
+            let html = render(
+                &FormBuilder::new(ct.clone())
+                    .with_item_id(Some(item.id))
+                    .with_field_modes([("field_club".to_string(), mode)].into())
+                    .build_edit_form(&item, "/x"),
+            );
+            let at = html.find(r#"id="field_boats_autocomplete""#).expect(&html);
+            html[at..at + html[at..].find('>').unwrap()].to_string()
+        };
+
+        let hidden = input_for(FieldMode::Hidden);
+        assert!(!hidden.contains("data-owner-field"), "{hidden}");
+        assert!(!hidden.contains("data-owner-hint"), "{hidden}");
+        assert!(hidden.contains(r#"data-field="field_boats""#), "{hidden}");
+
+        let read_only = input_for(FieldMode::ReadOnly);
+        assert!(
+            read_only.contains(r#"data-owner-field="field_club""#),
+            "{read_only}"
         );
     }
 
