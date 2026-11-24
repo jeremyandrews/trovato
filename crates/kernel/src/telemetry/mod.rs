@@ -50,6 +50,24 @@ pub fn outgoing_span(method: &str, url: &str) -> tracing::Span {
     )
 }
 
+/// Send an outgoing request inside its `http.client` span, counted into the
+/// request in scope: the one way the kernel sends HTTP (`host::ai` adds its
+/// provider and model to the same span itself).
+///
+/// # Errors
+///
+/// Whatever building or sending the request returns.
+pub async fn send(builder: reqwest::RequestBuilder) -> reqwest::Result<reqwest::Response> {
+    let (client, request) = builder.build_split();
+    let request = request?;
+    let span = outgoing_span(request.method().as_str(), request.url().as_str());
+    let response = tracing::Instrument::instrument(client.execute(request), span.clone()).await;
+    if let Ok(r) = response.as_ref() {
+        span.record("http.response.status_code", r.status().as_u16());
+    }
+    response
+}
+
 /// The span `TraceLayer` makes for each request: the method and the matched
 /// route template, never the URI.
 ///

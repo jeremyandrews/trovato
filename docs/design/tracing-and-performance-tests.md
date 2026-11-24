@@ -89,8 +89,8 @@ telemetry; see "No personal data" below.
 | Host calls | `host::trace` (`TracedLinker::func_wrap_async_traced` and `HostCallGuard`) | Every host function a plugin can import is already wrapped there. |
 | Gather | `GatherService::run_definition` | Every `execute*` entry point, a site's and a plugin's, lands there. |
 | Templates | `ThemeEngine::render_page`, `render_item`, `render_element` and `routes::helpers::render_admin_template` | The entry points that turn a page, an item, an element or an admin screen into HTML. About twenty handlers (login, password reset, comments, error and maintenance pages) still call `tera().render` themselves and are not counted as renders; their queries and cache calls are counted all the same. |
-| Queue jobs | `cron::run_queue_job` | Every claimed plugin queue job runs through it, from cron and from the resident runner. |
-| Outgoing HTTP | the two kernel `send()` sites: `host::http` (a plugin's `http-request`) and `host::ai` (an AI provider) | The only outgoing requests made on behalf of a request or a job. `update_status` is a daily background check and is left out. |
+| Queue jobs | `cron::run_queue_job` | Every claimed plugin queue job runs through it, from cron and from the resident runner. A job gets a span, not a request profile: nothing would read its counts. |
+| Outgoing HTTP | `telemetry::send`, which every kernel `send()` now goes through (a plugin's `http-request` and `http-open`, the AI provider calls of the services, search and the assistant, the release check); `host::ai` opens the same span itself to add its provider and model | One function, so a new send site that bypasses it is visible in review as a bare `.send()`. |
 
 Nothing is instrumented call site by call site.
 
@@ -102,7 +102,7 @@ cache sets, plugin calls, plugin time, host calls, gather runs, renders, render
 time, outgoing calls. `track_request_timing` creates one per request and runs
 the rest of the request inside a `tokio::task_local!` scope holding it; each
 choke point adds to it with `try_with`, which is a no-op outside a request (a
-cron run, startup). A queue job gets its own profile the same way.
+cron run, a queue job, startup).
 
 A task-local and not a span: counting must work, and be deterministic, when
 tracing is off and no span exists. Work a request spawns onto another task
@@ -113,7 +113,7 @@ The query listener is a per-layer filter that is enabled for the `sqlx::query`
 target **only while a profile is in scope**, so outside requests sqlx does the
 same work it does today. Inside one it costs what sqlx already does when its
 statement log is on: it takes the first four words and formats the SQL. That
-cost is measured and stated below.
+cost is measured in part 3 against `main` and stated in "Measurements" there.
 
 **Fingerprints.** A fingerprint names a statement without its values:
 `<verb>:<first table>:<8 hex of the SHA-256 of the normalised SQL>`, for
@@ -215,15 +215,16 @@ operator turns export on with a setting, not a rebuild):
 - `tracing-opentelemetry` 0.34: the bridge from `tracing` spans to OTel spans,
   maintained with `tracing` itself.
 
-Cost with export off, the default: measured (below) against `main` on the
-same machine and data. Target: under 1% at p99.
+Cost with export off, the default: measured against `main` on the same
+machine and data (part 3 adds the numbers here). Target: under 1% at p99.
 
 ### 6. Metrics
 
 Through the existing `prometheus-client`, no new crate:
 
 - `db_query_duration_seconds` and `tap_duration_seconds` are finally fed (from
-  the query listener and `instantiate_and_call_export`).
+  the query listener and `instantiate_and_call_export`), for work done while serving a request: they are observed through the
+  request's profile, so cron, queue jobs and startup do not reach them.
 - New `http_request_db_queries` histogram by route: queries per request.
 - New `cache_sets_total` by cache (Redis sets).
 
@@ -273,7 +274,7 @@ arguments always produce the same rows (ids, titles, bodies, dates and tag
 assignments derived from the seed and the row number). Set-based SQL,
 `INSERT ... SELECT ... FROM generate_series(lo, hi)` in batches, so Postgres
 does the work and the binary only sends statements; with `--items 20000000`
-it must finish in under an hour on the Mac Studio (measured below). Blogs
+it must finish in under an hour on the Mac Studio (measured in part 3). Blogs
 are left out until BG4's tables exist; the flag is reserved. Later runs reuse
 it to seed their benchmarks.
 

@@ -138,7 +138,7 @@ async fn shows_detail(state: &AppState, profile: &RequestProfile) -> bool {
         ServerTimingDetail::Admin => match profile.user_id() {
             Some(id) => matches!(
                 state.users().find_by_id(id).await,
-                Ok(Some(user)) if user.is_admin
+                Ok(Some(user)) if user.is_admin && user.is_active()
             ),
             None => false,
         },

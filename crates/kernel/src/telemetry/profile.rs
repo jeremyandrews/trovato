@@ -1,11 +1,10 @@
 //! Per-request counters, in a task-local scope.
 //!
 //! `track_request_timing` makes one [`RequestProfile`] per request and runs the
-//! request inside [`scope`]; `run_queue_job` does the same per job. Each choke
-//! point adds to whatever profile is in scope with a `try_with`, which is a
-//! no-op when there is none (startup, cron, a task the request spawned), so
-//! the counts are exactly the work done on the request's own task, and the same
-//! on every run.
+//! request inside [`scope`]. Each choke point adds to whatever profile is in
+//! scope with a `try_with`, which is a no-op when there is none (startup, cron,
+//! a queue job, a task the request spawned), so the counts are exactly the work
+//! done on the request's own task, and the same on every run.
 
 use std::future::Future;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -43,8 +42,8 @@ pub struct RequestProfile {
     user_id: OnceLock<Uuid>,
     /// Statement fingerprints in the order they ran, when asked for.
     fingerprints: Option<Mutex<Vec<String>>>,
-    /// Where query durations are observed, when the profile belongs to a
-    /// server with metrics.
+    /// Where query and tap durations are observed, when the profile belongs
+    /// to a server with metrics.
     metrics: Option<Arc<Metrics>>,
 }
 
@@ -243,18 +242,30 @@ pub(crate) fn render<T>(f: impl FnOnce() -> T) -> T {
             p.render_depth.fetch_add(1, Ordering::Relaxed) == 0
         })
         .ok();
-    let started = outer.is_some().then(std::time::Instant::now);
-    let out = f();
-    with(|p| {
-        p.render_depth.fetch_sub(1, Ordering::Relaxed);
-        if outer == Some(true)
-            && let Some(started) = started
-        {
-            p.render_nanos
-                .fetch_add(nanos_of(started.elapsed()), Ordering::Relaxed);
+    // Undone on drop, so a render that panics does not leave the depth raised
+    // for the rest of the request.
+    struct Leave {
+        outermost: bool,
+        started: Option<std::time::Instant>,
+    }
+    impl Drop for Leave {
+        fn drop(&mut self) {
+            with(|p| {
+                p.render_depth.fetch_sub(1, Ordering::Relaxed);
+                if self.outermost
+                    && let Some(started) = self.started
+                {
+                    p.render_nanos
+                        .fetch_add(nanos_of(started.elapsed()), Ordering::Relaxed);
+                }
+            });
         }
+    }
+    let _leave = outer.map(|outermost| Leave {
+        outermost,
+        started: Some(std::time::Instant::now()),
     });
-    out
+    f()
 }
 
 #[cfg(test)]

@@ -91,6 +91,13 @@ impl<S: Subscriber> Layer<S> for CaptureAll {
     }
 }
 
+fn csrf_from(html: &str) -> String {
+    let pos = html.find("csrf-token").expect("csrf-token meta tag");
+    let start = html[pos..].find("content=\"").map(|p| pos + p + 9).unwrap();
+    let end = html[start..].find('"').map(|p| start + p).unwrap();
+    html[start..end].to_string()
+}
+
 async fn send(
     app: &TestApp,
     request: Request<Body>,
@@ -149,6 +156,15 @@ fn no_secret_reaches_any_telemetry() {
         let search_term = format!("searchterm{tag}");
 
         app.create_test_user(&username, &password, &email).await;
+        {
+            let (pool, name) = (app.db.clone(), username.clone());
+            common::defer_cleanup(move || async move {
+                let _ = sqlx::query("DELETE FROM users WHERE name = $1")
+                    .bind(&name)
+                    .execute(&pool)
+                    .await;
+            });
+        }
         let cookies = app.login(&username, &password).await;
 
         let mut timings = Vec::new();
@@ -181,15 +197,36 @@ fn no_secret_reaches_any_telemetry() {
             &mut timings,
         )
         .await;
-        send(
+        // The reset request reaches its handler: an anonymous session, its
+        // CSRF token, and the email in the form body.
+        let form = app
+            .request(
+                Request::get("/user/password-reset")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(form.status(), 200);
+        let reset_cookies = common::extract_cookies(&form);
+        let form_html =
+            String::from_utf8_lossy(&to_bytes(form.into_body(), usize::MAX).await.unwrap())
+                .into_owned();
+        let csrf = csrf_from(&form_html);
+        let (status, _, _) = send(
             &app,
             Request::post("/user/password-reset")
                 .header("content-type", "application/x-www-form-urlencoded")
-                .body(Body::from(format!("email={}", email.replace('@', "%40"))))
+                .header("cookie", &reset_cookies)
+                .body(Body::from(format!(
+                    "_token={}&email={}",
+                    urlencoding::encode(&csrf),
+                    email.replace('@', "%40")
+                )))
                 .unwrap(),
             &mut timings,
         )
         .await;
+        assert_eq!(status, 200, "the reset request did not reach its handler");
         send(
             &app,
             Request::get("/api/v1/items")
@@ -225,8 +262,35 @@ fn no_secret_reaches_any_telemetry() {
             "no slow request line captured"
         );
         assert!(
-            output.contains("queries="),
-            "the slow line carries no counts"
+            output.lines().any(|l| l.contains("slow request")
+                && l.contains(" queries=")
+                && l.contains(" db_ms=")
+                && l.contains(" route=")),
+            "the slow line carries no breakdown"
+        );
+        // The tower_http request span is printed, so the URI check has
+        // something to look at.
+        assert!(
+            output.contains("request{method="),
+            "no request span in the log"
+        );
+        // The metrics this part feeds are there.
+        assert!(
+            metrics_body.contains("db_query_duration_seconds_count"),
+            "/metrics has no query durations"
+        );
+        assert!(
+            metrics_body
+                .lines()
+                .any(|l| l.starts_with("http_request_db_queries_count")
+                    && l.contains("route=\"/search\"")),
+            "/metrics has no queries per request for /search:\n{}",
+            metrics_body
+                .lines()
+                .filter(|l| l.contains("db_queries"))
+                .take(5)
+                .collect::<Vec<_>>()
+                .join("\n")
         );
         let search = search.expect("the profile snapshot is in the response");
         assert!(
@@ -254,10 +318,5 @@ fn no_secret_reaches_any_telemetry() {
                 panic!("the {what} reached telemetry:\n{}", &everything[start..end]);
             }
         }
-
-        let _ = sqlx::query("DELETE FROM users WHERE name = $1")
-            .bind(&username)
-            .execute(&app.db)
-            .await;
     });
 }

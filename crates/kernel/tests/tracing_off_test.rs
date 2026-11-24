@@ -51,8 +51,14 @@ fn allocations() -> u64 {
     ALLOCATIONS.with(Cell::get)
 }
 
-/// Every Gander span constructor a test can reach, once.
-fn make_spans() -> bool {
+/// Every Gander span and event a test can reach, once: the outgoing call
+/// span, the render span, and the in-process cache lookup event and Redis
+/// set counter, which run on every cache lookup.
+fn make_spans(metrics: &trovato_kernel::metrics::Metrics) -> bool {
+    use trovato_kernel::metrics::CacheName;
+    metrics.count_cache(CacheName::Item, true);
+    metrics.count_cache(CacheName::User, false);
+    metrics.count_cache_set(CacheName::LayerL2);
     let mut all_disabled = true;
     let span = trovato_kernel::telemetry::outgoing_span("GET", "https://api.example.com/x");
     all_disabled &= span.is_disabled();
@@ -71,6 +77,7 @@ fn production_filter() -> EnvFilter {
 
 #[test]
 fn tracing_off_allocates_nothing_for_a_span_and_tracing_on_does() {
+    let metrics = trovato_kernel::metrics::Metrics::new();
     // Tracing off: the production subscriber.
     let off = tracing_subscriber::registry()
         .with(
@@ -81,11 +88,11 @@ fn tracing_off_allocates_nothing_for_a_span_and_tracing_on_does() {
         .with(trovato_kernel::telemetry::query_listener::query_listener());
     let off_count = tracing::subscriber::with_default(off, || {
         // Warm up: the first call registers each callsite's interest.
-        make_spans();
+        make_spans(&metrics);
         let before = allocations();
         let mut disabled = true;
         for _ in 0..10_000 {
-            disabled &= make_spans();
+            disabled &= make_spans(&metrics);
         }
         let spent = allocations() - before;
         assert!(disabled, "a Gander span was enabled with tracing off");
@@ -110,11 +117,11 @@ fn tracing_off_allocates_nothing_for_a_span_and_tracing_on_does() {
                 .with_filter(Targets::new().with_target("gander", tracing::Level::TRACE)),
         );
     let on_count = tracing::subscriber::with_default(on, || {
-        make_spans();
+        make_spans(&metrics);
         let before = allocations();
         let mut disabled = true;
         for _ in 0..100 {
-            disabled &= make_spans();
+            disabled &= make_spans(&metrics);
         }
         assert!(
             !disabled,

@@ -116,7 +116,9 @@ pub fn normalize(sql: &str) -> String {
             }
             // A number that is not part of an identifier.
             c if c.is_ascii_digit() && !last_is_word(&out, pending_space) => {
-                while i < bytes.len() && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                while i < bytes.len()
+                    && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'.')
+                {
                     i += 1;
                 }
                 push_token(&mut out, &mut pending_space, "?");
@@ -272,6 +274,8 @@ mod tests {
             "select * from users where mail = ? and id = ? and pass = ?"
         );
         assert!(!n.contains("jane"));
+        // PG16 hex and underscore numbers leave no digits behind.
+        assert_eq!(normalize("SELECT 0xDEAD, 1_000 FROM t"), "select ? from t");
     }
 
     #[test]

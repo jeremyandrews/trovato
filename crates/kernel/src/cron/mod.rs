@@ -329,8 +329,8 @@ async fn run_queue_job(
     job: ClaimedJob,
     invocation_sink: Arc<AtomicU64>,
 ) -> Result<JobOutcome> {
-    // Gander's queue choke point: a job is profiled and traced like a
-    // request, in a profile of its own.
+    // Gander's queue choke point: a job is traced like a request. It has no
+    // request profile: nothing would read its counts.
     let span = tracing::trace_span!(
         target: crate::telemetry::TARGET,
         "queue.job",
@@ -339,21 +339,17 @@ async fn run_queue_job(
         trovato.queue.attempt = job.attempts,
         trovato.queue.outcome = tracing::field::Empty,
     );
-    let profile = Arc::new(crate::telemetry::RequestProfile::new(None, false));
-    let outcome = crate::telemetry::profile::scope(
-        profile,
-        tracing::Instrument::instrument(
-            run_queue_job_inner(
-                pool,
-                dispatcher,
-                services,
-                plugin_name,
-                queue_name,
-                job,
-                invocation_sink,
-            ),
-            span.clone(),
+    let outcome = tracing::Instrument::instrument(
+        run_queue_job_inner(
+            pool,
+            dispatcher,
+            services,
+            plugin_name,
+            queue_name,
+            job,
+            invocation_sink,
         ),
+        span.clone(),
     )
     .await;
     if let Ok(o) = outcome.as_ref() {

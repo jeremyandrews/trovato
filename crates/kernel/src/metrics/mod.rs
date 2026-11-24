@@ -149,6 +149,9 @@ pub struct Metrics {
     /// The `cache_misses` series, indexed like `hit_series`.
     miss_series: [Counter; CacheName::ALL.len()],
 
+    /// The `cache_sets` series, indexed like `hit_series`.
+    set_series: [Counter; CacheName::ALL.len()],
+
     /// Active HTTP connections gauge.
     pub active_connections: Gauge,
 
@@ -221,14 +224,14 @@ impl Metrics {
         });
         registry.register(
             "tap_duration_seconds",
-            "TAP invocation duration in seconds",
+            "TAP invocation duration while serving a request, in seconds",
             tap_duration_seconds.clone(),
         );
 
         let db_query_duration_seconds = Histogram::new(exponential_buckets(0.0001, 2.0, 14));
         registry.register(
             "db_query_duration_seconds",
-            "Database query duration in seconds",
+            "Database statement duration while serving a request, in seconds",
             db_query_duration_seconds.clone(),
         );
 
@@ -274,6 +277,7 @@ impl Metrics {
         };
         let hit_series = series(&cache_hits);
         let miss_series = series(&cache_misses);
+        let set_series = series(&cache_sets);
 
         let active_connections = Gauge::default();
         registry.register(
@@ -360,6 +364,7 @@ impl Metrics {
             http_request_db_queries,
             hit_series,
             miss_series,
+            set_series,
             active_connections,
             db_pool_size,
             db_pool_idle,
@@ -429,11 +434,9 @@ impl Metrics {
 
     /// Count one value written to the Redis cache.
     pub fn count_cache_set(&self, cache: CacheName) {
-        self.cache_sets
-            .get_or_create(&CacheLabels {
-                cache: cache.as_str(),
-            })
-            .inc();
+        if let Some(counter) = self.set_series.get(cache as usize) {
+            counter.inc();
+        }
         crate::telemetry::profile::count_cache_set();
     }
 
