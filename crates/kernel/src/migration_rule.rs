@@ -8,7 +8,8 @@
 //! old shape: dropping or renaming, retyping a column, `SET NOT NULL`, a
 //! `NOT NULL` column without a default, a new constraint, `TRUNCATE`, and a
 //! plain `CREATE INDEX` on a table the file did not create (it blocks writes
-//! for the whole build; build it `CONCURRENTLY` in a `-- no-transaction` file).
+//! for the whole build; build it `CONCURRENTLY`, alone in a `-- no-transaction`
+//! kernel file, and not `UNIQUE`, which is a new constraint).
 //!
 //! A refused statement is allowed in a file that names the release whose code
 //! stopped using the object:
@@ -91,10 +92,9 @@ pub fn check(sql: &str, workspace_version: &str, source: Source) -> Result<(), V
 
     let violations: Vec<Violation> = statements
         .iter()
-        .enumerate()
-        .filter_map(|(i, s)| {
+        .filter_map(|s| {
             refusal(s, &created)
-                .or_else(|| concurrent_index_refusal(s, &statements[..i], no_transaction))
+                .or_else(|| concurrent_index_refusal(s, statements.len(), no_transaction))
                 .map(|reason| Violation {
                     statement: s.clone(),
                     reason,
@@ -158,28 +158,34 @@ fn refusal(s: &str, created: &[String]) -> Option<&'static str> {
     if let Some(table) = plain_index_table(s)
         && !created.contains(&table)
     {
-        return Some(
+        return Some(if s.starts_with("CREATE UNIQUE ") {
+            "builds a unique index on an existing table: a new uniqueness rule the \
+                 previous release's writes may break, so it needs a contract marker"
+        } else {
             "builds an index on an existing table without CONCURRENTLY, which blocks \
-             its writes for the whole build (kernel: CREATE INDEX CONCURRENTLY in a \
-             `-- no-transaction` file; a plugin migration always runs in a \
-             transaction, so it needs a contract marker)",
-        );
+                 its writes for the whole build (kernel: CREATE INDEX CONCURRENTLY alone \
+                 in a `-- no-transaction` file; a plugin migration always runs in a \
+                 transaction, so it needs a contract marker)"
+        });
     }
     None
 }
 
-/// `CREATE INDEX CONCURRENTLY` cannot run in a transaction, and a failed or
-/// cancelled build leaves an INVALID index behind under its name. So it needs
-/// a `-- no-transaction` kernel file, and a
-/// `DROP INDEX CONCURRENTLY IF EXISTS <name>` before it, so a retry after a
-/// failure rebuilds the index instead of failing on (or, with `IF NOT EXISTS`,
-/// keeping) the invalid one.
+/// `CONCURRENTLY` cannot run in a transaction block, and Postgres runs a
+/// string of several statements (which is how sqlx sends a `-- no-transaction`
+/// file) as one. So a concurrent build or drop must be the only statement of a
+/// `-- no-transaction` kernel file. A failed or cancelled build leaves an
+/// INVALID index under its name; without `IF NOT EXISTS`, the retry fails on it
+/// loudly (recovery: `DROP INDEX CONCURRENTLY <name>`, then rerun) instead of
+/// recording the migration as done over a broken index.
 fn concurrent_index_refusal(
     s: &str,
-    earlier: &[String],
+    statements_in_file: usize,
     no_transaction: bool,
 ) -> Option<&'static str> {
-    let name = concurrent_index_name(s)?;
+    if !s.contains(" CONCURRENTLY ") || !(s.starts_with("CREATE ") || s.starts_with("DROP ")) {
+        return None;
+    }
     if s.starts_with("CREATE UNIQUE ") {
         return Some(
             "adds a uniqueness rule to an existing table, which the previous release's \
@@ -188,27 +194,23 @@ fn concurrent_index_refusal(
     }
     if !no_transaction {
         return Some(
-            "builds an index CONCURRENTLY, which cannot run in a transaction: only a kernel \
+            "uses CONCURRENTLY, which cannot run in a transaction: only a kernel \
              migration whose first line is `-- no-transaction` can",
         );
     }
-    let drop = format!("DROP INDEX CONCURRENTLY IF EXISTS {name}");
-    if !earlier.iter().any(|e| e == &drop) {
+    if statements_in_file != 1 {
         return Some(
-            "builds an index CONCURRENTLY without `DROP INDEX CONCURRENTLY IF EXISTS <name>` \
-             before it, so a retry after a failed build cannot recover the invalid index",
+            "uses CONCURRENTLY in a file with other statements: Postgres runs them as one \
+             transaction block, where CONCURRENTLY fails; give it a file of its own",
+        );
+    }
+    if s.starts_with("CREATE INDEX CONCURRENTLY IF NOT EXISTS ") {
+        return Some(
+            "builds an index CONCURRENTLY IF NOT EXISTS, which would keep the INVALID index \
+             a failed build leaves and record the migration as done",
         );
     }
     None
-}
-
-/// `CREATE [UNIQUE] INDEX CONCURRENTLY [IF NOT EXISTS] name ...` → `name`.
-fn concurrent_index_name(s: &str) -> Option<&str> {
-    let rest = s
-        .strip_prefix("CREATE INDEX CONCURRENTLY ")
-        .or_else(|| s.strip_prefix("CREATE UNIQUE INDEX CONCURRENTLY "))?;
-    let rest = rest.strip_prefix("IF NOT EXISTS ").unwrap_or(rest);
-    rest.split(' ').next().filter(|n| *n != "ON")
 }
 
 /// `ALTER TABLE [IF EXISTS] [ONLY] name action, action ...` → the table and
@@ -478,8 +480,7 @@ mod tests {
             "ALTER TABLE item ADD COLUMN owner UUID REFERENCES users(id);",
             "ALTER TABLE item ALTER COLUMN summary DROP NOT NULL;",
             "ALTER TABLE item ALTER COLUMN summary SET DEFAULT '';",
-            "-- no-transaction\nDROP INDEX CONCURRENTLY IF EXISTS idx_item_title;\n\
-             CREATE INDEX CONCURRENTLY idx_item_title ON item (title);",
+            "-- no-transaction\nCREATE INDEX CONCURRENTLY idx_item_title ON item (title);",
             "CREATE UNLOGGED TABLE scratch (id INT);\nCREATE INDEX idx_scratch ON scratch (id);",
             "UPDATE item SET summary = '' WHERE summary IS NULL;",
             "INSERT INTO role_permissions (role_id, permission) VALUES ('x', 'drop table y');",
@@ -508,36 +509,33 @@ mod tests {
     }
 
     #[test]
-    fn a_concurrent_index_needs_no_transaction_and_a_drop_before_it() {
+    fn a_concurrent_index_needs_a_no_transaction_file_of_its_own() {
         let build = "CREATE INDEX CONCURRENTLY idx_item_title ON item (title);";
         let drop = "DROP INDEX CONCURRENTLY IF EXISTS idx_item_title;";
         // Inside a transaction it cannot run at all.
         assert!(refused(build));
-        assert!(refused(&format!("{drop}\n{build}")));
-        // Without the drop, a retry after a failed build is stuck.
-        assert!(refused(&format!("-- no-transaction\n{build}")));
+        assert!(refused(drop));
+        // With any other statement Postgres runs the file as one transaction
+        // block, where CONCURRENTLY fails.
+        assert!(refused(&format!("-- no-transaction\n{drop}\n{build}")));
         assert!(refused(&format!(
-            "-- no-transaction\nDROP INDEX CONCURRENTLY IF EXISTS other;\n{build}"
+            "-- no-transaction\n{build}\nUPDATE item SET title = title;"
         )));
-        assert!(refused(&format!(
-            "-- no-transaction\n{}",
-            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_item_title ON item (title);"
-        )));
-        assert!(!refused(&format!("-- no-transaction\n{drop}\n{build}")));
+        // IF NOT EXISTS would keep the INVALID index a failed build leaves.
+        assert!(refused(
+            "-- no-transaction\n\
+             CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_item_title ON item (title);"
+        ));
+        // Alone in its file it runs, the build and the drop alike.
+        assert!(!refused(&format!("-- no-transaction\n{build}")));
+        assert!(!refused(&format!("-- no-transaction\n-- why\n{build}\n")));
+        assert!(!refused(&format!("-- no-transaction\n{drop}")));
         // A unique one is a new constraint on existing rows and writes.
         assert!(refused(
-            "-- no-transaction\nDROP INDEX CONCURRENTLY IF EXISTS u;\n\
-             CREATE UNIQUE INDEX CONCURRENTLY u ON item (slug);"
+            "-- no-transaction\nCREATE UNIQUE INDEX CONCURRENTLY u ON item (slug);"
         ));
         // A plugin migration always runs in a transaction.
-        assert!(
-            check(
-                &format!("-- no-transaction\n{drop}\n{build}"),
-                V,
-                Source::Plugin
-            )
-            .is_err()
-        );
+        assert!(check(&format!("-- no-transaction\n{build}"), V, Source::Plugin).is_err());
     }
 
     #[test]

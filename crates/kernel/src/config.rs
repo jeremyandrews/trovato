@@ -92,6 +92,10 @@ pub(crate) fn parse_or<T: std::str::FromStr>(lookup: Lookup<'_>, name: &str, def
 
 /// Parse a boolean-ish looked-up setting. Truthy: `1`, `true`, `yes`, `on`
 /// (case-insensitive); anything else present is `false`; absent is `default`.
+/// The shortest `HEALTH_TOKEN` accepted: it is checked on requests that no
+/// rate limit slows down.
+const MIN_HEALTH_TOKEN_LEN: usize = 32;
+
 pub(crate) fn parse_bool_or(lookup: Lookup<'_>, name: &str, default: bool) -> bool {
     lookup(name).map_or(default, |v| {
         matches!(
@@ -804,6 +808,15 @@ impl Config {
         let shutdown_drain =
             Duration::from_secs(parse_or(get, "SHUTDOWN_DRAIN_SECS", default_drain));
         let health_token = get("HEALTH_TOKEN").filter(|t| !t.trim().is_empty());
+        // The probes have no rate limit, so the token must not be guessable.
+        if let Some(token) = &health_token
+            && token.len() < MIN_HEALTH_TOKEN_LEN
+        {
+            anyhow::bail!(
+                "HEALTH_TOKEN must be at least {MIN_HEALTH_TOKEN_LEN} characters \
+                 (for example `openssl rand -hex 32`)"
+            );
+        }
 
         let runtime = RuntimeConfig {
             static_dirs,
@@ -1000,13 +1013,19 @@ mod config_tests {
             err.contains("MIGRATE_ON_START") && err.contains("ture"),
             "{err}"
         );
+        let token = "0123456789abcdef0123456789abcdef";
         assert_eq!(
-            with_db(&[("HEALTH_TOKEN", "t0ken")])
-                .health_token
-                .as_deref(),
-            Some("t0ken")
+            with_db(&[("HEALTH_TOKEN", token)]).health_token.as_deref(),
+            Some(token)
         );
         assert!(with_db(&[("HEALTH_TOKEN", " ")]).health_token.is_none());
+        let err = config_from(&[
+            ("DATABASE_URL", "postgres://localhost/x"),
+            ("HEALTH_TOKEN", "t0ken"),
+        ])
+        .expect_err("a short token fails")
+        .to_string();
+        assert!(err.contains("HEALTH_TOKEN"), "{err}");
     }
 
     /// A bad `TRUSTED_PROXIES` entry or `CLIENT_IP_STORAGE` value refuses to

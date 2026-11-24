@@ -44,7 +44,9 @@ exits 0, or exits nonzero on any failure.
 - `--lock-timeout <SECONDS>` (default 10; 0 waits forever): how long one
   statement may wait for a table lock before the migration rolls back and the
   command fails. It is set after the advisory lock is taken, so it never makes a
-  second run fail instead of wait.
+  second run fail instead of wait. A kernel half that includes a
+  `-- no-transaction` migration (a concurrent index build) runs without it,
+  and it is put back for the plugin migrations.
 - It refuses when a migration is marked failed (dirty), was edited after it
   was applied, or was applied by a newer release and named incompatible. These
   are checked before anything is applied, so a refusal changes nothing. (On a

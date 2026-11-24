@@ -60,6 +60,10 @@ a migration Job, the Deployment (`MIGRATE_ON_START=false`, liveness on
 
    If it fails, read `kubectl logs job/trovato-migrate-0.108.0`. A failed
    migration rolls back its own transaction and the old pods are unaffected.
+   The exception is a concurrent index build (a `-- no-transaction`
+   migration): if it fails it leaves an INVALID index, and every retry fails
+   with "already exists" until you run `DROP INDEX CONCURRENTLY <name>;`
+   (the name is in the error); then rerun the Job.
    A `lock_timeout` failure means a long query held the table; the Job retries
    by itself (`backoffLimit: 3`).
 
@@ -107,9 +111,9 @@ sending `Authorization: Bearer $HEALTH_TOKEN`. A proxy in the same pod that
 connects from loopback without adding `X-Forwarded-For` would make every
 visitor look local, so do not route `/health` through one. A service mesh
 sidecar (Istio, Linkerd) does exactly that: in a meshed pod, keep `/health`
-out of the mesh or accept that every caller sees the details. Make
-`HEALTH_TOKEN` long and random (`openssl rand -hex 32`): the probes have no
-rate limit.
+out of the mesh or accept that every caller sees the details. The probes
+have no rate limit, so a `HEALTH_TOKEN` shorter than 32 characters refuses to
+start; `openssl rand -hex 32` makes one.
 
 ```sh
 kubectl exec deploy/trovato -- curl -s localhost:3000/health
@@ -123,7 +127,7 @@ curl -s -H "Authorization: Bearer $HEALTH_TOKEN" https://example.com/health
 | `MIGRATE_ON_START` | `true` | `serve` applies pending kernel and plugin migrations when it starts; the other subcommands apply the kernel's |
 | `SHUTDOWN_DRAIN_SECS` | 5 under Kubernetes, 0 elsewhere | after SIGTERM, keep serving this long while reporting not ready |
 | `SHUTDOWN_TIMEOUT_SECS` | 30 | then wait this long for in-flight requests (only bounded when a drain is set) and background work |
-| `HEALTH_TOKEN` | unset | bearer token that sees the health details from anywhere |
+| `HEALTH_TOKEN` | unset | bearer token (32 characters or more) that sees the health details from anywhere |
 
 Keep `terminationGracePeriodSeconds` above `preStop` + `SHUTDOWN_DRAIN_SECS` +
 `SHUTDOWN_TIMEOUT_SECS` (one budget for in-flight requests, background work and

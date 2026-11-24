@@ -774,8 +774,9 @@ GET /health/ready
   503 (`not ready`) otherwise.
 
 A caller on loopback with no forwarding header, or one sending
-`Authorization: Bearer $HEALTH_TOKEN`, also gets `postgres`, `redis`, the pool
-statistics and the services report. See
+`Authorization: Bearer $HEALTH_TOKEN`, gets more: `/health` adds `postgres`,
+`redis`, the pool statistics and the services report; `/health/ready` adds
+`postgres`, `redis` and `draining`; `/health/live` adds nothing. See
 [deployment/upgrades.md](deployment/upgrades.md#probes).
 
 

@@ -269,7 +269,7 @@ async fn advisory_locks(database_url: &str) -> (i64, i64) {
          SELECT (SELECT count(*) FROM holders), \
                 (SELECT count(*) FROM pg_stat_activity a \
                   WHERE a.datname = current_database() AND a.pid <> pg_backend_pid() \
-                    AND a.query LIKE '%pg_try_advisory_lock%' \
+                    AND a.query = 'SELECT pg_try_advisory_lock($1)' \
                     AND a.pid NOT IN (SELECT pid FROM holders)) \
               + (SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted \
                   AND database = (SELECT oid FROM here))",
@@ -492,6 +492,102 @@ async fn a_waiting_migrator_does_not_block_a_concurrent_index_build() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+/// The concurrent index recipe the rule accepts really runs: a
+/// `-- no-transaction` file holding one `CREATE INDEX CONCURRENTLY`, applied by
+/// `run_kernel` under a lock timeout shorter than an open transaction the
+/// build must wait for (the run clears the timeout instead of letting it
+/// cancel the build and leave an INVALID index).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_no_transaction_concurrent_index_migration_applies() {
+    use trovato_kernel::migration_rule::{Source, check};
+
+    let db = ScratchDb::create("bg10_cic_migration").await;
+    let url = db.url();
+    let dir = TempDir::new("cic-migrations");
+    let files = [
+        ("1_create_thing.sql", "CREATE TABLE thing (x INT);\n"),
+        (
+            "2_index_thing.sql",
+            "-- no-transaction\nCREATE INDEX CONCURRENTLY idx_thing_x ON thing (x);\n",
+        ),
+    ];
+    for (name, sql) in files {
+        assert_eq!(
+            check(sql, env!("CARGO_PKG_VERSION"), Source::Kernel),
+            Ok(()),
+            "{name}"
+        );
+        std::fs::write(dir.0.join(name), sql).unwrap();
+    }
+    let migrator = sqlx::migrate::Migrator::new(dir.0.as_path()).await.unwrap();
+    let mut lock = trovato_kernel::migrate::MigrationLock::connect(&url)
+        .await
+        .unwrap();
+    lock.set_lock_timeout(Duration::from_secs(1)).await.unwrap();
+    assert_eq!(
+        trovato_kernel::migrate::run_kernel(&mut lock, &migrator)
+            .await
+            .unwrap(),
+        2
+    );
+    let restored: String = sqlx::query_scalar("SHOW lock_timeout")
+        .fetch_one(lock.conn())
+        .await
+        .unwrap();
+    assert_eq!(restored, "1s", "the timeout is put back for what runs next");
+    lock.release().await.unwrap();
+
+    // A later build waits for an older open transaction for longer than the
+    // lock timeout and still succeeds.
+    sqlx::query("DELETE FROM _sqlx_migrations WHERE version = 2")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    sqlx::query("DROP INDEX idx_thing_x")
+        .execute(db.pool())
+        .await
+        .unwrap();
+    let mut old = PgConnection::connect(&url).await.unwrap();
+    let mut snapshot = old.begin().await.unwrap();
+    // Repeatable read keeps the snapshot for the whole transaction.
+    sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+        .execute(&mut *snapshot)
+        .await
+        .unwrap();
+    sqlx::query("SELECT count(*) FROM thing")
+        .execute(&mut *snapshot)
+        .await
+        .unwrap();
+    let run = tokio::spawn(async move {
+        let mut lock = trovato_kernel::migrate::MigrationLock::connect(&url).await?;
+        lock.set_lock_timeout(Duration::from_secs(1)).await?;
+        let applied = trovato_kernel::migrate::run_kernel(&mut lock, &migrator).await?;
+        lock.release().await?;
+        anyhow::Ok(applied)
+    });
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    assert!(
+        !run.is_finished(),
+        "the build waits for the older transaction"
+    );
+    snapshot.commit().await.unwrap();
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(30), run)
+            .await
+            .expect("the build finishes once the transaction ends")
+            .unwrap()
+            .unwrap(),
+        1
+    );
+    let valid: bool = sqlx::query_scalar(
+        "SELECT indisvalid FROM pg_index WHERE indexrelid = 'idx_thing_x'::regclass",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert!(valid, "the index is valid");
 }
 
 /// `--dry-run` and `--status` change nothing.
@@ -749,6 +845,102 @@ async fn the_boot_path_waits_for_the_migration_lock() {
     assert_eq!(
         applied_versions(db.pool()).await,
         Some(kernel_migration_count())
+    );
+}
+
+/// A dirty (failed) or edited applied migration is a problem this binary
+/// cannot fix: `trovato migrate` refuses, `--status` names it, and a
+/// `MIGRATE_ON_START=false` server stays not ready instead of serving on it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_dirty_or_edited_migration_is_refused_and_keeps_serve_not_ready() {
+    for (label, damage, problem) in [
+        ("dirty", "SET success = false", "marked failed"),
+        (
+            "edited",
+            "SET checksum = '\\x00'::bytea",
+            "edited after it was applied",
+        ),
+    ] {
+        let db = ScratchDb::create(&format!("bg10_{label}")).await;
+        let url = db.url();
+        migrated(&db).await;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "UPDATE _sqlx_migrations {damage} \
+             WHERE version = (SELECT max(version) FROM _sqlx_migrations)"
+        )))
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+        let (ok, _, stderr) = migrate(&this_bin(), &url, &[], None).await;
+        assert!(!ok, "{label}: trovato migrate must refuse");
+        assert!(stderr.contains(problem), "{label}: {stderr}");
+        let (ok, status, _) = migrate(&this_bin(), &url, &["--status"], None).await;
+        assert!(ok, "{label}: --status reads the state whatever it says");
+        assert!(
+            status.contains("Problem: ") && status.contains(problem),
+            "{label}: {status}"
+        );
+
+        let mut server = Server::start(
+            &this_bin(),
+            &url,
+            &[("MIGRATE_ON_START", "false"), ("RUST_LOG", "info")],
+        )
+        .await;
+        server
+            .wait_for("/health/live", 200, Duration::from_secs(60))
+            .await;
+        server.wait_for_log(problem, Duration::from_secs(30)).await;
+        tokio::time::sleep(Duration::from_secs(3)).await;
+        assert_eq!(server.status("/health/ready").await, Some(503), "{label}");
+        assert!(!server.logged("Server listening"), "{label}: served anyway");
+        server.stop().await;
+    }
+}
+
+/// A refused run changes nothing, the kernel half included: a plugin problem
+/// is found before any kernel migration is applied.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_plugin_refusal_applies_no_kernel_migration() {
+    let db = ScratchDb::create("bg10_refusal_first").await;
+    let plugins = repo_root().join("plugins");
+    let discovered = trovato_kernel::plugin::PluginRuntime::discover_plugins_in(&plugins).await;
+    let mut eligible: Vec<&String> = discovered
+        .iter()
+        .filter(|(_, (info, _))| info.default_enabled && !info.migrations.files.is_empty())
+        .map(|(name, _)| name)
+        .collect();
+    eligible.sort();
+    let plugin = eligible
+        .first()
+        .expect("an auto-enabled plugin with migrations");
+    // What a newer release would have left: the table, and one of its rows.
+    sqlx::raw_sql(sqlx::AssertSqlSafe(
+        std::fs::read_to_string(
+            repo_root().join("crates/kernel/migrations/20260219000002_create_plugin_migration.sql"),
+        )
+        .unwrap(),
+    ))
+    .execute(db.pool())
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO plugin_migration (plugin, migration, applied_at) \
+         VALUES ($1, 'migrations/999_incompatible_drop_legacy.sql', 0)",
+    )
+    .bind(plugin.as_str())
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    let (ok, _, stderr) = migrate(&this_bin(), &db.url(), &[], Some(&plugins)).await;
+    assert!(!ok, "must refuse");
+    assert!(stderr.contains("marked incompatible"), "{stderr}");
+    assert_eq!(
+        applied_versions(db.pool()).await,
+        None,
+        "no kernel migration ran"
     );
 }
 
@@ -1374,6 +1566,14 @@ async fn sigterm_turns_readiness_off_and_finishes_in_flight_requests() {
     .await
     .unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
+    // Still unanswered: the server is waiting for the body.
+    let mut early = [0u8; 1];
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), slow.read(&mut early))
+            .await
+            .is_err(),
+        "the slow request was answered before its body"
+    );
 
     let signalled = Instant::now();
     server.sigterm();
@@ -1478,6 +1678,85 @@ async fn a_request_that_never_finishes_is_cut_off_after_the_drain() {
         signalled.elapsed()
     );
     drop(stuck);
+}
+
+/// Without a drain (a single server, the default) shutdown waits for an
+/// in-flight request as long as it takes, as it always has:
+/// `SHUTDOWN_TIMEOUT_SECS` does not cut it off.
+#[tokio::test(flavor = "multi_thread")]
+async fn without_a_drain_in_flight_requests_are_not_cut_off() {
+    let db = ScratchDb::create("bg10_nodrain").await;
+    migrated(&db).await;
+    let mut server = Server::start(
+        &this_bin(),
+        &db.url(),
+        &[("SHUTDOWN_DRAIN_SECS", "0"), ("SHUTDOWN_TIMEOUT_SECS", "2")],
+    )
+    .await;
+    server
+        .wait_for("/health/ready", 200, Duration::from_secs(60))
+        .await;
+
+    let addr = server.base.trim_start_matches("http://").to_string();
+    let mut slow = TcpStream::connect(&addr).await.unwrap();
+    let body = "username=x";
+    slow.write_all(
+        format!(
+            "POST /install/admin HTTP/1.1\r\nHost: {addr}\r\n\
+             Content-Type: application/x-www-form-urlencoded\r\n\
+             Content-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    server.sigterm();
+
+    // Well past the timeout, the request is still open and the server up.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert!(
+        server.child.try_wait().unwrap().is_none(),
+        "the server cut off an in-flight request without a drain"
+    );
+    slow.write_all(body.as_bytes()).await.unwrap();
+    let mut response = String::new();
+    tokio::time::timeout(Duration::from_secs(10), slow.read_to_string(&mut response))
+        .await
+        .expect("the in-flight request is answered")
+        .unwrap();
+    assert!(response.starts_with("HTTP/1.1 "), "{response:?}");
+    assert!(!response.starts_with("HTTP/1.1 5"), "{response:?}");
+    let exit = server.exit_within(Duration::from_secs(15)).await;
+    assert!(exit.success(), "{exit}");
+}
+
+/// The waiting server hands its socket over within a bound even when a
+/// client holds a half-sent request on it, so that client cannot keep the
+/// pod from ever becoming ready.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_half_sent_request_does_not_hold_up_the_hand_over() {
+    let db = ScratchDb::create("bg10_handover").await;
+    let url = db.url();
+    let mut server = Server::start(&this_bin(), &url, &[("MIGRATE_ON_START", "false")]).await;
+    server
+        .wait_for("/health/live", 200, Duration::from_secs(60))
+        .await;
+    let addr = server.base.trim_start_matches("http://").to_string();
+    let mut stuck = TcpStream::connect(&addr).await.unwrap();
+    // No blank line: the request is never finished.
+    stuck
+        .write_all(format!("GET /health/live HTTP/1.1\r\nHost: {addr}\r\n").as_bytes())
+        .await
+        .unwrap();
+
+    assert!(migrate(&this_bin(), &url, &[], None).await.0);
+    server
+        .wait_for("/health/ready", 200, Duration::from_secs(60))
+        .await;
+    drop(stuck);
+    server.stop().await;
 }
 
 /// SIGTERM while a `MIGRATE_ON_START=false` server builds its application

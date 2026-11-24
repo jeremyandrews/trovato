@@ -28,8 +28,10 @@ use subtle::ConstantTimeEq;
 
 use crate::state::AppState;
 
-/// The probe paths. Every middleware that would make a probe touch a session,
-/// a rate-limit bucket or the database asks this first.
+/// The probe paths, whatever the method. Middleware that only rewrites or
+/// gates by path (maintenance, redirects, aliases, language, the installer
+/// check) asks this; middleware that costs a session or a rate-limit bucket
+/// asks [`is_probe`], which exempts reads only.
 pub fn is_probe_path(path: &str) -> bool {
     matches!(path, "/health" | "/health/live" | "/health/ready")
 }

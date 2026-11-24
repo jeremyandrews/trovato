@@ -24,12 +24,15 @@ Fine at any time (expand):
 
 - a new table, view or function;
 - a new column that is nullable or has a `DEFAULT`;
-- an index on an existing table built `CONCURRENTLY`, in a kernel migration
-  whose first line is `-- no-transaction`, preceded by
-  `DROP INDEX CONCURRENTLY IF EXISTS <name>;` so a retry after a failed or
-  cancelled build replaces the INVALID index it left (plugin migrations always
-  run in one transaction, so a plugin index on an existing table needs a
-  contract marker);
+- a non-unique index on an existing table built `CONCURRENTLY`, as the only
+  statement of a kernel migration whose first line is `-- no-transaction`
+  (Postgres runs a file of several statements as one transaction block, where
+  `CONCURRENTLY` fails), and without `IF NOT EXISTS`. A failed or cancelled
+  build leaves an INVALID index under its name; the retry then fails on it
+  loudly, and the fix is `DROP INDEX CONCURRENTLY <name>;` by hand, then
+  `trovato migrate` again. (Plugin migrations always run in one transaction,
+  so a plugin index on an existing table needs a contract marker. A `UNIQUE`
+  index on an existing table is a new constraint and needs one too.)
 - inserting or updating rows the previous release reads the same way.
 
 Only in a later release, after no released code reads or writes the object

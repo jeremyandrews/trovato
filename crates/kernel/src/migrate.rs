@@ -45,6 +45,9 @@ pub type PluginSet = HashMap<String, (PluginInfo, PathBuf)>;
 /// path still frees the lock for the next migrator.
 pub struct MigrationLock {
     conn: PgConnection,
+    /// What [`set_lock_timeout`](Self::set_lock_timeout) asked for; `None`
+    /// keeps the session default.
+    lock_timeout: Option<Duration>,
 }
 
 impl MigrationLock {
@@ -82,7 +85,10 @@ impl MigrationLock {
                 .await
                 .context("failed to take the migration lock")?;
             if locked {
-                return Ok(Self { conn });
+                return Ok(Self {
+                    conn,
+                    lock_timeout: None,
+                });
             }
             tokio::time::sleep(LOCK_POLL).await;
         }
@@ -92,18 +98,23 @@ impl MigrationLock {
     ///
     /// Set after the advisory lock is held, never before: Postgres applies
     /// `lock_timeout` to advisory lock waits too, and a second migrator must
-    /// wait for the first, not fail. Zero leaves the server default.
+    /// wait for the first, not fail. Zero waits without limit, whatever the
+    /// role or server default.
     pub async fn set_lock_timeout(&mut self, timeout: Duration) -> Result<()> {
-        if timeout.is_zero() {
-            return Ok(());
-        }
-        sqlx::query(sqlx::AssertSqlSafe(format!(
-            "SET lock_timeout = '{}ms'",
-            timeout.as_millis()
-        )))
-        .execute(&mut self.conn)
-        .await
-        .context("failed to set lock_timeout")?;
+        self.lock_timeout = Some(timeout);
+        self.apply_lock_timeout(Some(timeout)).await
+    }
+
+    /// Put the session's `lock_timeout` to `timeout`, or back to its default.
+    async fn apply_lock_timeout(&mut self, timeout: Option<Duration>) -> Result<()> {
+        let sql = match timeout {
+            Some(t) => format!("SET lock_timeout = '{}ms'", t.as_millis()),
+            None => "RESET lock_timeout".to_string(),
+        };
+        sqlx::query(sqlx::AssertSqlSafe(sql))
+            .execute(&mut self.conn)
+            .await
+            .context("failed to set lock_timeout")?;
         Ok(())
     }
 
@@ -427,17 +438,17 @@ pub async fn run_kernel(lock: &mut MigrationLock, migrator: &Migrator) -> Result
     }
     // A `CREATE INDEX CONCURRENTLY` waits, by design, for every older
     // transaction, and `lock_timeout` would cancel it and leave an INVALID
-    // index. A run that includes a no-transaction migration waits instead.
+    // index. A kernel half that includes a no-transaction migration waits
+    // instead; the timeout is put back for what runs after it (the plugins).
     let pending: HashSet<i64> = report.pending.iter().map(|(v, _)| *v).collect();
-    if migrator
+    let clear_timeout = migrator
         .iter()
-        .any(|m| m.no_tx && pending.contains(&m.version))
-    {
-        sqlx::query("SET lock_timeout = 0")
-            .execute(lock.conn())
-            .await
-            .context("failed to clear lock_timeout")?;
-        info!("a pending migration runs outside a transaction; lock_timeout cleared for this run");
+        .any(|m| m.no_tx && pending.contains(&m.version));
+    if clear_timeout {
+        lock.apply_lock_timeout(Some(Duration::ZERO)).await?;
+        info!(
+            "a pending kernel migration runs outside a transaction; lock_timeout cleared for the kernel half"
+        );
     }
     // Our own check above has vetted every unknown migration, so sqlx's blanket
     // refusal of them is switched off.
@@ -446,10 +457,12 @@ pub async fn run_kernel(lock: &mut MigrationLock, migrator: &Migrator) -> Result
     // `run_direct` rather than `run`: `run` is generic over `Acquire`, which on
     // a borrowed connection makes every caller's future fail the `Send`
     // check (sqlx documents `run_direct` as the way around exactly that).
-    tolerant
-        .run_direct(None, lock.conn(), false)
-        .await
-        .context("failed to run kernel migrations")?;
+    let result = tolerant.run_direct(None, lock.conn(), false).await;
+    if clear_timeout {
+        let configured = lock.lock_timeout;
+        lock.apply_lock_timeout(configured).await?;
+    }
+    result.context("failed to run kernel migrations")?;
     for (version, description) in &report.pending {
         info!(version, description = %description, "applied kernel migration");
     }

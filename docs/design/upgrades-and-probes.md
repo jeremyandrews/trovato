@@ -159,13 +159,17 @@ what a rollback redeploys.
 Allowed at any time ("expand"):
 - new tables, new views, new functions;
 - new nullable columns, or columns with a `DEFAULT`;
-- indexes on existing tables built `CONCURRENTLY` in a kernel file whose first
-  line is `-- no-transaction` (sqlx's directive; `CONCURRENTLY` cannot run in a
-  transaction), each preceded by `DROP INDEX CONCURRENTLY IF EXISTS <name>`:
-  a failed or cancelled build leaves an INVALID index under its name, and a
-  retry must replace it rather than fail on it or, with `IF NOT EXISTS`, keep
-  it. A run that includes such a file clears `lock_timeout`, because the build
-  waits for older transactions by design. Plain `CREATE INDEX` is fine on a
+- non-unique indexes on existing tables built `CONCURRENTLY`, each as the only
+  statement of a kernel file whose first line is `-- no-transaction` (sqlx's
+  directive). `CONCURRENTLY` cannot run in a transaction block, and Postgres
+  runs a string of several statements, which is how sqlx sends such a file, as
+  one. `IF NOT EXISTS` is refused: a failed or cancelled build leaves an
+  INVALID index under its name, and the retry must fail on it loudly (fix:
+  `DROP INDEX CONCURRENTLY <name>` by hand, then rerun) rather than record the
+  migration over it. A kernel half that includes such a file runs with
+  `lock_timeout` cleared, because the build waits for older transactions by
+  design; the timeout is put back before the plugin migrations. A `UNIQUE`
+  index on an existing table is a new constraint and needs a marker. Plain `CREATE INDEX` is fine on a
   table the same file creates;
 - inserts and updates of rows the previous release reads the same way.
 
@@ -184,8 +188,8 @@ release N+1 reads the new one; release N+2 drops the old one with a marker
 naming N+1.
 
 **Enforcement, mechanical and cheap.** `crates/kernel/src/migration_rule.rs`
-is a pure function over a migration's SQL, about 150 lines with no parser
-crate. Comments and string literals are stripped first, then the statements
+is a pure function over a migration's SQL, with no parser crate. Comments
+and string literals are stripped first, then the statements
 are matched against the list above. A unit test runs it over every kernel
 migration newer than the cutoff (`20261127160002`, the newest on `main` when
 the rule was written; older files are history, and their count is pinned so a
@@ -300,8 +304,8 @@ compiles the workspace crates twice and the dependencies once.
     sees the details (as everyone did before this change); or
   - presents `Authorization: Bearer <HEALTH_TOKEN>`, compared in constant time
     (as SHA-256 digests, so the length does not show), when `HEALTH_TOKEN` is
-    set. The probes have no rate limit, so the token must be long and random
-    (`openssl rand -hex 32`).
+    set. The probes have no rate limit, so a token shorter than 32 characters
+    refuses to start (`openssl rand -hex 32` makes one).
 
   Everyone else gets the status word only. Existing tests that read
   `postgres`/`redis` from `/health` run as a loopback caller, so they still see
@@ -363,7 +367,7 @@ one process.
 |---|---|---|
 | `MIGRATE_ON_START` | `true` | migrate at start (`serve` and subcommands) |
 | `SHUTDOWN_DRAIN_SECS` | 5 under Kubernetes, else 0 | serve this long after SIGTERM while not ready |
-| `HEALTH_TOKEN` | unset | bearer token that sees health details from anywhere |
+| `HEALTH_TOKEN` | unset | bearer token (32 characters or more) that sees health details from anywhere |
 
 ## What this does not build, and why
 
