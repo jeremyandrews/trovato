@@ -32,6 +32,7 @@
                 <th scope="col">Address</th>
                 <th scope="col">Reason</th>
                 <th scope="col">Detail</th>
+                <th scope="col">Message</th>
                 <th scope="col">Since (UTC)</th>
                 <th scope="col">Action</th>
             </tr>
@@ -41,7 +42,8 @@
             <tr>
                 <td>{{ s.address }}</td>
                 <td>{% if s.reason == "hard_bounce" %}hard bounce{% elif s.reason == "complaint" %}spam complaint{% else %}added by hand{% endif %}</td>
-                <td>{% if s.detail %}{{ s.detail }}{% endif %}{% if s.outbox_id %} <a href="/admin/reports/mail/{{ s.outbox_id }}">message {{ s.outbox_id }}</a>{% endif %}</td>
+                <td>{% if s.detail %}{{ s.detail }}{% endif %}</td>
+                <td>{% if s.outbox_id %}<a href="/admin/reports/mail/{{ s.outbox_id }}">{{ s.outbox_id }}</a>{% endif %}</td>
                 <td class="log-time">{{ s.created_at }}</td>
                 <td>
                     <form method="post" action="/admin/reports/mail/suppressions/remove">
