@@ -579,18 +579,22 @@ impl AppState {
         // the same SMTP transport, `from` address and circuit breaker the
         // kernel's own mail uses, on every dispatch path.
         let email = config.smtp_host.as_ref().and_then(|host| {
-            match services::email::EmailService::new(
+            match services::mail_transport::SmtpTransport::new(
                 host,
                 config.smtp_port,
                 config.smtp_username.as_deref(),
                 config.smtp_password.as_deref(),
                 &config.smtp_encryption,
-                config.smtp_from_email.clone(),
-                config.site_url.clone(),
             ) {
-                Ok(svc) => {
+                Ok(transport) => {
                     info!(host = %host, port = config.smtp_port, "SMTP email service configured");
-                    Some(Arc::new(svc))
+                    Some(Arc::new(services::email::EmailService::new(
+                        db.clone(),
+                        Arc::new(transport),
+                        config.smtp_from_email.clone(),
+                        config.site_url.clone(),
+                        config.mail.clone(),
+                    )))
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "failed to initialize email service");
@@ -1932,11 +1936,16 @@ impl AppState {
             },
         )];
 
-        if let Some(ref email) = self.inner.email {
+        if let Some(state) = self
+            .inner
+            .email
+            .as_ref()
+            .and_then(|email| email.transport().breaker_state())
+        {
             circuit_breakers.push((
                 "email_smtp".to_string(),
                 CircuitBreakerHealth {
-                    state: email.circuit_breaker().state_name().to_string(),
+                    state: state.to_string(),
                 },
             ));
         }

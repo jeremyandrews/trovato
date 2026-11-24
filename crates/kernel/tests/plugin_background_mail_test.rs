@@ -21,11 +21,14 @@ use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use common::smtp_sink::{Envelope, SmtpSink};
 use sqlx::PgPool;
+use trovato_kernel::config::MailConfig;
 use trovato_kernel::cron::{CronResult, CronService};
 use trovato_kernel::middleware::{RateLimitConfig, RateLimiter};
 use trovato_kernel::models::SiteConfig;
 use trovato_kernel::plugin::{PluginConfig, PluginRuntime};
 use trovato_kernel::services::email::EmailService;
+use trovato_kernel::services::mail_transport::SmtpTransport;
+use trovato_kernel::services::mail_worker::{DrainScope, Lane, MailWorker};
 use trovato_kernel::tap::{TapDispatcher, TapRegistry};
 
 const FIXTURE: &str = "test_queue_worker";
@@ -110,7 +113,7 @@ fn redis_client() -> redis::Client {
 
 /// A `CronService` wired the way `AppState` wires it: the fixture dispatcher,
 /// the rate limiter, and the one email service, here pointed at the sink.
-fn cron(pool: PgPool) -> (Arc<CronService>, Arc<RateLimiter>) {
+fn cron(pool: PgPool) -> (Arc<CronService>, Arc<RateLimiter>, Arc<EmailService>) {
     let limiter = Arc::new(RateLimiter::new(
         redis_client(),
         RateLimitConfig {
@@ -119,21 +122,33 @@ fn cron(pool: PgPool) -> (Arc<CronService>, Arc<RateLimiter>) {
         },
         Vec::new(),
     ));
-    let email = EmailService::new(
-        "127.0.0.1",
-        sink().port,
-        None,
-        None,
-        "none",
+    let transport =
+        SmtpTransport::new("127.0.0.1", sink().port, None, None, "none").expect("transport");
+    let email = Arc::new(EmailService::new(
+        pool.clone(),
+        Arc::new(transport),
         SITE_FROM.to_string(),
         "http://localhost:3000".to_string(),
-    )
-    .expect("email service");
+        MailConfig::default(),
+    ));
     let mut cron = CronService::new(redis_client(), pool);
     cron.set_tap_dispatcher(dispatcher());
     cron.set_rate_limiter(limiter.clone());
-    cron.set_email_service(Some(Arc::new(email)));
-    (Arc::new(cron), limiter)
+    cron.set_email_service(Some(Arc::clone(&email)));
+    (Arc::new(cron), limiter, email)
+}
+
+/// Send what the plugin queued for the site contact (BG18: plugin mail is
+/// queued, and a worker sends it).
+async fn deliver(email: &EmailService) {
+    MailWorker::new(
+        email,
+        Lane::Any,
+        DrainScope::Recipients(vec![SITE_CONTACT.to_string()]),
+    )
+    .drain()
+    .await
+    .expect("drain the outbox");
 }
 
 async fn clean_queue(pool: &PgPool) {
@@ -173,7 +188,7 @@ async fn set_contact(pool: &PgPool) -> String {
 fn a_queue_worker_sends_mail_and_spends_the_bucket() {
     serial(async {
         let pool = fresh_pool().await;
-        let (cron, limiter) = cron(pool.clone());
+        let (cron, limiter, email) = cron(pool.clone());
         limiter.reset("mail", &bucket_identifier()).await.unwrap();
         clean_queue(&pool).await;
         let previous = set_contact(&pool).await;
@@ -195,6 +210,7 @@ fn a_queue_worker_sends_mail_and_spends_the_bucket() {
         .await
         .unwrap();
         cron.drain_plugin_queues().await.unwrap();
+        deliver(&email).await;
 
         let left = remaining(&pool).await;
         let sent = messages_for("queue worker mail");
@@ -213,7 +229,13 @@ fn a_queue_worker_sends_mail_and_spends_the_bucket() {
         assert_eq!(sent.len(), before + 1, "one mail must reach the sink");
         let message = sent.last().unwrap();
         assert_eq!(message.recipients, vec![SITE_CONTACT.to_string()]);
-        assert!(message.data.contains(&format!("From: {SITE_FROM}")));
+        assert!(
+            message
+                .data
+                .lines()
+                .any(|l| l.starts_with("From: ")
+                    && l.trim_end().ends_with(&format!("<{SITE_FROM}>")))
+        );
         assert_eq!(count, 1, "the send must be counted against the mail bucket");
     });
 }
@@ -224,7 +246,7 @@ fn a_queue_worker_sends_mail_and_spends_the_bucket() {
 fn tap_cron_sends_mail_and_spends_the_bucket() {
     serial(async {
         let pool = fresh_pool().await;
-        let (cron, limiter) = cron(pool.clone());
+        let (cron, limiter, email) = cron(pool.clone());
         limiter.reset("mail", &bucket_identifier()).await.unwrap();
         clean_queue(&pool).await;
         let previous = set_contact(&pool).await;
@@ -240,6 +262,7 @@ fn tap_cron_sends_mail_and_spends_the_bucket() {
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
+        deliver(&email).await;
 
         let sent = messages_for("cron tap mail");
         let count = limiter

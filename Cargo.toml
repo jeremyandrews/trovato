@@ -190,7 +190,7 @@ tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["rt"] }
 async-stream = "0.3"
 futures-core = "0.3"
-lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder"] }
+lettre = { version = "0.11", default-features = false, features = ["tokio1-rustls-tls", "smtp-transport", "builder", "pool"] }
 # Word and line diffs for the revision compare page. Default features (`std`,
 # `text`) pull in no other crate.
 similar = "3.2"

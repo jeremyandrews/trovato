@@ -159,10 +159,24 @@ impl User {
     /// Create a new user with a specific status.
     ///
     /// Use `status = 0` for inactive accounts pending email verification.
-    pub async fn create_with_status(pool: &PgPool, input: CreateUser, status: i16) -> Result<Self> {
-        let id = Uuid::now_v7();
+    pub async fn create_with_status<'e, E: sqlx::PgExecutor<'e>>(
+        executor: E,
+        input: CreateUser,
+        status: i16,
+    ) -> Result<Self> {
         let pass = hash_password(&input.password)?;
+        Self::insert_hashed(executor, input, &pass, status).await
+    }
 
+    /// [`Self::create_with_status`] with the password already hashed, so a
+    /// caller can hash (slow, by design) before it opens a transaction.
+    pub(crate) async fn insert_hashed<'e, E: sqlx::PgExecutor<'e>>(
+        executor: E,
+        input: CreateUser,
+        pass: &str,
+        status: i16,
+    ) -> Result<Self> {
+        let id = Uuid::now_v7();
         let user = sqlx::query_as::<_, User>(
             r#"
             INSERT INTO users (id, name, pass, mail, is_admin, status)
@@ -172,11 +186,11 @@ impl User {
         )
         .bind(id)
         .bind(&input.name)
-        .bind(&pass)
+        .bind(pass)
         .bind(&input.mail)
         .bind(input.is_admin)
         .bind(status)
-        .fetch_one(pool)
+        .fetch_one(executor)
         .await
         .context("failed to create user")?;
 

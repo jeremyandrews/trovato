@@ -569,8 +569,73 @@ pub struct Config {
     /// from any address (`HEALTH_TOKEN`). Unset: only a loopback caller does.
     pub health_token: Option<String>,
 
+    /// Mail outbox, worker and limit settings (BG18). See [`MailConfig`].
+    pub mail: MailConfig,
+
     /// The configuration request handling reads. See [`RuntimeConfig`].
     pub runtime: RuntimeConfig,
+}
+
+/// Mail outbox, worker and limit settings (BG18, `docs/design/mail-queue.md`).
+///
+/// Every limit is a count; 0 means no limit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MailConfig {
+    /// Worker tasks per process (`MAIL_WORKERS`, default 2, at least 1). The
+    /// first only sends transactional mail.
+    pub workers: usize,
+    /// Attempts before a message is marked failed (`MAIL_MAX_ATTEMPTS`, 12).
+    pub max_attempts: i32,
+    /// Seconds a claim holds a message before another worker may take it
+    /// (`MAIL_CLAIM_LEASE_SECS`, 300, at least 60: a worker stops starting sends
+    /// at half the lease).
+    pub claim_lease_secs: i64,
+    /// Seconds between polls when nothing wakes the worker (`MAIL_POLL_SECS`, 2).
+    pub poll_secs: u64,
+    /// Messages one claim takes on the general lane (`MAIL_BATCH`, 10).
+    pub batch: i64,
+    /// Days a finished message keeps its body (`MAIL_BODY_RETENTION_DAYS`, 7).
+    pub body_retention_days: i64,
+    /// Days a finished message is kept at all (`MAIL_LOG_RETENTION_DAYS`, 90).
+    pub log_retention_days: i64,
+    /// Bulk messages per blog per hour (`MAIL_BLOG_HOURLY_LIMIT`, 1000).
+    pub blog_hourly_limit: i64,
+    /// Bulk messages per blog per 24 hours (`MAIL_BLOG_DAILY_LIMIT`, 5000).
+    pub blog_daily_limit: i64,
+    /// Transactional messages per blog per hour
+    /// (`MAIL_BLOG_TRANSACTIONAL_HOURLY_LIMIT`, 500).
+    pub blog_transactional_hourly_limit: i64,
+    /// Bulk messages for the whole network per hour
+    /// (`MAIL_NETWORK_HOURLY_LIMIT`, 20000).
+    pub network_hourly_limit: i64,
+}
+
+impl Default for MailConfig {
+    fn default() -> Self {
+        Self::from_lookup(&|_| None)
+    }
+}
+
+impl MailConfig {
+    /// Resolve from `lookup`, with the documented defaults.
+    pub(crate) fn from_lookup(lookup: Lookup<'_>) -> Self {
+        let count = |name: &str, default: i64| parse_or(lookup, name, default).max(0);
+        Self {
+            workers: parse_positive_or(lookup, "MAIL_WORKERS", 2) as usize,
+            max_attempts: parse_positive_or(lookup, "MAIL_MAX_ATTEMPTS", 12) as i32,
+            claim_lease_secs: i64::from(
+                parse_positive_or(lookup, "MAIL_CLAIM_LEASE_SECS", 300).max(60),
+            ),
+            poll_secs: u64::from(parse_positive_or(lookup, "MAIL_POLL_SECS", 2)),
+            batch: i64::from(parse_positive_or(lookup, "MAIL_BATCH", 10)),
+            body_retention_days: count("MAIL_BODY_RETENTION_DAYS", 7),
+            log_retention_days: count("MAIL_LOG_RETENTION_DAYS", 90).max(1),
+            blog_hourly_limit: count("MAIL_BLOG_HOURLY_LIMIT", 1000),
+            blog_daily_limit: count("MAIL_BLOG_DAILY_LIMIT", 5000),
+            blog_transactional_hourly_limit: count("MAIL_BLOG_TRANSACTIONAL_HOURLY_LIMIT", 500),
+            network_hourly_limit: count("MAIL_NETWORK_HOURLY_LIMIT", 20000),
+        }
+    }
 }
 
 /// The settings a [`Config`] is resolved from.
@@ -916,6 +981,7 @@ impl Config {
             migrate_on_start,
             shutdown_drain,
             health_token,
+            mail: MailConfig::from_lookup(get),
             runtime,
         })
     }

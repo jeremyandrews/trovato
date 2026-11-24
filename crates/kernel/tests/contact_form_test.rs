@@ -149,6 +149,8 @@ async fn post_form(app: &TestApp, cookies: &str, body: String) -> (StatusCode, S
             cookies,
         )
         .await;
+    // The plugin's call queues the message (BG18); send it, as a worker would.
+    app.deliver_mail_to(&[SITE_CONTACT]).await;
     let status = response.status();
     (status, text_body(response).await)
 }

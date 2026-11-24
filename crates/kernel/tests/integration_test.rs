@@ -4937,7 +4937,17 @@ fn registration_form_renders_when_enabled() {
 fn json_registration_creates_inactive_user() {
     run_test(async {
         common::hold_until_cleanup(REGISTRATION_LOCK.read().await);
-        let app = shared_app().await;
+        // Mail goes to a loopback sink: the verification token is minted by
+        // the mail worker when it sends the message queued with the account
+        // (BG18), so the token is checked after delivery.
+        let sink = common::smtp_sink::SmtpSink::start().await;
+        let app = TestApp::with_config(|config| {
+            config.smtp_host = Some("127.0.0.1".to_string());
+            config.smtp_port = sink.port;
+            config.smtp_encryption = "none".to_string();
+        })
+        .await;
+        let app = &app;
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let username = format!("regtest_{}", &unique_id[..12]);
         let email = format!("{username}@test.example.com");
@@ -4996,6 +5006,21 @@ fn json_registration_creates_inactive_user() {
                 "User should be inactive (status=0) pending verification"
             );
 
+            // The verification mail was queued with the account; deliver it.
+            let queued: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM mail_outbox \
+                 WHERE recipient = $1 AND category = 'registration_verify'",
+            )
+            .bind(&email)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+            assert_eq!(
+                queued, 1,
+                "the verification mail is queued with the account"
+            );
+            assert_eq!(app.deliver_mail_to(&[&email]).await.sent, 1);
+
             // Verify a verification token was created
             let token_exists = sqlx::query_as::<_, (i64,)>(
             "SELECT COUNT(*) FROM email_verification_tokens WHERE user_id = (SELECT id FROM users WHERE name = $1)",
@@ -5017,6 +5042,7 @@ fn json_registration_creates_inactive_user() {
             .execute(&app.db)
             .await
             .ok();
+        sink.stop().await;
     });
 }
 

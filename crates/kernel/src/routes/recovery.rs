@@ -220,8 +220,10 @@ async fn notify(state: &AppState, user_id: Uuid, subject: &str, body: &str) {
     if user.mail.trim().is_empty() {
         return;
     }
-    if let Err(e) = email_service.send(&user.mail, subject, body).await {
-        warn!(error = %e, "failed to send a recovery notification");
+    let message =
+        crate::services::email::NewMail::account("recovery_notice", &user.mail, subject, body);
+    if let Err(e) = email_service.queue_now(message).await {
+        warn!(error = %e, "failed to queue a recovery notification");
     }
 }
 

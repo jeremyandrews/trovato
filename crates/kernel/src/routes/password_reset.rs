@@ -215,57 +215,78 @@ async fn queue_reset_mail(state: &AppState, client_id: String, email: String) {
     tokio::spawn(send_reset_mail(state.clone(), email, client_id));
 }
 
-/// Look `email` up and, if it belongs to an account, create a reset token and
-/// mail it with the `password_reset` email template. Runs after the request
-/// has been answered.
+/// Look `email` up and, if it belongs to an account, queue the reset mail with
+/// the `password_reset` email template. Runs after the request has been
+/// answered.
+///
+/// The token is minted by the mail worker immediately before the send (BG18),
+/// so it is never stored in the clear and a message delayed by a mail outage
+/// carries a fresh link. One message per account per ten minutes: the dedupe
+/// key makes a double submitted or retried request send once.
 async fn send_reset_mail(state: AppState, email: String, client_id: String) {
     match state.users().find_by_mail(&email).await {
-        Ok(Some(user)) => match PasswordResetToken::create(state.db(), user.id).await {
-            Ok((_, plain_token)) => {
-                // Send email if SMTP is configured, otherwise log
-                if let Some(email_service) = state.email() {
-                    let site_name = crate::models::SiteConfig::get(state.db(), "site_name")
-                        .await
-                        .ok()
-                        .flatten()
-                        .and_then(|v| v.as_str().map(|s| s.to_string()))
-                        .unwrap_or_else(|| "Trovato".to_string());
-
-                    if let Err(e) = email_service
-                        .send_password_reset_templated(
-                            state.theme().tera(),
-                            &email,
-                            &plain_token,
-                            &site_name,
-                        )
-                        .await
-                    {
-                        tracing::error!(error = %e, "failed to send password reset email");
-                        // Fall back to logging
+        Ok(Some(user)) => {
+            let Some(email_service) = state.email() else {
+                // SMTP not configured — log the token for development
+                match PasswordResetToken::create(state.db(), user.id).await {
+                    Ok((_, plain_token)) => {
+                        tracing::debug!(
+                            user_id = %user.id,
+                            token = %plain_token,
+                            "Password reset requested (SMTP not configured, token logged)"
+                        );
                         tracing::debug!(
                             reset_url = format!("/user/password-reset/{}", plain_token),
-                            "Reset URL (email send failed)"
+                            "Reset URL for testing"
                         );
-                    } else {
-                        info!(user_id = %user.id, "password reset email sent");
                     }
-                } else {
-                    // SMTP not configured — log the token for development
-                    tracing::debug!(
-                        user_id = %user.id,
-                        token = %plain_token,
-                        "Password reset requested (SMTP not configured, token logged)"
-                    );
-                    tracing::debug!(
-                        reset_url = format!("/user/password-reset/{}", plain_token),
-                        "Reset URL for testing"
-                    );
+                    Err(e) => tracing::error!(error = %e, "failed to create reset token"),
                 }
+                return;
+            };
+            let site_name = crate::models::SiteConfig::site_name(state.db())
+                .await
+                .unwrap_or_else(|_| "Trovato".to_string());
+            let reset_url = format!(
+                "{}/user/password-reset/{}",
+                email_service.site_url(),
+                crate::services::email::SECRET_MARKER
+            );
+            let subject = format!("Password reset for {site_name}");
+            let mut context = tera::Context::new();
+            context.insert("site_name", &site_name);
+            context.insert("action_url", &reset_url);
+            context.insert("subject", &subject);
+            let (html, text) = match crate::services::email_templates::render(
+                state.theme().tera(),
+                "password_reset",
+                &context,
+            ) {
+                Ok(parts) => parts,
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to render the password reset email");
+                    return;
+                }
+            };
+            let window = chrono::Utc::now().timestamp() / 600;
+            let message = crate::services::email::NewMail::account(
+                "password_reset",
+                &user.mail,
+                &subject,
+                &text,
+            )
+            .html(html)
+            .secret(crate::services::email::MailSecret::PasswordReset { user_id: user.id })
+            .dedupe(format!("password-reset:{}:{window}", user.id));
+            match email_service.queue_now(message).await {
+                Ok(Some(_)) => info!(user_id = %user.id, "password reset email queued"),
+                Ok(None) => info!(
+                    user_id = %user.id,
+                    "password reset email already queued in this window; not queued again"
+                ),
+                Err(e) => tracing::error!(error = %e, "failed to queue the password reset email"),
             }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to create reset token");
-            }
-        },
+        }
         Ok(None) => {
             // User not found - log but don't reveal to client
             info!(client = %state.runtime().client_ip_storage.kept_or_empty(&client_id), "password reset requested for non-existent email");

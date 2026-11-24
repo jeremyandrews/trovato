@@ -335,6 +335,12 @@ interface mail {
     }
 
     /// Send to the site's configured contact address only. No caller recipient.
+    ///
+    /// For both functions in this interface, success means the message was
+    /// accepted for delivery: written to the kernel's durable outbox, which
+    /// sends it with retries. It does not mean delivered, and a later bounce
+    /// is not reported back. An error means it was not accepted. (BG18; the
+    /// signatures and error codes are unchanged.)
     send-to-site-contacts: func(subject: string, body: string,
                                 attachments: list<attachment>) -> result<_, string>;
 

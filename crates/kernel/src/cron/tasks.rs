@@ -402,9 +402,25 @@ impl CronTasks {
             return Ok(());
         };
 
-        email_service.send(to, subject, body).await?;
-        info!(to = %to, subject = %subject, "sent queued email");
+        // Moved into the durable outbox (BG18), which sends it with retries.
+        let message =
+            crate::services::email::NewMail::notification("legacy_queue", to, subject, body);
+        email_service.queue_now(message).await?;
+        info!(subject = %subject, "moved a legacy queued email into the outbox");
         Ok(())
+    }
+
+    /// Mail retention (BG18): clear the bodies of old finished messages and
+    /// delete older ones, at most a thousand of each per run.
+    pub async fn purge_mail_outbox(&self) -> Result<(u64, u64)> {
+        // Rows outlive a mail configuration that is later removed, so the
+        // defaults apply then.
+        let config = self
+            .email
+            .as_ref()
+            .map(|e| e.config().clone())
+            .unwrap_or_default();
+        crate::services::mail_worker::purge(&self.pool, &config, 1000).await
     }
 
     /// Process a single reindex queue item.

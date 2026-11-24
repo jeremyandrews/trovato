@@ -20,6 +20,7 @@ use crate::routes::helpers::{
     CsrfOnlyForm, JsonSuccess, is_valid_email, is_valid_timezone, require_csrf, validate_password,
     validate_username,
 };
+use crate::services::email::{MailSecret, NewMail};
 use crate::state::AppState;
 
 /// Check if an anyhow error wraps a sqlx unique constraint violation.
@@ -814,7 +815,10 @@ async fn validate_registration_input(
 
     if mail.is_empty() {
         errors.push("Email address is required.".to_string());
-    } else if !is_valid_email(mail) {
+    } else if !is_valid_email(mail) || mail.parse::<lettre::Address>().is_err() {
+        // The second check is the mail library's own: an address it cannot
+        // parse could never receive the verification mail queued with the
+        // account, and that queue is in the account's transaction (BG18).
         errors.push("Please enter a valid email address.".to_string());
     }
 
@@ -845,11 +849,18 @@ async fn validate_registration_input(
 
 /// Result of a successful registration.
 struct RegistrationResult {
-    /// Whether the verification email was actually sent.
+    /// Whether a verification email was queued (mail is configured).
     email_sent: bool,
 }
 
 /// Core registration logic shared by form and JSON handlers.
+///
+/// The account and its mail (the verification link, and the administrator's
+/// notice when `notify_admin_on_register` is on) are written in one
+/// transaction (BG18): a registration that fails sends nothing, and one that
+/// succeeds always sends, whatever the mail server is doing at the time. The
+/// verification token is minted by the mail worker when it sends, so it is
+/// never stored in the clear.
 async fn do_register(
     state: &AppState,
     username: &str,
@@ -866,89 +877,100 @@ async fn do_register(
     // Create user with status=0 (inactive, pending email verification)
     // Registration is an anonymous action — no authenticated user context.
     let user_ctx = crate::tap::UserContext::anonymous();
-    let user = state
-        .users()
-        .create_with_status(input, 0, &user_ctx)
-        .await?;
 
-    // Create verification token
-    let (_, plain_token) =
-        EmailVerificationToken::create(state.db(), user.id, PURPOSE_REGISTRATION).await?;
-
-    // Send verification email
-    let site_name = SiteConfig::site_name(state.db()).await.unwrap_or_default();
-    let mut email_sent = false;
-    if let Some(email_service) = state.email() {
-        match email_service
-            .send_verification_email(mail.trim(), &plain_token, &site_name)
-            .await
-        {
-            Ok(()) => {
-                email_sent = true;
-                info!(user_id = %user.id, "verification email sent");
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "failed to send verification email");
-            }
-        }
-    } else {
+    let Some(email_service) = state.email() else {
+        let user = state
+            .users()
+            .create_with_status(input, 0, &user_ctx)
+            .await?;
         tracing::warn!(
             user_id = %user.id,
             "SMTP not configured; verification email not sent"
         );
-    }
+        info!(user_id = %user.id, "user registered (pending verification)");
+        return Ok(RegistrationResult { email_sent: false });
+    };
 
-    // Notify admin of new registration (if configured)
-    if let Some(email_svc) = state.email()
-        && let Ok(Some(notify_val)) = SiteConfig::get(state.db(), "notify_admin_on_register").await
-        && notify_val.as_bool().unwrap_or(false)
-    {
-        let admin_mail = SiteConfig::site_mail(state.db()).await.unwrap_or_default();
-        if !admin_mail.is_empty() {
-            let email = email_svc.clone();
-            let site_url = email_svc.site_url().to_string();
-            let user_name = username.trim().to_string();
-            let user_mail = mail.trim().to_string();
-            let site = site_name.clone();
-            let tera = state.theme().tera().clone();
-            let dest = admin_mail.clone();
+    let site_name = SiteConfig::site_name(state.db()).await.unwrap_or_default();
+    let notify_admin = SiteConfig::get(state.db(), "notify_admin_on_register")
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|v| v.as_bool().unwrap_or(false));
+    let admin_mail = if notify_admin {
+        SiteConfig::site_mail(state.db()).await.unwrap_or_default()
+    } else {
+        String::new()
+    };
+    let site_url = email_service.site_url().to_string();
+    let user_name = username.trim().to_string();
+    let user_mail = mail.trim().to_string();
+    let tera = state.theme().tera();
 
-            tokio::spawn(async move {
+    let user = state
+        .users()
+        .create_with_status_and_mail(input, 0, &user_ctx, email_service, |user| {
+            let verify_url = format!(
+                "{site_url}/user/verify/{}",
+                crate::services::email::SECRET_MARKER
+            );
+            let body = format!(
+                "Welcome to {site_name}!\n\n\
+                 To activate your account, visit the following link:\n\
+                 {verify_url}\n\n\
+                 If you did not register for an account, you can safely ignore this email.\n\n\
+                 This link will expire in 24 hours."
+            );
+            let mut messages = vec![
+                NewMail::account(
+                    "registration_verify",
+                    &user_mail,
+                    &format!("Verify your account at {site_name}"),
+                    &body,
+                )
+                .secret(MailSecret::Verification {
+                    user_id: user.id,
+                    purpose: PURPOSE_REGISTRATION.to_string(),
+                })
+                .dedupe(format!("register:{}", user.id)),
+            ];
+            if !admin_mail.is_empty() {
                 let action_url = format!("{site_url}/admin/users");
-                let subject = format!("New user registration at {site}: {user_name}");
-
+                let subject = format!("New user registration at {site_name}: {user_name}");
                 let mut ctx = tera::Context::new();
-                ctx.insert("site_name", &site);
+                ctx.insert("site_name", &site_name);
                 ctx.insert("username", &user_name);
                 ctx.insert("user_email", &user_mail);
                 ctx.insert("action_url", &action_url);
                 ctx.insert("subject", &subject);
-
-                match crate::services::email_templates::render(&tera, "admin_new_user", &ctx) {
+                match crate::services::email_templates::render(tera, "admin_new_user", &ctx) {
                     Ok((html, text)) => {
-                        if let Err(e) = email
-                            .send_templated(&dest, &subject, &text, html.as_deref())
-                            .await
-                        {
-                            tracing::warn!(
+                        let notice =
+                            NewMail::notification("admin_new_user", &admin_mail, &subject, &text)
+                                .html(html)
+                                .dedupe(format!("admin-new-user:{}", user.id));
+                        // A notice to the site's own address that cannot be sent
+                        // must not refuse the registration.
+                        match notice.validate() {
+                            Ok(()) => messages.push(notice),
+                            Err(e) => tracing::warn!(
                                 error = %e,
-                                "admin registration notification: failed to send"
-                            );
+                                "admin registration notification cannot be sent"
+                            ),
                         }
                     }
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "admin registration notification: template render failed"
-                        );
-                    }
+                    Err(e) => tracing::warn!(
+                        error = %e,
+                        "admin registration notification: template render failed"
+                    ),
                 }
-            });
-        }
-    }
+            }
+            messages
+        })
+        .await?;
 
-    info!(user_id = %user.id, "user registered (pending verification)");
-    Ok(RegistrationResult { email_sent })
+    info!(user_id = %user.id, "user registered (pending verification); verification email queued");
+    Ok(RegistrationResult { email_sent: true })
 }
 
 /// JSON registration handler.
@@ -1543,7 +1565,9 @@ async fn profile_update(
 
     if mail.is_empty() {
         errors.push("Email address is required.".to_string());
-    } else if !is_valid_email(mail) {
+    } else if !is_valid_email(mail) || mail.parse::<lettre::Address>().is_err() {
+        // The mail library's own parse too: the confirmation is queued to this
+        // address, and one it cannot parse would never be sent (BG18).
         errors.push("Please enter a valid email address.".to_string());
     }
 
@@ -1677,38 +1701,36 @@ async fn profile_update(
                     tracing::warn!(error = %e, "failed to invalidate old verification tokens");
                 }
 
-                // Create verification token
-                match EmailVerificationToken::create(state.db(), user.id, PURPOSE_EMAIL_CHANGE)
-                    .await
-                {
-                    Ok((_, plain_token)) => {
-                        let site_name = SiteConfig::site_name(state.db()).await.unwrap_or_default();
-                        if let Some(email_service) = state.email() {
-                            let verify_url = format!(
-                                "{}/user/verify-email/{}",
-                                email_service.site_url(),
-                                plain_token
-                            );
-                            let body = format!(
-                                "You requested to change your email address at {site_name}.\n\n\
-                                 To confirm this change, visit the following link:\n\
-                                 {verify_url}\n\n\
-                                 If you did not request this change, you can safely ignore this email.\n\n\
-                                 This link will expire in 24 hours."
-                            );
-                            if let Err(e) = email_service
-                                .send(mail, &format!("Confirm email change at {site_name}"), &body)
-                                .await
-                            {
-                                tracing::warn!(
-                                    error = %e,
-                                    "failed to send email change verification"
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::error!(error = %e, "failed to create email change token");
+                // Queue the confirmation; the worker mints the token when it
+                // sends, so it is never stored in the clear (BG18).
+                if let Some(email_service) = state.email() {
+                    let site_name = SiteConfig::site_name(state.db()).await.unwrap_or_default();
+                    let verify_url = format!(
+                        "{}/user/verify-email/{}",
+                        email_service.site_url(),
+                        crate::services::email::SECRET_MARKER
+                    );
+                    let body = format!(
+                        "You requested to change your email address at {site_name}.\n\n\
+                         To confirm this change, visit the following link:\n\
+                         {verify_url}\n\n\
+                         If you did not request this change, you can safely ignore this email.\n\n\
+                         This link will expire in 24 hours."
+                    );
+                    let message = NewMail::account(
+                        "email_change_verify",
+                        mail,
+                        &format!("Confirm email change at {site_name}"),
+                        &body,
+                    )
+                    .secret(MailSecret::Verification {
+                        user_id: user.id,
+                        purpose: PURPOSE_EMAIL_CHANGE.to_string(),
+                    });
+                    // No dedupe key: each request invalidates the links sent
+                    // before it, so each must send a fresh one.
+                    if let Err(e) = email_service.queue_now(message).await {
+                        tracing::error!(error = %e, "failed to queue email change verification");
                     }
                 }
             }

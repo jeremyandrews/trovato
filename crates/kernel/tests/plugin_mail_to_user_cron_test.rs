@@ -16,11 +16,14 @@ use std::sync::{Arc, LazyLock, OnceLock};
 
 use common::smtp_sink::SmtpSink;
 use sqlx::PgPool;
+use trovato_kernel::config::MailConfig;
 use trovato_kernel::cron::{CronResult, CronService};
 use trovato_kernel::middleware::{RateLimitConfig, RateLimiter};
 use trovato_kernel::models::SiteConfig;
 use trovato_kernel::plugin::{PluginConfig, PluginRuntime};
 use trovato_kernel::services::email::EmailService;
+use trovato_kernel::services::mail_transport::SmtpTransport;
+use trovato_kernel::services::mail_worker::{DrainScope, Lane, MailWorker};
 use trovato_kernel::tap::{TapDispatcher, TapRegistry};
 use uuid::Uuid;
 
@@ -98,20 +101,19 @@ fn tap_cron_mails_a_member() {
             .reset("mail_users", &format!("plugin:{FIXTURE}"))
             .await
             .ok();
-        let email = EmailService::new(
-            "127.0.0.1",
-            sink.port,
-            None,
-            None,
-            "none",
+        let transport =
+            SmtpTransport::new("127.0.0.1", sink.port, None, None, "none").expect("transport");
+        let email = Arc::new(EmailService::new(
+            pool.clone(),
+            Arc::new(transport),
             "no-reply@bl94.example.test".to_string(),
             "http://localhost:3000".to_string(),
-        )
-        .expect("email service");
+            MailConfig::default(),
+        ));
         let mut cron = CronService::new(redis_client(), pool.clone());
         cron.set_tap_dispatcher(dispatcher());
         cron.set_rate_limiter(limiter);
-        cron.set_email_service(Some(Arc::new(email)));
+        cron.set_email_service(Some(Arc::clone(&email)));
 
         let mut ran = false;
         for _ in 0..60 {
@@ -121,6 +123,17 @@ fn tap_cron_mails_a_member() {
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
+
+        // The plugin's call queued the message (BG18); send what is queued
+        // for this member.
+        MailWorker::new(
+            &email,
+            Lane::Any,
+            DrainScope::Recipients(vec![address.clone()]),
+        )
+        .drain()
+        .await
+        .expect("drain the outbox");
 
         let delivered: Vec<_> = sink
             .messages()

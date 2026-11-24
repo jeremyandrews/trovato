@@ -189,6 +189,10 @@ async fn post_mail(
         .await;
     let status = response.status();
     let text = text_body(response).await;
+    // The plugin's call queues the message (BG18); send it, as a worker would.
+    if app.state.email().is_some() {
+        app.deliver_mail_to(&[SITE_CONTACT]).await;
+    }
     let json = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
     (status, json)
 }
@@ -242,7 +246,11 @@ fn a_plugin_sends_mail_to_the_site_contact_address() {
         );
         // And the from address is the transport identity, not the contact address.
         assert!(
-            message.data.contains(&format!("From: {SITE_FROM}")),
+            message
+                .data
+                .lines()
+                .any(|l| l.starts_with("From: ")
+                    && l.trim_end().ends_with(&format!("<{SITE_FROM}>"))),
             "{}",
             message.data
         );

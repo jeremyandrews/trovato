@@ -794,21 +794,10 @@ async fn edit_comment_submit(
         subject: Some(subject),
     };
 
-    // The status before the edit, so approving out of the queue notifies the
-    // content author and re-saving an already published comment does not.
-    let previous = state
-        .comments()
-        .load(id)
-        .await
-        .ok()
-        .flatten()
-        .map(|c| c.status);
-
-    match state.comments().update(id, input, &user_ctx).await {
-        Ok(Some(comment)) => {
-            notify_author_if_published(&state, &comment, previous).await;
-            Redirect::to("/admin/content/comments").into_response()
-        }
+    // Approving out of the queue notifies the content author; re-saving an
+    // already published comment does not.
+    match update_comment_notifying(&state, id, input, &user_ctx).await {
+        Ok(Some(_)) => Redirect::to("/admin/content/comments").into_response(),
         Ok(None) => render_not_found(),
         Err(e) => {
             tracing::error!(error = %e, "failed to update comment");
@@ -817,36 +806,56 @@ async fn edit_comment_submit(
     }
 }
 
-/// Mail the content author when a moderation action has just made a comment
-/// visible.
+/// Update a comment, queueing the content author's notification in the same
+/// transaction when the update makes the comment visible (BG18).
 ///
 /// The notification used to fire when a comment was created, which under a
 /// hold-for-review default would have mailed the author the full text of every
 /// comment the queue exists to catch. It belongs on the transition into
-/// published, which is here and in the create route.
-async fn notify_author_if_published(state: &AppState, comment: &Comment, previous: Option<i16>) {
-    // One rule, in one place: `notify_if_published` decides. This loads the item
-    // unconditionally rather than pre-filtering on a placeholder author id,
-    // which would wrongly suppress the mail whenever the comment author happened
-    // to equal the placeholder. A moderation action can afford one query.
-    let Ok(Some(item)) = state.items().load(comment.item_id).await else {
-        return;
+/// published, which is here and in the create route. One rule, in one place:
+/// `should_notify_on_publish` decides, against the comment as it was inside the
+/// transaction.
+async fn update_comment_notifying(
+    state: &AppState,
+    id: uuid::Uuid,
+    input: UpdateComment,
+    user_ctx: &crate::tap::UserContext,
+) -> anyhow::Result<Option<Comment>> {
+    use crate::routes::comment::{
+        comment_mail_context, comment_notification, should_notify_on_publish,
     };
-    let commenter = state
-        .users()
-        .find_by_id(comment.author_id)
-        .await
-        .ok()
-        .flatten()
-        .map(|u| u.name);
-
-    crate::routes::comment::notify_if_published(
-        state,
-        comment,
-        previous,
-        &item,
-        commenter.as_deref(),
-    );
+    let before = state.comments().load(id).await.ok().flatten();
+    let mut ctx = None;
+    if let (Some(before), Some(status), Some(_)) = (&before, input.status, state.email())
+        && let Ok(Some(item)) = state.items().load(before.item_id).await
+        && should_notify_on_publish(
+            Some(before.status),
+            status,
+            before.author_id,
+            item.author_id,
+        )
+    {
+        let commenter = state
+            .users()
+            .find_by_id(before.author_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|u| u.name);
+        ctx = comment_mail_context(state, &item, commenter.as_deref()).await;
+    }
+    match (state.email(), ctx) {
+        (Some(email), Some(ctx)) => {
+            let tera = state.theme().tera();
+            state
+                .comments()
+                .update_with_mail(id, input, user_ctx, email, |before, c| {
+                    comment_notification(tera, &ctx, c, before.map(|b| b.status))
+                })
+                .await
+        }
+        _ => state.comments().update(id, input, user_ctx).await,
+    }
 }
 
 /// Set a comment's publication status (shared by approve/unpublish).
@@ -875,19 +884,8 @@ async fn set_comment_status(
         subject: None,
     };
 
-    let previous = state
-        .comments()
-        .load(id)
-        .await
-        .ok()
-        .flatten()
-        .map(|c| c.status);
-
-    match state.comments().update(id, input, &user_ctx).await {
-        Ok(Some(comment)) => {
-            notify_author_if_published(state, &comment, previous).await;
-            Redirect::to("/admin/content/comments").into_response()
-        }
+    match update_comment_notifying(state, id, input, &user_ctx).await {
+        Ok(Some(_)) => Redirect::to("/admin/content/comments").into_response(),
         Ok(None) => render_not_found(),
         Err(e) => {
             tracing::error!(error = %e, "failed to {} comment", action);
