@@ -350,6 +350,16 @@ pub struct RuntimeConfig {
     /// times which it is logged as an error.
     pub slow_request_threshold_ms: u128,
 
+    /// Who sees the per-request counts in `Server-Timing` (`SERVER_TIMING`:
+    /// `admin`, the default, `all` or `off`). Everyone else gets `total` only,
+    /// which is all any visitor got before.
+    pub server_timing: crate::middleware::ServerTimingDetail,
+
+    /// Record each statement's fingerprint in the request profile. No
+    /// environment variable sets it: the performance tests do, through
+    /// `Config`, and span export reads statements for itself.
+    pub profile_fingerprints: bool,
+
     /// Retention window for the kernel security audit stream, in days.
     pub security_audit_retention_days: i64,
 
@@ -825,6 +835,10 @@ impl Config {
             security_headers: crate::middleware::SecurityHeaders::from_lookup(get),
             tenant_resolution: crate::middleware::TenantResolution::from_lookup(get),
             slow_request_threshold_ms: parse_or(get, "QUERY_SLOW_THRESHOLD_MS", 100),
+            server_timing: crate::middleware::ServerTimingDetail::from_setting(
+                get("SERVER_TIMING").as_deref(),
+            ),
+            profile_fingerprints: false,
             security_audit_retention_days: crate::audit::retention_days_from(
                 get("SECURITY_AUDIT_RETENTION_DAYS").as_deref(),
             ),

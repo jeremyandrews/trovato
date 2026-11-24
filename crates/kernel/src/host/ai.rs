@@ -174,7 +174,20 @@ async fn execute_ai_request(
     req = req.header("content-type", "application/json");
     req = req.body(body);
 
-    let response = req.send().await.map_err(|e| {
+    let span = crate::telemetry::outgoing_span("POST", &url);
+    span.record(
+        "gen_ai.provider.name",
+        match resolved.config.protocol {
+            ProviderProtocol::OpenAiCompatible => "openai_compatible",
+            ProviderProtocol::Anthropic => "anthropic",
+        },
+    );
+    span.record("gen_ai.request.model", resolved.model.as_str());
+    let response = tracing::Instrument::instrument(req.send(), span.clone()).await;
+    if let Ok(r) = response.as_ref() {
+        span.record("http.response.status_code", r.status().as_u16());
+    }
+    let response = response.map_err(|e| {
         (
             host_errors::ERR_AI_REQUEST_FAILED,
             format!("HTTP request failed: {e}"),

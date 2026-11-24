@@ -43,6 +43,7 @@ mod stage;
 mod state;
 mod system_log;
 mod tap;
+mod telemetry;
 mod theme;
 mod update_status;
 
@@ -56,7 +57,6 @@ use axum::http::{HeaderValue, Method, StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
 use clap::{Parser, Subcommand};
 use tower_http::cors::CorsLayer;
-use tower_http::trace::TraceLayer;
 use tower_sessions::Session;
 use tower_sessions::cookie::SameSite;
 use tracing::{info, warn};
@@ -620,7 +620,7 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
             state.clone(),
             crate::middleware::track_request_timing,
         ))
-        .layer(TraceLayer::new_for_http())
+        .layer(crate::telemetry::trace_layer())
         .with_state(state.clone());
 
     // The front page: `/` served as the configured path, rewritten before
@@ -1253,6 +1253,8 @@ fn init_tracing() -> system_log::SystemLogReceiver {
     // Its own `INFO` filter keeps debug and trace callsites disabled.
     tracing_subscriber::registry()
         .with(tracing_subscriber::fmt::layer().with_filter(filter))
+        // Gander: counts every sqlx statement into the request in scope.
+        .with(telemetry::query_listener::query_listener())
         .with(log_layer.with_filter(tracing_subscriber::filter::LevelFilter::INFO))
         .init();
     log_receiver

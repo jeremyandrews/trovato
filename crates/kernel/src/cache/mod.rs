@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use redis::AsyncCommands;
 use redis::Client as RedisClient;
-use tracing::{debug, warn};
+use tracing::{Instrument, debug, warn};
 
 use crate::metrics::{CacheName, Metrics};
 
@@ -40,6 +40,13 @@ impl CacheLayer {
 
     /// Get a value from cache.
     pub async fn get(&self, key: &str) -> Option<String> {
+        let span = cache_span("cache.get", key);
+        let found = self.get_inner(key).instrument(span.clone()).await;
+        span.record("cache.hit", found.is_some());
+        found
+    }
+
+    async fn get_inner(&self, key: &str) -> Option<String> {
         let metrics = &self.inner.metrics;
         // A Redis that cannot be reached answers nothing, which is a miss to
         // the caller and is counted as one.
@@ -60,6 +67,12 @@ impl CacheLayer {
 
     /// Set a value in cache with TTL and tags.
     pub async fn set(&self, key: &str, value: &str, ttl_secs: u64, tags: &[&str]) {
+        self.set_inner(key, value, ttl_secs, tags)
+            .instrument(cache_span("cache.set", key))
+            .await;
+    }
+
+    async fn set_inner(&self, key: &str, value: &str, ttl_secs: u64, tags: &[&str]) {
         let Ok(mut conn) = self.inner.redis.get_multiplexed_async_connection().await else {
             warn!("failed to get Redis connection for cache set");
             return;
@@ -75,6 +88,7 @@ impl CacheLayer {
             warn!(error = %e, key = %key, "failed to set cache value in Redis");
             return;
         }
+        self.inner.metrics.count_cache_set(CacheName::LayerL2);
 
         // Register key with each tag
         for tag in tags {
@@ -89,6 +103,12 @@ impl CacheLayer {
 
     /// Invalidate a single cache key.
     pub async fn invalidate(&self, key: &str) {
+        self.invalidate_inner(key)
+            .instrument(cache_span("cache.invalidate", key))
+            .await;
+    }
+
+    async fn invalidate_inner(&self, key: &str) {
         let Ok(mut conn) = self.inner.redis.get_multiplexed_async_connection().await else {
             warn!("failed to get Redis connection for cache invalidate");
             return;
@@ -105,6 +125,12 @@ impl CacheLayer {
     ///
     /// Uses Lua script for atomic operation.
     pub async fn invalidate_tag(&self, tag: &str) {
+        self.invalidate_tag_inner(tag)
+            .instrument(cache_span("cache.invalidate_tag", tag))
+            .await;
+    }
+
+    async fn invalidate_tag_inner(&self, tag: &str) {
         let tag_key = format!("tag:{tag}");
 
         let Ok(mut conn) = self.inner.redis.get_multiplexed_async_connection().await else {
@@ -219,6 +245,19 @@ impl CacheLayer {
         };
         CacheStats { redis_keys }
     }
+}
+
+/// The span of one Redis cache call: its operation and the key's bin, never
+/// the key itself.
+fn cache_span(operation: &'static str, key: &str) -> tracing::Span {
+    tracing::trace_span!(
+        target: crate::telemetry::TARGET,
+        "cache",
+        otel.name = operation,
+        cache.tier = "redis",
+        cache.bin = crate::telemetry::cache_bin(key),
+        cache.hit = tracing::field::Empty,
+    )
 }
 
 /// Cache statistics.

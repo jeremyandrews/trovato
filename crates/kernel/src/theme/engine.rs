@@ -1093,11 +1093,17 @@ impl ThemeEngine {
         element: &RenderElement,
         context: &mut tera::Context,
     ) -> Result<String> {
-        self.render_consumer.render(self.tera(), element, context)
+        crate::telemetry::render("element", || {
+            self.render_consumer.render(self.tera(), element, context)
+        })
     }
 
     /// Render an item using template suggestions.
     pub fn render_item(&self, item: &Item, element: &RenderElement) -> Result<String> {
+        crate::telemetry::render("item", || self.render_item_inner(item, element))
+    }
+
+    fn render_item_inner(&self, item: &Item, element: &RenderElement) -> Result<String> {
         let suggestions = Self::item_suggestions(item);
         let suggestion_refs: Vec<&str> = suggestions.iter().map(|s| s.as_str()).collect();
 
@@ -1329,9 +1335,11 @@ impl ThemeEngine {
         context.insert("path", path);
         context.insert("is_admin", &Self::is_admin_path(path));
 
-        self.tera()
-            .render(&template, context)
-            .context("failed to render page template")
+        crate::telemetry::render("page", || {
+            self.tera()
+                .render(&template, context)
+                .context("failed to render page template")
+        })
     }
 
     /// Use `components` as the page builder registry, after checking that

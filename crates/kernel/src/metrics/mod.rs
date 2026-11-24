@@ -100,6 +100,12 @@ impl CacheName {
     }
 }
 
+/// Route labels: the matched route template only.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct RouteLabels {
+    pub route: String,
+}
+
 /// TAP invocation labels.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct TapLabels {
@@ -128,6 +134,12 @@ pub struct Metrics {
 
     /// Cache misses by cache name.
     pub cache_misses: Family<CacheLabels, Counter>,
+
+    /// Values written to the Redis cache, by cache name.
+    pub cache_sets: Family<CacheLabels, Counter>,
+
+    /// Database statements per request, by route template.
+    pub http_request_db_queries: Family<RouteLabels, Histogram>,
 
     /// The `cache_hits` series, one per [`CacheName`], indexed by its
     /// position in [`CacheName::ALL`]: counting a lookup is one atomic add,
@@ -234,6 +246,23 @@ impl Metrics {
             cache_misses.clone(),
         );
 
+        let cache_sets = Family::<CacheLabels, Counter>::default();
+        registry.register(
+            "cache_sets",
+            "Values written to the Redis cache, by cache",
+            cache_sets.clone(),
+        );
+
+        let http_request_db_queries =
+            Family::<RouteLabels, Histogram>::new_with_constructor(|| {
+                Histogram::new(exponential_buckets(1.0, 2.0, 10))
+            });
+        registry.register(
+            "http_request_db_queries",
+            "Database statements per request, by route template",
+            http_request_db_queries.clone(),
+        );
+
         let series = |family: &Family<CacheLabels, Counter>| {
             CacheName::ALL.map(|name| {
                 family
@@ -327,6 +356,8 @@ impl Metrics {
             db_query_duration_seconds,
             cache_hits,
             cache_misses,
+            cache_sets,
+            http_request_db_queries,
             hit_series,
             miss_series,
             active_connections,
@@ -387,6 +418,25 @@ impl Metrics {
         lookup
     }
 
+    /// Count the statements one request made, under its route template.
+    pub fn record_request_queries(&self, route: &str, queries: u32) {
+        self.http_request_db_queries
+            .get_or_create(&RouteLabels {
+                route: route.to_string(),
+            })
+            .observe(f64::from(queries));
+    }
+
+    /// Count one value written to the Redis cache.
+    pub fn count_cache_set(&self, cache: CacheName) {
+        self.cache_sets
+            .get_or_create(&CacheLabels {
+                cache: cache.as_str(),
+            })
+            .inc();
+        crate::telemetry::profile::count_cache_set();
+    }
+
     /// Count a hit (`hit = true`) or a miss in `cache`.
     ///
     /// For a read whose result is not an `Option`; prefer
@@ -401,6 +451,21 @@ impl Metrics {
         // is the index (pinned by `cache_names_index_their_own_series`).
         if let Some(counter) = series.get(cache as usize) {
             counter.inc();
+        }
+        // The same choke point counts the lookup into the request in scope
+        // and, for an in-process cache, marks it on the enclosing span (an
+        // event, not a span: a lookup takes well under a microsecond).
+        crate::telemetry::profile::count_cache_get(hit);
+        if cache != CacheName::LayerL2 {
+            let bin = cache.as_str();
+            tracing::event!(
+                target: crate::telemetry::TARGET,
+                tracing::Level::TRACE,
+                cache.tier = "memory",
+                cache.bin = bin,
+                cache.hit = hit,
+                "cache.get"
+            );
         }
     }
 

@@ -684,7 +684,12 @@ async fn execute_http_request(
         req = req.body(body.clone());
     }
 
-    let response = req.send().await.map_err(|e| {
+    let span = crate::telemetry::outgoing_span(&request.method, &request.url);
+    let response = tracing::Instrument::instrument(req.send(), span.clone()).await;
+    if let Ok(r) = response.as_ref() {
+        span.record("http.response.status_code", r.status().as_u16());
+    }
+    let response = response.map_err(|e| {
         if is_ssrf_block(&e) {
             // A rebinding resolution or a redirect hop to a private target was
             // denied by the client-level SSRF layers; report it as the same

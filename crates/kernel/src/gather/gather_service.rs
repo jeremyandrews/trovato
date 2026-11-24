@@ -926,6 +926,40 @@ impl GatherService {
         context: &QueryContext,
         scope: &RunScope<'_>,
     ) -> Result<GatherResult> {
+        // Gander's gather choke point: every `execute*` lands here.
+        crate::telemetry::profile::count_gather();
+        let span = tracing::trace_span!(
+            target: crate::telemetry::TARGET,
+            "gather.execute",
+            trovato.gather.base_table = %definition.base_table,
+            trovato.gather.item_type = definition.item_type.as_deref().unwrap_or(""),
+        );
+        tracing::Instrument::instrument(
+            self.run_definition_inner(
+                definition,
+                display,
+                page,
+                exposed_filters,
+                stage_ids,
+                context,
+                scope,
+            ),
+            span,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_definition_inner(
+        &self,
+        definition: &QueryDefinition,
+        display: &QueryDisplay,
+        page: u32,
+        exposed_filters: HashMap<String, FilterValue>,
+        stage_ids: &[Uuid],
+        context: &QueryContext,
+        scope: &RunScope<'_>,
+    ) -> Result<GatherResult> {
         // Performance guardrails: validate definition before execution
         let validation_errors = Self::validate_definition_with(definition, scope.own_tables);
         if !validation_errors.is_empty() {

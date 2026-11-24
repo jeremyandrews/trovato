@@ -87,8 +87,8 @@ telemetry; see "No personal data" below.
 | In-process caches | `Metrics::count_cache` (`metrics/mod.rs`) | Every moka cache lookup already reports its hit or miss there, under a closed `CacheName`. |
 | Plugin taps and plugin-to-plugin calls | `tap::dispatcher::instantiate_and_call_export` | The one function that makes a `Store` and calls a guest export. |
 | Host calls | `host::trace` (`TracedLinker::func_wrap_async_traced` and `HostCallGuard`) | Every host function a plugin can import is already wrapped there. |
-| Gather | `GatherService::execute_definition_with_stages` | Every `execute*` entry point lands there. |
-| Templates | `ThemeEngine::render_page`, `render_item`, `render_element` | The three entry points that turn a page, an item or an element into HTML. |
+| Gather | `GatherService::run_definition` | Every `execute*` entry point, a site's and a plugin's, lands there. |
+| Templates | `ThemeEngine::render_page`, `render_item`, `render_element` and `routes::helpers::render_admin_template` | The entry points that turn a page, an item, an element or an admin screen into HTML. About twenty handlers (login, password reset, comments, error and maintenance pages) still call `tera().render` themselves and are not counted as renders; their queries and cache calls are counted all the same. |
 | Queue jobs | `cron::run_queue_job` | Every claimed plugin queue job runs through it, from cron and from the resident runner. |
 | Outgoing HTTP | the two kernel `send()` sites: `host::http` (a plugin's `http-request`) and `host::ai` (an AI provider) | The only outgoing requests made on behalf of a request or a job. `update_status` is a daily background check and is left out. |
 
@@ -133,8 +133,9 @@ variable) or span export.
   Administrators only by default because counts and durations per request are
   a timing oracle for anyone else. The administrator check runs after the
   counters are read, through the cached user, so it never shows in the counts.
-- The slow request line gains `route`, `queries`, `db_ms`, `cache_gets`,
-  `cache_misses`, `plugin_calls`, `plugin_ms` and `render_ms`: the breakdown
+- The slow request line gains `route`, `status`, `queries`, `db_ms`,
+  `cache_gets`, `cache_misses`, `plugin_calls`, `plugin_ms`, `render_ms` and
+  `outgoing_calls`: the breakdown
   `Design-Web-Layer.md` asked for.
 - The response's extensions carry a `RequestProfileSnapshot`, which is how the
   performance tests read a request's numbers without a header.
@@ -157,8 +158,8 @@ exists:
 | in-process cache lookups | an event `cache.get` on the enclosing span with `cache.tier=memory`, `cache.bin` (the `CacheName`) and `cache.hit` |
 | `plugin.tap` | `trovato.plugin`, `trovato.tap` (the export name) |
 | `plugin.host_call` | `trovato.plugin`, `trovato.host.module`, `trovato.host.function` |
-| `gather.execute` | `trovato.gather.query` (the query's machine name) |
-| `template.render` | `trovato.template.kind` (`page`, `item`, `element`) |
+| `gather.execute` | `trovato.gather.base_table`, `trovato.gather.item_type` (the definition reaches the choke point without its machine name) |
+| `template.render` | `trovato.template.kind` (`page`, `item`, `element`, `admin`) |
 | `queue.job` | `trovato.plugin`, `trovato.queue`, `trovato.queue.attempt`, `trovato.queue.outcome` |
 | `http.client` | `http.request.method`, `server.address` (host only), `http.response.status_code`, and for AI calls `gen_ai.provider.name` and `gen_ai.request.model` |
 
