@@ -525,10 +525,10 @@ impl Item {
     }
 
     /// Delete an item inside the caller's transaction, with what points at it:
-    /// its URL aliases, and the menu links to its `/item/{id}` path or to any
-    /// of those aliases. Revisions and file references go by `ON DELETE
-    /// CASCADE`. The caller invalidates the navigation cache once the
-    /// transaction commits.
+    /// its URL aliases, the menu links to its `/item/{id}` path or to any of
+    /// those aliases, and its queued kernel embed jobs. Revisions and file
+    /// references go by `ON DELETE CASCADE`. The caller invalidates the
+    /// navigation cache once the transaction commits.
     pub async fn delete_in(
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         id: Uuid,
@@ -550,6 +550,21 @@ impl Item {
             .execute(&mut **tx)
             .await
             .context("failed to delete item")?;
+
+        // The item's queued kernel embed jobs: `plugin_queue` has no FK to the
+        // item (the id lives in the JSON payload), so nothing cascades. Only the
+        // kernel embed identity is touched; other plugins' rows are theirs.
+        //
+        // After the item row, not before: an enqueue holds `FOR KEY SHARE` on
+        // the item until its job commits (`embed_index::enqueue_embed_job`), so
+        // the item delete above waited for any such job, and this statement,
+        // reading afresh, sees and removes it.
+        sqlx::query("DELETE FROM plugin_queue WHERE plugin_name = $1 AND payload->>'item_id' = $2")
+            .bind(crate::services::embed_index::KERNEL_EMBED_PLUGIN)
+            .bind(id.to_string())
+            .execute(&mut **tx)
+            .await
+            .context("failed to delete item embed jobs")?;
 
         Ok(result.rows_affected() > 0)
     }

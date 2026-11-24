@@ -482,3 +482,279 @@ fn backfill_enqueues_jobs_for_gap_items() {
         clear_ai_config(&pool).await;
     });
 }
+
+// ── B188: deleting an item drops its queued embed job ────────────────────────
+
+#[test]
+fn deleting_an_item_removes_its_queued_embed_jobs() {
+    serial(async {
+        let pool = fresh_pool().await;
+        clean(&pool).await;
+        clear_ai_config(&pool).await;
+        set_failing_embed_provider(&pool).await;
+        let items = wired_items(pool.clone()).await;
+
+        // Save on the default (async) policy: one embed job is queued.
+        let created = items
+            .create(
+                CreateItem {
+                    item_type: "page".to_string(),
+                    title: "B188 delete drops embed job".to_string(),
+                    author_id: Uuid::nil(),
+                    status: Some(1),
+                    promote: None,
+                    sticky: None,
+                    fields: Some(serde_json::json!({ "body": { "value": "doomed" } })),
+                    stage_id: Some(LIVE_STAGE_ID),
+                    language: None,
+                    log: None,
+                },
+                &admin(),
+            )
+            .await
+            .expect("create");
+        assert_eq!(embed_jobs_for(&pool, created.id).await, 1);
+
+        // Another item's embed job and another plugin's row must survive.
+        let other = seed_item(&pool, "B188 bystander", "stays").await;
+        let other_job = insert_embed_job(&pool, other.id, "h", 5).await;
+        let payload = serde_json::json!({ "item_id": created.id });
+        let foreign_job = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO plugin_queue (plugin_name, queue_name, payload, created_at) \
+             VALUES ('b188_other_plugin', 'q', $1, 0) RETURNING id",
+        )
+        .bind(&payload)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        assert!(items.delete(created.id, &admin()).await.expect("delete"));
+
+        assert_eq!(
+            embed_jobs_for(&pool, created.id).await,
+            0,
+            "deleting an item must leave no __kernel_embed row for it"
+        );
+        let survivors =
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM plugin_queue WHERE id = ANY($1)")
+                .bind(vec![other_job, foreign_job])
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(
+            survivors, 2,
+            "other items' and other plugins' rows are untouched"
+        );
+
+        sqlx::query("DELETE FROM plugin_queue WHERE id = $1")
+            .bind(foreign_job)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let _ = Item::delete(&pool, other.id).await;
+        clean(&pool).await;
+        clear_ai_config(&pool).await;
+    });
+}
+
+#[test]
+fn drain_drops_a_job_whose_item_is_gone() {
+    serial(async {
+        let pool = fresh_pool().await;
+        clean(&pool).await;
+        // A job left behind for an item that no longer exists (e.g. queued
+        // before the delete-path fix, or raced with a delete).
+        let missing = Uuid::new_v4();
+        let id = insert_embed_job(&pool, missing, "whatever", 5).await;
+
+        let logs = captured_logs();
+        let cron = embed_cron(pool.clone()).await;
+        let before = logs.contents().len();
+        let stats = cron.drain_embed_jobs().await.unwrap();
+        let text = logs.contents()[before..].to_string();
+
+        // Quiet: nothing above debug from the kernel, and at most one debug line
+        // from the drain.
+        let kernel: Vec<&str> = text
+            .lines()
+            .filter(|l| l.contains("trovato_kernel"))
+            .collect();
+        assert!(
+            kernel
+                .iter()
+                .all(|l| l.contains("DEBUG") || l.contains("TRACE")),
+            "a job for a missing item must not log above debug:\n{text}"
+        );
+        let drain_debug = kernel
+            .iter()
+            .filter(|l| l.contains("DEBUG") && l.contains("trovato_kernel::cron"))
+            .count();
+        assert!(
+            drain_debug <= 1,
+            "at most one debug line for a job whose item is gone, got {drain_debug}:\n{text}"
+        );
+
+        // Treated as done: removed, never retried or dead-lettered, no error.
+        assert_eq!(stats.errors, 0);
+        assert_eq!(stats.retried, 0);
+        assert_eq!(stats.dead_lettered, 0);
+        let gone = sqlx::query("SELECT id FROM plugin_queue WHERE id = $1")
+            .bind(id)
+            .fetch_optional(&pool)
+            .await
+            .unwrap();
+        assert!(gone.is_none(), "a job for a missing item must be removed");
+        assert!(
+            embed_index::embed_status(&pool, missing)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        clean(&pool).await;
+    });
+}
+
+/// Shared buffer the test binary's `tracing` subscriber writes into, so a test
+/// can read what the drain actually logged.
+#[derive(Clone, Default)]
+struct CapturedLogs(Arc<Mutex<Vec<u8>>>);
+
+impl CapturedLogs {
+    fn contents(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+impl std::io::Write for CapturedLogs {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for CapturedLogs {
+    type Writer = Self;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+/// The capturing subscriber, installed once for the whole binary. Global, not
+/// thread-local: the drain runs each job in a spawned task on a runtime worker
+/// thread, which `set_default` would not reach.
+static CAPTURE: OnceLock<CapturedLogs> = OnceLock::new();
+
+fn captured_logs() -> &'static CapturedLogs {
+    CAPTURE.get_or_init(|| {
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_ansi(false)
+            .with_max_level(tracing::Level::DEBUG)
+            .finish();
+        tracing::subscriber::set_global_default(subscriber)
+            .expect("install the capturing subscriber");
+        logs
+    })
+}
+
+/// How long a waiter is given to show it is blocked on the other transaction's
+/// row lock before that transaction commits.
+const LOCK_WAIT: Duration = Duration::from_millis(300);
+
+#[test]
+fn an_enqueue_racing_an_uncommitted_delete_queues_nothing() {
+    serial(async {
+        let pool = fresh_pool().await;
+        clean(&pool).await;
+        let item = seed_item(&pool, "B188 enqueue during delete", "racing").await;
+
+        // The delete has run but not committed.
+        let mut tx = pool.begin().await.unwrap();
+        assert!(Item::delete_in(&mut tx, item.id).await.unwrap());
+
+        // A save's enqueue for the same item arrives meanwhile.
+        let enqueue = tokio::spawn({
+            let pool = pool.clone();
+            let id = item.id;
+            async move { embed_index::enqueue_embed_job(&pool, id, "h").await }
+        });
+        tokio::time::sleep(LOCK_WAIT).await;
+        assert!(
+            !enqueue.is_finished(),
+            "the enqueue must wait on the item row lock held by the delete"
+        );
+
+        tx.commit().await.unwrap();
+        let queued = enqueue
+            .await
+            .unwrap()
+            .expect("enqueue for a deleted item is not an error");
+        assert!(!queued, "nothing is queued for an item deleted meanwhile");
+        assert_eq!(
+            embed_jobs_for(&pool, item.id).await,
+            0,
+            "no embed job may outlive the item"
+        );
+
+        clean(&pool).await;
+    });
+}
+
+#[test]
+fn a_delete_racing_an_uncommitted_enqueue_removes_its_job() {
+    serial(async {
+        let pool = fresh_pool().await;
+        clean(&pool).await;
+        let item = seed_item(&pool, "B188 delete during enqueue", "racing").await;
+
+        // An enqueue that has locked the item and written its job, not yet
+        // committed: the same steps `enqueue_embed_job` takes.
+        let mut tx = pool.begin().await.unwrap();
+        sqlx::query("SELECT 1 FROM item WHERE id = $1 FOR KEY SHARE")
+            .bind(item.id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        let payload = serde_json::json!({ "item_id": item.id, "content_hash": "h" });
+        sqlx::query(
+            "INSERT INTO plugin_queue (plugin_name, queue_name, payload, created_at) \
+             VALUES ($1, $2, $3, 0)",
+        )
+        .bind(KERNEL_EMBED_PLUGIN)
+        .bind(EMBED_QUEUE_NAME)
+        .bind(&payload)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+
+        // The delete arrives meanwhile.
+        let delete = tokio::spawn({
+            let pool = pool.clone();
+            let id = item.id;
+            async move { Item::delete(&pool, id).await }
+        });
+        tokio::time::sleep(LOCK_WAIT).await;
+        assert!(
+            !delete.is_finished(),
+            "the delete must wait on the enqueue's lock on the item row"
+        );
+
+        tx.commit().await.unwrap();
+        assert!(
+            delete.await.unwrap().expect("delete"),
+            "the item is deleted"
+        );
+        assert_eq!(
+            embed_jobs_for(&pool, item.id).await,
+            0,
+            "the job committed while the delete waited must go with the item"
+        );
+
+        clean(&pool).await;
+    });
+}
