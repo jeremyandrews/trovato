@@ -36,6 +36,10 @@ pub async fn authenticate_bearer_token(
     mut request: Request<Body>,
     next: Next,
 ) -> Response {
+    // A probe carries `HEALTH_TOKEN`, not a credential of a user.
+    if crate::routes::health::is_probe(request.method(), request.uri().path()) {
+        return next.run(request).await;
+    }
     let auth_header = request
         .headers()
         .get("Authorization")

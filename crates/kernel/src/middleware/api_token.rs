@@ -56,6 +56,10 @@ pub async fn authenticate_api_token(
     request: Request<Body>,
     next: Next,
 ) -> Response {
+    // A probe carries `HEALTH_TOKEN`, not an API token.
+    if crate::routes::health::is_probe(request.method(), request.uri().path()) {
+        return next.run(request).await;
+    }
     let auth_header = request
         .headers()
         .get(axum::http::header::AUTHORIZATION)

@@ -7,7 +7,129 @@ here needs nothing beyond the ordinary upgrade.
 Each entry says what changed, who it affects, and how to find out whether that
 is you **before** you upgrade.
 
+## Upgrading with no downtime, and rolling back
+
+These hold for every release from the one that added `trovato migrate` on.
+The design is [docs/design/upgrades-and-probes.md](docs/design/upgrades-and-probes.md);
+the step by step procedure is [docs/deployment/upgrades.md](docs/deployment/upgrades.md).
+
+### Expand, then contract
+
+**Every migration leaves the previous release working.** While the migration
+step runs, the previous release is still serving. After it, the previous
+release is what a rollback redeploys. A migration that breaks it turns an
+upgrade into an outage and a rollback into a restore from backup.
+
+Fine at any time (expand):
+
+- a new table, view or function;
+- a new column that is nullable or has a `DEFAULT`;
+- a non-unique index on an existing table built `CONCURRENTLY`, as the only
+  statement of a kernel migration whose first line is `-- no-transaction`
+  (Postgres runs a file of several statements as one transaction block, where
+  `CONCURRENTLY` fails), and without `IF NOT EXISTS`. A failed or cancelled
+  build leaves an INVALID index under its name; the retry then fails on it
+  loudly, and the fix is `DROP INDEX CONCURRENTLY <name>;` by hand, then
+  `trovato migrate` again. (Plugin migrations always run in one transaction,
+  so a plugin index on an existing table needs a contract marker. A `UNIQUE`
+  index on an existing table is a new constraint and needs one too.)
+- inserting or updating rows the previous release reads the same way.
+
+Only in a later release, after no released code reads or writes the object
+(contract): dropping a table, column, view, function, type, index or constraint
+(the previous release's `ON CONFLICT` writes need its unique ones); renaming a table
+or column; changing a column's type; `SET NOT NULL`; adding a `NOT NULL` column
+without a `DEFAULT`; removing a column's `DEFAULT`; adding a constraint;
+`TRUNCATE`; a plain or unique `CREATE INDEX` on a table that already exists. A
+`DROP INDEX CONCURRENTLY`, like a concurrent build, needs a `-- no-transaction`
+kernel file of its own.
+
+A rename takes three releases:
+
+```sql
+-- 0.108.0: add the new column; 0.108.0's code writes both and reads the old one.
+ALTER TABLE item ADD COLUMN summary TEXT;
+UPDATE item SET summary = teaser WHERE summary IS NULL;   -- if it is small; see below
+
+-- 0.109.0's code reads `summary` only. No migration.
+
+-- 0.110.0: drop the old column, naming the release that stopped using it.
+-- trovato:contract 0.109.0: item.teaser unread since 0.109.0
+ALTER TABLE item DROP COLUMN teaser;
+```
+
+A `NOT NULL` column: add it with a `DEFAULT` (fast on Postgres 11 and later),
+or add it nullable, backfill, and add the constraint in a later release with a
+marker.
+
+**Backfills.** A migration that rewrites rows runs while the site serves.
+Keep it to about one second of row locks on any table the site writes,
+measured on the largest install. Anything bigger goes in batches of at most
+1000 rows, each its own short transaction, from cron or the queue. Add the
+column in one release, backfill, then constrain or drop in a later one.
+
+**The rule is checked.** `cargo test -p trovato-kernel --lib migration_rule`
+(run by `./scripts/pre-commit-check.sh` and CI) refuses a contract statement in
+a new kernel or plugin migration unless the comment lines at the top of the
+file carry `-- trovato:contract <release>: <reason>`, naming a release older
+than the one being built (the checker cannot see tags; whether that release really stopped
+using the object is the reviewer's question).
+
+**When a release cannot keep the previous one working**, name the migration
+`<version>_incompatible_<description>.sql`. Older binaries refuse to start on a
+schema that holds it (with `MIGRATE_ON_START=false`, to become ready), so that
+release needs planned downtime and
+cannot be rolled back by image. Its `UPGRADING.md` entry must say so.
+
+### Rolling back
+
+**Redeploy the previous image or binary. Never roll back the schema.** There
+are no down migrations. The previous release runs on the newer schema: it
+accepts migrations it does not know unless one is marked incompatible.
+
+- Kubernetes: `kubectl rollout undo deployment/trovato`, then
+  `kubectl rollout status deployment/trovato`.
+- One server: reinstall the previous binary and restart it. With the default
+  `MIGRATE_ON_START=true` it finds nothing to apply and starts.
+
+When the newer release is fixed, upgrade again. Its migrations are already
+applied, so `trovato migrate` finds nothing to do.
+
 ## Unreleased
+
+### Migrations can run as their own step; `/health` answers anonymous callers with its status only
+
+**Who is affected:** anyone running more than one server, anyone running on
+Kubernetes, and anyone reading `pool` or `services` from `/health`. A single
+server with the default settings migrates and starts exactly as before.
+
+**What changed.**
+
+- `trovato migrate` applies pending kernel and plugin migrations under one
+  Postgres advisory lock; `--status` and `--dry-run` change nothing. Plugin
+  migrations, which took no lock before, now take the same one wherever they
+  run.
+- `MIGRATE_ON_START` (default `true`). Set to `false`, `serve` never changes
+  the schema: it waits, alive and not ready, until `trovato migrate` has run.
+  The `plugin`, `config` and `user` commands refuse to run on a kernel schema
+  that is behind; once it is current, `plugin install`, `plugin migrate` and
+  `config import` apply the plugin migrations they need, under the lock.
+- An applied migration the binary does not know is accepted unless its name
+  marks it incompatible, where it used to stop the server at boot. This is
+  what makes a rollback by image work.
+- `/health/live` and `/health/ready` are new. `/health` keeps its status code
+  and `status` field. Its `postgres`, `redis`, `pool` and `services` fields now
+  go only to a caller on loopback with no `X-Forwarded-For`, `Forwarded` or
+  `X-Real-IP` header, or to one sending `Authorization: Bearer <HEALTH_TOKEN>`.
+  Probes no longer count against the visitor rate limits.
+- On SIGTERM the server reports not ready at once and keeps serving for
+  `SHUTDOWN_DRAIN_SECS`. That is 5 under Kubernetes and 0 elsewhere, so a
+  single server stops as fast as before.
+- The image's `HEALTHCHECK` uses `/health/live`.
+
+**How to find out.** If a monitor reads `pool` or `services` from `/health`
+from another host, set `HEALTH_TOKEN` and send it as a bearer token. A probe
+that only reads the status code needs nothing.
 
 ### One path per JSON capability; the item API takes `access content`
 
