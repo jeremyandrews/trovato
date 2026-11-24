@@ -147,7 +147,8 @@ echo "::group::cargo test$PKGS$FLAGS"
 # Unquoted on purpose: PKGS and FLAGS are built-up argument lists.
 # shellcheck disable=SC2086
 # MINE goes in through the environment: BSD awk refuses a newline in `-v`.
-cargo test $PKGS $FLAGS 2>&1 | MINE="$MINE" awk -v out="$TIMINGS_FILE" '
+# --no-fail-fast: one failing target must not hide the targets after it.
+cargo test --no-fail-fast $PKGS $FLAGS 2>&1 | MINE="$MINE" awk -v out="$TIMINGS_FILE" '
   BEGIN { n = split(ENVIRON["MINE"], rows, "\n"); for (i = 1; i <= n; i++) { split(rows[i], f, " "); pkg[f[2]] = f[1] } }
   { print; fflush() }
   /Running/ && match($0, /tests\/[^ ]+\.rs/) { cur = substr($0, RSTART + 6, RLENGTH - 9) }

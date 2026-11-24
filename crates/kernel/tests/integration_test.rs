@@ -1156,6 +1156,15 @@ fn e2e_metrics_endpoint_returns_prometheus_format() {
     run_test(async {
         let app = shared_app().await;
 
+        // One request first, so the request counter has a series to show: it
+        // counts a request when it completes, so in a process where nothing
+        // else has made one yet (this test alone, under nextest or a filter)
+        // `/metrics` would not yet count itself.
+        let warm = app
+            .request(Request::get("/health").body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(warm.status(), StatusCode::OK);
+
         let response = app
             .request(Request::get("/metrics").body(Body::empty()).unwrap())
             .await;

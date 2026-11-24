@@ -46,6 +46,51 @@ a time, its tests in parallel inside it. That is also what the targets' own
 locks (the `static` mutexes at the top of many files) are written for, and what
 a local `cargo test` does.
 
+The integration targets of one shard build and run in a single `cargo test`
+invocation, so a target in another package (`trovato-mcp`) does not rebuild the
+kernel under different features.
+
+### Four tests at a time inside a target
+
+`scripts/ci-test-shard.sh` sets `RUST_TEST_THREADS=4`, the runner's core
+count. Every `TestApp` opens a pool of up to 25 connections against a Postgres
+allowing 100, and with more threads the busiest targets (`config_storage_test`)
+time out waiting for one. Set the variable to run more or fewer.
+
+Tests that share site-wide state take a `static` lock, and two things about
+parallel tests have to be right for that lock to work:
+
+- **Hold the lock through cleanup.** `common::run_test` runs the cleanups a
+  test registered with `defer_cleanup` after the test body returns, so a guard
+  bound with `let _guard = LOCK.lock().await;` is released before the restore
+  runs, and the next test sees the unrestored state. Pass the guard to
+  `common::hold_until_cleanup(LOCK.lock().await)` instead: it is dropped after
+  the last cleanup. (A lock taken by a helper that a test calls more than once
+  keeps `let _guard`; it is released before the helper is called again.)
+- **Invalidate the caches your raw writes skip.** A model-level write (a menu
+  link, a tile) does not bump the process's caches the way the admin routes
+  do, and a concurrent test's request refills the cache in between. Invalidate
+  it (`menu::navigation::invalidate_config_menus()`), or wait for the
+  generations with `common::settle_cache_generations()`.
+
+A test that captures one request's events with `.with_subscriber(..)` must call
+`common::scoped_subscribers_see_every_callsite()` first. Without it a
+concurrent test's request can fix a callsite's interest at "never", and the
+capture misses those events for the rest of the binary (see the function's
+comment).
+
+A table a plugin creates on first use, from more than one test, is created
+under a Postgres advisory lock: `CREATE TABLE IF NOT EXISTS` is not safe
+against itself.
+
+### Dependencies optimized
+
+`Cargo.toml` builds argon2 and Cranelift (and what they need) at
+`opt-level = 3` in the dev profile. Most of a test's CPU is in those two, and
+this cuts it about three times. Optimizing every dependency cuts it further but
+triples a cold dependency build in CI; the comment there has the numbers. The
+workspace's own crates still build unoptimized.
+
 ## Where a new test goes
 
 Nowhere in particular: there is no list to add it to.

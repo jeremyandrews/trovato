@@ -136,7 +136,7 @@ jobs:
     name: Test (shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
     # BUDGET: provisional, set from the first measured run.
-    timeout-minutes: 30
+    timeout-minutes: 40
     strategy:
       # One shard's failure should not hide another's.
       fail-fast: false

@@ -7,9 +7,9 @@
 //! of exiting, an old binary on a newer schema, and what a pod does between
 //! SIGTERM and exit.
 //!
-//! The file is named to sort after every other kernel test target, so adding it
-//! does not move any existing target to a different CI shard
-//! (`scripts/ci-test-shard.sh` partitions by sorted index).
+//! CI places it on a shard by its measured time (`.config/ci-test-weights.txt`,
+//! `scripts/ci-test-shard.sh`), and it is on the slow-test allowlist
+//! (`.config/slow-tests.txt`): its waits are the behaviour under test.
 //!
 //! `previous_release_serves_on_this_schema` is the CI `rollback` job's driver
 //! and skips itself unless `TROVATO_PREVIOUS_BIN` names the previous binary.
