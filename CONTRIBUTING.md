@@ -125,7 +125,10 @@ header, and `scripts/changelog-fold.sh` is what the release runs.
 A change that makes a page run more statements, cache lookups or plugin calls
 fails `performance_test` until the expected counts change in the same commit.
 [docs/performance-tests.md](docs/performance-tests.md) covers writing one,
-reading a failure and recording new counts.
+reading a failure and recording new counts. To see where in a request the
+work happens, [Reading a trace](docs/tracing.md#reading-a-trace) in
+`docs/tracing.md` shows how to run the local trace viewer and read a page's
+trace.
 
 ## Coding standards
 

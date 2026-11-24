@@ -115,7 +115,10 @@ normalised text. The normalised text is the statement with comments dropped,
 every literal and parameter replaced by `?` or `$?`, and lists collapsed. The
 expectations file holds the same two for every statement a page runs, so
 `git diff` on it shows which statements came or went. To see where in the code
-a statement runs, search the code for a distinctive part of its text.
+a statement runs, search the code for a distinctive part of its text. To see
+where in the request it runs, and what ran around it, load the page with the
+local trace viewer running and find the fingerprint among the trace's
+`db.query` spans: [Reading a trace](tracing.md#reading-a-trace).
 
 Then do one of these:
 

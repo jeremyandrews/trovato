@@ -345,9 +345,13 @@ their benchmarks.
 ### 9. Timing benchmarks
 
 `scripts/bench.sh` starts nothing; it runs `trovato-loadtest`'s new
-`bench` binary against a running server: named scenarios (`front`, `item`,
-`feed`, `search`, `category`), a warm-up, then N sequential requests per
-scenario, printing median and p99 per scenario. `--save` writes
+`bench` binary against a running server: named pages (`front`, `item`,
+`feed`, `category`, and `search` when asked for, since at 20,000,000 posts it
+takes seconds a request), each in turn: a warm-up, then N requests from 8
+clients, three runs, printing the median over the runs of each run's median
+and p99, with every run's figures beside it. Eight clients rather than one,
+so the server's own concurrency (the pool, the caches' locks) is in the
+measurement, as it is in production. `--save` writes
 `benchmarks/baseline.json`; `--compare` prints the change against it. By hand
 only: a GitHub runner is too noisy for timings and has no generated site; a
 scheduled job is left for when there is a fixed benchmark host.
