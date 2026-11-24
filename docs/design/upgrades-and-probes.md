@@ -73,14 +73,21 @@ trovato migrate --dry-run    # list what would be applied; change nothing
 ```
 
 - **One lock for the whole run.** The command opens one dedicated connection
-  (not a pooled one) and takes `pg_advisory_lock(TROVATO_MIGRATE_LOCK)`. That is
-  a fixed key of our own, separate from sqlx's key. Kernel migrations
-  (`MIGRATOR.run` on that same connection), then plugin migrations in
+  (not a pooled one) and takes the advisory lock `MIGRATE_LOCK_KEY`, a fixed key of
+  our own, separate from sqlx's key. It waits by polling
+  `pg_try_advisory_lock` every 250 ms, not by blocking in `pg_advisory_lock`: a
+  backend blocked there holds a snapshot, and a `CREATE INDEX CONCURRENTLY` in
+  the holder waits for every older snapshot, so the two would deadlock. sqlx
+  still takes its own key inside, so a binary from before this change (which
+  blocks on sqlx's key) can, for that first upgrade only, collide the same way
+  with a concurrent index build; the Job's retry recovers it. Kernel migrations
+  (sqlx's `run_direct` on that same connection, with `ignore_missing` set once
+  our own check has vetted the unknown ones), then plugin migrations in
   dependency order, all run on that connection. Then the lock is released and
   the connection closed. If anything fails, the connection is dropped, Postgres
   ends the session, and the lock goes with it. A failed run can never leave a
   lock behind in a pool. This fixes caveat 2a.
-- **Safe from several places at once.** A second process blocks on the lock.
+- **Safe from several places at once.** A second process waits for the lock.
   Once it gets the lock it finds nothing pending and exits 0. Each migration is
   applied exactly once.
 - **Idempotent.** Running it on an up-to-date database does nothing and exits 0.
@@ -208,7 +215,8 @@ previous release working, the file is named `<version>_incompatible_<desc>.sql`
 (kernel) or `<NNN>_incompatible_<desc>.sql` (plugin). The name is what an older
 binary can see: sqlx records the description (`incompatible ...`) in
 `_sqlx_migrations`, and plugin file names are stored in `plugin_migration`. An
-older binary refuses to become ready on such a schema, so a rollback across it
+older binary refuses to start on such a schema (with `MIGRATE_ON_START=false`,
+to become ready), so a rollback across it
 fails loudly instead of corrupting data. Such a release needs downtime, and
 `UPGRADING.md` must say so.
 
@@ -304,7 +312,8 @@ compiles the workspace crates twice and the dependencies once.
 On **SIGTERM**:
 1. Readiness turns false at once (`/health/ready` answers 503).
 2. The resident queue runner stops taking new batches. A batch already claimed
-   finishes, or, if the process is killed first, its claim lease
+   finishes (waited for only when a drain is configured; a single server exits
+   as before), or, if the process is killed first, its claim lease
    (`locked_until`) expires and another process takes it. That is the "release"
    half.
 3. The server keeps accepting and serving for `SHUTDOWN_DRAIN_SECS`.

@@ -180,6 +180,12 @@ fn concurrent_index_refusal(
     no_transaction: bool,
 ) -> Option<&'static str> {
     let name = concurrent_index_name(s)?;
+    if s.starts_with("CREATE UNIQUE ") {
+        return Some(
+            "adds a uniqueness rule to an existing table, which the previous release's \
+             writes may break, as ADD UNIQUE would",
+        );
+    }
     if !no_transaction {
         return Some(
             "builds an index CONCURRENTLY, which cannot run in a transaction: only a kernel \
@@ -518,6 +524,11 @@ mod tests {
             "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_item_title ON item (title);"
         )));
         assert!(!refused(&format!("-- no-transaction\n{drop}\n{build}")));
+        // A unique one is a new constraint on existing rows and writes.
+        assert!(refused(
+            "-- no-transaction\nDROP INDEX CONCURRENTLY IF EXISTS u;\n\
+             CREATE UNIQUE INDEX CONCURRENTLY u ON item (slug);"
+        ));
         // A plugin migration always runs in a transaction.
         assert!(
             check(

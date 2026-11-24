@@ -70,8 +70,8 @@ than the one being built (the checker cannot see tags; whether that release real
 using the object is the reviewer's question).
 
 **When a release cannot keep the previous one working**, name the migration
-`<version>_incompatible_<description>.sql`. Older binaries refuse to become
-ready on a schema that holds it, so that release needs planned downtime and
+`<version>_incompatible_<description>.sql`. Older binaries refuse to start on a
+schema that holds it (with `MIGRATE_ON_START=false`, to become ready), so that release needs planned downtime and
 cannot be rolled back by image. Its `UPGRADING.md` entry must say so.
 
 ### Rolling back

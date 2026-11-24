@@ -32,6 +32,9 @@ use crate::plugin::PluginInfo;
 /// one covers only the kernel half, and is taken on a pooled connection.
 pub const MIGRATE_LOCK_KEY: i64 = 0x7472_6f76_6174_6f4d;
 
+/// How often a waiting migrator tries the lock again.
+const LOCK_POLL: Duration = Duration::from_millis(250);
+
 /// Plugins by name, with their manifest and directory.
 pub type PluginSet = HashMap<String, (PluginInfo, PathBuf)>;
 
@@ -67,27 +70,22 @@ impl MigrationLock {
     }
 
     async fn lock(mut conn: PgConnection) -> Result<Self> {
-        // A role or URL default `lock_timeout` or `statement_timeout` would turn
-        // the wait for another migrator into a failure: off for the wait, back
-        // to the session default once the lock is held.
-        sqlx::raw_sql(sqlx::AssertSqlSafe(
-            "SET lock_timeout = 0; SET statement_timeout = 0",
-        ))
-        .execute(&mut conn)
-        .await
-        .context("failed to clear timeouts for the migration lock")?;
-        sqlx::query("SELECT pg_advisory_lock($1)")
-            .bind(MIGRATE_LOCK_KEY)
-            .execute(&mut conn)
-            .await
-            .context("failed to take the migration lock")?;
-        sqlx::raw_sql(sqlx::AssertSqlSafe(
-            "RESET lock_timeout; RESET statement_timeout",
-        ))
-        .execute(&mut conn)
-        .await
-        .context("failed to restore timeouts after taking the migration lock")?;
-        Ok(Self { conn })
+        // Polled, not `pg_advisory_lock`: a backend blocked in that call holds
+        // a snapshot for the whole wait, and a `CREATE INDEX CONCURRENTLY` in
+        // the holder waits for every older snapshot, so the two would deadlock.
+        // Each try is a short statement of its own, which also keeps a role's
+        // `lock_timeout` or `statement_timeout` from failing the wait.
+        loop {
+            let locked: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+                .bind(MIGRATE_LOCK_KEY)
+                .fetch_one(&mut conn)
+                .await
+                .context("failed to take the migration lock")?;
+            if locked {
+                return Ok(Self { conn });
+            }
+            tokio::time::sleep(LOCK_POLL).await;
+        }
     }
 
     /// Limit how long a migration's statement may wait for a table lock.

@@ -275,11 +275,23 @@ async fn prepare_schema_for_cli(pool: &sqlx::PgPool, config: &Config) -> Result<
         &config.disabled_plugins,
     )
     .await?;
-    if !report.kernel.pending.is_empty() || !report.kernel.problems.is_empty() {
+    let kernel = &report.kernel;
+    if !kernel.problems.is_empty() {
+        anyhow::bail!(
+            "the database schema cannot be used by this binary:\n  {}",
+            kernel.problems.join("\n  ")
+        );
+    }
+    if !kernel.pending.is_empty() {
+        let pending: Vec<String> = kernel
+            .pending
+            .iter()
+            .map(|(v, d)| format!("{v} {d}"))
+            .collect();
         anyhow::bail!(
             "the database schema is behind this binary (MIGRATE_ON_START=false): \
-             run `trovato migrate` first.\n{}",
-            report.render_status()
+             run `trovato migrate` first. Pending kernel migrations:\n  {}",
+            pending.join("\n  ")
         );
     }
     Ok(())
@@ -691,7 +703,9 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         .get()
         .copied()
         .unwrap_or_else(|| tokio::time::Instant::now() + config.shutdown_timeout);
-    if let Some(runner) = queue_runner
+    // Waited for only where a drain is configured, like in-flight requests: a
+    // single server stops as fast as it did, its claims expiring as before.
+    if let Some(runner) = queue_runner.filter(|_| bound_in_flight)
         && tokio::time::timeout_at(deadline, runner).await.is_err()
     {
         warn!(
@@ -854,7 +868,7 @@ async fn signalled(mut rx: tokio::sync::watch::Receiver<Option<Signal>>) -> Sign
 enum Signal {
     /// SIGINT (Ctrl-C at a terminal): stop without a drain.
     Interrupt,
-    /// SIGTERM (Kubernetes, systemd, `docker stop`): drain first.
+    /// SIGTERM: drain for `SHUTDOWN_DRAIN_SECS` first (0 unless under Kubernetes or set).
     Terminate,
 }
 

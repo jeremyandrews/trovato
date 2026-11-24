@@ -120,7 +120,7 @@ curl -s -H "Authorization: Bearer $HEALTH_TOKEN" https://example.com/health
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `MIGRATE_ON_START` | `true` | apply pending migrations when `serve` (or another subcommand) starts |
+| `MIGRATE_ON_START` | `true` | `serve` applies pending kernel and plugin migrations when it starts; the other subcommands apply the kernel's |
 | `SHUTDOWN_DRAIN_SECS` | 5 under Kubernetes, 0 elsewhere | after SIGTERM, keep serving this long while reporting not ready |
 | `SHUTDOWN_TIMEOUT_SECS` | 30 | then wait this long for in-flight requests (only bounded when a drain is set) and background work |
 | `HEALTH_TOKEN` | unset | bearer token that sees the health details from anywhere |
