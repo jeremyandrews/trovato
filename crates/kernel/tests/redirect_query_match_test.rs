@@ -88,22 +88,40 @@ async fn follow_observing_query(app: &TestApp, uri: &str) -> (StatusCode, Option
     (status, observed)
 }
 
-/// Every test in this file needs the plugin enabled and a fresh app; this
-/// macro is the shared setup each `#[test]` starts with.
-macro_rules! redirects_app {
-    () => {{
-        shared_app()
-            .await
-            .ensure_plugin_enabled("trovato_redirects")
-            .await;
-        &TestApp::new().await
-    }};
+/// This file's app, built once and shared by every `#[test]` below.
+///
+/// Each test used to build its own `TestApp::new()` (a fresh pool, fully
+/// migrated), needed because `shared_app()`'s `AppState` snapshots which
+/// plugins are enabled at the moment it is first built, so enabling
+/// `trovato_redirects` afterward does not retroactively give it a
+/// `redirect_cache`. But seven fresh pools in one binary could exhaust
+/// Postgres's connection cap under the slower, unsharded coverage job
+/// (`pool timed out while waiting for an open connection`), so this file
+/// now builds exactly one, the same way `shared_app()` and other
+/// many-test files do (e.g. `site_queries_test.rs`).
+static APP: std::sync::OnceLock<TestApp> = std::sync::OnceLock::new();
+
+fn app() -> &'static TestApp {
+    APP.get_or_init(|| {
+        let handle = common::shared_runtime_handle();
+        std::thread::spawn(move || {
+            handle.block_on(async {
+                shared_app()
+                    .await
+                    .ensure_plugin_enabled("trovato_redirects")
+                    .await;
+                TestApp::new().await
+            })
+        })
+        .join()
+        .expect("redirect query match app init thread panicked")
+    })
 }
 
 #[test]
 fn two_query_sources_match_their_own_request() {
     run_test(async {
-        let app = redirects_app!();
+        let app = app();
         common::ensure_plugin_tables(app, "trovato_redirects");
         let s = Uuid::now_v7().simple().to_string();
         let s = &s[20..];
@@ -124,7 +142,7 @@ fn two_query_sources_match_their_own_request() {
 #[test]
 fn an_unmatched_query_falls_back_to_the_path_only_redirect() {
     run_test(async {
-        let app = redirects_app!();
+        let app = app();
         common::ensure_plugin_tables(app, "trovato_redirects");
         let s = Uuid::now_v7().simple().to_string();
         let s = &s[20..];
@@ -144,7 +162,7 @@ fn an_unmatched_query_falls_back_to_the_path_only_redirect() {
 #[test]
 fn an_unmatched_query_with_no_path_only_redirect_is_not_redirected() {
     run_test(async {
-        let app = redirects_app!();
+        let app = app();
         common::ensure_plugin_tables(app, "trovato_redirects");
         let s = Uuid::now_v7().simple().to_string();
         let s = &s[20..];
@@ -161,7 +179,7 @@ fn an_unmatched_query_with_no_path_only_redirect_is_not_redirected() {
 #[test]
 fn a_path_only_redirect_still_matches_any_query() {
     run_test(async {
-        let app = redirects_app!();
+        let app = app();
         common::ensure_plugin_tables(app, "trovato_redirects");
         let s = Uuid::now_v7().simple().to_string();
         let s = &s[20..];
@@ -181,7 +199,7 @@ fn a_path_only_redirect_still_matches_any_query() {
 #[test]
 fn query_parameter_order_does_not_matter() {
     run_test(async {
-        let app = redirects_app!();
+        let app = app();
         common::ensure_plugin_tables(app, "trovato_redirects");
         let s = Uuid::now_v7().simple().to_string();
         let s = &s[20..];
@@ -198,7 +216,7 @@ fn query_parameter_order_does_not_matter() {
 #[test]
 fn percent_encoding_is_normalized() {
     run_test(async {
-        let app = redirects_app!();
+        let app = app();
         common::ensure_plugin_tables(app, "trovato_redirects");
         let s = Uuid::now_v7().simple().to_string();
         let s = &s[20..];
@@ -222,7 +240,7 @@ fn percent_encoding_is_normalized() {
 #[test]
 fn an_unmatched_request_s_query_reaches_the_app_untouched() {
     run_test(async {
-        let app = redirects_app!();
+        let app = app();
         common::ensure_plugin_tables(app, "trovato_redirects");
         let s = Uuid::now_v7().simple().to_string();
         let s = &s[20..];
