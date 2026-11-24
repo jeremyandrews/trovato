@@ -407,9 +407,39 @@ fn other_events_and_other_rows_are_left_alone() {
 #[test]
 fn without_a_key_the_webhook_does_not_exist() {
     run_test(async {
-        let plain = shared_app().await;
         let body = hard_bounce("nobody@bg18-admin.example.test", 1);
+        let plain = shared_app().await;
+        assert!(
+            plain.state.email().is_none(),
+            "the shared app is expected to have no mail"
+        );
         assert_eq!(post_webhook(plain, &body).await, StatusCode::NOT_FOUND);
+
+        // Mail configured, no key: still no webhook, whatever signs the request.
+        let keyless = TestApp::with_config(|config| {
+            config.smtp_host = Some("127.0.0.1".to_string());
+            config.smtp_port = 2525;
+            config.smtp_encryption = "none".to_string();
+            config.smtp_from_email = FROM.to_string();
+            config.mail.webhook_signing_key = None;
+        })
+        .await;
+        assert!(keyless.state.email().is_some());
+        assert_eq!(post_webhook(&keyless, &body).await, StatusCode::NOT_FOUND);
+        let timestamp = chrono::Utc::now().timestamp().to_string();
+        let mut mac = Hmac::<Sha256>::new_from_slice(b"").unwrap();
+        mac.update(timestamp.as_bytes());
+        mac.update(b"empty-key-token");
+        let empty_key = serde_json::json!({
+            "signature": {"timestamp": timestamp, "token": "empty-key-token",
+                          "signature": hex::encode(mac.finalize().into_bytes())},
+            "event-data": {"event": "failed", "severity": "permanent",
+                           "recipient": "nobody@bg18-admin.example.test"},
+        });
+        assert_eq!(
+            post_webhook(&keyless, &empty_key).await,
+            StatusCode::NOT_FOUND
+        );
     });
 }
 
@@ -505,6 +535,10 @@ fn the_list_and_the_detail_show_what_was_queued() {
         .await;
         assert!(html.contains(&format!("/admin/reports/mail/{sent}\"")));
         assert!(!html.contains(&format!("/admin/reports/mail/{reset}\"")));
+        assert!(
+            html.contains("All (2)") && html.contains("Queued (1)"),
+            "the status counts took the status filter"
+        );
 
         let (status, html) = get(app, &format!("/admin/reports/mail/{reset}"), &cookies).await;
         assert_eq!(status, StatusCode::OK);
@@ -605,15 +639,47 @@ fn retry_and_cancel_need_a_token_and_the_right_state() {
 
         // A sent message can be neither.
         for path in [&cancel, &retry] {
-            post_form(
-                app,
-                path,
-                &cookies,
-                &format!("_token={}", token(app, tokens, &cookies).await),
-            )
-            .await;
+            assert_eq!(
+                post_form(
+                    app,
+                    path,
+                    &cookies,
+                    &format!("_token={}", token(app, tokens, &cookies).await),
+                )
+                .await,
+                StatusCode::SEE_OTHER
+            );
         }
         assert_eq!(row(&app.db, id).await.0, "sent");
+        let (_, html) = get(app, &format!("/admin/reports/mail/{id}"), &cookies).await;
+        assert!(html.contains("This message cannot be retried"), "{html}");
+
+        // Nor one a worker holds.
+        sqlx::query(
+            "UPDATE mail_outbox SET status = 'sending', locked_by = 'bg18-test', \
+             locked_until = now() + interval '10 minutes', finished_at = NULL WHERE id = $1",
+        )
+        .bind(id)
+        .execute(&app.db)
+        .await
+        .unwrap();
+        for path in [&cancel, &retry] {
+            assert_eq!(
+                post_form(
+                    app,
+                    path,
+                    &cookies,
+                    &format!("_token={}", token(app, tokens, &cookies).await),
+                )
+                .await,
+                StatusCode::SEE_OTHER
+            );
+        }
+        assert_eq!(
+            row(&app.db, id).await.0,
+            "sending",
+            "an action touched a row a worker holds"
+        );
 
         // Nor can one whose body retention cleared.
         sqlx::query(
@@ -634,6 +700,7 @@ fn retry_and_cancel_need_a_token_and_the_right_state() {
         assert_eq!(row(&app.db, id).await.0, "failed");
         let (_, html) = get(app, &format!("/admin/reports/mail/{id}"), &cookies).await;
         assert!(html.contains("Cleared by retention"));
+        assert!(!html.contains(">Retry<"));
     });
 }
 
@@ -662,9 +729,33 @@ fn suppressions_are_added_and_removed_with_a_token() {
             StatusCode::BAD_REQUEST
         );
         assert_eq!(suppression(&app.db, &to).await, None);
+        // A valid token, so it is the address check that refuses.
+        clean_up(&app.db, "not-an-address");
         assert_eq!(
-            post_form(app, add, &cookies, "_token=x&address=not-an-address").await,
+            post_form(
+                app,
+                add,
+                &cookies,
+                &format!(
+                    "_token={}&address=not-an-address",
+                    token(app, add, &cookies).await
+                )
+            )
+            .await,
             StatusCode::BAD_REQUEST
+        );
+        assert_eq!(suppression(&app.db, "not-an-address").await, None);
+
+        // A complaint stops bulk mail only; adding the address by hand makes
+        // it stop everything.
+        let complained = sent_to(app, &to).await;
+        assert_eq!(
+            post_webhook(app, &complaint(&to, complained)).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            suppression(&app.db, &to).await.as_deref(),
+            Some("complaint")
         );
         assert_eq!(
             post_form(
@@ -694,6 +785,21 @@ fn suppressions_are_added_and_removed_with_a_token() {
         let id = queue(app, NewMail::account("test", &to, "Blocked", "Hello")).await;
         app.deliver_mail_to(&[&to]).await;
         assert_eq!(row(&app.db, id).await.0, "suppressed");
+
+        // No provider event replaces an entry made by hand.
+        assert_eq!(
+            post_webhook(app, &hard_bounce(&to, complained)).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            post_webhook(app, &complaint(&to, complained)).await,
+            StatusCode::OK
+        );
+        assert_eq!(
+            suppression(&app.db, &to).await.as_deref(),
+            Some("manual"),
+            "a provider event replaced a manual entry"
+        );
 
         assert_eq!(
             post_form(
@@ -760,13 +866,26 @@ fn a_blog_owner_sees_their_own_blog_only() {
         .await;
 
         let (owner_id, owner) = user_holding(app, "bg18blogowner", &["view own blog mail"]).await;
-        let (_, outsider) = user_holding(app, "bg18outsider", &["view own blog mail"]).await;
+        // A member of the other blog, with the permission, but not of this one.
+        let (outsider_id, outsider) =
+            user_holding(app, "bg18outsider", &["view own blog mail"]).await;
         let (_, member) = user_holding(app, "bg18plainmember", &[]).await;
+        for (user, blog) in [(owner_id, DEFAULT_TENANT_ID), (outsider_id, other)] {
+            sqlx::query(
+                "INSERT INTO user_tenant (user_id, tenant_id, is_active) VALUES ($1, $2, TRUE)",
+            )
+            .bind(user)
+            .bind(blog)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+        // The owner sees that a message bounced.
         sqlx::query(
-            "INSERT INTO user_tenant (user_id, tenant_id, is_active) VALUES ($1, $2, TRUE)",
+            "UPDATE mail_outbox SET status = 'failed', bounced_at = now(), \
+             last_error = 'hard bounce: 550 bg18 test' WHERE id = $1",
         )
-        .bind(owner_id)
-        .bind(DEFAULT_TENANT_ID)
+        .bind(ours)
         .execute(pool)
         .await
         .unwrap();
@@ -777,6 +896,8 @@ fn a_blog_owner_sees_their_own_blog_only() {
         assert!(html.contains("Ours"), "{html}");
         assert!(!html.contains("Theirs"));
         assert!(html.contains("All (1)"));
+        assert!(html.contains("<span class=\"mail-note\">bounced</span>"));
+        assert!(html.contains("hard bounce: 550 bg18 test"));
         // No message bodies and no suppression list from here.
         assert!(!html.contains(&format!("/admin/reports/mail/{ours}")));
         assert!(!html.contains("/admin/reports/mail/suppressions"));

@@ -165,8 +165,8 @@ pub struct MailDetail {
     pub body_purged_at: Option<String>,
 }
 
-/// One message, or `None`. With `tenant`, only that blog's.
-pub async fn detail(pool: &PgPool, id: i64, tenant: Option<Uuid>) -> Result<Option<MailDetail>> {
+/// One message, or `None`.
+pub async fn detail(pool: &PgPool, id: i64) -> Result<Option<MailDetail>> {
     let mut qb = QueryBuilder::new("SELECT ");
     qb.push(ROW_COLUMNS).push(
         ", m.priority, m.max_attempts, m.dedupe_key, m.text_body, m.html_body, \
@@ -184,9 +184,6 @@ pub async fn detail(pool: &PgPool, id: i64, tenant: Option<Uuid>) -> Result<Opti
          FROM mail_outbox m JOIN tenant t ON t.id = m.tenant_id WHERE m.id = ",
     );
     qb.push_bind(id);
-    if let Some(tenant) = tenant {
-        qb.push(" AND m.tenant_id = ").push_bind(tenant);
-    }
     let found: Option<MailDetail> = qb.build_query_as().fetch_optional(pool).await?;
     Ok(found.map(|mut d| {
         d.text_body = d.text_body.map(|b| redact_secret_marker(&b));
@@ -269,15 +266,17 @@ pub async fn suppressions(
     Ok((rows, total))
 }
 
-/// Stop all mail to `address`, by hand. An existing entry is kept as it is.
-/// `false` when the address was already suppressed.
-pub async fn suppress(pool: &PgPool, address: &str, detail: &str) -> Result<bool> {
+/// Stop all mail to `address`, by hand. A complaint (which stops bulk mail
+/// only) becomes a manual entry; a hard bounce or a manual entry is kept.
+/// `false` when the address was already stopped from all mail.
+pub async fn suppress(pool: &PgPool, address: &str) -> Result<bool> {
     let done = sqlx::query(
-        "INSERT INTO mail_suppression (address, reason, detail) VALUES ($1, 'manual', $2) \
-         ON CONFLICT (address) DO NOTHING",
+        "INSERT INTO mail_suppression (address, reason, detail) VALUES ($1, 'manual', 'added by an administrator') \
+         ON CONFLICT (address) DO UPDATE SET reason = 'manual', outbox_id = NULL, \
+             detail = EXCLUDED.detail, created_at = now() \
+         WHERE mail_suppression.reason = 'complaint'",
     )
     .bind(address.trim().to_lowercase())
-    .bind(detail)
     .execute(pool)
     .await?;
     Ok(done.rows_affected() == 1)
@@ -340,10 +339,11 @@ pub async fn record_feedback(
         Some(id) => match feedback {
             Feedback::HardBounce => {
                 sqlx::query_scalar::<_, i64>(
-                    "UPDATE mail_outbox SET bounced_at = COALESCE(bounced_at, now()), \
+                    "UPDATE mail_outbox SET bounced_at = now(), \
                          status = 'failed', finished_at = COALESCE(finished_at, now()), \
                          last_error = $3 \
                      WHERE id = $1 AND lower(recipient) = $2 AND status IN ('sent', 'failed') \
+                     AND bounced_at IS NULL \
                      RETURNING id",
                 )
                 .bind(id)

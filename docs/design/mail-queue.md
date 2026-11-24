@@ -394,7 +394,7 @@ stopped by the worker's existing suppression check at send.
 
 **Pages** (`routes/admin_mail.rs`, `templates/admin/reports/mail*.html`). The
 list builds one filtered `SELECT ... ORDER BY id DESC LIMIT 50 OFFSET n`
-(`mail_outbox_tenant_newest` serves one blog, the primary key the network)
+(`mail_outbox_tenant_newest` serves one blog and the primary key the network; two later migrations build, concurrently, `(status, id DESC)` for the status filter and the counts (an index only scan) and `(lower(recipient), id DESC)` for the recipient filter)
 and one `count(*) ... GROUP BY status` with the same filters except status;
 the total for the pager is read from those counts, so there is no third
 query. Status and kind are accepted only from their fixed lists. Retry and

@@ -40,7 +40,7 @@ use super::helpers::{
 const NETWORK_PERMISSION: &str = "administer site";
 
 /// What the blog owner page takes, with a membership of the blog.
-pub const OWNER_PERMISSION: &str = "view own blog mail";
+const OWNER_PERMISSION: &str = "view own blog mail";
 
 /// Session key for the message an action leaves for the next page.
 const FLASH_KEY: &str = "mail_report_flash";
@@ -153,7 +153,15 @@ async fn render_list(
     let pool = state.db();
     let rows = mail_log::list(pool, &filter, PER_PAGE, (page - 1) * PER_PAGE);
     let counts = mail_log::status_counts(pool, &filter);
-    let (rows, counts) = match tokio::try_join!(rows, counts) {
+    // The blog filter's choices; the owner view has no blog filter.
+    let blogs = async {
+        if owner {
+            Ok(Vec::new())
+        } else {
+            mail_log::blogs(pool).await
+        }
+    };
+    let (rows, counts, blogs) = match tokio::try_join!(rows, counts, blogs) {
         Ok(found) => found,
         Err(e) => {
             tracing::error!(error = %e, "failed to read the mail outbox");
@@ -166,11 +174,6 @@ async fn render_list(
             .find(|(s, _)| s == status)
             .map_or(0, |(_, n)| *n),
         None => counts.iter().map(|(_, n)| n).sum(),
-    };
-    let blogs = if owner {
-        Vec::new()
-    } else {
-        mail_log::blogs(pool).await.unwrap_or_default()
     };
     let flash: Option<String> = session.remove(FLASH_KEY).await.ok().flatten();
     let path = if owner {
@@ -287,7 +290,7 @@ async fn message_detail(
         Err(refusal) => return refusal,
     };
     let viewer = super::helpers::user_context_for(&state, &user).await;
-    let message = match mail_log::detail(state.db(), id, None).await {
+    let message = match mail_log::detail(state.db(), id).await {
         Ok(Some(message)) => message,
         Ok(None) => return render_not_found(),
         Err(e) => {
@@ -314,8 +317,21 @@ async fn message_detail(
     render_admin_template(&state, &viewer, "admin/reports/mail-detail.html", context).await
 }
 
+/// The two things an administrator can do to one message.
+#[derive(Debug, Clone, Copy)]
+enum Action {
+    Retry,
+    Cancel,
+}
+
 /// Run a Retry or Cancel and go back to the message with what happened.
-async fn act(state: &AppState, session: &Session, id: i64, token: &str, action: &str) -> Response {
+async fn act(
+    state: &AppState,
+    session: &Session,
+    id: i64,
+    token: &str,
+    action: Action,
+) -> Response {
     let user = match require_permission(state, session, NETWORK_PERMISSION).await {
         Ok(user) => user,
         Err(refusal) => return refusal,
@@ -324,27 +340,27 @@ async fn act(state: &AppState, session: &Session, id: i64, token: &str, action: 
         return refusal;
     }
     let done = match action {
-        "retry" => mail_log::retry(state.db(), id).await,
-        _ => mail_log::cancel(state.db(), id).await,
+        Action::Retry => mail_log::retry(state.db(), id).await,
+        Action::Cancel => mail_log::cancel(state.db(), id).await,
     };
     let message = match (action, done) {
-        ("retry", Ok(true)) => {
+        (Action::Retry, Ok(true)) => {
             if let Some(email) = state.email() {
                 email.wake();
             }
             "The message is queued again."
         }
-        ("retry", Ok(false)) => {
+        (Action::Retry, Ok(false)) => {
             "This message cannot be retried: it is not failed or cancelled, or its body was cleared."
         }
-        (_, Ok(true)) => "The message is cancelled.",
-        (_, Ok(false)) => "This message cannot be cancelled: it is no longer queued.",
+        (Action::Cancel, Ok(true)) => "The message is cancelled.",
+        (Action::Cancel, Ok(false)) => "This message cannot be cancelled: it is no longer queued.",
         (_, Err(e)) => {
-            tracing::error!(error = %e, id, action, "a mail log action failed");
+            tracing::error!(error = %e, id, ?action, "a mail log action failed");
             return render_server_error("The message could not be changed.");
         }
     };
-    tracing::info!(user_id = %user.id, id, action, "mail log action");
+    tracing::info!(user_id = %user.id, id, ?action, "mail log action");
     let _ = session.insert(FLASH_KEY, message).await;
     Redirect::to(&format!("/admin/reports/mail/{id}")).into_response()
 }
@@ -356,7 +372,7 @@ async fn retry_message(
     Path(id): Path<i64>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    act(&state, &session, id, &form.token, "retry").await
+    act(&state, &session, id, &form.token, Action::Retry).await
 }
 
 /// POST /admin/reports/mail/{id}/cancel
@@ -366,7 +382,7 @@ async fn cancel_message(
     Path(id): Path<i64>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    act(&state, &session, id, &form.token, "cancel").await
+    act(&state, &session, id, &form.token, Action::Cancel).await
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -466,8 +482,7 @@ async fn suppress_address(
     if address.parse::<lettre::Address>().is_err() {
         return render_error("That is not an email address.");
     }
-    let message = match mail_log::suppress(state.db(), &address, "added by an administrator").await
-    {
+    let message = match mail_log::suppress(state.db(), &address).await {
         Ok(true) => format!("No blog will mail {address} until it is removed here."),
         Ok(false) => format!("{address} was already on the list."),
         Err(e) => {
