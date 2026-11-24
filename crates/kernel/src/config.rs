@@ -1073,12 +1073,15 @@ mod config_tests {
                 .as_deref(),
             Some(token)
         );
-        assert!(
-            with_db(&[("METRICS_TOKEN", "")])
-                .runtime
-                .metrics_token
-                .is_none()
-        );
+        for blank in ["", " "] {
+            assert!(
+                with_db(&[("METRICS_TOKEN", blank)])
+                    .runtime
+                    .metrics_token
+                    .is_none(),
+                "{blank:?}"
+            );
+        }
         let err = config_from(&[
             ("DATABASE_URL", "postgres://localhost/x"),
             ("HEALTH_TOKEN", "t0ken"),

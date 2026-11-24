@@ -59,12 +59,14 @@ where
         // Counts every sqlx statement into the request in scope.
         .with(query_listener::query_listener())
         .with(log.with_filter(tracing_subscriber::filter::LevelFilter::INFO));
-    let dispatch = match export {
-        Some(provider) => tracing::Dispatch::new(base.with(export::install(provider))),
+    match export {
+        Some(provider) => {
+            let dispatch = tracing::Dispatch::new(base.with(export::install(provider)));
+            export::set_dispatch(&dispatch);
+            dispatch
+        }
         None => tracing::Dispatch::new(base),
-    };
-    export::set_dispatch(&dispatch);
-    dispatch
+    }
 }
 
 /// Run one template render of `kind` (`page`, `item`, `element`, `admin`)

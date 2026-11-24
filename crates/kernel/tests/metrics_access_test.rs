@@ -17,6 +17,7 @@ use axum::http::{Method, Request, StatusCode};
 use common::{TestApp, run_test};
 
 const TOKEN: &str = "metrics-access-test-token-0123456789abcdef";
+const HEALTH_TOKEN: &str = "health-probe-token-not-for-metrics-0123456789";
 
 async fn scrape(app: &TestApp, headers: &[(&str, &str)]) -> (StatusCode, String) {
     send(app, Method::GET, headers).await
@@ -38,6 +39,7 @@ fn metrics_answer_an_operator_and_nobody_else() {
     run_test(async {
         let app = TestApp::with_config(|c| {
             c.runtime.metrics_token = Some(TOKEN.to_string());
+            c.health_token = Some(HEALTH_TOKEN.to_string());
         })
         .await;
 
@@ -80,6 +82,43 @@ fn metrics_answer_an_operator_and_nobody_else() {
         let (status, _) = send(&app, Method::HEAD, &[("x-forwarded-for", "203.0.113.9")]).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "HEAD through a proxy");
 
+        // Each token opens its own door only: the probe token is not the
+        // metrics token, and the metrics token is not the probe token.
+        let probe = format!("Bearer {HEALTH_TOKEN}");
+        let (status, _) = scrape(
+            &app,
+            &[
+                ("x-forwarded-for", "203.0.113.9"),
+                ("authorization", probe.as_str()),
+            ],
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::NOT_FOUND,
+            "the health token read /metrics"
+        );
+        let health = |token: &str| {
+            Request::get("/health/ready")
+                .header("x-forwarded-for", "203.0.113.9")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::empty())
+                .unwrap()
+        };
+        let detailed = |body: &str| body.contains("\"postgres\"");
+        let as_probe = app.request(health(HEALTH_TOKEN)).await;
+        let as_probe = to_bytes(as_probe.into_body(), usize::MAX).await.unwrap();
+        assert!(
+            detailed(&String::from_utf8_lossy(&as_probe)),
+            "the health token does not open the health details: {as_probe:?}"
+        );
+        let as_metrics = app.request(health(TOKEN)).await;
+        let as_metrics = to_bytes(as_metrics.into_body(), usize::MAX).await.unwrap();
+        assert!(
+            !detailed(&String::from_utf8_lossy(&as_metrics)),
+            "the metrics token opened the health details"
+        );
+
         // A wrong token, or the right one with a byte missing, earns nothing.
         let short = format!("Bearer {}", &TOKEN[1..]);
         for wrong in ["Bearer not-the-token", short.as_str(), TOKEN] {
@@ -90,5 +129,24 @@ fn metrics_answer_an_operator_and_nobody_else() {
             .await;
             assert_eq!(status, StatusCode::NOT_FOUND, "{wrong}");
         }
+    });
+}
+
+#[test]
+fn without_a_metrics_token_only_the_same_host_reads_metrics() {
+    run_test(async {
+        let app = TestApp::with_config(|c| c.runtime.metrics_token = None).await;
+        let (status, _) = scrape(&app, &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        // No token is configured, so no bearer opens it from elsewhere.
+        let (status, _) = scrape(
+            &app,
+            &[
+                ("x-forwarded-for", "203.0.113.9"),
+                ("authorization", "Bearer "),
+            ],
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
     });
 }

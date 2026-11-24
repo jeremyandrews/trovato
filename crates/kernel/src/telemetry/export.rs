@@ -96,8 +96,8 @@ impl ExportSettings {
 static TRACER: OnceLock<SdkTracer> = OnceLock::new();
 /// Its provider, kept to flush on shutdown.
 static PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
-/// The global dispatcher, for finding a statement's parent span (see
-/// [`db_query`]).
+/// The exporting dispatcher, for finding a statement's parent span (see
+/// [`sampled_parent`]).
 static DISPATCH: OnceLock<WeakDispatch> = OnceLock::new();
 
 /// Whether spans are being exported.
@@ -166,8 +166,8 @@ where
         .with_filter(Targets::new().with_target(TARGET, tracing::Level::TRACE))
 }
 
-/// Remember the global dispatcher, so [`db_query`] can find a statement's
-/// parent without asking for the current dispatcher, which a layer cannot do
+/// Remember the exporting dispatcher, so [`sampled_parent`] can find a
+/// statement's parent without asking for the current dispatcher, which a layer cannot do
 /// from inside one of its own callbacks.
 pub fn set_dispatch(dispatch: &tracing::Dispatch) {
     let _ = DISPATCH.set(dispatch.downgrade());
@@ -182,27 +182,26 @@ pub fn shutdown() {
     }
 }
 
+/// The OTel context a statement run now would be exported under: the
+/// innermost exported span the current thread is in, if its trace is
+/// sampled. `None` with export off, outside any exported span (a statement
+/// outside any request has no trace to join), and in a request sampling left
+/// out, so such a statement is never normalised at all.
+pub fn sampled_parent() -> Option<opentelemetry::Context> {
+    let dispatch = DISPATCH.get().and_then(WeakDispatch::upgrade)?;
+    current_otel_context(&dispatch).filter(|cx| cx.span().span_context().is_sampled())
+}
+
 /// Export one finished statement, `sql` as sqlx ran it, as a `db.query` span
-/// under the current request's span: started `elapsed` before now, ended now.
-/// The span carries the statement only normalised (`db.query.text`, every
-/// literal and parameter replaced) and its fingerprint (`db.query.summary`),
-/// so no literal a `format!` put into the SQL reaches the backend.
-///
-/// Does nothing unless export is on and the statement ran inside a sampled,
-/// exported span: a statement outside any request has no trace to join, and
-/// one in a request sampling left out is not normalised at all.
-pub fn db_query(elapsed: Duration, sql: &str, rows: Option<u64>) {
-    let (Some(tracer), Some(dispatch)) =
-        (TRACER.get(), DISPATCH.get().and_then(WeakDispatch::upgrade))
-    else {
+/// under `parent` (from [`sampled_parent`]): started `elapsed` before now,
+/// ended now. The span carries the statement only normalised
+/// (`db.query.text`, every literal and parameter replaced) and its
+/// fingerprint (`db.query.summary`), so no literal a `format!` put into the
+/// SQL reaches the backend. Does nothing with export off.
+pub fn db_query(parent: &opentelemetry::Context, elapsed: Duration, sql: &str, rows: Option<u64>) {
+    let Some(tracer) = TRACER.get() else {
         return;
     };
-    let Some(parent) = current_otel_context(&dispatch) else {
-        return;
-    };
-    if !parent.span().span_context().is_sampled() {
-        return;
-    }
     let end = SystemTime::now();
     let start = end.checked_sub(elapsed).unwrap_or(end);
     let text = fingerprint::normalize(sql);
@@ -222,7 +221,7 @@ pub fn db_query(elapsed: Duration, sql: &str, rows: Option<u64>) {
         .with_kind(SpanKind::Client)
         .with_start_time(start)
         .with_attributes(attributes)
-        .start_with_context(tracer, &parent);
+        .start_with_context(tracer, parent);
     span.end_with_timestamp(end);
 }
 
@@ -267,13 +266,14 @@ mod tests {
         assert!(!settings(&[("TRACING_EXPORT", "off")]).unwrap().otlp);
         assert!(!settings(&[("TRACING_EXPORT", "")]).unwrap().otlp);
         assert!(settings(&[("TRACING_EXPORT", "otlp")]).unwrap().otlp);
+        assert!(settings(&[("TRACING_EXPORT", " otlp ")]).unwrap().otlp);
     }
 
     #[test]
     fn a_setting_that_is_not_understood_stops_the_server() {
         // A typo must not quietly leave export off.
         assert!(settings(&[("TRACING_EXPORT", "jaeger")]).is_err());
-        for bad in ["half", "1.5", "-0.1"] {
+        for bad in ["half", "1.5", "-0.1", "NaN", "inf"] {
             assert!(
                 settings(&[("TRACING_EXPORT", "otlp"), ("OTEL_TRACES_SAMPLER_ARG", bad)]).is_err()
             );
@@ -331,6 +331,12 @@ mod tests {
     fn a_statement_outside_export_is_not_exported() {
         // Export not installed in the lib tests: nothing to do, nothing panics.
         assert!(!active());
-        db_query(Duration::from_millis(1), "select 1", Some(1));
+        assert!(sampled_parent().is_none());
+        db_query(
+            &opentelemetry::Context::new(),
+            Duration::from_millis(1),
+            "select 1",
+            Some(1),
+        );
     }
 }

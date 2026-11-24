@@ -115,9 +115,16 @@ impl<S: Subscriber> Layer<S> for QueryListener {
         if event.metadata().target() != SQLX_TARGET {
             return;
         }
-        let exporting = export::active();
+        // With export on, the statement's span goes under the request's, if
+        // that one is sampled; asked first, so a statement in a request
+        // sampling left out costs no copy of its text.
+        let parent = if export::active() {
+            export::sampled_parent()
+        } else {
+            None
+        };
         let mut statement = Statement {
-            want_text: exporting || profile::wants_statements(),
+            want_text: parent.is_some() || profile::wants_statements(),
             ..Statement::default()
         };
         event.record(&mut statement);
@@ -129,8 +136,10 @@ impl<S: Subscriber> Layer<S> for QueryListener {
             ..
         } = statement;
         let text = full.or(summary);
-        if exporting && let Some(sql) = text.as_deref() {
-            export::db_query(elapsed, sql, rows_returned);
+        if let Some(parent) = &parent
+            && let Some(sql) = text.as_deref()
+        {
+            export::db_query(parent, elapsed, sql, rows_returned);
         }
         profile::count_query(elapsed, move || text);
     }

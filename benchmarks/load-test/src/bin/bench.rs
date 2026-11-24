@@ -172,6 +172,11 @@ fn change(now: f64, before: f64) -> String {
 #[tokio::main]
 async fn main() {
     let args = Args::parse();
+    // Read before measuring: a bad path should not cost a whole run.
+    let baseline: Option<Report> = args.baseline.as_ref().map(|p| {
+        let text = std::fs::read_to_string(p).expect("read the baseline");
+        serde_json::from_str(&text).expect("parse the baseline")
+    });
     let client = reqwest::Client::builder()
         .pool_max_idle_per_host(args.concurrency.max(1))
         .timeout(Duration::from_secs(60))
@@ -225,10 +230,6 @@ async fn main() {
         );
     }
 
-    let baseline: Option<Report> = args.baseline.as_ref().map(|p| {
-        let text = std::fs::read_to_string(p).expect("read the baseline");
-        serde_json::from_str(&text).expect("parse the baseline")
-    });
     println!(
         "| page | median ms | p99 ms | runs (median / p99) | errors |{}",
         if baseline.is_some() {

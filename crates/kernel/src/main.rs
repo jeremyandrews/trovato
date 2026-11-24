@@ -273,9 +273,11 @@ async fn main() -> Result<()> {
     };
     // The spans still waiting in the export batch are sent before the
     // process ends.
-    tokio::task::spawn_blocking(telemetry::export::shutdown)
-        .await
-        .ok();
+    if telemetry::export::active() {
+        tokio::task::spawn_blocking(telemetry::export::shutdown)
+            .await
+            .ok();
+    }
     result
 }
 

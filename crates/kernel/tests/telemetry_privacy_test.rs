@@ -259,6 +259,19 @@ fn no_secret_reaches_any_telemetry() {
             &mut timings,
         )
         .await;
+        // A method the client made up is text of its own: it must not become
+        // a span name or a metric label.
+        let invented_method = format!("INVENTED-{tag}");
+        send(
+            &app,
+            Request::builder()
+                .method(invented_method.as_str())
+                .uri("/")
+                .body(Body::empty())
+                .unwrap(),
+            &mut timings,
+        )
+        .await;
         let (metrics_status, metrics_body, _) = send(
             &app,
             Request::get("/metrics").body(Body::empty()).unwrap(),
@@ -319,7 +332,19 @@ fn no_secret_reaches_any_telemetry() {
                     "db.query without {key}: {query:?}"
                 );
             }
+            // Normalised: no string literal survives into the text.
+            let text = query
+                .attributes
+                .iter()
+                .find(|kv| kv.key.as_str() == "db.query.text")
+                .map(|kv| kv.value.to_string())
+                .unwrap_or_default();
+            assert!(!text.contains('\''), "a literal was exported: {text}");
         }
+        assert!(
+            metrics_body.contains("method=\"_OTHER\""),
+            "the invented method was not counted as _OTHER"
+        );
 
         // The capture is not vacuous: it saw the request spans, the slow
         // request lines with their breakdown, and real counts.
@@ -382,8 +407,10 @@ fn no_secret_reaches_any_telemetry() {
         assert!(timings.iter().any(|t| t.contains("queries")), "{timings:?}");
 
         // The user id and name are in the existing login audit line ("user
-        // logged in", for the site log), so they are checked against what this telemetry
-        // adds: the Gander spans and events, Server-Timing and /metrics.
+        // logged in", for the site log), and `tower_http`'s request span in the
+        // log prints the method, so these are checked against what this
+        // telemetry adds: the Gander spans and events, Server-Timing, /metrics
+        // and the exported spans.
         let added = output
             .lines()
             .filter(|l| {
@@ -397,6 +424,7 @@ fn no_secret_reaches_any_telemetry() {
         for (what, value) in [
             ("user id", user_id.as_str()),
             ("username", username.as_str()),
+            ("invented method", invented_method.as_str()),
         ] {
             if let Some(line) = added.lines().find(|l| l.contains(value)) {
                 panic!("the {what} reached telemetry:\n{line}");

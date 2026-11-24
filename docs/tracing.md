@@ -18,7 +18,7 @@ template (`GET /item/{id}`), never its path. Inside it:
 
 | Span | One per | Attributes |
 |---|---|---|
-| `db.query` | database statement | `db.query.summary` (the fingerprint, `select:item:1a2b3c4d`), `db.query.text` (the SQL with every literal and parameter replaced by `?`), `db.response.returned_rows` |
+| `db.query` | database statement a request makes (statements in queue jobs and background tasks are not counted and not exported) | `db.query.summary` (the fingerprint, `select:item:1a2b3c4d`), `db.query.text` (the SQL with every literal and parameter replaced by `?`), `db.response.returned_rows` |
 | `cache` (`cache.get`, `cache.set`, `cache.invalidate`, `cache.invalidate_tag`) | Redis cache call | `cache.tier=redis`, `cache.bin` (the key's first segment), `cache.hit` |
 | an event `cache.get` on the enclosing span | in-process cache lookup | `cache.tier=memory`, `cache.bin`, `cache.hit` |
 | `plugin.tap` | plugin tap call | `trovato.plugin`, `trovato.tap` |
@@ -62,13 +62,21 @@ accept. There is no gRPC.
 | `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | | The full traces URL, when it is not `<base>/v1/traces`. |
 | `OTEL_EXPORTER_OTLP_HEADERS` | | Headers for every export, `key=value,key=value`: a hosted backend's API key goes here. |
 | `OTEL_EXPORTER_OTLP_TIMEOUT` | `10000` | Milliseconds one export may take. |
-| `OTEL_SERVICE_NAME` | `trovato` | The service name traces are filed under. Give each site or environment its own. |
+| `OTEL_SERVICE_NAME` | `trovato` | The service name traces are filed under. Give each site or environment its own. This is the only way to name the service: a `service.name` in `OTEL_RESOURCE_ATTRIBUTES` is overridden. |
 | `OTEL_RESOURCE_ATTRIBUTES` | | More resource attributes, `deployment.environment=production,...` |
-| `OTEL_TRACES_SAMPLER_ARG` | `1.0` | The share of requests traced, 0 to 1. Each request starts a trace of its own (an incoming `traceparent` header is not read), and everything inside a request is traced or not with it. `OTEL_TRACES_SAMPLER` is not read. |
+| `OTEL_TRACES_SAMPLER_ARG` | `1.0` | The share of requests and queue jobs traced, 0 to 1. Each request starts a trace of its own (an incoming `traceparent` header is not read), and everything inside a request is traced or not with it. `OTEL_TRACES_SAMPLER` is not read. |
 
 Spans are sent by a batch processor on a thread of its own: a request never
 waits on the collector, and a collector that is down costs dropped spans, not
 slow pages. On shutdown the spans still in the batch are sent.
+
+A failed export is not logged: an endpoint that is wrong or down, or a hosted
+backend that refuses the API key in `OTEL_EXPORTER_OTLP_HEADERS`, shows as
+traces that never arrive. When none do, check the endpoint from the server
+itself, for example
+`curl -si -X POST -H 'content-type: application/x-protobuf' <endpoint>/v1/traces`
+(with the same headers), which a working collector answers with a 200 or a
+400, not a connection error or a 401.
 
 Examples:
 

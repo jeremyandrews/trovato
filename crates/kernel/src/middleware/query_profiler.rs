@@ -145,10 +145,12 @@ async fn shows_detail(state: &AppState, profile: &RequestProfile) -> bool {
     }
 }
 
-/// The method as a span names it: one of the standard methods, or `_OTHER`
-/// (the OpenTelemetry convention), so a client cannot put text of its own
-/// into a span with an invented method.
-fn span_method(method: &axum::http::Method) -> &'static str {
+/// The method as telemetry names it, in the request span and the `method`
+/// label of the request metrics: one of the standard methods, or `_OTHER`
+/// (the OpenTelemetry convention). An invented method is text the client
+/// chose, so it must not reach a span or a metric, where it would also add a
+/// series per method for the life of the process.
+fn method_label(method: &axum::http::Method) -> &'static str {
     use axum::http::Method;
     match *method {
         Method::GET => "GET",
@@ -194,9 +196,9 @@ pub async fn track_request_timing(
         "http.request",
         // A backend's name for the span (`GET /item/{id}`); field values are
         // only evaluated when the span is enabled.
-        otel.name = %format_args!("{} {route_label}", span_method(&method)),
+        otel.name = %format_args!("{} {route_label}", method_label(&method)),
         otel.kind = "server",
-        http.request.method = span_method(&method),
+        http.request.method = method_label(&method),
         http.route = route_label,
         http.response.status_code = Empty,
         trovato.db.queries = Empty,
@@ -219,7 +221,12 @@ pub async fn track_request_timing(
     span.record("trovato.plugin.calls", snapshot.plugin_calls);
 
     let metrics = state.metrics();
-    metrics.record_request(method.as_str(), route_label, status, elapsed.as_secs_f64());
+    metrics.record_request(
+        method_label(&method),
+        route_label,
+        status,
+        elapsed.as_secs_f64(),
+    );
     metrics.record_request_queries(route_label, snapshot.queries);
 
     let detail = shows_detail(&state, &profile).await;
@@ -267,12 +274,12 @@ mod tests {
 
     #[test]
     #[allow(clippy::unwrap_used)]
-    fn a_span_names_only_standard_methods() {
+    fn telemetry_names_only_standard_methods() {
         use axum::http::Method;
-        assert_eq!(span_method(&Method::GET), "GET");
-        assert_eq!(span_method(&Method::PATCH), "PATCH");
+        assert_eq!(method_label(&Method::GET), "GET");
+        assert_eq!(method_label(&Method::PATCH), "PATCH");
         let invented = Method::from_bytes(b"ALICE-AT-EXAMPLE-COM").unwrap();
-        assert_eq!(span_method(&invented), "_OTHER");
+        assert_eq!(method_label(&invented), "_OTHER");
     }
 
     /// The boundaries are exclusive on both steps, which is what keeps a request

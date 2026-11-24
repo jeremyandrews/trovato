@@ -48,9 +48,8 @@ pub fn is_probe(method: &axum::http::Method, path: &str) -> bool {
 /// user's credential: a probe (`HEALTH_TOKEN`) or a read of `/metrics`
 /// (`METRICS_TOKEN`). The API token and JWT middleware leave these alone.
 pub fn carries_operator_token(method: &axum::http::Method, path: &str) -> bool {
-    is_probe(method, path)
-        || (matches!(*method, axum::http::Method::GET | axum::http::Method::HEAD)
-            && path == "/metrics")
+    matches!(*method, axum::http::Method::GET | axum::http::Method::HEAD)
+        && (is_probe_path(path) || path == "/metrics")
 }
 
 /// How long one dependency check is reused.

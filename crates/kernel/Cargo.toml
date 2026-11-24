@@ -60,7 +60,8 @@ opentelemetry_sdk = { version = "0.33", default-features = false, features = ["t
 opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
 tracing-opentelemetry = { version = "0.34", default-features = false }
 # opentelemetry-http's reqwest 0.13 comes with no TLS of its own: this gives it the
-# native-tls the kernel's reqwest 0.12 already uses (no new crates), so an
+# native-tls the kernel's reqwest 0.12 already uses (no crate the lock file did
+# not already hold), so an
 # https:// OTLP endpoint works. Only the feature is used, never the crate by name.
 reqwest-otlp-tls = { package = "reqwest", version = "0.13", default-features = false, features = ["native-tls"] }
 clap = { workspace = true }
