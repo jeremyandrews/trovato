@@ -26,6 +26,9 @@
                 <span class="comment__author">{{ comment.author_name | default(value="Anonymous") }}</span>
                 <time class="comment__date" datetime="{{ comment.created }}">{{ comment.created | date(format="%B %d, %Y at %H:%M") }}</time>
             </header>
+            {% if comment.subject %}
+            <h3 class="comment__subject">{{ comment.subject }}</h3>
+            {% endif %}
             <div class="comment__body">
                 {{ comment.body_html | safe }} {# SAFE: FilterPipeline::for_format_safe output — render_comment_body sanitizes by the comment's text format before it reaches here #}
             </div>
@@ -61,6 +64,11 @@
         <form class="comment-form" method="post" action="/api/v1/item/{{ item_id }}/comments" data-comment-form>
             <input type="hidden" name="_csrf" value="{{ csrf_token }}">
             <input type="hidden" name="parent_id" id="comment-parent-id" value="">
+
+            <div class="form-group">
+                <label for="comment-subject" class="sr-only">Subject (optional)</label>
+                <input type="text" id="comment-subject" name="subject" placeholder="Subject (optional)" maxlength="255">
+            </div>
 
             <div class="form-group">
                 <label for="comment-body" class="sr-only">Your comment</label>

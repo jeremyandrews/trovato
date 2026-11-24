@@ -99,6 +99,7 @@ async fn item_with_comment(
                 item_id: id,
                 parent_id: None,
                 author_id: Uuid::nil(),
+                subject: None,
                 body: format!("A comment saying {comment_word}"),
                 body_format: None,
                 status: Some(CommentStatus::Published.as_i16()),

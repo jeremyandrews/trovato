@@ -137,6 +137,7 @@ async fn seed_history(app: &TestApp, author: Uuid, item_id: Uuid, published: usi
                     item_id,
                     parent_id: None,
                     author_id: author,
+                    subject: None,
                     body: "An earlier, approved remark".to_string(),
                     body_format: Some("filtered_html".to_string()),
                     status: Some(CommentStatus::Published.as_i16()),
@@ -161,6 +162,7 @@ async fn seed_history(app: &TestApp, author: Uuid, item_id: Uuid, published: usi
                     item_id,
                     parent_id: None,
                     author_id: author,
+                    subject: None,
                     body: "Not evidence of anything".to_string(),
                     body_format: Some("filtered_html".to_string()),
                     status: Some(status.as_i16()),
@@ -364,6 +366,7 @@ fn approval_is_what_advances_an_account() {
                     body: None,
                     body_format: None,
                     status: Some(CommentStatus::Published.as_i16()),
+                    subject: None,
                 },
                 &admin(),
             )

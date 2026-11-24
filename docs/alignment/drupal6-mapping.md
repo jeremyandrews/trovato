@@ -420,6 +420,7 @@ Systematic mapping of Drupal 6 + CCK + Views subsystems to their Trovato equival
 | D6 Concept | Trovato Equivalent | Status |
 |---|---|---|
 | `comment` table | Comment model + plugin | Aligned |
+| `comment.subject` | `comment.subject`, optional plain text | Aligned |
 | Comment threading | Threaded display | Aligned |
 | Comment moderation | Admin moderation UI | Aligned |
 | Per-content-type comment settings | Plugin configuration | Aligned |

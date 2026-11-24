@@ -538,6 +538,10 @@ struct EditCommentForm {
     token: String,
     body: String,
     status: i16,
+    /// Optional plain text subject. The form always carries the field's full,
+    /// current value, so empty clears it rather than meaning "unchanged".
+    #[serde(default)]
+    subject: String,
 }
 
 /// Form data for the moderation default setting.
@@ -775,11 +779,19 @@ async fn edit_comment_submit(
         return render_server_error("Unknown comment status");
     }
 
+    let Ok(subject) = crate::routes::comment::validate_subject(Some(&form.subject)) else {
+        return render_server_error(&format!(
+            "Subject cannot exceed {} characters",
+            crate::models::comment::SUBJECT_MAX_CHARS
+        ));
+    };
+
     let user_ctx = admin_user_context(&state, &user).await;
     let input = UpdateComment {
         body: Some(form.body),
         body_format: None,
         status: Some(form.status),
+        subject: Some(subject),
     };
 
     // The status before the edit, so approving out of the queue notifies the
@@ -860,6 +872,7 @@ async fn set_comment_status(
         body: None,
         body_format: None,
         status: Some(status),
+        subject: None,
     };
 
     let previous = state

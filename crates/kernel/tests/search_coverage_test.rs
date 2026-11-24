@@ -102,6 +102,7 @@ async fn create_comment(app: &common::TestApp, item_id: Uuid, body: &str, status
                 item_id,
                 parent_id: None,
                 author_id: Uuid::nil(),
+                subject: None,
                 body: body.to_string(),
                 body_format: Some("filtered_html".to_string()),
                 status: Some(status),
@@ -229,6 +230,7 @@ async fn build_fixture(app: &common::TestApp) -> Fixture {
                 item_id: story,
                 parent_id: Some(top),
                 author_id: Uuid::nil(),
+                subject: None,
                 body: format!("Replying with {}", words.reply),
                 body_format: None,
                 status: Some(CommentStatus::Published.as_i16()),
@@ -435,6 +437,7 @@ fn the_postgres_search_covers_every_text_field_and_published_comments() {
                     body: Some(format!("edited to say {later}")),
                     body_format: None,
                     status: None,
+                    subject: None,
                 },
                 &admin(),
             )
@@ -453,6 +456,7 @@ fn the_postgres_search_covers_every_text_field_and_published_comments() {
                     body: None,
                     body_format: None,
                     status: Some(CommentStatus::Unpublished.as_i16()),
+                    subject: None,
                 },
                 &admin(),
             )
@@ -558,6 +562,7 @@ fn deletes_unpublishes_and_comment_writes_request_a_rebuild() {
             body,
             body_format: None,
             status,
+            subject: None,
         };
         app.state
             .comments()

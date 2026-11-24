@@ -117,10 +117,11 @@ struct TypeFieldsRow {
     settings: Option<serde_json::Value>,
 }
 
-/// One publicly visible comment's body, for the item it is on.
+/// One publicly visible comment's subject and body, for the item it is on.
 #[derive(sqlx::FromRow)]
 struct CommentRow {
     item_id: Uuid,
+    subject: Option<String>,
     body: String,
 }
 
@@ -132,16 +133,16 @@ struct CommentRow {
 /// is, which keeps the fragment, and so the index, stable between builds.
 const VISIBLE_COMMENTS_SQL: &str = r#"
     WITH RECURSIVE visible AS (
-        SELECT id, item_id, body, ARRAY[created] AS sort_path
+        SELECT id, item_id, subject, body, ARRAY[created] AS sort_path
         FROM comment
         WHERE item_id = ANY($1) AND parent_id IS NULL AND status = $2
         UNION ALL
-        SELECT c.id, c.item_id, c.body, v.sort_path || c.created
+        SELECT c.id, c.item_id, c.subject, c.body, v.sort_path || c.created
         FROM comment c
         JOIN visible v ON c.parent_id = v.id
         WHERE c.status = $2
     )
-    SELECT item_id, body FROM visible ORDER BY item_id, sort_path
+    SELECT item_id, subject, body FROM visible ORDER BY item_id, sort_path
 "#;
 
 /// Ask for a Pagefind rebuild at the next cron run.
@@ -427,7 +428,22 @@ pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<V
         .context("failed to query comments for pagefind index")?;
     let mut comments_by_item: HashMap<Uuid, Vec<String>> = HashMap::new();
     for row in comment_rows {
-        let text = plain_text(&row.body);
+        // The subject folded in alongside the body, at the body's own weight:
+        // a subject is not ranked differently from the text it labels, and a
+        // comment with none contributes exactly what it always did.
+        let mut text = row
+            .subject
+            .as_deref()
+            .map(plain_text)
+            .filter(|s| !s.is_empty())
+            .unwrap_or_default();
+        let body_text = plain_text(&row.body);
+        if !body_text.is_empty() {
+            if !text.is_empty() {
+                text.push(' ');
+            }
+            text.push_str(&body_text);
+        }
         if !text.is_empty() {
             comments_by_item.entry(row.item_id).or_default().push(text);
         }

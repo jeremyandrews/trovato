@@ -126,6 +126,7 @@ async fn comment(app: &TestApp, item_id: Uuid, author: Uuid, body: &str) -> Uuid
                 item_id,
                 parent_id: None,
                 author_id: author,
+                subject: None,
                 body: body.to_string(),
                 body_format: Some("plain_text".to_string()),
                 status: Some(1),

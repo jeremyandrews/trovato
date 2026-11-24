@@ -59,6 +59,9 @@
             {% for comment in comments %}
             <tr>
                 <td class="comment-body">
+                    {% if comment.subject %}
+                    <strong class="comment-preview__subject">{{ comment.subject }}</strong>
+                    {% endif %}
                     <div class="comment-preview">{{ comment.body | truncate(length=100) }}</div>
                     {% if comment.depth > 0 %}
                     <span class="comment-reply-indicator">Reply (depth {{ comment.depth }})</span>
