@@ -235,7 +235,7 @@ fn a_member_is_mailed_with_an_unsubscribe_link_and_headers() {
     common::run_test(async {
         let fixture = capable();
         let app = &fixture.app;
-        let _guard = BUCKET_LOCK.lock().await;
+        common::hold_until_cleanup(BUCKET_LOCK.lock().await);
         let (user, address) = member(app, "bl94-send").await;
         reset_buckets(app, user).await;
         let subject = subject("MemberNotice");
@@ -294,7 +294,7 @@ fn an_unknown_blocked_or_addressless_user_is_unavailable() {
     common::run_test(async {
         let fixture = capable();
         let app = &fixture.app;
-        let _guard = BUCKET_LOCK.lock().await;
+        common::hold_until_cleanup(BUCKET_LOCK.lock().await);
         let (blocked, _) = member(app, "bl94-blocked").await;
         sqlx::query("UPDATE users SET status = 0 WHERE id = $1")
             .bind(blocked)
@@ -336,7 +336,7 @@ fn a_malformed_message_is_refused_as_send_to_site_contacts_refuses_it() {
     common::run_test(async {
         let fixture = capable();
         let app = &fixture.app;
-        let _guard = BUCKET_LOCK.lock().await;
+        common::hold_until_cleanup(BUCKET_LOCK.lock().await);
         let (user, _) = member(app, "bl94-invalid").await;
         reset_buckets(app, user).await;
 
@@ -388,7 +388,7 @@ fn the_per_recipient_and_per_plugin_buckets_refuse_past_their_limits() {
     common::run_test(async {
         let fixture = capable();
         let app = &fixture.app;
-        let _guard = BUCKET_LOCK.lock().await;
+        common::hold_until_cleanup(BUCKET_LOCK.lock().await);
         let limiter = app.state.rate_limiter();
         let (user, _) = member(app, "bl94-bucket").await;
         reset_buckets(app, user).await;
@@ -434,7 +434,7 @@ fn the_unsubscribe_link_confirms_on_get_and_opts_out_on_post() {
     common::run_test(async {
         let fixture = capable();
         let app = &fixture.app;
-        let _guard = BUCKET_LOCK.lock().await;
+        common::hold_until_cleanup(BUCKET_LOCK.lock().await);
         let (user, _) = member(app, "bl94-unsub").await;
         reset_buckets(app, user).await;
         let first = subject("BeforeOptOut");
@@ -537,7 +537,7 @@ fn the_profile_page_lists_opt_outs_and_resubscribes() {
     common::run_test(async {
         let fixture = capable();
         let app = &fixture.app;
-        let _guard = BUCKET_LOCK.lock().await;
+        common::hold_until_cleanup(BUCKET_LOCK.lock().await);
         let name = common::username("bl94-profile");
         let mail = format!("{name}@member.bl94.example.test");
         let cookies = app
@@ -632,7 +632,7 @@ fn deleting_the_user_deletes_their_rows() {
     common::run_test(async {
         let fixture = capable();
         let app = &fixture.app;
-        let _guard = BUCKET_LOCK.lock().await;
+        common::hold_until_cleanup(BUCKET_LOCK.lock().await);
         let (user, _) = member(app, "bl94-delete").await;
         reset_buckets(app, user).await;
         let (json, _) = mail_user(app, &user.to_string(), &subject("Delete"), "body").await;

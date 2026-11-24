@@ -14,9 +14,9 @@
 #
 # Measured on the CI Cluster job, which builds this file on every pull request:
 # the dependencies were 8.4 of the 17.7 minutes the release build took (run
-# 45316035626). docker-publish.yml caches every stage of this file in the
-# GitHub Actions cache (mode=max), and the Cluster job reads that cache, so a
-# branch that does not change dependencies starts from the cooked layer.
+# 45316035626). That job caches the `cook` stage below on each push to main
+# and reads it on pull requests, so a branch that does not change dependencies
+# starts from the cooked layer.
 FROM rust:1-bookworm AS chef
 
 WORKDIR /usr/src/trovato
@@ -35,10 +35,13 @@ FROM chef AS planner
 COPY . .
 RUN cargo chef prepare --recipe-path recipe.json
 
-FROM chef AS builder
+# The dependencies alone, as their own target: the Cluster job in ci.yml
+# builds and caches this stage by name.
+FROM chef AS cook
 COPY --from=planner /usr/src/trovato/recipe.json recipe.json
 RUN cargo chef cook --release --bin trovato --recipe-path recipe.json
 
+FROM cook AS builder
 COPY . .
 
 RUN cargo build --release --bin trovato

@@ -118,11 +118,14 @@ printf '%s\n' "$MINE" | sed 's/^/  /'
 # target, for scripts/ci-slow-tests.sh. Optional: unset, nothing is written.
 TIMINGS_FILE="${TIMINGS_FILE:-}"
 
-# One cargo invocation per package, with all of that package's selected test
-# targets. cargo runs them one after another in name order, so two targets
-# never touch the database at the same time; the tests INSIDE a target run in
-# parallel, as they do in a local `cargo test` (libtest's default, one thread
-# per CPU), which is what the targets' own locks are written for.
+# ONE cargo invocation for the whole shard, every package and every selected
+# target. One per package, which this was, built the kernel a second time for
+# `trovato-mcp`'s single target, because each `-p` selection resolves the
+# kernel's features on its own: two minutes of the shard for one test file
+# (run 45397439767). cargo still runs the targets one after another, so no two
+# of them touch the database at the same time; the tests INSIDE a target run
+# in parallel (four threads, below), as they do in a local `cargo test`, which
+# is what the targets' own locks are written for.
 #
 # libtest and not nextest, deliberately, for these targets. nextest runs every
 # test in its own process, and every process here builds its own TestApp: the
@@ -130,20 +133,28 @@ TIMINGS_FILE="${TIMINGS_FILE:-}"
 # on front_page_test: its fifteen tests take 3.6 s in one process and 26 s as
 # fifteen, 45 CPU-seconds against 3.3. Four cores do not win back a thirteen
 # fold increase in work. Unit tests, which build nothing, do run under nextest.
-for pkg in $(printf '%s\n' "$MINE" | awk '{print $1}' | sort -u); do
-  FLAGS=$(printf '%s\n' "$MINE" | awk -v p="$pkg" '$1 == p {printf " --test %s", $2}')
-  echo "::group::cargo test -p $pkg$FLAGS"
-  # Unquoted on purpose: FLAGS is a built-up list of --test arguments.
-  # shellcheck disable=SC2086
-  cargo test -p "$pkg" $FLAGS 2>&1 | awk -v pkg="$pkg" -v out="$TIMINGS_FILE" '
-    { print; fflush() }
-    /Running/ && match($0, /tests\/[^ ]+\.rs/) { cur = substr($0, RSTART + 6, RLENGTH - 9) }
-    /^test result:/ && cur != "" {
-      if (out != "" && match($0, /finished in [0-9.]+s/))
-        print pkg "::" cur " " substr($0, RSTART + 12, RLENGTH - 13) >> out
-      cur = ""
-    }'
-  echo "::endgroup::"
-done
+# Four test threads per target, the CPU count of a GitHub-hosted runner,
+# whatever the machine. libtest's default is one per CPU, and some targets build
+# a whole app per test (`TestApp::new`, a pool of up to 25 connections each):
+# on a 32 core workstation that is more connections than the 100 the Postgres
+# service allows, and the run fails with `PoolTimedOut` for a reason CI never
+# sees. Pinned, a local run of this script is the run CI does.
+export RUST_TEST_THREADS="${RUST_TEST_THREADS:-4}"
+
+PKGS=$(printf '%s\n' "$MINE" | awk '{print $1}' | sort -u | awk '{printf " -p %s", $1}')
+FLAGS=$(printf '%s\n' "$MINE" | awk '{printf " --test %s", $2}')
+echo "::group::cargo test$PKGS$FLAGS"
+# Unquoted on purpose: PKGS and FLAGS are built-up argument lists.
+# shellcheck disable=SC2086
+cargo test $PKGS $FLAGS 2>&1 | awk -v mine="$MINE" -v out="$TIMINGS_FILE" '
+  BEGIN { n = split(mine, rows, "\n"); for (i = 1; i <= n; i++) { split(rows[i], f, " "); pkg[f[2]] = f[1] } }
+  { print; fflush() }
+  /Running/ && match($0, /tests\/[^ ]+\.rs/) { cur = substr($0, RSTART + 6, RLENGTH - 9) }
+  /^test result:/ && cur != "" {
+    if (out != "" && match($0, /finished in [0-9.]+s/))
+      print pkg[cur] "::" cur " " substr($0, RSTART + 12, RLENGTH - 13) >> out
+    cur = ""
+  }'
+echo "::endgroup::"
 
 df -h /

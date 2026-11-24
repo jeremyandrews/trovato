@@ -89,7 +89,7 @@ async fn admin_dashboard(app: &TestApp) -> String {
 fn an_admin_sees_an_ordinary_banner_for_an_ordinary_release() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = BANNER_LOCK.lock().await;
+        common::hold_until_cleanup(BANNER_LOCK.lock().await);
         store_status(app, "999.0.0", "999.0.0", false).await;
 
         let html = admin_dashboard(app).await;
@@ -117,7 +117,7 @@ fn an_admin_sees_an_ordinary_banner_for_an_ordinary_release() {
 fn an_admin_sees_an_alarm_for_a_security_release() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = BANNER_LOCK.lock().await;
+        common::hold_until_cleanup(BANNER_LOCK.lock().await);
         store_status(app, "999.0.1", "[security] fixes CVE-2026-00000", true).await;
 
         let html = admin_dashboard(app).await;
@@ -144,7 +144,7 @@ fn an_admin_sees_an_alarm_for_a_security_release() {
 fn no_banner_when_the_stored_release_is_older_than_the_running_one() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = BANNER_LOCK.lock().await;
+        common::hold_until_cleanup(BANNER_LOCK.lock().await);
         store_status(app, "0.0.1", "0.0.1", false).await;
 
         let html = admin_dashboard(app).await;
@@ -163,7 +163,7 @@ fn no_banner_when_the_stored_release_is_older_than_the_running_one() {
 fn no_banner_before_any_check_has_run() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = BANNER_LOCK.lock().await;
+        common::hold_until_cleanup(BANNER_LOCK.lock().await);
         clear_status(app).await;
 
         let html = admin_dashboard(app).await;
@@ -181,7 +181,7 @@ fn no_banner_before_any_check_has_run() {
 fn an_anonymous_visitor_is_never_told_the_version() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = BANNER_LOCK.lock().await;
+        common::hold_until_cleanup(BANNER_LOCK.lock().await);
         store_status(app, "999.0.1", "[security] fixes CVE-2026-00000", true).await;
 
         for path in ["/", "/user/login"] {
@@ -212,7 +212,7 @@ fn an_anonymous_visitor_is_never_told_the_version() {
 fn an_authenticated_non_admin_is_never_told_the_version() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = BANNER_LOCK.lock().await;
+        common::hold_until_cleanup(BANNER_LOCK.lock().await);
         store_status(app, "999.0.1", "[security] fixes CVE-2026-00000", true).await;
 
         let name = format!("upusr_{}", Uuid::now_v7().simple());

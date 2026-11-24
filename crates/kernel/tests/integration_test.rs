@@ -2148,7 +2148,7 @@ fn e2e_admin_content_filter_by_type() {
 #[test]
 fn e2e_admin_list_categories() {
     run_test(async {
-        let _lock = PLUGIN_STATE_LOCK.read().await;
+        common::hold_until_cleanup(PLUGIN_STATE_LOCK.read().await);
         let app = shared_app().await;
         app.ensure_plugin_enabled("trovato_categories").await;
 
@@ -2186,7 +2186,7 @@ fn e2e_admin_list_categories() {
 #[test]
 fn e2e_admin_create_category() {
     run_test(async {
-        let _lock = PLUGIN_STATE_LOCK.read().await;
+        common::hold_until_cleanup(PLUGIN_STATE_LOCK.read().await);
         let app = shared_app().await;
         app.ensure_plugin_enabled("trovato_categories").await;
 
@@ -2258,7 +2258,7 @@ fn e2e_admin_create_category() {
 #[test]
 fn e2e_admin_delete_category() {
     run_test(async {
-        let _lock = PLUGIN_STATE_LOCK.read().await;
+        common::hold_until_cleanup(PLUGIN_STATE_LOCK.read().await);
         let app = shared_app().await;
         app.ensure_plugin_enabled("trovato_categories").await;
 
@@ -2313,7 +2313,7 @@ fn e2e_admin_delete_category() {
 #[test]
 fn e2e_admin_list_tags() {
     run_test(async {
-        let _lock = PLUGIN_STATE_LOCK.read().await;
+        common::hold_until_cleanup(PLUGIN_STATE_LOCK.read().await);
         let app = shared_app().await;
         app.ensure_plugin_enabled("trovato_categories").await;
 
@@ -2363,7 +2363,7 @@ fn e2e_admin_list_tags() {
 #[test]
 fn e2e_admin_create_tag() {
     run_test(async {
-        let _lock = PLUGIN_STATE_LOCK.read().await;
+        common::hold_until_cleanup(PLUGIN_STATE_LOCK.read().await);
         let app = shared_app().await;
         app.ensure_plugin_enabled("trovato_categories").await;
 
@@ -2443,7 +2443,7 @@ fn e2e_admin_create_tag() {
 #[test]
 fn e2e_admin_delete_tag() {
     run_test(async {
-        let _lock = PLUGIN_STATE_LOCK.read().await;
+        common::hold_until_cleanup(PLUGIN_STATE_LOCK.read().await);
         let app = shared_app().await;
         app.ensure_plugin_enabled("trovato_categories").await;
 
@@ -2718,7 +2718,7 @@ fn e2e_admin_files_filter_by_status() {
 #[test]
 fn e2e_admin_search_config_page() {
     run_test(async {
-        let _lock = SEARCH_CONFIG_LOCK.lock().await;
+        common::hold_until_cleanup(SEARCH_CONFIG_LOCK.lock().await);
         let app = shared_app().await;
 
         let cookies = app
@@ -2760,7 +2760,7 @@ fn e2e_admin_search_config_page() {
 #[test]
 fn e2e_admin_add_search_config() {
     run_test(async {
-        let _lock = SEARCH_CONFIG_LOCK.lock().await;
+        common::hold_until_cleanup(SEARCH_CONFIG_LOCK.lock().await);
         let app = shared_app().await;
 
         // Use the existing 'page' content type
@@ -2920,7 +2920,7 @@ fn e2e_admin_add_search_config() {
 #[test]
 fn e2e_admin_remove_search_config() {
     run_test(async {
-        let _lock = SEARCH_CONFIG_LOCK.lock().await;
+        common::hold_until_cleanup(SEARCH_CONFIG_LOCK.lock().await);
         let app = shared_app().await;
 
         // Use the existing 'page' content type which has a 'body' field
@@ -2978,7 +2978,7 @@ fn e2e_admin_remove_search_config() {
 #[test]
 fn e2e_admin_reindex_content_type() {
     run_test(async {
-        let _lock = SEARCH_CONFIG_LOCK.lock().await;
+        common::hold_until_cleanup(SEARCH_CONFIG_LOCK.lock().await);
         let app = shared_app().await;
 
         let cookies = app
@@ -3456,7 +3456,7 @@ fn e2e_batch_delete_nonexistent_returns_404() {
 #[test]
 fn e2e_api_category_create_anonymous_rejected() {
     run_test(async {
-        let _lock = PLUGIN_STATE_LOCK.read().await;
+        common::hold_until_cleanup(PLUGIN_STATE_LOCK.read().await);
         let app = shared_app().await;
         app.ensure_plugin_enabled("trovato_categories").await;
 
@@ -3492,7 +3492,7 @@ fn e2e_api_category_create_anonymous_rejected() {
 #[test]
 fn e2e_api_category_create_missing_csrf_rejected() {
     run_test(async {
-        let _lock = PLUGIN_STATE_LOCK.read().await;
+        common::hold_until_cleanup(PLUGIN_STATE_LOCK.read().await);
         let app = shared_app().await;
         app.ensure_plugin_enabled("trovato_categories").await;
 
@@ -3527,7 +3527,7 @@ fn e2e_api_category_create_missing_csrf_rejected() {
 #[test]
 fn e2e_api_category_create_and_delete_authorized() {
     run_test(async {
-        let _lock = PLUGIN_STATE_LOCK.read().await;
+        common::hold_until_cleanup(PLUGIN_STATE_LOCK.read().await);
         let app = shared_app().await;
         app.ensure_plugin_enabled("trovato_categories").await;
 
@@ -4440,7 +4440,7 @@ fn e2e_admin_comment_moderation() {
 #[test]
 fn e2e_installer_redirects_when_installed() {
     run_test(async {
-        let _lock = INSTALLER_LOCK.lock().await;
+        common::hold_until_cleanup(INSTALLER_LOCK.lock().await);
         let app = shared_app().await;
 
         // Ensure site is marked as installed
@@ -4494,7 +4494,7 @@ fn e2e_installer_shows_welcome_page() {
 #[test]
 fn e2e_installer_admin_form_accessible() {
     run_test(async {
-        let _lock = INSTALLER_LOCK.lock().await;
+        common::hold_until_cleanup(INSTALLER_LOCK.lock().await);
         let app = shared_app().await;
 
         // Mark as NOT installed
@@ -4622,7 +4622,7 @@ fn e2e_admin_plugin_list_shows_plugins() {
 #[test]
 fn e2e_admin_plugin_toggle() {
     run_test(async {
-        let _lock = PLUGIN_STATE_LOCK.write().await;
+        common::hold_until_cleanup(PLUGIN_STATE_LOCK.write().await);
         let app = shared_app().await;
         // Ensure the redirects plugin is installed so the toggle form appears
         app.ensure_plugin_enabled("trovato_redirects").await;
@@ -4724,7 +4724,7 @@ fn e2e_admin_plugin_toggle() {
 #[test]
 fn e2e_toggle_gated_plugin_waits_for_restart() {
     run_test(async {
-        let _lock = PLUGIN_STATE_LOCK.write().await;
+        common::hold_until_cleanup(PLUGIN_STATE_LOCK.write().await);
         let app = shared_app().await;
         // Ensure categories is installed in DB and enabled in-memory
         app.ensure_plugin_enabled("trovato_categories").await;
@@ -4825,7 +4825,7 @@ fn e2e_toggle_gated_plugin_waits_for_restart() {
 #[test]
 fn e2e_runtime_plugin_gate_returns_404_when_disabled() {
     run_test(async {
-        let _lock = PLUGIN_STATE_LOCK.write().await;
+        common::hold_until_cleanup(PLUGIN_STATE_LOCK.write().await);
         let app = shared_app().await;
 
         // Ensure the categories plugin is enabled in memory for this test.
@@ -4875,7 +4875,7 @@ fn e2e_runtime_plugin_gate_returns_404_when_disabled() {
 #[test]
 fn registration_form_returns_404_when_disabled() {
     run_test(async {
-        let _lock = REGISTRATION_LOCK.write().await;
+        common::hold_until_cleanup(REGISTRATION_LOCK.write().await);
         let app = shared_app().await;
 
         // Ensure registration is disabled (default)
@@ -4898,7 +4898,7 @@ fn registration_form_returns_404_when_disabled() {
 #[test]
 fn registration_form_renders_when_enabled() {
     run_test(async {
-        let _lock = REGISTRATION_LOCK.read().await;
+        common::hold_until_cleanup(REGISTRATION_LOCK.read().await);
         let app = shared_app().await;
 
         // Enable registration
@@ -4927,7 +4927,7 @@ fn registration_form_renders_when_enabled() {
 #[test]
 fn json_registration_creates_inactive_user() {
     run_test(async {
-        let _lock = REGISTRATION_LOCK.read().await;
+        common::hold_until_cleanup(REGISTRATION_LOCK.read().await);
         let app = shared_app().await;
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let username = format!("regtest_{}", &unique_id[..12]);
@@ -5014,7 +5014,7 @@ fn json_registration_creates_inactive_user() {
 #[test]
 fn json_registration_validates_password_mismatch() {
     run_test(async {
-        let _lock = REGISTRATION_LOCK.read().await;
+        common::hold_until_cleanup(REGISTRATION_LOCK.read().await);
         let app = shared_app().await;
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let username = format!("regval_{}", &unique_id[..12]);
@@ -5064,7 +5064,7 @@ fn json_registration_validates_password_mismatch() {
 #[test]
 fn json_registration_validates_missing_fields() {
     run_test(async {
-        let _lock = REGISTRATION_LOCK.read().await;
+        common::hold_until_cleanup(REGISTRATION_LOCK.read().await);
         let app = shared_app().await;
 
         // Enable registration
@@ -5116,7 +5116,7 @@ fn json_registration_validates_missing_fields() {
 #[test]
 fn json_registration_returns_404_when_disabled() {
     run_test(async {
-        let _lock = REGISTRATION_LOCK.write().await;
+        common::hold_until_cleanup(REGISTRATION_LOCK.write().await);
         let app = shared_app().await;
 
         // Ensure registration is disabled
@@ -5549,7 +5549,7 @@ fn profile_update_changes_display_name() {
 #[test]
 fn pathauto_generates_alias_on_item_create() {
     run_test(async {
-        let _lock = PATHAUTO_LOCK.lock().await;
+        common::hold_until_cleanup(PATHAUTO_LOCK.lock().await);
         let app = shared_app().await;
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let type_name = format!("pa_{}", &unique_id[..8]);
@@ -5664,7 +5664,7 @@ fn pathauto_generates_alias_on_item_create() {
 #[test]
 fn pathauto_skips_when_alias_exists() {
     run_test(async {
-        let _lock = PATHAUTO_LOCK.lock().await;
+        common::hold_until_cleanup(PATHAUTO_LOCK.lock().await);
         let app = shared_app().await;
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let type_name = format!("pa2_{}", &unique_id[..8]);
@@ -6967,7 +6967,7 @@ fn e2e_conference_delete_shows_flash_message() {
 fn e2e_search_filters_by_stage_live() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = SEARCH_CONFIG_LOCK.lock().await;
+        common::hold_until_cleanup(SEARCH_CONFIG_LOCK.lock().await);
 
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let search_term = format!("stagelive_{}", &unique_id[..12]);
@@ -7077,7 +7077,7 @@ fn e2e_search_filters_by_stage_live() {
 fn e2e_search_includes_active_stage() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = SEARCH_CONFIG_LOCK.lock().await;
+        common::hold_until_cleanup(SEARCH_CONFIG_LOCK.lock().await);
 
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let search_term = format!("stageact_{}", &unique_id[..12]);
@@ -7185,7 +7185,7 @@ fn e2e_search_includes_active_stage() {
 fn e2e_search_snippet_includes_body() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = SEARCH_CONFIG_LOCK.lock().await;
+        common::hold_until_cleanup(SEARCH_CONFIG_LOCK.lock().await);
 
         let unique_id = uuid::Uuid::now_v7().simple().to_string();
         let search_term = format!("bodysnip{}", &unique_id[..12]);
@@ -7298,7 +7298,7 @@ fn defer_ai_config_cleanup(app: &common::TestApp, provider: Option<&str>) {
 #[test]
 fn e2e_admin_ai_budgets_page_loads() {
     run_test(async {
-        let _lock = AI_BUDGET_LOCK.lock().await;
+        common::hold_until_cleanup(AI_BUDGET_LOCK.lock().await);
         let app = shared_app().await;
 
         let cookies = app
@@ -7360,7 +7360,7 @@ fn e2e_admin_ai_budgets_requires_admin() {
 #[test]
 fn e2e_admin_ai_budgets_save_config() {
     run_test(async {
-        let _lock = AI_BUDGET_LOCK.lock().await;
+        common::hold_until_cleanup(AI_BUDGET_LOCK.lock().await);
         let app = shared_app().await;
         defer_ai_config_cleanup(app, None);
 
@@ -7420,7 +7420,7 @@ fn e2e_admin_ai_budgets_save_config() {
 #[test]
 fn e2e_admin_ai_budgets_user_page_loads() {
     run_test(async {
-        let _lock = AI_BUDGET_LOCK.lock().await;
+        common::hold_until_cleanup(AI_BUDGET_LOCK.lock().await);
         let app = shared_app().await;
 
         let cookies = app
@@ -7487,7 +7487,7 @@ fn e2e_admin_ai_budgets_user_invalid_id() {
 #[test]
 fn e2e_ai_budget_service_record_and_query() {
     run_test(async {
-        let _lock = AI_BUDGET_LOCK.lock().await;
+        common::hold_until_cleanup(AI_BUDGET_LOCK.lock().await);
         let app = shared_app().await;
         defer_ai_config_cleanup(app, Some("test-provider-budget"));
 
@@ -7543,7 +7543,7 @@ fn e2e_ai_budget_service_record_and_query() {
 #[test]
 fn e2e_ai_cost_estimate_reflects_pricing_config() {
     run_test(async {
-        let _lock = AI_BUDGET_LOCK.lock().await;
+        common::hold_until_cleanup(AI_BUDGET_LOCK.lock().await);
         let app = shared_app().await;
         defer_ai_config_cleanup(app, None);
         let budget_svc = app.state.ai_budgets();
@@ -7611,7 +7611,7 @@ fn e2e_ai_budget_sidebar_link() {
 #[test]
 fn e2e_ai_budget_enforcement_deny() {
     run_test(async {
-        let _lock = AI_BUDGET_LOCK.lock().await;
+        common::hold_until_cleanup(AI_BUDGET_LOCK.lock().await);
         let app = shared_app().await;
 
         let budget_svc = app.state.ai_budgets();
@@ -7749,7 +7749,7 @@ fn e2e_ai_budget_enforcement_deny() {
 #[test]
 fn e2e_ai_plugin_background_budget_enforcement_deny() {
     run_test(async {
-        let _lock = AI_BUDGET_LOCK.lock().await;
+        common::hold_until_cleanup(AI_BUDGET_LOCK.lock().await);
         let app = shared_app().await;
         defer_ai_config_cleanup(app, Some("test-provider-plugin-budget"));
 
@@ -7854,7 +7854,7 @@ fn e2e_ai_plugin_background_budget_enforcement_deny() {
 #[test]
 fn e2e_ai_timeout_config_read_and_resolution() {
     run_test(async {
-        let _lock = AI_BUDGET_LOCK.lock().await;
+        common::hold_until_cleanup(AI_BUDGET_LOCK.lock().await);
         let app = shared_app().await;
         defer_ai_config_cleanup(app, None);
         let ai = app.state.ai_providers();
@@ -7911,7 +7911,7 @@ fn e2e_ai_timeout_config_read_and_resolution() {
 #[test]
 fn e2e_ai_cost_accounting_and_currency_budget() {
     run_test(async {
-        let _lock = AI_BUDGET_LOCK.lock().await;
+        common::hold_until_cleanup(AI_BUDGET_LOCK.lock().await);
         let app = shared_app().await;
         defer_ai_config_cleanup(app, Some("test-provider-cost"));
         let budget_svc = app.state.ai_budgets();
@@ -8039,7 +8039,7 @@ fn e2e_ai_cost_accounting_and_currency_budget() {
 #[test]
 fn e2e_ai_permission_configure_ai_grants_provider_access() {
     run_test(async {
-        let _lock = AI_PERMISSION_LOCK.lock().await;
+        common::hold_until_cleanup(AI_PERMISSION_LOCK.lock().await);
         let app = shared_app().await;
 
         // Create a role with "configure ai" permission
@@ -8121,7 +8121,7 @@ fn e2e_ai_permission_configure_ai_grants_provider_access() {
 #[test]
 fn e2e_ai_permission_no_configure_ai_gets_403() {
     run_test(async {
-        let _lock = AI_PERMISSION_LOCK.lock().await;
+        common::hold_until_cleanup(AI_PERMISSION_LOCK.lock().await);
         let app = shared_app().await;
 
         // Create a non-admin user with NO special roles
@@ -8153,7 +8153,7 @@ fn e2e_ai_permission_no_configure_ai_gets_403() {
 #[test]
 fn e2e_ai_permission_view_usage_grants_budget_access() {
     run_test(async {
-        let _lock = AI_PERMISSION_LOCK.lock().await;
+        common::hold_until_cleanup(AI_PERMISSION_LOCK.lock().await);
         let app = shared_app().await;
 
         // Create a role with "view ai usage" permission
@@ -8305,7 +8305,7 @@ fn e2e_ai_permission_admin_implicitly_has_all() {
 #[test]
 fn e2e_ai_permission_view_usage_cannot_post_budget_config() {
     run_test(async {
-        let _lock = AI_PERMISSION_LOCK.lock().await;
+        common::hold_until_cleanup(AI_PERMISSION_LOCK.lock().await);
         let app = shared_app().await;
 
         // Create a role with only "view ai usage" permission
@@ -8418,7 +8418,7 @@ fn e2e_ai_chat_unauthenticated_returns_error() {
 #[test]
 fn e2e_ai_chat_missing_permission_returns_403() {
     run_test(async {
-        let _guard = AI_PERMISSION_LOCK.lock().await;
+        common::hold_until_cleanup(AI_PERMISSION_LOCK.lock().await);
         let app = shared_app().await;
 
         // Create a regular user (no special permissions)
@@ -8455,7 +8455,7 @@ fn e2e_ai_chat_missing_permission_returns_403() {
 #[test]
 fn e2e_ai_chat_admin_gets_sse_or_502() {
     run_test(async {
-        let _guard = AI_CHAT_LOCK.lock().await;
+        common::hold_until_cleanup(AI_CHAT_LOCK.lock().await);
         let app = shared_app().await;
 
         let cookies = app
@@ -8534,7 +8534,7 @@ fn e2e_ai_chat_empty_message_returns_400() {
 #[test]
 fn e2e_ai_chat_admin_config_page() {
     run_test(async {
-        let _guard = AI_CHAT_LOCK.lock().await;
+        common::hold_until_cleanup(AI_CHAT_LOCK.lock().await);
         let app = shared_app().await;
 
         let cookies = app
@@ -8571,7 +8571,7 @@ fn e2e_ai_chat_admin_config_page() {
 #[test]
 fn e2e_ai_chat_admin_save_config() {
     run_test(async {
-        let _guard = AI_CHAT_LOCK.lock().await;
+        common::hold_until_cleanup(AI_CHAT_LOCK.lock().await);
         let app = shared_app().await;
 
         let cookies = app
@@ -8628,7 +8628,7 @@ fn e2e_ai_chat_admin_save_config() {
 #[test]
 fn e2e_ai_chat_admin_blank_temperature_saves_unset() {
     run_test(async {
-        let _guard = AI_CHAT_LOCK.lock().await;
+        common::hold_until_cleanup(AI_CHAT_LOCK.lock().await);
         let app = shared_app().await;
 
         let cookies = app
@@ -8680,7 +8680,7 @@ fn e2e_ai_chat_admin_blank_temperature_saves_unset() {
 #[test]
 fn e2e_ai_chat_rate_limit_returns_429() {
     run_test(async {
-        let _guard = AI_CHAT_LOCK.lock().await;
+        common::hold_until_cleanup(AI_CHAT_LOCK.lock().await);
         let app = shared_app().await;
 
         // Clear any leftover rate limit state from prior tests.

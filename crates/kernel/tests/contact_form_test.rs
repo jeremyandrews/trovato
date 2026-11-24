@@ -184,7 +184,7 @@ async fn set_site_contact(app: &TestApp) {
 fn a_visitor_with_no_account_sends_a_message_to_the_site_owner() {
     common::run_test(async {
         let fixture = fixture();
-        let _guard = SITE_MAIL_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
 
         let (cookies, token) = get_form(&fixture.app).await;
@@ -325,7 +325,7 @@ fn the_themed_page_renders_its_title_as_the_page_heading() {
 fn a_submission_with_no_token_is_refused_and_sends_nothing() {
     common::run_test(async {
         let fixture = fixture();
-        let _guard = SITE_MAIL_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
 
         let (cookies, _) = get_form(&fixture.app).await;
@@ -345,7 +345,7 @@ fn a_submission_with_no_token_is_refused_and_sends_nothing() {
 fn a_submission_with_a_forged_token_is_refused_and_sends_nothing() {
     common::run_test(async {
         let fixture = fixture();
-        let _guard = SITE_MAIL_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
 
         let (cookies, _) = get_form(&fixture.app).await;
@@ -371,7 +371,7 @@ fn a_submission_with_a_forged_token_is_refused_and_sends_nothing() {
 fn an_invalid_submission_can_be_corrected_and_resubmitted() {
     common::run_test(async {
         let fixture = fixture();
-        let _guard = SITE_MAIL_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
 
         let (cookies, token) = get_form(&fixture.app).await;
@@ -408,7 +408,7 @@ fn an_invalid_submission_can_be_corrected_and_resubmitted() {
 fn a_visitor_can_attach_a_copy_of_the_message() {
     common::run_test(async {
         let fixture = fixture();
-        let _guard = SITE_MAIL_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
 
         let (cookies, token) = get_form(&fixture.app).await;
@@ -431,7 +431,7 @@ fn a_visitor_can_attach_a_copy_of_the_message() {
 fn markup_a_visitor_types_comes_back_escaped() {
     common::run_test(async {
         let fixture = fixture();
-        let _guard = SITE_MAIL_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
 
         let (cookies, token) = get_form(&fixture.app).await;

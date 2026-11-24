@@ -256,7 +256,7 @@ async fn listed_items(app: &TestApp, marker: &str) -> Vec<Uuid> {
 fn front_page_set_to_an_item_renders_it() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = FRONT_PAGE.lock().await;
+        common::hold_until_cleanup(FRONT_PAGE.lock().await);
         ensure_item_type(app).await;
 
         let title = format!("Item Front Page {}", Uuid::now_v7().simple());
@@ -297,7 +297,7 @@ fn front_page_set_to_an_item_renders_it() {
 fn front_page_set_to_a_gather_renders_it_with_its_pager() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = FRONT_PAGE.lock().await;
+        common::hold_until_cleanup(FRONT_PAGE.lock().await);
         ensure_item_type(app).await;
 
         let marker = format!("FPG{}", Uuid::now_v7().simple());
@@ -341,7 +341,7 @@ fn front_page_set_to_a_gather_renders_it_with_its_pager() {
 fn front_page_set_to_an_alias_of_a_gather_renders_the_gather() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = FRONT_PAGE.lock().await;
+        common::hold_until_cleanup(FRONT_PAGE.lock().await);
         ensure_item_type(app).await;
 
         let marker = format!("FPA{}", Uuid::now_v7().simple());
@@ -395,7 +395,7 @@ fn front_page_set_to_an_alias_of_a_gather_renders_the_gather() {
 fn front_page_set_to_a_plugin_route_renders_it() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = FRONT_PAGE.lock().await;
+        common::hold_until_cleanup(FRONT_PAGE.lock().await);
         app.ensure_plugin_enabled("trovato_categories").await;
         set_front_page(app, "/topics").await;
 
@@ -431,7 +431,7 @@ fn front_page_set_to_a_plugin_route_renders_it() {
 fn a_target_the_visitor_may_not_see_is_refused_as_at_the_target() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = FRONT_PAGE.lock().await;
+        common::hold_until_cleanup(FRONT_PAGE.lock().await);
         ensure_item_type(app).await;
 
         let marker = format!("FPP{}", Uuid::now_v7().simple());
@@ -464,7 +464,7 @@ fn a_target_the_visitor_may_not_see_is_refused_as_at_the_target() {
 fn a_deleted_target_falls_back_to_the_stock_front_page() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = FRONT_PAGE.lock().await;
+        common::hold_until_cleanup(FRONT_PAGE.lock().await);
         ensure_item_type(app).await;
 
         let title = format!("Deleted Front Page {}", Uuid::now_v7().simple());
@@ -496,7 +496,7 @@ fn a_deleted_target_falls_back_to_the_stock_front_page() {
 fn head_is_answered_as_the_target_answers_it() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = FRONT_PAGE.lock().await;
+        common::hold_until_cleanup(FRONT_PAGE.lock().await);
         set_front_page(app, "/search").await;
 
         let front = app
@@ -610,7 +610,7 @@ async fn post_site_form(app: &TestApp, cookies: &str, front_page: &str) -> (Stat
 fn the_admin_form_saves_only_a_path_that_resolves() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = FRONT_PAGE.lock().await;
+        common::hold_until_cleanup(FRONT_PAGE.lock().await);
         clear_front_page(app).await;
         let name = format!("frontadm{}", &Uuid::now_v7().simple().to_string()[20..]);
         let cookies = app
@@ -657,7 +657,7 @@ fn the_admin_form_saves_only_a_path_that_resolves() {
 fn a_front_page_translation_is_served_in_that_language() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = FRONT_PAGE.lock().await;
+        common::hold_until_cleanup(FRONT_PAGE.lock().await);
         ensure_item_type(app).await;
 
         let marker = Uuid::now_v7().simple().to_string();
@@ -730,7 +730,7 @@ fn a_front_page_translation_is_served_in_that_language() {
 fn external_front_page_is_rejected() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = FRONT_PAGE.lock().await;
+        common::hold_until_cleanup(FRONT_PAGE.lock().await);
 
         for external in [
             "https://example.com/",
@@ -765,7 +765,7 @@ fn external_front_page_is_rejected() {
 fn front_page_set_to_root_does_not_loop() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = FRONT_PAGE.lock().await;
+        common::hold_until_cleanup(FRONT_PAGE.lock().await);
 
         set_front_page(app, "/").await;
 
@@ -787,7 +787,7 @@ fn front_page_set_to_root_does_not_loop() {
 fn promoted_item_behind_newer_published_items_is_listed() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = FRONT_PAGE.lock().await;
+        common::hold_until_cleanup(FRONT_PAGE.lock().await);
         ensure_item_type(app).await;
         clear_front_page(app).await;
 
@@ -839,7 +839,7 @@ fn promoted_item_behind_newer_published_items_is_listed() {
 fn a_promoted_teaser_shows_its_body_under_either_field_name() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = FRONT_PAGE.lock().await;
+        common::hold_until_cleanup(FRONT_PAGE.lock().await);
         ensure_item_type(app).await;
         clear_front_page(app).await;
 
@@ -891,7 +891,7 @@ fn a_promoted_teaser_shows_its_body_under_either_field_name() {
 fn a_translated_front_page_offers_its_translations() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = FRONT_PAGE.lock().await;
+        common::hold_until_cleanup(FRONT_PAGE.lock().await);
         ensure_item_type(app).await;
 
         let marker = Uuid::now_v7().simple().to_string();
@@ -954,7 +954,7 @@ fn a_translated_front_page_offers_its_translations() {
 fn an_untranslated_front_page_offers_no_alternates() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = FRONT_PAGE.lock().await;
+        common::hold_until_cleanup(FRONT_PAGE.lock().await);
         ensure_item_type(app).await;
 
         let marker = Uuid::now_v7().simple().to_string();

@@ -94,7 +94,7 @@ fn result_count(html: &str) -> usize {
 #[test]
 fn special_characters_in_a_query_search_instead_of_failing() {
     run_test(async {
-        let _serial = SERIAL.lock().await;
+        common::hold_until_cleanup(SERIAL.lock().await);
         let term = unique_term("zqnoank");
         publish(
             &format!("Noank & Mystic {term}"),
@@ -148,7 +148,7 @@ fn special_characters_in_a_query_search_instead_of_failing() {
 #[test]
 fn a_miss_and_a_query_with_no_searchable_word_say_which() {
     run_test(async {
-        let _serial = SERIAL.lock().await;
+        common::hold_until_cleanup(SERIAL.lock().await);
         let (status, html) = get(&search_uri(&unique_term("zqzzqxjv"))).await;
         assert_eq!(status, StatusCode::OK);
         assert!(html.contains("No results found"), "{html}");
@@ -170,7 +170,7 @@ fn a_miss_and_a_query_with_no_searchable_word_say_which() {
 #[test]
 fn search_asks_for_search_content() {
     run_test(async {
-        let _serial = SERIAL.lock().await;
+        common::hold_until_cleanup(SERIAL.lock().await);
         let app = shared_app().await;
 
         let granted = trovato_kernel::models::Role::get_permissions(&app.db, ANONYMOUS_ROLE_ID)

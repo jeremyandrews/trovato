@@ -197,7 +197,7 @@ async fn followup(app: &TestApp, question: &str) -> (StatusCode, String) {
 fn the_followup_answers_before_the_classifier_and_the_label_is_counted() {
     run_test(async {
         let app = shared_app().await;
-        let _serial = SERIAL.lock().await;
+        common::hold_until_cleanup(SERIAL.lock().await);
         let stub = setup(app, true).await;
         let before = labels_today(app).await;
 
@@ -235,7 +235,7 @@ fn the_followup_answers_before_the_classifier_and_the_label_is_counted() {
 fn a_reply_outside_the_three_labels_counts_nothing() {
     run_test(async {
         let app = shared_app().await;
-        let _serial = SERIAL.lock().await;
+        common::hold_until_cleanup(SERIAL.lock().await);
         let stub = setup(app, true).await;
         stub.gate.add_permits(2);
         let before = labels_today(app).await;
@@ -270,7 +270,7 @@ fn a_reply_outside_the_three_labels_counts_nothing() {
 fn with_sentiment_off_no_classifier_call_is_made() {
     run_test(async {
         let app = shared_app().await;
-        let _serial = SERIAL.lock().await;
+        common::hold_until_cleanup(SERIAL.lock().await);
         let stub = setup(app, false).await;
         stub.gate.add_permits(1);
         *stub.label.lock().unwrap() = "satisfied".to_string();
@@ -306,7 +306,7 @@ fn with_sentiment_off_no_classifier_call_is_made() {
 fn no_followup_text_is_stored_anywhere() {
     run_test(async {
         let app = shared_app().await;
-        let _serial = SERIAL.lock().await;
+        common::hold_until_cleanup(SERIAL.lock().await);
         let stub = setup(app, true).await;
         stub.gate.add_permits(1);
         *stub.label.lock().unwrap() = "satisfied".to_string();

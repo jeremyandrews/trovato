@@ -298,7 +298,7 @@ fn the_blog_tag_page_is_headed_by_its_tag() {
 #[test]
 fn a_gather_without_its_own_size_pages_by_the_site_setting() {
     run_test(async {
-        let _serial = SERIAL.lock().await;
+        common::hold_until_cleanup(SERIAL.lock().await);
         let app = shared_app().await;
         let s = stamp();
         for n in 1..=4 {
@@ -358,7 +358,7 @@ fn a_gather_without_its_own_size_pages_by_the_site_setting() {
 #[test]
 fn item_views_are_counted_and_shown_to_the_permission() {
     run_test(async {
-        let _serial = SERIAL.lock().await;
+        common::hold_until_cleanup(SERIAL.lock().await);
         let app = shared_app().await;
         let s = stamp();
         let id = item(app, &format!("Reads {s}")).await;

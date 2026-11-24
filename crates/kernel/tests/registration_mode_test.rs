@@ -42,7 +42,7 @@ async fn register_page_status(app: &TestApp) -> StatusCode {
 fn the_open_mode_opens_the_register_route() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = REGISTRATION.lock().await;
+        common::hold_until_cleanup(REGISTRATION.lock().await);
         clear_settings(app).await;
 
         RegistrationMode::Open
@@ -65,7 +65,7 @@ fn the_open_mode_opens_the_register_route() {
 fn the_admin_only_mode_closes_the_register_route() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = REGISTRATION.lock().await;
+        common::hold_until_cleanup(REGISTRATION.lock().await);
         clear_settings(app).await;
 
         RegistrationMode::AdminOnly
@@ -89,7 +89,7 @@ fn the_admin_only_mode_closes_the_register_route() {
 fn saving_the_mode_removes_the_superseded_boolean() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = REGISTRATION.lock().await;
+        common::hold_until_cleanup(REGISTRATION.lock().await);
         clear_settings(app).await;
 
         // A site as it was: opened through the boolean, nothing else set.
@@ -133,7 +133,7 @@ fn saving_the_mode_removes_the_superseded_boolean() {
 fn a_stored_closed_mode_still_closes_registration() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = REGISTRATION.lock().await;
+        common::hold_until_cleanup(REGISTRATION.lock().await);
         clear_settings(app).await;
 
         SiteConfig::set(&app.db, "user_registration", serde_json::json!("closed"))
@@ -151,7 +151,7 @@ fn a_stored_closed_mode_still_closes_registration() {
 fn registration_is_closed_by_default() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = REGISTRATION.lock().await;
+        common::hold_until_cleanup(REGISTRATION.lock().await);
         clear_settings(app).await;
 
         assert_eq!(register_page_status(app).await, StatusCode::NOT_FOUND);
@@ -164,7 +164,7 @@ fn registration_is_closed_by_default() {
 fn the_registration_submission_is_gated_as_well() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = REGISTRATION.lock().await;
+        common::hold_until_cleanup(REGISTRATION.lock().await);
         clear_settings(app).await;
 
         RegistrationMode::AdminOnly

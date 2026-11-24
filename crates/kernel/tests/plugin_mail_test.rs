@@ -214,7 +214,7 @@ fn messages_for(sink: &SmtpSink, subject: &str) -> Vec<Envelope> {
 fn a_plugin_sends_mail_to_the_site_contact_address() {
     common::run_test(async {
         let fixture = with_smtp();
-        let _guard = SITE_MAIL_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         SiteConfig::set_site_mail(&fixture.app.db, SITE_CONTACT)
             .await
             .expect("set the site contact address");
@@ -260,7 +260,7 @@ fn a_plugin_sends_mail_to_the_site_contact_address() {
 fn an_attachment_arrives_as_a_mime_part() {
     common::run_test(async {
         let fixture = with_smtp();
-        let _guard = SITE_MAIL_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         SiteConfig::set_site_mail(&fixture.app.db, SITE_CONTACT)
             .await
             .expect("set the site contact address");
@@ -297,7 +297,7 @@ fn an_attachment_arrives_as_a_mime_part() {
 fn with_no_site_contact_address_the_send_is_refused() {
     common::run_test(async {
         let fixture = with_smtp();
-        let _guard = SITE_MAIL_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         SiteConfig::set_site_mail(&fixture.app.db, "")
             .await
             .expect("clear the site contact address");

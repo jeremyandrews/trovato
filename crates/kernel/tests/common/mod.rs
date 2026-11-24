@@ -151,6 +151,25 @@ where
     DEFERRED_CLEANUPS.with(|pending| pending.borrow_mut().push(Box::new(move || Box::pin(f()))));
 }
 
+/// Hold `guard` until the running test's cleanups have run, then release it.
+///
+/// For the file-level locks (`static FRONT_PAGE: Mutex<()>` and the like) that
+/// make a test's turn with some site-wide state exclusive. Bound as
+/// `let _guard = LOCK.lock().await`, the guard is dropped when the test body
+/// returns, which is BEFORE [`run_test`] awaits the cleanups the body
+/// registered. So the cleanup that puts the shared state back ran after the
+/// lock was released, in the middle of whichever test took it next: one test
+/// restoring the stock theme while another asserted on the theme it had just
+/// set. The race was always there and `--test-threads=1` hid it; tests inside
+/// a target run in parallel now.
+///
+/// Call it before registering any cleanup that touches the guarded state:
+/// cleanups run last-registered-first, so a guard registered first is released
+/// last.
+pub fn hold_until_cleanup<G: Send + 'static>(guard: G) {
+    defer_cleanup(move || async move { drop(guard) });
+}
+
 /// Drain and await every cleanup the finished test registered.
 ///
 /// One at a time, with the borrow released around each `block_on`, so a cleanup
