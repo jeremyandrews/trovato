@@ -20,6 +20,7 @@ use crate::content::{ItemService, RecordTypeRegistry};
 use crate::metrics::{CacheName, Metrics};
 use crate::models::UrlAlias;
 use crate::services::ai_provider::AiProviderService;
+use crate::services::user::UserService;
 use crate::services::vector_store::{PgVectorStore, VectorStore};
 use crate::tap::UserContext;
 use anyhow::{Context, Result};
@@ -122,6 +123,12 @@ pub struct GatherService {
     /// [`Self::item_access`]. When unset or a gather names no `record_type`, every
     /// gather is an Item gather and this is never consulted.
     record_types: OnceLock<Arc<RecordTypeRegistry>>,
+    /// The user service (B166), late-bound like [`Self::item_access`]: author
+    /// resolution needs its cache and its batched `names_by_ids`, and
+    /// `UserService` is constructed after `GatherService` in `AppState`. When
+    /// unset (a narrow test harness), rows get no `author` key at all, same as
+    /// an unwired `item_access` skips the access pass rather than failing.
+    users: OnceLock<Arc<UserService>>,
     /// Serializes this server's query writes with its reloads. A write holds it
     /// from its database write until `queries` is updated; a reload holds it
     /// from reading the rows until it has applied them. Without it a reload
@@ -258,6 +265,7 @@ impl GatherService {
             writes: tokio::sync::Mutex::new(()),
             site_page_size: parking_lot::RwLock::new(None),
             record_types: OnceLock::new(),
+            users: OnceLock::new(),
             metrics,
         })
     }
@@ -309,6 +317,14 @@ impl GatherService {
     /// by `AppState::new` after the registry is built. Idempotent (first wins).
     pub fn set_record_types(&self, record_types: Arc<RecordTypeRegistry>) {
         let _ = self.record_types.set(record_types);
+    }
+
+    /// Late-bind the user service (B166), so a row's `author_id` resolves to
+    /// a name (and a profile link) through the one cached lookup the item page
+    /// and `/api/item` also use. Called once by `AppState::new` after
+    /// `UserService` is constructed. Idempotent (first wins).
+    pub fn set_user_service(&self, users: Arc<UserService>) {
+        let _ = self.users.set(users);
     }
 
     /// Register a query definition.
@@ -1248,6 +1264,7 @@ impl GatherService {
         // Item gathers only.
         if record_ctx.is_none() && !scope.own_base {
             self.resolve_row_urls(&mut rows, stage_ids, context).await;
+            self.resolve_row_authors(&mut rows, &viewer).await;
         }
 
         let total = visible_total.or(sql_total).unwrap_or(0);
@@ -1309,6 +1326,45 @@ impl GatherService {
             let url = aliases.get(&source).cloned().unwrap_or(source);
             if let Some(object) = row.as_object_mut() {
                 object.insert("url".to_string(), serde_json::Value::String(url));
+            }
+        }
+    }
+
+    /// Give each row that carries an `author_id` an `author`: the display
+    /// name, and a profile link only when `viewer` may see one (B166).
+    ///
+    /// **One query for the whole result set**, through the same `UserService`
+    /// lookup the item page and `/api/item` resolve an author through — never
+    /// one per row. A `SELECT item.*` row always carries `author_id` (every
+    /// base-table column survives field filtering); an explicit-field gather
+    /// needs it in its own output fields, exactly as `url` needs `id` — a row
+    /// without one gets no `author` rather than a wrong one.
+    async fn resolve_row_authors(&self, rows: &mut [serde_json::Value], viewer: &UserContext) {
+        if rows.is_empty() {
+            return;
+        }
+        let Some(users) = self.users.get() else {
+            return;
+        };
+
+        let ids: Vec<Uuid> = rows.iter().filter_map(row_author_id).collect();
+        if ids.is_empty() {
+            return;
+        }
+
+        let views = users.author_views(&ids, viewer).await;
+        for row in rows.iter_mut() {
+            let Some(id) = row_author_id(row) else {
+                continue;
+            };
+            let Some(view) = views.get(&id) else {
+                continue;
+            };
+            if let Some(object) = row.as_object_mut() {
+                object.insert(
+                    "author".to_string(),
+                    serde_json::to_value(view).unwrap_or(serde_json::Value::Null),
+                );
             }
         }
     }
@@ -3042,6 +3098,13 @@ fn row_id(row: &serde_json::Value) -> Option<String> {
         serde_json::Value::Null => None,
         other => Some(other.to_string()),
     }
+}
+
+/// The `author_id` of a gather row, when it carries one and it parses as a
+/// `Uuid`. A gather may project an explicit field list that omits it, same as
+/// [`row_id`] for `id`.
+fn row_author_id(row: &serde_json::Value) -> Option<Uuid> {
+    row.get("author_id")?.as_str()?.parse().ok()
 }
 
 #[cfg(test)]
