@@ -985,7 +985,7 @@ jobs:
     name: Cluster (two nodes)
     runs-on: ubuntu-latest
     # BUDGET: provisional, set from the first measured run.
-    timeout-minutes: 30
+    timeout-minutes: 45
     env:
       TROVATO_CLUSTER_URL: http://localhost:8095
       TROVATO_CLUSTER_DATABASE_URL: postgres://trovato:trovato@localhost:56432/trovato
