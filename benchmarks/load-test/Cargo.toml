@@ -7,6 +7,11 @@ edition = "2024"
 name = "loadtest"
 path = "src/main.rs"
 
+# Median and p99 per page, by hand (`scripts/bench.sh`).
+[[bin]]
+name = "bench"
+path = "src/bin/bench.rs"
+
 [lints]
 workspace = true
 
