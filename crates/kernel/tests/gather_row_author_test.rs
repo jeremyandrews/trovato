@@ -39,15 +39,23 @@ fn admin() -> UserContext {
     UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()])
 }
 
-/// A signed-in viewer holding no permissions beyond the authenticated-user
-/// default: sees the name, never a link.
+/// A signed-in viewer holding no permissions beyond `access content` (the
+/// authenticated-user default every real account gets, but a hand-built
+/// `UserContext` does not): sees the item, and the author's name, never a
+/// link.
 fn plain_viewer() -> UserContext {
-    UserContext::authenticated(Uuid::now_v7(), Vec::new())
+    UserContext::authenticated(Uuid::now_v7(), vec!["access content".to_string()])
 }
 
-/// A signed-in viewer who may see a profile.
+/// A signed-in viewer who may also see a profile.
 fn profile_viewer() -> UserContext {
-    UserContext::authenticated(Uuid::now_v7(), vec!["access user profiles".to_string()])
+    UserContext::authenticated(
+        Uuid::now_v7(),
+        vec![
+            "access content".to_string(),
+            "access user profiles".to_string(),
+        ],
+    )
 }
 
 fn display() -> QueryDisplay {
