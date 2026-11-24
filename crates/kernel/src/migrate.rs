@@ -28,8 +28,9 @@ use crate::plugin::PluginInfo;
 
 /// The advisory lock key every Trovato migrator takes ("trovatoM").
 ///
-/// Separate from the key sqlx's migrator derives from the database name: that
-/// one covers only the kernel half, and is taken on a pooled connection.
+/// Separate from the key sqlx's migrator derives from the database name,
+/// which covers only the kernel half; sqlx still takes that one inside
+/// `run_direct`, on this lock's connection.
 pub const MIGRATE_LOCK_KEY: i64 = 0x7472_6f76_6174_6f4d;
 
 /// How often a waiting migrator tries the lock again.
@@ -96,10 +97,10 @@ impl MigrationLock {
 
     /// Limit how long a migration's statement may wait for a table lock.
     ///
-    /// Set after the advisory lock is held, never before: Postgres applies
-    /// `lock_timeout` to advisory lock waits too, and a second migrator must
-    /// wait for the first, not fail. Zero waits without limit, whatever the
-    /// role or server default.
+    /// It covers migration statements only: our own lock is polled and never
+    /// waits. (sqlx's key, taken inside `run_direct`, does wait under it, but
+    /// only a binary from before this change holds that key without ours.)
+    /// Zero waits without limit, whatever the role or server default.
     pub async fn set_lock_timeout(&mut self, timeout: Duration) -> Result<()> {
         self.lock_timeout = Some(timeout);
         self.apply_lock_timeout(Some(timeout)).await
@@ -457,12 +458,14 @@ pub async fn run_kernel(lock: &mut MigrationLock, migrator: &Migrator) -> Result
     // `run_direct` rather than `run`: `run` is generic over `Acquire`, which on
     // a borrowed connection makes every caller's future fail the `Send`
     // check (sqlx documents `run_direct` as the way around exactly that).
-    let result = tolerant.run_direct(None, lock.conn(), false).await;
+    tolerant
+        .run_direct(None, lock.conn(), false)
+        .await
+        .context("failed to run kernel migrations")?;
     if clear_timeout {
         let configured = lock.lock_timeout;
         lock.apply_lock_timeout(configured).await?;
     }
-    result.context("failed to run kernel migrations")?;
     for (version, description) in &report.pending {
         info!(version, description = %description, "applied kernel migration");
     }
@@ -545,7 +548,7 @@ pub async fn run(
     Ok(Applied { kernel, plugins })
 }
 
-/// Read the schema state for `serve` with `MIGRATE_ON_START=false`.
+/// Read the schema state on a connection of its own: no lock, no writes.
 pub async fn read_report(
     database_url: &str,
     migrator: &Migrator,

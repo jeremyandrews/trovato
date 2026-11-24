@@ -36,10 +36,13 @@ Fine at any time (expand):
 - inserting or updating rows the previous release reads the same way.
 
 Only in a later release, after no released code reads or writes the object
-(contract): dropping a table, column, view, function or type; renaming a table
+(contract): dropping a table, column, view, function, type, index or constraint
+(the previous release's `ON CONFLICT` writes need its unique ones); renaming a table
 or column; changing a column's type; `SET NOT NULL`; adding a `NOT NULL` column
-without a `DEFAULT`; adding a constraint; `TRUNCATE`; a plain `CREATE INDEX` on a
-table that already exists.
+without a `DEFAULT`; removing a column's `DEFAULT`; adding a constraint;
+`TRUNCATE`; a plain or unique `CREATE INDEX` on a table that already exists. A
+`DROP INDEX CONCURRENTLY`, like a concurrent build, needs a `-- no-transaction`
+kernel file of its own.
 
 A rename takes three releases:
 
@@ -74,7 +77,8 @@ using the object is the reviewer's question).
 
 **When a release cannot keep the previous one working**, name the migration
 `<version>_incompatible_<description>.sql`. Older binaries refuse to start on a
-schema that holds it (with `MIGRATE_ON_START=false`, to become ready), so that release needs planned downtime and
+schema that holds it (with `MIGRATE_ON_START=false`, to become ready), so that
+release needs planned downtime and
 cannot be rolled back by image. Its `UPGRADING.md` entry must say so.
 
 ### Rolling back

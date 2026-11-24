@@ -73,7 +73,7 @@ impl Probes {
         }
     }
 
-    /// Report not ready from now on (SIGTERM).
+    /// Report not ready from now on (at the shutdown signal).
     pub fn start_draining(&self) {
         self.draining.store(true, Ordering::SeqCst);
     }

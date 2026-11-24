@@ -71,16 +71,19 @@ pub enum Source {
 /// an older release, the one whose code stopped using the object. The checker
 /// cannot see tags, so "older" is all it can hold a marker to.
 pub fn check(sql: &str, workspace_version: &str, source: Source) -> Result<(), Vec<Violation>> {
-    if let Some(marker) = contract_marker(sql) {
-        return match marker_is_valid(marker, workspace_version) {
-            true => Ok(()),
-            false => Err(vec![Violation {
+    // A marker waives the compatibility refusals only; a statement that
+    // cannot run where it is (CONCURRENTLY in a transaction) is refused anyway.
+    let marked = match contract_marker(sql) {
+        Some(marker) if !marker_is_valid(marker, workspace_version) => {
+            return Err(vec![Violation {
                 statement: marker.trim().to_string(),
                 reason: "a contract marker must read `-- trovato:contract <x.y.z>: <reason>`, \
                          naming a release older than this one",
-            }]),
-        };
-    }
+            }]);
+        }
+        Some(_) => true,
+        None => false,
+    };
 
     let statements: Vec<String> = blank_comments_and_literals(sql)
         .split(';')
@@ -93,7 +96,9 @@ pub fn check(sql: &str, workspace_version: &str, source: Source) -> Result<(), V
     let violations: Vec<Violation> = statements
         .iter()
         .filter_map(|s| {
-            refusal(s, &created)
+            (!marked)
+                .then(|| refusal(s, &created))
+                .flatten()
                 .or_else(|| concurrent_index_refusal(s, statements.len(), no_transaction))
                 .map(|reason| Violation {
                     statement: s.clone(),
@@ -139,8 +144,16 @@ fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
 
 /// Why `statement` is refused, if it is.
 fn refusal(s: &str, created: &[String]) -> Option<&'static str> {
-    // Every kind of DROP but an index's, so a kind nobody listed is refused.
-    if s.starts_with("DROP ") && !s.starts_with("DROP INDEX ") {
+    // Every kind of DROP, so a kind nobody listed is refused. An index too: a
+    // unique one is what the previous release's `ON CONFLICT` relies on, and
+    // any other, its query plans.
+    if s.starts_with("DROP INDEX ") {
+        return Some(
+            "drops an index the previous release may rely on (a unique one for its \
+             ON CONFLICT writes, any for its query plans)",
+        );
+    }
+    if s.starts_with("DROP ") {
         return Some("drops an object the previous release may still use");
     }
     if s.starts_with("TRUNCATE ") {
@@ -189,7 +202,7 @@ fn concurrent_index_refusal(
     if s.starts_with("CREATE UNIQUE ") {
         return Some(
             "adds a uniqueness rule to an existing table, which the previous release's \
-             writes may break, as ADD UNIQUE would",
+             writes may break, as ADD UNIQUE would, so it needs a contract marker",
         );
     }
     if !no_transaction {
@@ -249,8 +262,11 @@ fn split_top_level(s: &str) -> Vec<String> {
 fn action_refusal(action: &str) -> Option<&'static str> {
     let words: Vec<&str> = action.split(' ').collect();
     match words.as_slice() {
-        // Dropping a constraint only relaxes what the previous release meets.
-        ["DROP", "CONSTRAINT", ..] => None,
+        // A unique or primary key constraint backs the previous release's
+        // `ON CONFLICT` writes, which fail without it.
+        ["DROP", "CONSTRAINT", ..] => {
+            Some("drops a constraint the previous release's ON CONFLICT writes may rely on")
+        }
         ["DROP", ..] => Some("drops a column the previous release may still read"),
         ["ADD", ..] => add_refusal(action),
         ["ALTER", rest @ ..] => {
@@ -464,6 +480,10 @@ mod tests {
             "ALTER TABLE item ADD PRIMARY KEY (id);",
             "ALTER TABLE item ADD FOREIGN KEY (owner) REFERENCES users(id);",
             "ALTER TABLE item ADD EXCLUDE USING gist (span WITH &&);",
+            // The previous release's ON CONFLICT writes need its unique indexes
+            // and constraints.
+            "DROP INDEX IF EXISTS idx_users_name_unique;",
+            "ALTER TABLE item DROP CONSTRAINT IF EXISTS item_slug_key;",
         ] {
             assert!(refused(sql), "should be refused: {sql}");
         }
@@ -484,8 +504,6 @@ mod tests {
             "CREATE UNLOGGED TABLE scratch (id INT);\nCREATE INDEX idx_scratch ON scratch (id);",
             "UPDATE item SET summary = '' WHERE summary IS NULL;",
             "INSERT INTO role_permissions (role_id, permission) VALUES ('x', 'drop table y');",
-            "DROP INDEX IF EXISTS idx_unused;",
-            "ALTER TABLE item DROP CONSTRAINT IF EXISTS old_check;",
             // A table this file creates: nothing older reads it.
             "CREATE TABLE thing (id INT, name TEXT);\n\
              ALTER TABLE thing ALTER COLUMN name SET NOT NULL;\n\
@@ -529,7 +547,15 @@ mod tests {
         // Alone in its file it runs, the build and the drop alike.
         assert!(!refused(&format!("-- no-transaction\n{build}")));
         assert!(!refused(&format!("-- no-transaction\n-- why\n{build}\n")));
-        assert!(!refused(&format!("-- no-transaction\n{drop}")));
+        // A drop is a contract step: alone, and with a marker.
+        let marker = "-- trovato:contract 0.106.0: idx_item_title unused since 0.106.0";
+        assert!(refused(&format!("-- no-transaction\n{drop}")));
+        assert!(!refused(&format!("-- no-transaction\n{marker}\n{drop}")));
+        // A marker waives compatibility, not where a statement can run.
+        assert!(refused(&format!(
+            "-- no-transaction\n{marker}\n{drop}\n{build}"
+        )));
+        assert!(refused(&format!("{marker}\n{drop}")));
         // A unique one is a new constraint on existing rows and writes.
         assert!(refused(
             "-- no-transaction\nCREATE UNIQUE INDEX CONCURRENTLY u ON item (slug);"

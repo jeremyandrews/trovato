@@ -353,6 +353,15 @@ fn applied_counts(stdout: &str) -> (i64, i64) {
 async fn two_migrators_at_once_both_succeed_and_apply_each_migration_once() {
     let db = ScratchDb::create("bg10_race").await;
     let url = db.url();
+    // A database default that would fail a blocking wait for the lock after a
+    // second: the migrators poll, so it must not.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "ALTER DATABASE \"{}\" SET lock_timeout = '1s'",
+        db.name()
+    )))
+    .execute(db.pool())
+    .await
+    .unwrap();
     let plugins = repo_root().join("plugins");
 
     // Hold the lock first, so both are certainly started and waiting on it
@@ -598,7 +607,14 @@ async fn dry_run_and_status_change_nothing() {
 
     let dry = migrate(&this_bin(), &url, &["--dry-run"], None).await;
     assert!(dry.0);
-    assert!(dry.1.contains("Would apply"), "dry run output:\n{}", dry.1);
+    assert!(
+        dry.1.contains(&format!(
+            "Would apply {} migration(s)",
+            kernel_migration_count()
+        )),
+        "dry run output:\n{}",
+        dry.1
+    );
     let status = migrate(&this_bin(), &url, &["--status"], None).await;
     assert!(status.0);
     assert!(
@@ -675,7 +691,15 @@ async fn lock_timeout_applies_to_the_migrations() {
     assert!(stderr.contains("lock timeout"), "{stderr}");
     assert!(started.elapsed() < Duration::from_secs(15));
 
-    // `0` waits for the blocker instead, then succeeds.
+    // `0` waits for the blocker instead, then succeeds, even where the
+    // database's own default would give up after a second.
+    sqlx::query(sqlx::AssertSqlSafe(format!(
+        "ALTER DATABASE \"{}\" SET lock_timeout = '1s'",
+        db.name()
+    )))
+    .execute(db.pool())
+    .await
+    .unwrap();
     let work = TempDir::new("lock-timeout-0");
     let mut waiting = command(&this_bin(), &url, &work)
         .args(["migrate", "--lock-timeout", "0"])
@@ -683,6 +707,27 @@ async fn lock_timeout_applies_to_the_migrations() {
         .stderr(Stdio::null())
         .spawn()
         .unwrap();
+    // Stuck on the table lock, not merely slow to start ...
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let blocked: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM pg_stat_activity \
+             WHERE datname = current_database() AND wait_event_type = 'Lock'",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        if blocked > 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the migrator never reached the table lock"
+        );
+        assert!(waiting.try_wait().unwrap().is_none(), "the migrator exited");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // ... and still there well past the database default of one second.
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert!(
         waiting.try_wait().unwrap().is_none(),
@@ -1672,6 +1717,11 @@ async fn a_request_that_never_finishes_is_cut_off_after_the_drain() {
     // 1 (drain) + 3 (timeout) + 0.5 + up to 1 (pool close), with slack.
     let exit = server.exit_within(Duration::from_secs(15)).await;
     assert!(exit.success(), "exit after the cut-off: {exit}");
+    assert!(
+        server.logged("In-flight requests did not finish within SHUTDOWN_TIMEOUT_SECS"),
+        "the deadline cut the request off:\n{}",
+        server.log.lock()
+    );
     assert!(
         signalled.elapsed() >= Duration::from_secs(4),
         "the drain and the timeout both ran: {:?}",

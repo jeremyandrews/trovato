@@ -47,13 +47,11 @@ pub async fn run_plugin_migrations(
     plugin_dir: &Path,
 ) -> Result<Vec<String>> {
     let mut lock = crate::migrate::MigrationLock::acquire(pool).await?;
-    let result = async {
-        crate::migrate::refuse_plugin_problems(lock.conn(), [(plugin_name, info)]).await?;
-        run_plugin_migrations_on(lock.conn(), plugin_name, info, plugin_dir).await
-    }
-    .await;
+    // On an error the lock is dropped, which closes its connection and frees it.
+    crate::migrate::refuse_plugin_problems(lock.conn(), [(plugin_name, info)]).await?;
+    let applied = run_plugin_migrations_on(lock.conn(), plugin_name, info, plugin_dir).await?;
     lock.release().await?;
-    result
+    Ok(applied)
 }
 
 /// [`run_plugin_migrations`] on a connection that already holds the lock.

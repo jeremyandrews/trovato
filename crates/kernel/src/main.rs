@@ -718,8 +718,13 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
 
     // Close external connections with a timeout.
     info!("Closing external connections...");
-    // At least a second, even if the in-flight wait used the whole budget.
-    let close_by = deadline.max(tokio::time::Instant::now() + std::time::Duration::from_secs(1));
+    // With a drain, what is left of the one budget, but at least a second.
+    // Without one, a fresh SHUTDOWN_TIMEOUT_SECS, as a single server always had.
+    let close_by = if bound_in_flight {
+        deadline.max(tokio::time::Instant::now() + std::time::Duration::from_secs(1))
+    } else {
+        tokio::time::Instant::now() + config.shutdown_timeout
+    };
     let drain_result = tokio::time::timeout_at(close_by, async {
         db_pool.close().await;
         info!("Database pool closed");

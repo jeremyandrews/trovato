@@ -94,9 +94,9 @@ trovato migrate --dry-run    # list what would be applied; change nothing
 - **Nonzero exit on any failure**: connection, lock, a failed migration, an
   edited applied migration (checksum mismatch), a dirty migration, or an
   unknown applied migration marked incompatible (see 3).
-- **`lock_timeout` is set after the advisory lock is held, not before.**
-  Postgres applies `lock_timeout` to advisory lock waits too. Set first, it would
-  make the second of two concurrent runs fail instead of wait. Set after, it
+- **`lock_timeout` covers migration statements, not the wait for the lock.**
+  Our lock is polled with `pg_try_advisory_lock`, which never waits, so a
+  second run waits for the first whatever the timeout. The timeout
   limits how long a migration's DDL can sit in the lock queue on a busy table.
   Without it, an `ALTER TABLE` waiting behind a long read blocks every later
   read of that table, which takes the site down. On timeout the migration's
@@ -113,8 +113,8 @@ trovato migrate --dry-run    # list what would be applied; change nothing
   migration.
 
 The existing `trovato plugin install` and `trovato plugin migrate` run their
-plugin migrations under the same lock, with the same incompatible check. `db::run_migrations`, which the tests call,
-takes it too.
+plugin migrations under the same lock, with the same incompatible check.
+`db::run_migrations`, which the tests call, takes it too.
 
 ### 2. Boot: `MIGRATE_ON_START`
 
@@ -169,17 +169,21 @@ Allowed at any time ("expand"):
   migration over it. A kernel half that includes such a file runs with
   `lock_timeout` cleared, because the build waits for older transactions by
   design; the timeout is put back before the plugin migrations. A `UNIQUE`
-  index on an existing table is a new constraint and needs a marker. Plain `CREATE INDEX` is fine on a
-  table the same file creates;
+  index on an existing table is a new constraint and needs a marker. A
+  `DROP INDEX CONCURRENTLY` likewise needs a `-- no-transaction` file of its
+  own, and a marker, as every index drop does. A marker waives the
+  compatibility refusals only, never these placement rules. Plain
+  `CREATE INDEX` is fine on a table the same file creates;
 - inserts and updates of rows the previous release reads the same way.
 
 Only in a later release, once no released code reads or writes the object
 ("contract"):
 - `DROP TABLE`, `DROP COLUMN`, `DROP VIEW`, `DROP FUNCTION`, `DROP TYPE`,
-  `DROP SCHEMA`;
+  `DROP SCHEMA`, `DROP INDEX` and `DROP CONSTRAINT` (the previous release's
+  `ON CONFLICT` writes need its unique indexes and constraints);
 - `RENAME` of a table or column;
 - `ALTER COLUMN ... TYPE`, `SET NOT NULL`, `ADD COLUMN ... NOT NULL` without a
-  `DEFAULT`, `ADD CONSTRAINT`, `TRUNCATE`;
+  `DEFAULT`, `ADD CONSTRAINT`, `ALTER COLUMN ... DROP DEFAULT`, `TRUNCATE`;
 - `CREATE INDEX` without `CONCURRENTLY` on a table the file does not create
   (it blocks writes for the whole build).
 
@@ -188,15 +192,15 @@ release N+1 reads the new one; release N+2 drops the old one with a marker
 naming N+1.
 
 **Enforcement, mechanical and cheap.** `crates/kernel/src/migration_rule.rs`
-is a pure function over a migration's SQL, with no parser crate. Comments
-and string literals are stripped first, then the statements
-are matched against the list above. A unit test runs it over every kernel
-migration newer than the cutoff (`20261127160002`, the newest on `main` when
-the rule was written; older files are history, and their count is pinned so a
-file cannot be slipped in under the cutoff) and every plugin migration. The unit test runs in `./scripts/pre-commit-check.sh`
-(as a named step) and in CI (the shard 1 unit test step, also named). A
-refused statement passes only if the comment lines at the top of the file (before
-the first statement) carry
+is a pure function over a migration's SQL, with no parser crate. Comments and
+string literals are stripped first, then the statements are matched against
+the list above. A unit test runs it over every kernel migration newer than the
+cutoff (`20261127160002`, the newest on `main` when the rule was written; older
+files are history, and their count is pinned so a file cannot be slipped in
+under the cutoff) and every plugin migration. The unit test runs in
+`./scripts/pre-commit-check.sh` (as a named step) and in CI (the shard 1 unit
+test step, also named). A refused statement passes only if the comment lines
+at the top of the file (before the first statement) carry
 
 ```sql
 -- trovato:contract <release>: <what stopped using it>
@@ -324,10 +328,12 @@ On **SIGTERM**:
 4. It stops accepting, finishes in-flight requests, stops the remaining
    background tasks (search analytics flush once more, as today, and the queue
    runner's batch) and closes the pool, all within one `SHUTDOWN_TIMEOUT_SECS`
-   (existing setting, default 30) counted from when it stops accepting, plus
-   half a second, and exits. (The in-flight wait is bounded only when a drain
-   is configured; see below.) Closing the pool always gets at least a second,
-   even when the in-flight wait used the whole budget.
+   (existing setting, default 30) counted from when it stops accepting, and
+   exits. (The in-flight wait is bounded only when a drain is configured; see
+   below.) With a drain, the worst case is `SHUTDOWN_TIMEOUT_SECS` + 1.5
+   seconds: half a second for background tasks, then at least a second to
+   close the pool, even when the in-flight wait used the whole budget. Without
+   one, closing the pool gets its own `SHUTDOWN_TIMEOUT_SECS`, as before.
 
 `SHUTDOWN_DRAIN_SECS` defaults to **5 when running under Kubernetes**
 (`KUBERNETES_SERVICE_HOST` is set, which the kubelet does in every pod), and

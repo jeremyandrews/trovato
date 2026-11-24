@@ -90,12 +90,12 @@ pub(crate) fn parse_or<T: std::str::FromStr>(lookup: Lookup<'_>, name: &str, def
         .unwrap_or(default)
 }
 
-/// Parse a boolean-ish looked-up setting. Truthy: `1`, `true`, `yes`, `on`
-/// (case-insensitive); anything else present is `false`; absent is `default`.
 /// The shortest `HEALTH_TOKEN` accepted: it is checked on requests that no
 /// rate limit slows down.
 const MIN_HEALTH_TOKEN_LEN: usize = 32;
 
+/// Parse a boolean-ish looked-up setting. Truthy: `1`, `true`, `yes`, `on`
+/// (case-insensitive); anything else present is `false`; absent is `default`.
 pub(crate) fn parse_bool_or(lookup: Lookup<'_>, name: &str, default: bool) -> bool {
     lookup(name).map_or(default, |v| {
         matches!(
@@ -1014,6 +1014,14 @@ mod config_tests {
             "{err}"
         );
         let token = "0123456789abcdef0123456789abcdef";
+        assert!(
+            config_from(&[
+                ("DATABASE_URL", "postgres://localhost/x"),
+                ("HEALTH_TOKEN", &token[1..])
+            ])
+            .is_err(),
+            "31 characters is too short"
+        );
         assert_eq!(
             with_db(&[("HEALTH_TOKEN", token)]).health_token.as_deref(),
             Some(token)

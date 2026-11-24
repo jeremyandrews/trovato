@@ -13,7 +13,8 @@ once the migration has run. A binary now accepts applied migrations it does not
 know, unless one is named incompatible. They used to stop it at boot, which made
 a rollback by image impossible. Every new migration must keep the previous
 release working (expand, then contract). A unit test run by the pre-commit
-script and CI refuses the statements that break the previous release (a drop, rename,
+script and CI refuses the statements that break the previous release (a drop, including
+of an index or constraint, a rename,
 retype, `SET NOT NULL`, `DROP DEFAULT`, `TRUNCATE`, a `NOT NULL` column without
 a default, a new constraint, a plain or unique index build on an existing table; see
 `UPGRADING.md`), unless the file names the release that
