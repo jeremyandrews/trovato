@@ -33,6 +33,14 @@ pub fn is_probe_path(path: &str) -> bool {
     matches!(path, "/health" | "/health/live" | "/health/ready")
 }
 
+/// A probe request: `GET` or `HEAD` on a probe path. The exemptions that
+/// remove a cost a visitor would pay (rate limits, credential lookups, the
+/// session index) ask this, so any other method on these paths, which answers
+/// 405 through the themed error page, is charged like any other request.
+pub fn is_probe(method: &axum::http::Method, path: &str) -> bool {
+    matches!(*method, axum::http::Method::GET | axum::http::Method::HEAD) && is_probe_path(path)
+}
+
 /// How long one dependency check is reused.
 const CHECK_TTL: Duration = Duration::from_secs(1);
 
@@ -191,7 +199,10 @@ async fn health(State(state): State<AppState>, request: Request) -> Response {
         utilization_pct: (active * 100).checked_div(size).unwrap_or(0),
     };
     // The full service report (circuit breaker states and so on).
-    let services = state.health_report().await;
+    // Bounded like the cached checks: two of them, uncached, run inside it.
+    let services = tokio::time::timeout(CHECK_TIMEOUT * 2, state.health_report())
+        .await
+        .ok();
     answer(
         status_code(ok),
         json!({

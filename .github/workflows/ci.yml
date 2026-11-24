@@ -256,6 +256,14 @@ jobs:
           cp target/wasm32-wasip1/release/test_form_taps_b.wasm plugins/test_form_taps_b/
           cp target/wasm32-wasip1/release/test_owned_vocabulary.wasm plugins/test_owned_vocabulary/
 
+      # The expand-then-contract rule (docs/design/upgrades-and-probes.md §3):
+      # a new migration that would break the previous release fails here unless
+      # it carries `-- trovato:contract <release>: <reason>`. First, on its own,
+      # so a failure says what it is; the unit test step reuses its build.
+      - name: Migration compatibility rule
+        if: matrix.shard == 1
+        run: cargo test --all --lib migration_rule
+
       # Unit + doc tests are cheap relative to the integration binaries, so one
       # shard carries them for the whole workspace rather than all three
       # repeating the work.
@@ -273,14 +281,6 @@ jobs:
         run: |
           cargo test --all --lib --bins -- --test-threads=1
           cargo test --all --doc
-
-      # The expand-then-contract rule (docs/design/upgrades-and-probes.md §3):
-      # a new migration that would break the previous release fails here unless
-      # it carries `-- trovato:contract <release>: <reason>`. It already ran in
-      # the step above; named on its own so a failure says what it is.
-      - name: Migration compatibility rule
-        if: matrix.shard == 1
-        run: cargo test -p trovato-kernel --lib migration_rule
 
       # Integration tests, split across shards so no single runner has to link
       # all 50+ test binaries onto one 33 GB volume. The enumeration and the
@@ -1005,8 +1005,10 @@ jobs:
       - uses: actions/checkout@v5
       - name: Install kubeconform
         run: |
-          curl -sSL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
-            | tar xz -C "$RUNNER_TEMP" kubeconform
+          cd "$RUNNER_TEMP"
+          curl -sSLO https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          echo "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73  kubeconform-linux-amd64.tar.gz" | sha256sum -c
+          tar xzf kubeconform-linux-amd64.tar.gz kubeconform
       - name: Validate
         run: '"$RUNNER_TEMP/kubeconform" -strict -summary deploy/kubernetes/'
 

@@ -300,11 +300,21 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
 
     // With migrations as their own step, wait (alive, not ready) until the
     // schema this binary needs is there, rather than exit and crash loop.
+    //
+    // The signal is listened for from here on in that mode, once, so a SIGTERM
+    // that arrives while the application is still being built is kept and
+    // starts the drain as soon as the server runs. (Tokio replaces the default
+    // action for good once a handler exists; a second listener created later
+    // would not see it.) The default mode listens from the server start, as it
+    // always has.
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
+    let mut stop_signal = None;
     let early_listener = if config.migrate_on_start {
         None
     } else {
-        match wait_for_schema(&config, addr).await? {
+        let signal = listen_for_signal();
+        stop_signal = Some(signal.clone());
+        match wait_for_schema(&config, addr, signal).await? {
             Some(listener) => Some(listener),
             // Asked to stop while waiting.
             None => return Ok(()),
@@ -622,14 +632,19 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
     // Shutdown (`docs/design/upgrades-and-probes.md` §6). At the signal,
     // readiness turns false and the queue runner stops taking work; on SIGTERM
     // the server keeps serving for the drain; then it stops accepting and
-    // finishes in-flight requests, for at most SHUTDOWN_TIMEOUT_SECS.
+    // finishes in-flight requests and the background work, all within one
+    // SHUTDOWN_TIMEOUT_SECS counted from when it stops accepting.
+    let stop_signal = stop_signal.unwrap_or_else(listen_for_signal);
+    let deadline = Arc::new(std::sync::OnceLock::<tokio::time::Instant>::new());
     let (stopping_tx, stopping_rx) = tokio::sync::oneshot::channel::<()>();
     let shutdown = {
         let probes = state.probes().clone();
         let workers = workers_token.clone();
         let drain = config.shutdown_drain;
+        let deadline = deadline.clone();
+        let timeout = config.shutdown_timeout;
         async move {
-            let signal = shutdown_signal().await;
+            let signal = signalled(stop_signal).await;
             probes.start_draining();
             workers.cancel();
             if signal == Signal::Terminate && !drain.is_zero() {
@@ -640,6 +655,7 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
                 tokio::time::sleep(drain).await;
             }
             info!("No longer accepting connections; finishing in-flight requests");
+            let _ = deadline.set(tokio::time::Instant::now() + timeout);
             let _ = stopping_tx.send(());
         }
     };
@@ -650,7 +666,10 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
     .with_graceful_shutdown(shutdown);
     let in_flight_deadline = async {
         match stopping_rx.await {
-            Ok(()) => tokio::time::sleep(config.shutdown_timeout).await,
+            Ok(()) => match deadline.get() {
+                Some(at) => tokio::time::sleep_until(*at).await,
+                None => std::future::pending().await,
+            },
             Err(_) => std::future::pending().await,
         }
     };
@@ -666,10 +685,12 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
     // Signal all background tasks to stop.
     info!("Signaling background tasks to shut down...");
     shutdown_token.cancel();
+    let deadline = deadline
+        .get()
+        .copied()
+        .unwrap_or_else(|| tokio::time::Instant::now() + config.shutdown_timeout);
     if let Some(runner) = queue_runner
-        && tokio::time::timeout(config.shutdown_timeout, runner)
-            .await
-            .is_err()
+        && tokio::time::timeout_at(deadline, runner).await.is_err()
     {
         warn!(
             "The queue runner did not finish its batch; its claims are reclaimed when their leases expire"
@@ -681,7 +702,7 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
 
     // Close external connections with a timeout.
     info!("Closing external connections...");
-    let drain_result = tokio::time::timeout(config.shutdown_timeout, async {
+    let drain_result = tokio::time::timeout_at(deadline, async {
         db_pool.close().await;
         info!("Database pool closed");
     })
@@ -709,9 +730,18 @@ struct WaitingServer {
 impl WaitingServer {
     /// Stop answering probes and give the socket to the full server.
     /// Connections that arrive in between wait in the socket's backlog.
+    ///
+    /// Bounded: a client holding a half-sent request would otherwise keep the
+    /// probe server's graceful shutdown, and so the hand-over, waiting forever.
     async fn hand_over(self) -> Result<tokio::net::TcpListener> {
         let _ = self.stop.send(());
-        let _ = self.task.await;
+        let mut task = self.task;
+        if tokio::time::timeout(std::time::Duration::from_secs(2), &mut task)
+            .await
+            .is_err()
+        {
+            task.abort();
+        }
         tokio::net::TcpListener::from_std(self.listener)
             .context("failed to take over the listening socket")
     }
@@ -725,7 +755,11 @@ impl WaitingServer {
 /// Returns the waiting server, still answering, for the caller to
 /// [`hand_over`](WaitingServer::hand_over) once the application is built; or
 /// `None` when a shutdown signal came first.
-async fn wait_for_schema(config: &Config, addr: SocketAddr) -> Result<Option<WaitingServer>> {
+async fn wait_for_schema(
+    config: &Config,
+    addr: SocketAddr,
+    stop_signal: tokio::sync::watch::Receiver<Option<Signal>>,
+) -> Result<Option<WaitingServer>> {
     let listener = std::net::TcpListener::bind(addr).context("failed to bind to address")?;
     listener
         .set_nonblocking(true)
@@ -750,7 +784,7 @@ async fn wait_for_schema(config: &Config, addr: SocketAddr) -> Result<Option<Wai
     };
     info!(%addr, "MIGRATE_ON_START=false: checking the schema; answering probes only until it is ready");
 
-    let signal = shutdown_signal();
+    let signal = signalled(stop_signal);
     tokio::pin!(signal);
     let mut last_reason = String::new();
     loop {
@@ -788,6 +822,26 @@ async fn wait_for_schema(config: &Config, addr: SocketAddr) -> Result<Option<Wai
             }
             () = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
         }
+    }
+}
+
+/// Listen for SIGINT and SIGTERM from now on; the receiver holds the first.
+fn listen_for_signal() -> tokio::sync::watch::Receiver<Option<Signal>> {
+    let (tx, rx) = tokio::sync::watch::channel(None);
+    tokio::spawn(async move {
+        let signal = shutdown_signal().await;
+        let _ = tx.send(Some(signal));
+    });
+    rx
+}
+
+/// Resolve once a signal has been received, now or before.
+async fn signalled(mut rx: tokio::sync::watch::Receiver<Option<Signal>>) -> Signal {
+    let received = rx.wait_for(Option::is_some).await.ok().and_then(|s| *s);
+    match received {
+        Some(signal) => signal,
+        // The listener is gone without a signal: never stop on that.
+        None => std::future::pending().await,
     }
 }
 

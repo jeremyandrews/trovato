@@ -42,9 +42,11 @@ exits 0, or exits nonzero on any failure.
   statement may wait for a table lock before the migration rolls back and the
   command fails. It is set after the advisory lock is taken, so it never makes a
   second run fail instead of wait.
-- It refuses, changing nothing, when a migration is marked failed (dirty), was
-  edited after it was applied, or was applied by a newer release and named
-  incompatible.
+- It refuses when a migration is marked failed (dirty), was edited after it
+  was applied, or was applied by a newer release and named incompatible. The
+  kernel half is checked before any kernel migration runs, the plugin half
+  before any plugin migration runs, so a plugin problem is found after the
+  kernel migrations have been applied.
 
 It needs Postgres only, not Redis.
 
@@ -52,8 +54,10 @@ It needs Postgres only, not Redis.
 
 With `MIGRATE_ON_START=true` (the default), `serve` and the `plugin`, `config`
 and `user` commands apply pending migrations when they start, as they always
-have. With `false` they never change the schema. `serve` waits, answering
+have. With `false`, `serve` never changes the schema: it waits, answering
 `/health/live` 200 and `/health/ready` 503, until `trovato migrate` has run. The
-other commands refuse to run on a schema that is behind, and say so.
+other commands refuse to run on a kernel schema that is behind, and say so;
+`plugin install`, `plugin migrate` and `config import` still apply the plugin
+migrations they need, under the lock.
 
 See [docs/deployment/upgrades.md](deployment/upgrades.md).

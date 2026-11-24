@@ -196,7 +196,7 @@ impl PluginConfigSet {
             .map(|(name, entry)| (name.clone(), entry.clone()))
             .collect();
         let mut lock = crate::migrate::MigrationLock::acquire(pool).await?;
-        crate::plugin::migration::run_all_pending_migrations(lock.conn(), &to_migrate)
+        crate::migrate::run_plugins(&mut lock, &to_migrate)
             .await
             .context("failed to run the migrations of the enabled plugins")?;
         lock.release().await

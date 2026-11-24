@@ -24,8 +24,9 @@ Fine at any time (expand):
 
 - a new table, view or function;
 - a new column that is nullable or has a `DEFAULT`;
-- an index on an existing table built `CONCURRENTLY`, in a file whose first
-  line is `-- no-transaction`;
+- an index on an existing table built `CONCURRENTLY`, in a kernel migration
+  whose first line is `-- no-transaction` (plugin migrations always run in one
+  transaction, so a plugin index on an existing table needs a contract marker);
 - inserting or updating rows the previous release reads the same way.
 
 Only in a later release, after no released code reads or writes the object
@@ -61,7 +62,9 @@ column in one release, backfill, then constrain or drop in a later one.
 **The rule is checked.** `cargo test -p trovato-kernel --lib migration_rule`
 (run by `./scripts/pre-commit-check.sh` and CI) refuses a contract statement in
 a new kernel or plugin migration unless the file carries
-`-- trovato:contract <release>: <reason>`, naming a release that already exists.
+`-- trovato:contract <release>: <reason>`, naming a release older than the one
+being built (the checker cannot see tags; whether that release really stopped
+using the object is the reviewer's question).
 
 **When a release cannot keep the previous one working**, name the migration
 `<version>_incompatible_<description>.sql`. Older binaries refuse to become
@@ -96,9 +99,11 @@ server with the default settings migrates and starts exactly as before.
   Postgres advisory lock; `--status` and `--dry-run` change nothing. Plugin
   migrations, which took no lock before, now take the same one wherever they
   run.
-- `MIGRATE_ON_START` (default `true`). Set to `false`, `serve` and the other
-  subcommands never change the schema; `serve` waits, alive and not ready,
-  until `trovato migrate` has run.
+- `MIGRATE_ON_START` (default `true`). Set to `false`, `serve` never changes
+  the schema: it waits, alive and not ready, until `trovato migrate` has run.
+  `config`, `user` and `plugin list` refuse to run on a kernel schema that is
+  behind; `plugin install`, `plugin migrate` and `config import` still apply
+  the plugin migrations they need, under the lock.
 - An applied migration the binary does not know is accepted unless its name
   marks it incompatible, where it used to stop the server at boot. This is
   what makes a rollback by image work.

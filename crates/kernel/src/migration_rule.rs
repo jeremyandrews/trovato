@@ -57,8 +57,8 @@ pub fn is_incompatible_description(description: &str) -> bool {
 /// Check one migration's SQL against the rule.
 ///
 /// `workspace_version` is the release being built; a contract marker must name
-/// a release no newer than it, because the release that stopped using the
-/// object has to exist already.
+/// an older release, the one whose code stopped using the object. The checker
+/// cannot see tags, so "older" is all it can hold a marker to.
 pub fn check(sql: &str, workspace_version: &str) -> Result<(), Vec<Violation>> {
     if let Some(marker) = contract_marker(sql) {
         return match marker_is_valid(marker, workspace_version) {
@@ -66,7 +66,7 @@ pub fn check(sql: &str, workspace_version: &str) -> Result<(), Vec<Violation>> {
             false => Err(vec![Violation {
                 statement: marker.trim().to_string(),
                 reason: "a contract marker must read `-- trovato:contract <x.y.z>: <reason>`, \
-                         naming a release no newer than this one",
+                         naming a release older than this one",
             }]),
         };
     }
@@ -109,7 +109,7 @@ fn marker_is_valid(marker: &str, workspace_version: &str) -> bool {
         parse_version(version.trim()),
         parse_version(workspace_version),
     ) {
-        (Some(named), Some(current)) => named <= current && !reason.trim().is_empty(),
+        (Some(named), Some(current)) => named < current && !reason.trim().is_empty(),
         _ => false,
     }
 }
@@ -122,27 +122,22 @@ fn parse_version(v: &str) -> Option<(u64, u64, u64)> {
 
 /// Why `statement` is refused, if it is.
 fn refusal(s: &str, created: &[String]) -> Option<&'static str> {
-    const DROPS: [&str; 7] = [
-        "DROP TABLE ",
-        "DROP VIEW ",
-        "DROP MATERIALIZED VIEW ",
-        "DROP FUNCTION ",
-        "DROP TYPE ",
-        "DROP SCHEMA ",
-        "DROP PROCEDURE ",
-    ];
-    if DROPS.iter().any(|d| s.starts_with(d)) {
+    // Every kind of DROP but an index's, so a kind nobody listed is refused.
+    if s.starts_with("DROP ") && !s.starts_with("DROP INDEX ") {
         return Some("drops an object the previous release may still use");
     }
     if s.starts_with("TRUNCATE ") {
         return Some("deletes rows the previous release may still read");
     }
-    if s.starts_with("ALTER TABLE ") {
+    if s.starts_with("ALTER ") && s.contains(" RENAME ") {
+        return Some("renames an object the previous release reads by its old name");
+    }
+    // A table this file creates has no previous release reading it.
+    if let Some(table) = altered_table(s)
+        && !created.contains(&table)
+    {
         if s.contains(" DROP COLUMN ") {
             return Some("drops a column the previous release may still read");
-        }
-        if s.contains(" RENAME ") {
-            return Some("renames an object the previous release reads by its old name");
         }
         if alters_column_type(s) {
             return Some("retypes a column the previous release reads");
@@ -150,27 +145,34 @@ fn refusal(s: &str, created: &[String]) -> Option<&'static str> {
         if s.contains(" SET NOT NULL") {
             return Some("makes a column NOT NULL that the previous release may leave empty");
         }
+        if s.contains(" DROP DEFAULT") {
+            return Some("removes a default the previous release's inserts may rely on");
+        }
         for action in alter_actions(s) {
             if let Some(reason) = add_refusal(&action) {
                 return Some(reason);
             }
         }
     }
-    if (s.starts_with("ALTER VIEW ") || s.starts_with("ALTER MATERIALIZED VIEW "))
-        && s.contains(" RENAME ")
-    {
-        return Some("renames an object the previous release reads by its old name");
-    }
     if let Some(table) = plain_index_table(s)
         && !created.contains(&table)
     {
         return Some(
             "builds an index on an existing table without CONCURRENTLY, which blocks \
-             its writes for the whole build (use CREATE INDEX CONCURRENTLY in a \
-             `-- no-transaction` file)",
+             its writes for the whole build (kernel: CREATE INDEX CONCURRENTLY in a \
+             `-- no-transaction` file; a plugin migration always runs in a \
+             transaction, so it needs a contract marker)",
         );
     }
     None
+}
+
+/// `ALTER TABLE [IF EXISTS] [ONLY] name ...` → `name`.
+fn altered_table(s: &str) -> Option<String> {
+    let rest = s.strip_prefix("ALTER TABLE ")?;
+    let rest = rest.strip_prefix("IF EXISTS ").unwrap_or(rest);
+    let rest = rest.strip_prefix("ONLY ").unwrap_or(rest);
+    rest.split(' ').next().map(table_name)
 }
 
 fn alters_column_type(s: &str) -> bool {
@@ -270,9 +272,9 @@ fn normalize(s: &str) -> String {
         .to_ascii_uppercase()
 }
 
-/// Replace comments, string literals, quoted identifiers' contents are kept,
-/// and dollar-quoted bodies with spaces, so a keyword inside one is not read
-/// as a statement.
+/// Replace comments, string literals and dollar-quoted bodies with spaces
+/// (quoted identifiers are kept), so a keyword inside one is not read as a
+/// statement.
 fn blank_comments_and_literals(sql: &str) -> String {
     let bytes = sql.as_bytes();
     let mut out = String::with_capacity(sql.len());
@@ -356,6 +358,7 @@ mod tests {
         let sql = "ALTER TABLE item DROP COLUMN legacy_flag;";
         for marker in [
             "-- trovato:contract 0.108.0: not released yet",
+            "-- trovato:contract 0.107.0: the release being built",
             "-- trovato:contract 0.106.0:",
             "-- trovato:contract 0.106: no patch number",
             "-- trovato:contract soon: no version",
@@ -363,7 +366,7 @@ mod tests {
             assert!(refused(&format!("{marker}\n{sql}")), "{marker}");
         }
         assert!(!refused(&format!(
-            "-- trovato:contract 0.107.0: this release\n{sql}"
+            "-- trovato:contract 0.106.3: an older release\n{sql}"
         )));
     }
 
@@ -385,6 +388,11 @@ mod tests {
             "ALTER TABLE item ADD CONSTRAINT title_len CHECK (length(title) < 9);",
             "ALTER TABLE item ADD UNIQUE (title);",
             "ALTER VIEW v RENAME TO w;",
+            "ALTER TYPE mood RENAME VALUE 'sad' TO 'blue';",
+            "DROP SEQUENCE item_seq;",
+            "DROP TRIGGER t ON item;",
+            "ALTER TABLE item ALTER COLUMN weight DROP DEFAULT;",
+            "ALTER TABLE IF EXISTS ONLY item DROP COLUMN legacy;",
             "TRUNCATE search_analytics;",
             "CREATE INDEX idx_item_title ON item (title);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_item_slug ON public.item (slug);",
@@ -409,6 +417,10 @@ mod tests {
             "INSERT INTO role_permissions (role_id, permission) VALUES ('x', 'drop table y');",
             "DROP INDEX IF EXISTS idx_unused;",
             "ALTER TABLE item DROP CONSTRAINT IF EXISTS old_check;",
+            // A table this file creates: nothing older reads it.
+            "CREATE TABLE thing (id INT, name TEXT);\n\
+             ALTER TABLE thing ALTER COLUMN name SET NOT NULL;\n\
+             ALTER TABLE thing ADD CONSTRAINT thing_pk PRIMARY KEY (id);",
         ] {
             assert_eq!(check(sql, V), Ok(()), "should pass: {sql}");
         }
@@ -445,19 +457,20 @@ mod tests {
     /// ones are history and are not re-litigated.
     const KERNEL_CUTOFF: u64 = 20261127160002;
 
-    /// Plugin migrations that predate the rule and contain a statement it
-    /// refuses. Nothing may be added to this list: a new plugin migration that
-    /// needs a contract statement carries the marker instead.
-    const PLUGIN_GRANDFATHERED: &[&str] = &[];
+    /// How many kernel migrations are at or below the cutoff. Pinned, so a file
+    /// given an old timestamp (a long-lived branch, a hand-picked name) cannot
+    /// slip under the cutoff unchecked; sqlx would apply it all the same.
+    const KERNEL_HISTORY: usize = 87;
 
     /// The rule over the tree: every kernel migration after the cutoff and
-    /// every plugin migration not grandfathered. This is the check
+    /// every plugin migration. This is the check
     /// `scripts/pre-commit-check.sh` and CI run.
     #[test]
     fn every_new_migration_in_the_tree_follows_the_rule() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
         let version = env!("CARGO_PKG_VERSION");
         let mut failures = Vec::new();
+        let mut history = 0;
 
         let mut check_file = |path: &std::path::Path, label: String| {
             let name = path.file_name().unwrap().to_string_lossy().to_string();
@@ -478,8 +491,13 @@ mod tests {
             let Some(version) = name.split('_').next().and_then(|v| v.parse::<u64>().ok()) else {
                 continue;
             };
-            if version > KERNEL_CUTOFF && name.ends_with(".sql") {
+            if !name.ends_with(".sql") {
+                continue;
+            }
+            if version > KERNEL_CUTOFF {
                 check_file(&path, format!("crates/kernel/migrations/{name}"));
+            } else {
+                history += 1;
             }
         }
 
@@ -498,12 +516,14 @@ mod tests {
                     .unwrap_or(&path)
                     .to_string_lossy()
                     .to_string();
-                if !PLUGIN_GRANDFATHERED.contains(&label.as_str()) {
-                    check_file(&path, label);
-                }
+                check_file(&path, label);
             }
         }
 
+        assert_eq!(
+            history, KERNEL_HISTORY,
+            "a kernel migration was added at or below KERNEL_CUTOFF; give it a current timestamp"
+        );
         assert!(
             failures.is_empty(),
             "migrations that break the previous release (docs/design/upgrades-and-probes.md §3); \

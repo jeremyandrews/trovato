@@ -146,11 +146,13 @@ impl Server {
     async fn wait_for(&mut self, path: &str, status: u16, within: Duration) {
         let deadline = Instant::now() + within;
         loop {
-            if self.status(path).await == Some(status) {
-                return;
-            }
+            // Exit first: a port another process took over must not answer for
+            // a server that has already died.
             if let Ok(Some(exit)) = self.child.try_wait() {
                 panic!("trovato serve exited ({exit}) before {path} answered {status}");
+            }
+            if self.status(path).await == Some(status) {
+                return;
             }
             assert!(
                 Instant::now() < deadline,
@@ -268,11 +270,52 @@ async fn two_migrators_at_once_both_succeed_and_apply_each_migration_once() {
     let url = db.url();
     let plugins = repo_root().join("plugins");
 
+    // Hold the lock first, so both are certainly started and waiting on it
+    // together rather than one finishing before the other begins.
+    let holder = trovato_kernel::migrate::MigrationLock::acquire(db.pool())
+        .await
+        .unwrap();
     let bin = this_bin();
-    let (a, b) = tokio::join!(
-        migrate(&bin, &url, &[], Some(&plugins)),
-        migrate(&bin, &url, &[], Some(&plugins)),
+    let work_a = TempDir::new("race-a");
+    let work_b = TempDir::new("race-b");
+    let spawn = |work: &TempDir| {
+        let mut cmd = command(&bin, &url, work);
+        cmd.arg("migrate")
+            .env("PLUGINS_DIR", &plugins)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        cmd.spawn().expect("spawn trovato migrate")
+    };
+    let mut child_a = spawn(&work_a);
+    let mut child_b = spawn(&work_b);
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    assert!(
+        child_a.try_wait().unwrap().is_none(),
+        "a waits for the lock"
     );
+    assert!(
+        child_b.try_wait().unwrap().is_none(),
+        "b waits for the lock"
+    );
+    assert_eq!(
+        applied_versions(db.pool()).await,
+        None,
+        "nothing ran while the lock was held"
+    );
+    holder.release().await.unwrap();
+
+    let finish = |child: Child| async move {
+        let out = tokio::time::timeout(Duration::from_secs(300), child.wait_with_output())
+            .await
+            .expect("migrate finishes once the lock is free")
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+        if !out.status.success() {
+            eprintln!("{stdout}\n{}", String::from_utf8_lossy(&out.stderr));
+        }
+        (out.status.success(), stdout)
+    };
+    let (a, b) = tokio::join!(finish(child_a), finish(child_b));
     assert!(a.0 && b.0, "both migrators must succeed");
 
     let (ka, pa) = applied_counts(&a.1);
@@ -329,9 +372,60 @@ async fn dry_run_and_status_change_nothing() {
     assert_eq!(applied_versions(db.pool()).await.unwrap_or(0), 0);
 }
 
+/// A run that fails still releases the lock: the next one can take it at once.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_migration_run_releases_the_lock() {
+    let db = ScratchDb::create("bg10_lockfail").await;
+    migrated(&db).await;
+    // The newest migration marked failed (dirty), as a crashed run leaves it.
+    sqlx::query(
+        "UPDATE _sqlx_migrations SET success = false \
+         WHERE version = (SELECT max(version) FROM _sqlx_migrations)",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+
+    assert!(
+        trovato_kernel::db::run_migrations(db.pool()).await.is_err(),
+        "a dirty migration must stop the run"
+    );
+    assert!(!migrate(&this_bin(), &db.url(), &[], None).await.0);
+
+    let lock = tokio::time::timeout(
+        Duration::from_secs(5),
+        trovato_kernel::migrate::MigrationLock::acquire(db.pool()),
+    )
+    .await
+    .expect("the lock is free after a failed run")
+    .unwrap();
+    lock.release().await.unwrap();
+}
+
 // =============================================================================
 // MIGRATE_ON_START=false
 // =============================================================================
+
+/// The other subcommands do not migrate either with `MIGRATE_ON_START=false`:
+/// on a schema that is behind they refuse, say why, and change nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn cli_commands_refuse_a_schema_that_is_behind() {
+    let db = ScratchDb::create("bg10_cli_off").await;
+    let work = TempDir::new("cli-off");
+    let out = command(&this_bin(), &db.url(), &work)
+        .args(["user", "roles", "nobody"])
+        .env("MIGRATE_ON_START", "false")
+        .output()
+        .await
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(!out.status.success(), "must refuse: {stderr}");
+    assert!(
+        stderr.contains("run `trovato migrate` first"),
+        "says why: {stderr}"
+    );
+    assert_eq!(applied_versions(db.pool()).await, None, "schema untouched");
+}
 
 /// With `MIGRATE_ON_START=false`, a server on a schema that is behind waits:
 /// alive, not ready, schema untouched. It does not exit (no crash loop), and it
@@ -361,12 +455,34 @@ async fn serve_waits_for_pending_migrations_without_changing_the_schema() {
         0,
         "serve with MIGRATE_ON_START=false must not migrate"
     );
+    let tables: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM pg_tables WHERE schemaname = 'public'")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
+    assert_eq!(
+        tables, 0,
+        "serve with MIGRATE_ON_START=false created tables"
+    );
 
-    // The migration Job runs; the waiting pod becomes ready on its own.
+    // The migration Job runs; the waiting pod becomes ready on its own, and
+    // liveness never drops while it hands its socket to the real server.
     assert!(migrate(&this_bin(), &url, &[], None).await.0);
-    server
-        .wait_for("/health/ready", 200, Duration::from_secs(60))
-        .await;
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        assert_eq!(
+            server.status("/health/live").await,
+            Some(200),
+            "liveness during the hand-over"
+        );
+        if server.status("/health/ready").await == Some(200) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "not ready within 60s of migrate");
+        assert!(server.child.try_wait().unwrap().is_none(), "serve exited");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(server.status("/health/live").await, Some(200));
     assert_eq!(server.status("/health").await, Some(200));
     server.stop().await;
 }
@@ -420,6 +536,14 @@ async fn binary_refuses_a_newer_incompatible_migration() {
     tokio::time::sleep(Duration::from_secs(3)).await;
     assert_eq!(server.status("/health/ready").await, Some(503));
     server.stop().await;
+
+    // With `MIGRATE_ON_START` on, as on a single server, it refuses to start.
+    let mut server = Server::start(&this_bin(), &url, &[("MIGRATE_ON_START", "true")]).await;
+    let exit = tokio::time::timeout(Duration::from_secs(60), server.child.wait())
+        .await
+        .expect("serve must exit on a newer incompatible migration")
+        .unwrap();
+    assert!(!exit.success(), "serve exit: {exit}");
 
     // `trovato migrate` refuses it too, with a nonzero exit.
     assert!(!migrate(&this_bin(), &url, &[], None).await.0);
@@ -598,12 +722,8 @@ async fn anonymous_health_reveals_no_pool_statistics() {
 async fn probes_are_not_rate_limited() {
     let db = ScratchDb::create("bg10_probe_rl").await;
     migrated(&db).await;
-    let mut server = Server::start(
-        &this_bin(),
-        &db.url(),
-        &[("TROVATO_RATE_LIMIT_PAGE", "5/60")],
-    )
-    .await;
+    let mut server =
+        Server::start(&this_bin(), &db.url(), &[("TROVATO_RATE_LIMIT_PAGE", "5")]).await;
     server
         .wait_for("/health/ready", 200, Duration::from_secs(60))
         .await;
@@ -611,6 +731,22 @@ async fn probes_are_not_rate_limited() {
         for _ in 0..20 {
             assert_eq!(server.status(path).await, Some(200), "{path}");
         }
+    }
+
+    // The control: the same caller's page views do hit the limit, so the
+    // probes above passed because they are exempt, not because nothing limits.
+    let mut limited = false;
+    for _ in 0..10 {
+        if server.status("/").await == Some(429) {
+            limited = true;
+            break;
+        }
+    }
+    assert!(limited, "page views past the limit of 5 must get 429");
+
+    // And the probes still answer once the caller is limited.
+    for path in ["/health", "/health/ready", "/health/live"] {
+        assert_eq!(server.status(path).await, Some(200), "{path} after 429");
     }
     server.stop().await;
 }
@@ -629,7 +765,7 @@ async fn sigterm_turns_readiness_off_and_finishes_in_flight_requests() {
         &this_bin(),
         &db.url(),
         &[
-            ("SHUTDOWN_DRAIN_SECS", "3"),
+            ("SHUTDOWN_DRAIN_SECS", "5"),
             ("SHUTDOWN_TIMEOUT_SECS", "20"),
         ],
     )
@@ -666,17 +802,31 @@ async fn sigterm_turns_readiness_off_and_finishes_in_flight_requests() {
     assert!(signalled.elapsed() < Duration::from_secs(3));
     assert_eq!(server.status("/health/live").await, Some(200));
 
-    // Finish the slow request after the drain has ended.
+    // Still serving new requests late in the drain (it lasts 5 seconds).
     tokio::time::sleep(Duration::from_secs(4).saturating_sub(signalled.elapsed())).await;
+    assert_eq!(
+        server.status("/health/live").await,
+        Some(200),
+        "during drain"
+    );
+    assert!(signalled.elapsed() < Duration::from_secs(5));
+
+    // Finish the slow request after the drain has ended.
+    tokio::time::sleep(Duration::from_secs(6).saturating_sub(signalled.elapsed())).await;
     slow.write_all(body.as_bytes()).await.unwrap();
     let mut response = String::new();
     tokio::time::timeout(Duration::from_secs(10), slow.read_to_string(&mut response))
         .await
         .expect("the in-flight request must be answered")
         .unwrap();
+    let code: u16 = response
+        .strip_prefix("HTTP/1.1 ")
+        .and_then(|rest| rest.get(..3))
+        .and_then(|c| c.parse().ok())
+        .unwrap_or_else(|| panic!("in-flight request got: {response:?}"));
     assert!(
-        response.starts_with("HTTP/1.1 "),
-        "in-flight request got: {response:?}"
+        code < 500,
+        "in-flight request answered {code}: {response:?}"
     );
 
     let exit = tokio::time::timeout(Duration::from_secs(30), server.child.wait())

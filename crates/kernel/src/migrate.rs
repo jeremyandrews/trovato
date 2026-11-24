@@ -430,7 +430,12 @@ pub async fn run_kernel(lock: &mut MigrationLock, migrator: &Migrator) -> Result
 }
 
 /// Apply the pending plugin migrations of `plugins` on the lock's connection.
-pub async fn run_plugins(lock: &mut MigrationLock, plugins: &PluginSet) -> Result<usize> {
+/// Refuses, changing nothing, when an applied plugin migration this binary
+/// does not know is named incompatible. Returns the files applied, by plugin.
+pub async fn run_plugins(
+    lock: &mut MigrationLock,
+    plugins: &PluginSet,
+) -> Result<HashMap<String, Vec<String>>> {
     let applied = applied_plugin_migrations(lock.conn()).await?;
     let problems: Vec<String> = plugins
         .iter()
@@ -453,7 +458,7 @@ pub async fn run_plugins(lock: &mut MigrationLock, plugins: &PluginSet) -> Resul
     for (plugin, files) in &results {
         info!(plugin = %plugin, count = files.len(), "applied plugin migrations");
     }
-    Ok(results.values().map(Vec::len).sum())
+    Ok(results)
 }
 
 /// Kernel then plugin migrations, all under one hold of the lock.
@@ -467,7 +472,11 @@ pub async fn run(
     // Read after the kernel half: on a fresh database `plugin_status` exists
     // only now.
     let plugins = plugins_to_migrate(lock.conn(), plugins_dirs, disabled_plugins).await?;
-    let plugins = run_plugins(lock, &plugins).await?;
+    let plugins = run_plugins(lock, &plugins)
+        .await?
+        .values()
+        .map(Vec::len)
+        .sum();
     Ok(Applied { kernel, plugins })
 }
 

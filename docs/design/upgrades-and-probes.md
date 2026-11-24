@@ -125,10 +125,15 @@ subcommands migrate at start.
   needs is pending (kernel or enabled-plugin migrations), or Postgres cannot be
   reached yet, it does not exit, so there is no crash loop. It binds the port and
   serves only the three probes: live 200, ready 503, `/health` 503. It checks
-  again every 2 seconds. When the schema is ready it stops the probe server,
-  builds the full application on the same socket, and starts serving.
-  SIGTERM while waiting exits cleanly. The other subcommands refuse to run on a
-  schema that is behind and say "run `trovato migrate` first".
+  again every 2 seconds. When the schema is ready it builds the full
+  application while the probe server keeps answering, then hands the socket
+  over (bounded at 2 seconds, so a half-sent request cannot hold it). In this
+  mode the signal is listened for once, from the start: SIGTERM while waiting
+  exits cleanly, and SIGTERM while the application builds starts the drain as
+  soon as it serves. `config`, `user` and `plugin list` refuse to run on a
+  kernel schema that is behind and say "run `trovato migrate` first";
+  `plugin install`, `plugin migrate` and `config import` still apply the plugin
+  migrations they need, under the lock.
 - **Unknown applied migrations** (in the database, not in this binary) are
   accepted unless their name marks them incompatible (see 3). This is what lets
   the previous image run on the new schema.
@@ -171,8 +176,8 @@ is a pure function over a migration's SQL, about 150 lines with no parser
 crate. Comments and string literals are stripped first, then the statements
 are matched against the list above. A unit test runs it over every kernel
 migration newer than the cutoff (`20261127160002`, the newest on `main` when
-the rule was written; older files are history) and every plugin migration not
-on a short grandfather list. The unit test runs in `./scripts/pre-commit-check.sh`
+the rule was written; older files are history, and their count is pinned so a
+file cannot be slipped in under the cutoff) and every plugin migration. The unit test runs in `./scripts/pre-commit-check.sh`
 (as a named step) and in CI (the shard 1 unit test step, also named). A
 refused statement passes only if the file carries
 
@@ -181,8 +186,9 @@ refused statement passes only if the file carries
 -- e.g.  -- trovato:contract 0.108.0: item.legacy_flag unread since 0.108.0
 ```
 
-`<release>` must be a version no newer than the workspace version, because the
-release that stopped using the object has to exist already. The marker covers
+`<release>` must be older than the workspace version: the release that stopped
+using the object comes before the one dropping it. The checker cannot see
+tags, so that is all it can hold a marker to. The marker covers
 the file, which makes the reviewer's question concrete: did `<release>` really
 stop using it? The checker cannot answer that. A reviewer can, by looking at
 that release.
@@ -224,8 +230,10 @@ change (`crates/kernel/src/migrate.rs` exists in it). **No such tag exists
 yet:** `v0.104.0` and older all migrate at boot with sqlx's default
 `ignore_missing = false`, so no released binary can start on a schema with one
 more migration. So, until the first release containing this change is tagged,
-the job builds the **merge base with `main`**, and says which it chose in its
-log. For this pull request that is `main` at the merge base. The branch adds no
+the job builds the **first parent of the commit under test** (for a pull
+request's merge commit, the tip of `main` it merges into; on a push to `main`,
+the previous commit), and says which it chose in its log. For this pull
+request that is `main`. The branch adds no
 kernel migration, so this run proves the harness works and that the branch
 does not break an old binary's boot. Once a release with this change is
 tagged, the same job proves the real rollback for every later pull request.
@@ -253,18 +261,24 @@ compiles the workspace crates twice and the dependencies once.
   up waiters. `/health/live` touches nothing.
 - **No session, cookie or visitor rate-limit bucket.** The probes stay in the
   router where `/health` is today, so the security headers still apply. They are
-  exempted by one function, `routes::health::is_probe_path`, from the per-IP
-  rate limiter (no bucket is touched), maintenance mode, the installer
-  redirect, redirects, path aliases and language negotiation, the same way
-  `/health` was already exempted from the last four. No handler reads the
-  session, so no cookie is ever set. A probe never costs a Redis round trip
-  beyond the cached `PING`.
+  exempted by path (`routes::health::is_probe_path`) from maintenance mode,
+  the installer redirect, redirects, path aliases and language negotiation,
+  the same way `/health` was already exempted from the last four; and, for
+  `GET` and `HEAD` only (`is_probe`), from both rate limiters (no bucket is
+  touched), the bearer and API token lookups (`HEALTH_TOKEN` is not a user's
+  credential) and the session index. Any other method on a probe path answers
+  405 and is charged like any visitor request. No handler reads the session, so
+  no cookie is ever set, and a probe never costs a Redis round trip beyond the
+  cached `PING`. The trusted `/health` details (an uncached report) are bounded
+  at 4 seconds.
 - **Details only for a trusted caller.** Pool statistics, the services report
   and the per-dependency booleans go only to a caller that is either
   - connected from a loopback address with **no** `X-Forwarded-For`,
     `Forwarded` or `X-Real-IP` header. The no-header condition matters because a
     reverse proxy on the same host connects from loopback, and its visitors must
-    not count as local; or
+    not count as local. A proxy on the same host or in the same pod that
+    connects from loopback *without* adding one of those headers would defeat
+    this, so such a deployment must not route `/health` through it; or
   - presents `Authorization: Bearer <HEALTH_TOKEN>`, compared in constant time,
     when `HEALTH_TOKEN` is set.
 
@@ -281,10 +295,11 @@ On **SIGTERM**:
    (`locked_until`) expires and another process takes it. That is the "release"
    half.
 3. The server keeps accepting and serving for `SHUTDOWN_DRAIN_SECS`.
-4. It stops accepting, finishes in-flight requests for up to
-   `SHUTDOWN_TIMEOUT_SECS` (existing setting, default 30), then the remaining
-   background tasks stop (search analytics flush once more, as today), the pool
-   closes, and the process exits.
+4. It stops accepting, finishes in-flight requests, stops the remaining
+   background tasks (search analytics flush once more, as today, and the queue
+   runner's batch) and closes the pool, all within one `SHUTDOWN_TIMEOUT_SECS`
+   (existing setting, default 30) counted from when it stops accepting, plus
+   half a second, and exits.
 
 `SHUTDOWN_DRAIN_SECS` defaults to **5 when running under Kubernetes**
 (`KUBERNETES_SERVICE_HOST` is set, which the kubelet does in every pod), and
@@ -311,9 +326,9 @@ one process.
   `trovato migrate`), `deployment.yaml` (`MIGRATE_ON_START=false`, liveness on
   `/health/live`, readiness on `/health/ready`, `preStop` sleep,
   `terminationGracePeriodSeconds: 45`, `RollingUpdate` with `maxUnavailable: 0`
-  and `maxSurge: 1`), `service.yaml`, and `kustomization.yaml` only so
-  `kubectl apply -k` works. A CI job validates them with `kubeconform`, a
-  single static binary downloaded in one step.
+  and `maxSurge: 1`) and `service.yaml`. A CI job validates them with
+  `kubeconform`, a single static binary downloaded and checksum-verified in
+  one step.
 
 ### Settings added
 

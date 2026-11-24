@@ -76,8 +76,8 @@ a migration Job, the Deployment (`MIGRATE_ON_START=false`, liveness on
    `SHUTDOWN_DRAIN_SECS`, finishes its in-flight requests, and exits.
 
 A pod that starts before step 3 has finished does not crash loop. It answers
-`/health/live` 200 and `/health/ready` 503, and becomes ready by itself within
-two seconds of the Job finishing.
+`/health/live` 200 and `/health/ready` 503, notices within two seconds of the
+Job finishing, and becomes ready once it has loaded its plugins.
 
 ### Roll back
 
@@ -103,7 +103,9 @@ Each answers `{"status": "..."}` to an anonymous caller, at most one dependency
 check a second however often it is asked, with no session and no rate limit.
 The details (per-dependency booleans, pool statistics, the services and circuit
 breaker report) go to a caller on loopback with no forwarding header, or to one
-sending `Authorization: Bearer $HEALTH_TOKEN`:
+sending `Authorization: Bearer $HEALTH_TOKEN`. A proxy in the same pod that
+connects from loopback without adding `X-Forwarded-For` would make every
+visitor look local, so do not route `/health` through one.
 
 ```sh
 kubectl exec deploy/trovato -- curl -s localhost:3000/health
@@ -120,4 +122,5 @@ curl -s -H "Authorization: Bearer $HEALTH_TOKEN" https://example.com/health
 | `HEALTH_TOKEN` | unset | bearer token that sees the health details from anywhere |
 
 Keep `terminationGracePeriodSeconds` above `preStop` + `SHUTDOWN_DRAIN_SECS` +
-`SHUTDOWN_TIMEOUT_SECS`.
+`SHUTDOWN_TIMEOUT_SECS` (one budget for in-flight requests, background work and
+closing the pool) plus a few seconds.

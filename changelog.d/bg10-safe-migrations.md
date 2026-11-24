@@ -20,8 +20,9 @@ change produces.
 
 `/health/live` and `/health/ready` are new. `/health` no longer gives pool
 statistics and the services report to anonymous callers, and none of the three
-uses a session or a visitor rate-limit bucket. Each checks Postgres and Redis at
-most once a second. On SIGTERM the server reports not ready at once, keeps
-serving for `SHUTDOWN_DRAIN_SECS` (5 under Kubernetes, 0 elsewhere), and
-finishes in-flight requests before it exits. Example Kubernetes manifests are
+uses a session or a visitor rate-limit bucket. `/health` and `/health/ready`
+check Postgres and Redis at most once a second; `/health/live` checks nothing.
+On SIGTERM the server reports not ready at once, keeps serving for
+`SHUTDOWN_DRAIN_SECS` (5 under Kubernetes, 0 elsewhere), and finishes
+in-flight requests before it exits. Example Kubernetes manifests are
 under `deploy/kubernetes/`.
