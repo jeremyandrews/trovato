@@ -225,6 +225,27 @@ sanitized, so both are printed with `| safe` and a `{# SAFE: ... #}` comment.
 A text field's format, stored beside it as `<name>_format`, is part of that field
 and is not printed as a field of its own when the type declares `<name>` as text.
 
+### The Comment Thread in the Render Context
+
+`routes::comment::render_thread` builds `elements/comments.html`'s context; the
+reply, edit and delete pages (`comment-page.html`) build the same shape for one
+comment through `comment_for_page`. Each comment in `comments` (and the single
+`comment` the other pages carry) is:
+
+| Key | What it holds |
+|---|---|
+| `comment.id` | The comment's id. |
+| `comment.depth` | Thread depth, for indentation; absent on the single-comment pages. |
+| `comment.created` | Unix timestamp. |
+| `comment.author_name` | The author's account name, or absent for one the kernel could not look up. |
+| `comment.subject` | The comment's optional plain text subject, or absent when it has none. It is user input and is never passed through a text format, so it is printed with autoescape on (`{{ comment.subject }}`), never `| safe` — the one field here that is the exception `body_html` already is for the opposite reason. |
+| `comment.body_html` | The body, already rendered and sanitized by its text format. Printed with `| safe`. |
+| `comment.can_edit` / `comment.can_delete` | Whether an Edit/Delete link should be shown; absent on the single-comment pages. |
+
+```jinja
+{% if comment.subject %}<h3 class="comment__subject">{{ comment.subject }}</h3>{% endif %}
+```
+
 ### Menus in the Render Context
 
 Every config menu reaches templates, by name, as a tree:

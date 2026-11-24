@@ -9,6 +9,11 @@
     <form method="post" action="/admin/content/comments/{{ comment.id }}/edit">
         <input type="hidden" name="_token" value="{{ csrf_token }}">
         <div class="form-group">
+            <label for="subject">Subject (optional)</label>
+            <input type="text" id="subject" name="subject" class="form-control" maxlength="255" value="{{ comment.subject | default(value='') }}">
+        </div>
+
+        <div class="form-group">
             <label for="body">Comment Body</label>
             <textarea id="body" name="body" rows="6" class="form-control" required>{{ comment.body }}</textarea>
         </div>

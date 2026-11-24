@@ -245,6 +245,7 @@ GET /api/v1/item/{item_id}/comments?page=1&per_page=20&include=author
       "parent_id": null,
       "author_id": "<uuid>",
       "author": {"id": "<uuid>", "name": "admin"},
+      "subject": "Great post!",
       "body": "Great post!",
       "body_html": "<p>Great post!</p>",
       "status": 1,
@@ -261,13 +262,14 @@ GET /api/v1/item/{item_id}/comments?page=1&per_page=20&include=author
 
 ### Create Comment
 
-Requires authentication.
+Requires authentication. `subject` is optional plain text (never a text
+format), trimmed, capped at 255 characters, and absent when empty.
 
 ```
 POST /api/v1/item/{item_id}/comments
 Content-Type: application/json
 
-{"body": "Nice article!", "parent_id": null}
+{"subject": "Re: the article", "body": "Nice article!", "parent_id": null}
 ```
 
 **Response (201):** Comment object.
@@ -280,7 +282,9 @@ GET /api/v1/comment/{id}?include=author
 
 ### Update Comment
 
-Requires authentication. Must be comment author or admin.
+Requires authentication. Must be comment author or admin. `subject` absent
+leaves it unchanged; present (including `""`) replaces it, independently of
+`body` — a request can change one without the other.
 
 ```
 PUT /api/v1/comment/{id}

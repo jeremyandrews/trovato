@@ -681,9 +681,9 @@ sql = "select alias from url_alias where source = $? and stage_id = $? order by 
 count = 4
 sql = "select * from users where id = $?"
 
-["item.anonymous.cold".statements."with:now:b137403c"]
+["item.anonymous.cold".statements."with:now:66deae0e"]
 count = 1
-sql = "with recursive comment_tree as ( select id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth, array[created, extract(epoch from now())::bigint - created] as sort_path from comment where item_id = $? and parent_id is null and status = $? union all select c.id, c.item_id, c.parent_id, c.author_id, c.body, c.body_format, c.status, c.created, c.changed, c.depth, ct.sort_path || c.created from comment c join comment_tree ct on c.parent_id = ct.id where c.status = $? ) select id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth from comment_tree order by sort_path"
+sql = "with recursive comment_tree as ( select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth, array[created, extract(epoch from now())::bigint - created] as sort_path from comment where item_id = $? and parent_id is null and status = $? union all select c.id, c.item_id, c.parent_id, c.author_id, c.subject, c.body, c.body_format, c.status, c.created, c.changed, c.depth, ct.sort_path || c.created from comment c join comment_tree ct on c.parent_id = ct.id where c.status = $? ) select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth from comment_tree order by sort_path"
 
 ["item.anonymous.warm"]
 queries = 13
@@ -727,9 +727,9 @@ sql = "select alias from url_alias where source = $? and stage_id = $? order by 
 count = 1
 sql = "select * from users where id = $?"
 
-["item.anonymous.warm".statements."with:now:b137403c"]
+["item.anonymous.warm".statements."with:now:66deae0e"]
 count = 1
-sql = "with recursive comment_tree as ( select id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth, array[created, extract(epoch from now())::bigint - created] as sort_path from comment where item_id = $? and parent_id is null and status = $? union all select c.id, c.item_id, c.parent_id, c.author_id, c.body, c.body_format, c.status, c.created, c.changed, c.depth, ct.sort_path || c.created from comment c join comment_tree ct on c.parent_id = ct.id where c.status = $? ) select id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth from comment_tree order by sort_path"
+sql = "with recursive comment_tree as ( select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth, array[created, extract(epoch from now())::bigint - created] as sort_path from comment where item_id = $? and parent_id is null and status = $? union all select c.id, c.item_id, c.parent_id, c.author_id, c.subject, c.body, c.body_format, c.status, c.created, c.changed, c.depth, ct.sort_path || c.created from comment c join comment_tree ct on c.parent_id = ct.id where c.status = $? ) select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth from comment_tree order by sort_path"
 
 ["item.user.cold"]
 queries = 22
@@ -789,9 +789,9 @@ sql = "select alias from url_alias where source = $? and stage_id = $? order by 
 count = 4
 sql = "select * from users where id = $?"
 
-["item.user.cold".statements."with:now:b137403c"]
+["item.user.cold".statements."with:now:66deae0e"]
 count = 1
-sql = "with recursive comment_tree as ( select id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth, array[created, extract(epoch from now())::bigint - created] as sort_path from comment where item_id = $? and parent_id is null and status = $? union all select c.id, c.item_id, c.parent_id, c.author_id, c.body, c.body_format, c.status, c.created, c.changed, c.depth, ct.sort_path || c.created from comment c join comment_tree ct on c.parent_id = ct.id where c.status = $? ) select id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth from comment_tree order by sort_path"
+sql = "with recursive comment_tree as ( select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth, array[created, extract(epoch from now())::bigint - created] as sort_path from comment where item_id = $? and parent_id is null and status = $? union all select c.id, c.item_id, c.parent_id, c.author_id, c.subject, c.body, c.body_format, c.status, c.created, c.changed, c.depth, ct.sort_path || c.created from comment c join comment_tree ct on c.parent_id = ct.id where c.status = $? ) select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth from comment_tree order by sort_path"
 
 ["item.user.warm"]
 queries = 13
@@ -835,9 +835,9 @@ sql = "select alias from url_alias where source = $? and stage_id = $? order by 
 count = 1
 sql = "select * from users where id = $?"
 
-["item.user.warm".statements."with:now:b137403c"]
+["item.user.warm".statements."with:now:66deae0e"]
 count = 1
-sql = "with recursive comment_tree as ( select id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth, array[created, extract(epoch from now())::bigint - created] as sort_path from comment where item_id = $? and parent_id is null and status = $? union all select c.id, c.item_id, c.parent_id, c.author_id, c.body, c.body_format, c.status, c.created, c.changed, c.depth, ct.sort_path || c.created from comment c join comment_tree ct on c.parent_id = ct.id where c.status = $? ) select id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth from comment_tree order by sort_path"
+sql = "with recursive comment_tree as ( select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth, array[created, extract(epoch from now())::bigint - created] as sort_path from comment where item_id = $? and parent_id is null and status = $? union all select c.id, c.item_id, c.parent_id, c.author_id, c.subject, c.body, c.body_format, c.status, c.created, c.changed, c.depth, ct.sort_path || c.created from comment c join comment_tree ct on c.parent_id = ct.id where c.status = $? ) select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth from comment_tree order by sort_path"
 
 ["login.anonymous.cold"]
 queries = 8

@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::content::FilterPipeline;
 use crate::error::AppError;
+use crate::models::comment::{SUBJECT_MAX_CHARS, normalize_subject, subject_too_long};
 use crate::models::{Comment, CommentStatus, CreateComment, UpdateComment};
 use crate::pagination::{Page, PageParams};
 use crate::routes::helpers::{require_csrf_header, require_login_json, user_context_for};
@@ -21,6 +22,24 @@ use crate::state::AppState;
 /// Render a comment body to HTML with safe format whitelisting.
 fn render_comment_body(comment: &Comment) -> String {
     FilterPipeline::for_format_safe(&comment.body_format).process(&comment.body)
+}
+
+/// Normalize and length-check a submitted subject, or the 400 it earns.
+///
+/// Shared by every route that accepts one (the JSON API here and the
+/// moderation form in [`super::admin`]), so the limit and the "empty means no
+/// subject" rule cannot drift between them.
+pub(crate) fn validate_subject(raw: Option<&str>) -> Result<Option<String>, AppError> {
+    let subject = normalize_subject(raw);
+    if let Some(ref s) = subject
+        && subject_too_long(s)
+    {
+        return Err(AppError::with_status(
+            StatusCode::BAD_REQUEST,
+            format!("Comment subject cannot exceed {SUBJECT_MAX_CHARS} characters"),
+        ));
+    }
+    Ok(subject)
 }
 
 // =============================================================================
@@ -35,6 +54,10 @@ pub struct CommentResponse {
     pub author_id: Uuid,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<AuthorInfo>,
+    /// Absent when the comment has none, so a client that never sends a
+    /// subject never sees the key at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
     pub body: String,
     pub body_html: String,
     pub status: i16,
@@ -57,12 +80,19 @@ pub struct AuthorInfo {
 pub struct CreateCommentRequest {
     pub body: String,
     pub parent_id: Option<Uuid>,
+    #[serde(default)]
+    pub subject: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateCommentRequest {
     pub body: Option<String>,
     pub status: Option<i16>,
+    /// Absent (no `subject` key at all) means unchanged; present — including
+    /// an empty string — replaces it, the same shape [`UpdateComment::subject`]
+    /// takes once this is validated.
+    #[serde(default)]
+    pub subject: Option<String>,
 }
 
 /// One comment submission, however it arrived.
@@ -85,6 +115,8 @@ pub struct UpdateCommentRequest {
 pub struct CommentSubmission {
     /// Comment text.
     pub body: String,
+    /// Optional plain text subject, from whichever encoding carried it.
+    pub subject: Option<String>,
     /// Parent comment, for a threaded reply.
     pub parent_id: Option<Uuid>,
     /// CSRF token from the form body; `None` when the request is JSON and the
@@ -110,6 +142,7 @@ impl CommentSubmission {
     fn from_form(form: std::collections::HashMap<String, String>) -> Self {
         Self {
             body: form.get("body").cloned().unwrap_or_default(),
+            subject: form.get("subject").cloned(),
             // An empty hidden input posts "", which is "no parent" rather than a
             // malformed UUID.
             parent_id: form
@@ -150,6 +183,7 @@ impl<S: Send + Sync> axum::extract::FromRequest<S> for CommentSubmission {
             .map_err(|e| bad_request(format!("invalid JSON body: {e}")))?;
         Ok(Self {
             body: request.body,
+            subject: request.subject,
             parent_id: request.parent_id,
             body_csrf: None,
             wants_redirect: false,
@@ -246,6 +280,7 @@ async fn list_item_comments(
             parent_id: comment.parent_id,
             author_id: comment.author_id,
             author,
+            subject: comment.subject,
             body: comment.body,
             body_html,
             status: comment.status,
@@ -393,6 +428,8 @@ async fn create_comment_inner(
         ));
     }
 
+    let subject = validate_subject(request.subject.as_deref())?;
+
     // Build UserContext with real permissions for access check
     // One loader, one context shape: the same one every read handler in this
     // module gets from `get_user_context`, reached from an already-loaded user.
@@ -439,6 +476,7 @@ async fn create_comment_inner(
         item_id,
         parent_id: request.parent_id,
         author_id: user_id,
+        subject,
         body: request.body.clone(),
         body_format: Some("filtered_html".to_string()),
         status: Some(status.as_i16()),
@@ -487,6 +525,7 @@ async fn create_comment_inner(
         parent_id: comment.parent_id,
         author_id: comment.author_id,
         author: commenter,
+        subject: comment.subject,
         body: comment.body,
         body_html,
         status: comment.status,
@@ -569,6 +608,7 @@ async fn get_comment(
         parent_id: comment.parent_id,
         author_id: comment.author_id,
         author,
+        subject: comment.subject,
         body: comment.body,
         body_html,
         status: comment.status,
@@ -634,10 +674,19 @@ async fn update_comment(
         ));
     }
 
+    // `request.subject` is `None` when the JSON carried no `subject` key at
+    // all (leave it alone); `Some(raw)` is validated and becomes the new
+    // value, including `Some(None)` when `raw` was empty (clear it).
+    let subject = match request.subject.as_deref() {
+        None => None,
+        Some(raw) => Some(validate_subject(Some(raw))?),
+    };
+
     let input = UpdateComment {
         body: request.body,
         body_format: None,
         status: request.status,
+        subject,
     };
 
     let comment = state
@@ -672,6 +721,7 @@ async fn update_comment(
         parent_id: comment.parent_id,
         author_id: comment.author_id,
         author,
+        subject: comment.subject,
         body: comment.body,
         body_html,
         status: comment.status,
@@ -790,6 +840,9 @@ pub(crate) async fn render_thread(
                 "depth": comment.depth,
                 "created": comment.created,
                 "author_name": names.get(&comment.author_id),
+                // Plain text: the template prints it with autoescape on, never
+                // `| safe`, the same rule `body_html` is the one exception to.
+                "subject": comment.subject,
                 "body_html": render_comment_body(comment),
                 "can_edit": crate::services::comment::permission_allows(comment, "edit", viewer),
                 "can_delete": crate::services::comment::permission_allows(comment, "delete", viewer),
@@ -845,6 +898,11 @@ pub struct CommentPageForm {
     /// The new comment text (the edit page only).
     #[serde(default)]
     pub body: String,
+    /// The new subject (the edit page only). Empty clears it, since the form
+    /// always carries the field's full, current value rather than a partial
+    /// change.
+    #[serde(default)]
+    pub subject: String,
 }
 
 /// What a comment page is about: the item, and the address it is read at.
@@ -924,6 +982,7 @@ async fn comment_for_page(state: &AppState, comment: &Comment) -> serde_json::Va
         "id": comment.id,
         "created": comment.created,
         "author_name": author_name,
+        "subject": comment.subject,
         "body_html": render_comment_body(comment),
     })
 }
@@ -1067,13 +1126,14 @@ async fn comment_for_operation(
     Ok((viewer, comment, target))
 }
 
-/// The edit page context, showing `body` in the form.
+/// The edit page context, showing `body` and `subject` in the form.
 async fn edit_context(
     state: &AppState,
     session: &Session,
     comment: &Comment,
     target: &PageTarget,
     body: &str,
+    subject: &str,
     errors: &[&str],
 ) -> tera::Context {
     let mut context = tera::Context::new();
@@ -1081,6 +1141,7 @@ async fn edit_context(
     context.insert("page_title", "Edit comment");
     context.insert("comment", &comment_for_page(state, comment).await);
     context.insert("body", body);
+    context.insert("subject", subject);
     context.insert("errors", errors);
     context.insert("item_title", &target.item.title);
     context.insert("item_path", &target.item_path);
@@ -1107,7 +1168,16 @@ async fn edit_page(
         Ok(found) => found,
         Err(refusal) => return refusal,
     };
-    let context = edit_context(&state, &session, &comment, &target, &comment.body, &[]).await;
+    let context = edit_context(
+        &state,
+        &session,
+        &comment,
+        &target,
+        &comment.body,
+        comment.subject.as_deref().unwrap_or(""),
+        &[],
+    )
+    .await;
     render_comment_page(
         &state,
         &session,
@@ -1143,6 +1213,7 @@ async fn edit_submit(
             &comment,
             &target,
             &form.body,
+            &form.subject,
             &["Comment body cannot be empty."],
         )
         .await;
@@ -1155,10 +1226,33 @@ async fn edit_submit(
         )
         .await;
     }
+    let Ok(subject) = validate_subject(Some(&form.subject)) else {
+        let context = edit_context(
+            &state,
+            &session,
+            &comment,
+            &target,
+            &form.body,
+            &form.subject,
+            &[&format!(
+                "Subject cannot exceed {SUBJECT_MAX_CHARS} characters."
+            )],
+        )
+        .await;
+        return render_comment_page(
+            &state,
+            &session,
+            &format!("/comment/{id}/edit"),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            context,
+        )
+        .await;
+    };
     let input = UpdateComment {
         body: Some(form.body),
         body_format: None,
         status: None,
+        subject: Some(subject),
     };
     match state.comments().update(id, input, &viewer).await {
         Ok(Some(_)) => axum::response::Redirect::to(&format!(
@@ -1303,6 +1397,7 @@ pub(crate) fn notify_if_published(
 
     let notification_state = state.clone();
     let email = email_service.clone();
+    let comment_subject = comment.subject.clone();
     let comment_body = comment.body.clone();
     let item_title = item.title.clone();
     let item_author_id = item.author_id;
@@ -1316,6 +1411,7 @@ pub(crate) fn notify_if_published(
             item_author_id,
             &commenter_name,
             &item_title,
+            comment_subject.as_deref(),
             &comment_body,
             item_id,
         )
@@ -1327,12 +1423,14 @@ pub(crate) fn notify_if_published(
 ///
 /// This is called in a background task and must not panic. All errors
 /// are logged but silently swallowed.
+#[allow(clippy::too_many_arguments)]
 async fn send_comment_notification(
     state: &AppState,
     email_service: &std::sync::Arc<crate::services::email::EmailService>,
     item_author_id: uuid::Uuid,
     commenter_name: &str,
     item_title: &str,
+    comment_subject: Option<&str>,
     comment_text: &str,
     item_id: uuid::Uuid,
 ) {
@@ -1358,7 +1456,13 @@ async fn send_comment_notification(
         .unwrap_or_else(|_| "Trovato".to_string());
     let site_url = email_service.site_url();
     let action_url = format!("{site_url}/item/{item_id}");
-    let subject = format!("New comment on \"{item_title}\" at {site_name}");
+    // The comment's own subject when it has one; otherwise the mail's own
+    // subject text, as it has always read.
+    let subject = comment_subject
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("New comment on \"{item_title}\" at {site_name}"));
 
     // Truncate comment preview for email. Walks back to a char boundary: a
     // multi-byte character straddling byte 500 would panic a bare slice, and

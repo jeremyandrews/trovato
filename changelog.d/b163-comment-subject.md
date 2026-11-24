@@ -1,0 +1,5 @@
+A comment can now have an optional plain text subject, shown as a heading above its body and editable wherever the body is.
+
+The `comment` table had no column to hold one, so a site importing comments with titles (Drupal's comment entity has a subject field) had nowhere to put the title but inside the body — which changed the body's text and left the title unable to be edited on its own. `comment.subject` is nullable, trimmed on save, stored as `NULL` rather than an empty string, and capped at 255 characters (checked in Rust before it ever reaches the column's own `CHECK` constraint). It is plain text: rendered with autoescape on, never through a text format, the same rule a comment's author name already follows.
+
+The subject is searchable at the same weight as the body, in both the Postgres vector and the Pagefind export, and a comment with none is indexed exactly as it was before this. The notification mail uses a comment's subject as its subject line when it has one, falling back to the text it has always used otherwise.

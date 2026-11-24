@@ -435,6 +435,7 @@ fn the_rendered_thread_shows_only_published_comments() {
                     body: None,
                     body_format: None,
                     status: Some(CommentStatus::Unpublished.as_i16()),
+                    subject: None,
                 },
                 &admin(),
             )

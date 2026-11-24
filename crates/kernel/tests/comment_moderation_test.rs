@@ -364,6 +364,7 @@ fn approving_a_held_comment_publishes_it() {
                     body: None,
                     body_format: None,
                     status: Some(CommentStatus::Published.as_i16()),
+                    subject: None,
                 },
                 &admin(),
             )
@@ -406,6 +407,7 @@ fn a_comment_marked_spam_is_retained_and_invisible() {
                     body: None,
                     body_format: None,
                     status: Some(CommentStatus::Spam.as_i16()),
+                    subject: None,
                 },
                 &admin(),
             )
