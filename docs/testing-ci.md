@@ -98,6 +98,10 @@ this cuts it about three times. Optimizing every dependency cuts it further but
 triples a cold dependency build in CI; the comment there has the numbers. The
 workspace's own crates still build unoptimized.
 
+The Test job also builds with line tables instead of full debug info
+(`CARGO_PROFILE_DEV_DEBUG`): backtraces keep their files and lines, and the
+build takes a quarter less CPU. A local build is unchanged.
+
 ## Where a new test goes
 
 Nowhere in particular: there is no list to add it to.

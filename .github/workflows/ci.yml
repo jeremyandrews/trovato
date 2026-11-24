@@ -176,6 +176,13 @@ jobs:
       REDIS_URL: redis://127.0.0.1:6379
       RUST_LOG: warn
       TOTAL_SHARDS: 3
+      # Line tables, not full debug info: a backtrace still names every file
+      # and line, but there is no variable information for a debugger nobody
+      # attaches here. Building the kernel's test targets takes a quarter less
+      # CPU (1955 to 1450 CPU-seconds, measured locally 2026-11-24), and the
+      # shards spend most of their first pass building. CI only; a local
+      # build keeps the full debug info.
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v5
 
