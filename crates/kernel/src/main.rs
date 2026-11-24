@@ -1331,7 +1331,12 @@ async fn run_user_command(action: UserAction) -> Result<()> {
 /// `user create` and `user reset-password` take one, so it never appears in
 /// argv, the shell history or the output.
 fn read_password_from_stdin(prompt: &str) -> Result<String> {
-    eprint!("{prompt}");
+    use std::io::IsTerminal;
+    // A prompt only for a person typing; piped input gets none, so it does
+    // not run into the command's own output.
+    if std::io::stdin().is_terminal() {
+        eprint!("{prompt}");
+    }
     let mut buf = String::new();
     std::io::stdin()
         .read_line(&mut buf)

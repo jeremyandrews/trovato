@@ -290,13 +290,18 @@ pub(crate) async fn new_account_problems(
         errors.push(msg.to_string());
     }
 
-    // Check if username already exists
-    if let Ok(Some(_)) = state.users().find_by_name(name).await {
+    // Check if username already exists. An empty value is already refused
+    // above, and would otherwise match the anonymous account's empty mail.
+    if !name.trim().is_empty()
+        && let Ok(Some(_)) = state.users().find_by_name(name).await
+    {
         errors.push(format!("Username '{name}' is already taken."));
     }
 
     // Check if email already exists
-    if let Ok(Some(_)) = state.users().find_by_mail(mail).await {
+    if !mail.trim().is_empty()
+        && let Ok(Some(_)) = state.users().find_by_mail(mail).await
+    {
         errors.push(format!("Email '{mail}' is already in use."));
     }
 

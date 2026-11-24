@@ -338,6 +338,11 @@ async fn user_create_refuses_what_the_admin_form_refuses() {
             ran.all()
         );
         assert!(!ran.all().contains(PASSWORD), "{}", ran.all());
+        assert!(
+            says != "Email is required." || !ran.stderr.contains("already in use"),
+            "an empty address is missing, not taken:\n{}",
+            ran.all()
+        );
     }
     assert_eq!(
         user_count(db.pool()).await,
