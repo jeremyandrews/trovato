@@ -171,7 +171,12 @@ async fn dashboard(State(state): State<AppState>, session: Session) -> Response 
     let enabled: Vec<String> = state.enabled_plugins().into_iter().collect();
     context.insert(
         "dashboard_cards",
-        &super::admin_nav::dashboard(&viewer, &enabled),
+        &super::admin_nav::dashboard(
+            &viewer,
+            &enabled,
+            state.plugin_admin_nav().links(),
+            state.plugin_admin_nav().cards(),
+        ),
     );
     context.insert("path", "/admin");
     context.insert("user", &user);

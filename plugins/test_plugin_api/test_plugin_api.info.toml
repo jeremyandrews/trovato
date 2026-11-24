@@ -6,7 +6,7 @@ default_enabled = false
 dependencies = []
 
 [taps]
-implements = ["tap_menu", "tap_perm", "tap_api"]
+implements = ["tap_menu", "tap_perm", "tap_api", "tap_admin_nav"]
 weight = 0
 
 # `mail` so the send_mail callback can reach the site contact address (0.101).

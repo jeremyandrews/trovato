@@ -1161,6 +1161,67 @@ fn tap_perm() -> Vec<PermissionDefinition> {
 }
 ```
 
+### Admin sidebar links and dashboard cards
+
+A plugin's own `/admin/...` page renders inside the kernel's `page--admin.html`,
+with the same sidebar and dashboard every kernel admin page gets — filtered to
+what the signed-in viewer may actually open. A plugin adds its own entry to
+that sidebar and to the `/admin` dashboard through `tap_admin_nav`, the same
+shape `tap_menu` and `tap_perm` already use: a declaration collected once at
+boot, not queried per request.
+
+```rust
+#[plugin_tap]
+fn tap_admin_nav() -> Vec<AdminNavDefinition> {
+    vec![
+        AdminNavDefinition::new(
+            "Structure",             // section heading — joins an existing
+                                      // one by this name, or starts a new one
+            "Groups",                // link text, and the card's title
+            "/admin/groups",         // must start with /admin
+            "administer groups",     // permission that gates the link and card
+        )
+        .card("Manage user groups."), // optional: also show a dashboard card
+    ]
+}
+```
+
+`permission` is display filtering only, exactly like every kernel sidebar
+link: a viewer who does not hold it does not see the link or the card, but
+the route itself still has to check the permission on every request — the
+sidebar never substitutes for that check. Gate the two on the same
+permission, as above, so they cannot disagree about who may reach the screen.
+
+A disabled plugin contributes no link and no card. Enabling or disabling the
+plugin takes effect immediately, with no restart: the kernel re-filters the
+sidebar and dashboard on every request from the plugin set and the viewer's
+permissions at that moment.
+
+`href` must be the plugin's own path, under `/admin`, and distinct from every
+kernel link and every other plugin's declared href — a colliding declaration
+is dropped (logged, not fatal) rather than silently shadowing an existing
+screen.
+
+For the admin page itself to pick up the kernel's chrome, ask for theming the
+same way any plugin page does — `ApiResponse::themed(title, body)` — on a
+route under `/admin`:
+
+```rust
+#[plugin_tap]
+fn tap_menu() -> Vec<MenuDefinition> {
+    vec![
+        MenuDefinition::new("/admin/groups", "Groups")
+            .callback("groups_admin")
+            .permission("administer groups")
+            .parent("/admin"),
+    ]
+}
+
+fn groups_admin() -> ApiResponse {
+    ApiResponse::themed("Groups", "<p>…manage groups here…</p>")
+}
+```
+
 ---
 
 ## Database Operations

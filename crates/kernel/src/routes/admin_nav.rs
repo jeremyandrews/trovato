@@ -6,9 +6,21 @@
 //! links that answered 403 (BL-117). The gate of each link here is the one its
 //! GET handler checks; when a screen's permission changes, this table changes
 //! with it.
+//!
+//! The kernel's own screens are [`LINKS`] and [`CARDS`], fixed at compile
+//! time. A plugin's are [`crate::plugin::admin_nav_registry::PluginNavLink`]
+//! and `PluginNavCard`, declared through `tap_admin_nav` and collected once at
+//! boot into [`crate::state::AppState::plugin_admin_nav`] — before that
+//! existed, a plugin's own admin page could not appear in this sidebar at all
+//! (BL-162), and a site worked around the gap by hand-copying this list into
+//! its own template, shown to anyone admitted to `/admin` regardless of which
+//! links they could actually open. [`sidebar`] and [`dashboard`] filter both
+//! sources through the same permission and plugin-enablement gate, so the two
+//! cannot drift apart.
 
 use serde::Serialize;
 
+use crate::plugin::admin_nav_registry::{PluginNavCard, PluginNavLink};
 use crate::tap::UserContext;
 
 /// What a viewer must hold to open a screen.
@@ -376,8 +388,8 @@ pub const CARDS: &[Card] = &[
 /// A card as the template draws it.
 #[derive(Debug, Clone, Serialize)]
 pub struct DashboardCard {
-    pub title: &'static str,
-    pub description: &'static str,
+    pub title: String,
+    pub description: String,
     pub links: Vec<NavLink>,
 }
 
@@ -390,11 +402,25 @@ fn offered(link: &Link, viewer: &UserContext, enabled_plugins: &[String]) -> boo
             .is_none_or(|p| enabled_plugins.iter().any(|e| e == p))
 }
 
+/// [`offered`], for a plugin-declared link: the viewer holds its permission,
+/// and its plugin is presently enabled. Unlike a kernel link naming a plugin,
+/// a plugin link's plugin is never absent — it is the plugin that declared
+/// it — so there is no "no plugin required" case to fall through.
+fn offered_plugin(link: &PluginNavLink, viewer: &UserContext, enabled_plugins: &[String]) -> bool {
+    viewer.can(&link.permission) && enabled_plugins.iter().any(|e| e == &link.plugin)
+}
+
 /// The dashboard cards `viewer` may use: each card's links filtered exactly as
 /// the sidebar filters them, and a card with none left dropped, so the
-/// dashboard never offers a screen that answers 403 or 404.
-pub fn dashboard(viewer: &UserContext, enabled_plugins: &[String]) -> Vec<DashboardCard> {
-    CARDS
+/// dashboard never offers a screen that answers 403 or 404. Plugin-declared
+/// cards follow the same rule, appended after the kernel's own.
+pub fn dashboard(
+    viewer: &UserContext,
+    enabled_plugins: &[String],
+    plugin_links: &[PluginNavLink],
+    plugin_cards: &[PluginNavCard],
+) -> Vec<DashboardCard> {
+    let mut cards: Vec<DashboardCard> = CARDS
         .iter()
         .filter_map(|card| {
             let links: Vec<NavLink> = card
@@ -407,25 +433,45 @@ pub fn dashboard(viewer: &UserContext, enabled_plugins: &[String]) -> Vec<Dashbo
                         .is_some_and(|l| offered(l, viewer, enabled_plugins))
                 })
                 .map(|(label, href)| NavLink {
-                    label,
-                    href,
+                    label: (*label).to_string(),
+                    href: (*href).to_string(),
                     active: false,
                 })
                 .collect();
             (!links.is_empty()).then_some(DashboardCard {
-                title: card.title,
-                description: card.description,
+                title: card.title.to_string(),
+                description: card.description.to_string(),
                 links,
             })
         })
-        .collect()
+        .collect();
+
+    for card in plugin_cards {
+        let visible = plugin_links
+            .iter()
+            .find(|l| l.plugin == card.plugin && l.href == card.href)
+            .is_some_and(|l| offered_plugin(l, viewer, enabled_plugins));
+        if visible {
+            cards.push(DashboardCard {
+                title: card.title.clone(),
+                description: card.description.clone(),
+                links: vec![NavLink {
+                    label: card.title.clone(),
+                    href: card.href.clone(),
+                    active: false,
+                }],
+            });
+        }
+    }
+
+    cards
 }
 
 /// A link as the template draws it.
 #[derive(Debug, Clone, Serialize)]
 pub struct NavLink {
-    pub label: &'static str,
-    pub href: &'static str,
+    pub label: String,
+    pub href: String,
     pub active: bool,
 }
 
@@ -433,7 +479,7 @@ pub struct NavLink {
 #[derive(Debug, Clone, Serialize)]
 pub struct NavSection {
     /// `None` for the links above the first heading.
-    pub title: Option<&'static str>,
+    pub title: Option<String>,
     pub links: Vec<NavLink>,
 }
 
@@ -445,21 +491,59 @@ fn under(path: &str, prefix: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
+/// One link ready to be grouped into a section and checked for activeness,
+/// whichever of [`LINKS`] or a plugin's declarations it came from.
+struct Entry<'a> {
+    section: Option<&'a str>,
+    label: &'a str,
+    href: &'a str,
+    /// Other path prefixes [`under`] which this entry is still active; a
+    /// plugin link has none of its own.
+    also: &'a [&'a str],
+}
+
 /// The links `viewer` may open, grouped by section, with the one for `path`
 /// marked active: the link whose address is the longest prefix of `path`, so
 /// `/admin/content/files/3` is Files rather than Content, and `/admin` itself
 /// only for the dashboard. A section with no link left is dropped.
-pub fn sidebar(viewer: &UserContext, enabled_plugins: &[String], path: &str) -> Vec<NavSection> {
-    let visible: Vec<&Link> = LINKS
+///
+/// `plugin_links` joins the kernel's own [`LINKS`] before grouping, under the
+/// section name it declares: an existing kernel section by that name gets a
+/// new entry, and a name no kernel section uses starts one of its own, placed
+/// after every kernel section in declaration order.
+pub fn sidebar(
+    viewer: &UserContext,
+    enabled_plugins: &[String],
+    path: &str,
+    plugin_links: &[PluginNavLink],
+) -> Vec<NavSection> {
+    let mut entries: Vec<Entry> = LINKS
         .iter()
         .filter(|l| offered(l, viewer, enabled_plugins))
+        .map(|l| Entry {
+            section: l.section,
+            label: l.label,
+            href: l.href,
+            also: l.also,
+        })
         .collect();
+    entries.extend(
+        plugin_links
+            .iter()
+            .filter(|l| offered_plugin(l, viewer, enabled_plugins))
+            .map(|l| Entry {
+                section: Some(l.section.as_str()),
+                label: l.label.as_str(),
+                href: l.href.as_str(),
+                also: &[],
+            }),
+    );
 
-    let active = visible
+    let active = entries
         .iter()
-        .filter_map(|l| {
-            std::iter::once(l.href)
-                .chain(l.also.iter().copied())
+        .filter_map(|e| {
+            std::iter::once(e.href)
+                .chain(e.also.iter().copied())
                 .filter(|prefix| {
                     if *prefix == "/admin" {
                         path == "/admin"
@@ -469,27 +553,60 @@ pub fn sidebar(viewer: &UserContext, enabled_plugins: &[String], path: &str) -> 
                 })
                 .map(str::len)
                 .max()
-                .map(|len| (len, l.href))
+                .map(|len| (len, e.href))
         })
         .max_by_key(|(len, _)| *len)
         .map(|(_, href)| href);
 
+    // Grouped by section title, in the order each title first appears, so a
+    // plugin link joins its named kernel section wherever that section sits
+    // rather than always trailing at the end.
     let mut sections: Vec<NavSection> = Vec::new();
-    for l in visible {
+    let mut index: std::collections::HashMap<Option<&str>, usize> =
+        std::collections::HashMap::new();
+    for e in entries {
         let nav = NavLink {
-            label: l.label,
-            href: l.href,
-            active: active == Some(l.href),
+            label: e.label.to_string(),
+            href: e.href.to_string(),
+            active: active == Some(e.href),
         };
-        match sections.last_mut() {
-            Some(section) if section.title == l.section => section.links.push(nav),
-            _ => sections.push(NavSection {
-                title: l.section,
-                links: vec![nav],
-            }),
+        match index.get(&e.section) {
+            Some(&i) => sections[i].links.push(nav),
+            None => {
+                index.insert(e.section, sections.len());
+                sections.push(NavSection {
+                    title: e.section.map(str::to_string),
+                    links: vec![nav],
+                });
+            }
         }
     }
     sections
+}
+
+/// Build this viewer's sidebar for `path` and insert it into `context` as
+/// `admin_nav`, with the sorted `enabled_plugins` list beside it.
+///
+/// This is the one step every admin page takes to get the kernel's sidebar —
+/// a kernel route (`helpers::render_admin_template`), the themed error page
+/// (`middleware::error_page`), and a plugin's own admin route
+/// (`routes::plugin_api::themed_response`) alike — through this helper so the
+/// three cannot drift apart. Before it existed the third did not call either
+/// of the other two's inline version of this block at all, so a plugin's
+/// admin page rendered `page--admin.html` with no sidebar (BL-162).
+pub fn insert_context(
+    state: &crate::state::AppState,
+    viewer: &UserContext,
+    path: &str,
+    context: &mut tera::Context,
+) {
+    let mut enabled: Vec<String> = state.enabled_plugins().into_iter().collect();
+    enabled.sort();
+    context.insert(
+        "admin_nav",
+        &sidebar(viewer, &enabled, path, state.plugin_admin_nav().links()),
+    );
+    context.insert("enabled_plugins", &enabled);
 }
 
 #[cfg(test)]
@@ -506,11 +623,33 @@ mod tests {
         )
     }
 
-    fn hrefs(sections: &[NavSection]) -> Vec<&'static str> {
+    fn hrefs(sections: &[NavSection]) -> Vec<String> {
         sections
             .iter()
-            .flat_map(|s| s.links.iter().map(|l| l.href))
+            .flat_map(|s| s.links.iter().map(|l| l.href.clone()))
             .collect()
+    }
+
+    /// A plugin link in the "Structure" section, needing a permission no
+    /// kernel link uses, from a plugin named "groups" — the example this
+    /// module's docs and the plugin authoring guide both use.
+    fn groups_link() -> PluginNavLink {
+        PluginNavLink {
+            plugin: "groups".to_string(),
+            section: "Structure".to_string(),
+            label: "Groups".to_string(),
+            href: "/admin/groups".to_string(),
+            permission: "administer groups".to_string(),
+        }
+    }
+
+    fn groups_card() -> PluginNavCard {
+        PluginNavCard {
+            plugin: "groups".to_string(),
+            title: "Groups".to_string(),
+            description: "Manage user groups.".to_string(),
+            href: "/admin/groups".to_string(),
+        }
     }
 
     #[test]
@@ -519,29 +658,33 @@ mod tests {
             &viewer(&["access administration pages", "edit any content"]),
             &[],
             "/admin/content",
+            &[],
         );
         assert_eq!(hrefs(&nav), vec!["/admin", "/admin/content"]);
         assert!(nav[1].links[0].active);
-        assert_eq!(nav[1].title, Some("Content"));
+        assert_eq!(nav[1].title, Some("Content".to_string()));
     }
 
     #[test]
     fn a_plugin_screen_needs_its_plugin() {
         let v = viewer(&["access administration pages", "administer comments"]);
-        assert!(!hrefs(&sidebar(&v, &[], "/admin")).contains(&"/admin/content/comments"));
         assert!(
-            hrefs(&sidebar(&v, &[COMMENTS.to_string()], "/admin"))
-                .contains(&"/admin/content/comments")
+            !hrefs(&sidebar(&v, &[], "/admin", &[]))
+                .contains(&"/admin/content/comments".to_string())
+        );
+        assert!(
+            hrefs(&sidebar(&v, &[COMMENTS.to_string()], "/admin", &[]))
+                .contains(&"/admin/content/comments".to_string())
         );
     }
 
     #[test]
     fn the_longest_matching_link_is_active() {
         let admin = UserContext::administrator(Uuid::now_v7(), vec![]);
-        let active = |path: &str| -> Vec<&'static str> {
-            sidebar(&admin, &[CATEGORIES.to_string()], path)
+        let active = |path: &str| -> Vec<String> {
+            sidebar(&admin, &[CATEGORIES.to_string()], path, &[])
                 .iter()
-                .flat_map(|s| s.links.iter().filter(|l| l.active).map(|l| l.href))
+                .flat_map(|s| s.links.iter().filter(|l| l.active).map(|l| l.href.clone()))
                 .collect()
         };
         assert_eq!(active("/admin"), vec!["/admin"]);
@@ -564,7 +707,9 @@ mod tests {
     #[test]
     fn plugins_is_for_the_site_administrator_only() {
         let holder = viewer(&["administer site", "access administration pages"]);
-        assert!(!hrefs(&sidebar(&holder, &[], "/admin")).contains(&"/admin/plugins"));
+        assert!(
+            !hrefs(&sidebar(&holder, &[], "/admin", &[])).contains(&"/admin/plugins".to_string())
+        );
     }
     /// Every plugin a link waits for is one the route gate knows, by the name
     /// `AppState::enabled_plugins` holds. `"comments"` and `"categories"` were
@@ -597,12 +742,18 @@ mod tests {
     fn comments_and_categories_show_when_their_plugins_are_enabled() {
         let admin = UserContext::administrator(Uuid::now_v7(), vec![]);
         let enabled = vec![gated("_comments"), gated("_categories")];
-        let links = hrefs(&sidebar(&admin, &enabled, "/admin"));
-        assert!(links.contains(&"/admin/content/comments"), "{links:?}");
-        assert!(links.contains(&"/admin/structure/categories"), "{links:?}");
-        let none = hrefs(&sidebar(&admin, &[], "/admin"));
-        assert!(!none.contains(&"/admin/content/comments"));
-        assert!(!none.contains(&"/admin/structure/categories"));
+        let links = hrefs(&sidebar(&admin, &enabled, "/admin", &[]));
+        assert!(
+            links.contains(&"/admin/content/comments".to_string()),
+            "{links:?}"
+        );
+        assert!(
+            links.contains(&"/admin/structure/categories".to_string()),
+            "{links:?}"
+        );
+        let none = hrefs(&sidebar(&admin, &[], "/admin", &[]));
+        assert!(!none.contains(&"/admin/content/comments".to_string()));
+        assert!(!none.contains(&"/admin/structure/categories".to_string()));
     }
 
     #[test]
@@ -618,32 +769,147 @@ mod tests {
         }
     }
 
-    fn card_hrefs(cards: &[DashboardCard]) -> Vec<&'static str> {
+    fn card_hrefs(cards: &[DashboardCard]) -> Vec<String> {
         cards
             .iter()
-            .flat_map(|c| c.links.iter().map(|l| l.href))
+            .flat_map(|c| c.links.iter().map(|l| l.href.clone()))
             .collect()
     }
 
     #[test]
     fn the_dashboard_offers_only_what_the_viewer_may_open() {
         let editor = viewer(&["access administration pages", "edit any content"]);
-        let cards = dashboard(&editor, &[gated("_comments")]);
+        let cards = dashboard(&editor, &[gated("_comments")], &[], &[]);
         assert_eq!(
-            cards.iter().map(|c| c.title).collect::<Vec<_>>(),
+            cards.iter().map(|c| c.title.clone()).collect::<Vec<_>>(),
             vec!["Content"]
         );
         assert_eq!(card_hrefs(&cards), vec!["/admin/content"]);
 
         let moderator = viewer(&["access administration pages", "administer comments"]);
-        assert!(dashboard(&moderator, &[]).is_empty());
+        assert!(dashboard(&moderator, &[], &[], &[]).is_empty());
         assert_eq!(
-            card_hrefs(&dashboard(&moderator, &[gated("_comments")])),
+            card_hrefs(&dashboard(&moderator, &[gated("_comments")], &[], &[])),
             vec!["/admin/content/comments"]
         );
 
         let admin = UserContext::administrator(Uuid::now_v7(), vec![]);
-        let all = dashboard(&admin, &[gated("_comments"), gated("_categories")]);
+        let all = dashboard(
+            &admin,
+            &[gated("_comments"), gated("_categories")],
+            &[],
+            &[],
+        );
         assert_eq!(all.len(), CARDS.len(), "the administrator sees every card");
+    }
+
+    // --- plugin-declared links and cards (BL-162) ---
+
+    #[test]
+    fn a_plugin_link_joins_its_named_section() {
+        let admin = UserContext::administrator(Uuid::now_v7(), vec![]);
+        let nav = sidebar(&admin, &["groups".to_string()], "/admin", &[groups_link()]);
+        let structure = nav
+            .iter()
+            .find(|s| s.title.as_deref() == Some("Structure"))
+            .expect("a Structure section");
+        assert!(
+            structure.links.iter().any(|l| l.href == "/admin/groups"),
+            "{structure:?}"
+        );
+    }
+
+    #[test]
+    fn a_viewer_without_the_plugin_links_permission_does_not_see_it() {
+        let holder = viewer(&["access administration pages"]);
+        let nav = sidebar(&holder, &["groups".to_string()], "/admin", &[groups_link()]);
+        assert!(!hrefs(&nav).contains(&"/admin/groups".to_string()));
+    }
+
+    #[test]
+    fn a_plugin_link_needs_its_plugin_enabled_even_with_the_permission() {
+        let holder = viewer(&["access administration pages", "administer groups"]);
+        assert!(
+            !hrefs(&sidebar(&holder, &[], "/admin", &[groups_link()]))
+                .contains(&"/admin/groups".to_string())
+        );
+        assert!(
+            hrefs(&sidebar(
+                &holder,
+                &["groups".to_string()],
+                "/admin",
+                &[groups_link()]
+            ))
+            .contains(&"/admin/groups".to_string())
+        );
+    }
+
+    #[test]
+    fn a_plugin_link_can_be_the_active_one() {
+        let holder = viewer(&["access administration pages", "administer groups"]);
+        let nav = sidebar(
+            &holder,
+            &["groups".to_string()],
+            "/admin/groups/42",
+            &[groups_link()],
+        );
+        let active: Vec<&str> = nav
+            .iter()
+            .flat_map(|s| s.links.iter().filter(|l| l.active).map(|l| l.href.as_str()))
+            .collect();
+        assert_eq!(active, vec!["/admin/groups"]);
+    }
+
+    #[test]
+    fn kernel_links_and_cards_are_unchanged_by_an_unrelated_plugin_declaration() {
+        let admin = UserContext::administrator(Uuid::now_v7(), vec![]);
+        let enabled = vec![
+            gated("_comments"),
+            gated("_categories"),
+            "groups".to_string(),
+        ];
+        let with_plugin = sidebar(&admin, &enabled, "/admin", &[groups_link()]);
+        let without_plugin = sidebar(&admin, &enabled, "/admin", &[]);
+        let kernel_hrefs = |nav: &[NavSection]| -> Vec<String> {
+            hrefs(nav)
+                .into_iter()
+                .filter(|h| h != "/admin/groups")
+                .collect()
+        };
+        assert_eq!(kernel_hrefs(&with_plugin), kernel_hrefs(&without_plugin));
+
+        let cards_with = dashboard(&admin, &enabled, &[groups_link()], &[groups_card()]);
+        let cards_without = dashboard(&admin, &enabled, &[], &[]);
+        assert_eq!(cards_with.len(), cards_without.len() + 1);
+    }
+
+    #[test]
+    fn a_plugin_card_needs_its_permission_and_plugin_like_its_link() {
+        let holder = viewer(&["access administration pages"]);
+        assert!(
+            dashboard(
+                &holder,
+                &["groups".to_string()],
+                &[groups_link()],
+                &[groups_card()]
+            )
+            .is_empty()
+        );
+
+        let granted = viewer(&["access administration pages", "administer groups"]);
+        let cards = dashboard(
+            &granted,
+            &["groups".to_string()],
+            &[groups_link()],
+            &[groups_card()],
+        );
+        assert_eq!(card_hrefs(&cards), vec!["/admin/groups"]);
+        assert_eq!(cards[0].title, "Groups");
+        assert_eq!(cards[0].description, "Manage user groups.");
+
+        assert!(
+            dashboard(&granted, &[], &[groups_link()], &[groups_card()]).is_empty(),
+            "disabling the plugin drops the card too"
+        );
     }
 }

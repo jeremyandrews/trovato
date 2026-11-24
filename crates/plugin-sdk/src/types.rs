@@ -712,6 +712,67 @@ impl MenuDefinition {
     }
 }
 
+/// One admin sidebar link, and optionally one dashboard card, returned by
+/// `tap_admin_nav`.
+///
+/// A plugin's own admin page is reached the same way any kernel admin page
+/// is — the kernel builds the same sidebar context for both (BL-162) — but
+/// before this tap existed the sidebar itself was a fixed kernel list a
+/// plugin could not add to, so a plugin's admin screen was invisible in
+/// navigation however it gated its own route. This mirrors `tap_perm` and
+/// `tap_menu`: a declaration collected once at boot, not queried per request.
+///
+/// `permission` is display filtering only — the kernel shows or hides the
+/// link by it, exactly as it does for its own links, but never substitutes
+/// for the route's own access check. A plugin whose route requires more than
+/// this permission (or something else entirely) is still safe: the viewer who
+/// sees the link because they hold it can still be refused by the route.
+///
+/// `href` must be the plugin's own path, under `/admin`. A disabled plugin's
+/// declaration is dropped entirely — it contributes no link and no card,
+/// exactly as its routes stop being reachable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminNavDefinition {
+    /// The sidebar section heading this link sits under (for example
+    /// `"Structure"` or `"People"`). Joins an existing kernel section when
+    /// one by that name exists, otherwise starts a new one.
+    pub section: String,
+    /// The link text, and the dashboard card's title when `card_description`
+    /// is set.
+    pub label: String,
+    /// Where it goes. Must start with `/admin`.
+    pub href: String,
+    /// What the viewer must hold to see this link and card.
+    pub permission: String,
+    /// When set, this entry also becomes a dashboard card on `/admin`, titled
+    /// `label`, with this one line of description, linking to `href`.
+    #[serde(default)]
+    pub card_description: Option<String>,
+}
+
+impl AdminNavDefinition {
+    pub fn new(
+        section: impl Into<String>,
+        label: impl Into<String>,
+        href: impl Into<String>,
+        permission: impl Into<String>,
+    ) -> Self {
+        Self {
+            section: section.into(),
+            label: label.into(),
+            href: href.into(),
+            permission: permission.into(),
+            card_description: None,
+        }
+    }
+
+    /// Also show this entry as a dashboard card on `/admin`.
+    pub fn card(mut self, description: impl Into<String>) -> Self {
+        self.card_description = Some(description.into());
+        self
+    }
+}
+
 // =============================================================================
 // Plugin-served requests (`tap_api`) — added in KERNEL_API_VERSION (0,99)
 // =============================================================================

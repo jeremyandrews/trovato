@@ -492,7 +492,20 @@ async fn themed_response(
     parsed: ApiResponse,
 ) -> Response {
     let mut context = tera::Context::new();
-    crate::routes::helpers::inject_site_context(state, session, &mut context, path).await;
+    let viewer = crate::routes::helpers::get_user_context(session, state).await;
+    crate::routes::helpers::inject_site_context_for(state, session, &viewer, &mut context, path)
+        .await;
+    // A plugin's admin page gets the kernel's own sidebar context, the same
+    // one `render_admin_template` builds for a kernel admin page: before this,
+    // `page--admin.html` rendered for a plugin path with no `admin_nav` at
+    // all, because this function is the one other place that template is
+    // reached from and it never set it (BL-162). The rule is
+    // `ThemeEngine::is_admin_path`, the same one `render_page` below uses to
+    // pick `page--admin.html` as a suggestion and the themed error page uses
+    // to decide the same thing.
+    if crate::theme::ThemeEngine::is_admin_path(path) {
+        crate::routes::admin_nav::insert_context(state, &viewer, path, &mut context);
+    }
     // The title is the page's heading as well as its `<title>`: a plugin page
     // arrived with no `<h1>` at all, because `render_page` puts the title in the
     // context and the theme's page template only used it in the document title.

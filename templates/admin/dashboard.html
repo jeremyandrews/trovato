@@ -34,7 +34,7 @@
         <p class="dashboard-card__description">{{ card.description }}</p>
         <ul class="dashboard-card__links">
             {% for link in card.links %}
-            <li><a href="{{ link.href | safe }}">{{ link.label }}</a></li> {# SAFE: each href is a constant in `routes::admin_nav::CARDS`, never user text #}
+            <li><a href="{{ link.href | safe }}">{{ link.label }}</a></li> {# SAFE: each href is either a constant in `routes::admin_nav::CARDS` or a plugin's own `tap_admin_nav` declaration, validated at boot — never user text #}
             {% endfor %}
         </ul>
     </section>
