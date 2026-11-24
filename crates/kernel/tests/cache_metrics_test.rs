@@ -23,7 +23,9 @@ use trovato_kernel::tap::UserContext;
 use uuid::Uuid;
 
 /// Its own client address, so this file does not spend the shared rate-limit
-/// bucket that requests without `X-Forwarded-For` fall into.
+/// bucket that requests without `X-Forwarded-For` fall into. Not on
+/// `/metrics`, which answers only the bare loopback peer (see `scrape`); its
+/// few requests fit in the shared bucket.
 const CLIENT_IP: &str = "10.76.0.1";
 
 async fn get(app: &TestApp, path: &str) -> (StatusCode, String) {
@@ -40,10 +42,21 @@ async fn get(app: &TestApp, path: &str) -> (StatusCode, String) {
     (status, String::from_utf8_lossy(&body).into_owned())
 }
 
+/// `/metrics`, read the way a local scraper reads it: from the loopback
+/// peer, with no forwarding header (with one, it answers 404).
+async fn scrape(app: &TestApp) -> (StatusCode, String) {
+    let response = app
+        .request(Request::get("/metrics").body(Body::empty()).unwrap())
+        .await;
+    let status = response.status();
+    let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    (status, String::from_utf8_lossy(&body).into_owned())
+}
+
 /// The value of the first sample on `/metrics` whose line starts with
 /// `series{` and carries every one of `labels`, or `None` if there is none.
 async fn sample(app: &TestApp, series: &str, labels: &[&str]) -> Option<f64> {
-    let (status, text) = get(app, "/metrics").await;
+    let (status, text) = scrape(app).await;
     assert_eq!(status, StatusCode::OK, "/metrics answered {status}");
     text.lines()
         .filter(|line| line.starts_with(&format!("{series}{{")))
@@ -145,7 +158,7 @@ fn http_request_labels_use_the_route_template_not_the_path() {
         let id = Uuid::new_v4();
         get(app, &format!("/item/{id}")).await;
 
-        let (_, text) = get(app, "/metrics").await;
+        let (_, text) = scrape(app).await;
         let leaked: Vec<&str> = text
             .lines()
             .filter(|l| l.starts_with("http_request") && l.contains(&id.to_string()))

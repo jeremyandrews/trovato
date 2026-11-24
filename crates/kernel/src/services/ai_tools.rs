@@ -256,7 +256,7 @@ async fn send_once(
         request = request.header(name.as_str(), value.as_str());
     }
 
-    let response = request.send().await.map_err(|e| {
+    let response = crate::telemetry::send(request).await.map_err(|e| {
         if e.is_timeout() {
             ChatError::Timeout
         } else {
@@ -1592,7 +1592,7 @@ mod tests {
         let first = redirect_server(format!("{target}/latest/meta-data/")).await;
 
         let service = provider_service();
-        let result = service.http().get(&first).send().await;
+        let result = crate::telemetry::send(service.http().get(&first)).await;
 
         assert!(
             result.is_err(),

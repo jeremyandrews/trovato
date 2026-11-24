@@ -135,6 +135,16 @@ pub struct ExecuteParams {
     /// request.
     #[serde(skip)]
     feeds: Vec<crate::routes::feed::FeedLink>,
+    /// Where pager links and the filter form point, when that is not the
+    /// `base_path` the page is rendered at: the alias a visitor reached a
+    /// gather with no `canonical_url` by. Never from the request.
+    #[serde(skip)]
+    link_base: Option<String>,
+    /// The term a term page is about (`id`, `label`, `slug`, `description`),
+    /// set by a gather route whose path names a tag. The page is titled by it
+    /// and its templates read it as `term`. Never from the request.
+    #[serde(skip)]
+    term: Option<serde_json::Value>,
 }
 
 impl ExecuteParams {
@@ -148,7 +158,22 @@ impl ExecuteParams {
             stage,
             filters,
             feeds: Vec::new(),
+            link_base: None,
+            term: None,
         }
+    }
+
+    /// The page is about this term: titled by its label (see `term`).
+    pub fn with_term(mut self, term: Option<&crate::models::Tag>) -> Self {
+        self.term = term.map(|tag| {
+            serde_json::json!({
+                "id": tag.id,
+                "label": tag.label,
+                "slug": tag.slug,
+                "description": tag.description,
+            })
+        });
+        self
     }
 
     /// Advertise these argument feeds on the rendered page.
@@ -156,6 +181,84 @@ impl ExecuteParams {
         self.feeds = feeds;
         self
     }
+
+    /// Point pager links and the filter form at `path` (see `link_base`).
+    pub fn with_link_base(mut self, path: Option<String>) -> Self {
+        self.link_base = path;
+        self
+    }
+}
+
+/// `?page=` as the request gave it, before any default: whether it was given
+/// at all decides the page of a zero-based pager.
+#[derive(Deserialize)]
+struct RawPage {
+    page: Option<String>,
+}
+
+/// The 1-based page a request's `?page=` names in a listing with this pager.
+///
+/// Counted from 1, as Trovato always has (`?page=2` is the second page), or,
+/// for a gather that replaces a Drupal listing ([`crate::gather::types::PagerConfig::zero_based`]),
+/// from 0 as Drupal did (`?page=1` is the second page). Absent or unreadable,
+/// it is the first page.
+pub(crate) fn requested_page(pager: &crate::gather::types::PagerConfig, raw: Option<&str>) -> u32 {
+    let given = raw.and_then(|v| v.trim().parse::<u32>().ok());
+    if pager.zero_based {
+        given.map_or(1, |n| n.saturating_add(1))
+    } else {
+        given.unwrap_or(1).max(1)
+    }
+}
+
+/// The address of page `page` (1-based) of a listing whose links start with
+/// `prefix` (from [`build_page_url_prefix`], ending in `?` or `&`).
+///
+/// Counted from 1 this is `prefix` + `page=N`, exactly what Trovato has always
+/// published. Zero-based, it is the Drupal address: the first page carries no
+/// `?page=`, page N is `page=N-1`.
+fn page_href(prefix: &str, page: u32, zero_based: bool) -> String {
+    if !zero_based {
+        return format!("{prefix}page={page}");
+    }
+    if page <= 1 {
+        prefix.trim_end_matches(['?', '&']).to_string()
+    } else {
+        format!("{prefix}page={}", page - 1)
+    }
+}
+
+/// The `pager` a gather template reads.
+///
+/// `pages` (numbers and `"..."`) and `page_url_prefix` are kept for templates
+/// written against them; the URLs beside them (`links`, `first_url`,
+/// `prev_url`, `next_url`, `last_url`) are the ones to link with, because only
+/// they know whether the pager counts from 0.
+fn pager_context(prefix: &str, current: u32, total: u32, zero_based: bool) -> serde_json::Value {
+    let pages = compute_page_list(current, total);
+    let links: Vec<serde_json::Value> = pages
+        .iter()
+        .map(|p| match p.as_u64().and_then(|n| u32::try_from(n).ok()) {
+            Some(n) => serde_json::json!({
+                "page": n,
+                "url": page_href(prefix, n, zero_based),
+                "current": n == current,
+            }),
+            None => serde_json::json!({ "page": "...", "ellipsis": true }),
+        })
+        .collect();
+    serde_json::json!({
+        "current_page": current,
+        "total_pages": total,
+        "page_url_prefix": prefix,
+        "pages": pages,
+        "links": links,
+        "zero_based": zero_based,
+        "first_url": page_href(prefix, 1, zero_based),
+        "last_url": page_href(prefix, total, zero_based),
+        "prev_url": (current > 1).then(|| page_href(prefix, current - 1, zero_based)),
+        "next_url": (current < total).then(|| page_href(prefix, current + 1, zero_based)),
+    })
 }
 
 fn default_page() -> u32 {
@@ -371,18 +474,26 @@ async fn render_query_html(
     Extension(resolved_lang): Extension<ResolvedLanguage>,
     requested: Option<Extension<crate::middleware::RequestedPath>>,
     Path(query_id): Path<String>,
-    Query(params): Query<ExecuteParams>,
+    Query(mut params): Query<ExecuteParams>,
+    Query(raw_page): Query<RawPage>,
 ) -> Response {
+    let query = state.gather().get_query(&query_id);
+    if let Some(ref query) = query {
+        params.page = requested_page(&query.display.pager, raw_page.page.as_deref());
+    }
     // Use canonical_url from the query definition when available so that pager
     // links and filter form actions stay on the friendly URL (e.g. /conferences)
     // rather than /gather/{query_id}.
-    let canonical = state
-        .gather()
-        .get_query(&query_id)
-        .and_then(|q| q.display.canonical_url);
+    let canonical = query.and_then(|q| q.display.canonical_url);
+    let requested_path = requested.map(|Extension(r)| r.0);
+    // Without one, they stay on the address the visitor used: a gather reached
+    // at its alias `/blog` pages to `/blog?page=2`, not to
+    // `/gather/blog_listing?page=2` (B160).
+    if canonical.is_none() {
+        params = params.with_link_base(requested_path.clone());
+    }
     let base_path = canonical.unwrap_or_else(|| format!("/gather/{query_id}"));
     let language = language_for_context(&resolved_lang, state.default_language());
-    let requested_path = requested.map(|Extension(r)| r.0);
     match execute_and_render(
         &state,
         &session,
@@ -399,6 +510,7 @@ async fn render_query_html(
         Err(GatherPageError::NotFound) => {
             AppError::with_status(StatusCode::NOT_FOUND, "query not found").into_response()
         }
+        Err(GatherPageError::PastTheEnd) => super::helpers::render_not_found(),
         Err(GatherPageError::Failed(error)) => {
             AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, error).into_response()
         }
@@ -414,6 +526,10 @@ pub enum GatherPageError {
     Denied(GatherDenied),
     /// The query failed; the message says why.
     Failed(String),
+    /// The page asked for is past the listing's last page: a `404`, because
+    /// the page does not exist, and an empty `200` would be a soft 404 to a
+    /// search engine (B160).
+    PastTheEnd,
 }
 
 /// Execute a gather query and render it as an HTML page.
@@ -461,7 +577,7 @@ pub async fn execute_query_only(
 
     let mut display = query.display;
     if let Some(per_page) = per_page {
-        display.items_per_page = per_page;
+        display.items_per_page = Some(per_page);
     }
     state
         .gather()
@@ -513,7 +629,13 @@ pub async fn execute_and_render(
 
     // Pre-fetch widget data before executing — borrows exposed_filters for faceted
     // scoping, then releases the borrow so execute() can take ownership.
-    let preload = preload_widget_data(state, &gather_query, &exposed_filters).await;
+    let preload = preload_widget_data(
+        state,
+        query_context.viewer.as_ref(),
+        &gather_query,
+        &exposed_filters,
+    )
+    .await;
 
     let result = state
         .gather()
@@ -526,6 +648,13 @@ pub async fn execute_and_render(
         )
         .await
         .map_err(|e| GatherPageError::Failed(e.to_string()))?;
+
+    // A page past the last one does not exist. Not on the front page, whose
+    // 404 would fall back to the stock front page instead.
+    if result.page > 1 && result.page > result.total_pages && !super::front::is_front_page_request()
+    {
+        return Err(GatherPageError::PastTheEnd);
+    }
 
     // Collect filter values for template context
     let filter_values: HashMap<String, String> = params
@@ -541,10 +670,11 @@ pub async fn execute_and_render(
     let link_base = if super::front::is_front_page_request() {
         requested_path.unwrap_or("/")
     } else {
-        base_path
+        params.link_base.as_deref().unwrap_or(base_path)
     };
 
     // Render gather content (either via theme template or fallback HTML)
+    let term = params.term.as_ref();
     let content_html = render_gather_with_theme(
         state,
         &gather_query,
@@ -552,10 +682,25 @@ pub async fn execute_and_render(
         &filter_values,
         link_base,
         &preload,
+        term,
     )
     .unwrap_or_else(|| {
-        render_gather_content_html(&gather_query, &result, &filter_values, link_base, &preload)
+        render_gather_content_html(
+            &gather_query,
+            &result,
+            &filter_values,
+            link_base,
+            &preload,
+            term,
+        )
     });
+
+    // A term page is titled by its term, a listing by its gather (B160).
+    let page_title = term
+        .and_then(|t| t.get("label"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(&gather_query.label)
+        .to_string();
 
     // Wrap in page layout with site context.
     //
@@ -571,6 +716,9 @@ pub async fn execute_and_render(
     if let Some(requested_path) = requested_path {
         context.insert("requested_path", requested_path);
     }
+    if let Some(term) = term {
+        context.insert("term", term);
+    }
     if let Some(ref lang) = query_context.language {
         context.insert("active_language", lang);
         context.insert(
@@ -585,16 +733,16 @@ pub async fn execute_and_render(
         context.insert("feeds", &feeds);
     }
 
-    // Build breadcrumbs: Home > Query Label
+    // Build breadcrumbs: Home > the page's title
     let breadcrumbs = vec![
         serde_json::json!({"path": "/", "title": "Home"}),
-        serde_json::json!({"path": null, "title": gather_query.label}),
+        serde_json::json!({"path": null, "title": page_title}),
     ];
     context.insert("breadcrumbs", &breadcrumbs);
 
     let page_html = state
         .theme()
-        .render_page(base_path, &gather_query.label, &content_html, &mut context)
+        .render_page(base_path, &page_title, &content_html, &mut context)
         .map_err(|e| {
             tracing::error!(error = %e, "failed to render a gather page");
             GatherPageError::Failed("This page could not be displayed.".to_string())
@@ -646,6 +794,7 @@ fn render_gather_with_theme(
     filter_values: &HashMap<String, String>,
     base_path: &str,
     preload: &WidgetPreloadData,
+    term: Option<&serde_json::Value>,
 ) -> Option<String> {
     // Try to find a template for this query
     let suggestions = [
@@ -661,6 +810,9 @@ fn render_gather_with_theme(
     let mut context = tera::Context::new();
     context.insert("query", query);
     context.insert("rows", &result.items);
+    if let Some(term) = term {
+        context.insert("term", term);
+    }
     context.insert("columns", &gather_columns(query, &result.items));
     context.insert("total", &result.total);
     context.insert("page", &result.page);
@@ -677,15 +829,14 @@ fn render_gather_with_theme(
 
     // Pager info
     if query.display.pager.enabled && result.total_pages > 1 {
-        let page_url_prefix = build_page_url_prefix(base_path, filter_values);
         context.insert(
             "pager",
-            &serde_json::json!({
-                "current_page": result.page,
-                "total_pages": result.total_pages,
-                "page_url_prefix": page_url_prefix,
-                "pages": compute_page_list(result.page, result.total_pages),
-            }),
+            &pager_context(
+                &build_page_url_prefix(base_path, filter_values),
+                result.page,
+                result.total_pages,
+                query.display.pager.zero_based,
+            ),
         );
     }
 
@@ -721,6 +872,7 @@ struct WidgetPreloadData {
 /// template path and the fallback HTML path share the same data.
 async fn preload_widget_data(
     state: &AppState,
+    viewer: Option<&UserContext>,
     query: &GatherQuery,
     active_filters: &HashMap<String, FilterValue>,
 ) -> WidgetPreloadData {
@@ -733,6 +885,28 @@ async fn preload_widget_data(
         match &filter.widget {
             ExposedWidget::CategorySelect { category } => {
                 if !category_options.contains_key(category) {
+                    // No options from a vocabulary the viewer may not read
+                    // (B189); a site-wide one always reads.
+                    let hidden = match state.categories().get_category(category).await {
+                        Ok(Some(vocabulary)) => match viewer {
+                            Some(viewer) => {
+                                !crate::content::owned_vocabulary::may_view(
+                                    state,
+                                    viewer,
+                                    &vocabulary,
+                                )
+                                .await
+                            }
+                            None => vocabulary.owner().is_some(),
+                        },
+                        // Missing: the lookup below answers as before.
+                        Ok(None) => false,
+                        Err(_) => true,
+                    };
+                    if hidden {
+                        category_options.insert(category.clone(), Vec::new());
+                        continue;
+                    }
                     let all_tags = state
                         .categories()
                         .list_tags_with_depth(category)
@@ -885,7 +1059,10 @@ fn build_page_url_prefix(base_path: &str, filter_values: &HashMap<String, String
         .iter()
         .filter(|(k, v)| !["page", "stage"].contains(&k.as_str()) && !v.is_empty())
         .map(|(k, v)| format!("{}={}", urlencoding::encode(k), urlencoding::encode(v)))
-        .collect();
+        .collect::<Vec<_>>();
+    // Sorted, so the same listing always links to the same address.
+    let mut active = active;
+    active.sort();
 
     let joined = active.join("&");
     if active.is_empty() {
@@ -1147,11 +1324,16 @@ fn render_gather_content_html(
     filter_values: &HashMap<String, String>,
     base_path: &str,
     preload: &WidgetPreloadData,
+    term: Option<&serde_json::Value>,
 ) -> String {
     let mut html = String::new();
 
-    // Title
-    html.push_str(&format!("<h1>{}</h1>\n", escape_html(&query.label)));
+    // Title: the term a term page is about, else the gather's label.
+    let title = term
+        .and_then(|t| t.get("label"))
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or(&query.label);
+    html.push_str(&format!("<h1>{}</h1>\n", escape_html(title)));
 
     if let Some(ref desc) = query.description {
         html.push_str(&format!("<p>{}</p>\n", escape_html(desc)));
@@ -1221,19 +1403,18 @@ fn render_gather_content_html(
         }
 
         let prefix = build_page_url_prefix(base_path, filter_values);
+        let zero_based = query.display.pager.zero_based;
         if result.has_prev {
             html.push_str(&format!(
-                "<a href=\"{}page={}\">Previous</a>\n",
-                prefix,
-                result.page - 1
+                "<a href=\"{}\">Previous</a>\n",
+                escape_html(&page_href(&prefix, result.page - 1, zero_based))
             ));
         }
 
         if result.has_next {
             html.push_str(&format!(
-                "<a href=\"{}page={}\">Next</a>\n",
-                prefix,
-                result.page + 1
+                "<a href=\"{}\">Next</a>\n",
+                escape_html(&page_href(&prefix, result.page + 1, zero_based))
             ));
         }
 

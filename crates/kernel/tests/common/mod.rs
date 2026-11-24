@@ -17,6 +17,7 @@
 
 #![allow(dead_code)]
 
+pub mod perf;
 pub mod plugin_copy;
 pub mod smtp_sink;
 
@@ -287,7 +288,15 @@ impl TestApp {
     /// nothing else — where a `set_var` steers every other test thread in the
     /// binary too, and cannot be undone once another thread may have read it.
     pub async fn with_config(customize: impl FnOnce(&mut Config)) -> Self {
-        Self::build(customize, false).await
+        Self::build(customize, false, false).await
+    }
+
+    /// Build a test app for a whole site, the performance tests' (`perf`): the
+    /// router also serves the gathers' own routes, as `main.rs` does, and
+    /// answers the `x-perf-extra-query` header with one more statement, which
+    /// is how a test proves the page counts catch an added query.
+    pub async fn for_site(customize: impl FnOnce(&mut Config)) -> Self {
+        Self::build(customize, false, true).await
     }
 
     /// Build a test app whose router also runs the two rate-limit layers, in the
@@ -305,10 +314,10 @@ impl TestApp {
     /// `AppState` reads its limits once, at construction, so a test that
     /// configures `rate_limit.*` keys writes them before calling this.
     pub async fn with_rate_limits(customize: impl FnOnce(&mut Config)) -> Self {
-        Self::build(customize, true).await
+        Self::build(customize, true, false).await
     }
 
-    async fn build(customize: impl FnOnce(&mut Config), rate_limited: bool) -> Self {
+    async fn build(customize: impl FnOnce(&mut Config), rate_limited: bool, site: bool) -> Self {
         // `dotenvy::dotenv` calls `set_var` for every line it applies, so it goes
         // through the workspace env lock like any other mutation. It is also the
         // last environment *mutation* left in this fixture: everything below is a
@@ -385,6 +394,13 @@ impl TestApp {
         // rewrites in middleware cannot change which route is matched. The
         // fallback receives all unmatched requests, resolves any URL alias, and
         // re-dispatches to the inner router with the rewritten URI.
+        let gather_routes = if site {
+            trovato_kernel::routes::gather_routes::build_gather_route_router(
+                &state.gather().list_queries(),
+            )
+        } else {
+            Router::new()
+        };
         let inner_router: Router<trovato_kernel::state::AppState> = Router::new()
             .merge(trovato_kernel::routes::front::router())
             .merge(trovato_kernel::routes::install::router())
@@ -413,6 +429,7 @@ impl TestApp {
             // Plugin-gated routes — runtime middleware returns 404 when disabled
             .merge(trovato_kernel::routes::gated_plugin_routes(&state))
             // RSS feeds declared by gather query display configs.
+            .merge(gather_routes)
             .merge(trovato_kernel::routes::feed::build_feed_router(
                 &state.gather().list_queries(),
             ))
@@ -426,6 +443,7 @@ impl TestApp {
         let inner_with_state: Router = inner_router.clone().with_state(state.clone());
         let shared_router = std::sync::Arc::new(inner_with_state);
 
+        let probe_state = state.clone();
         let router = inner_router
             .fallback({
                 let router = shared_router.clone();
@@ -444,7 +462,20 @@ impl TestApp {
             // Middleware layers (must match main.rs ordering):
             // MockConnectInfo → resolve_client_ip → TraceLayer → session →
             // bearer_auth → api_token → negotiate_language → routes
-            // The audit actor, innermost as in `main.rs`.
+            // The performance site's probe (`for_site` only): one more
+            // statement inside the request when the test asks for it.
+            .layer(axum::middleware::from_fn(
+                move |req: axum::extract::Request, next: axum::middleware::Next| {
+                    let state = probe_state.clone();
+                    async move {
+                        if site && req.headers().contains_key("x-perf-extra-query") {
+                            let _ = sqlx::query("SELECT 1").execute(state.db()).await;
+                        }
+                        next.run(req).await
+                    }
+                },
+            ))
+            // The audit actor, innermost as in `main.rs` (only the probe is inside it).
             .layer(axum::middleware::from_fn(
                 trovato_kernel::middleware::scope_audit_actor,
             ))
@@ -537,7 +568,7 @@ impl TestApp {
                 state.clone(),
                 trovato_kernel::middleware::track_request_timing,
             ))
-            .layer(tower_http::trace::TraceLayer::new_for_http())
+            .layer(trovato_kernel::telemetry::trace_layer())
             // Supply a loopback peer (outermost, runs first) so
             // `resolve_client_ip` has a trusted socket address — mirroring
             // `into_make_service_with_connect_info` in production. Inserted

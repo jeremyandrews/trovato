@@ -221,13 +221,14 @@ pub async fn fetch_and_store(
     endpoint: &str,
     now: i64,
 ) -> Result<Option<UpdateStatus>> {
-    let response = client
-        .get(endpoint)
-        .header("Accept", "application/vnd.github+json")
-        .timeout(REQUEST_TIMEOUT)
-        .send()
-        .await
-        .context("failed to reach the release endpoint")?;
+    let response = crate::telemetry::send(
+        client
+            .get(endpoint)
+            .header("Accept", "application/vnd.github+json")
+            .timeout(REQUEST_TIMEOUT),
+    )
+    .await
+    .context("failed to reach the release endpoint")?;
 
     if !response.status().is_success() {
         anyhow::bail!("release endpoint returned {}", response.status());

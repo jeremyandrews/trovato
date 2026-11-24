@@ -557,12 +557,16 @@ async fn serve_feed(
     format: FeedFormat,
     segments: HashMap<String, String>,
 ) -> Response {
+    let viewer = crate::routes::item::get_user_context(&session, &state).await;
     // The argument, resolved by the same code the gather's page route uses:
-    // an unknown tag or author is a 404, not an empty feed.
+    // an unknown tag or author is a 404, not an empty feed, and so is a tag
+    // of a vocabulary this viewer may not read.
     let (url_args, raw_value) = match &config.argument {
         None => (HashMap::new(), None),
         Some(binding) => {
-            match resolve_route_params(&state, std::slice::from_ref(binding), &segments).await {
+            match resolve_route_params(&state, &viewer, std::slice::from_ref(binding), &segments)
+                .await
+            {
                 Ok(resolved) => (resolved, segments.get(&binding.segment).cloned()),
                 Err(RouteParamError::NotFound) => {
                     return (StatusCode::NOT_FOUND, "Feed not found").into_response();
@@ -579,7 +583,6 @@ async fn serve_feed(
         _ => pattern.to_string(),
     };
 
-    let viewer = crate::routes::item::get_user_context(&session, &state).await;
     // A signed-in viewer's feed is that viewer's execution of the query, so no
     // shared cache may keep it; an anonymous one is the same for every
     // anonymous reader.

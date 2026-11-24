@@ -80,6 +80,10 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     // Delete a past revision of an item the user may delete. The current
     // revision is never deleted. Granted by no migration.
     "delete revisions",
+    // See an item's view count ("N reads") when the site counts views
+    // (B160, `content::view_counter`). Drupal's statistics permission of the
+    // same name. Granted by no migration.
+    "view post access counter",
     // Content moderation (B158, `content::moderation`): one permission per
     // transition of the Editorial workflow, named as Drupal names them, and
     // the latest (draft) revision of an item ahead of its published one, with

@@ -40,11 +40,12 @@ const SELECT_STAR: &str = "table_fmt_select_star";
 fn table_display() -> QueryDisplay {
     QueryDisplay {
         format: DisplayFormat::Table,
-        items_per_page: 10,
+        items_per_page: Some(10),
         pager: PagerConfig {
             enabled: false,
             style: PagerStyle::Full,
             show_count: false,
+            zero_based: false,
         },
         empty_text: None,
         header: None,

@@ -23,7 +23,7 @@ import type { Config } from "@measured/puck";
 import React, { useEffect, useState } from "react";
 
 import { defaultProps, puckFields, renderPreview, type EditorContext, type Preview } from "./fields";
-import type { ComponentDefinition } from "./registry";
+import type { ComponentDefinition, FieldDefinition } from "./registry";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -298,12 +298,31 @@ function ServerPreview(props: {
 // ---------------------------------------------------------------------------
 
 /**
+ * The page settings form (Puck's root fields): the built in title, then every
+ * page root field the enabled plugins declare, with the same field mapping
+ * components use, each starting at its declared default.
+ */
+export function rootConfig(rootFields: FieldDefinition[], ctx: EditorContext): NonNullable<Config<any>["root"]> {
+  return {
+    fields: {
+      title: { type: "text", label: "Title" },
+      ...puckFields(rootFields, ctx, false),
+    },
+    defaultProps: { title: "", ...defaultProps(rootFields) },
+  };
+}
+
+/**
  * Build the Puck config from the registry. Components with `in_editor =
  * false` stay out of the picker (a stored page holding one still loads).
  * Categories appear in registry order: the standard set's first, then each
- * plugin's.
+ * plugin's. `rootFields` are the page settings form's fields after the title.
  */
-export function buildConfig(registry: ComponentDefinition[], ctx: EditorContext): Config<any> {
+export function buildConfig(
+  registry: ComponentDefinition[],
+  ctx: EditorContext,
+  rootFields: FieldDefinition[] = [],
+): Config<any> {
   registryIndex = new Map(registry.map((d) => [d.type_name, d]));
   const components: Config<any>["components"] = {};
   const categories: Record<string, { components: string[]; visible?: boolean; title?: string }> = {};
@@ -339,5 +358,5 @@ export function buildConfig(registry: ComponentDefinition[], ctx: EditorContext)
   // Loadable from a stored page, never offered in the picker.
   if (hidden.length > 0) categories.not_offered = { components: hidden, visible: false };
 
-  return { categories, components };
+  return { categories, components, root: rootConfig(rootFields, ctx) };
 }

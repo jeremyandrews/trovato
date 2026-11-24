@@ -493,7 +493,7 @@ async fn view_item(
         .unwrap_or_default();
 
     // Render fields through filter pipeline
-    let (mut children_html, page_stylesheets) =
+    let (mut children_html, page_stylesheets, page_root) =
         render_item_fields(&state, &user, &item.fields, &content_type_fields).await;
 
     // Every plugin's `tap_item_view` output, collected once. It reaches the
@@ -639,6 +639,14 @@ async fn view_item(
     context.insert("item", &item);
     context.insert("children", &children_html);
     context.insert("page_stylesheets", &page_stylesheets);
+    // The page's root values (declared defaults when it has no page builder
+    // content), for the item and page templates and every tile on the page.
+    context.insert(
+        "page_root",
+        &page_root.unwrap_or_else(|| {
+            crate::content::page_builder::page_root_defaults(state.theme().components())
+        }),
+    );
     context.insert("plugin_output", &plugin_output);
     // The viewer this route already loaded, so the item template can name it
     // and `inject_site_context_for` below does not load it again.
@@ -648,6 +656,15 @@ async fn view_item(
     context.insert("reverse_references", &reverse_references);
     context.insert("safe_urls", &safe_urls);
     context.insert("active_language", &active_language);
+    // The view counter (B160): this view is counted when the site counts
+    // views, and the total shown to a role holding `view post access counter`.
+    match state.items().record_view(item.id).await {
+        Ok(Some(total)) if user.can(crate::content::view_counter::VIEW_COUNT_PERMISSION) => {
+            context.insert("view_count", &total);
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, item = %item.id, "failed to count an item view"),
+    }
     context.insert(
         "text_direction",
         crate::middleware::language::text_direction_for_language(&active_language),
@@ -770,16 +787,20 @@ async fn view_item(
 ///
 /// One body for the item page and the revision preview, so a past revision is
 /// shown exactly as it would have been. The caller hands in fields already cut
-/// to what the viewer may see. Returns the HTML and the stylesheets the page
-/// builder components in it declared, for the page head.
+/// to what the viewer may see. Returns the HTML, the stylesheets the page
+/// builder components in it declared, for the page head, and the first page
+/// builder field's root values (`page_root`, see
+/// `content::page_builder::page_root_values`), `None` when the item has no
+/// page builder content.
 pub(crate) async fn render_item_fields(
     state: &AppState,
     viewer: &UserContext,
     fields: &serde_json::Value,
     content_type_fields: &[trovato_sdk::types::FieldDefinition],
-) -> (String, Vec<String>) {
+) -> (String, Vec<String>, Option<serde_json::Value>) {
     let mut children_html = String::new();
     let mut stylesheets: Vec<String> = Vec::new();
+    let mut page_root: Option<serde_json::Value> = None;
     if let Some(fields) = fields.as_object() {
         for (name, value) in fields {
             // A text field's format, stored beside it as `<name>_format`, is
@@ -824,6 +845,9 @@ pub(crate) async fn render_item_fields(
                             if !stylesheets.contains(&sheet) {
                                 stylesheets.push(sheet);
                             }
+                        }
+                        if page_root.is_none() {
+                            page_root = Some(serde_json::Value::Object(rendered.root));
                         }
                     }
                     Err(e) => {
@@ -972,7 +996,7 @@ pub(crate) async fn render_item_fields(
             }
         }
     }
-    (children_html, stylesheets)
+    (children_html, stylesheets, page_root)
 }
 
 /// Whether `key` is `<name>_format` for a field `<name>` the item type declares
@@ -1893,7 +1917,7 @@ async fn preview_revision(
         .map(|ct| ct.fields.clone())
         .unwrap_or_default();
     let viewer = crate::routes::helpers::get_user_context(&session, &state).await;
-    let (fields_html, page_stylesheets) =
+    let (fields_html, page_stylesheets, page_root) =
         render_item_fields(&state, &viewer, &revision.fields, &content_type_fields).await;
     let authors = revision_authors(&state, &revisions).await;
 
@@ -1908,6 +1932,9 @@ async fn preview_revision(
     context.insert("current_revision_id", &item.current_revision_id);
     context.insert("fields_html", &fields_html);
     context.insert("page_stylesheets", &page_stylesheets);
+    if let Some(page_root) = &page_root {
+        context.insert("page_root", page_root);
+    }
 
     super::helpers::render_admin_template(&state, &viewer, "admin/revision-preview.html", context)
         .await
@@ -1973,7 +2000,7 @@ async fn latest_version(
             .collect();
         fields.retain(|name, _| visible.contains(name));
     }
-    let (fields_html, page_stylesheets) =
+    let (fields_html, page_stylesheets, page_root) =
         render_item_fields(&state, &viewer, &revision.fields, &content_type_fields).await;
     let authors = revision_authors(&state, std::slice::from_ref(&revision)).await;
     let latest_state = crate::content::moderation::label(crate::content::moderation::state_of(
@@ -1994,6 +2021,9 @@ async fn latest_version(
     context.insert("latest_state", &latest_state);
     context.insert("fields_html", &fields_html);
     context.insert("page_stylesheets", &page_stylesheets);
+    if let Some(page_root) = &page_root {
+        context.insert("page_root", page_root);
+    }
 
     Ok(super::helpers::render_admin_template(
         &state,

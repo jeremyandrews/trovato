@@ -65,6 +65,11 @@ pub async fn track_session(
         return next.run(req).await;
     }
 
+    // A probe that carries a cookie must not cost a session load from Redis.
+    if crate::routes::health::is_probe(req.method(), req.uri().path()) {
+        return next.run(req).await;
+    }
+
     let response = next.run(req).await;
 
     // Anonymous traffic is the overwhelming majority and touches nothing here.

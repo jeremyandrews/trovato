@@ -1,5 +1,5 @@
 <div class="blog-listing">
-    <h1>{{ query.label }}</h1>
+    <h1>{% if term %}{{ term.label }}{% else %}{{ query.label }}{% endif %}</h1>
 
     {% if query.description %}
     <p class="gather-query__description">{{ query.description }}</p>

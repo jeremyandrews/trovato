@@ -152,6 +152,12 @@
                         should set <code>UPDATE_CHECK=0</code> in the environment
                         rather than rely on this checkbox.</p>
                     </div>
+
+                    <div class="form-item">
+                        <input type="checkbox" id="count_content_views" name="count_content_views" value="1" {% if count_content_views %}checked{% endif %}>
+                        <label for="count_content_views">Count content views</label>
+                        <p class="form-item__description">Each view of an item adds one to its count, shown as "N reads" to roles with <em>view post access counter</em>. One database write per item view while it is on.</p>
+                    </div>
                 </div>
             </div>
         </fieldset>

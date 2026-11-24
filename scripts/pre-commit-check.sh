@@ -67,6 +67,9 @@ echo ""
 
 run_check "Unit tests" cargo test --all --lib
 run_check "Doc tests" cargo test --all --doc
+# The expand-then-contract rule for migrations (docs/design/upgrades-and-probes.md
+# §3), named on its own so a failure says what it is. Mirrors CI.
+run_check "Migration compatibility rule" cargo test --all --lib migration_rule
 
 # SQL custom-expr guard (PF-5 durable convention, mirrors CI: SQL Custom-Expr
 # Guard job). Ratchets bare `Expr::cust(` sites; a new one must be confirmed

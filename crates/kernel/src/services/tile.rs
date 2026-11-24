@@ -33,6 +33,10 @@ pub struct TileRenderContext<'a> {
     /// Every config menu as a tree for this viewer, by name, as the page
     /// context carries it in `menus_by_name`.
     pub menus_by_name: &'a BTreeMap<String, Vec<MenuTreeLink>>,
+    /// The page's root values, as the page context carries them in
+    /// `page_root` (see `content::page_builder::page_root_values`): every
+    /// tile template receives them, so a tile can follow a page's settings.
+    pub page_root: &'a serde_json::Value,
 }
 
 /// Service for loading and rendering tiles.
@@ -135,7 +139,7 @@ impl TileService {
 /// off the page entirely rather than drawn as an empty box.
 async fn render_tile_html(tile: &Tile, render: &TileRenderContext<'_>) -> Option<String> {
     let body = match tile.tile_type.as_str() {
-        "custom_html" => custom_html_body(tile),
+        "custom_html" => render_custom_html_tile(tile, render)?,
         "menu" => render_menu_tile(tile, render),
         "gather_query" => render_gather_tile(tile, render).await?,
         "chat" => chat_widget(&tile.machine_name),
@@ -231,6 +235,38 @@ fn gather_page_path(query: &GatherQuery) -> String {
         .unwrap_or_else(|| format!("/gather/{}", query.query_id))
 }
 
+/// A `custom_html` tile: its body, through the text format it names, or,
+/// when a template `elements/tile--custom_html--{machine_name}` or
+/// `elements/tile--custom_html` is on the search path, that template's
+/// rendering of it, with `tile`, `body` (the filtered HTML) and `page_root`.
+///
+/// A template is how a sitewide tile follows a page's settings: a footer
+/// call to action that a page's root field hides or replaces. `None`, and so
+/// no tile at all, when the template renders nothing but whitespace.
+fn render_custom_html_tile(tile: &Tile, render: &TileRenderContext<'_>) -> Option<String> {
+    let body = custom_html_body(tile);
+    let suggestions = [
+        format!("elements/tile--custom_html--{}", tile.machine_name),
+        "elements/tile--custom_html".to_string(),
+    ];
+    let refs: Vec<&str> = suggestions.iter().map(String::as_str).collect();
+    let Some(template) = render.state.theme().resolve_template(&refs) else {
+        return Some(body);
+    };
+    let mut context = tera::Context::new();
+    context.insert("tile", tile);
+    context.insert("body", &body);
+    context.insert("page_root", render.page_root);
+    match render.state.theme().tera().render(&template, &context) {
+        Ok(html) if html.trim().is_empty() => None,
+        Ok(html) => Some(html),
+        Err(e) => {
+            tracing::warn!(tile = %tile.machine_name, error = %e, "failed to render tile");
+            Some(String::new())
+        }
+    }
+}
+
 /// A `custom_html` tile's body, through the text format it names.
 fn custom_html_body(tile: &Tile) -> String {
     let body = tile
@@ -252,7 +288,8 @@ fn custom_html_body(tile: &Tile) -> String {
 }
 
 /// Render a tile's body through the first template its suggestions resolve to:
-/// `elements/tile--{type}--{machine_name}`, then `elements/tile--{type}`.
+/// `elements/tile--{type}--{machine_name}`, then `elements/tile--{type}`, with
+/// the page's root values added as `page_root`.
 ///
 /// A template that fails to render is logged and leaves the body empty rather
 /// than failing the page around it.
@@ -271,7 +308,9 @@ fn render_tile_template(
         tracing::warn!(tile = %tile.machine_name, "no template for tile");
         return String::new();
     };
-    match theme.tera().render(&template, context) {
+    let mut context = context.clone();
+    context.insert("page_root", render.page_root);
+    match theme.tera().render(&template, &context) {
         Ok(html) => html,
         Err(e) => {
             tracing::warn!(tile = %tile.machine_name, error = %e, "failed to render tile");

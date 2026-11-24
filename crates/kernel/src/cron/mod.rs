@@ -329,6 +329,44 @@ async fn run_queue_job(
     job: ClaimedJob,
     invocation_sink: Arc<AtomicU64>,
 ) -> Result<JobOutcome> {
+    // Gander's queue choke point: a job is traced like a request. It has no
+    // request profile: nothing would read its counts.
+    let span = tracing::trace_span!(
+        target: crate::telemetry::TARGET,
+        "queue.job",
+        trovato.plugin = %plugin_name,
+        trovato.queue = %queue_name,
+        trovato.queue.attempt = job.attempts,
+        trovato.queue.outcome = tracing::field::Empty,
+    );
+    let outcome = tracing::Instrument::instrument(
+        run_queue_job_inner(
+            pool,
+            dispatcher,
+            services,
+            plugin_name,
+            queue_name,
+            job,
+            invocation_sink,
+        ),
+        span.clone(),
+    )
+    .await;
+    if let Ok(o) = outcome.as_ref() {
+        span.record("trovato.queue.outcome", o.as_str());
+    }
+    outcome
+}
+
+async fn run_queue_job_inner(
+    pool: PgPool,
+    dispatcher: Arc<TapDispatcher>,
+    services: crate::tap::RequestServices,
+    plugin_name: String,
+    queue_name: String,
+    job: ClaimedJob,
+    invocation_sink: Arc<AtomicU64>,
+) -> Result<JobOutcome> {
     // Infallible: payload came from JSONB and round-trips to a string.
     let input_json = serde_json::to_string(&job.payload).unwrap_or_else(|_| "{}".to_string());
 

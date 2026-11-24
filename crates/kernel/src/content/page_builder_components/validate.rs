@@ -12,9 +12,9 @@ use super::schema::{FieldDefinition, FieldKind, ReferenceTarget};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FieldError {
     /// Where the component is in the page: `content[2]`, or
-    /// `content[1].zones.zone-0[0]` for a child.
+    /// `content[1].zones.zone-0[0]` for a child; `root` for a page root field.
     pub location: String,
-    /// The component's type name.
+    /// The component's type name; empty for a page root field.
     pub component: String,
     /// The field, with list positions: `title`, `cards[1].link`.
     pub field: String,
@@ -24,6 +24,17 @@ pub struct FieldError {
 
 impl std::fmt::Display for FieldError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A page root error names no component: `root: footer_mode: ...`.
+        if self.component.is_empty() {
+            let mut parts: Vec<&str> = Vec::new();
+            for part in [&self.location, &self.field] {
+                if !part.is_empty() {
+                    parts.push(part);
+                }
+            }
+            parts.push(&self.message);
+            return write!(f, "{}", parts.join(": "));
+        }
         if self.field.is_empty() {
             write!(
                 f,

@@ -75,7 +75,7 @@ pub async fn resolve_path_alias(
         || path.starts_with("/install")
         || path.starts_with("/user")
         || path.starts_with("/item")
-        || path == "/health"
+        || crate::routes::health::is_probe_path(path)
         || path == "/"
     {
         return next.run(request).await;

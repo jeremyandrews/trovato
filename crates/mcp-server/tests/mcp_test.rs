@@ -1028,3 +1028,82 @@ fn list_items_hides_what_get_item_would_refuse() {
         Item::delete(ctx.state.db(), shown.id).await.ok();
     });
 }
+
+/// The category tools follow the category API's visibility rule (B189): an
+/// owned vocabulary, here of an owner type no plugin declares, is neither
+/// listed to nor readable by a caller who may not see its owner, and reads
+/// exactly like a vocabulary that does not exist; an administrator sees it.
+#[test]
+fn the_category_tools_hide_an_owned_vocabulary() {
+    run_test(async {
+        let ctx = shared_app().await;
+        let id = format!(
+            "b189_mcp_{}",
+            &uuid::Uuid::now_v7().simple().to_string()[20..]
+        );
+        sqlx::query(
+            "INSERT INTO category (id, label, owner_type, owner_id) \
+             VALUES ($1, 'Owned', 'b189_nobody', 'o1')",
+        )
+        .bind(&id)
+        .execute(ctx.state.db())
+        .await
+        .unwrap();
+        ctx.state
+            .categories()
+            .create_tag(trovato_kernel::models::CreateTag {
+                category_id: id.clone(),
+                label: "Hidden term".to_string(),
+                description: None,
+                slug: None,
+                weight: Some(0),
+                parent_ids: None,
+            })
+            .await
+            .unwrap();
+
+        let reader = user_with(ctx, &["access content"]);
+        let listed = |user: trovato_kernel::tap::UserContext| {
+            let state = ctx.state.clone();
+            async move {
+                let result = trovato_mcp::tools::categories::list_categories(&state, &user)
+                    .await
+                    .unwrap();
+                extract_text(&result)
+            }
+        };
+        let tags = |user: trovato_kernel::tap::UserContext, category: String| {
+            let state = ctx.state.clone();
+            async move {
+                let params: trovato_mcp::server::ListTagsParams =
+                    serde_json::from_value(serde_json::json!({ "category_id": category })).unwrap();
+                let result = trovato_mcp::tools::categories::list_tags(&state, &user, params)
+                    .await
+                    .unwrap();
+                extract_text(&result)
+            }
+        };
+
+        let text = listed(reader.clone()).await;
+        assert!(!text.contains(&id), "the reader is not listed it: {text}");
+        assert!(text.contains("\"tags\""), "the reader still lists tags");
+        let hidden = tags(reader.clone(), id.clone()).await;
+        assert!(!hidden.contains("Hidden term"), "{hidden}");
+        assert_eq!(
+            hidden,
+            tags(reader.clone(), "b189_no_such_vocabulary".to_string()).await,
+            "a hidden vocabulary reads like a missing one"
+        );
+
+        let text = listed(ctx.admin_user_ctx.clone()).await;
+        assert!(text.contains(&id), "the administrator is listed it");
+        let shown = tags(ctx.admin_user_ctx.clone(), id.clone()).await;
+        assert!(shown.contains("Hidden term"), "{shown}");
+
+        sqlx::query("DELETE FROM category WHERE id = $1")
+            .bind(&id)
+            .execute(ctx.state.db())
+            .await
+            .unwrap();
+    });
+}

@@ -1,0 +1,16 @@
+# Scrapes the Trovato server on the host. A request from this container does
+# not come from loopback, so it carries METRICS_TOKEN: start Trovato with
+#   METRICS_TOKEN=local-observability-token-not-for-production
+# (or change both). TROVATO_PORT is not read here: edit the target if Trovato
+# is not on port 3000.
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: trovato
+    metrics_path: /metrics
+    authorization:
+      type: Bearer
+      credentials: local-observability-token-not-for-production
+    static_configs:
+      - targets: ["host.docker.internal:3000"]

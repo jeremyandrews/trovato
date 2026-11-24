@@ -31,9 +31,7 @@ use crate::menu::MenuRegistry;
 use crate::metrics::Metrics;
 use crate::middleware::{RateLimitConfig, RateLimiter};
 use crate::permissions::PermissionService;
-use crate::plugin::{
-    PluginConfig, PluginRuntime, migration as plugin_migration, status as plugin_status,
-};
+use crate::plugin::{PluginConfig, PluginRuntime, status as plugin_status};
 use crate::search::SearchService;
 use crate::search::sentiment::SentimentQueue;
 use crate::services;
@@ -63,6 +61,8 @@ struct AppStateInner {
 
     /// Maximum database connections configured for the pool.
     db_pool_max_connections: u32,
+    /// Readiness and draining state for the health probes.
+    probes: Arc<crate::routes::health::Probes>,
 
     /// Plugin search path on disk.
     plugins_dirs: Vec<PathBuf>,
@@ -337,10 +337,13 @@ impl AppState {
             .await
             .context("failed to create database pool")?;
 
-        // Run migrations
-        db::run_migrations(&db)
-            .await
-            .context("failed to run migrations")?;
+        // Run migrations, unless they run as their own step (`trovato migrate`);
+        // then `serve` has already waited until the schema is ready.
+        if config.migrate_on_start {
+            db::run_migrations(&db)
+                .await
+                .context("failed to run migrations")?;
+        }
 
         // Create Redis client
         let redis = RedisClient::open(config.redis_url.as_str())
@@ -551,16 +554,10 @@ impl AppState {
             .into_iter()
             .filter(|(name, _)| enabled_set.contains(name))
             .collect();
-        let migration_results =
-            plugin_migration::run_all_pending_migrations(&db, &enabled_discovered)
-                .await
-                .context("failed to run plugin migrations")?;
-        for (plugin_name, applied) in &migration_results {
-            info!(
-                plugin = %plugin_name,
-                count = applied.len(),
-                "applied plugin migrations"
-            );
+        if config.migrate_on_start {
+            let mut lock = crate::migrate::MigrationLock::acquire(&db).await?;
+            crate::migrate::run_plugins(&mut lock, &enabled_discovered).await?;
+            lock.release().await?;
         }
 
         let plugin_runtime = Arc::new(plugin_runtime);
@@ -1282,6 +1279,9 @@ impl AppState {
                 runtime: config.runtime.clone(),
                 db,
                 db_pool_max_connections: config.database_max_connections,
+                probes: Arc::new(crate::routes::health::Probes::new(
+                    config.health_token.clone(),
+                )),
                 plugins_dirs: config.plugins_dirs.clone(),
                 page_builder_components,
                 plugin_static_dirs,
@@ -1371,6 +1371,14 @@ impl AppState {
         Ok(state)
     }
 
+    /// Clear every in-process cache of this server, without bumping: what a
+    /// bump of every kind does here. The performance tests' "cold" start.
+    pub async fn clear_local_caches(&self) {
+        for kind in crate::cache::generation::CacheKind::ALL {
+            self.clear_local_cache(kind).await;
+        }
+    }
+
     /// Clear this server's cache of `kind`, without bumping: what a bump from
     /// any server, this one included, does here.
     async fn clear_local_cache(&self, kind: crate::cache::generation::CacheKind) {
@@ -1404,7 +1412,11 @@ impl AppState {
                 }
             }
             CacheKind::Menus => crate::menu::clear_local_config_menus(),
-            CacheKind::SiteConfig => self.front_page().clear(),
+            CacheKind::SiteConfig => {
+                self.front_page().clear();
+                self.gather().clear_site_settings();
+                self.items().view_counter().clear();
+            }
             CacheKind::Themes => {
                 crate::theme::registry::load_active(self.db(), self.theme()).await;
             }
@@ -1428,6 +1440,11 @@ impl AppState {
     /// Get the database pool.
     pub fn db(&self) -> &PgPool {
         &self.inner.db
+    }
+
+    /// The health probes' readiness and draining state.
+    pub fn probes(&self) -> &Arc<crate::routes::health::Probes> {
+        &self.inner.probes
     }
 
     /// Get the configured maximum database pool connections.

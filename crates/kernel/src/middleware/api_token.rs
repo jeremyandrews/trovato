@@ -56,6 +56,10 @@ pub async fn authenticate_api_token(
     request: Request<Body>,
     next: Next,
 ) -> Response {
+    // A probe or a scrape carries an operator's token, not an API token.
+    if crate::routes::health::carries_operator_token(request.method(), request.uri().path()) {
+        return next.run(request).await;
+    }
     let auth_header = request
         .headers()
         .get(axum::http::header::AUTHORIZATION)

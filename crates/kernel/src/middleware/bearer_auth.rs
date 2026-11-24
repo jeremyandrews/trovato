@@ -36,6 +36,10 @@ pub async fn authenticate_bearer_token(
     mut request: Request<Body>,
     next: Next,
 ) -> Response {
+    // A probe or a scrape carries an operator's token, not a user's credential.
+    if crate::routes::health::carries_operator_token(request.method(), request.uri().path()) {
+        return next.run(request).await;
+    }
     let auth_header = request
         .headers()
         .get("Authorization")

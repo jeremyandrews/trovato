@@ -13,6 +13,11 @@
 //! also receives `variant_classes`, the classes the chosen select options add,
 //! every one from the component's declared `classes`.
 //!
+//! The page's root values (the built in `title` and every page root field
+//! the enabled plugins declare) are normalized the same way, declared
+//! defaults filled in, into [`RenderedPage::root`]: what page, region and
+//! tile templates receive as `page_root` ([`page_root_values`]).
+//!
 //! Security: each component is sanitized individually via Ammonia before
 //! assembly, and the allowlist carries no `style` attribute: a component
 //! expresses a variant as a declared class, never as inline CSS. The page
@@ -27,7 +32,7 @@ use serde::{Deserialize, Serialize};
 
 use super::page_builder_components::{
     ComponentDefinition, ComponentRegistry, FieldDefinition, FieldKind, MAX_ZONE_DEPTH,
-    ReferenceTarget, is_safe_url,
+    ReferenceTarget, is_safe_url, root_values,
 };
 
 /// Regex for extracting heading levels from rendered HTML.
@@ -62,11 +67,33 @@ pub struct PuckPage {
     pub content: Vec<PuckComponent>,
 }
 
-/// Page-level metadata from Puck's root config.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Page-level values from Puck's root config.
+///
+/// `title` is built in. Every other key is kept in `fields` as stored, in
+/// either shape the editor's Puck may write (directly under `root`, or under
+/// `root.props`); [`PuckRoot::values`] reads both. Nothing here is validated:
+/// a stored page always renders, and only the values a page root field
+/// declares reach a template ([`page_root_values`]).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PuckRoot {
     /// Page title (may be used by the page template).
+    #[serde(default)]
     pub title: Option<String>,
+    /// Every other root key, as stored.
+    #[serde(flatten)]
+    pub fields: serde_json::Map<String, serde_json::Value>,
+}
+
+impl PuckRoot {
+    /// The root's values, `title` included, from either stored shape: a key
+    /// under `props` takes precedence over the same key directly under root.
+    pub fn values(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut flat = self.fields.clone();
+        if let Some(title) = &self.title {
+            flat.insert("title".into(), serde_json::Value::String(title.clone()));
+        }
+        root_values(&serde_json::Value::Object(flat))
+    }
 }
 
 /// A single Puck component with optional child zones.
@@ -83,14 +110,18 @@ pub struct PuckComponent {
     pub zones: HashMap<String, Vec<PuckComponent>>,
 }
 
-/// What a page renders to: the HTML, and the stylesheets the components that
-/// rendered declared, each once, in first-use order.
+/// What a page renders to: the HTML, the stylesheets the components that
+/// rendered declared, each once, in first-use order, and the page's root
+/// values.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RenderedPage {
     /// The concatenated, sanitized component HTML.
     pub html: String,
     /// Stylesheet URLs the page must link for this HTML.
     pub stylesheets: Vec<String>,
+    /// The page's root values as templates receive them, `page_root`: see
+    /// [`page_root_values`].
+    pub root: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A reference a page's components hold, to be resolved before rendering.
@@ -185,6 +216,13 @@ pub fn collect_references(page: &PuckPage, registry: &ComponentRegistry) -> Vec<
         }
     }
     let mut out = Vec::new();
+    if let Some(root) = &page.root {
+        collect_in(
+            registry.root_field_definitions(),
+            &serde_json::Value::Object(root.values()),
+            &mut out,
+        );
+    }
     for component in &page.content {
         walk(component, registry, 0, &mut out);
     }
@@ -374,6 +412,7 @@ pub fn render_puck_page(
         registry,
         references,
     };
+    let root = page_root_values(page.root.as_ref(), registry, references);
     let mut stylesheets = vec![STANDARD_STYLESHEET.to_string()];
     let mut parts = Vec::with_capacity(page.content.len());
     for component in &page.content {
@@ -395,7 +434,65 @@ pub fn render_puck_page(
     Ok(RenderedPage {
         html: rendered,
         stylesheets,
+        root,
     })
+}
+
+/// A page's root values as page, region and tile templates receive them, in
+/// the context variable `page_root`.
+///
+/// - `title`: the root's title, when it is text;
+/// - one key per page root field the enabled plugins declare: the page's
+///   value, or the field's declared default when the page has none (absent,
+///   `null` or empty text), normalized to the field's type exactly as a
+///   component prop is (a select value outside its options, an unsafe URL or
+///   a value of the wrong type is left out; a `rich_text` field adds
+///   `<name>_html`, the sanitized rendering);
+/// - `variant_classes`: the classes the chosen select options add, space
+///   separated, each one a class a root file declared.
+///
+/// Root keys no enabled plugin declares are not passed on. `None` (a page
+/// with no root, or no page builder field at all) gives the defaults.
+pub fn page_root_values(
+    root: Option<&PuckRoot>,
+    registry: &ComponentRegistry,
+    references: &ResolvedReferences,
+) -> serde_json::Map<String, serde_json::Value> {
+    let values = root.map(PuckRoot::values).unwrap_or_default();
+    let fields = registry.root_field_definitions();
+    let mut effective = serde_json::Map::new();
+    for field in fields {
+        let value = values
+            .get(&field.name)
+            .filter(|v| !v.is_null() && v.as_str() != Some(""))
+            .or(field.default.as_ref());
+        if let Some(value) = value {
+            effective.insert(field.name.clone(), value.clone());
+        }
+    }
+    let effective = serde_json::Value::Object(effective);
+    let mut out = match normalize_props(fields, &effective, references) {
+        serde_json::Value::Object(map) => map,
+        _ => serde_json::Map::new(),
+    };
+    if let Some(title) = values.get("title").filter(|t| t.is_string()) {
+        out.insert("title".into(), title.clone());
+    }
+    out.insert(
+        "variant_classes".into(),
+        serde_json::Value::String(chosen_classes(fields, registry.root_classes(), &effective)),
+    );
+    out
+}
+
+/// [`page_root_values`] for a page without page builder content: every
+/// declared default, and no title.
+pub fn page_root_defaults(registry: &ComponentRegistry) -> serde_json::Value {
+    serde_json::Value::Object(page_root_values(
+        None,
+        registry,
+        &ResolvedReferences::default(),
+    ))
 }
 
 /// Validate heading hierarchy across the full rendered page.
@@ -511,7 +608,9 @@ impl Renderer<'_> {
 
         // Build the Tera context from the declared fields
         let mut context = tera::Context::new();
-        if let Some(obj) = self.props_for(&def.fields, &component.props).as_object() {
+        if let Some(obj) =
+            normalize_props(&def.fields, &component.props, self.references).as_object()
+        {
             for (key, value) in obj {
                 context.insert(key, value);
             }
@@ -548,120 +647,130 @@ impl Renderer<'_> {
         // Sanitize per-component
         Ok(SANITIZER.clean(&html).to_string())
     }
+}
 
-    /// The template's view of `props`: each declared field, normalized to its
-    /// type, and nothing else. A rich text field adds `<name>_html`.
-    fn props_for(
-        &self,
-        fields: &[FieldDefinition],
-        props: &serde_json::Value,
-    ) -> serde_json::Value {
-        use serde_json::Value;
-        let mut out = serde_json::Map::new();
-        for field in fields {
-            let Some(value) = props.get(&field.name).filter(|v| !v.is_null()) else {
-                continue;
-            };
-            let normalized = match &field.kind {
-                FieldKind::Text { .. } => value.is_string().then(|| value.clone()),
-                FieldKind::RichText { min_heading, .. } => {
-                    if let Some(text) = value.as_str() {
-                        out.insert(
-                            format!("{}_html", field.name),
-                            Value::String(crate::theme::render_markdown(
-                                text,
-                                usize::from(*min_heading),
-                            )),
-                        );
-                        Some(value.clone())
-                    } else {
-                        None
-                    }
+/// The template's view of `props`: each declared field, normalized to its
+/// type, and nothing else. A rich text field adds `<name>_html`.
+fn normalize_props(
+    fields: &[FieldDefinition],
+    props: &serde_json::Value,
+    references: &ResolvedReferences,
+) -> serde_json::Value {
+    use serde_json::Value;
+    let mut out = serde_json::Map::new();
+    for field in fields {
+        let Some(value) = props.get(&field.name).filter(|v| !v.is_null()) else {
+            continue;
+        };
+        let normalized = match &field.kind {
+            FieldKind::Text { .. } => value.is_string().then(|| value.clone()),
+            FieldKind::RichText { min_heading, .. } => {
+                if let Some(text) = value.as_str() {
+                    out.insert(
+                        format!("{}_html", field.name),
+                        Value::String(crate::theme::render_markdown(
+                            text,
+                            usize::from(*min_heading),
+                        )),
+                    );
+                    Some(value.clone())
+                } else {
+                    None
                 }
-                FieldKind::Number { .. } => value.is_number().then(|| value.clone()),
-                FieldKind::HeadingLevel => value
-                    .as_u64()
-                    .filter(|l| (2..=6).contains(l))
-                    .map(Value::from),
-                FieldKind::Boolean => value.is_boolean().then(|| value.clone()),
-                FieldKind::Url => value
-                    .as_str()
-                    .filter(|u| is_safe_url(u))
-                    .map(|u| Value::String(u.to_string())),
-                FieldKind::Select { options } => value
-                    .as_str()
-                    .filter(|v| options.iter().any(|o| o.value == *v))
-                    .map(|v| Value::String(v.to_string())),
-                FieldKind::Image { .. } => {
-                    let src = value.get("src").and_then(Value::as_str).unwrap_or("");
-                    if src.is_empty() || !is_safe_url(src) {
-                        None
-                    } else {
-                        let decorative = value
-                            .get("decorative")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false);
-                        let alt = if decorative {
-                            ""
-                        } else {
-                            value.get("alt").and_then(Value::as_str).unwrap_or("")
-                        };
-                        Some(serde_json::json!({
-                            "src": src,
-                            "alt": alt,
-                            "decorative": decorative,
-                        }))
-                    }
-                }
-                FieldKind::Link { .. } => {
-                    let url = value.get("url").and_then(Value::as_str).unwrap_or("");
-                    if url.is_empty() || !is_safe_url(url) {
-                        None
-                    } else {
-                        Some(serde_json::json!({
-                            "url": url,
-                            "label": value.get("label").and_then(Value::as_str).unwrap_or(""),
-                            "new_tab": value.get("new_tab").and_then(Value::as_bool).unwrap_or(false),
-                        }))
-                    }
-                }
-                FieldKind::List { fields, .. } => value.as_array().map(|items| {
-                    Value::Array(
-                        items
-                            .iter()
-                            .filter(|i| i.is_object())
-                            .map(|i| self.props_for(fields, i))
-                            .collect(),
-                    )
-                }),
-                // An item of another type than the field names is left out,
-                // as one the viewer may not see is.
-                FieldKind::Reference {
-                    target, item_type, ..
-                } => value
-                    .as_str()
-                    .and_then(|id| self.references.get(*target, id))
-                    .filter(|resolved| match item_type {
-                        Some(wanted) => {
-                            resolved.get("type").and_then(Value::as_str) == Some(wanted.as_str())
-                        }
-                        None => true,
-                    })
-                    .cloned(),
-            };
-            if let Some(v) = normalized {
-                out.insert(field.name.clone(), v);
             }
+            FieldKind::Number { .. } => value.is_number().then(|| value.clone()),
+            FieldKind::HeadingLevel => value
+                .as_u64()
+                .filter(|l| (2..=6).contains(l))
+                .map(Value::from),
+            FieldKind::Boolean => value.is_boolean().then(|| value.clone()),
+            FieldKind::Url => value
+                .as_str()
+                .filter(|u| is_safe_url(u))
+                .map(|u| Value::String(u.to_string())),
+            FieldKind::Select { options } => value
+                .as_str()
+                .filter(|v| options.iter().any(|o| o.value == *v))
+                .map(|v| Value::String(v.to_string())),
+            FieldKind::Image { .. } => {
+                let src = value.get("src").and_then(Value::as_str).unwrap_or("");
+                if src.is_empty() || !is_safe_url(src) {
+                    None
+                } else {
+                    let decorative = value
+                        .get("decorative")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    let alt = if decorative {
+                        ""
+                    } else {
+                        value.get("alt").and_then(Value::as_str).unwrap_or("")
+                    };
+                    Some(serde_json::json!({
+                        "src": src,
+                        "alt": alt,
+                        "decorative": decorative,
+                    }))
+                }
+            }
+            FieldKind::Link { .. } => {
+                let url = value.get("url").and_then(Value::as_str).unwrap_or("");
+                if url.is_empty() || !is_safe_url(url) {
+                    None
+                } else {
+                    Some(serde_json::json!({
+                        "url": url,
+                        "label": value.get("label").and_then(Value::as_str).unwrap_or(""),
+                        "new_tab": value.get("new_tab").and_then(Value::as_bool).unwrap_or(false),
+                    }))
+                }
+            }
+            FieldKind::List { fields, .. } => value.as_array().map(|items| {
+                Value::Array(
+                    items
+                        .iter()
+                        .filter(|i| i.is_object())
+                        .map(|i| normalize_props(fields, i, references))
+                        .collect(),
+                )
+            }),
+            // An item of another type than the field names is left out,
+            // as one the viewer may not see is.
+            FieldKind::Reference {
+                target, item_type, ..
+            } => value
+                .as_str()
+                .and_then(|id| references.get(*target, id))
+                .filter(|resolved| match item_type {
+                    Some(wanted) => {
+                        resolved.get("type").and_then(Value::as_str) == Some(wanted.as_str())
+                    }
+                    None => true,
+                })
+                .cloned(),
+        };
+        if let Some(v) = normalized {
+            out.insert(field.name.clone(), v);
         }
-        Value::Object(out)
     }
+    Value::Object(out)
 }
 
 /// The classes the component's chosen select options add, space separated,
 /// each checked against the component's declared `classes`.
 fn variant_classes(def: &ComponentDefinition, props: &serde_json::Value) -> String {
+    chosen_classes(&def.fields, &def.classes, props)
+}
+
+/// The classes the chosen options of `fields`' select fields add, each one
+/// of `declared`, once, in field order.
+fn chosen_classes(
+    fields: &[FieldDefinition],
+    declared: &[String],
+    props: &serde_json::Value,
+) -> String {
     let mut classes: Vec<&str> = Vec::new();
-    for field in &def.fields {
+    for field in fields {
         let FieldKind::Select { options } = &field.kind else {
             continue;
         };
@@ -672,7 +781,7 @@ fn variant_classes(def: &ComponentDefinition, props: &serde_json::Value) -> Stri
             .iter()
             .find(|o| o.value == choice)
             .and_then(|o| o.class.as_deref())
-            && def.classes.iter().any(|c| c == class)
+            && declared.iter().any(|c| c == class)
             && !classes.contains(&class)
         {
             classes.push(class);
@@ -1064,6 +1173,129 @@ mod tests {
         .unwrap();
         assert_eq!(rendered.html, fixture("standard-page-v0.106.html"));
         assert_eq!(rendered.stylesheets, vec![STANDARD_STYLESHEET]);
+        // Its root is the title alone, and templates receive just that.
+        assert_eq!(
+            serde_json::Value::Object(rendered.root),
+            json!({ "title": "A page saved by v0.106.0", "variant_classes": "" })
+        );
+
+        // With a plugin declaring page root fields enabled, the same page
+        // still validates, renders the same HTML, and gets their defaults.
+        let registry = root_registry();
+        assert!(registry.validate_page(&json_fixture()).is_empty());
+        let page: PuckPage = serde_json::from_value(json_fixture()).unwrap();
+        let rendered = render_puck_page(
+            &page,
+            engine().tera(),
+            &registry,
+            &ResolvedReferences::default(),
+        )
+        .unwrap();
+        assert_eq!(rendered.html, fixture("standard-page-v0.106.html"));
+        assert_eq!(rendered.root["footer_mode"], "default");
+    }
+
+    fn json_fixture() -> serde_json::Value {
+        serde_json::from_str(&fixture("standard-page-v0.106.json")).unwrap()
+    }
+
+    const ROOT: &str = r#"
+classes = ["page--no-footer-cta"]
+[[fields]]
+name = "footer_mode"
+type = "select"
+default = "default"
+options = [
+  { value = "default" },
+  { value = "hide", class = "page--no-footer-cta" },
+  { value = "custom" },
+]
+[[fields]]
+name = "footer_text"
+type = "rich_text"
+[[fields]]
+name = "footer_link"
+type = "url"
+"#;
+
+    fn root_registry() -> ComponentRegistry {
+        let dir = std::env::temp_dir().join(format!("trovato-pb-root-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(dir.join("components")).unwrap();
+        std::fs::write(dir.join("components/page.root.toml"), ROOT).unwrap();
+        let registry = ComponentRegistry::load(&[
+            crate::content::page_builder_components::PluginComponentSource {
+                name: "site".into(),
+                dir: dir.clone(),
+            },
+        ])
+        .unwrap();
+        std::fs::remove_dir_all(dir).ok();
+        registry
+    }
+
+    fn root_of(page: serde_json::Value, registry: &ComponentRegistry) -> serde_json::Value {
+        let page: PuckPage = serde_json::from_value(page).unwrap();
+        serde_json::Value::Object(page_root_values(
+            page.root.as_ref(),
+            registry,
+            &ResolvedReferences::default(),
+        ))
+    }
+
+    #[test]
+    fn page_root_values_are_normalized_with_defaults() {
+        let registry = root_registry();
+        // No value: the declared default.
+        assert_eq!(
+            root_of(
+                json!({ "root": { "title": "T" }, "content": [] }),
+                &registry
+            ),
+            json!({ "title": "T", "footer_mode": "default", "variant_classes": "" })
+        );
+        // A chosen option adds its declared class.
+        assert_eq!(
+            root_of(
+                json!({ "root": { "footer_mode": "hide" }, "content": [] }),
+                &registry
+            ),
+            json!({ "footer_mode": "hide", "variant_classes": "page--no-footer-cta" })
+        );
+        // Nested under props, as current Puck keeps it; rich text is rendered
+        // and sanitized; an unsafe URL, an unknown option and an undeclared
+        // key never reach a template.
+        let root = root_of(
+            json!({ "root": { "props": {
+                "footer_mode": "custom",
+                "footer_text": "# Call us\n\n<script>x</script>\n\nCall **now**",
+                "footer_link": "javascript:alert(1)",
+                "colour": "red"
+            } }, "content": [] }),
+            &registry,
+        );
+        assert_eq!(root["footer_mode"], "custom");
+        let html = root["footer_text_html"].as_str().unwrap();
+        assert!(html.contains("<h2>Call us</h2>"), "{html}");
+        assert!(
+            html.contains("<strong>now</strong>") && !html.contains("<script"),
+            "{html}"
+        );
+        assert!(root.get("footer_link").is_none(), "{root}");
+        assert!(root.get("colour").is_none(), "{root}");
+        let root = root_of(
+            json!({ "root": { "footer_mode": "blink" }, "content": [] }),
+            &registry,
+        );
+        assert!(root.get("footer_mode").is_none(), "{root}");
+        // No page builder content at all: the defaults.
+        assert_eq!(
+            page_root_defaults(&registry),
+            json!({ "footer_mode": "default", "variant_classes": "" })
+        );
+        assert_eq!(
+            page_root_defaults(&ComponentRegistry::new()),
+            json!({ "variant_classes": "" })
+        );
     }
 
     #[test]

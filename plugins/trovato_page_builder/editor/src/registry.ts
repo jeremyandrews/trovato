@@ -55,6 +55,19 @@ export type ComponentDefinition = {
   source: ComponentSource;
 };
 
+/**
+ * A page root field: a page level value (beyond the built in title) a plugin
+ * declares in `components/<name>.root.toml`, served beside the components as
+ * `root_fields`. Same format as a component field, plus who declared it.
+ */
+export type RootFieldDefinition = FieldDefinition & { source: ComponentSource };
+
+/** The whole `/api/v1/page-builder/components` answer. */
+export type RegistryResponse = {
+  data: ComponentDefinition[];
+  root_fields?: RootFieldDefinition[];
+};
+
 /** An image field's value. */
 export type ImageValue = { src?: string; alt?: string; decorative?: boolean };
 

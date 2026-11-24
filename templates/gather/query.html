@@ -1,5 +1,7 @@
 <div class="gather-query gather-query--{{ query.query_id }}" data-query-id="{{ query.query_id }}">
-    {% if query.label %}
+    {% if term %}
+    <h2 class="gather-query__title">{{ term.label }}</h2>
+    {% elif query.label %}
     <h2 class="gather-query__title">{{ query.label }}</h2>
     {% endif %}
 

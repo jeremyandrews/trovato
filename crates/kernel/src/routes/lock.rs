@@ -3,6 +3,7 @@
 //! Provides API endpoints for content lock heartbeat and break operations.
 
 use axum::{
+    body::Bytes,
     extract::State,
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
@@ -42,6 +43,15 @@ pub fn api() -> super::api::ApiRoutes {
             "/lock/break",
             break_lock,
             doc("Break another user's edit lock (`break content lock`; `X-CSRF-Token`)").alias(),
+        )
+        .post(
+            "/lock/release",
+            release,
+            doc(
+                "Release the caller's own edit lock at once, e.g. on `pagehide` via \
+                 `navigator.sendBeacon` (`X-CSRF-Token`, or a form-urlencoded `_token` field)",
+            )
+            .alias(),
         )
         .plugin("trovato_content_locking")
 }
@@ -150,6 +160,98 @@ async fn break_lock(
         Err(e) => {
             tracing::warn!(error = %e, "break lock failed");
             AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, "Break lock failed")
+                .into_response()
+        }
+    }
+}
+
+/// Whether the request body is a URL-encoded form (ignoring a `charset` parameter).
+fn is_form_urlencoded(headers: &HeaderMap) -> bool {
+    headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(|v| {
+            v.split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("application/x-www-form-urlencoded")
+        })
+        .unwrap_or(false)
+}
+
+/// The release payload, read from JSON like heartbeat and break, or — because
+/// `navigator.sendBeacon` cannot set a custom header, which is how the other
+/// two routes carry a CSRF token — from a form-urlencoded body, the same shape
+/// [`super::helpers::require_csrf_header_or_field`] already accepts a token
+/// from.
+fn parse_release_payload(headers: &HeaderMap, body: &str) -> Option<LockRequest> {
+    if is_form_urlencoded(headers) {
+        Some(LockRequest {
+            entity_type: super::helpers::single_form_field(body, "entity_type")?,
+            entity_id: super::helpers::single_form_field(body, "entity_id")?,
+        })
+    } else {
+        serde_json::from_str(body).ok()
+    }
+}
+
+/// POST /api/v1/lock/release — release the caller's own edit lock at once.
+///
+/// This is the route `content-lock.js` beacons on `pagehide`, so that a closed
+/// tab or an away navigation frees the item immediately rather than waiting
+/// out the lease. A save already releases the lock on success
+/// ([`crate::routes::item::release_edit_lock`]); a release that finds nothing
+/// held is not an error, since the beacon fires whether or not that already
+/// happened.
+async fn release(
+    State(state): State<AppState>,
+    session: tower_sessions::Session,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
+    let body = String::from_utf8_lossy(&body).into_owned();
+    let Some(payload) = parse_release_payload(&headers, &body) else {
+        return AppError::with_status(StatusCode::BAD_REQUEST, "Invalid request body")
+            .into_response();
+    };
+
+    if !ALLOWED_ENTITY_TYPES.contains(&payload.entity_type.as_str()) {
+        return AppError::with_status(StatusCode::BAD_REQUEST, "Invalid entity type")
+            .into_response();
+    }
+    if payload.entity_id.len() > MAX_ENTITY_ID_LENGTH {
+        return AppError::with_status(StatusCode::BAD_REQUEST, "entity_id too long")
+            .into_response();
+    }
+
+    let user_id = match crate::routes::helpers::require_login_json(&state, &session).await {
+        Ok(user) => user.id,
+        Err(refusal) => return refusal.into_response(),
+    };
+
+    if let Err(refusal) =
+        crate::routes::helpers::require_csrf_header_or_field(&session, &headers, &body).await
+    {
+        return refusal.into_response();
+    }
+
+    let Some(lock_service) = state.content_lock() else {
+        return AppError::with_status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Content locking not enabled",
+        )
+        .into_response();
+    };
+
+    match lock_service
+        .release(&payload.entity_type, &payload.entity_id, user_id)
+        .await
+    {
+        Ok(_) => answer(&session, "released").await,
+        Err(e) => {
+            tracing::warn!(error = %e, "lock release failed");
+            AppError::with_status(StatusCode::INTERNAL_SERVER_ERROR, "Lock release failed")
                 .into_response()
         }
     }
