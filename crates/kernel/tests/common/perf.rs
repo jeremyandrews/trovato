@@ -207,7 +207,8 @@ pub struct Visit {
 pub struct PerfSite {
     /// The app, on the scratch database.
     pub app: TestApp,
-    /// The scratch database, dropped with the site.
+    /// The scratch database. Never dropped, as the site is a `static`: the
+    /// next run's `ScratchDb::drop_stale` removes it.
     _db: trovato_test_utils::ScratchDb,
     redis: redis::Client,
     /// The newest post's page, with three comments.

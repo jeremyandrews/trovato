@@ -119,6 +119,7 @@ fn feed() {
         measure(
             site,
             "feed",
+            // Feed readers do not sign in.
             &[Visitor::Anonymous],
             "/blog/feed.xml",
             &["<item>", "Post 1:"],

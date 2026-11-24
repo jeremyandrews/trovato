@@ -84,7 +84,7 @@ trovato generate --items <N> [--comments <N>] [--tags <N>] [--users <N>]
 ```
 
 Writes a deterministic site into `DATABASE_URL` for performance tests and
-benchmarks. It only writes into an empty, migrated database: one with any
+benchmarks. It only writes into an empty database (it runs the migrations itself): one with any
 content it did not write (a real site, or a run that did not finish) is
 refused. The same arguments always write the same rows: ids, titles, bodies,
 dates, authors and tags all come from the seed and the row number. It writes:

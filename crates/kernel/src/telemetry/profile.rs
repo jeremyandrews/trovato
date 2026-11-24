@@ -335,6 +335,10 @@ mod tests {
         assert_eq!(s.renders, 2);
         assert_eq!(s.fingerprints.len(), 1);
         assert!(s.fingerprints[0].starts_with("select:item:"));
+        assert_eq!(
+            s.statements,
+            vec!["select * from item where id = ?".to_string()]
+        );
         assert_eq!(profile.user_id(), Some(Uuid::nil()));
     }
 

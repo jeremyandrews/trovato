@@ -412,7 +412,8 @@ pub async fn repair_after_crash(pool: &PgPool) -> Result<bool> {
     let mut repaired = false;
     for trigger in POST_TRIGGERS {
         let disabled: bool = sqlx::query_scalar(
-            "SELECT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = $1 AND tgenabled = 'D')",
+            "SELECT EXISTS (SELECT 1 FROM pg_trigger WHERE tgrelid = 'comment'::regclass \
+             AND tgname = $1 AND tgenabled = 'D')",
         )
         .bind(trigger)
         .fetch_one(pool)
@@ -441,7 +442,8 @@ async fn run_batches(
     sql: String,
     extra: Vec<i64>,
 ) -> Result<()> {
-    let batch = options.batch.max(1);
+    // No larger than the work, so the row numbers cannot overflow.
+    let batch = options.batch.clamp(1, total.max(1));
     let next = Arc::new(AtomicU64::new(1));
     let done = Arc::new(AtomicU64::new(0));
     let sql = Arc::new(sql);
