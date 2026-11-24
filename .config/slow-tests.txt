@@ -1,0 +1,9 @@
+# Tests allowed to take longer than the 30 s per-test budget in CI
+# (scripts/ci-slow-tests.sh). One per line:
+#
+#   <name> | <measured seconds on CI> | <why it cannot be faster>
+#
+# <name> is what the guard prints: `<binary id> <test name>` for a test run by
+# nextest, `<package>::<target>` for an integration target run by libtest
+# (timed as a whole; see docs/testing-ci.md). An entry still fails at twice its
+# measured time, so record the CI figure, not a local one.

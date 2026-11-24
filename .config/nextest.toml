@@ -1,0 +1,26 @@
+# cargo-nextest configuration. See docs/testing-ci.md for how CI uses it.
+
+# The CI profile. `slow-timeout` only marks a test SLOW in the output after
+# 10 s; it never kills one (no `terminate-after`), and nothing is retried:
+# a test that fails is a failure to root cause, not to rerun away. The hard
+# per-test budget is the 30 s guard, scripts/ci-slow-tests.sh, which reads
+# the JUnit report written here.
+[profile.ci]
+slow-timeout = { period = "10s" }
+retries = 0
+fail-fast = false
+failure-output = "immediate-final"
+
+[profile.ci.junit]
+path = "junit.xml"
+
+# The cluster scenarios share one two node site and some restart its
+# servers, so they run one at a time. Under libtest a static mutex in
+# cluster_test.rs did this; under nextest every test is its own process and
+# a static is per process, so the serialization has to live here.
+[test-groups]
+cluster = { max-threads = 1 }
+
+[[profile.default.overrides]]
+filter = "binary(cluster_test)"
+test-group = "cluster"

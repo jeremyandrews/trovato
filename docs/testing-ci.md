@@ -1,0 +1,109 @@
+# Testing in CI
+
+How the CI workflow (`.github/workflows/ci.yml`) runs the tests, where a new
+test lands, and the time budget that keeps a pull request's wait short.
+
+## How CI is split
+
+Every job starts at once, so the slowest job is how long a pull request waits.
+The test work is in three jobs.
+
+**Test**, three shards. Each shard is one runner with its own Postgres and
+Redis. Every shard runs:
+
+1. One part of the unit and doc tests, chosen so the three come out even:
+
+   | Shard | Runs | Runner |
+   | --- | --- | --- |
+   | 1 | the migration compatibility rule, then every library unit test (`--lib`) | nextest |
+   | 2 | every binary target's unit tests (`--bins`) | nextest |
+   | 3 | every doc test (`--doc`) | cargo |
+
+2. Its share of the integration test targets (`scripts/ci-test-shard.sh`),
+   twice, against the same database, then the guards that the second pass did
+   not grow the shared fixture and that the shared conference fixture is unique.
+
+3. The slow test budget (below).
+
+**Cluster** builds the release image and runs `cluster_test` against two
+kernels behind a proxy, under nextest.
+
+**Coverage** is report only, so it is not on the pull request path. It runs on
+every push to `main` and by hand (Actions, CI, "Run workflow").
+
+### Unit tests under nextest, integration targets under libtest
+
+Unit tests build nothing on start, so nextest's one process per test costs
+nothing and buys isolation: no test sees another's environment variables or
+globals, and they all run at once.
+
+The integration targets are different. Every process builds its own `TestApp`:
+the WASM plugins compiled, the templates parsed, the database checked. Measured
+on `front_page_test`, its fifteen tests take 3.6 s in one process and 26 s as
+fifteen processes, 45 CPU-seconds against 3.3. A four core runner cannot win
+back thirteen times the work, so these targets run under libtest: one target at
+a time, its tests in parallel inside it. That is also what the targets' own
+locks (the `static` mutexes at the top of many files) are written for, and what
+a local `cargo test` does.
+
+## Where a new test goes
+
+Nowhere in particular: there is no list to add it to.
+
+- A unit test (`#[test]` in `src/`) runs in the shard that runs its target kind.
+- A doc test runs in shard 3.
+- A new file in `crates/*/tests/` is found by `cargo metadata` and given to one
+  shard. Until its time is recorded in `.config/ci-test-weights.txt` it is
+  scheduled at the `@default` weight.
+
+An integration target must pass alone on a fresh database: the shard it lands
+in, and which targets share its database, change whenever the weights do. If it
+needs a plugin's tables, call `common::ensure_plugin_tables`; if it needs a
+plugin enabled, enable it; never rely on a target that sorts before it.
+
+## The budgets
+
+| What | Budget | Where |
+| --- | --- | --- |
+| One test | 30 s, else on the allowlist with its time and reason | `scripts/ci-slow-tests.sh`, `.config/slow-tests.txt` |
+| An allowlisted test | twice its recorded time | the same |
+| A Test shard | TEST_BUDGET | `timeout-minutes` on the Test job |
+| Cluster | CLUSTER_BUDGET | `timeout-minutes` on the Cluster job |
+
+nextest marks a test SLOW in the log after 10 s (`slow-timeout` in the `ci`
+profile, `.config/nextest.toml`). That is a warning; the 30 s line is the gate.
+For integration targets libtest times the whole target, not its tests, so the
+30 s applies to the target, and any one test over 30 s takes its target over too.
+
+An allowlist line is `name | measured seconds | reason`. The name is what the
+guard prints: `<binary id> <test name>` for a nextest test, `<package>::<target>`
+for an integration target.
+
+## Remeasuring
+
+Each shard uploads its timings as the `test-timings-shard-N` artifact: one
+line per integration target per pass, and the nextest JUnit report. To
+rebalance, take a recent run's artifacts and set each target's weight to the
+sum of its two passes; set the `@shard` lines to what each shard's unit or doc
+step took. The partition is longest first onto the least loaded shard, so the
+weights only need to be right relative to each other.
+
+Locally, with Postgres and Redis up (`docker compose up -d postgres redis`):
+
+```sh
+createdb trovato_test   # once; the harness migrates it
+export DATABASE_URL=postgres://trovato:trovato@localhost:5432/trovato_test
+export REDIS_URL=redis://127.0.0.1:6379
+
+# one shard, as CI runs it, with its timings
+time SHARD=1 TOTAL_SHARDS=3 TIMINGS_FILE=/tmp/shard1.txt ./scripts/ci-test-shard.sh
+./scripts/ci-slow-tests.sh /tmp/shard1.txt
+
+# the unit tests, with the JUnit report the guard reads
+cargo nextest run --workspace --lib --bins --profile ci
+./scripts/ci-slow-tests.sh target/nextest/ci/junit.xml
+
+# every test that exists, by name: nothing may disappear from these
+cargo nextest list --workspace --run-ignored all --message-format oneline
+cargo test --all --doc -- --list
+```

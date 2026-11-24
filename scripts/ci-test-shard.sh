@@ -19,7 +19,8 @@ SHARD="${SHARD:?SHARD must be set}"
 TOTAL_SHARDS="${TOTAL_SHARDS:?TOTAL_SHARDS must be set}"
 
 # The target list is enumerated from `cargo metadata` rather than hard-coded,
-# and partitioned by index modulo TOTAL_SHARDS over a sorted list. That matters:
+# and partitioned over the whole enumerated list (see the partition below).
+# That matters:
 # with a hard-coded list, adding a test file and forgetting to register it would
 # leave it silently unrun and CI green, which is a worse failure than a red
 # build. Here every discovered target lands in exactly one shard by
@@ -29,11 +30,14 @@ TOTAL_SHARDS="${TOTAL_SHARDS:?TOTAL_SHARDS must be set}"
 # checked: an empty workspace list, or an empty shard, fails the job.
 #
 # One target is left out by name: `cluster_test`, which needs the two node
-# harness and runs in the `cluster` job; here it would only skip itself. Left
-# in, it also moved every target sorted after it into a different shard, and
-# two of those (language_navigation_test, config_admin_coverage_test) fail
-# when they no longer share a database with the targets that enable the
-# plugins they rely on. That order dependence is real and is not fixed here.
+# harness and runs in the `cluster` job; here it would only skip itself.
+#
+# Every target passes alone on a fresh database (checked 2026-11-24 by running
+# each one by itself against a new `createdb`), so which shard a target lands
+# in, and which targets share its database, is a scheduling decision and not a
+# correctness one. That was not always so: `language_navigation_test` used to
+# pass only when an earlier target in the same database had migrated the
+# translation plugin, which is why this list once could not be reordered.
 ALL=$(
   cargo metadata --no-deps --format-version 1 \
     | jq -r '.packages[] | .name as $p
@@ -50,8 +54,57 @@ if [ "$TOTAL" -eq 0 ]; then
 fi
 echo "Discovered $TOTAL integration test targets across the workspace."
 
-MINE=$(printf '%s\n' "$ALL" \
-  | awk -v s="$SHARD" -v n="$TOTAL_SHARDS" '(NR - 1) % n == (s - 1)')
+# The partition. Longest first onto the least loaded shard, by the measured
+# cost of each target in .config/ci-test-weights.txt, starting from the work
+# each shard already carries outside this script (its `@shard` lines: the unit
+# and doc tests). Index modulo three, which this replaced, put the three
+# slowest targets and the unit tests on one runner and left it ten minutes
+# behind the other two.
+#
+# Deterministic: ties go to the lower shard, and equal weights to the target
+# that sorts first, so every runner computes the same partition. A target the
+# weights file does not list gets the `@default` weight, so a new test file is
+# still scheduled, just not cleverly until its time is recorded.
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+WEIGHTS="${WEIGHTS:-$ROOT/.config/ci-test-weights.txt}"
+if [ ! -r "$WEIGHTS" ]; then
+  echo "::error::cannot read the target weights file $WEIGHTS"
+  exit 1
+fi
+
+PLAN=$(printf '%s\n' "$ALL" | awk -v n="$TOTAL_SHARDS" -v wf="$WEIGHTS" '
+  BEGIN {
+    dflt = 10
+    while ((getline line < wf) > 0) {
+      sub(/#.*/, "", line)
+      if (line !~ /[^ \t]/) continue
+      k = split(line, f, " ")
+      if (f[1] == "@default") dflt = f[2] + 0
+      else if (f[1] ~ /^@shard[0-9]+$/) base[substr(f[1], 7) + 0] = f[2] + 0
+      else w[f[1]] = f[2] + 0
+    }
+  }
+  { pkg[NR] = $1; tgt[NR] = $2; key = $1 "::" $2; cost[NR] = (key in w) ? w[key] : dflt }
+  END {
+    for (s = 1; s <= n; s++) load[s] = base[s] + 0
+    for (i = 1; i <= NR; i++) done[i] = 0
+    for (k = 1; k <= NR; k++) {
+      best = 0
+      for (i = 1; i <= NR; i++)
+        if (!done[i] && (best == 0 || cost[i] > cost[best])) best = i
+      done[best] = 1
+      to = 1
+      for (s = 2; s <= n; s++) if (load[s] < load[to]) to = s
+      load[to] += cost[best]
+      shard[best] = to
+    }
+    for (i = 1; i <= NR; i++) print shard[i], pkg[i], tgt[i], cost[i]
+    for (s = 1; s <= n; s++) printf "@load %d %d\n", s, load[s]
+  }')
+
+printf '%s\n' "$PLAN" | awk '$1 == "@load" {print "  planned load, shard " $2 ": " $3 " s"}'
+
+MINE=$(printf '%s\n' "$PLAN" | awk -v s="$SHARD" '$1 == s {print $2, $3}')
 
 COUNT=$(printf '%s\n' "$MINE" | grep -c . || true)
 if [ "$COUNT" -eq 0 ]; then
@@ -61,14 +114,35 @@ fi
 echo "shard $SHARD runs $COUNT of $TOTAL target(s):"
 printf '%s\n' "$MINE" | sed 's/^/  /'
 
+# Where each target's time goes, one `<package>::<target> <seconds>` line per
+# target, for scripts/ci-slow-tests.sh. Optional: unset, nothing is written.
+TIMINGS_FILE="${TIMINGS_FILE:-}"
+
 # One cargo invocation per package, with all of that package's selected test
-# targets.
+# targets. cargo runs them one after another in name order, so two targets
+# never touch the database at the same time; the tests INSIDE a target run in
+# parallel, as they do in a local `cargo test` (libtest's default, one thread
+# per CPU), which is what the targets' own locks are written for.
+#
+# libtest and not nextest, deliberately, for these targets. nextest runs every
+# test in its own process, and every process here builds its own TestApp: the
+# WASM plugins compiled, the templates parsed, the database checked. Measured
+# on front_page_test: its fifteen tests take 3.6 s in one process and 26 s as
+# fifteen, 45 CPU-seconds against 3.3. Four cores do not win back a thirteen
+# fold increase in work. Unit tests, which build nothing, do run under nextest.
 for pkg in $(printf '%s\n' "$MINE" | awk '{print $1}' | sort -u); do
   FLAGS=$(printf '%s\n' "$MINE" | awk -v p="$pkg" '$1 == p {printf " --test %s", $2}')
   echo "::group::cargo test -p $pkg$FLAGS"
   # Unquoted on purpose: FLAGS is a built-up list of --test arguments.
   # shellcheck disable=SC2086
-  cargo test -p "$pkg" $FLAGS -- --test-threads=1
+  cargo test -p "$pkg" $FLAGS 2>&1 | awk -v pkg="$pkg" -v out="$TIMINGS_FILE" '
+    { print; fflush() }
+    /Running/ && match($0, /tests\/[^ ]+\.rs/) { cur = substr($0, RSTART + 6, RLENGTH - 9) }
+    /^test result:/ && cur != "" {
+      if (out != "" && match($0, /finished in [0-9.]+s/))
+        print pkg "::" cur " " substr($0, RSTART + 12, RLENGTH - 13) >> out
+      cur = ""
+    }'
   echo "::endgroup::"
 done
 

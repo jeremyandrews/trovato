@@ -21,6 +21,9 @@ on:
       # protection with required checks is ever enabled, revisit it: a skipped
       # required check stays pending forever and blocks the merge.
       - '**/*.md'
+  # Runs the whole workflow by hand, including the Coverage job, which does not
+  # run on pull requests.
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
@@ -115,17 +118,25 @@ jobs:
   # runnable from a bare `createdb` — were invisible to every job here until
   # they were added.
   #
-  # CAPACITY, when this job starts running out of disk again. Shard 1 also
-  # carries the unit and doc tests and finishes at ~13 GB free, against 19-20 GB
-  # for shards 2 and 3, so it is the one that tips first. The recorded remedy is
-  # backlog key `ci-split-unit-doc-job`: move the unit/doc step into its own job,
-  # NOT add a fourth shard (a fourth shard re-pays the whole dependency build for
-  # no additional linking relief). A GitHub-hosted larger runner is not an
-  # option — it needs an organization-owned repo, and `ci-larger-runner` is
-  # closed as REJECTED, not deferred.
+  # CAPACITY, when this job starts running out of disk again. Shard 1 used to
+  # carry all of the unit and doc tests and finished at ~13 GB free, against
+  # 19-20 GB for shards 2 and 3, so it was the one that tipped first. They are
+  # now spread one part per shard (see "Unit tests" below). If one shard still
+  # tips, the recorded remedy is backlog key `ci-split-unit-doc-job`: move the
+  # unit/doc steps into their own job, NOT add a fourth shard (a fourth shard
+  # re-pays the whole dependency build for no additional linking relief). A
+  # GitHub-hosted larger runner is not an option — it needs an
+  # organization-owned repo, and `ci-larger-runner` is closed as REJECTED, not
+  # deferred.
+  #
+  # WALL CLOCK. The slowest job sets how long a pull request waits, and this
+  # job's slowest shard is usually it. docs/testing-ci.md has the budget, where
+  # each shard's minutes go, and how to remeasure them.
   test:
     name: Test (shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
+    # BUDGET: provisional, set from the first measured run.
+    timeout-minutes: 30
     strategy:
       # One shard's failure should not hide another's.
       fail-fast: false
@@ -176,19 +187,31 @@ jobs:
       # plugins. Measured 2026-07-27 after Epic 4 pushed it over the edge.
       # Cutting debuginfo was tried and rejected: `line-tables-only` shrinks a
       # test binary only 182 MB -> 172 MB, ~5%, nowhere near enough.
-      - name: Free up runner disk space
+      #
+      # In the background: the deletion took 0.9 to 1.7 minutes of every
+      # shard's critical path (run 45316035626), and nothing before the first
+      # large build needs the space. The toolchain, the cache restore and the
+      # WASM build run meanwhile; "Wait for the disk space" below is the point
+      # past which the space is needed, and it waits for this to finish.
+      - name: Free up runner disk space (in the background)
         run: |
           df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+          # shellcheck disable=SC2016 # expanded by the inner shell, on purpose
+          nohup sh -c 'sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /usr/local/share/boost /usr/local/share/powershell || true
-          sudo docker image prune --all --force || true
-          df -h /
+            sudo docker image prune --all --force || true
+            touch "$RUNNER_TEMP/disk-reclaimed"' > "$RUNNER_TEMP/disk-reclaim.log" 2>&1 &
 
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: wasm32-wasip1
       - uses: Swatinem/rust-cache@v2
+      # Prebuilt binary; see the sqlx-cli note in the Coverage job.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
 
       # NO `sqlx migrate run` STEP, deliberately, and no sqlx-cli to run it
       # with. The test harness migrates the database itself, before it seeds
@@ -256,17 +279,28 @@ jobs:
           cp target/wasm32-wasip1/release/test_form_taps_b.wasm plugins/test_form_taps_b/
           cp target/wasm32-wasip1/release/test_owned_vocabulary.wasm plugins/test_owned_vocabulary/
 
+      - name: Wait for the disk space
+        run: |
+          until [ -f "$RUNNER_TEMP/disk-reclaimed" ]; do sleep 2; done
+          cat "$RUNNER_TEMP/disk-reclaim.log"
+          df -h /
+
       # The expand-then-contract rule (docs/design/upgrades-and-probes.md §3):
       # a new migration that would break the previous release fails here unless
       # it carries `-- trovato:contract <release>: <reason>`. First, on its own,
       # so a failure says what it is; the unit test step reuses its build.
       - name: Migration compatibility rule
         if: matrix.shard == 1
-        run: cargo test --all --lib migration_rule
+        run: cargo nextest run --workspace --lib --profile ci -E 'test(migration_rule)'
 
-      # Unit + doc tests are cheap relative to the integration binaries, so one
-      # shard carries them for the whole workspace rather than all three
-      # repeating the work.
+      # Unit + doc tests are cheap relative to the integration binaries, so each
+      # runs once for the whole workspace rather than on all three shards. They
+      # are split one part per shard, because each part's cost is mostly one
+      # compile of the kernel with `cfg(test)`: on one shard they were 6.7
+      # minutes that put shard 1 ten minutes behind the other two (run
+      # 45316035626). scripts/ci-test-shard.sh starts each shard's integration
+      # share from these, through the `@shard` lines of
+      # .config/ci-test-weights.txt; move a part here and move its line there.
       #
       # `--bins` is NOT redundant with `--lib`, and leaving it off silently drops
       # tests: `trovato-phase0` has no library target at all, so its 13 unit
@@ -276,11 +310,21 @@ jobs:
       # few seconds and one binary link, which is a price worth paying to avoid
       # hard-coding which packages need `--bins` — the same fail-open trap the
       # dynamic target enumeration below exists to avoid.)
-      - name: Run unit and doc tests
+      #
+      # Under nextest, one process per test and as many at once as there are
+      # cores, which is what dropped `--test-threads=1`: what it guarded was the
+      # process environment, which `EnvGuard` (crates/test-utils/src/env.rs)
+      # already locks and which no other test process can see.
+      - name: Unit tests (library targets)
         if: matrix.shard == 1
-        run: |
-          cargo test --all --lib --bins -- --test-threads=1
-          cargo test --all --doc
+        run: cargo nextest run --workspace --lib --profile ci
+      - name: Unit tests (binary targets)
+        if: matrix.shard == 2
+        run: cargo nextest run --workspace --bins --profile ci
+      # nextest does not run doc tests; cargo does.
+      - name: Doc tests
+        if: matrix.shard == 3
+        run: cargo test --all --doc
 
       # Integration tests, split across shards so no single runner has to link
       # all 50+ test binaries onto one 33 GB volume. The enumeration and the
@@ -295,7 +339,8 @@ jobs:
       - name: Run integration tests (shard ${{ matrix.shard }}/3)
         env:
           SHARD: ${{ matrix.shard }}
-        run: ./scripts/ci-test-shard.sh
+          TIMINGS_FILE: target/ci-timings/pass-1.txt
+        run: mkdir -p target/ci-timings && ./scripts/ci-test-shard.sh
 
       # A snapshot of the rows that a pass must not add to, for the guard after
       # the second pass.
@@ -359,6 +404,7 @@ jobs:
       - name: Re-run integration tests on the same database (shard ${{ matrix.shard }}/3)
         env:
           SHARD: ${{ matrix.shard }}
+          TIMINGS_FILE: target/ci-timings/pass-2.txt
         run: ./scripts/ci-test-shard.sh
 
       # A pass must not leave state behind.
@@ -461,8 +507,40 @@ jobs:
           fi
           echo "shared conference fixture is unique — no contamination from this shard."
 
+      # The per-test budget: no test over 30 s unless .config/slow-tests.txt
+      # says why. Unit tests are timed one by one by nextest's JUnit report;
+      # integration targets, which run under libtest, are timed per target (see
+      # the script). Both passes count, so a test that is only slow on a
+      # database that has been used once is caught too.
+      - name: Slow test budget
+        run: |
+          set -euo pipefail
+          reports="target/ci-timings/pass-1.txt target/ci-timings/pass-2.txt"
+          [ -f target/nextest/ci/junit.xml ] && reports="$reports target/nextest/ci/junit.xml"
+          # shellcheck disable=SC2086
+          ./scripts/ci-slow-tests.sh $reports
+
+      # The measured times, kept so the partition in .config/ci-test-weights.txt
+      # can be refreshed from real runs (docs/testing-ci.md says how).
+      - name: Keep the test timings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-timings-shard-${{ matrix.shard }}
+          path: |
+            target/ci-timings/
+            target/nextest/ci/junit.xml
+          if-no-files-found: ignore
+          retention-days: 30
+
+  # Report only: nothing reads its number to pass or fail anything. So it is
+  # not on the pull request path: at 42 minutes (run 45316035626) it was the
+  # longest job by ten and set every pull request's wall clock for a number
+  # nobody gated on. It runs on every push to main, which is where the report
+  # it uploads describes, and by hand (workflow_dispatch) for a branch.
   coverage:
     name: Coverage
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -519,6 +597,10 @@ jobs:
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
 
       # NOT switched to taiki-e/install-action: it has no sqlx-cli manifest
       # (verified 2026-07-27 — manifests/sqlx-cli.json 404s), so this stays a
@@ -583,8 +665,21 @@ jobs:
           cp target/wasm32-wasip1/release/test_form_taps_b.wasm plugins/test_form_taps_b/
           cp target/wasm32-wasip1/release/test_owned_vocabulary.wasm plugins/test_owned_vocabulary/
 
+      # The same split as the Test job, in one database: the unit tests under
+      # nextest, one process each and in parallel; the integration targets
+      # under libtest, one target at a time with its tests in parallel (why not
+      # nextest for those: see scripts/ci-test-shard.sh). `--test '*'` is every
+      # integration target, which is what the plain `cargo llvm-cov
+      # --workspace` this replaced ran after the unit tests; neither runs doc
+      # tests. `--test-threads=1` is gone with the reason it was there for: the
+      # targets' own locks make their tests safe to run together, which a local
+      # `cargo test` has always relied on.
       - name: Generate coverage report
-        run: cargo llvm-cov --workspace --lcov --output-path lcov.info -- --test-threads=1
+        run: |
+          cargo llvm-cov clean --workspace
+          cargo llvm-cov nextest --no-report --workspace --lib --bins
+          cargo llvm-cov --no-report --workspace --test '*'
+          cargo llvm-cov report --lcov --output-path lcov.info
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
@@ -880,9 +975,18 @@ jobs:
   # unless TROVATO_CLUSTER_URL is set, so the Test shards above run it as a
   # no-op; this is the one job that points it at a cluster. The image is the
   # release Dockerfile, built here from the branch.
+  #
+  # WHERE ITS TIME GOES. Of 26 minutes on run 45316035626, 18.6 were building
+  # the image (8.4 of them recompiling dependencies, 9.3 the kernel crate in
+  # release), 4.8 building the test binary after it, and 0.6 the tests. So the
+  # image build reads the layer cache docker-publish.yml writes on every push
+  # to main (the Dockerfile builds dependencies in their own layer), and the
+  # test binary builds while the image does.
   cluster:
     name: Cluster (two nodes)
     runs-on: ubuntu-latest
+    # BUDGET: provisional, set from the first measured run.
+    timeout-minutes: 30
     env:
       TROVATO_CLUSTER_URL: http://localhost:8095
       TROVATO_CLUSTER_DATABASE_URL: postgres://trovato:trovato@localhost:56432/trovato
@@ -900,12 +1004,49 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
       - uses: Swatinem/rust-cache@v2
-      - name: Build the image and start the cluster
-        run: docker compose -f docker-compose.cluster.yml up -d --build
-      - name: Build the cluster tests
-        run: cargo test -p trovato-kernel --test cluster_test --no-run
+      # Prebuilt binary; see the sqlx-cli note in the Coverage job.
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      # Started here and waited for after the image build, so the two builds
+      # overlap instead of adding up.
+      - name: Build the cluster tests (in the background)
+        run: |
+          # shellcheck disable=SC2016 # expanded by the inner shell, on purpose
+          nohup sh -c 'cargo nextest run -p trovato-kernel --test cluster_test --no-run; \
+            echo $? > "$RUNNER_TEMP/cluster-test-build.rc"' > "$RUNNER_TEMP/cluster-test-build.log" 2>&1 &
+      - uses: docker/setup-buildx-action@v3
+      # The release Dockerfile, as before. `cache-from` only: the cache is the
+      # one docker-publish.yml writes for linux/amd64 on each push to main,
+      # read here and never written, so this job adds nothing to the 10 GB the
+      # repository's caches share. When the dependencies or the base image
+      # changed since the last publish, nothing matches and the build is the
+      # full one it always was.
+      - name: Build the image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          tags: trovato-cluster:local
+          cache-from: type=gha,scope=linux/amd64
+      - name: Start the cluster
+        run: docker compose -f docker-compose.cluster.yml up -d --no-build
+      - name: Wait for the cluster test build
+        run: |
+          until [ -f "$RUNNER_TEMP/cluster-test-build.rc" ]; do sleep 2; done
+          cat "$RUNNER_TEMP/cluster-test-build.log"
+          exit "$(cat "$RUNNER_TEMP/cluster-test-build.rc")"
+      # One process per test under nextest, so the static lock that kept the
+      # scenarios apart under libtest no longer can: the `cluster` test group
+      # in .config/nextest.toml (max-threads = 1) does it instead. The
+      # scenarios share one site and some restart its servers, so they do run
+      # one at a time; that is the resource, not a test-runner habit.
       - name: Run the cluster tests
-        run: cargo test -p trovato-kernel --test cluster_test -- --test-threads=1
+        run: cargo nextest run -p trovato-kernel --test cluster_test --profile ci
+      - name: Slow test budget
+        run: ./scripts/ci-slow-tests.sh target/nextest/ci/junit.xml
       - name: Kernel logs
         if: failure()
         run: |
