@@ -454,6 +454,10 @@ impl PerfSite {
         json: serde_json::Value,
     ) -> Visit {
         let _turn = self.one_at_a_time.lock().await;
+        // From a known cache state, as a cold visit is: tests run in parallel,
+        // so whatever ran just before must not decide what this request finds
+        // cached. The token page then warms the same caches every time.
+        self.make_cold().await;
         let (_, _, html) = self.request(visitor, "/", false).await;
         let marker = "name=\"csrf-token\" content=\"";
         let token = html
