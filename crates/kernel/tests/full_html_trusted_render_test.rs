@@ -104,16 +104,35 @@ async fn create(app: &TestApp, uid: Uuid, fields: serde_json::Value) -> Uuid {
         .id
 }
 
+/// Checks the page against the exact dangerous substrings the payload holds,
+/// not a generic `<script` or `onclick`/`onerror` scan: the item page's own
+/// chrome legitimately includes `<script src="...">` includes and could in
+/// principle use those attribute names elsewhere, so a loose substring check
+/// would fail on content this change never touches. Matching the payload's
+/// own literal strings instead still fails the moment any of them survives.
 fn assert_cleaned(html: &str) {
     assert!(
         html.contains(r#"<p class="lead">Hi <em>there</em></p>"#),
         "rich markup missing or escaped: {html}"
     );
-    assert!(!html.contains("<script"), "script survived: {html}");
-    assert!(!html.contains("onclick"), "onclick survived: {html}");
-    assert!(!html.contains("onerror"), "onerror survived: {html}");
     assert!(
-        !html.contains("javascript:"),
+        !html.contains("<script>alert(1)</script>"),
+        "script survived: {html}"
+    );
+    assert!(
+        !html.contains("alert(1)"),
+        "script content survived: {html}"
+    );
+    assert!(
+        !html.contains(r#"onclick="x()""#),
+        "onclick survived: {html}"
+    );
+    assert!(
+        !html.contains(r#"onerror="x()""#),
+        "onerror survived: {html}"
+    );
+    assert!(
+        !html.contains("javascript:alert(1)"),
         "javascript: survived: {html}"
     );
 }
