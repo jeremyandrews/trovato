@@ -414,14 +414,31 @@ pub async fn inject_site_context_for(
     }
     context.insert("assistant_scopes", &assistant_scopes);
 
+    // The page's root values: a route rendering page builder content sets
+    // them first (the item route); every other page gets the declared
+    // defaults, so a page, region or tile template can always read
+    // `page_root.<field>`.
+    if !context.contains_key("page_root") {
+        context.insert(
+            "page_root",
+            &crate::content::page_builder::page_root_defaults(state.theme().components()),
+        );
+    }
+    let page_root = context
+        .get("page_root")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
     // Load tiles for all regions filtered by request path and user roles, each
-    // rendered for this viewer, in this language, from the menus built above.
+    // rendered for this viewer, in this language, from the menus built above,
+    // with the page's root values.
     let tile_render = crate::services::tile::TileRenderContext {
         state,
         viewer,
         language: &active_language,
         roles: &user_roles,
         menus_by_name: &site_menus.menus_by_name,
+        page_root: &page_root,
     };
     for region in &["header", "navigation", "sidebar", "footer"] {
         let region_html = state
@@ -466,7 +483,7 @@ pub async fn render_admin_template(
         let empty: Vec<String> = Vec::new();
         context.insert("errors", &empty);
     }
-    match state.theme().tera().render(template, &context) {
+    match crate::telemetry::render("admin", || state.theme().tera().render(template, &context)) {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
             tracing::error!(error = %e, template = %template, "failed to render template");

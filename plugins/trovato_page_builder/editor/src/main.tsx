@@ -16,7 +16,7 @@ import { createRoot } from "react-dom/client";
 import { parseStored, puckToStored, storedToPuck, type PuckData } from "./data";
 import type { EditorContext } from "./fields";
 import { buildConfig } from "./puck-config";
-import type { ComponentDefinition } from "./registry";
+import type { ComponentDefinition, RegistryResponse, RootFieldDefinition } from "./registry";
 import "./editor.css";
 
 async function mount(host: HTMLElement): Promise<void> {
@@ -29,10 +29,13 @@ async function mount(host: HTMLElement): Promise<void> {
   host.textContent = "Loading the page builder…";
 
   let registry: ComponentDefinition[];
+  let rootFields: RootFieldDefinition[];
   try {
     const response = await fetch(registryUrl, { credentials: "same-origin" });
     if (!response.ok) throw new Error(String(response.status));
-    registry = (await response.json()).data;
+    const body = (await response.json()) as RegistryResponse;
+    registry = body.data;
+    rootFields = body.root_fields ?? [];
   } catch (e) {
     host.textContent = `The page builder could not load its components (${String(e)}).`;
     return;
@@ -41,10 +44,11 @@ async function mount(host: HTMLElement): Promise<void> {
   const ctx: EditorContext = {
     previewUrl: host.dataset.previewUrl ?? "/api/v1/page-builder/preview",
   };
-  const config = buildConfig(registry, ctx);
+  const config = buildConfig(registry, ctx, rootFields);
+  const rootNames = rootFields.map((f) => f.name);
   const initial = storedToPuck(parseStored(input.value));
   // Ids generated for components stored without one are part of the page.
-  input.value = JSON.stringify(puckToStored(initial));
+  input.value = JSON.stringify(puckToStored(initial, rootNames));
 
   host.textContent = "";
   createRoot(host).render(
@@ -53,7 +57,7 @@ async function mount(host: HTMLElement): Promise<void> {
       data={initial}
       iframe={{ enabled: false }}
       onChange={(data) => {
-        input.value = JSON.stringify(puckToStored(data as unknown as PuckData));
+        input.value = JSON.stringify(puckToStored(data as unknown as PuckData, rootNames));
       }}
       headerTitle="Page builder"
       overrides={{

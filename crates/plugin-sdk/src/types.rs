@@ -2069,16 +2069,23 @@ pub struct Vocabulary {
 }
 
 /// What the kernel sends `tap_vocabulary_owner_access` when a request reaches
-/// an owner route the plugin declared.
+/// an owner route the plugin declared, or a category read route reaches one of
+/// its owners' vocabularies.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct VocabularyOwnerAccessRequest {
     /// The owner type the route serves.
     pub owner_type: String,
     /// The route's `{owner}` segment, as requested: a slug, an id, whatever
-    /// the plugin puts in its links.
+    /// the plugin puts in its links. For `"view"`, the owner id the
+    /// vocabulary stores.
     pub owner_key: String,
-    /// `"administer terms"`.
+    /// `"administer terms"` for the owner route, or `"view"` (B189) when a
+    /// category read route asks whether this user may read the owner's
+    /// vocabularies and terms. Only `grant` naming the same owner id admits a
+    /// `"view"`; a plugin that does not answer it leaves them hidden from
+    /// everyone but holders of the declared permission and of `administer
+    /// categories`.
     pub operation: String,
     /// The user asking.
     pub user_id: String,

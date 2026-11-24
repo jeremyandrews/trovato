@@ -449,7 +449,7 @@ impl RawField {
                     {
                         bail!(
                             "select field '{name}', option '{}': class '{class}' is not in the \
-                             component's classes list",
+                             declared classes list",
                             option.value
                         );
                     }
@@ -657,6 +657,73 @@ fn props_summary(fields: &[FieldDefinition]) -> serde_json::Value {
     serde_json::Value::Object(map)
 }
 
+/// The page root field names the kernel keeps for itself: `title`, the built
+/// in root field; `props`, under which current Puck versions nest the root's
+/// values; and `variant_classes`, which templates receive beside the values.
+pub const RESERVED_ROOT_FIELD_NAMES: &[&str] = &["title", "props", "variant_classes"];
+
+/// The page root file as written: `components/<name>.root.toml`.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawRoot {
+    #[serde(default)]
+    classes: Vec<String>,
+    #[serde(default)]
+    fields: Vec<RawField>,
+}
+
+/// One page level field a plugin declares, as the registry serves it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RootFieldDefinition {
+    /// The field, exactly as a component field is declared.
+    #[serde(flatten)]
+    pub field: FieldDefinition,
+    /// Who declared it.
+    pub source: ComponentSource,
+}
+
+/// A checked page root file: the fields it declares and the CSS classes its
+/// select options may add to the page's `page_root.variant_classes`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RootDeclaration {
+    /// Every class a select option in this file may add.
+    pub classes: Vec<String>,
+    /// The fields, in the order the editor's page settings form shows them.
+    pub fields: Vec<RootFieldDefinition>,
+}
+
+/// Parse and check one page root file.
+///
+/// The fields use the component field format, types, limits and checks; a
+/// name the kernel reserves ([`RESERVED_ROOT_FIELD_NAMES`]) is refused, and a
+/// select option's class must be one of the file's own `classes`.
+pub fn parse_root(text: &str, source: ComponentSource) -> Result<RootDeclaration> {
+    let raw: RawRoot = toml::from_str(text).context("not a valid page root file")?;
+    if let Some(class) = raw.classes.iter().find(|c| !is_class_name(c)) {
+        bail!("'{class}' is not a CSS class name");
+    }
+    for field in &raw.fields {
+        if RESERVED_ROOT_FIELD_NAMES.contains(&field.name.as_str()) {
+            bail!(
+                "page root field name '{}' is reserved by the kernel ({})",
+                field.name,
+                RESERVED_ROOT_FIELD_NAMES.join(", ")
+            );
+        }
+    }
+    let fields = check_fields(raw.fields, &raw.classes, 0)?;
+    Ok(RootDeclaration {
+        classes: raw.classes,
+        fields: fields
+            .into_iter()
+            .map(|field| RootFieldDefinition {
+                field,
+                source: source.clone(),
+            })
+            .collect(),
+    })
+}
+
 /// Parse and check one component file.
 ///
 /// `stylesheet_base` turns a declared stylesheet path into the URL a page
@@ -855,6 +922,49 @@ type = "list"
         )
         .unwrap_err();
         assert!(format!("{err:#}").contains("reserved"), "{err:#}");
+    }
+
+    #[test]
+    fn a_root_file_declares_fields_with_the_component_format() {
+        let root = parse_root(
+            r#"classes = ["page--quiet"]
+[[fields]]
+name = "mode"
+type = "select"
+default = "a"
+options = [{ value = "a" }, { value = "b", class = "page--quiet" }]
+[[fields]]
+name = "note"
+type = "rich_text"
+max_length = 20
+"#,
+            ComponentSource::Plugin("p".into()),
+        )
+        .unwrap();
+        assert_eq!(root.classes, vec!["page--quiet"]);
+        let names: Vec<&str> = root.fields.iter().map(|f| f.field.name.as_str()).collect();
+        assert_eq!(names, vec!["mode", "note"]);
+        assert_eq!(root.fields[0].source, ComponentSource::Plugin("p".into()));
+    }
+
+    #[test]
+    fn a_root_file_cannot_take_a_reserved_name_or_an_unknown_key() {
+        for name in ["title", "props", "variant_classes"] {
+            let err = parse_root(
+                &format!("[[fields]]\nname = \"{name}\"\ntype = \"text\"\n"),
+                ComponentSource::Kernel,
+            )
+            .unwrap_err();
+            assert!(format!("{err:#}").contains("reserved"), "{err:#}");
+        }
+        let err = parse_root("label = \"x\"\n", ComponentSource::Kernel).unwrap_err();
+        assert!(format!("{err:#}").contains("label"), "{err:#}");
+        let err = parse_root(
+            "[[fields]]\nname = \"m\"\ntype = \"select\"\noptions = [{ value = \"a\", class = \"x\" }]\n",
+            ComponentSource::Kernel,
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("'x' is not in"), "{err:#}");
     }
 
     #[test]

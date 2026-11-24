@@ -46,6 +46,8 @@ struct SiteConfigFormData {
     notify_admin_on_register: Option<String>,
     #[serde(default)]
     update_check: Option<String>,
+    #[serde(default)]
+    count_content_views: Option<String>,
 }
 
 /// Test email form data (CSRF token only).
@@ -118,6 +120,8 @@ async fn site_config_form(State(state): State<AppState>, session: Session) -> Re
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    let count_content_views = crate::content::view_counter::stored_setting(pool).await;
+
     let csrf_token = generate_csrf_token(&session).await;
 
     // Read and clear flash message
@@ -140,6 +144,7 @@ async fn site_config_form(State(state): State<AppState>, session: Session) -> Re
     context.insert("cookie_secure", &state.runtime().cookie_secure);
     context.insert("notify_admin_on_register", &notify_admin_on_register);
     context.insert("update_check", &update_check);
+    context.insert("count_content_views", &count_content_views);
     context.insert("update_status", &update_status);
     context.insert("running_version", crate::update_status::running_version());
     context.insert("flash", &flash);
@@ -251,6 +256,7 @@ async fn site_config_submit(
         context.insert("cookie_secure", &state.runtime().cookie_secure);
         context.insert("notify_admin_on_register", &notify_admin_on_register);
         context.insert("update_check", &form.update_check.is_some());
+        context.insert("count_content_views", &form.count_content_views.is_some());
         context.insert(
             "update_status",
             &crate::update_status::stored_status(pool).await,
@@ -303,6 +309,9 @@ async fn site_config_submit(
         tracing::error!(error = %e, "failed to save items_per_page");
         return render_server_error("Failed to save site settings.");
     }
+    // Gathers with no page size of their own page by it (B160): this server
+    // at once, the others on the bump.
+    state.gather().clear_site_settings();
 
     // Saving also clears the boolean this setting supersedes, so a site cannot end
     // up with two registration settings that disagree.
@@ -338,6 +347,19 @@ async fn site_config_submit(
     {
         tracing::error!(error = %e, "failed to save update_check");
     }
+
+    // Count content views (B160) — checkbox: present means on.
+    if let Err(e) = SiteConfig::set(
+        pool,
+        crate::content::view_counter::SETTING_KEY,
+        serde_json::json!(form.count_content_views.is_some()),
+    )
+    .await
+    {
+        tracing::error!(error = %e, "failed to save count_content_views");
+    }
+    // This server counts (or stops) at once, the others on the bump.
+    state.items().view_counter().clear();
 
     let _ = session
         .insert(FLASH_KEY, "Settings saved successfully.")

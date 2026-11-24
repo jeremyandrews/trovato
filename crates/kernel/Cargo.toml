@@ -52,6 +52,18 @@ hostname = { workspace = true }
 async-trait = { workspace = true }
 urlencoding = { workspace = true }
 prometheus-client = { workspace = true }
+# OTLP trace export (BG14, docs/design/tracing-and-performance-tests.md §5).
+# Compiled in always; `TRACING_EXPORT=otlp` turns it on. HTTP/protobuf only,
+# no gRPC, through reqwest's blocking client on the batch processor's thread.
+opentelemetry = { version = "0.33", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace"] }
+opentelemetry-otlp = { version = "0.33", default-features = false, features = ["http-proto", "reqwest-blocking-client", "trace"] }
+tracing-opentelemetry = { version = "0.34", default-features = false }
+# opentelemetry-http's reqwest 0.13 comes with no TLS of its own: this gives it
+# the native-tls the kernel's reqwest 0.12 already uses (no crate the lock file
+# did not already hold), so an https:// OTLP endpoint works. Only the feature is
+# used, never the crate by name.
+reqwest-otlp-tls = { package = "reqwest", version = "0.13", default-features = false, features = ["native-tls"] }
 clap = { workspace = true }
 trovato-sdk = { path = "../plugin-sdk" }
 image = { workspace = true }
@@ -78,6 +90,8 @@ default = []
 workspace = true
 
 [dev-dependencies]
+# The in-memory span exporter, for the export tests.
+opentelemetry_sdk = { version = "0.33", default-features = false, features = ["trace", "testing"] }
 # Parses the RSS and Atom the feed routes emit, so the feed tests check them
 # with a real reader's parser rather than by string matching alone.
 feed-rs = "2"

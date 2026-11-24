@@ -111,7 +111,7 @@ async fn seed_tutorial_data(app: &'static common::TestApp) {
                         },
                         display: QueryDisplay {
                             format: DisplayFormat::Table,
-                            items_per_page: 25,
+                            items_per_page: Some(25),
                             pager: PagerConfig {
                                 enabled: true,
                                 style: PagerStyle::Full,

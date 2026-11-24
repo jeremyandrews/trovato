@@ -47,6 +47,13 @@ const MAX_CAPACITY: u64 = 1_000;
 /// TTL for the distinct-values cache (5 minutes).
 const DISTINCT_VALUES_TTL: Duration = Duration::from_secs(300);
 
+/// How long the site's items per page is kept before it is read again, on a
+/// server that missed the cache generation bump a save makes.
+const SITE_PAGE_SIZE_TTL: Duration = Duration::from_secs(60);
+
+/// Items per page for a gather that names none, on a site that set none.
+const DEFAULT_SITE_PAGE_SIZE: u32 = 10;
+
 /// Maximum entries in the distinct-values cache.
 const DISTINCT_VALUES_CAPACITY: u64 = 500;
 
@@ -115,6 +122,11 @@ pub struct GatherService {
     /// could read the rows just before a write, then put the old query back
     /// over the new one, or drop a query registered meanwhile.
     writes: tokio::sync::Mutex<()>,
+    /// The site's items per page (`site_config.items_per_page`, set at
+    /// `/admin/config/site`), for a gather that names no page size of its own.
+    /// Read once and kept until the `SiteConfig` cache generation moves or
+    /// [`SITE_PAGE_SIZE_TTL`] passes, so a listing costs no query to learn it.
+    site_page_size: parking_lot::RwLock<Option<(u32, std::time::Instant)>>,
     /// Counts hits and misses in `queries` and `distinct_values_cache`.
     metrics: Arc<Metrics>,
 }
@@ -237,9 +249,46 @@ impl GatherService {
             vector_store,
             item_access: OnceLock::new(),
             writes: tokio::sync::Mutex::new(()),
+            site_page_size: parking_lot::RwLock::new(None),
             record_types: OnceLock::new(),
             metrics,
         })
+    }
+
+    /// The site's items per page, for a gather that names none of its own.
+    ///
+    /// From the cache this service keeps (see `site_page_size`): a database
+    /// read at most once per `SITE_PAGE_SIZE_TTL`, and none while it is warm.
+    /// A value that is missing, unreadable or zero is the long-standing
+    /// default of 10.
+    pub async fn site_items_per_page(&self) -> u32 {
+        if let Some((size, loaded)) = *self.site_page_size.read()
+            && loaded.elapsed() < SITE_PAGE_SIZE_TTL
+        {
+            return size;
+        }
+        let stored = crate::models::SiteConfig::get(&self.pool, "items_per_page")
+            .await
+            .ok()
+            .flatten();
+        let size = stored
+            .as_ref()
+            .and_then(|v| match v {
+                serde_json::Value::Number(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()),
+                serde_json::Value::String(s) => s.trim().parse::<u32>().ok(),
+                _ => None,
+            })
+            .filter(|n| *n > 0)
+            .unwrap_or(DEFAULT_SITE_PAGE_SIZE);
+        *self.site_page_size.write() = Some((size, std::time::Instant::now()));
+        size
+    }
+
+    /// Forget the site's items per page, so the next listing reads it again.
+    /// Called on a `SiteConfig` cache generation bump and when the site
+    /// settings form saves.
+    pub fn clear_site_settings(&self) {
+        *self.site_page_size.write() = None;
     }
 
     /// Late-bind the shared item-access seam (Story 3.4). Called once by
@@ -329,7 +378,7 @@ impl GatherService {
     /// neither an argument home path nor a `canonical_url`
     /// ([`crate::routes::feed`]'s channel link).
     ///
-    /// Served from [`Self::outbound_alias_cache`] once warm, so a feed request
+    /// Served from the private `outbound_alias_cache` once warm, so a feed request
     /// costs no query beyond the first; a `url_alias` write clears the cache at
     /// once ([`Self::clear_outbound_alias_cache`]), so an alias written after
     /// startup reaches the feed without a restart.
@@ -903,7 +952,7 @@ impl GatherService {
         scope: &PluginScope,
     ) -> Result<GatherResult> {
         let display = QueryDisplay {
-            items_per_page: per_page,
+            items_per_page: Some(per_page),
             ..QueryDisplay::default()
         };
         let run = RunScope {
@@ -934,6 +983,40 @@ impl GatherService {
         context: &QueryContext,
         scope: &RunScope<'_>,
     ) -> Result<GatherResult> {
+        // Gander's gather choke point: every `execute*` lands here.
+        crate::telemetry::profile::count_gather();
+        let span = tracing::trace_span!(
+            target: crate::telemetry::TARGET,
+            "gather.execute",
+            trovato.gather.base_table = %definition.base_table,
+            trovato.gather.item_type = definition.item_type.as_deref().unwrap_or(""),
+        );
+        tracing::Instrument::instrument(
+            self.run_definition_inner(
+                definition,
+                display,
+                page,
+                exposed_filters,
+                stage_ids,
+                context,
+                scope,
+            ),
+            span,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_definition_inner(
+        &self,
+        definition: &QueryDefinition,
+        display: &QueryDisplay,
+        page: u32,
+        exposed_filters: HashMap<String, FilterValue>,
+        stage_ids: &[Uuid],
+        context: &QueryContext,
+        scope: &RunScope<'_>,
+    ) -> Result<GatherResult> {
         // Performance guardrails: validate definition before execution
         let validation_errors = Self::validate_definition_with(definition, scope.own_tables);
         if !validation_errors.is_empty() {
@@ -943,22 +1026,20 @@ impl GatherService {
             self.check_base_table(definition)?;
         }
 
-        // Cap items_per_page to the configured maximum (GATHER_MAX_PAGE_SIZE).
+        // The gather's own page size, or the site's when it names none
+        // (B160), capped to the configured maximum (GATHER_MAX_PAGE_SIZE).
         let max_page = self.max_page_size;
-        let resolved_display = if display.items_per_page > max_page {
-            let requested = display.items_per_page;
+        let requested = match display.items_per_page {
+            Some(own) => own,
+            None => self.site_items_per_page().await,
+        };
+        if requested > max_page {
             tracing::warn!(
                 requested = requested,
                 capped = max_page,
                 "items_per_page exceeds maximum, capping"
             );
-            let mut capped = display.clone();
-            capped.items_per_page = max_page;
-            capped
-        } else {
-            display.clone()
-        };
-        let display = &resolved_display;
+        }
 
         // Apply exposed filters
         let resolved_definition = self
@@ -1023,8 +1104,8 @@ impl GatherService {
             ..final_definition
         };
 
-        // Build and execute queries (per_page already clamped in resolved_display above)
-        let per_page = display.items_per_page;
+        // Build and execute queries (per_page clamped to the maximum above)
+        let per_page = requested.min(max_page);
         let builder = GatherQueryBuilder::new_with_stages(builder_def, stage_ids.to_vec())
             .with_extensions(self.extensions.clone())
             .with_language(context.language.clone())
@@ -2001,7 +2082,7 @@ impl GatherService {
                 // Default limit for child queries; warn if results may be truncated
                 let default_child_limit: u32 = 1000;
                 let child_display = include_def.display.clone().unwrap_or(QueryDisplay {
-                    items_per_page: default_child_limit,
+                    items_per_page: Some(default_child_limit),
                     ..Default::default()
                 });
 
@@ -2146,7 +2227,7 @@ impl GatherService {
                 },
                 display: QueryDisplay {
                     format: DisplayFormat::Table,
-                    items_per_page: 25,
+                    items_per_page: Some(25),
                     pager: PagerConfig {
                         enabled: true,
                         style: PagerStyle::Full,
@@ -2192,7 +2273,7 @@ impl GatherService {
                 },
                 display: QueryDisplay {
                     format: DisplayFormat::Table,
-                    items_per_page: 25,
+                    items_per_page: Some(25),
                     pager: PagerConfig {
                         enabled: true,
                         style: PagerStyle::Full,
@@ -2238,7 +2319,7 @@ impl GatherService {
                 },
                 display: QueryDisplay {
                     format: DisplayFormat::Table,
-                    items_per_page: 25,
+                    items_per_page: Some(25),
                     empty_text: Some("No items by this author.".to_string()),
                     ..Default::default()
                 },
@@ -2260,7 +2341,7 @@ impl GatherService {
                 },
                 display: QueryDisplay {
                     format: DisplayFormat::Table,
-                    items_per_page: 50,
+                    items_per_page: Some(50),
                     pager: PagerConfig {
                         enabled: true,
                         style: PagerStyle::Full,
@@ -2290,7 +2371,7 @@ impl GatherService {
                 },
                 display: QueryDisplay {
                     format: DisplayFormat::Table,
-                    items_per_page: 50,
+                    items_per_page: Some(50),
                     empty_text: Some("No comments.".to_string()),
                     ..Default::default()
                 },
@@ -2321,7 +2402,7 @@ impl GatherService {
                 },
                 display: QueryDisplay {
                     format: DisplayFormat::Table,
-                    items_per_page: 50,
+                    items_per_page: Some(50),
                     empty_text: Some("No URL aliases.".to_string()),
                     ..Default::default()
                 },
@@ -2344,7 +2425,7 @@ impl GatherService {
                 },
                 display: QueryDisplay {
                     format: DisplayFormat::Table,
-                    items_per_page: 50,
+                    items_per_page: Some(50),
                     empty_text: Some("No roles defined.".to_string()),
                     ..Default::default()
                 },
@@ -2367,7 +2448,7 @@ impl GatherService {
                 },
                 display: QueryDisplay {
                     format: DisplayFormat::Table,
-                    items_per_page: 50,
+                    items_per_page: Some(50),
                     empty_text: Some("No content types defined.".to_string()),
                     ..Default::default()
                 },
@@ -3029,7 +3110,7 @@ mod tests {
                 ..Default::default()
             },
             display: QueryDisplay {
-                items_per_page: 10,
+                items_per_page: Some(10),
                 pager: PagerConfig {
                     enabled: true,
                     style: PagerStyle::Full,

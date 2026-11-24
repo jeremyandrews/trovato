@@ -28,7 +28,7 @@ pub use install_check::check_installation;
 pub use language::negotiate_language;
 pub use maintenance::check_maintenance;
 pub use path_alias::{path_alias_fallback, resolve_path_alias};
-pub use query_profiler::track_request_timing;
+pub use query_profiler::{ServerTimingDetail, track_request_timing};
 pub use rate_limit::{
     BUCKETS, ClientIp, DEFAULT_STATIC_PREFIXES, RateLimitCaller, RateLimitConfig, RateLimiter,
     bucket_config_key, bucket_env_key, categorize_path, categorize_path_with,

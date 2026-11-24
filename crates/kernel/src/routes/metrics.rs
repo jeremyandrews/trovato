@@ -1,7 +1,7 @@
 //! Prometheus metrics endpoint.
 
 use axum::Router;
-use axum::extract::State;
+use axum::extract::{Request, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
@@ -15,8 +15,22 @@ pub fn router() -> Router<AppState> {
 
 /// Prometheus metrics endpoint.
 ///
-/// Returns metrics in Prometheus text exposition format.
-async fn metrics(State(state): State<AppState>) -> Response {
+/// Returns metrics in Prometheus text exposition format, to an operator only
+/// (`METRICS_TOKEN`, or a loopback peer that is not a proxy: see
+/// [`crate::routes::health::is_operator`]). Anyone else gets a 404, as if
+/// there were no such route: route templates, pool sizes and request rates
+/// are nobody else's business.
+async fn metrics(State(state): State<AppState>, request: Request) -> Response {
+    if !crate::routes::health::is_operator(&request, state.runtime().metrics_token.as_deref()) {
+        // Never stored: a cache in front must not hand an operator's answer
+        // to the next caller, nor remember a refusal.
+        let mut refused = crate::routes::helpers::render_not_found();
+        refused.headers_mut().insert(
+            axum::http::header::CACHE_CONTROL,
+            axum::http::HeaderValue::from_static("no-store"),
+        );
+        return refused;
+    }
     // Update database pool gauges before encoding
     let pool = state.db();
     let pool_size = pool.size();
@@ -42,7 +56,10 @@ async fn metrics(State(state): State<AppState>) -> Response {
 
     (
         StatusCode::OK,
-        [("content-type", "text/plain; version=0.0.4; charset=utf-8")],
+        [
+            ("content-type", "text/plain; version=0.0.4; charset=utf-8"),
+            ("cache-control", "no-store"),
+        ],
         output,
     )
         .into_response()

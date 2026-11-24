@@ -251,7 +251,7 @@ fn filter_value_serialization() {
 fn query_display_defaults() {
     let display = QueryDisplay::default();
 
-    assert_eq!(display.items_per_page, 10);
+    assert_eq!(display.items_per_page, None, "pages by the site setting");
     assert_eq!(display.format, DisplayFormat::Table);
     assert!(display.pager.enabled);
     assert!(display.pager.show_count);
@@ -261,7 +261,7 @@ fn query_display_defaults() {
 fn query_display_custom() {
     let display = QueryDisplay {
         format: DisplayFormat::Grid,
-        items_per_page: 20,
+        items_per_page: Some(20),
         pager: PagerConfig {
             enabled: true,
             style: PagerStyle::Mini,
@@ -277,7 +277,7 @@ fn query_display_custom() {
     };
 
     assert_eq!(display.format, DisplayFormat::Grid);
-    assert_eq!(display.items_per_page, 20);
+    assert_eq!(display.items_per_page, Some(20));
     assert_eq!(display.pager.style, PagerStyle::Mini);
     assert!(!display.pager.show_count);
 }
@@ -398,7 +398,7 @@ fn gather_query_creation() {
             ..Default::default()
         },
         display: QueryDisplay {
-            items_per_page: 10,
+            items_per_page: Some(10),
             ..Default::default()
         },
         plugin: "trovato_blog".to_string(),
@@ -538,7 +538,7 @@ fn gate_test_recent_articles_query_definition() {
         },
         display: QueryDisplay {
             format: DisplayFormat::List,
-            items_per_page: 10,
+            items_per_page: Some(10),
             pager: PagerConfig {
                 enabled: true,
                 style: PagerStyle::Full,
@@ -566,7 +566,7 @@ fn gate_test_recent_articles_query_definition() {
     assert_eq!(parsed.definition.item_type, Some("blog".to_string()));
     assert_eq!(parsed.definition.filters.len(), 2);
     assert_eq!(parsed.definition.sorts.len(), 2);
-    assert_eq!(parsed.display.items_per_page, 10);
+    assert_eq!(parsed.display.items_per_page, Some(10));
     assert!(parsed.display.pager.enabled);
 
     // Verify category filter

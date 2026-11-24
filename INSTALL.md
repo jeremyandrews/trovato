@@ -453,7 +453,7 @@ visit your site or the admin dashboard.
 After installation, confirm everything is running:
 
 ```bash
-# Health check
+# Health check (`/health/live` and `/health/ready` are the probes)
 curl http://localhost:3000/health
 
 # Admin dashboard (requires login)
@@ -469,14 +469,19 @@ cargo run --release
 ```
 
 The installer will not run again. Any new database or plugin migrations
-are applied automatically on startup.
+are applied automatically on startup. To see them first, run
+`trovato migrate --dry-run`; to roll a release back, start the previous binary
+(see [docs/deployment/upgrades.md](docs/deployment/upgrades.md) and the
+[command line reference](docs/cli-reference.md)).
 
 ## More Than One Server
 
 Several servers can run one site behind a load balancer, with no sticky
 sessions and no extra setting, if they share one Postgres, one Redis and one
 read-write volume for `UPLOADS_DIR` and `PAGEFIND_OUTPUT_DIR`. See
-[docs/deployment/multi-server.md](docs/deployment/multi-server.md).
+[docs/deployment/multi-server.md](docs/deployment/multi-server.md). On
+Kubernetes, migrations run as their own step; see
+[docs/deployment/upgrades.md](docs/deployment/upgrades.md).
 
 ## Configuration Export/Import
 

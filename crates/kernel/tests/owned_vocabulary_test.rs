@@ -876,3 +876,249 @@ async fn an_owned_vocabulary_round_trips_through_config() {
     let _ = std::fs::remove_dir_all(&out);
     let _ = std::fs::remove_dir_all(&bad);
 }
+
+// =============================================================================
+// B189: an owned vocabulary is read only by someone who may see its owner
+// =============================================================================
+
+/// Every vocabulary id `GET /api/v1/categories` lists to `cookies`, every page.
+async fn listed_vocabularies(app: &TestApp, cookies: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    for page in 1.. {
+        let (status, body) = get(
+            app,
+            cookies,
+            &format!("/api/v1/categories?per_page=500&page={page}"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let data = json["data"].as_array().unwrap();
+        if data.is_empty() {
+            break;
+        }
+        ids.extend(data.iter().map(|c| c["id"].as_str().unwrap().to_string()));
+        let total = json["total"].as_u64().unwrap() as usize;
+        if ids.len() >= total {
+            break;
+        }
+    }
+    ids
+}
+
+/// Every route that reads one vocabulary or one of its terms.
+fn read_routes(vocabulary: &str, term: Uuid) -> Vec<String> {
+    vec![
+        format!("/api/v1/category/{vocabulary}"),
+        format!("/api/v1/category/{vocabulary}/tags"),
+        format!("/api/v1/category/{vocabulary}/roots"),
+        format!("/api/v1/tag/{term}"),
+        format!("/api/v1/tag/{term}/parents"),
+        format!("/api/v1/tag/{term}/children"),
+        format!("/api/v1/tag/{term}/ancestors"),
+        format!("/api/v1/tag/{term}/descendants"),
+        format!("/api/v1/tag/{term}/breadcrumb"),
+        // The unversioned alias serves the same handlers.
+        format!("/api/category/{vocabulary}/tags"),
+        format!("/api/tag/{term}"),
+    ]
+}
+
+/// A root term and a child term in `vocabulary`.
+async fn two_terms(app: &TestApp, vocabulary: &str, label: &str) -> (Uuid, Uuid) {
+    let root = app
+        .state
+        .categories()
+        .create_tag(CreateTag {
+            category_id: vocabulary.to_string(),
+            label: format!("{label} root"),
+            description: None,
+            slug: None,
+            weight: Some(0),
+            parent_ids: None,
+        })
+        .await
+        .unwrap();
+    let child = app
+        .state
+        .categories()
+        .create_tag(CreateTag {
+            category_id: vocabulary.to_string(),
+            label: format!("{label} child"),
+            description: None,
+            slug: None,
+            weight: Some(0),
+            parent_ids: Some(vec![root.id]),
+        })
+        .await
+        .unwrap();
+    (root.id, child.id)
+}
+
+/// The visibility rule over the category API (B189). Anonymous callers, plain
+/// users and another club's manager see the site-wide vocabularies only, and
+/// get 404 (never 403) for an owned vocabulary and its terms on every read
+/// route; a club's manager, whom the plugin grants `view`, sees that club's
+/// vocabulary and not another club's; the declared permission, `administer
+/// categories` and a site administrator see every club's; a site-wide
+/// vocabulary reads byte for byte the same to every one of them.
+#[test]
+fn owned_vocabularies_are_hidden_from_public_category_reads() {
+    common::run_test(async {
+        let app = app();
+        app.ensure_plugin_enabled("trovato_categories").await;
+        let creator = creator(app).await;
+        let (_, club_a, vocab_a) = club(app, &creator).await;
+        let (_, _club_b, vocab_b) = club(app, &creator).await;
+        let (root_a, child_a) = two_terms(app, &vocab_a, "Sculls").await;
+        let (root_b, _) = two_terms(app, &vocab_b, "Sweeps").await;
+
+        let site = unique("b189_site");
+        sqlx::query("INSERT INTO category (id, label) VALUES ($1, 'Site wide')")
+            .bind(&site)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        let site_term = app
+            .state
+            .categories()
+            .create_tag(CreateTag {
+                category_id: site.clone(),
+                label: "Oars".to_string(),
+                description: None,
+                slug: None,
+                weight: Some(0),
+                parent_ids: None,
+            })
+            .await
+            .unwrap();
+
+        let (plain, _) = user(app, "ov_b189_plain").await;
+        let (manager_a, manager_a_id) = user(app, "ov_b189_mgr").await;
+        manage(app, &club_a, manager_a_id).await;
+        let (every_club, every_club_id) = user(app, "ov_b189_all").await;
+        grant(app, every_club_id, PERM_ALL_CLUBS).await;
+        let (categories_admin, categories_admin_id) = user(app, "ov_b189_cat").await;
+        grant(app, categories_admin_id, "administer categories").await;
+        let admin_name = unique("ov_b189_admin");
+        let admin = app
+            .create_and_login_admin(&admin_name, PASSWORD, &format!("{admin_name}@test.local"))
+            .await;
+
+        // Who sees which club's vocabulary.
+        let callers: [(&str, &str, bool, bool); 6] = [
+            ("anonymous", "", false, false),
+            ("a plain user", &plain, false, false),
+            ("club A's manager", &manager_a, true, false),
+            (
+                "a holder of the declared permission",
+                &every_club,
+                true,
+                true,
+            ),
+            (
+                "a holder of administer categories",
+                &categories_admin,
+                true,
+                true,
+            ),
+            ("the site administrator", &admin, true, true),
+        ];
+
+        let site_category = format!(
+            "{{\"id\":\"{site}\",\"label\":\"Site wide\",\"description\":null,\
+             \"hierarchy\":0,\"weight\":0}}"
+        );
+        let site_tag = format!(
+            "{{\"id\":\"{}\",\"category_id\":\"{site}\",\"label\":\"Oars\",\
+             \"description\":null,\"weight\":0,\"created\":{},\"changed\":{}}}",
+            site_term.id, site_term.created, site_term.changed
+        );
+        let site_tags =
+            format!("{{\"data\":[{site_tag}],\"total\":1,\"page\":1,\"per_page\":100}}");
+
+        for (who, cookies, sees_a, sees_b) in callers {
+            let listed = listed_vocabularies(app, cookies).await;
+            assert!(
+                listed.contains(&site),
+                "{who} lists the site-wide vocabulary"
+            );
+            assert!(listed.contains(&"tags".to_string()), "{who} lists tags");
+            assert_eq!(listed.contains(&vocab_a), sees_a, "{who} lists club A's");
+            assert_eq!(listed.contains(&vocab_b), sees_b, "{who} lists club B's");
+
+            for (vocabulary, root, child, sees) in [
+                (&vocab_a, root_a, Some(child_a), sees_a),
+                (&vocab_b, root_b, None, sees_b),
+            ] {
+                let mut routes = read_routes(vocabulary, root);
+                if let Some(child) = child {
+                    routes.extend(read_routes(vocabulary, child));
+                }
+                for uri in routes {
+                    let (status, body) = get(app, cookies, &uri).await;
+                    if sees {
+                        assert_eq!(status, StatusCode::OK, "{who}: GET {uri}: {body}");
+                    } else {
+                        assert_eq!(status, StatusCode::NOT_FOUND, "{who}: GET {uri}: {body}");
+                        assert!(
+                            !body.contains("Sculls") && !body.contains("Sweeps"),
+                            "{who}: GET {uri} names no term: {body}"
+                        );
+                    }
+                }
+            }
+            if sees_a {
+                let (_, body) =
+                    get(app, cookies, &format!("/api/v1/category/{vocab_a}/tags")).await;
+                assert!(
+                    body.contains("Sculls root") && body.contains("Sculls child"),
+                    "{body}"
+                );
+                let (_, body) =
+                    get(app, cookies, &format!("/api/v1/tag/{child_a}/breadcrumb")).await;
+                assert!(body.contains("Sculls root"), "{who}: {body}");
+            }
+
+            // The site-wide vocabulary, byte for byte the same for everyone.
+            let (status, body) = get(app, cookies, &format!("/api/v1/category/{site}")).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body, site_category, "{who}");
+            for uri in [
+                format!("/api/v1/category/{site}/tags"),
+                format!("/api/v1/category/{site}/roots"),
+            ] {
+                let (status, body) = get(app, cookies, &uri).await;
+                assert_eq!(status, StatusCode::OK);
+                assert_eq!(body, site_tags, "{who}: {uri}");
+            }
+            let (status, body) = get(app, cookies, &format!("/api/v1/tag/{}", site_term.id)).await;
+            assert_eq!(status, StatusCode::OK);
+            assert_eq!(body, site_tag, "{who}");
+        }
+
+        // An id that names nothing answers as a hidden one does, so a 404
+        // says nothing about whether an owned vocabulary exists.
+        for uri in read_routes("b189_no_such_vocabulary", Uuid::now_v7()) {
+            let (status, body) = get(app, "", &uri).await;
+            assert_eq!(status, StatusCode::NOT_FOUND, "GET {uri}: {body}");
+        }
+
+        // The pager counts what the caller may see: the total an anonymous
+        // caller is told is the number of vocabularies they can list.
+        let (_, body) = get(app, "", "/api/v1/categories?per_page=1").await;
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let anonymous_listed = listed_vocabularies(app, "").await;
+        assert_eq!(
+            json["total"].as_u64().unwrap() as usize,
+            anonymous_listed.len()
+        );
+
+        sqlx::query("DELETE FROM category WHERE id = $1")
+            .bind(&site)
+            .execute(&app.db)
+            .await
+            .ok();
+        disable_plugin(app).await;
+    });
+}

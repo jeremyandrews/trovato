@@ -30,7 +30,7 @@ pub async fn check_installation(
     }
 
     // Allow health check
-    if path == "/health" {
+    if crate::routes::health::is_probe_path(path) {
         return next.run(request).await;
     }
 

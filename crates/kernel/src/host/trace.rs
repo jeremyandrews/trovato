@@ -173,6 +173,8 @@ pub(crate) struct HostCallGuard {
     started: Instant,
     /// Whether the call reached its own end, as opposed to being dropped.
     completed: bool,
+    /// The call's `plugin.host_call` span, closed with the guard.
+    span: tracing::Span,
 }
 
 impl HostCallGuard {
@@ -205,6 +207,14 @@ impl HostCallGuard {
         host_call_nanos: Option<Arc<AtomicU64>>,
     ) -> Self {
         let started = enter(invocation_id, module, function, &plugin);
+        crate::telemetry::profile::count_host_call();
+        let span = tracing::trace_span!(
+            target: crate::telemetry::TARGET,
+            "plugin.host_call",
+            trovato.plugin = %plugin,
+            trovato.host.module = module,
+            trovato.host.function = function,
+        );
         Self {
             host_call_nanos,
             invocation_id,
@@ -213,6 +223,7 @@ impl HostCallGuard {
             plugin,
             started,
             completed,
+            span,
         }
     }
 
@@ -292,8 +303,9 @@ impl TracedLinker for Linker<PluginState> {
             let mut guard =
                 HostCallGuard::open(invocation_id, module, name, plugin, false, Some(nanos));
             let inner = func(caller, params);
+            let span = guard.span.clone();
             Box::new(async move {
-                let out = Box::into_pin(inner).await;
+                let out = tracing::Instrument::instrument(Box::into_pin(inner), span).await;
                 guard.complete();
                 drop(guard);
                 out

@@ -129,7 +129,7 @@ These D6 features are intentionally not being implemented:
 | Gap | Rationale |
 |---|---|
 | `hook_init` / `hook_exit` | Axum middleware handles per-request concerns more efficiently. |
-| Actions/Trigger system | Tap system + webhooks cover the same use cases more cleanly. |
+| ~~Actions/Trigger system~~ | Reversed 2026-11-23 for the hosted case: tap system + webhooks cover a plugin author, not a code-free blog owner. See [gap-analysis.md](gap-analysis.md#11-no-actionstrigger-system) and [rules.md](../design/rules.md). |
 | Update status checking | Different deployment model (compiled binary, not download-and-unzip). |
 | Term synonyms | Rarely used in D6 sites. |
 | Poor man's cron | External scheduling (systemd, cron, k8s) is more reliable. |

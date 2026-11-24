@@ -256,6 +256,14 @@ jobs:
           cp target/wasm32-wasip1/release/test_form_taps_b.wasm plugins/test_form_taps_b/
           cp target/wasm32-wasip1/release/test_owned_vocabulary.wasm plugins/test_owned_vocabulary/
 
+      # The expand-then-contract rule (docs/design/upgrades-and-probes.md §3):
+      # a new migration that would break the previous release fails here unless
+      # it carries `-- trovato:contract <release>: <reason>`. First, on its own,
+      # so a failure says what it is; the unit test step reuses its build.
+      - name: Migration compatibility rule
+        if: matrix.shard == 1
+        run: cargo test --all --lib migration_rule
+
       # Unit + doc tests are cheap relative to the integration binaries, so one
       # shard carries them for the whole workspace rather than all three
       # repeating the work.
@@ -908,6 +916,107 @@ jobs:
       - name: Stop the cluster
         if: always()
         run: docker compose -f docker-compose.cluster.yml down -v
+
+  # Proof of rollback (docs/design/upgrades-and-probes.md §4): the previous
+  # binary must start and serve on the schema this change's `trovato migrate`
+  # produces, because redeploying the previous image is the whole rollback.
+  #
+  # "Previous" is the newest release tag that tolerates a newer schema (it
+  # contains crates/kernel/src/migrate.rs). Until one is tagged, it is the
+  # first parent of the commit under test: the base branch tip for a pull
+  # request's merge commit, the previous commit on a push to main.
+  rollback:
+    name: Rollback (previous binary on this schema)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: trovato
+          POSTGRES_PASSWORD: trovato
+          POSTGRES_DB: trovato_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    env:
+      DATABASE_URL: postgres://trovato:trovato@localhost:5432/trovato_test
+      REDIS_URL: redis://127.0.0.1:6379
+      RUST_LOG: warn
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+      - uses: Swatinem/rust-cache@v2
+      - name: Pick the previous binary
+        run: |
+          previous=""
+          for tag in $(git tag --list 'v*' --sort=-v:refname); do
+            if git cat-file -e "$tag:crates/kernel/src/migrate.rs" 2>/dev/null; then
+              previous="$tag"
+              break
+            fi
+          done
+          if [ -z "$previous" ]; then
+            previous=$(git rev-parse HEAD^1)
+            echo "No release tag tolerates a newer schema yet (none contains crates/kernel/src/migrate.rs)."
+            echo "Using the first parent of the commit under test instead: $previous"
+          else
+            echo "Previous release: $previous"
+          fi
+          echo "PREVIOUS_REF=$previous" >> "$GITHUB_ENV"
+      # Built first and copied out: both builds share target/ (and so the
+      # dependency cache), and both write target/debug/trovato.
+      - name: Build the previous binary
+        run: |
+          git worktree add "$RUNNER_TEMP/previous" "$PREVIOUS_REF"
+          (cd "$RUNNER_TEMP/previous" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" \
+            cargo build -p trovato-kernel --bin trovato)
+          cp target/debug/trovato "$RUNNER_TEMP/trovato-previous"
+      - name: Previous binary on this branch's schema
+        env:
+          TROVATO_PREVIOUS_BIN: ${{ runner.temp }}/trovato-previous
+          TROVATO_PREVIOUS_ROOT: ${{ runner.temp }}/previous
+        run: |
+          set -o pipefail
+          cargo test -p trovato-kernel --test zero_downtime_test \
+            previous_release_serves_on_this_schema -- --exact --nocapture \
+            2>&1 | tee "$RUNNER_TEMP/rollback.log"
+          # The test skips itself without TROVATO_PREVIOUS_BIN, and a renamed
+          # test matches nothing; either would pass silently. Its last line of
+          # evidence must be there.
+          grep -q "previous binary: POST /user/login/json -> 200" "$RUNNER_TEMP/rollback.log"
+
+  # The example manifests under deploy/kubernetes/ against the Kubernetes API
+  # schemas. kubeconform is one static binary.
+  kubernetes-manifests:
+    name: Kubernetes manifests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install kubeconform
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -sSLO https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          echo "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73  kubeconform-linux-amd64.tar.gz" | sha256sum -c
+          tar xzf kubeconform-linux-amd64.tar.gz kubeconform
+      - name: Validate
+        run: '"$RUNNER_TEMP/kubeconform" -strict -summary deploy/kubernetes/'
 
   changelog:
     name: Changelog Fragment

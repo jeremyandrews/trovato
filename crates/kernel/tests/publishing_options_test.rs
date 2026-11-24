@@ -616,7 +616,7 @@ fn a_gather_filters_on_promote_and_sorts_sticky_first() {
         };
         let display = QueryDisplay {
             format: DisplayFormat::Table,
-            items_per_page: 50,
+            items_per_page: Some(50),
             pager: PagerConfig {
                 enabled: true,
                 style: PagerStyle::Full,

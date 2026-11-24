@@ -120,6 +120,16 @@ CI's `Changelog Fragment` job fails a pull request that changes anything under
 `changelog.d/README.md` has the full format, including the optional `Category:`
 header, and `scripts/changelog-fold.sh` is what the release runs.
 
+## Performance tests
+
+A change that makes a page run more statements, cache lookups or plugin calls
+fails `performance_test` until the expected counts change in the same commit.
+[docs/performance-tests.md](docs/performance-tests.md) covers writing one,
+reading a failure and recording new counts. To see where in a request the
+work happens, [Reading a trace](docs/tracing.md#reading-a-trace) in
+`docs/tracing.md` shows how to run the local trace viewer and read a page's
+trace.
+
 ## Coding standards
 
 The full reference is [docs/coding-standards.md](docs/coding-standards.md). The

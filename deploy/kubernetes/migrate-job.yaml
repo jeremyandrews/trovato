@@ -1,0 +1,49 @@
+# The migration step of an upgrade: `trovato migrate`, run to completion
+# BEFORE the Deployment's image is changed. See docs/deployment/upgrades.md.
+#
+# A Job's pod template cannot be changed after it is created, so make one Job
+# per release: change the name and the image together, e.g.
+#   sed 's/0.107.0/0.108.0/g' migrate-job.yaml | kubectl apply -f -
+#   kubectl wait --for=condition=complete --timeout=15m job/trovato-migrate-0.108.0
+#
+# Safe to run while the previous release is serving: every migration keeps the
+# previous release working (UPGRADING.md, "Expand, then contract"). Safe to run
+# twice, or from two places at once: the command takes one advisory lock and a
+# second run finds nothing to do.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: trovato-migrate-0.107.0
+  labels:
+    app.kubernetes.io/name: trovato
+    app.kubernetes.io/component: migrate
+spec:
+  # A migration that could not get a table lock within --lock-timeout rolls
+  # back and exits nonzero; the Job tries again.
+  backoffLimit: 3
+  activeDeadlineSeconds: 900
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: trovato
+        app.kubernetes.io/component: migrate
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: ghcr.io/jeremyandrews/trovato:0.107.0
+          command: ["./trovato", "migrate", "--lock-timeout", "10"]
+          # DATABASE_URL (and DISABLED_PLUGINS, if used) must match the
+          # Deployment's, so the Job migrates the plugins the servers will run.
+          envFrom:
+            - secretRef:
+                name: trovato
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false

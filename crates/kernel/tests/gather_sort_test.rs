@@ -35,7 +35,7 @@ fn admin() -> UserContext {
 fn display() -> QueryDisplay {
     QueryDisplay {
         format: DisplayFormat::Table,
-        items_per_page: 50,
+        items_per_page: Some(50),
         pager: PagerConfig {
             enabled: true,
             style: PagerStyle::Full,

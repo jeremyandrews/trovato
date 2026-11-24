@@ -90,6 +90,10 @@ pub(crate) fn parse_or<T: std::str::FromStr>(lookup: Lookup<'_>, name: &str, def
         .unwrap_or(default)
 }
 
+/// The shortest `HEALTH_TOKEN` accepted: it is checked on requests that no
+/// rate limit slows down.
+const MIN_HEALTH_TOKEN_LEN: usize = 32;
+
 /// Parse a boolean-ish looked-up setting. Truthy: `1`, `true`, `yes`, `on`
 /// (case-insensitive); anything else present is `false`; absent is `default`.
 pub(crate) fn parse_bool_or(lookup: Lookup<'_>, name: &str, default: bool) -> bool {
@@ -346,6 +350,21 @@ pub struct RuntimeConfig {
     /// times which it is logged as an error.
     pub slow_request_threshold_ms: u128,
 
+    /// Who sees the per-request counts in `Server-Timing` (`SERVER_TIMING`:
+    /// `admin`, the default, `all` or `off`). Everyone else gets `total` only,
+    /// which is all any visitor got before.
+    pub server_timing: crate::middleware::ServerTimingDetail,
+
+    /// Record each statement's fingerprint in the request profile. No
+    /// environment variable sets it: the performance tests do, through
+    /// `Config`, and span export reads statements for itself.
+    pub profile_fingerprints: bool,
+
+    /// Bearer token that reads `/metrics` from any address (`METRICS_TOKEN`,
+    /// at least 32 characters). Unset: only a loopback caller with no
+    /// forwarding header does; everyone else gets a 404.
+    pub metrics_token: Option<String>,
+
     /// Retention window for the kernel security audit stream, in days.
     pub security_audit_retention_days: i64,
 
@@ -533,6 +552,22 @@ pub struct Config {
 
     /// How long graceful shutdown waits for in-flight work (default: 30s).
     pub shutdown_timeout: Duration,
+
+    /// Whether `serve` and the other subcommands apply pending migrations when
+    /// they start (`MIGRATE_ON_START`, default true). Off, they never change the
+    /// schema: `trovato migrate` does, as its own step, and `serve` waits, not
+    /// ready, until the schema it needs is there.
+    pub migrate_on_start: bool,
+
+    /// How long the server keeps serving, reporting not ready, after SIGTERM
+    /// and before it stops accepting (`SHUTDOWN_DRAIN_SECS`). Defaults to 5
+    /// seconds under Kubernetes (`KUBERNETES_SERVICE_HOST` set) and 0 elsewhere,
+    /// so a single server stops exactly as fast as it always has.
+    pub shutdown_drain: Duration,
+
+    /// Bearer token that sees the health details (pool statistics, services)
+    /// from any address (`HEALTH_TOKEN`). Unset: only a loopback caller does.
+    pub health_token: Option<String>,
 
     /// The configuration request handling reads. See [`RuntimeConfig`].
     pub runtime: RuntimeConfig,
@@ -770,6 +805,45 @@ impl Config {
         let jwt_secret = get("JWT_SECRET");
 
         let shutdown_timeout = Duration::from_secs(parse_or(get, "SHUTDOWN_TIMEOUT_SECS", 30));
+        // Strict: a typo must not quietly turn a single server into one that
+        // waits, not ready, for a migration nobody runs.
+        let migrate_on_start = match get("MIGRATE_ON_START")
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            None | Some("" | "1" | "true" | "yes" | "on") => true,
+            Some("0" | "false" | "no" | "off") => false,
+            Some(other) => anyhow::bail!("MIGRATE_ON_START must be true or false, not {other:?}"),
+        };
+        let default_drain = if get("KUBERNETES_SERVICE_HOST").is_some() {
+            5
+        } else {
+            0
+        };
+        let shutdown_drain =
+            Duration::from_secs(parse_or(get, "SHUTDOWN_DRAIN_SECS", default_drain));
+        let health_token = get("HEALTH_TOKEN").filter(|t| !t.trim().is_empty());
+        // The probes have no rate limit, so the token must not be guessable.
+        if let Some(token) = &health_token
+            && token.len() < MIN_HEALTH_TOKEN_LEN
+        {
+            anyhow::bail!(
+                "HEALTH_TOKEN must be at least {MIN_HEALTH_TOKEN_LEN} characters \
+                 (for example `openssl rand -hex 32`)"
+            );
+        }
+
+        let metrics_token = get("METRICS_TOKEN").filter(|t| !t.trim().is_empty());
+        // A token that opens `/metrics` from anywhere must not be guessable:
+        // only the page rate limit stands in the way.
+        if let Some(token) = &metrics_token
+            && token.len() < MIN_HEALTH_TOKEN_LEN
+        {
+            anyhow::bail!(
+                "METRICS_TOKEN must be at least {MIN_HEALTH_TOKEN_LEN} characters \
+                 (for example `openssl rand -hex 32`)"
+            );
+        }
 
         let runtime = RuntimeConfig {
             static_dirs,
@@ -778,6 +852,11 @@ impl Config {
             security_headers: crate::middleware::SecurityHeaders::from_lookup(get),
             tenant_resolution: crate::middleware::TenantResolution::from_lookup(get),
             slow_request_threshold_ms: parse_or(get, "QUERY_SLOW_THRESHOLD_MS", 100),
+            server_timing: crate::middleware::ServerTimingDetail::from_setting(
+                get("SERVER_TIMING").as_deref(),
+            ),
+            profile_fingerprints: false,
+            metrics_token,
             security_audit_retention_days: crate::audit::retention_days_from(
                 get("SECURITY_AUDIT_RETENTION_DAYS").as_deref(),
             ),
@@ -834,6 +913,9 @@ impl Config {
             trusted_proxies,
             jwt_secret,
             shutdown_timeout,
+            migrate_on_start,
+            shutdown_drain,
+            health_token,
             runtime,
         })
     }
@@ -933,6 +1015,79 @@ mod config_tests {
         let mut pairs = vec![("DATABASE_URL", "postgres://localhost/x")];
         pairs.extend_from_slice(extra);
         config_from(&pairs).expect("config resolves")
+    }
+
+    /// The drain defaults to a Kubernetes endpoint update only under Kubernetes;
+    /// an explicit value wins either way. `MIGRATE_ON_START` reads strictly:
+    /// a value that is not a boolean fails startup.
+    #[test]
+    fn drain_and_migrate_on_start_settings() {
+        let k8s = ("KUBERNETES_SERVICE_HOST", "10.0.0.1");
+        assert_eq!(with_db(&[k8s]).shutdown_drain, Duration::from_secs(5));
+        assert_eq!(
+            with_db(&[k8s, ("SHUTDOWN_DRAIN_SECS", "0")]).shutdown_drain,
+            Duration::ZERO
+        );
+        assert_eq!(
+            with_db(&[("SHUTDOWN_DRAIN_SECS", "7")]).shutdown_drain,
+            Duration::from_secs(7)
+        );
+        assert!(!with_db(&[("MIGRATE_ON_START", "false")]).migrate_on_start);
+        assert!(with_db(&[("MIGRATE_ON_START", "true")]).migrate_on_start);
+        assert!(with_db(&[("MIGRATE_ON_START", "")]).migrate_on_start);
+        let err = config_from(&[
+            ("DATABASE_URL", "postgres://localhost/x"),
+            ("MIGRATE_ON_START", "ture"),
+        ])
+        .expect_err("a typo fails")
+        .to_string();
+        assert!(
+            err.contains("MIGRATE_ON_START") && err.contains("ture"),
+            "{err}"
+        );
+        let token = "0123456789abcdef0123456789abcdef";
+        assert!(
+            config_from(&[
+                ("DATABASE_URL", "postgres://localhost/x"),
+                ("HEALTH_TOKEN", &token[1..])
+            ])
+            .is_err(),
+            "31 characters is too short"
+        );
+        assert_eq!(
+            with_db(&[("HEALTH_TOKEN", token)]).health_token.as_deref(),
+            Some(token)
+        );
+        assert!(with_db(&[("HEALTH_TOKEN", " ")]).health_token.is_none());
+        let err = config_from(&[
+            ("DATABASE_URL", "postgres://localhost/x"),
+            ("METRICS_TOKEN", &token[1..]),
+        ])
+        .expect_err("a 31 character metrics token is too short");
+        assert!(err.to_string().contains("METRICS_TOKEN"), "{err}");
+        assert_eq!(
+            with_db(&[("METRICS_TOKEN", token)])
+                .runtime
+                .metrics_token
+                .as_deref(),
+            Some(token)
+        );
+        for blank in ["", " "] {
+            assert!(
+                with_db(&[("METRICS_TOKEN", blank)])
+                    .runtime
+                    .metrics_token
+                    .is_none(),
+                "{blank:?}"
+            );
+        }
+        let err = config_from(&[
+            ("DATABASE_URL", "postgres://localhost/x"),
+            ("HEALTH_TOKEN", "t0ken"),
+        ])
+        .expect_err("a short token fails")
+        .to_string();
+        assert!(err.contains("HEALTH_TOKEN"), "{err}");
     }
 
     /// A bad `TRUSTED_PROXIES` entry or `CLIENT_IP_STORAGE` value refuses to
@@ -1074,6 +1229,16 @@ mod config_tests {
             vec!["url_prefix".to_string(), "accept_header".to_string()]
         );
         assert_eq!(config.shutdown_timeout, Duration::from_secs(30));
+        assert!(
+            config.migrate_on_start,
+            "unset MIGRATE_ON_START keeps migrating at start"
+        );
+        assert_eq!(
+            config.shutdown_drain,
+            Duration::ZERO,
+            "no drain outside Kubernetes"
+        );
+        assert!(config.health_token.is_none());
         assert!(config.jwt_secret.is_none());
         // Unset TRUSTED_PROXIES must trust nothing (RATE-1), not everything.
         assert!(config.trusted_proxies.is_empty());

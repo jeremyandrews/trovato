@@ -68,6 +68,65 @@ impl ScratchDb {
         }
     }
 
+    /// Drop every database `create(label)` made more than five minutes ago that
+    /// nobody is connected to.
+    ///
+    /// For a scratch database held in a `static`, which Rust never drops: the
+    /// next run clears what the last one left. A database in use by a run
+    /// going on now has a connection, so it is left alone.
+    ///
+    /// # Panics
+    ///
+    /// If `DATABASE_URL` is unset or the server cannot be reached.
+    pub async fn drop_stale(label: &str) {
+        let database_url = crate::env::database_url();
+        let without_query = database_url
+            .split_once('?')
+            .map_or(database_url.as_str(), |(base, _)| base);
+        let cut = without_query
+            .rfind('/')
+            .expect("DATABASE_URL must include a database name");
+        let server_url = &without_query[..cut];
+        let mut admin = PgConnection::connect(&format!("{server_url}/postgres"))
+            .await
+            .expect("failed to connect to the postgres maintenance database");
+        let prefix = format!("trovato_{label}_");
+        let pattern = format!("{}%", prefix.replace('_', "\\_"));
+        let listed: Vec<String> = sqlx::query_scalar(
+            "SELECT datname FROM pg_database d WHERE datname LIKE $1 \
+             AND NOT EXISTS (SELECT 1 FROM pg_stat_activity a WHERE a.datname = d.datname)",
+        )
+        .bind(&pattern)
+        .fetch_all(&mut admin)
+        .await
+        .expect("list stale scratch databases");
+        // Only names `create(label)` makes, so `perf` does not match `perf_x_...`,
+        // and only ones made a while ago: a run that has created its database
+        // but not yet connected to it has no connection to protect it.
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis());
+        let stale = listed.into_iter().filter(|name| {
+            name.strip_prefix(&prefix)
+                .and_then(|id| Uuid::try_parse(id).ok())
+                .and_then(|id| id.get_timestamp())
+                .is_some_and(|ts| {
+                    let (secs, nanos) = ts.to_unix();
+                    let made_ms = u128::from(secs) * 1000 + u128::from(nanos / 1_000_000);
+                    now_ms.saturating_sub(made_ms) > 5 * 60 * 1000
+                })
+        });
+        // No `FORCE`: a run that connects between the list and the drop keeps
+        // its database, because a plain drop refuses one in use.
+        for name in stale {
+            let _ = admin
+                .execute(AssertSqlSafe(format!(
+                    r#"DROP DATABASE IF EXISTS "{name}""#
+                )))
+                .await;
+        }
+    }
+
     /// The pool connected to this database.
     pub fn pool(&self) -> &PgPool {
         self.pool.as_ref().expect("scratch pool was already closed")

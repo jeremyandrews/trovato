@@ -140,10 +140,33 @@ pub(crate) enum RouteParamError {
 /// tag or author is a 404 rather than an unfiltered or empty listing.
 pub(crate) async fn resolve_route_params(
     state: &AppState,
+    viewer: &crate::tap::UserContext,
     mappings: &[GatherRouteParam],
     segments: &HashMap<String, String>,
 ) -> Result<HashMap<String, String>, RouteParamError> {
+    resolve_route_args(state, viewer, mappings, segments)
+        .await
+        .map(|route| route.params)
+}
+
+/// What a route's path segments resolve to: the gather's URL arguments, and
+/// the term the first `tag_category` segment named, if any.
+pub(crate) struct ResolvedRoute {
+    pub params: HashMap<String, String>,
+    /// The tag a term page is about, as the lookup found it: the page is titled
+    /// by it (B160). No second query: it is the row the slug lookup returned.
+    pub term: Option<Tag>,
+}
+
+/// [`resolve_route_params`], keeping the tag a `tag_category` segment named.
+pub(crate) async fn resolve_route_args(
+    state: &AppState,
+    viewer: &crate::tap::UserContext,
+    mappings: &[GatherRouteParam],
+    segments: &HashMap<String, String>,
+) -> Result<ResolvedRoute, RouteParamError> {
     let mut resolved = HashMap::new();
+    let mut term: Option<Tag> = None;
 
     for mapping in mappings {
         // Path segment not present — should not happen with correct route
@@ -158,8 +181,24 @@ pub(crate) async fn resolve_route_params(
                 return Err(RouteParamError::NotFound);
             }
             match Tag::find_by_slug(state.db(), category_id, raw_value).await {
+                // A term of a vocabulary the viewer may not read is no term
+                // at all to them (B189): the same 404 as an unknown slug.
                 Ok(Some(tag)) => {
+                    match crate::content::owned_vocabulary::visible_category(
+                        state,
+                        viewer,
+                        category_id,
+                    )
+                    .await
+                    {
+                        Ok(Some(_)) => {}
+                        Ok(None) => return Err(RouteParamError::NotFound),
+                        Err(_) => return Err(RouteParamError::Failed),
+                    }
                     resolved.insert(mapping.param.clone(), tag.id.to_string());
+                    if term.is_none() {
+                        term = Some(tag);
+                    }
                 }
                 Ok(None) => return Err(RouteParamError::NotFound),
                 Err(_) => return Err(RouteParamError::Failed),
@@ -187,7 +226,10 @@ pub(crate) async fn resolve_route_params(
         }
     }
 
-    Ok(resolved)
+    Ok(ResolvedRoute {
+        params: resolved,
+        term,
+    })
 }
 
 /// Handle a gather route alias request.
@@ -204,13 +246,15 @@ async fn handle_gather_route(
     Query(extra_params): Query<HashMap<String, String>>,
     config: &RouteConfig,
 ) -> Response {
-    let resolved_params = match resolve_route_params(&state, &config.params, &segments).await {
-        Ok(resolved) => resolved,
-        Err(RouteParamError::NotFound) => return render_not_found(),
-        Err(RouteParamError::Failed) => {
-            return render_server_error("Failed to resolve the address");
-        }
-    };
+    let viewer = crate::routes::helpers::get_user_context(&session, &state).await;
+    let (resolved_params, term) =
+        match resolve_route_args(&state, &viewer, &config.params, &segments).await {
+            Ok(resolved) => (resolved.params, resolved.term),
+            Err(RouteParamError::NotFound) => return render_not_found(),
+            Err(RouteParamError::Failed) => {
+                return render_server_error("Failed to resolve the address");
+            }
+        };
 
     // Content negotiation: check format param before consuming extra_params
     let wants_json = extra_params.get("format").is_some_and(|f| f == "json");
@@ -245,7 +289,9 @@ async fn handle_gather_route(
     let feeds = query
         .map(|query| crate::routes::feed::argument_feed_links(&query, &segments))
         .unwrap_or_default();
-    let params = ExecuteParams::new(page, stage, all_filters).with_feeds(feeds);
+    let params = ExecuteParams::new(page, stage, all_filters)
+        .with_feeds(feeds)
+        .with_term(term.as_ref());
 
     // Use the request path (without query string) as the base path so that
     // pager links and form actions stay on the pretty URL.

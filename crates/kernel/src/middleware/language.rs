@@ -284,7 +284,7 @@ pub async fn negotiate_language(
     // - path_alias skips them because they never need alias-to-source rewriting.
     if path.starts_with("/static")
         || path.starts_with("/api")
-        || path == "/health"
+        || crate::routes::health::is_probe_path(path)
         || path.starts_with("/install")
     {
         request

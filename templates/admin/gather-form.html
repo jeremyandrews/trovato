@@ -109,8 +109,8 @@
 
         <div class="form-item">
             <label for="items_per_page" class="form-item__label">Items per page</label>
-            <input type="number" id="items_per_page" class="form-text" value="10" min="1" max="100">
-            <p class="form-item__description">Maximum: 100</p>
+            <input type="number" id="items_per_page" class="form-text" value="" min="1" max="100" placeholder="Site default">
+            <p class="form-item__description">Maximum: 100. Leave blank to use the site's items per page (Site settings).</p>
         </div>
 
         <div class="form-item">
@@ -129,6 +129,15 @@
             <label><input type="checkbox" id="pager_enabled" checked> Enable pager</label>
             <label style="margin-left: 1rem;"><input type="checkbox" id="pager_show_count"> Show result count</label>
             <label style="margin-left: 1rem;"><input type="checkbox" id="pager_zero_based"> Count <code>?page=</code> from 0 (Drupal links)</label>
+        </div>
+
+        {# Shown only for a gather that has a feed (display.feed). #}
+        <div class="form-item" id="feed-settings" hidden>
+            <label class="form-item__label">Feed</label>
+            <label for="feed_items">Number of items in the feed</label>
+            <input type="number" id="feed_items" class="form-text" min="1" max="200">
+            <label><input type="checkbox" id="feed_full_content"> Each entry carries the full text, not only the summary</label>
+            <p class="form-item__description">RSS and Atom alike. Saving keeps the feed's path and title.</p>
         </div>
 
         <div id="includes-section">
