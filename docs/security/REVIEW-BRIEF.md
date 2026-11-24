@@ -568,9 +568,13 @@ surface and it is enumerated in the surface notes below.
 
 Three content formats exist (`content/filter.rs:38-69`): `plain_text`,
 `filtered_html` and `full_html`, defaulting to `plain_text`. `full_html` is
-unfiltered by design and gated on the `use full_html` permission.
-`for_format_safe` downgrades `full_html` and anything unknown to `plain_text`,
-and every public render path uses it.
+gated on the `use full_html` permission but is never unfiltered: it is cleaned
+by a fixed, permissive ammonia allowlist (`TrustedHtmlFilter`, `div`, `span`,
+`figure`, tables, headings, lists, images, `class`/`id` on every tag; `script`,
+`style`, every `on*` attribute and `javascript:`/`data:` URLs always removed).
+`FilterPipeline::for_format` builds a pipeline that sanitizes whichever format
+it is given — including an untrusted or made-up format string, which falls
+back to `plain_text` — so every public render path uses it safely (B151).
 
 Ammonia 4.1.4 is applied at five places with five different allowlists: the
 filtered HTML pipeline, the markdown filter (defaults plus `class` on `code`,
@@ -582,23 +586,27 @@ element templates (`theme/render.rs:42-56`), with a `SAFE_TAGS` allowlist
 excluding `script`, `iframe`, `object`, `embed`, `form`, `style`, `link`,
 `meta` and `input`, falling back to `span`.
 
-**Tests.** Mostly unit rather than integration. `content/filter.rs` carries five
-blocks labelled security regression tests plus `for_format_safe_rejects_full_html`
-and `for_format_checked_downgrades_full_html`. `theme/engine.rs` has
+**Tests.** Mostly unit rather than integration. `content/filter.rs` carries a
+`TrustedHtmlFilter` block of security regression tests (script and style
+elements, the `style` attribute, every `on*` handler, `javascript:`/`data:`
+URLs, SVG `onload`, `iframe`, an unclosed tag) plus
+`for_format_rejects_script_in_full_html` and
+`for_format_checked_downgrades_full_html`. `theme/engine.rs` has
 `markdown_filter_sanitizes_dangerous_html`,
 `an_arbitrary_class_on_a_div_is_still_stripped`,
 `a_language_name_cannot_smuggle_anything`, `the_class_allowlist_is_per_element`.
-`theme/render.rs` has `test_process_value_rejects_full_html`,
-`test_render_markup_rejects_unsafe_tag`. `tests/theme_test.rs` contains **no**
-XSS assertion.
+`theme/render.rs` has `test_process_value_rejects_full_html` (now asserting the
+cleaned-HTML property rather than escaping), `test_render_markup_rejects_unsafe_tag`.
+`tests/theme_test.rs` contains **no** XSS assertion.
 
 **No test found for:** the claim attached to `templates/search.html:29` that the
 search snippet is safe, where the escaping step is a SQL comment in
 `search/mod.rs` asserted nowhere, so a query rewrite dropping it would be a
-stored XSS with no failing test; the `.txt` no autoescape boundary;
-`services/tile.rs:95`, which hardcodes `has_full_html = true` so a tile body
-renders unfiltered HTML regardless of who wrote it, with a comment asserting
-tiles are admin authored and nothing in the code enforcing it.
+stored XSS with no failing test; the `.txt` no autoescape boundary.
+`services/tile.rs`'s `custom_html_body` (B151) no longer hardcodes
+`has_full_html = true`: it now calls `FilterPipeline::for_format`, the same
+sanitized path every other render uses, so a tile body is cleaned regardless
+of who wrote it.
 
 ### 1.7 The security headers middleware
 

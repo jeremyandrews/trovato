@@ -420,7 +420,7 @@ fn teaser(body: &str) -> String {
     } else {
         text
     };
-    FilterPipeline::for_format_safe("plain_text").process(&cut)
+    FilterPipeline::for_format("plain_text").process(&cut)
 }
 
 #[cfg(test)]

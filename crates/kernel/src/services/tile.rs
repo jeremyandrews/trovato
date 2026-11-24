@@ -280,11 +280,10 @@ fn custom_html_body(tile: &Tile) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or("filtered_html");
 
-    // Tile configs are admin-set (saved via admin forms with "configure site"
-    // permission). for_format_checked with has_full_html=true is appropriate —
-    // admins may use full_html. Unknown format strings fall through to
-    // for_format() which defaults to plain_text (safe).
-    crate::content::FilterPipeline::for_format_checked(format, true).process(body)
+    // The same view path every other body goes through: full_html is cleaned
+    // by TrustedHtmlFilter, so a tile body is sanitized regardless of who
+    // wrote it. An unknown format string falls through to plain_text (safe).
+    crate::content::FilterPipeline::for_format(format).process(body)
 }
 
 /// Render a tile's body through the first template its suggestions resolve to:
@@ -402,6 +401,23 @@ mod tests {
         assert!(html.contains("tile--custom_html"));
         assert!(html.contains("Test Tile"));
         assert!(html.contains("<p>Hello <strong>World</strong></p>"));
+    }
+
+    // SECURITY REGRESSION TEST — B151: a custom_html tile in full_html is
+    // sanitized like any other render path, regardless of who wrote it.
+    #[test]
+    fn render_custom_html_tile_in_full_html_strips_script() {
+        let tile = make_tile(
+            "custom_html",
+            serde_json::json!({
+                "body": r#"<p class="lead">Hi</p><script>alert(1)</script><img src=x onerror="alert(1)">"#,
+                "format": "full_html"
+            }),
+        );
+        let html = wrap_tile(&tile, &custom_html_body(&tile));
+        assert!(html.contains(r#"<p class="lead">Hi</p>"#), "{html}");
+        assert!(!html.contains("<script"), "{html}");
+        assert!(!html.contains("onerror"), "{html}");
     }
 
     #[test]

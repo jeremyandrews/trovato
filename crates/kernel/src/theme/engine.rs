@@ -15,6 +15,34 @@ use crate::services::locale::LocaleService;
 
 use super::render::RenderTreeConsumer;
 
+/// The `text_format` Tera filter: `{{ value | text_format(format=fmt) }}`.
+///
+/// A struct rather than a closure so it can report [`tera::Filter::is_safe`]
+/// as `true`: every pipeline [`FilterPipeline::for_format`] builds, including
+/// `full_html`'s, is sanitized before it is returned, so Tera does not need to
+/// HTML-escape the result and a template does not need `| safe`.
+struct TextFormatFilter;
+
+impl tera::Filter for TextFormatFilter {
+    fn filter(
+        &self,
+        value: &tera::Value,
+        args: &std::collections::HashMap<String, tera::Value>,
+    ) -> tera::Result<tera::Value> {
+        let text = tera::try_get_value!("text_format", "value", String, value);
+        let format = args
+            .get("format")
+            .and_then(|v| v.as_str())
+            .unwrap_or("plain_text");
+        let pipeline = FilterPipeline::for_format(format);
+        Ok(tera::Value::String(pipeline.process(&text)))
+    }
+
+    fn is_safe(&self) -> bool {
+        true
+    }
+}
+
 tokio::task_local! {
     /// Whether the request being handled is for an `/admin` path, set by
     /// [`scope_request`]; outside a request (a background task) it is unset,
@@ -676,20 +704,10 @@ impl ThemeEngine {
             },
         );
 
-        // Filter for text format processing
-        tera.register_filter(
-            "text_format",
-            |value: &tera::Value, args: &std::collections::HashMap<String, tera::Value>| {
-                let text = tera::try_get_value!("text_format", "value", String, value);
-                let format = args
-                    .get("format")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("plain_text");
-
-                let pipeline = FilterPipeline::for_format_safe(format);
-                Ok(tera::Value::String(pipeline.process(&text)))
-            },
-        );
+        // Filter for text format processing: a struct, not a closure, so it
+        // can report `is_safe() == true` (its output is sanitized by
+        // construction — see `TextFormatFilter`) — needs no `| safe`.
+        tera.register_filter("text_format", TextFormatFilter);
 
         // Filter for formatting Unix timestamps as human-readable dates.
         //
@@ -1556,6 +1574,35 @@ mod tests {
         let result = tera.render("test", &ctx).unwrap();
         // Japanese CLDR format
         assert_eq!(result, "2025年2月15日", "Japanese format: {result}");
+    }
+
+    // SECURITY REGRESSION TEST — B151: the `text_format` filter sanitizes
+    // full_html without needing `| safe`, and its output is never re-escaped.
+    #[test]
+    fn test_text_format_filter_cleans_full_html_without_safe() {
+        let mut tera = Tera::default();
+        ThemeEngine::register_filters(&mut tera, None);
+
+        tera.add_raw_template("test", r#"{{ value | text_format(format="full_html") }}"#)
+            .unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert(
+            "value",
+            r#"<p class="lead">Hi</p><script>alert(1)</script>"#,
+        );
+        let result = tera.render("test", &ctx).unwrap();
+        assert!(result.contains(r#"<p class="lead">Hi</p>"#), "{result}");
+        assert!(
+            !result.contains("&lt;p"),
+            "escaped despite is_safe: {result}"
+        );
+        assert!(!result.contains("script"), "{result}");
+    }
+
+    #[test]
+    fn test_text_format_filter_is_safe() {
+        use tera::Filter;
+        assert!(TextFormatFilter.is_safe());
     }
 
     #[test]

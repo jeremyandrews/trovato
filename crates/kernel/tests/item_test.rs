@@ -60,13 +60,15 @@ fn filter_filtered_html_removes_event_handlers() {
     assert!(output.contains(r#"href="/page""#));
 }
 
+// SECURITY REGRESSION TEST — B151: full_html is sanitized, never raw
 #[test]
-fn filter_full_html_allows_everything() {
+fn filter_full_html_strips_script_but_keeps_rich_markup() {
     let pipeline = FilterPipeline::for_format("full_html");
-    let input = "<script>alert('test')</script>";
+    let input = r#"<p class="lead">Hi</p><script>alert('test')</script>"#;
     let output = pipeline.process(input);
 
-    assert_eq!(input, output);
+    assert!(!output.contains("script"));
+    assert!(output.contains(r#"<p class="lead">Hi</p>"#));
 }
 
 // ============================================================================

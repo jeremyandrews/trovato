@@ -20,7 +20,7 @@ use crate::state::AppState;
 
 /// Render a comment body to HTML with safe format whitelisting.
 fn render_comment_body(comment: &Comment) -> String {
-    FilterPipeline::for_format_safe(&comment.body_format).process(&comment.body)
+    FilterPipeline::for_format(&comment.body_format).process(&comment.body)
 }
 
 // =============================================================================

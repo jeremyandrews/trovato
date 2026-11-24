@@ -329,8 +329,10 @@ fn format_form(
             )
             .title("Filter")
             .description(
-                "No filtering keeps text exactly as written, and is never rendered from \
-                 stored content: such a field is shown as plain text.",
+                "No filtering cleans text with a fixed, permissive rule rather than a \
+                 configured allowlist: ordinary rich markup (headings, lists, tables, \
+                 images, classes) is kept, and a <script>, an event handler and a \
+                 javascript: URL are always removed.",
             )
             .default_value(if values.filter.is_empty() {
                 "html".to_string()
