@@ -840,10 +840,7 @@ mod tests {
             description: String::new(),
             title_label: None,
             fields: vec![
-                FieldDefinition::new(
-                    "field_author",
-                    FieldType::RecordReference("person".into()),
-                ),
+                FieldDefinition::new("field_author", FieldType::RecordReference("person".into())),
                 FieldDefinition::new(
                     "field_topics",
                     FieldType::RecordReference("category_term".into()),
@@ -871,7 +868,9 @@ mod tests {
             let at = html.find(&needle).unwrap_or_else(|| panic!("{html}"));
             let tag_end = at + html[at..].find('>').unwrap();
             let tag = &html[at..tag_end];
-            let p = tag.find("placeholder=\"").unwrap_or_else(|| panic!("{tag}"));
+            let p = tag
+                .find("placeholder=\"")
+                .unwrap_or_else(|| panic!("{tag}"));
             let start = p + "placeholder=\"".len();
             let end = start + tag[start..].find('"').unwrap();
             tag[start..end].to_string()

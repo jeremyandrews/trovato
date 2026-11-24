@@ -63,7 +63,11 @@ pub(crate) async fn build(
         .with_permitted_formats(permitted_text_formats(user))
         .with_reference_titles(titles)
         .with_item_id(item.map(|i| i.id))
-        .with_placeholders(record_reference_placeholders(state, content_type, &language))
+        .with_placeholders(record_reference_placeholders(
+            state,
+            content_type,
+            &language,
+        ))
         .with_default_placeholder(translate(state, "Search...", &language))
         .with_owner_hint(translate(state, "Choose the owner first", &language))
         .with_field_modes(modes)
