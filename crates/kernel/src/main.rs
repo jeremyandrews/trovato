@@ -95,6 +95,11 @@ enum Commands {
         #[command(subcommand)]
         action: UserAction,
     },
+    /// Cache commands.
+    Cache {
+        #[command(subcommand)]
+        action: CacheAction,
+    },
     /// Apply pending kernel and plugin migrations, under one lock.
     ///
     /// Safe to run from several places at once: a second run waits for the
@@ -168,7 +173,50 @@ enum ConfigAction {
 }
 
 #[derive(Subcommand)]
+enum CacheAction {
+    /// Tell every running server to drop its in-memory caches, so a change
+    /// written straight to the database is served on the next request.
+    Clear {
+        /// Clear only this kind (repeatable); every kind when omitted.
+        #[arg(long = "kind", value_name = "KIND", value_parser = parse_cache_kind)]
+        kinds: Vec<CacheKind>,
+    },
+}
+
+/// A `--kind` value, by the name `cache:gen` uses for it.
+fn parse_cache_kind(name: &str) -> std::result::Result<CacheKind, String> {
+    CacheKind::from_name(name).ok_or_else(|| {
+        let names: Vec<&str> = CacheKind::ALL.iter().map(|k| k.as_str()).collect();
+        format!("unknown cache kind; one of: {}", names.join(", "))
+    })
+}
+
+#[derive(Subcommand)]
 enum UserAction {
+    /// Create an account, with the checks the admin "Add user" form makes.
+    ///
+    /// The password is read from stdin, never from the command line. Exits 1,
+    /// creating nothing, when the name or email is taken or missing.
+    Create {
+        /// Username.
+        username: String,
+        /// Email address (required, as on the admin form).
+        // An `Option` rather than a required argument so that a missing
+        // address fails as an empty one does, with the form's message and
+        // exit code 1, not clap's usage error and exit code 2.
+        #[arg(long, value_name = "ADDRESS")]
+        mail: Option<String>,
+        /// Give the account this role (repeatable).
+        #[arg(long = "role", value_name = "ROLE")]
+        roles: Vec<String>,
+        /// Create the account blocked.
+        #[arg(long)]
+        blocked: bool,
+        /// Create the account with no password: it cannot sign in until
+        /// `trovato user reset-password` (or a password reset) sets one.
+        #[arg(long)]
+        no_password: bool,
+    },
     /// Reset a user's password.
     ResetPassword {
         /// Username.
@@ -244,6 +292,7 @@ async fn main() -> Result<()> {
         Some(Commands::Plugin { action }) => run_plugin_command(action).await,
         Some(Commands::Config { action }) => run_config_command(action).await,
         Some(Commands::User { action }) => run_user_command(action).await,
+        Some(Commands::Cache { action }) => run_cache_command(action).await,
         Some(Commands::Migrate {
             status,
             dry_run,
@@ -1178,17 +1227,30 @@ async fn run_user_command(action: UserAction) -> Result<()> {
     prepare_schema_for_cli(&pool, &config).await?;
 
     match action {
+        UserAction::Create {
+            username,
+            mail,
+            roles,
+            blocked,
+            no_password,
+        } => {
+            let account = NewAccount {
+                username,
+                mail: mail.unwrap_or_default(),
+                roles,
+                blocked,
+            };
+            let password = if no_password {
+                None
+            } else {
+                Some(read_password_from_stdin("Password: ")?)
+            };
+            create_user_from_cli(&config, account, password).await?;
+        }
         UserAction::ResetPassword { username, password } => {
             let password = match password {
                 Some(p) => p,
-                None => {
-                    eprint!("New password: ");
-                    let mut buf = String::new();
-                    std::io::stdin()
-                        .read_line(&mut buf)
-                        .context("failed to read password from stdin")?;
-                    buf.trim().to_string()
-                }
+                None => read_password_from_stdin("New password: ")?,
             };
 
             if password.len() < 12 {
@@ -1265,6 +1327,104 @@ async fn run_user_command(action: UserAction) -> Result<()> {
     Ok(())
 }
 
+/// Read one line from stdin as a password, prompting on stderr: how
+/// `user create` and `user reset-password` take one, so it never appears in
+/// argv, the shell history or the output.
+fn read_password_from_stdin(prompt: &str) -> Result<String> {
+    eprint!("{prompt}");
+    let mut buf = String::new();
+    std::io::stdin()
+        .read_line(&mut buf)
+        .context("failed to read password from stdin")?;
+    Ok(buf.trim().to_string())
+}
+
+/// What `trovato user create` was asked for, short of the password.
+struct NewAccount {
+    username: String,
+    mail: String,
+    roles: Vec<String>,
+    blocked: bool,
+}
+
+/// `trovato user create`: the admin "Add user" form's checks and write, from
+/// the command line.
+///
+/// The account is written by the site's own `UserService`, as the form writes
+/// it, so `tap_user_register` reaches the enabled plugins and the audit trail
+/// records it; roles go through `RoleService`, which audits each grant as the
+/// form's role checkboxes do. That takes the full server state, built here the
+/// way `trovato generate` builds it. `password` is `None` for `--no-password`.
+async fn create_user_from_cli(
+    config: &Config,
+    account: NewAccount,
+    password: Option<String>,
+) -> Result<()> {
+    let state = AppState::new(config)
+        .await
+        .context("failed to initialize application state")?;
+
+    let mut problems = routes::admin_user::new_account_problems(
+        &state,
+        &account.username,
+        &account.mail,
+        password.as_deref(),
+    )
+    .await;
+    let mut roles = Vec::new();
+    for name in &account.roles {
+        match models::Role::find_by_name(state.db(), name).await? {
+            Some(role) => roles.push(role),
+            None => problems.push(format!("Role '{name}' not found.")),
+        }
+    }
+    if !problems.is_empty() {
+        anyhow::bail!("{}", problems.join("\n"));
+    }
+
+    let input = models::CreateUser {
+        name: account.username.clone(),
+        password: password.unwrap_or_default(),
+        mail: account.mail.clone(),
+        // Never a superuser: the form allows it only to a superuser, and
+        // nobody is signed in here.
+        is_admin: false,
+    };
+    let nobody = tap::UserContext::anonymous();
+    let user = if account.blocked {
+        state.users().create_with_status(input, 0, &nobody).await?
+    } else {
+        state.users().create(input, &nobody).await?
+    };
+    for role in &roles {
+        state.roles().assign_to_user(user.id, role.id).await?;
+    }
+
+    let status = if account.blocked { "blocked" } else { "active" };
+    println!("Created {status} user '{}' ({}).", user.name, user.id);
+    if !roles.is_empty() {
+        let names: Vec<&str> = roles.iter().map(|r| r.name.as_str()).collect();
+        println!("Roles: {}.", names.join(", "));
+    }
+    if user.pass.is_empty() {
+        println!(
+            "It has no password and cannot sign in until one is set: \
+             trovato user reset-password {}",
+            user.name
+        );
+    }
+    if let Some(warning) =
+        routes::admin_user::access_rule_warning(&state, &user.name, &account.mail).await
+    {
+        println!("Warning: {warning}");
+    }
+    println!(
+        "{}",
+        bump_from_cli(config, &[CacheKind::Users, CacheKind::Permissions]).await
+    );
+    Ok(())
+}
+
 /// Resolve a username and a role name, or say which one was not found.
 ///
 /// Both lookups are by name rather than id, because a name is what an operator
@@ -1288,17 +1448,44 @@ async fn find_user_and_role(
 /// status waits for a restart; everything else an import writes does not.
 const CLI_PLUGIN_RESTART_NOTE: &str = "Plugin enable and disable take effect when the servers restart (all of them, if more than one).";
 
-/// Tell every running server to drop its caches of `kinds` (`cache::generation`),
-/// and say what happened in a line fit for the terminal.
+/// `trovato cache clear`.
+async fn run_cache_command(action: CacheAction) -> Result<()> {
+    let config = Config::from_env().context("failed to load configuration")?;
+    match action {
+        CacheAction::Clear { kinds } => {
+            let kinds = if kinds.is_empty() {
+                CacheKind::ALL.to_vec()
+            } else {
+                kinds
+            };
+            // Clearing is this command's whole job, so a Redis that cannot be
+            // reached is a failure here, not the note it is after a write.
+            clear_caches(&config, &kinds)
+                .await
+                .context("running servers were NOT told: Redis could not be reached")?;
+            let names: Vec<&str> = kinds.iter().map(|k| k.as_str()).collect();
+            println!("Cleared: {}.", names.join(", "));
+            println!("Running servers drop their cached copies within a second.");
+        }
+    }
+    Ok(())
+}
+
+/// Tell every running server to drop its caches of `kinds`: the one path every
+/// command takes, `cache clear` included (`cache::clear_everywhere`).
 ///
 /// A command runs in its own process, with no server cache of its own to
 /// clear; the bump is how the servers hear about the write.
+async fn clear_caches(config: &Config, kinds: &[CacheKind]) -> Result<()> {
+    let client = redis::Client::open(config.redis_url.as_str())?;
+    cache::clear_everywhere(&client, kinds).await
+}
+
+/// [`clear_caches`] after a command's write, saying what happened in a line
+/// fit for the terminal: the write has happened either way, so a Redis that
+/// cannot be reached is reported rather than turned into a failure.
 async fn bump_from_cli(config: &Config, kinds: &[CacheKind]) -> String {
-    let bumped = match redis::Client::open(config.redis_url.as_str()) {
-        Ok(client) => cache::generation::bump_now(&client, kinds).await,
-        Err(e) => Err(e.into()),
-    };
-    match bumped {
+    match clear_caches(config, kinds).await {
         Ok(()) => "Running servers drop their cached copies within a second.".to_string(),
         Err(e) => format!(
             "Running servers were NOT told: Redis could not be reached ({e:#}). \

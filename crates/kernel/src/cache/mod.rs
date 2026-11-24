@@ -12,9 +12,31 @@ use redis::Client as RedisClient;
 use tracing::{Instrument, debug, warn};
 
 use crate::metrics::{CacheName, Metrics};
+use generation::CacheKind;
 
 /// Default TTL for a cached value (5 minutes).
 const DEFAULT_TTL_SECS: u64 = 300;
+
+/// Clear `kinds` on every running server, from a process that runs none: the
+/// one invalidation path of the command line. `trovato cache clear` is this
+/// and nothing else; every other command that writes behind the servers'
+/// backs (`config import`, `plugin ...`, `user ...`, `generate`) ends with it.
+///
+/// Bumps each kind's generation ([`generation`]) and waits for Redis to
+/// answer; every server clears those caches within one poll. Clearing
+/// [`CacheKind::SiteConfig`] also drops the search settings' copy in the shared
+/// tier ([`crate::search::settings::SETTINGS_CACHE_KEY`]): the one value read
+/// from `site_config` that is held in Redis rather than in a server's memory,
+/// so no generation reaches it and it would otherwise wait out its TTL.
+pub async fn clear_everywhere(redis: &RedisClient, kinds: &[CacheKind]) -> anyhow::Result<()> {
+    generation::bump_now(redis, kinds).await?;
+    if kinds.contains(&CacheKind::SiteConfig) {
+        let mut conn = redis.get_multiplexed_async_connection().await?;
+        conn.del::<_, ()>(crate::search::settings::SETTINGS_CACHE_KEY)
+            .await?;
+    }
+    Ok(())
+}
 
 /// The shared cache layer.
 #[derive(Clone)]

@@ -193,7 +193,7 @@ impl UserService {
     ) -> Result<User> {
         // Hash before BEGIN: Argon2 takes a while, and a pooled connection
         // must not sit idle in a transaction meanwhile.
-        let pass = crate::models::user::hash_password(&input.password)?;
+        let pass = crate::models::user::stored_password(&input.password)?;
         let mut tx = self.inner.pool.begin().await?;
         let user = User::insert_hashed(&mut *tx, input, &pass, status).await?;
         for message in mail(&user) {

@@ -50,6 +50,8 @@ pub struct User {
 #[derive(Debug, Deserialize)]
 pub struct CreateUser {
     pub name: String,
+    /// The plain password, hashed on insert. Empty for an account with no
+    /// password, which cannot sign in with one until a password is set.
     pub password: String,
     pub mail: String,
     pub is_admin: bool,
@@ -135,7 +137,7 @@ impl User {
     /// Create a new user (active by default).
     pub async fn create(pool: &PgPool, input: CreateUser) -> Result<Self> {
         let id = Uuid::now_v7();
-        let pass = hash_password(&input.password)?;
+        let pass = stored_password(&input.password)?;
 
         let user = sqlx::query_as::<_, User>(
             r#"
@@ -164,7 +166,7 @@ impl User {
         input: CreateUser,
         status: i16,
     ) -> Result<Self> {
-        let pass = hash_password(&input.password)?;
+        let pass = stored_password(&input.password)?;
         Self::insert_hashed(executor, input, &pass, status).await
     }
 
@@ -555,6 +557,17 @@ fn argon2_instance() -> Argon2<'static> {
 ///
 /// Also the hash of an OAuth client secret a config import supplies
 /// (`config_storage::plugin_config::hash_secret`).
+/// What `users.pass` holds for a new account's `password`: its hash, or
+/// nothing for an empty one, which is an account with no password (it cannot
+/// sign in with one until a password is set, as after `clear_password`). Not
+/// the hash of the empty string, which an empty password would match.
+pub(crate) fn stored_password(password: &str) -> Result<String> {
+    if password.is_empty() {
+        return Ok(String::new());
+    }
+    hash_password(password)
+}
+
 pub(crate) fn hash_password(password: &str) -> Result<String> {
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = argon2_instance();

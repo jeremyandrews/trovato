@@ -10,8 +10,9 @@
 //! Reads go through the kernel's two tier cache ([`CacheLayer`]) under
 //! [`SETTINGS_CACHE_KEY`], so a search request costs no database round trip;
 //! [`SearchSettings::save`] drops the cached copy. A value written behind the
-//! form's back (a config import, a hand edit) is picked up when the cached copy
-//! expires, within [`SETTINGS_CACHE_TTL_SECS`].
+//! form's back is picked up when the cached copy expires, within
+//! [`SETTINGS_CACHE_TTL_SECS`], or at once after `trovato config import` or
+//! `trovato cache clear`, which drop it ([`crate::cache::clear_everywhere`]).
 //!
 //! Defaults are the literal values `templates/search.html` carried before this
 //! model existed, so a site that never opens the screen ranks exactly as before.

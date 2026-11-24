@@ -260,6 +260,84 @@ async fn add_user_form(State(state): State<AppState>, session: Session) -> Respo
     .await
 }
 
+/// Everything wrong with a new account, in the words the "Add user" form uses:
+/// empty when it may be created.
+///
+/// The one set of rules for an account an administrator creates, on this form
+/// and with `trovato user create`. A name and an email address are required,
+/// and neither may belong to another account (compared case-insensitively). A
+/// `password` of `None` is an account created with no password at all
+/// (`--no-password`); `Some` is checked by [`validate_password`].
+pub(crate) async fn new_account_problems(
+    state: &AppState,
+    name: &str,
+    mail: &str,
+    password: Option<&str>,
+) -> Vec<String> {
+    let mut errors = Vec::new();
+
+    if name.trim().is_empty() {
+        errors.push("Username is required.".to_string());
+    }
+
+    if mail.trim().is_empty() {
+        errors.push("Email is required.".to_string());
+    }
+
+    if let Some(password) = password
+        && let Err(msg) = validate_password(password)
+    {
+        errors.push(msg.to_string());
+    }
+
+    // Check if username already exists
+    if let Ok(Some(_)) = state.users().find_by_name(name).await {
+        errors.push(format!("Username '{name}' is already taken."));
+    }
+
+    // Check if email already exists
+    if let Ok(Some(_)) = state.users().find_by_mail(mail).await {
+        errors.push(format!("Email '{mail}' is already in use."));
+    }
+
+    errors
+}
+
+/// What to tell the administrator who just created the account `name` when an
+/// access rule (B108) blocks its name or address, or `None`.
+///
+/// Access rules warn here rather than refuse: an administrator may knowingly
+/// create an account the public registration form would turn away.
+pub(crate) async fn access_rule_warning(
+    state: &AppState,
+    name: &str,
+    mail: &str,
+) -> Option<String> {
+    let blocked = crate::services::access_rule::blocked_types(
+        state.db(),
+        Some(name.trim()),
+        Some(mail.trim()),
+        None,
+    )
+    .await;
+    if blocked.is_empty() {
+        return None;
+    }
+    let types: Vec<&str> = blocked
+        .iter()
+        .map(|t| match t {
+            crate::services::access_rule::RuleType::Username => "username",
+            crate::services::access_rule::RuleType::Email => "email address",
+            crate::services::access_rule::RuleType::Host => "address",
+        })
+        .collect();
+    Some(format!(
+        "User {} was created, but an access rule blocks its {}: it could not have registered itself, and cannot sign in until the rule is changed.",
+        name.trim(),
+        types.join(" and "),
+    ))
+}
+
 /// Handle add user form submission.
 ///
 /// POST /admin/people/add
@@ -278,31 +356,8 @@ async fn add_user_submit(
         return resp;
     }
 
-    // Validate
-    let mut errors = Vec::new();
-
-    if form.name.trim().is_empty() {
-        errors.push("Username is required.".to_string());
-    }
-
-    if form.mail.trim().is_empty() {
-        errors.push("Email is required.".to_string());
-    }
-
     let password = form.password.as_deref().unwrap_or("");
-    if let Err(msg) = validate_password(password) {
-        errors.push(msg.to_string());
-    }
-
-    // Check if username already exists
-    if let Ok(Some(_)) = state.users().find_by_name(&form.name).await {
-        errors.push(format!("Username '{}' is already taken.", form.name));
-    }
-
-    // Check if email already exists
-    if let Ok(Some(_)) = state.users().find_by_mail(&form.mail).await {
-        errors.push(format!("Email '{}' is already in use.", form.mail));
-    }
+    let errors = new_account_problems(&state, &form.name, &form.mail, Some(password)).await;
 
     if !errors.is_empty() {
         let csrf_token = generate_csrf_token(&session).await;
@@ -356,30 +411,7 @@ async fn add_user_submit(
         Ok(user) => {
             apply_role_membership(&state, &current_user, user.id, &form.roles).await;
             tracing::info!(name = %form.name, "user created");
-            // Access rules (B108) warn here rather than refuse: an
-            // administrator may knowingly create an account the public
-            // registration form would turn away.
-            let blocked = crate::services::access_rule::blocked_types(
-                state.db(),
-                Some(form.name.trim()),
-                Some(form.mail.trim()),
-                None,
-            )
-            .await;
-            if !blocked.is_empty() {
-                let types: Vec<&str> = blocked
-                    .iter()
-                    .map(|t| match t {
-                        crate::services::access_rule::RuleType::Username => "username",
-                        crate::services::access_rule::RuleType::Email => "email address",
-                        crate::services::access_rule::RuleType::Host => "address",
-                    })
-                    .collect();
-                let message = format!(
-                    "User {} was created, but an access rule blocks its {}: it could not have registered itself, and cannot sign in until the rule is changed.",
-                    form.name.trim(),
-                    types.join(" and "),
-                );
+            if let Some(message) = access_rule_warning(&state, &form.name, &form.mail).await {
                 let _ = session.insert(ACCESS_RULE_WARNING_KEY, message).await;
             }
             Redirect::to("/admin/people").into_response()

@@ -97,6 +97,12 @@ impl CacheKind {
         }
     }
 
+    /// The kind named `name`, as [`as_str`](Self::as_str) spells it: how an
+    /// operator names one (`trovato cache clear --kind items`).
+    pub fn from_name(name: &str) -> Option<CacheKind> {
+        Self::ALL.into_iter().find(|k| k.as_str() == name)
+    }
+
     /// The kind whose cache holds rows of `table`, if any.
     pub fn for_table(table: &str) -> Option<CacheKind> {
         let table = table.trim_matches('"').rsplit('.').next().unwrap_or(table);
@@ -232,6 +238,15 @@ mod tests {
         let names: std::collections::HashSet<_> =
             CacheKind::ALL.iter().map(|k| k.as_str()).collect();
         assert_eq!(names.len(), CacheKind::ALL.len());
+    }
+
+    #[test]
+    fn every_kind_is_found_by_its_name() {
+        for kind in CacheKind::ALL {
+            assert_eq!(CacheKind::from_name(kind.as_str()), Some(kind));
+        }
+        assert_eq!(CacheKind::from_name("Items"), None);
+        assert_eq!(CacheKind::from_name(""), None);
     }
 
     #[test]

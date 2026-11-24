@@ -1,0 +1,625 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+//! `trovato user create` and `trovato cache clear` (B165), through the real
+//! binary.
+//!
+//! An operator's account import and a direct database write both used to need
+//! more than the command line gave: the first a SQL `INSERT INTO users`, the
+//! second a server restart. Each test here runs `trovato` as a child process
+//! against a scratch database of its own, and the cache test runs a real
+//! `trovato serve` beside it, because what is under test is one process telling
+//! another.
+//!
+//! Named to sort after every other kernel test target, so adding it does not
+//! move any existing kernel target to a different CI shard
+//! (`scripts/ci-test-shard.sh` partitions by sorted index).
+//!
+//! Requires Postgres and Redis; runs in CI.
+
+use std::net::TcpListener as StdListener;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::time::{Duration, Instant};
+
+use sqlx::PgPool;
+use tokio::io::AsyncWriteExt;
+use tokio::process::{Child, Command};
+use trovato_test_utils::ScratchDb;
+use uuid::Uuid;
+
+/// Held by every test that clears caches: a clear of every kind drops the
+/// shared search settings copy one of them watches.
+static CLEARING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// A password long enough for the admin form's rule (12 to 128 characters).
+const PASSWORD: &str = "operator-cli-password-1";
+
+fn bin() -> PathBuf {
+    PathBuf::from(env!("CARGO_BIN_EXE_trovato"))
+}
+
+fn repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+}
+
+/// A directory under the system temp directory, removed on drop.
+struct TempDir(PathBuf);
+
+impl TempDir {
+    fn new(label: &str) -> Self {
+        let dir = std::env::temp_dir().join(format!("trovato-{label}-{}", Uuid::now_v7().simple()));
+        std::fs::create_dir_all(&dir).unwrap();
+        Self(dir)
+    }
+}
+
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A `trovato` command with a clean environment, so the developer's `.env`
+/// and the suite's shared `DATABASE_URL` cannot leak in. No plugins: these
+/// tests are about the kernel.
+fn command(database_url: &str, work: &TempDir) -> Command {
+    let mut cmd = Command::new(bin());
+    cmd.env_clear()
+        .current_dir(&work.0)
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("DATABASE_URL", database_url)
+        .env("REDIS_URL", trovato_test_utils::env::redis_url())
+        .env("DATABASE_MAX_CONNECTIONS", "5")
+        .env("RUST_LOG", "warn")
+        .env("TEMPLATES_DIR", repo_root().join("templates"))
+        .env("STATIC_DIR", repo_root().join("static"))
+        .env("UPLOADS_DIR", work.0.join("uploads"))
+        .env("THEMES_DIR", work.0.join("themes"))
+        .env("PLUGINS_DIR", work.0.join("plugins"))
+        .env("COOKIE_SECURE", "never")
+        .kill_on_drop(true);
+    cmd
+}
+
+/// What a finished command said.
+struct Ran {
+    code: Option<i32>,
+    stdout: String,
+    stderr: String,
+}
+
+impl Ran {
+    fn all(&self) -> String {
+        format!(
+            "exit {:?}\n--- stdout\n{}--- stderr\n{}",
+            self.code, self.stdout, self.stderr
+        )
+    }
+}
+
+/// Run `trovato <args>` to completion, writing `stdin` to it.
+async fn run(database_url: &str, args: &[&str], stdin: &str) -> Ran {
+    let work = TempDir::new("cli");
+    let mut child = command(database_url, &work)
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn trovato");
+    let mut input = child.stdin.take().unwrap();
+    input.write_all(stdin.as_bytes()).await.unwrap();
+    drop(input);
+    let out = child.wait_with_output().await.unwrap();
+    Ran {
+        code: out.status.code(),
+        stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+    }
+}
+
+async fn migrated(label: &str) -> ScratchDb {
+    let db = ScratchDb::create(label).await;
+    trovato_kernel::db::run_migrations(db.pool())
+        .await
+        .expect("migrate the scratch database");
+    db
+}
+
+#[derive(sqlx::FromRow)]
+struct Account {
+    id: Uuid,
+    mail: Option<String>,
+    pass: String,
+    status: i16,
+    is_admin: bool,
+}
+
+async fn account(pool: &PgPool, name: &str) -> Option<Account> {
+    sqlx::query_as("SELECT id, mail, pass, status, is_admin FROM users WHERE name = $1")
+        .bind(name)
+        .fetch_optional(pool)
+        .await
+        .unwrap()
+}
+
+async fn user_count(pool: &PgPool) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM users")
+        .fetch_one(pool)
+        .await
+        .unwrap()
+}
+
+/// A password verifies against `user`'s stored hash, the check login makes.
+async fn password_verifies(pool: &PgPool, name: &str, password: &str) -> bool {
+    trovato_kernel::models::User::find_by_name(pool, name)
+        .await
+        .unwrap()
+        .expect("the account exists")
+        .verify_password(password)
+}
+
+// =============================================================================
+// trovato user create
+// =============================================================================
+
+#[tokio::test]
+async fn user_create_makes_an_account_that_can_log_in() {
+    let db = migrated("cli_user_create").await;
+    sqlx::query("INSERT INTO roles (id, name) VALUES ($1, 'cli_editor')")
+        .bind(Uuid::now_v7())
+        .execute(db.pool())
+        .await
+        .unwrap();
+
+    let ran = run(
+        &db.url(),
+        &[
+            "user",
+            "create",
+            "cli_alice",
+            "--mail",
+            "alice@example.com",
+            "--role",
+            "cli_editor",
+        ],
+        &format!("{PASSWORD}\n"),
+    )
+    .await;
+    assert_eq!(ran.code, Some(0), "{}", ran.all());
+    assert!(
+        !ran.all().contains(PASSWORD),
+        "the password must never be printed:\n{}",
+        ran.all()
+    );
+
+    let alice = account(db.pool(), "cli_alice")
+        .await
+        .expect("the account exists");
+    assert_eq!(alice.mail.as_deref(), Some("alice@example.com"));
+    assert_eq!(alice.status, 1, "active unless --blocked");
+    assert!(!alice.is_admin, "the command never makes a superuser");
+    assert!(
+        password_verifies(db.pool(), "cli_alice", PASSWORD).await,
+        "the password read from stdin is the one that logs in"
+    );
+
+    let roles: Vec<String> = sqlx::query_scalar(
+        "SELECT r.name FROM roles r JOIN user_roles ur ON ur.role_id = r.id WHERE ur.user_id = $1",
+    )
+    .bind(alice.id)
+    .fetch_all(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(roles, vec!["cli_editor".to_string()]);
+
+    // The security audit trail records the role grant, as the admin form's
+    // role checkboxes do (`RoleService::assign_to_user`).
+    let events: Vec<String> =
+        sqlx::query_scalar("SELECT kind FROM security_audit_log WHERE user_id = $1 ORDER BY id")
+            .bind(alice.id)
+            .fetch_all(db.pool())
+            .await
+            .unwrap();
+    assert!(
+        events.iter().any(|k| k == "user.roles_changed"),
+        "role grant audited: {events:?}"
+    );
+}
+
+#[tokio::test]
+async fn user_create_blocked_and_without_a_password() {
+    let db = migrated("cli_user_nopass").await;
+
+    // No stdin at all: --no-password must not wait for one.
+    let ran = run(
+        &db.url(),
+        &[
+            "user",
+            "create",
+            "cli_bob",
+            "--mail",
+            "bob@example.com",
+            "--no-password",
+            "--blocked",
+        ],
+        "",
+    )
+    .await;
+    assert_eq!(ran.code, Some(0), "{}", ran.all());
+
+    let bob = account(db.pool(), "cli_bob").await.expect("account exists");
+    assert_eq!(bob.status, 0, "--blocked creates a blocked account");
+    assert!(
+        bob.pass.is_empty(),
+        "--no-password stores no password, so nothing logs in until a reset"
+    );
+    assert!(!password_verifies(db.pool(), "cli_bob", "").await);
+
+    // The reset the command points at is what lets it log in.
+    let reset = run(
+        &db.url(),
+        &["user", "reset-password", "cli_bob"],
+        &format!("{PASSWORD}\n"),
+    )
+    .await;
+    assert_eq!(reset.code, Some(0), "{}", reset.all());
+    assert!(password_verifies(db.pool(), "cli_bob", PASSWORD).await);
+}
+
+#[tokio::test]
+async fn user_create_refuses_what_the_admin_form_refuses() {
+    let db = migrated("cli_user_refuse").await;
+    let first = run(
+        &db.url(),
+        &["user", "create", "cli_carol", "--mail", "carol@example.com"],
+        &format!("{PASSWORD}\n"),
+    )
+    .await;
+    assert_eq!(first.code, Some(0), "{}", first.all());
+    let before = user_count(db.pool()).await;
+
+    // (args, stdin, what the message must say)
+    let cases: Vec<(Vec<&str>, String, &str)> = vec![
+        (
+            vec!["user", "create", "CLI_Carol", "--mail", "other@example.com"],
+            format!("{PASSWORD}\n"),
+            "Username 'CLI_Carol' is already taken.",
+        ),
+        (
+            vec!["user", "create", "cli_dave", "--mail", "Carol@Example.com"],
+            format!("{PASSWORD}\n"),
+            "Email 'Carol@Example.com' is already in use.",
+        ),
+        (
+            vec!["user", "create", "cli_dave"],
+            format!("{PASSWORD}\n"),
+            "Email is required.",
+        ),
+        (
+            vec!["user", "create", "cli_dave", "--mail", ""],
+            format!("{PASSWORD}\n"),
+            "Email is required.",
+        ),
+        (
+            vec!["user", "create", "cli_dave", "--mail", "   "],
+            format!("{PASSWORD}\n"),
+            "Email is required.",
+        ),
+        (
+            vec!["user", "create", "cli_dave", "--mail", "dave@example.com"],
+            "short\n".to_string(),
+            "Password must be at least 12 characters.",
+        ),
+        (
+            vec!["user", "create", "cli_dave", "--mail", "dave@example.com"],
+            "\n".to_string(),
+            "Password is required.",
+        ),
+        (
+            vec![
+                "user",
+                "create",
+                "cli_dave",
+                "--mail",
+                "dave@example.com",
+                "--role",
+                "no_such_role",
+            ],
+            format!("{PASSWORD}\n"),
+            "Role 'no_such_role' not found.",
+        ),
+    ];
+    for (args, stdin, says) in cases {
+        let ran = run(&db.url(), &args, &stdin).await;
+        assert_eq!(ran.code, Some(1), "{args:?} must exit 1:\n{}", ran.all());
+        assert!(
+            ran.stderr.contains(says),
+            "{args:?} must say {says:?}:\n{}",
+            ran.all()
+        );
+        assert!(!ran.all().contains(PASSWORD), "{}", ran.all());
+    }
+    assert_eq!(
+        user_count(db.pool()).await,
+        before,
+        "a refused create writes nothing"
+    );
+}
+
+// =============================================================================
+// trovato cache clear, against a running server
+// =============================================================================
+
+/// A running `trovato serve`.
+struct Server {
+    child: Child,
+    base: String,
+    _work: TempDir,
+}
+
+impl Server {
+    async fn start(database_url: &str) -> Self {
+        let work = TempDir::new("serve");
+        let port = StdListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let child = command(database_url, &work)
+            .arg("serve")
+            .env("PORT", port.to_string())
+            // Long enough that only an invalidation, never the TTL, can
+            // explain a fresh read inside this test.
+            .env("CACHE_TTL", "3600")
+            .env("CACHE_TTL_ITEMS", "3600")
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("spawn trovato serve");
+        let mut server = Self {
+            child,
+            base: format!("http://127.0.0.1:{port}"),
+            _work: work,
+        };
+        let deadline = Instant::now() + Duration::from_secs(180);
+        loop {
+            if let Ok(Some(exit)) = server.child.try_wait() {
+                panic!("trovato serve exited ({exit}) before it was ready");
+            }
+            if server.get("/health/ready").await.map(|(s, _)| s) == Some(200) {
+                return server;
+            }
+            assert!(Instant::now() < deadline, "server never became ready");
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    async fn get(&self, path: &str) -> Option<(u16, String)> {
+        let response = http()
+            .get(format!("{}{path}", self.base))
+            .send()
+            .await
+            .ok()?;
+        let status = response.status().as_u16();
+        Some((status, response.text().await.unwrap_or_default()))
+    }
+
+    async fn page(&self, path: &str) -> String {
+        let (status, body) = self.get(path).await.expect("server answers");
+        assert_eq!(status, 200, "GET {path}:\n{body}");
+        body
+    }
+
+    async fn stop(mut self) {
+        let _ = self.child.start_kill();
+        let _ = tokio::time::timeout(Duration::from_secs(30), self.child.wait()).await;
+    }
+}
+
+fn http() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap()
+}
+
+/// A published page, written straight to the database.
+async fn seed_page(pool: &PgPool, title: &str) -> Uuid {
+    let id = Uuid::now_v7();
+    let now = chrono::Utc::now().timestamp();
+    sqlx::query(
+        "INSERT INTO item (id, type, title, author_id, status, created, changed, promote, \
+         sticky, fields, language) \
+         VALUES ($1, 'page', $2, '00000000-0000-0000-0000-000000000000', 1, $3, $3, 0, 0, \
+         '{}'::jsonb, 'en')",
+    )
+    .bind(id)
+    .bind(title)
+    .bind(now)
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO item_revision (id, item_id, title, author_id, status, created, fields, log) \
+         VALUES ($1, $2, $3, '00000000-0000-0000-0000-000000000000', 1, $4, '{}'::jsonb, 'seed')",
+    )
+    .bind(Uuid::now_v7())
+    .bind(id)
+    .bind(title)
+    .bind(now)
+    .execute(pool)
+    .await
+    .unwrap();
+    id
+}
+
+/// Retitle an item behind every server's back.
+async fn retitle(pool: &PgPool, id: Uuid, title: &str) {
+    sqlx::query("UPDATE item SET title = $2 WHERE id = $1")
+        .bind(id)
+        .bind(title)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// Wait until `path` shows `needle`, or panic after `within`.
+async fn wait_for_text(server: &Server, path: &str, needle: &str, within: Duration) {
+    let deadline = Instant::now() + within;
+    loop {
+        let body = server.page(path).await;
+        if body.contains(needle) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{path} still does not show {needle:?} after {within:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test]
+async fn cache_clear_makes_a_running_server_serve_a_direct_write() {
+    let _serial = CLEARING.lock().await;
+    let db = migrated("cli_cache_clear").await;
+    sqlx::query(
+        "INSERT INTO site_config (key, value) VALUES ('installed', 'true'::jsonb) \
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+    )
+    .execute(db.pool())
+    .await
+    .unwrap();
+    let id = seed_page(db.pool(), "Title before the write").await;
+    let path = format!("/item/{id}");
+
+    let server = Server::start(&db.url()).await;
+    assert!(server.page(&path).await.contains("Title before the write"));
+
+    // A write the server does not hear about: its cached item still serves.
+    retitle(db.pool(), id, "Title after the write").await;
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    let stale = server.page(&path).await;
+    assert!(
+        stale.contains("Title before the write") && !stale.contains("Title after the write"),
+        "the server serves its cached item until told (the premise of this test)"
+    );
+
+    // A kind other than items leaves the item cached.
+    let other = run(&db.url(), &["cache", "clear", "--kind", "menus"], "").await;
+    assert_eq!(other.code, Some(0), "{}", other.all());
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(
+        server.page(&path).await.contains("Title before the write"),
+        "--kind menus must not clear items"
+    );
+
+    let ran = run(&db.url(), &["cache", "clear"], "").await;
+    assert_eq!(ran.code, Some(0), "{}", ran.all());
+    wait_for_text(
+        &server,
+        &path,
+        "Title after the write",
+        Duration::from_secs(5),
+    )
+    .await;
+
+    // Naming the kind does it too.
+    retitle(db.pool(), id, "Title after the second write").await;
+    let named = run(&db.url(), &["cache", "clear", "--kind", "items"], "").await;
+    assert_eq!(named.code, Some(0), "{}", named.all());
+    wait_for_text(
+        &server,
+        &path,
+        "Title after the second write",
+        Duration::from_secs(5),
+    )
+    .await;
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn cache_clear_refuses_an_unknown_kind() {
+    let db = migrated("cli_cache_kind").await;
+    let ran = run(&db.url(), &["cache", "clear", "--kind", "no_such_kind"], "").await;
+    assert_ne!(ran.code, Some(0), "{}", ran.all());
+    assert!(
+        ran.stderr.contains("items"),
+        "lists the kinds:\n{}",
+        ran.all()
+    );
+}
+
+/// The search settings are the one `site_config` value cached in Redis rather
+/// than in a server's memory, so no generation reaches them: clearing
+/// `site_config` drops that copy too, and a hand edit is read at once.
+#[tokio::test]
+async fn cache_clear_drops_the_shared_search_settings() {
+    use trovato_kernel::cache::CacheLayer;
+    use trovato_kernel::search::settings::SearchSettings;
+    let _serial = CLEARING.lock().await;
+
+    let db = migrated("cli_cache_search").await;
+    let redis = redis::Client::open(trovato_test_utils::env::redis_url()).unwrap();
+    let cache = CacheLayer::new(redis, Default::default());
+    let write = |per_page: u32| {
+        let pool = db.pool().clone();
+        async move {
+            let settings = SearchSettings {
+                results_per_page: per_page,
+                ..Default::default()
+            };
+            sqlx::query(
+                "INSERT INTO site_config (key, value) VALUES ('search', $1) \
+                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+            )
+            .bind(serde_json::to_value(&settings).unwrap())
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+
+    write(17).await;
+    let ran = run(&db.url(), &["cache", "clear", "--kind", "site_config"], "").await;
+    assert_eq!(ran.code, Some(0), "{}", ran.all());
+    assert_eq!(
+        SearchSettings::load(db.pool(), &cache)
+            .await
+            .results_per_page,
+        17
+    );
+
+    // Written behind the cache's back: the cached copy still answers.
+    write(23).await;
+    assert_eq!(
+        SearchSettings::load(db.pool(), &cache)
+            .await
+            .results_per_page,
+        17
+    );
+
+    // Another kind leaves it; site_config (or every kind) drops it.
+    let other = run(&db.url(), &["cache", "clear", "--kind", "items"], "").await;
+    assert_eq!(other.code, Some(0), "{}", other.all());
+    assert_eq!(
+        SearchSettings::load(db.pool(), &cache)
+            .await
+            .results_per_page,
+        17
+    );
+    let ran = run(&db.url(), &["cache", "clear"], "").await;
+    assert_eq!(ran.code, Some(0), "{}", ran.all());
+    assert_eq!(
+        SearchSettings::load(db.pool(), &cache)
+            .await
+            .results_per_page,
+        23
+    );
+
+    // Leave no copy of this scratch site's settings for another test to read.
+    let ran = run(&db.url(), &["cache", "clear", "--kind", "site_config"], "").await;
+    assert_eq!(ran.code, Some(0), "{}", ran.all());
+}
