@@ -64,6 +64,12 @@ expect "timings: a listed target that never reports fails" 1 timings "$MINE
 trovato-kernel never_ran_test" "$WORK/cargo.out"
 expect "timings: a binary that is not on the list fails" 1 timings "trovato-kernel front_page_test" "$WORK/cargo.out"
 
+# What CI sees: CARGO_TERM_COLOR=always colours cargo's own lines.
+E=$(printf '\033')
+sed "s/^     Running /${E}[1m${E}[92m     Running${E}[0m /" "$WORK/cargo.out" > "$WORK/colour.out"
+expect "timings: coloured cargo output" 0 timings "$MINE" "$WORK/colour.out"
+has "timings: a target's time, coloured" "$WORK/targets" "trovato-kernel::front_page_test 1.26"
+
 cat > "$WORK/doc.out" <<'EOF'
    Doc-tests trovato_kernel
 
@@ -72,6 +78,7 @@ test crates/kernel/src/lib.rs - f (line 1) ... ok
 
 test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 35.20s
 EOF
+sed "s/^   Doc-tests /${E}[1m${E}[92m   Doc-tests${E}[0m /" "$WORK/doc.out" > "$WORK/doc-colour.out" && mv "$WORK/doc-colour.out" "$WORK/doc.out"
 rm -f "$WORK/doc.txt"
 expect "timings: doc tests" 0 sh -c "awk -v doc=1 -v targets='$WORK/doc.txt' -f '$ROOT/scripts/ci-test-timings.awk' < '$WORK/doc.out'"
 has "timings: a crate's doc tests are one entry" "$WORK/doc.txt" "doc::trovato_kernel 35.20"

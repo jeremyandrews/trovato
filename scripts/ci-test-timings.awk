@@ -28,12 +28,14 @@ BEGIN {
   }
   bad = 0
 }
-{ print; fflush() }
-doc && /^ *Doc-tests / { cur = "doc::" $2; next }
-!doc && /^ *Running / {
+# Matched without colour: CI sets CARGO_TERM_COLOR=always, and cargo then wraps
+# `Running` and `Doc-tests` in escape codes. Passed through as it came.
+{ print; fflush(); line = $0; gsub(/\033\[[0-9;]*m/, "", line) }
+doc && line ~ /^ *Doc-tests / { split(line, w, " "); cur = "doc::" w[2]; next }
+!doc && line ~ /^ *Running / {
   cur = ""
-  if (match($0, /\([^)]*\)$/)) {
-    bin = substr($0, RSTART + 1, RLENGTH - 2)
+  if (match(line, /\([^)]*\)$/)) {
+    bin = substr(line, RSTART + 1, RLENGTH - 2)
     sub(/.*\//, "", bin)
     sub(/-[0-9a-f]+$/, "", bin)
     if (bin in name) cur = name[bin]
@@ -41,18 +43,18 @@ doc && /^ *Doc-tests / { cur = "doc::" $2; next }
   }
   next
 }
-cur != "" && /^test .* <[0-9.]+s>$/ {
-  t = $0
+cur != "" && line ~ /^test .* <[0-9.]+s>$/ {
+  t = line
   sub(/^test /, "", t)
   sub(/ \.\.\. .*$/, "", t)
-  match($0, /<[0-9.]+s>$/)
-  secs = substr($0, RSTART + 1, RLENGTH - 3)
+  match(line, /<[0-9.]+s>$/)
+  secs = substr(line, RSTART + 1, RLENGTH - 3)
   if (tests != "") print cur " " t " " secs >> tests
   next
 }
-/^test result:/ && cur != "" {
-  if (match($0, /finished in [0-9.]+s/)) {
-    secs = substr($0, RSTART + 12, RLENGTH - 13)
+line ~ /^test result:/ && cur != "" {
+  if (match(line, /finished in [0-9.]+s/)) {
+    secs = substr(line, RSTART + 12, RLENGTH - 13)
     if (targets != "") print cur " " secs >> targets
     seen[cur] = 1
   }
