@@ -207,7 +207,17 @@ jobs:
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           targets: wasm32-wasip1
+      # rust-cache keys on the lockfile and the manifests' dependencies, not
+      # on `[profile]`: without this, a change to the dev profile in Cargo.toml
+      # hits the old cache in full, rebuilds the dependencies it changed in every
+      # run, and never saves them (runs 45406677098 to 45425763074 all restored
+      # one key, through three different profiles).
+      - name: Key the cache on the dev profile
+        id: profile
+        run: echo "hash=$(awk '/^\[/ { p = /^\[profile\./ } p' Cargo.toml | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: profile-${{ steps.profile.outputs.hash }}
       # Prebuilt binary; see the sqlx-cli note in the Coverage job.
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -598,7 +608,13 @@ jobs:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
           components: llvm-tools-preview
           targets: wasm32-wasip1
+      # Keyed on the dev profile too; see the Test job.
+      - name: Key the cache on the dev profile
+        id: profile
+        run: echo "hash=$(awk '/^\[/ { p = /^\[profile\./ } p' Cargo.toml | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: profile-${{ steps.profile.outputs.hash }}
 
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
@@ -1007,7 +1023,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_TOOLCHAIN }}
+      # Keyed on the dev profile too; see the Test job.
+      - name: Key the cache on the dev profile
+        id: profile
+        run: echo "hash=$(awk '/^\[/ { p = /^\[profile\./ } p' Cargo.toml | sha256sum | cut -c1-12)" >> "$GITHUB_OUTPUT"
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: profile-${{ steps.profile.outputs.hash }}
       # Prebuilt binary; see the sqlx-cli note in the Coverage job.
       - name: Install cargo-nextest
         uses: taiki-e/install-action@v2
@@ -1021,25 +1043,29 @@ jobs:
           nohup sh -c 'cargo nextest run -p trovato-kernel --test cluster_test --no-run; \
             echo $? > "$RUNNER_TEMP/cluster-test-build.rc"' > "$RUNNER_TEMP/cluster-test-build.log" 2>&1 &
       - uses: docker/setup-buildx-action@v3
-      # The dependency layer first, on its own (the Dockerfile's `cook` stage):
-      # it is the one worth caching, and on its own it is the only thing that
-      # goes into the cache. Written on pushes to main alone, which every pull
-      # request can read; a pull request writing its own copy would put
+      # The dependency layer (the Dockerfile's `cook` stage) is the one layer
+      # worth caching, and this step, on its own, is what writes it: only that
+      # stage goes into the cache. Written on pushes to main alone, which every
+      # pull request can read; a pull request writing its own copy would put
       # another gigabyte against the 10 GB the repository's caches share, for
-      # each pull request. When the dependencies or the base image changed
-      # since main last wrote it, nothing matches and the build is the full
-      # one it always was.
+      # each pull request. So a pull request skips this step.
       - name: Build the dependency layer
+        # TEMP-B212: this pull request writes too, to measure the warm path. Remove.
+        if: github.event_name == 'push' || github.head_ref == 'b212-faster-ci-gate-wall-clock-from-42-min-co'
         uses: docker/build-push-action@v6
         with:
           context: .
           target: cook
           platforms: linux/amd64
           cache-from: type=gha,scope=cluster-cook
-          # TEMP-B212: this pull request writes too, to measure the warm path. Remove.
-          cache-to: ${{ (github.event_name == 'push' || github.head_ref == 'b212-faster-ci-gate-wall-clock-from-42-min-co') && 'type=gha,scope=cluster-cook,mode=max' || '' }}
-      # The release Dockerfile, as before, on top of the layer just built (the
-      # builder keeps it between the two steps).
+          cache-to: type=gha,scope=cluster-cook,mode=max
+      # The release Dockerfile, as before, reading the dependency layer from
+      # the cache. It names the cache itself: BuildKit reuses imported layers
+      # only in a build that asked for them, so the step above leaving the
+      # layer in the builder is not enough (run 45425763074 rebuilt all 586
+      # crates here). When the dependencies or the base image changed since
+      # main last wrote it, nothing matches and the build is the full one it
+      # always was.
       - name: Build the image
         uses: docker/build-push-action@v6
         with:
@@ -1047,6 +1073,7 @@ jobs:
           platforms: linux/amd64
           load: true
           tags: trovato-cluster:local
+          cache-from: type=gha,scope=cluster-cook
       - name: Start the cluster
         run: docker compose -f docker-compose.cluster.yml up -d --no-build
       - name: Wait for the cluster test build

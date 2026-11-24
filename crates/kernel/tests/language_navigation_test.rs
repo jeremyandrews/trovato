@@ -24,6 +24,13 @@ const TYPE_SEED_LOCK: i64 = 0x_1A46_0000_0002;
 
 const ITEM_TYPE: &str = "language_nav_test";
 
+/// The config menu cache is process-wide and filled by whichever render reads
+/// it first after a write. A render that started reading before a test wrote
+/// its menu link can fill the cache after the write's invalidation, without
+/// the link, for the cache's whole TTL. Every test here writes menu links and then reads them
+/// off a rendered page, so they take turns, each through its cleanup.
+static MENUS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn admin() -> UserContext {
     UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()])
 }
@@ -135,6 +142,9 @@ async fn translate(app: &TestApp, item: Uuid, language: &str, title: &str) {
     .execute(&app.db)
     .await
     .expect("record translation");
+    // Raw SQL, past the model that would invalidate the menu cache, and a
+    // translation changes a menu entry's label and address.
+    trovato_kernel::menu::navigation::invalidate_config_menus();
 }
 
 async fn add_menu_link(app: &TestApp, page: &mut Page, title: &str) {
@@ -172,6 +182,8 @@ async fn cleanup(app: &TestApp, pages: &[Page]) {
             .ok();
         app.state.items().delete(page.id, &admin()).await.ok();
     }
+    // The link deletes above are raw SQL too.
+    trovato_kernel::menu::navigation::invalidate_config_menus();
 }
 
 async fn body_text(response: Response) -> String {
@@ -227,6 +239,7 @@ fn anchor_with_href<'a>(html: &'a str, href: &str) -> &'a str {
 fn a_translated_menu_entry_is_prefixed_labelled_and_current() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
         ensure_item_type(app).await;
 
         let marker = Uuid::now_v7().simple().to_string();
@@ -264,6 +277,7 @@ fn a_translated_menu_entry_is_prefixed_labelled_and_current() {
 fn a_menu_entry_with_no_translation_is_left_alone() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
         ensure_item_type(app).await;
 
         let marker = Uuid::now_v7().simple().to_string();
@@ -300,6 +314,7 @@ fn a_menu_entry_with_no_translation_is_left_alone() {
 fn a_hand_written_menu_label_survives_translation() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
         ensure_item_type(app).await;
 
         let marker = Uuid::now_v7().simple().to_string();
@@ -332,6 +347,7 @@ fn a_hand_written_menu_label_survives_translation() {
 fn available_translations_lists_the_languages_the_page_exists_in() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
         ensure_item_type(app).await;
 
         let marker = Uuid::now_v7().simple().to_string();
@@ -374,6 +390,7 @@ fn available_translations_lists_the_languages_the_page_exists_in() {
 fn hreflang_tags_name_the_translations_and_nothing_else() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
         ensure_item_type(app).await;
 
         let marker = Uuid::now_v7().simple().to_string();
@@ -502,6 +519,7 @@ async fn alias_gather(app: &TestApp, query_id: &str, slug: &str) -> String {
 fn a_gather_page_localizes_its_menus() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
         ensure_item_type(app).await;
 
         let marker = Uuid::now_v7().simple().to_string();

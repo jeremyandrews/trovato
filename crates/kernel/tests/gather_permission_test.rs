@@ -36,6 +36,15 @@ const ITEM_TYPE: &str = "gather_perm_test";
 /// The permission the protected gathers in this file declare.
 const PERMISSION: &str = "view gather permission test";
 
+/// The config menu cache is process-wide and filled by whichever render reads
+/// it first after a write. A render that started reading before a test wrote
+/// its menu link can fill the cache after the write's invalidation, without
+/// the link, for the cache's whole TTL. `menu_links_to_a_protected_gather_are_drawn_only_for_a_viewer_who_may_follow_them`
+/// writes footer links and reads them off a page, so it holds this for
+/// writing and the other tests here, which render pages, for reading, each
+/// through its cleanup.
+static MENUS: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+
 fn admin() -> UserContext {
     UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()])
 }
@@ -245,6 +254,7 @@ fn assert_login_redirect(status: StatusCode, location: Option<&str>, body: &str,
 fn gather_page_sends_anonymous_to_login_and_refuses_a_user_without_the_permission() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.read().await);
         let fx = protected_gather(app, "page").await;
         let path = format!("/gather/{}", fx.query.query_id);
 
@@ -263,6 +273,7 @@ fn gather_page_sends_anonymous_to_login_and_refuses_a_user_without_the_permissio
 fn gather_page_serves_rows_to_the_holder_and_to_an_admin() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.read().await);
         let fx = protected_gather(app, "holder").await;
         let path = format!("/gather/{}", fx.query.query_id);
 
@@ -289,6 +300,7 @@ fn gather_page_serves_rows_to_the_holder_and_to_an_admin() {
 fn execute_api_refuses_without_the_permission_and_serves_the_holder() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.read().await);
         let fx = protected_gather(app, "execute").await;
         let path = format!("/api/query/{}/execute", fx.query.query_id);
 
@@ -313,6 +325,7 @@ fn execute_api_refuses_without_the_permission_and_serves_the_holder() {
 fn query_definition_api_refuses_without_the_permission() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.read().await);
         let fx = protected_gather(app, "definition").await;
         let path = format!("/api/query/{}", fx.query.query_id);
 
@@ -332,6 +345,7 @@ fn query_definition_api_refuses_without_the_permission() {
 fn query_listing_omits_a_gather_the_viewer_may_not_run() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.read().await);
         let fx = protected_gather(app, "listing").await;
         let id = format!("\"{}\"", fx.query.query_id);
 
@@ -354,6 +368,7 @@ fn query_listing_omits_a_gather_the_viewer_may_not_run() {
 fn route_alias_refuses_without_the_permission_in_html_and_json() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.read().await);
         let fx = protected_gather(app, "alias").await;
 
         let (status, location, body) = get_startup_routes(app, &fx.query, &fx.alias_path, "").await;
@@ -389,6 +404,7 @@ fn route_alias_refuses_without_the_permission_in_html_and_json() {
 fn feed_refuses_without_the_permission_and_serves_the_holder() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.read().await);
         let fx = protected_gather(app, "feed").await;
 
         let (status, _, body) = get_startup_routes(app, &fx.query, &fx.feed_path, "").await;
@@ -440,6 +456,7 @@ async fn footer_link(app: &TestApp, path: &str, title: &str, parent: Option<Uuid
 fn menu_links_to_a_protected_gather_are_drawn_only_for_a_viewer_who_may_follow_them() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.write().await);
         let fx = protected_gather(app, "menu").await;
         let stamp = Uuid::now_v7().simple().to_string();
 
