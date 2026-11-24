@@ -113,7 +113,7 @@ async fn front_page_html(app: &TestApp) -> String {
 #[test]
 fn the_promoted_listing_asks_for_access_content() {
     run_test(async {
-        let _serial = SERIAL.lock().await;
+        common::hold_until_cleanup(SERIAL.lock().await);
         let app = shared_app().await;
         let title = format!("b87b promoted {}", Uuid::now_v7().simple());
         promoted_item(app, &title, serde_json::json!({})).await;
@@ -165,7 +165,7 @@ fn the_promoted_listing_asks_for_access_content() {
 #[test]
 fn a_teaser_is_cut_from_plain_text() {
     run_test(async {
-        let _serial = SERIAL.lock().await;
+        common::hold_until_cleanup(SERIAL.lock().await);
         let app = shared_app().await;
         let title = format!("b87b teaser {}", Uuid::now_v7().simple());
         let body = format!("<p><strong>{}</strong></p>", "word ".repeat(80));
@@ -195,7 +195,7 @@ fn a_teaser_is_cut_from_plain_text() {
 #[test]
 fn the_edit_form_hides_an_item_the_user_may_not_see() {
     run_test(async {
-        let _serial = SERIAL.lock().await;
+        common::hold_until_cleanup(SERIAL.lock().await);
         let app = shared_app().await;
         ensure_item_type(app).await;
         let (_, cookies) = common::user_holding(app, "b87b-edit", &["access content"]).await;

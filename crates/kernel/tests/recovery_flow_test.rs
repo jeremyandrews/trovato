@@ -19,6 +19,12 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use common::TestApp;
 
+/// Which built-in recovery paths are switched on is site-wide.
+/// `an_admin_can_switch_a_built_in_path_off` turns both off for a moment, and
+/// every other test here starts a recovery that needs them on, so it holds
+/// this for writing and the rest for reading, each through its cleanup.
+static RECOVERY_CONFIG: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+
 async fn json_body(response: axum::response::Response) -> serde_json::Value {
     let bytes = axum::body::to_bytes(response.into_body(), 2_000_000)
         .await
@@ -85,6 +91,7 @@ fn the_full_recovery_flow_grants_only_a_scoped_reset_then_a_session() {
     common::run_test(async {
         // AC-1 + D-38, the happy path and the shape of what it grants.
         let app = common::shared_app().await;
+        common::hold_until_cleanup(RECOVERY_CONFIG.read().await);
         let username = "rec_full";
         let ip = ip_for(username);
         let (user_id, codes) = user_with_recovery_codes(app, username).await;
@@ -283,6 +290,7 @@ fn the_full_recovery_flow_grants_only_a_scoped_reset_then_a_session() {
 fn a_wrong_code_is_rejected_and_burns_the_flow() {
     common::run_test(async {
         let app = common::shared_app().await;
+        common::hold_until_cleanup(RECOVERY_CONFIG.read().await);
         let username = "rec_wrong";
         let ip = ip_for(username);
         let (user_id, codes) = user_with_recovery_codes(app, username).await;
@@ -356,6 +364,7 @@ fn a_wrong_code_is_rejected_and_burns_the_flow() {
 fn a_redeemed_code_cannot_be_reused() {
     common::run_test(async {
         let app = common::shared_app().await;
+        common::hold_until_cleanup(RECOVERY_CONFIG.read().await);
         let username = "rec_reuse";
         let ip = ip_for(username);
         let (user_id, codes) = user_with_recovery_codes(app, username).await;
@@ -411,6 +420,7 @@ fn recovery_start_is_generic_for_an_unknown_account() {
     common::run_test(async {
         // AC-4: no account-existence oracle.
         let app = common::shared_app().await;
+        common::hold_until_cleanup(RECOVERY_CONFIG.read().await);
         let known = "rec_generic_known";
         let (user_id, _codes) = user_with_recovery_codes(app, known).await;
 
@@ -449,6 +459,7 @@ fn recovery_initiation_is_rate_limited() {
         // AC-4. The limiter is what stops a short code being brute-forced inside
         // the flow TTL, and what stops a victim's inbox being flooded.
         let app = common::shared_app().await;
+        common::hold_until_cleanup(RECOVERY_CONFIG.read().await);
         let username = "rec_ratelimit";
         let ip = ip_for(username);
         let (user_id, _codes) = user_with_recovery_codes(app, username).await;
@@ -483,6 +494,7 @@ fn a_method_the_flow_did_not_choose_cannot_be_verified() {
         // The step a hostile plugin would most want to skip. `verify` is bound
         // to the method that was actually initiated, on kernel state alone.
         let app = common::shared_app().await;
+        common::hold_until_cleanup(RECOVERY_CONFIG.read().await);
         let username = "rec_wrongmethod";
         let ip = ip_for(username);
         let (user_id, codes) = user_with_recovery_codes(app, username).await;
@@ -534,6 +546,7 @@ fn a_method_cannot_be_chosen_twice() {
         // Re-choosing would let a caller mint challenges (and emails) without
         // limit inside one flow.
         let app = common::shared_app().await;
+        common::hold_until_cleanup(RECOVERY_CONFIG.read().await);
         let username = "rec_rechoose";
         let ip = ip_for(username);
         let (user_id, _codes) = user_with_recovery_codes(app, username).await;
@@ -577,6 +590,7 @@ fn saved_codes_satisfy_the_one_path_invariant() {
         // recovery path configured, `active_recovery_path_count` is non-zero and
         // the passwordless gate opens.
         let app = common::shared_app().await;
+        common::hold_until_cleanup(RECOVERY_CONFIG.read().await);
         let username = "rec_invariant";
         app.create_test_user(
             username,
@@ -635,6 +649,7 @@ fn an_admin_can_switch_a_built_in_path_off() {
         // AC-5. A high-assurance deployment must be able to require something
         // stronger than the built-ins.
         let app = common::shared_app().await;
+        common::hold_until_cleanup(RECOVERY_CONFIG.write().await);
         let username = "rec_adminoff";
         let (user_id, _codes) = user_with_recovery_codes(app, username).await;
 
@@ -724,6 +739,7 @@ fn an_admin_can_switch_a_built_in_path_off() {
 fn a_non_admin_cannot_change_the_recovery_configuration() {
     common::run_test(async {
         let app = common::shared_app().await;
+        common::hold_until_cleanup(RECOVERY_CONFIG.read().await);
         let cookies = app
             .create_and_login_user(
                 "rec_nonadmin",
@@ -746,6 +762,7 @@ fn a_non_admin_cannot_change_the_recovery_configuration() {
 fn recovery_codes_are_only_ever_stored_hashed() {
     common::run_test(async {
         let app = common::shared_app().await;
+        common::hold_until_cleanup(RECOVERY_CONFIG.read().await);
         let username = "rec_hashed";
         let (user_id, codes) = user_with_recovery_codes(app, username).await;
 
@@ -774,6 +791,7 @@ fn generating_codes_replaces_the_previous_batch() {
     common::run_test(async {
         // A user must never be left unsure which of two printouts is live.
         let app = common::shared_app().await;
+        common::hold_until_cleanup(RECOVERY_CONFIG.read().await);
         let username = "rec_regen";
         let (user_id, first) = user_with_recovery_codes(app, username).await;
 

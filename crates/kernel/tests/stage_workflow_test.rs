@@ -50,8 +50,7 @@ static SITE_WIDE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 /// land on top of the workflow the next test had just set. Registered first,
 /// this cleanup runs last.
 async fn site_wide() {
-    let guard = SITE_WIDE.lock().await;
-    common::defer_cleanup(move || async move { drop(guard) });
+    common::hold_until_cleanup(SITE_WIDE.lock().await);
 }
 
 static APP: std::sync::OnceLock<TestApp> = std::sync::OnceLock::new();

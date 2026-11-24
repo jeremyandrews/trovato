@@ -239,16 +239,31 @@ async fn item_api(name: &str, args: &[&str], out: bool, user: UserContext) -> An
 // Fixture
 // =============================================================================
 
+/// Advisory-lock key serializing the creation of [`tally`]'s table.
+const TALLY_CREATE_LOCK: i64 = 0x_B80E_0000_0001;
+
 /// This file's own table, with a key column so `upsert` has a conflict target,
 /// and a run column so each test reads only its own rows.
+///
+/// `CREATE TABLE IF NOT EXISTS` is not atomic: two tests creating the table at
+/// once both find it missing and the second fails on Postgres's catalog
+/// (`pg_type_typname_nsp_index`). So the create runs under an advisory lock,
+/// in a transaction that releases it.
 async fn tally(app: &TestApp) -> String {
+    let mut tx = app.db.begin().await.expect("begin table create");
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(TALLY_CREATE_LOCK)
+        .execute(&mut *tx)
+        .await
+        .expect("take table create lock");
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS b80w_tally \
          (k text PRIMARY KEY, run text NOT NULL, n integer NOT NULL, note text)",
     )
-    .execute(&app.db)
+    .execute(&mut *tx)
     .await
     .expect("create own table");
+    tx.commit().await.expect("commit table create");
     let run = Uuid::now_v7().simple().to_string();
     let pool = app.db.clone();
     let r = run.clone();

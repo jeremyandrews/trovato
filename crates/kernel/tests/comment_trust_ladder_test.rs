@@ -254,7 +254,7 @@ async fn post_comment_status(app: &TestApp, cookies: &str, item_id: Uuid) -> i64
 fn a_new_account_waits_for_review() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = SETTINGS.lock().await;
+        common::hold_until_cleanup(SETTINGS.lock().await);
         ensure_item_type(app).await;
         set_settings(app, Some("pending"), Some(3)).await;
 
@@ -276,7 +276,7 @@ fn a_new_account_waits_for_review() {
 fn an_established_account_skips_the_queue() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = SETTINGS.lock().await;
+        common::hold_until_cleanup(SETTINGS.lock().await);
         ensure_item_type(app).await;
         set_settings(app, Some("pending"), Some(3)).await;
 
@@ -300,7 +300,7 @@ fn an_established_account_skips_the_queue() {
 fn comments_awaiting_review_or_marked_spam_earn_no_trust() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = SETTINGS.lock().await;
+        common::hold_until_cleanup(SETTINGS.lock().await);
         ensure_item_type(app).await;
         set_settings(app, Some("pending"), Some(3)).await;
 
@@ -334,7 +334,7 @@ fn comments_awaiting_review_or_marked_spam_earn_no_trust() {
 fn approval_is_what_advances_an_account() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = SETTINGS.lock().await;
+        common::hold_until_cleanup(SETTINGS.lock().await);
         ensure_item_type(app).await;
         set_settings(app, Some("pending"), Some(3)).await;
 
@@ -389,7 +389,7 @@ fn approval_is_what_advances_an_account() {
 fn a_zero_threshold_disables_the_ladder() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = SETTINGS.lock().await;
+        common::hold_until_cleanup(SETTINGS.lock().await);
         ensure_item_type(app).await;
         set_settings(app, Some("pending"), Some(0)).await;
 
@@ -413,7 +413,7 @@ fn a_zero_threshold_disables_the_ladder() {
 fn the_ladder_does_not_hold_comments_on_an_open_site() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = SETTINGS.lock().await;
+        common::hold_until_cleanup(SETTINGS.lock().await);
         ensure_item_type(app).await;
         set_settings(app, Some("published"), Some(3)).await;
 
@@ -436,7 +436,7 @@ fn the_ladder_does_not_hold_comments_on_an_open_site() {
 fn the_default_threshold_applies_when_unset() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = SETTINGS.lock().await;
+        common::hold_until_cleanup(SETTINGS.lock().await);
         ensure_item_type(app).await;
         set_settings(app, Some("pending"), None).await;
 

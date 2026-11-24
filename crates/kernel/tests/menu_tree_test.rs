@@ -65,6 +65,14 @@ async fn build_app() -> TestApp {
     .await
 }
 
+/// The config menu cache is process-wide and filled by whichever render reads
+/// it first after a write. A render that started reading before a test wrote
+/// its menu link can fill the cache after the write's invalidation, without
+/// the link, for the cache's whole TTL. Every test here writes menu links and then reads them
+/// off a rendered page (one counts the queries of a warm render), so they take
+/// turns, each through its cleanup.
+static MENU_CACHE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn stamp() -> String {
     Uuid::now_v7().simple().to_string()
 }
@@ -179,6 +187,7 @@ async fn member(app: &TestApp, permissions: &[&str]) -> (Uuid, String) {
 fn a_config_menu_named_user_reaches_the_page() {
     run_test(async {
         let app = app();
+        common::hold_until_cleanup(MENU_CACHE.lock().await);
         let s = stamp();
         let title = format!("B74 user menu {s}");
         link(app, "user", &format!("/b74-user-{s}"), &title, None).await;
@@ -200,6 +209,7 @@ fn a_config_menu_named_user_reaches_the_page() {
 fn a_child_link_renders_nested_under_its_parent() {
     run_test(async {
         let app = app();
+        common::hold_until_cleanup(MENU_CACHE.lock().await);
         let s = stamp();
         let parent = link(
             app,
@@ -243,6 +253,7 @@ fn a_child_link_renders_nested_under_its_parent() {
 fn a_child_under_a_link_the_viewer_may_not_follow_is_dropped() {
     run_test(async {
         let app = app();
+        common::hold_until_cleanup(MENU_CACHE.lock().await);
         let s = stamp();
         // The plugin's gated entry: only a holder of PERM_EXTRA may follow it.
         let parent = link(
@@ -278,6 +289,7 @@ fn a_child_under_a_link_the_viewer_may_not_follow_is_dropped() {
 fn a_plugin_entry_under_user_is_drawn_for_a_viewer_with_its_permission() {
     run_test(async {
         let app = app();
+        common::hold_until_cleanup(MENU_CACHE.lock().await);
 
         let (_, holder) = member(app, &[PERM_EXTRA]).await;
         let html = get(app, "/user/profile", &holder).await;
@@ -299,6 +311,7 @@ fn a_plugin_entry_under_user_is_drawn_for_a_viewer_with_its_permission() {
 fn a_uid_entry_is_drawn_with_the_viewers_id_and_never_for_an_anonymous_visitor() {
     run_test(async {
         let app = app();
+        common::hold_until_cleanup(MENU_CACHE.lock().await);
 
         let (uid, cookies) = member(app, &[]).await;
         let html = get(app, "/user/profile", &cookies).await;
@@ -320,6 +333,7 @@ fn a_uid_entry_is_drawn_with_the_viewers_id_and_never_for_an_anonymous_visitor()
 fn a_link_is_active_on_every_page_under_its_path_and_home_only_on_home() {
     run_test(async {
         let app = app();
+        common::hold_until_cleanup(MENU_CACHE.lock().await);
         let s = stamp();
         let section = format!("/b74-devices-{s}");
         link(app, "main", &section, &format!("B74 devices {s}"), None).await;
@@ -386,6 +400,7 @@ fn a_menu_tile_renders_its_menu_filtered_for_the_viewer() {
         use trovato_kernel::models::tile::{CreateTile, Tile};
 
         let app = app();
+        common::hold_until_cleanup(MENU_CACHE.lock().await);
         let s = stamp();
         let menu = format!("b74tile{s}");
         link(
@@ -484,6 +499,7 @@ async fn statements_for(app: &TestApp, path: &str, cookies: &str) -> Vec<String>
     use tracing::instrument::WithSubscriber;
     use tracing_subscriber::layer::SubscriberExt;
 
+    common::scoped_subscribers_see_every_callsite();
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let subscriber = tracing_subscriber::registry().with(Statements(seen.clone()));
     get(app, path, cookies).with_subscriber(subscriber).await;
@@ -494,6 +510,7 @@ async fn statements_for(app: &TestApp, path: &str, cookies: &str) -> Vec<String>
 fn a_warm_page_with_four_menus_runs_no_menu_or_alias_query() {
     run_test(async {
         let app = app();
+        common::hold_until_cleanup(MENU_CACHE.lock().await);
         let s = stamp();
 
         // Four config menus, one link of them to a translated page by its alias.

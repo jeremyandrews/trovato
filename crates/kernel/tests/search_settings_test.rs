@@ -205,7 +205,7 @@ fn the_settings_screen_is_for_site_administrators_only() {
 fn saving_requires_the_permission_too() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = SETTINGS.lock().await;
+        common::hold_until_cleanup(SETTINGS.lock().await);
         restore_defaults_on_exit(app);
 
         let (_, plain) = common::user_holding(app, "srchpost", &[]).await;
@@ -236,7 +236,7 @@ fn saving_requires_the_permission_too() {
 fn saving_the_form_changes_the_search_page_config() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = SETTINGS.lock().await;
+        common::hold_until_cleanup(SETTINGS.lock().await);
         restore_defaults_on_exit(app);
 
         // Before any save the page carries today's literal values, so an upgraded
@@ -292,7 +292,7 @@ fn saving_the_form_changes_the_search_page_config() {
 fn an_invalid_value_is_refused_with_a_message() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = SETTINGS.lock().await;
+        common::hold_until_cleanup(SETTINGS.lock().await);
         restore_defaults_on_exit(app);
 
         let cookies = admin_session(app).await;
@@ -347,7 +347,7 @@ fn an_invalid_value_is_refused_with_a_message() {
 fn expansion_switched_off_is_refused_before_any_provider_call() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = SETTINGS.lock().await;
+        common::hold_until_cleanup(SETTINGS.lock().await);
         restore_defaults_on_exit(app);
 
         save_settings(
@@ -389,7 +389,7 @@ fn expansion_switched_off_is_refused_before_any_provider_call() {
 fn summary_and_followup_switched_off_are_refused() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = SETTINGS.lock().await;
+        common::hold_until_cleanup(SETTINGS.lock().await);
         restore_defaults_on_exit(app);
 
         save_settings(app, &[("expand", "on"), ("analytics_enabled", "on")]).await;
@@ -418,7 +418,7 @@ fn summary_and_followup_switched_off_are_refused() {
 fn followup_rejects_a_conversation_over_the_turn_cap() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = SETTINGS.lock().await;
+        common::hold_until_cleanup(SETTINGS.lock().await);
         restore_defaults_on_exit(app);
 
         let mut fields: Vec<(&str, &str)> = ALL_STAGES_ON.to_vec();
@@ -504,7 +504,7 @@ async fn ranked_ids(app: &TestApp, term: &str) -> Vec<Uuid> {
 fn server_search_orders_equal_matches_by_type_boost() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = SETTINGS.lock().await;
+        common::hold_until_cleanup(SETTINGS.lock().await);
         restore_defaults_on_exit(app);
         app.ensure_conference_type().await;
 

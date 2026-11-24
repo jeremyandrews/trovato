@@ -205,3 +205,56 @@ expect_used = "deny"
 manual_let_else = "warn"
 uninlined_format_args = "warn"
 semicolon_if_nothing_returned = "warn"
+
+# The dependencies the tests spend their CPU in, optimized even in debug and
+# test builds: argon2, which hashes a password for every user a test creates
+# and every login, and Cranelift, which compiles the in-tree plugins whenever a
+# `TestApp` starts. Unoptimized, integration_test takes 18 CPU-seconds and
+# session_management_test 9.5; with these, 5.5 and 4.1 (measured locally,
+# 2026-11-24). A debug `cargo run` starts faster too.
+#
+# Only these packages, not `"*"`: every dependency optimized cut those two to
+# 3.3 and 2.7, but tripled a cold dependency build in CI (5.6 to 16.5 minutes,
+# runs 45406677098 and 45412845837), and a cold cache is common enough there
+# to matter. The kernel and the plugins build, and step in a debugger, exactly
+# as before.
+[profile.dev.package.cranelift-codegen]
+opt-level = 3
+[profile.dev.package.cranelift-frontend]
+opt-level = 3
+[profile.dev.package.cranelift-entity]
+opt-level = 3
+[profile.dev.package.cranelift-bforest]
+opt-level = 3
+[profile.dev.package.cranelift-bitset]
+opt-level = 3
+[profile.dev.package.cranelift-control]
+opt-level = 3
+[profile.dev.package.cranelift-native]
+opt-level = 3
+[profile.dev.package.cranelift-assembler-x64]
+opt-level = 3
+[profile.dev.package.regalloc2]
+opt-level = 3
+[profile.dev.package.wasmparser]
+opt-level = 3
+[profile.dev.package.wasmtime]
+opt-level = 3
+[profile.dev.package.wasmtime-environ]
+opt-level = 3
+[profile.dev.package.wasmtime-internal-cranelift]
+opt-level = 3
+[profile.dev.package.wasmtime-internal-core]
+opt-level = 3
+[profile.dev.package.pulley-interpreter]
+opt-level = 3
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
+[profile.dev.package.digest]
+opt-level = 3
+[profile.dev.package.password-hash]
+opt-level = 3
+[profile.dev.package.base64ct]
+opt-level = 3

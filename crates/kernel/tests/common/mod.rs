@@ -151,6 +151,25 @@ where
     DEFERRED_CLEANUPS.with(|pending| pending.borrow_mut().push(Box::new(move || Box::pin(f()))));
 }
 
+/// Hold `guard` until the running test's cleanups have run, then release it.
+///
+/// For the file-level locks (`static FRONT_PAGE: Mutex<()>` and the like) that
+/// make a test's turn with some site-wide state exclusive. Bound as
+/// `let _guard = LOCK.lock().await`, the guard is dropped when the test body
+/// returns, which is BEFORE [`run_test`] awaits the cleanups the body
+/// registered. So the cleanup that puts the shared state back ran after the
+/// lock was released, in the middle of whichever test took it next: one test
+/// restoring the stock theme while another asserted on the theme it had just
+/// set. The race was always there and `--test-threads=1` hid it; tests inside
+/// a target run in parallel now.
+///
+/// Call it before registering any cleanup that touches the guarded state:
+/// cleanups run last-registered-first, so a guard registered first is released
+/// last.
+pub fn hold_until_cleanup<G: Send + 'static>(guard: G) {
+    defer_cleanup(move || async move { drop(guard) });
+}
+
 /// Drain and await every cleanup the finished test registered.
 ///
 /// One at a time, with the borrow released around each `block_on`, so a cleanup
@@ -1210,6 +1229,31 @@ pub async fn grant_via_role(app: &TestApp, user_id: Uuid, permissions: &[&str]) 
         .await
         .expect("assign role to user");
     app.state.permissions().invalidate_user(user_id);
+}
+
+/// Make a scoped subscriber (`.with_subscriber(..)` on one request) see every
+/// event that request emits, while other tests run requests at the same time.
+///
+/// Call it before creating the scoped subscriber.
+///
+/// tracing-core caches each callsite's interest the first time the callsite
+/// fires. When exactly one dispatcher is alive, it asks the default subscriber
+/// *of the thread the callsite fired on*, not the live one. A binary with no
+/// global subscriber and one scoped capture is in that state. A concurrent
+/// test's request on another thread then fixes `never` on `sqlx::query`, the
+/// response trace or a warning, and the capture misses them for the rest of
+/// the run. It sees no statements and no warnings, and only when the tests
+/// run in parallel.
+///
+/// A global no-op subscriber is never dropped. With it there are always two
+/// dispatchers while a capture is alive, and every interest is asked of all
+/// of them. It enables nothing, so the binary logs nothing it did not
+/// before.
+pub fn scoped_subscribers_see_every_callsite() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(tracing::subscriber::NoSubscriber::new());
+    });
 }
 
 /// Wait until the cache generations bumped by this test's writes so far have

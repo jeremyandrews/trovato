@@ -2,10 +2,30 @@
 # Multi-stage: compiles kernel + WASM plugins, copies into slim runtime.
 # For development, use .devcontainer/ instead (full Rust toolchain).
 
-# ---- Build stage ----
-FROM rust:1-bookworm AS builder
+# ---- Build stages ----
+#
+# The dependency build is its own layer, so a change to the workspace's own
+# source does not recompile the ~400 crates underneath it. `cargo chef
+# prepare` reduces the workspace to its manifests and lockfile (workspace
+# member versions masked, so a version bump is not a dependency change), and
+# `cargo chef cook` builds exactly the dependencies `cargo build --release
+# --bin trovato` needs. The layer is only rebuilt when Cargo.toml or
+# Cargo.lock change, or the base image moves.
+#
+# Measured on the CI Cluster job, which builds this file on every pull request:
+# the dependencies were 8.4 of the 17.7 minutes the release build took (run
+# 45316035626). That job caches the `cook` stage below on each push to main
+# and reads it on pull requests, so a branch that does not change dependencies
+# starts from the cooked layer.
+FROM rust:1-bookworm AS chef
 
 WORKDIR /usr/src/trovato
+
+# The pinned toolchain, before anything is built. Without it here the cooked
+# dependencies were built by the image's own stable Rust, the `COPY . .` below
+# then brought in rust-toolchain.toml, rustup switched to the pinned version,
+# and every crate was compiled again by the other compiler.
+COPY rust-toolchain.toml .
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev \
@@ -13,6 +33,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 RUN rustup target add wasm32-wasip1
 
+# Pinned so that the recipe format, and with it the cooked layer's cache key,
+# only moves when this line does.
+RUN cargo install cargo-chef --version 0.1.78 --locked
+
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+# The dependencies alone, as their own target: the Cluster job in ci.yml
+# builds and caches this stage by name.
+FROM chef AS cook
+COPY --from=planner /usr/src/trovato/recipe.json recipe.json
+RUN cargo chef cook --release --bin trovato --recipe-path recipe.json
+
+FROM cook AS builder
 COPY . .
 
 RUN cargo build --release --bin trovato

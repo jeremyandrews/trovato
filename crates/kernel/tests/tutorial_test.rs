@@ -857,7 +857,7 @@ static STEP5_PATHAUTO_LOCK: Mutex<()> = Mutex::const_new(());
 #[test]
 fn test_part01_step05_pathauto_generates_conference_aliases() {
     run_test(async {
-        let _lock = STEP5_PATHAUTO_LOCK.lock().await;
+        common::hold_until_cleanup(STEP5_PATHAUTO_LOCK.lock().await);
         let app = shared_app().await;
         seed_tutorial_data(app).await;
 
@@ -956,7 +956,7 @@ fn test_part01_step05_pathauto_generates_conference_aliases() {
 #[test]
 fn test_part01_step05_aliases_resolvable_by_middleware_lookup() {
     run_test(async {
-        let _lock = STEP5_PATHAUTO_LOCK.lock().await;
+        common::hold_until_cleanup(STEP5_PATHAUTO_LOCK.lock().await);
         let app = shared_app().await;
         seed_tutorial_data(app).await;
 
@@ -1037,7 +1037,7 @@ fn test_part01_step05_aliases_resolvable_by_middleware_lookup() {
 #[test]
 fn test_part01_step05_regenerate_skips_already_matching_alias() {
     run_test(async {
-        let _lock = STEP5_PATHAUTO_LOCK.lock().await;
+        common::hold_until_cleanup(STEP5_PATHAUTO_LOCK.lock().await);
         let app = shared_app().await;
         seed_tutorial_data(app).await;
 

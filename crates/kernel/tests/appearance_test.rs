@@ -263,7 +263,7 @@ fn the_appearance_screen_refuses_anonymous_and_plain_users() {
 fn switching_the_default_theme_applies_without_a_restart() {
     run_test(async {
         let app = themed_app();
-        let _guard = THEMES.lock().await;
+        common::hold_until_cleanup(THEMES.lock().await);
         restore_stock_on_exit(app);
         let (_, cookies) = user_holding(app, "b108atheme", &["administer themes"]).await;
 
@@ -385,7 +385,7 @@ fn switching_the_default_theme_applies_without_a_restart() {
 fn the_stored_theme_is_read_at_start_and_a_missing_one_is_stock() {
     run_test(async {
         let app = themed_app();
-        let _guard = THEMES.lock().await;
+        common::hold_until_cleanup(THEMES.lock().await);
         restore_stock_on_exit(app);
         SiteConfig::set(&app.db, DEFAULT_THEME_KEY, serde_json::json!("lakeside"))
             .await
@@ -410,7 +410,7 @@ fn the_stored_theme_is_read_at_start_and_a_missing_one_is_stock() {
 fn a_theme_that_does_not_parse_cannot_be_activated() {
     run_test(async {
         let app = themed_app();
-        let _guard = THEMES.lock().await;
+        common::hold_until_cleanup(THEMES.lock().await);
         restore_stock_on_exit(app);
         let (_, cookies) = user_holding(app, "b138cracked", &["administer themes"]).await;
 
