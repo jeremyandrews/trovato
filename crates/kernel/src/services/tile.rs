@@ -11,7 +11,7 @@ use crate::gather::{GatherDenied, GatherQuery};
 use crate::menu::MenuTreeLink;
 use crate::models::tile::{CreateTile, Tile, UpdateTile, gather_tile_items};
 use crate::routes::gather::{ExecuteParams, execute_query_only, query_language};
-use crate::routes::helpers::html_escape;
+use crate::routes::helpers::{TranslationLink, html_escape};
 use crate::services::audit::AuditTrail;
 use crate::state::AppState;
 use crate::tap::UserContext;
@@ -37,6 +37,15 @@ pub struct TileRenderContext<'a> {
     /// `page_root` (see `content::page_builder::page_root_values`): every
     /// tile template receives them, so a tile can follow a page's settings.
     pub page_root: &'a serde_json::Value,
+    /// The address this page is read at, as asked for: `requested_path` in
+    /// the page context, the language switcher's own address for the active
+    /// language.
+    pub current_path: &'a str,
+    /// Every language this page can be read in and its address there, when
+    /// the route knows (an item page does; most others do not). `None` for a
+    /// tile to fall back to a language's front page, the same way a crawler
+    /// is offered no `hreflang` alternate at all for a page with none.
+    pub translations: Option<&'a [TranslationLink]>,
 }
 
 /// Service for loading and rendering tiles.
@@ -142,6 +151,7 @@ async fn render_tile_html(tile: &Tile, render: &TileRenderContext<'_>) -> Option
         "custom_html" => render_custom_html_tile(tile, render)?,
         "menu" => render_menu_tile(tile, render),
         "gather_query" => render_gather_tile(tile, render).await?,
+        "language_switcher" => render_language_switcher_tile(tile, render)?,
         "chat" => chat_widget(&tile.machine_name),
         _ => "<p>Unknown tile type</p>".to_string(),
     };
@@ -319,6 +329,81 @@ fn render_tile_template(
     }
 }
 
+/// A `language_switcher` tile: one link per language the site has enabled, to
+/// this same page in that language when the route knows where that is (an
+/// item page does, through `translations`), else to that language's front
+/// page — the fallback Drupal's own switcher uses for a page with no
+/// translation. No settings beyond the usual title and visibility.
+///
+/// `None`, and so no tile at all, on a site with one enabled language: there
+/// is nothing to switch to.
+fn render_language_switcher_tile(tile: &Tile, render: &TileRenderContext<'_>) -> Option<String> {
+    let links = language_switcher_links(
+        render.state.known_languages(),
+        render.state.default_language(),
+        render.language,
+        render.current_path,
+        render.translations,
+    );
+    if links.is_empty() {
+        return None;
+    }
+    let mut context = tera::Context::new();
+    context.insert("tile", tile);
+    context.insert("links", &links);
+    Some(render_tile_template(tile, render, &context))
+}
+
+/// The links a language switcher tile shows: one per language in
+/// `known_languages`, each `{ language, path, current }`. Empty when there is
+/// one language or fewer — nothing to switch to.
+///
+/// The active language links to `current_path`, whatever page that is. Every
+/// other language links to its address from `translations` when the route
+/// supplied one for it, else to that language's front page: the fallback
+/// Drupal's own switcher block uses for a page with no translation.
+fn language_switcher_links(
+    known_languages: &[String],
+    default_language: &str,
+    active_language: &str,
+    current_path: &str,
+    translations: Option<&[TranslationLink]>,
+) -> Vec<serde_json::Value> {
+    if known_languages.len() <= 1 {
+        return Vec::new();
+    }
+    known_languages
+        .iter()
+        .map(|language| {
+            let current = language == active_language;
+            let path = if current {
+                current_path.to_string()
+            } else {
+                translations
+                    .and_then(|list| list.iter().find(|t| &t.language == language))
+                    .map(|t| t.path.clone())
+                    .unwrap_or_else(|| language_front_page(language, default_language))
+            };
+            serde_json::json!({
+                "language": language,
+                "path": path,
+                "current": current,
+            })
+        })
+        .collect()
+}
+
+/// Where a language's front page is: `/` for the site's default language,
+/// `/{language}` for any other — the same address the front page route reads
+/// a language prefix back from.
+fn language_front_page(language: &str, default_language: &str) -> String {
+    if language == default_language {
+        "/".to_string()
+    } else {
+        format!("/{language}")
+    }
+}
+
 /// A `menu` tile: the links of the config menu it names (`menu_name`, default
 /// `main`), filtered for the viewer, from the menus already built for this
 /// render.
@@ -439,5 +524,69 @@ mod tests {
         query.display.canonical_url = None;
         query.display.routes.clear();
         assert_eq!(gather_page_path(&query), "/gather/upcoming");
+    }
+
+    fn lang(code: &str) -> String {
+        code.to_string()
+    }
+
+    #[test]
+    fn a_single_language_site_has_nothing_to_switch_to() {
+        let links = language_switcher_links(&[lang("en")], "en", "en", "/about", None);
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn one_link_per_enabled_language_the_current_one_marked() {
+        let known = vec![lang("en"), lang("it"), lang("he")];
+        let links = language_switcher_links(&known, "en", "it", "/it/why", None);
+        assert_eq!(links.len(), 3);
+
+        let en = links.iter().find(|l| l["language"] == "en").unwrap();
+        assert_eq!(en["path"], "/");
+        assert_eq!(en["current"], false);
+
+        let it = links.iter().find(|l| l["language"] == "it").unwrap();
+        assert_eq!(it["path"], "/it/why");
+        assert_eq!(it["current"], true);
+
+        let he = links.iter().find(|l| l["language"] == "he").unwrap();
+        assert_eq!(he["path"], "/he");
+        assert_eq!(he["current"], false);
+    }
+
+    #[test]
+    fn a_translated_page_links_to_its_own_alias_in_each_language() {
+        let known = vec![lang("en"), lang("it")];
+        let translations = vec![
+            TranslationLink {
+                language: "en".to_string(),
+                path: "/test-article".to_string(),
+            },
+            TranslationLink {
+                language: "it".to_string(),
+                path: "/it/articolo-di-prova".to_string(),
+            },
+        ];
+        let links =
+            language_switcher_links(&known, "en", "en", "/test-article", Some(&translations));
+
+        let it = links.iter().find(|l| l["language"] == "it").unwrap();
+        assert_eq!(it["path"], "/it/articolo-di-prova");
+        assert_eq!(it["current"], false);
+    }
+
+    #[test]
+    fn a_language_with_no_translation_falls_back_to_its_front_page() {
+        let known = vec![lang("en"), lang("it"), lang("he")];
+        let translations = vec![TranslationLink {
+            language: "en".to_string(),
+            path: "/test-article".to_string(),
+        }];
+        let links =
+            language_switcher_links(&known, "en", "en", "/test-article", Some(&translations));
+
+        let he = links.iter().find(|l| l["language"] == "he").unwrap();
+        assert_eq!(he["path"], "/he");
     }
 }

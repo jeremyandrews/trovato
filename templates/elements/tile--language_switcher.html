@@ -1,0 +1,17 @@
+{#
+  A `language_switcher` tile: one link per language the site has enabled, to
+  this same page in that language (its alias there when one exists, else that
+  language's front page). Override it for one tile with
+  `elements/tile--language_switcher--{machine_name}.html`.
+
+  Given: `tile` (the tile row) and `links`, each `{ language, path, current }`.
+#}
+<nav class="tile-language-switcher" aria-label="{{ tile.label }}">
+<ul class="tile-language-switcher__list">
+{% for link in links %}
+    <li class="tile-language-switcher__item{% if link.current %} tile-language-switcher__item--current{% endif %}">
+        <a href="{{ link.path }}" hreflang="{{ link.language }}" lang="{{ link.language }}"{% if link.current %} aria-current="true"{% endif %}>{{ link.language | upper }}</a>
+    </li>
+{% endfor %}
+</ul>
+</nav>

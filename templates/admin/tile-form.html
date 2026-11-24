@@ -43,6 +43,7 @@
                 <option value="menu" {% if values.tile_type is defined and values.tile_type == "menu" %}selected{% endif %}>Menu</option>
                 <option value="gather_query" {% if values.tile_type is defined and values.tile_type == "gather_query" %}selected{% endif %}>Gather query</option>
                 <option value="chat" {% if values.tile_type is defined and values.tile_type == "chat" %}selected{% endif %}>Chat</option>
+                <option value="language_switcher" {% if values.tile_type is defined and values.tile_type == "language_switcher" %}selected{% endif %}>Language switcher</option>
             </select>
         </div>
 
@@ -92,6 +93,11 @@
         <!-- Chat fields (no additional config needed) -->
         <div id="fields-chat" class="tile-type-fields" style="display:none">
             <p class="form-help">The chat widget will be rendered in this region. Configure chat settings at <a href="/admin/system/ai-chat">AI Chat</a>.</p>
+        </div>
+
+        <!-- Language switcher fields (no additional config needed) -->
+        <div id="fields-language_switcher" class="tile-type-fields" style="display:none">
+            <p class="form-help">One link per enabled language, to this same page in that language. Hidden automatically on a site with only one language.</p>
         </div>
 
         <div class="form-group">
