@@ -13,6 +13,7 @@
 //! nothing is interested in that target, so every one of those callsites is
 //! disabled once and costs an atomic load afterwards.
 
+pub mod export;
 pub mod fingerprint;
 pub mod profile;
 pub mod query_listener;

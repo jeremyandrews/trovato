@@ -230,11 +230,24 @@ operator turns export on with a setting, not a rebuild):
 
 - `opentelemetry` and `opentelemetry_sdk` 0.33: the API and the batch span
   processor and sampler.
-- `opentelemetry-otlp` 0.33 with `http-proto` and `reqwest-client` only (no
-  gRPC, so no `tonic`): the exporter, over the `reqwest` the kernel already
-  uses.
+- `opentelemetry-otlp` 0.33 with `http-proto` and `reqwest-blocking-client`
+  only (no gRPC, so no `tonic`): the exporter. The SDK's batch processor runs
+  on a thread of its own, outside the Tokio runtime, so it needs the blocking
+  client; the async one would need the SDK's experimental runtime processor.
 - `tracing-opentelemetry` 0.34: the bridge from `tracing` spans to OTel spans,
   maintained with `tracing` itself.
+
+They bring three crates outside the family, all theirs to choose: `prost` and
+`prost-derive` (the OTLP protobuf encoding) and `web-time`. They also bring a
+second `reqwest`: `opentelemetry-http` 0.33 depends on `reqwest` 0.13 while
+the kernel is on 0.12. That is a second copy of one crate the kernel already
+trusts, not a new one, and it goes when the kernel moves to 0.13. Writing a
+client of our own for 0.12 to avoid it would be code to maintain for a build
+time saving.
+
+The test for export installs the same layer with the SDK's in-memory
+exporter (its `testing` feature, a dev-dependency only) and runs the privacy
+check over everything exported.
 
 Cost with export off, the default: measured against `main` on the same
 machine and data (part 3 adds the numbers here). Target: under 1% at p99.

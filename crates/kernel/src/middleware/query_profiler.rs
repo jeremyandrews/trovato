@@ -173,6 +173,10 @@ pub async fn track_request_timing(
     let span = tracing::trace_span!(
         target: telemetry::TARGET,
         "http.request",
+        // A backend's name for the span (`GET /item/{id}`); field values are
+        // only evaluated when the span is enabled.
+        otel.name = %format_args!("{method} {route_label}"),
+        otel.kind = "server",
         http.request.method = %method,
         http.route = route_label,
         http.response.status_code = Empty,

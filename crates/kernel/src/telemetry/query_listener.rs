@@ -26,7 +26,7 @@ use tracing_subscriber::Layer;
 use tracing_subscriber::filter::Filtered;
 use tracing_subscriber::layer::{Context, Filter};
 
-use super::profile;
+use super::{export, fingerprint, profile};
 
 /// The target sqlx's statement event uses.
 const SQLX_TARGET: &str = "sqlx::query";
@@ -76,6 +76,7 @@ struct Statement {
     summary: Option<String>,
     full: Option<String>,
     elapsed_secs: f64,
+    rows_returned: Option<u64>,
     want_text: bool,
 }
 
@@ -94,6 +95,12 @@ impl Visit for Statement {
         }
     }
 
+    fn record_u64(&mut self, field: &Field, value: u64) {
+        if field.name() == "rows_returned" {
+            self.rows_returned = Some(value);
+        }
+    }
+
     fn record_f64(&mut self, field: &Field, value: f64) {
         if field.name() == "elapsed_secs" {
             self.elapsed_secs = value;
@@ -108,14 +115,32 @@ impl<S: Subscriber> Layer<S> for QueryListener {
         if event.metadata().target() != SQLX_TARGET {
             return;
         }
+        let exporting = export::active();
         let mut statement = Statement {
-            want_text: profile::wants_statements(),
+            want_text: exporting || profile::wants_statements(),
             ..Statement::default()
         };
         event.record(&mut statement);
         let elapsed = Duration::try_from_secs_f64(statement.elapsed_secs).unwrap_or_default();
-        let Statement { summary, full, .. } = statement;
-        profile::count_query(elapsed, move || full.or(summary));
+        let Statement {
+            summary,
+            full,
+            rows_returned,
+            ..
+        } = statement;
+        let text = full.or(summary);
+        if exporting && let Some(sql) = text.as_deref() {
+            // The span carries the statement only normalised: no literal
+            // `format!` put into the SQL text reaches the backend.
+            let normalized = fingerprint::normalize(sql);
+            export::db_query(
+                elapsed,
+                &fingerprint::fingerprint_normalized(&normalized),
+                &normalized,
+                rows_returned,
+            );
+        }
+        profile::count_query(elapsed, move || text);
     }
 }
 

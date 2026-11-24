@@ -7,6 +7,9 @@
 //!
 //! - a log line, under the production `RUST_LOG` default;
 //! - any Gander span or event, captured at `TRACE`, fields and all;
+//! - every span exported with trace export on (into an in-memory exporter
+//!   instead of OTLP), its attributes and events, including the `db.query`
+//!   spans made from sqlx's statements;
 //! - a `Server-Timing` header, with the detail shown to everyone;
 //! - `/metrics`.
 //!
@@ -128,7 +131,15 @@ async fn send(
 fn no_secret_reaches_any_telemetry() {
     let captured = Captured::default();
     let writer = captured.clone();
+    // Export on, as `TRACING_EXPORT=otlp` sets it up, into memory.
+    let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+    let export_layer = trovato_kernel::telemetry::export::install(
+        opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build(),
+    );
     let subscriber = tracing_subscriber::registry()
+        .with(export_layer)
         .with(
             tracing_subscriber::fmt::layer()
                 .with_ansi(false)
@@ -140,7 +151,9 @@ fn no_secret_reaches_any_telemetry() {
                 .with_filter(Targets::new().with_target("gander", tracing::Level::TRACE)),
         )
         .with(trovato_kernel::telemetry::query_listener::query_listener());
-    tracing::subscriber::set_global_default(subscriber).expect("one subscriber per test binary");
+    let dispatch = tracing::Dispatch::new(subscriber);
+    trovato_kernel::telemetry::export::set_dispatch(&dispatch);
+    tracing::dispatcher::set_global_default(dispatch).expect("one subscriber per test binary");
 
     run_test(async move {
         let app = TestApp::with_config(|c| {
@@ -256,6 +269,38 @@ fn no_secret_reaches_any_telemetry() {
 
         let output = captured.text();
 
+        // What was exported: every span's name, attributes and events.
+        let spans = exporter.get_finished_spans().unwrap();
+        let exported = spans
+            .iter()
+            .map(|s| format!("EXPORTED {} {:?} {:?}", s.name, s.attributes, s.events))
+            .collect::<Vec<_>>()
+            .join("\n");
+        // Not vacuous: the request spans, by method and route template, and
+        // the statements, each under a span of its own trace.
+        assert!(
+            spans.iter().any(|s| s.name == "GET /search"),
+            "no exported request span for /search: {:?}",
+            spans.iter().map(|s| s.name.as_ref()).collect::<Vec<_>>()
+        );
+        let queries: Vec<_> = spans.iter().filter(|s| s.name == "db.query").collect();
+        assert!(!queries.is_empty(), "no db.query span exported");
+        for query in &queries {
+            assert!(
+                spans
+                    .iter()
+                    .any(|s| s.span_context.span_id() == query.parent_span_id
+                        && s.span_context.trace_id() == query.span_context.trace_id()),
+                "a db.query span has no exported parent in its trace: {query:?}"
+            );
+            for key in ["db.query.summary", "db.query.text", "db.system.name"] {
+                assert!(
+                    query.attributes.iter().any(|kv| kv.key.as_str() == key),
+                    "db.query without {key}: {query:?}"
+                );
+            }
+        }
+
         // The capture is not vacuous: it saw the request spans, the slow
         // request lines with their breakdown, and real counts.
         assert!(
@@ -326,6 +371,7 @@ fn no_secret_reaches_any_telemetry() {
             })
             .chain(timings.iter().map(String::as_str))
             .chain(metrics_body.lines())
+            .chain(exported.lines())
             .collect::<Vec<_>>()
             .join("\n");
         for (what, value) in [
@@ -336,7 +382,10 @@ fn no_secret_reaches_any_telemetry() {
                 panic!("the {what} reached telemetry:\n{line}");
             }
         }
-        let everything = format!("{output}\n{}\n{metrics_body}", timings.join("\n"));
+        let everything = format!(
+            "{output}\n{}\n{metrics_body}\n{exported}",
+            timings.join("\n")
+        );
         for (what, secret) in [
             ("password", password.as_str()),
             ("email", email.as_str()),
