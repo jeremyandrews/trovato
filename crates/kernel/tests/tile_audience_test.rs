@@ -372,6 +372,7 @@ fn editing_the_audience_preserves_an_existing_paths_rule() {
         let token = csrf_from(&body_text(edit_page).await);
         let fields = [
             ("_token", token.as_str()),
+            ("machine_name", machine.as_str()),
             ("label", "Audience form tile"),
             ("region", "sidebar"),
             ("tile_type", "custom_html"),
