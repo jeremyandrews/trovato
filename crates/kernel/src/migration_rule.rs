@@ -54,12 +54,22 @@ pub fn is_incompatible_description(description: &str) -> bool {
     description.starts_with("incompatible ")
 }
 
+/// Where a migration runs, which decides what it may do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Source {
+    /// A kernel migration, run by sqlx: a first line `-- no-transaction`
+    /// runs it outside a transaction.
+    Kernel,
+    /// A plugin migration: always inside a transaction.
+    Plugin,
+}
+
 /// Check one migration's SQL against the rule.
 ///
 /// `workspace_version` is the release being built; a contract marker must name
 /// an older release, the one whose code stopped using the object. The checker
 /// cannot see tags, so "older" is all it can hold a marker to.
-pub fn check(sql: &str, workspace_version: &str) -> Result<(), Vec<Violation>> {
+pub fn check(sql: &str, workspace_version: &str, source: Source) -> Result<(), Vec<Violation>> {
     if let Some(marker) = contract_marker(sql) {
         return match marker_is_valid(marker, workspace_version) {
             true => Ok(()),
@@ -77,14 +87,18 @@ pub fn check(sql: &str, workspace_version: &str) -> Result<(), Vec<Violation>> {
         .filter(|s| !s.is_empty())
         .collect();
     let created: Vec<String> = statements.iter().filter_map(|s| created_table(s)).collect();
+    let no_transaction = source == Source::Kernel && sql.starts_with("-- no-transaction");
 
     let violations: Vec<Violation> = statements
         .iter()
-        .filter_map(|s| {
-            refusal(s, &created).map(|reason| Violation {
-                statement: s.clone(),
-                reason,
-            })
+        .enumerate()
+        .filter_map(|(i, s)| {
+            refusal(s, &created)
+                .or_else(|| concurrent_index_refusal(s, &statements[..i], no_transaction))
+                .map(|reason| Violation {
+                    statement: s.clone(),
+                    reason,
+                })
         })
         .collect();
     if violations.is_empty() {
@@ -94,10 +108,13 @@ pub fn check(sql: &str, workspace_version: &str) -> Result<(), Vec<Violation>> {
     }
 }
 
-/// The marker line, if the file has one.
+/// The marker, if the file has one in its leading comment block (the lines
+/// before the first statement), so a marker-shaped line inside a string or a
+/// later comment blesses nothing.
 fn contract_marker(sql: &str) -> Option<&str> {
     sql.lines()
         .map(str::trim_start)
+        .take_while(|l| l.is_empty() || l.starts_with("--"))
         .find_map(|l| l.strip_prefix(CONTRACT_MARKER))
 }
 
@@ -133,26 +150,10 @@ fn refusal(s: &str, created: &[String]) -> Option<&'static str> {
         return Some("renames an object the previous release reads by its old name");
     }
     // A table this file creates has no previous release reading it.
-    if let Some(table) = altered_table(s)
+    if let Some((table, actions)) = altered_table(s)
         && !created.contains(&table)
     {
-        if s.contains(" DROP COLUMN ") {
-            return Some("drops a column the previous release may still read");
-        }
-        if alters_column_type(s) {
-            return Some("retypes a column the previous release reads");
-        }
-        if s.contains(" SET NOT NULL") {
-            return Some("makes a column NOT NULL that the previous release may leave empty");
-        }
-        if s.contains(" DROP DEFAULT") {
-            return Some("removes a default the previous release's inserts may rely on");
-        }
-        for action in alter_actions(s) {
-            if let Some(reason) = add_refusal(&action) {
-                return Some(reason);
-            }
-        }
+        return actions.iter().find_map(|a| action_refusal(a));
     }
     if let Some(table) = plain_index_table(s)
         && !created.contains(&table)
@@ -167,29 +168,55 @@ fn refusal(s: &str, created: &[String]) -> Option<&'static str> {
     None
 }
 
-/// `ALTER TABLE [IF EXISTS] [ONLY] name ...` → `name`.
-fn altered_table(s: &str) -> Option<String> {
+/// `CREATE INDEX CONCURRENTLY` cannot run in a transaction, and a failed or
+/// cancelled build leaves an INVALID index behind under its name. So it needs
+/// a `-- no-transaction` kernel file, and a
+/// `DROP INDEX CONCURRENTLY IF EXISTS <name>` before it, so a retry after a
+/// failure rebuilds the index instead of failing on (or, with `IF NOT EXISTS`,
+/// keeping) the invalid one.
+fn concurrent_index_refusal(
+    s: &str,
+    earlier: &[String],
+    no_transaction: bool,
+) -> Option<&'static str> {
+    let name = concurrent_index_name(s)?;
+    if !no_transaction {
+        return Some(
+            "builds an index CONCURRENTLY, which cannot run in a transaction: only a kernel \
+             migration whose first line is `-- no-transaction` can",
+        );
+    }
+    let drop = format!("DROP INDEX CONCURRENTLY IF EXISTS {name}");
+    if !earlier.iter().any(|e| e == &drop) {
+        return Some(
+            "builds an index CONCURRENTLY without `DROP INDEX CONCURRENTLY IF EXISTS <name>` \
+             before it, so a retry after a failed build cannot recover the invalid index",
+        );
+    }
+    None
+}
+
+/// `CREATE [UNIQUE] INDEX CONCURRENTLY [IF NOT EXISTS] name ...` → `name`.
+fn concurrent_index_name(s: &str) -> Option<&str> {
+    let rest = s
+        .strip_prefix("CREATE INDEX CONCURRENTLY ")
+        .or_else(|| s.strip_prefix("CREATE UNIQUE INDEX CONCURRENTLY "))?;
+    let rest = rest.strip_prefix("IF NOT EXISTS ").unwrap_or(rest);
+    rest.split(' ').next().filter(|n| *n != "ON")
+}
+
+/// `ALTER TABLE [IF EXISTS] [ONLY] name action, action ...` → the table and
+/// its actions, split at top-level commas.
+fn altered_table(s: &str) -> Option<(String, Vec<String>)> {
     let rest = s.strip_prefix("ALTER TABLE ")?;
     let rest = rest.strip_prefix("IF EXISTS ").unwrap_or(rest);
     let rest = rest.strip_prefix("ONLY ").unwrap_or(rest);
-    rest.split(' ').next().map(table_name)
+    let (name, actions) = rest.split_once(' ').unwrap_or((rest, ""));
+    Some((table_name(name), split_top_level(actions)))
 }
 
-fn alters_column_type(s: &str) -> bool {
-    s.match_indices("ALTER COLUMN ").any(|(i, m)| {
-        let rest = &s[i + m.len()..];
-        let mut words = rest.split(' ').skip(1);
-        match words.next() {
-            Some("TYPE") => true,
-            Some("SET") => matches!((words.next(), words.next()), (Some("DATA"), Some("TYPE"))),
-            _ => false,
-        }
-    })
-}
-
-/// The comma-separated actions of an `ALTER TABLE`, split at the top level.
-fn alter_actions(s: &str) -> Vec<String> {
-    let mut actions = Vec::new();
+fn split_top_level(s: &str) -> Vec<String> {
+    let mut parts = Vec::new();
     let mut depth = 0i32;
     let mut current = String::new();
     for c in s.chars() {
@@ -197,25 +224,47 @@ fn alter_actions(s: &str) -> Vec<String> {
             '(' => depth += 1,
             ')' => depth -= 1,
             ',' if depth == 0 => {
-                actions.push(std::mem::take(&mut current));
+                parts.push(std::mem::take(&mut current).trim().to_string());
                 continue;
             }
             _ => {}
         }
         current.push(c);
     }
-    actions.push(current);
-    // The first action carries the `ALTER TABLE name` prefix; drop it.
-    actions
-        .into_iter()
-        .map(|a| {
-            let a = a.trim().to_string();
-            match a.find(" ADD ") {
-                Some(i) if a.starts_with("ALTER TABLE ") => a[i + 1..].to_string(),
-                _ => a,
+    parts.push(current.trim().to_string());
+    parts
+}
+
+/// Why one `ALTER TABLE` action on an existing table is refused, if it is.
+/// `COLUMN` is optional in Postgres (`DROP c`, `ALTER c TYPE t`), so actions
+/// are read by position, not by looking for `DROP COLUMN`.
+fn action_refusal(action: &str) -> Option<&'static str> {
+    let words: Vec<&str> = action.split(' ').collect();
+    match words.as_slice() {
+        // Dropping a constraint only relaxes what the previous release meets.
+        ["DROP", "CONSTRAINT", ..] => None,
+        ["DROP", ..] => Some("drops a column the previous release may still read"),
+        ["ADD", ..] => add_refusal(action),
+        ["ALTER", rest @ ..] => {
+            let rest = match rest {
+                ["COLUMN", rest @ ..] => rest,
+                rest => rest,
+            };
+            match rest.get(1..).unwrap_or_default() {
+                ["TYPE", ..] | ["SET", "DATA", "TYPE", ..] => {
+                    Some("retypes a column the previous release reads")
+                }
+                ["SET", "NOT", "NULL", ..] => {
+                    Some("makes a column NOT NULL that the previous release may leave empty")
+                }
+                ["DROP", "DEFAULT", ..] => {
+                    Some("removes a default the previous release's inserts may rely on")
+                }
+                _ => None,
             }
-        })
-        .collect()
+        }
+        _ => None,
+    }
 }
 
 fn add_refusal(action: &str) -> Option<&'static str> {
@@ -338,19 +387,19 @@ mod tests {
     const V: &str = "0.107.0";
 
     fn refused(sql: &str) -> bool {
-        check(sql, V).is_err()
+        check(sql, V, Source::Kernel).is_err()
     }
 
     #[test]
     fn drop_column_without_the_marker_fails_and_with_it_passes() {
         let sql = "ALTER TABLE item DROP COLUMN legacy_flag;";
-        let err = check(sql, V).unwrap_err();
+        let err = check(sql, V, Source::Kernel).unwrap_err();
         assert_eq!(err.len(), 1);
         assert!(err[0].reason.contains("drops a column"), "{err:?}");
 
         let marked = "-- trovato:contract 0.106.0: item.legacy_flag unread since 0.106.0\n\
                       ALTER TABLE item DROP COLUMN legacy_flag;";
-        assert_eq!(check(marked, V), Ok(()));
+        assert_eq!(check(marked, V, Source::Kernel), Ok(()));
     }
 
     #[test]
@@ -396,6 +445,17 @@ mod tests {
             "TRUNCATE search_analytics;",
             "CREATE INDEX idx_item_title ON item (title);",
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_item_slug ON public.item (slug);",
+            // COLUMN is optional in Postgres.
+            "ALTER TABLE item DROP legacy;",
+            "ALTER TABLE item DROP IF EXISTS legacy;",
+            "ALTER TABLE item ALTER title TYPE TEXT;",
+            "ALTER TABLE item ALTER title SET DATA TYPE TEXT;",
+            "ALTER TABLE item ALTER title SET NOT NULL;",
+            "ALTER TABLE item ADD COLUMN a TEXT, DROP b;",
+            "DROP SCHEMA old CASCADE;",
+            "ALTER TABLE item ADD PRIMARY KEY (id);",
+            "ALTER TABLE item ADD FOREIGN KEY (owner) REFERENCES users(id);",
+            "ALTER TABLE item ADD EXCLUDE USING gist (span WITH &&);",
         ] {
             assert!(refused(sql), "should be refused: {sql}");
         }
@@ -412,7 +472,9 @@ mod tests {
             "ALTER TABLE item ADD COLUMN owner UUID REFERENCES users(id);",
             "ALTER TABLE item ALTER COLUMN summary DROP NOT NULL;",
             "ALTER TABLE item ALTER COLUMN summary SET DEFAULT '';",
-            "-- no-transaction\nCREATE INDEX CONCURRENTLY idx_item_title ON item (title);",
+            "-- no-transaction\nDROP INDEX CONCURRENTLY IF EXISTS idx_item_title;\n\
+             CREATE INDEX CONCURRENTLY idx_item_title ON item (title);",
+            "CREATE UNLOGGED TABLE scratch (id INT);\nCREATE INDEX idx_scratch ON scratch (id);",
             "UPDATE item SET summary = '' WHERE summary IS NULL;",
             "INSERT INTO role_permissions (role_id, permission) VALUES ('x', 'drop table y');",
             "DROP INDEX IF EXISTS idx_unused;",
@@ -422,7 +484,7 @@ mod tests {
              ALTER TABLE thing ALTER COLUMN name SET NOT NULL;\n\
              ALTER TABLE thing ADD CONSTRAINT thing_pk PRIMARY KEY (id);",
         ] {
-            assert_eq!(check(sql, V), Ok(()), "should pass: {sql}");
+            assert_eq!(check(sql, V, Source::Kernel), Ok(()), "should pass: {sql}");
         }
     }
 
@@ -435,8 +497,49 @@ mod tests {
             "CREATE FUNCTION f() RETURNS void AS $$ BEGIN DROP TABLE tmp; END $$ LANGUAGE plpgsql;",
             "CREATE FUNCTION g() RETURNS void AS $body$ TRUNCATE x; $body$ LANGUAGE plpgsql;",
         ] {
-            assert_eq!(check(sql, V), Ok(()), "should pass: {sql}");
+            assert_eq!(check(sql, V, Source::Kernel), Ok(()), "should pass: {sql}");
         }
+    }
+
+    #[test]
+    fn a_concurrent_index_needs_no_transaction_and_a_drop_before_it() {
+        let build = "CREATE INDEX CONCURRENTLY idx_item_title ON item (title);";
+        let drop = "DROP INDEX CONCURRENTLY IF EXISTS idx_item_title;";
+        // Inside a transaction it cannot run at all.
+        assert!(refused(build));
+        assert!(refused(&format!("{drop}\n{build}")));
+        // Without the drop, a retry after a failed build is stuck.
+        assert!(refused(&format!("-- no-transaction\n{build}")));
+        assert!(refused(&format!(
+            "-- no-transaction\nDROP INDEX CONCURRENTLY IF EXISTS other;\n{build}"
+        )));
+        assert!(refused(&format!(
+            "-- no-transaction\n{}",
+            "CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_item_title ON item (title);"
+        )));
+        assert!(!refused(&format!("-- no-transaction\n{drop}\n{build}")));
+        // A plugin migration always runs in a transaction.
+        assert!(
+            check(
+                &format!("-- no-transaction\n{drop}\n{build}"),
+                V,
+                Source::Plugin
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn the_marker_counts_only_in_the_leading_comments() {
+        let sql = "ALTER TABLE item DROP COLUMN legacy_flag;";
+        let marker = "-- trovato:contract 0.106.0: unread since 0.106.0";
+        assert!(!refused(&format!("-- Drop the flag.\n\n{marker}\n{sql}")));
+        // After the first statement, in a comment or a string, it blesses nothing.
+        assert!(refused(&format!("{sql}\n{marker}")));
+        assert!(refused(&format!(
+            "INSERT INTO note (body) VALUES ('\n{marker}\n');\n{sql}"
+        )));
+        assert!(refused(&format!("/*\n{marker}\n*/\n{sql}")));
     }
 
     #[test]
@@ -472,13 +575,13 @@ mod tests {
         let mut failures = Vec::new();
         let mut history = 0;
 
-        let mut check_file = |path: &std::path::Path, label: String| {
+        let mut check_file = |path: &std::path::Path, label: String, source: Source| {
             let name = path.file_name().unwrap().to_string_lossy().to_string();
             if is_incompatible_name(&name) {
                 return;
             }
             let sql = std::fs::read_to_string(path).unwrap();
-            if let Err(violations) = check(&sql, version) {
+            if let Err(violations) = check(&sql, version, source) {
                 for v in violations {
                     failures.push(format!("{label}: {} — {}", v.reason, v.statement));
                 }
@@ -495,7 +598,11 @@ mod tests {
                 continue;
             }
             if version > KERNEL_CUTOFF {
-                check_file(&path, format!("crates/kernel/migrations/{name}"));
+                check_file(
+                    &path,
+                    format!("crates/kernel/migrations/{name}"),
+                    Source::Kernel,
+                );
             } else {
                 history += 1;
             }
@@ -516,7 +623,7 @@ mod tests {
                     .unwrap_or(&path)
                     .to_string_lossy()
                     .to_string();
-                check_file(&path, label);
+                check_file(&path, label, Source::Plugin);
             }
         }
 

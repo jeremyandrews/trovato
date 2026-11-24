@@ -13,7 +13,7 @@ What you supply:
 
 - a Secret named `trovato` holding at least `DATABASE_URL`, `REDIS_URL`,
   `SITE_URL`, `TRUSTED_PROXIES` (your ingress), and optionally `HEALTH_TOKEN`;
-- a `ReadWriteMany` PersistentVolumeClaim named `trovato-uploads`;
+- a `ReadWriteMany` PersistentVolumeClaim named `trovato-shared`, mounted at `/shared` for uploads and the Pagefind index;
 - an Ingress or load balancer in front of the Service.
 
 Validate them (CI does this on every pull request):

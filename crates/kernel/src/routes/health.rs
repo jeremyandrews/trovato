@@ -23,6 +23,7 @@ use axum::routing::get;
 use axum::{Json, Router};
 use serde::Serialize;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 use crate::state::AppState;
@@ -107,7 +108,8 @@ impl Probes {
         let headers = request.headers();
         if let Some(expected) = &self.token
             && let Some(given) = bearer(headers)
-            && bool::from(given.as_bytes().ct_eq(expected.as_bytes()))
+            // Digests, so the comparison is constant time in the length too.
+            && bool::from(Sha256::digest(given.as_bytes()).ct_eq(&Sha256::digest(expected.as_bytes())))
         {
             return true;
         }
@@ -254,7 +256,7 @@ pub fn waiting_router() -> Router {
 mod tests {
     use super::*;
 
-    fn request(peer: [u8; 4], headers: &[(&str, &str)]) -> Request {
+    fn request(peer: impl Into<std::net::IpAddr>, headers: &[(&str, &str)]) -> Request {
         let mut builder = axum::http::Request::get("/health");
         for (k, v) in headers {
             builder = builder.header(*k, *v);
@@ -262,7 +264,7 @@ mod tests {
         let mut request = builder.body(axum::body::Body::empty()).unwrap();
         request
             .extensions_mut()
-            .insert(ConnectInfo(SocketAddr::from((peer, 4000))));
+            .insert(ConnectInfo(SocketAddr::from((peer.into(), 4000))));
         request
     }
 
@@ -270,6 +272,11 @@ mod tests {
     fn only_an_operator_or_the_token_holder_is_trusted() {
         let probes = Probes::new(Some("s3cret".to_string()));
         assert!(probes.is_trusted(&request([127, 0, 0, 1], &[])));
+        assert!(probes.is_trusted(&request(std::net::Ipv6Addr::LOCALHOST, &[])));
+        assert!(!probes.is_trusted(&request(
+            std::net::Ipv6Addr::LOCALHOST,
+            &[("x-forwarded-for", "203.0.113.9")]
+        )));
         assert!(!probes.is_trusted(&request([203, 0, 113, 9], &[])));
         assert!(!probes.is_trusted(&request(
             [127, 0, 0, 1],
@@ -298,5 +305,18 @@ mod tests {
         for path in ["/health/", "/health/deep", "/healthz", "/"] {
             assert!(!is_probe_path(path), "{path}");
         }
+    }
+
+    #[test]
+    fn only_reads_of_a_probe_path_are_probes() {
+        use axum::http::Method;
+        for method in [Method::GET, Method::HEAD] {
+            assert!(is_probe(&method, "/health"), "{method}");
+            assert!(is_probe(&method, "/health/ready"), "{method}");
+        }
+        for method in [Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS] {
+            assert!(!is_probe(&method, "/health"), "{method}");
+        }
+        assert!(!is_probe(&Method::GET, "/healthz"));
     }
 }

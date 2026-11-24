@@ -754,18 +754,30 @@ Requires `administer site`; the two writes also `X-CSRF-Token`. See
 
 ```
 GET /health
+GET /health/live
+GET /health/ready
 ```
 
-**Response (200 or 503):**
+**Response to an anonymous caller (200 or 503):**
 ```json
 {
-  "status": "healthy",
-  "postgres": true,
-  "redis": true
+  "status": "healthy"
 }
 ```
 
-Returns 200 when both backends are reachable, 503 otherwise.
+- `/health` answers 200 (`healthy`) when Postgres and Redis are reachable, 503
+  (`unhealthy`) otherwise.
+- `/health/live` answers 200 (`alive`) whenever the process answers, and
+  checks nothing else.
+- `/health/ready` answers 200 (`ready`) when Postgres and Redis are reachable,
+  the schema is migrated, plugins are loaded and the server is not draining,
+  503 (`not ready`) otherwise.
+
+A caller on loopback with no forwarding header, or one sending
+`Authorization: Bearer $HEALTH_TOKEN`, also gets `postgres`, `redis`, the pool
+statistics and the services report. See
+[deployment/upgrades.md](deployment/upgrades.md#probes).
+
 
 ---
 

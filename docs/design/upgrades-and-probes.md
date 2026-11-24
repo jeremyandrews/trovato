@@ -105,8 +105,8 @@ trovato migrate --dry-run    # list what would be applied; change nothing
   says. They take no lock and write nothing, so they can never block a running
   migration.
 
-The existing `trovato plugin install|migrate|enable` run their plugin
-migrations under the same lock. `db::run_migrations`, which the tests call,
+The existing `trovato plugin install` and `trovato plugin migrate` run their
+plugin migrations under the same lock, with the same incompatible check. `db::run_migrations`, which the tests call,
 takes it too.
 
 ### 2. Boot: `MIGRATE_ON_START`
@@ -121,7 +121,7 @@ subcommands migrate at start.
   gated on our own check). That only changes a case that used to exit at boot.
   It is what lets a single server roll back by reinstalling the previous binary.
 - **`false` (hosted): `serve` never changes the schema.** Before building the
-  application it reads the schema state (`migrate::check`). If anything it
+  application it reads the schema state (`migrate::read_report`). If anything it
   needs is pending (kernel or enabled-plugin migrations), or Postgres cannot be
   reached yet, it does not exit, so there is no crash loop. It binds the port and
   serves only the three probes: live 200, ready 503, `/health` 503. It checks
@@ -130,10 +130,10 @@ subcommands migrate at start.
   over (bounded at 2 seconds, so a half-sent request cannot hold it). In this
   mode the signal is listened for once, from the start: SIGTERM while waiting
   exits cleanly, and SIGTERM while the application builds starts the drain as
-  soon as it serves. `config`, `user` and `plugin list` refuse to run on a
-  kernel schema that is behind and say "run `trovato migrate` first";
-  `plugin install`, `plugin migrate` and `config import` still apply the plugin
-  migrations they need, under the lock.
+  soon as it serves. The `plugin`, `config` and `user` commands refuse to run
+  on a kernel schema that is behind and say "run `trovato migrate` first";
+  once it is current, `plugin install`, `plugin migrate` and `config import`
+  apply the plugin migrations they need, under the lock.
 - **Unknown applied migrations** (in the database, not in this binary) are
   accepted unless their name marks them incompatible (see 3). This is what lets
   the previous image run on the new schema.
@@ -152,9 +152,14 @@ what a rollback redeploys.
 Allowed at any time ("expand"):
 - new tables, new views, new functions;
 - new nullable columns, or columns with a `DEFAULT`;
-- indexes on existing tables built `CONCURRENTLY` in a file whose first line is
-  `-- no-transaction` (sqlx's directive; `CONCURRENTLY` cannot run in a
-  transaction). Plain `CREATE INDEX` is fine on a table the same file creates;
+- indexes on existing tables built `CONCURRENTLY` in a kernel file whose first
+  line is `-- no-transaction` (sqlx's directive; `CONCURRENTLY` cannot run in a
+  transaction), each preceded by `DROP INDEX CONCURRENTLY IF EXISTS <name>`:
+  a failed or cancelled build leaves an INVALID index under its name, and a
+  retry must replace it rather than fail on it or, with `IF NOT EXISTS`, keep
+  it. A run that includes such a file clears `lock_timeout`, because the build
+  waits for older transactions by design. Plain `CREATE INDEX` is fine on a
+  table the same file creates;
 - inserts and updates of rows the previous release reads the same way.
 
 Only in a later release, once no released code reads or writes the object
@@ -179,7 +184,8 @@ migration newer than the cutoff (`20261127160002`, the newest on `main` when
 the rule was written; older files are history, and their count is pinned so a
 file cannot be slipped in under the cutoff) and every plugin migration. The unit test runs in `./scripts/pre-commit-check.sh`
 (as a named step) and in CI (the shard 1 unit test step, also named). A
-refused statement passes only if the file carries
+refused statement passes only if the comment lines at the top of the file (before
+the first statement) carry
 
 ```sql
 -- trovato:contract <release>: <what stopped using it>
@@ -278,9 +284,16 @@ compiles the workspace crates twice and the dependencies once.
     reverse proxy on the same host connects from loopback, and its visitors must
     not count as local. A proxy on the same host or in the same pod that
     connects from loopback *without* adding one of those headers would defeat
-    this, so such a deployment must not route `/health` through it; or
-  - presents `Authorization: Bearer <HEALTH_TOKEN>`, compared in constant time,
-    when `HEALTH_TOKEN` is set.
+    this, so such a deployment must not route `/health` through it. Service
+    mesh sidecars do exactly that (Istio's inbound proxy connects from
+    127.0.0.6, Linkerd's from loopback, neither adding `X-Forwarded-For` by
+    default): in a meshed pod every caller looks local, so either keep
+    `/health` out of the mesh or accept that anything that reaches the pod
+    sees the details (as everyone did before this change); or
+  - presents `Authorization: Bearer <HEALTH_TOKEN>`, compared in constant time
+    (as SHA-256 digests, so the length does not show), when `HEALTH_TOKEN` is
+    set. The probes have no rate limit, so the token must be long and random
+    (`openssl rand -hex 32`).
 
   Everyone else gets the status word only. Existing tests that read
   `postgres`/`redis` from `/health` run as a loopback caller, so they still see
@@ -299,13 +312,18 @@ On **SIGTERM**:
    background tasks (search analytics flush once more, as today, and the queue
    runner's batch) and closes the pool, all within one `SHUTDOWN_TIMEOUT_SECS`
    (existing setting, default 30) counted from when it stops accepting, plus
-   half a second, and exits.
+   half a second, and exits. (The in-flight wait is bounded only when a drain
+   is configured; see below.) Closing the pool always gets at least a second,
+   even when the in-flight wait used the whole budget.
 
 `SHUTDOWN_DRAIN_SECS` defaults to **5 when running under Kubernetes**
 (`KUBERNETES_SERVICE_HOST` is set, which the kubelet does in every pod), and
-**0 otherwise**. With 0, the steps above are exactly today's shutdown, so a
-single server stops as fast as it does now. **SIGINT** (Ctrl-C at a terminal)
-never drains. Five seconds covers endpoint removal reaching kube-proxy and the
+**0 otherwise**. With 0 a single server stops as it does now: it waits for
+in-flight requests (a long streaming response included) without limit, and
+`SHUTDOWN_TIMEOUT_SECS` bounds the background work and closing the pool. With
+a drain configured, in-flight requests are cut off at `SHUTDOWN_TIMEOUT_SECS`
+too, so the pod exits inside its grace period. **SIGINT** (Ctrl-C at a
+terminal) never drains. Five seconds covers endpoint removal reaching kube-proxy and the
 ingress controller in a normal cluster. The `preStop` pause in the manifest
 covers the same window before the process even hears about it. The two
 together make it hold for load balancers that watch readiness and for those

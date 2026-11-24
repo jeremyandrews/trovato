@@ -56,8 +56,8 @@ With `MIGRATE_ON_START=true` (the default), `serve` and the `plugin`, `config`
 and `user` commands apply pending migrations when they start, as they always
 have. With `false`, `serve` never changes the schema: it waits, answering
 `/health/live` 200 and `/health/ready` 503, until `trovato migrate` has run. The
-other commands refuse to run on a kernel schema that is behind, and say so;
-`plugin install`, `plugin migrate` and `config import` still apply the plugin
-migrations they need, under the lock.
+other commands refuse to run on a kernel schema that is behind, and say so.
+Once it is current, `plugin install`, `plugin migrate` and `config import`
+apply the plugin migrations they need, under the lock.
 
 See [docs/deployment/upgrades.md](deployment/upgrades.md).

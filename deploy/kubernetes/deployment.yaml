@@ -50,6 +50,12 @@ spec:
               value: "5"
             - name: SHUTDOWN_TIMEOUT_SECS
               value: "30"
+            # Uploads and the Pagefind index live on the volume every server
+            # shares (docs/deployment/multi-server.md).
+            - name: UPLOADS_DIR
+              value: /shared/uploads
+            - name: PAGEFIND_OUTPUT_DIR
+              value: /shared/pagefind
           # Liveness checks nothing but the process, so a database blip takes
           # pods out of rotation (readiness) without restarting them.
           livenessProbe:
@@ -84,11 +90,10 @@ spec:
           securityContext:
             allowPrivilegeEscalation: false
           volumeMounts:
-            # Uploaded files are shared by every server
-            # (docs/deployment/multi-server.md).
-            - name: uploads
-              mountPath: /app/uploads
+            # Mounted one level above the directories Trovato writes.
+            - name: shared
+              mountPath: /shared
       volumes:
-        - name: uploads
+        - name: shared
           persistentVolumeClaim:
-            claimName: trovato-uploads
+            claimName: trovato-shared

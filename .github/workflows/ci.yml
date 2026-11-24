@@ -993,8 +993,14 @@ jobs:
           TROVATO_PREVIOUS_BIN: ${{ runner.temp }}/trovato-previous
           TROVATO_PREVIOUS_ROOT: ${{ runner.temp }}/previous
         run: |
+          set -o pipefail
           cargo test -p trovato-kernel --test zero_downtime_test \
-            previous_release_serves_on_this_schema -- --nocapture
+            previous_release_serves_on_this_schema -- --exact --nocapture \
+            2>&1 | tee "$RUNNER_TEMP/rollback.log"
+          # The test skips itself without TROVATO_PREVIOUS_BIN, and a renamed
+          # test matches nothing; either would pass silently. Its last line of
+          # evidence must be there.
+          grep -q "previous binary: POST /user/login/json -> 200" "$RUNNER_TEMP/rollback.log"
 
   # The example manifests under deploy/kubernetes/ against the Kubernetes API
   # schemas. kubeconform is one static binary.

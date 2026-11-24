@@ -67,11 +67,26 @@ impl MigrationLock {
     }
 
     async fn lock(mut conn: PgConnection) -> Result<Self> {
+        // A role or URL default `lock_timeout` or `statement_timeout` would turn
+        // the wait for another migrator into a failure: off for the wait, back
+        // to the session default once the lock is held.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(
+            "SET lock_timeout = 0; SET statement_timeout = 0",
+        ))
+        .execute(&mut conn)
+        .await
+        .context("failed to clear timeouts for the migration lock")?;
         sqlx::query("SELECT pg_advisory_lock($1)")
             .bind(MIGRATE_LOCK_KEY)
             .execute(&mut conn)
             .await
             .context("failed to take the migration lock")?;
+        sqlx::raw_sql(sqlx::AssertSqlSafe(
+            "RESET lock_timeout; RESET statement_timeout",
+        ))
+        .execute(&mut conn)
+        .await
+        .context("failed to restore timeouts after taking the migration lock")?;
         Ok(Self { conn })
     }
 
@@ -412,6 +427,20 @@ pub async fn run_kernel(lock: &mut MigrationLock, migrator: &Migrator) -> Result
     if report.pending.is_empty() {
         return Ok(0);
     }
+    // A `CREATE INDEX CONCURRENTLY` waits, by design, for every older
+    // transaction, and `lock_timeout` would cancel it and leave an INVALID
+    // index. A run that includes a no-transaction migration waits instead.
+    let pending: HashSet<i64> = report.pending.iter().map(|(v, _)| *v).collect();
+    if migrator
+        .iter()
+        .any(|m| m.no_tx && pending.contains(&m.version))
+    {
+        sqlx::query("SET lock_timeout = 0")
+            .execute(lock.conn())
+            .await
+            .context("failed to clear lock_timeout")?;
+        info!("a pending migration runs outside a transaction; lock_timeout cleared for this run");
+    }
     // Our own check above has vetted every unknown migration, so sqlx's blanket
     // refusal of them is switched off.
     let mut tolerant = Migrator::with_migrations(migrator.iter().cloned().collect());
@@ -436,10 +465,33 @@ pub async fn run_plugins(
     lock: &mut MigrationLock,
     plugins: &PluginSet,
 ) -> Result<HashMap<String, Vec<String>>> {
-    let applied = applied_plugin_migrations(lock.conn()).await?;
+    refuse_plugin_problems(
+        lock.conn(),
+        plugins
+            .iter()
+            .map(|(name, (info, _))| (name.as_str(), info)),
+    )
+    .await?;
+    let results = crate::plugin::migration::run_all_pending_migrations(lock.conn(), plugins)
+        .await
+        .context("failed to run plugin migrations")?;
+    for (plugin, files) in &results {
+        info!(plugin = %plugin, count = files.len(), "applied plugin migrations");
+    }
+    Ok(results)
+}
+
+/// Fail, before anything is applied, when any of `plugins` has an applied
+/// migration this binary does not know that is named incompatible. Every path
+/// that applies plugin migrations calls this first.
+pub(crate) async fn refuse_plugin_problems<'a>(
+    conn: &mut PgConnection,
+    plugins: impl IntoIterator<Item = (&'a str, &'a PluginInfo)>,
+) -> Result<()> {
+    let applied = applied_plugin_migrations(conn).await?;
     let problems: Vec<String> = plugins
-        .iter()
-        .flat_map(|(name, (info, _))| {
+        .into_iter()
+        .flat_map(|(name, info)| {
             plugin_report(name, info, applied.get(name))
                 .problems
                 .into_iter()
@@ -452,13 +504,7 @@ pub async fn run_plugins(
             problems.join("\n  ")
         );
     }
-    let results = crate::plugin::migration::run_all_pending_migrations(lock.conn(), plugins)
-        .await
-        .context("failed to run plugin migrations")?;
-    for (plugin, files) in &results {
-        info!(plugin = %plugin, count = files.len(), "applied plugin migrations");
-    }
-    Ok(results)
+    Ok(())
 }
 
 /// Kernel then plugin migrations, all under one hold of the lock.
@@ -468,6 +514,14 @@ pub async fn run(
     plugins_dirs: &[PathBuf],
     disabled_plugins: &[String],
 ) -> Result<Applied> {
+    // Plugin problems first, so a refusal changes nothing, kernel half
+    // included. (On a fresh database there is nothing applied to refuse.)
+    let before = plugins_to_migrate(lock.conn(), plugins_dirs, disabled_plugins).await?;
+    refuse_plugin_problems(
+        lock.conn(),
+        before.iter().map(|(name, (info, _))| (name.as_str(), info)),
+    )
+    .await?;
     let kernel = run_kernel(lock, migrator).await?;
     // Read after the kernel half: on a fresh database `plugin_status` exists
     // only now.
@@ -520,5 +574,38 @@ mod tests {
     ) {
         fn assert_send<T: Send>(_: T) {}
         assert_send(super::run_plugins(lock, plugins));
+    }
+
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn an_unknown_plugin_migration_is_a_problem_only_when_named_incompatible() {
+        let info: crate::plugin::PluginInfo = toml::from_str(
+            r#"
+name = "p"
+description = "p"
+version = "1.0.0"
+[migrations]
+files = ["migrations/001_a.sql"]
+"#,
+        )
+        .unwrap();
+        let applied: std::collections::HashSet<String> = [
+            "migrations/001_a.sql",
+            "migrations/002_newer.sql",
+            "migrations/003_incompatible_drop_x.sql",
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        let report = super::plugin_report("p", &info, Some(&applied));
+        assert_eq!(report.applied, 1);
+        assert!(report.pending.is_empty());
+        assert_eq!(report.unknown.len(), 2, "{report:?}");
+        assert_eq!(report.problems.len(), 1, "{report:?}");
+        assert!(report.problems[0].contains("003_incompatible_drop_x"));
+
+        let nothing_applied = super::plugin_report("p", &info, None);
+        assert_eq!(nothing_applied.pending, vec!["migrations/001_a.sql"]);
+        assert!(nothing_applied.problems.is_empty());
     }
 }

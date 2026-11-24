@@ -632,8 +632,9 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
     // Shutdown (`docs/design/upgrades-and-probes.md` §6). At the signal,
     // readiness turns false and the queue runner stops taking work; on SIGTERM
     // the server keeps serving for the drain; then it stops accepting and
-    // finishes in-flight requests and the background work, all within one
-    // SHUTDOWN_TIMEOUT_SECS counted from when it stops accepting.
+    // finishes in-flight requests (bounded by SHUTDOWN_TIMEOUT_SECS when a drain
+    // is configured) and the background work, within SHUTDOWN_TIMEOUT_SECS
+    // counted from when it stops accepting.
     let stop_signal = stop_signal.unwrap_or_else(listen_for_signal);
     let deadline = Arc::new(std::sync::OnceLock::<tokio::time::Instant>::new());
     let (stopping_tx, stopping_rx) = tokio::sync::oneshot::channel::<()>();
@@ -664,13 +665,14 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown);
+    // In-flight requests are cut off at the deadline only where a drain is
+    // configured (Kubernetes, which kills the pod at its grace period anyway).
+    // Without one, a single server waits for them as it always has.
+    let bound_in_flight = !config.shutdown_drain.is_zero();
     let in_flight_deadline = async {
-        match stopping_rx.await {
-            Ok(()) => match deadline.get() {
-                Some(at) => tokio::time::sleep_until(*at).await,
-                None => std::future::pending().await,
-            },
-            Err(_) => std::future::pending().await,
+        match (stopping_rx.await, deadline.get()) {
+            (Ok(()), Some(at)) if bound_in_flight => tokio::time::sleep_until(*at).await,
+            _ => std::future::pending().await,
         }
     };
     tokio::select! {
@@ -702,7 +704,9 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
 
     // Close external connections with a timeout.
     info!("Closing external connections...");
-    let drain_result = tokio::time::timeout_at(deadline, async {
+    // At least a second, even if the in-flight wait used the whole budget.
+    let close_by = deadline.max(tokio::time::Instant::now() + std::time::Duration::from_secs(1));
+    let drain_result = tokio::time::timeout_at(close_by, async {
         db_pool.close().await;
         info!("Database pool closed");
     })

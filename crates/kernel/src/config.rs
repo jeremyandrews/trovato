@@ -786,7 +786,16 @@ impl Config {
         let jwt_secret = get("JWT_SECRET");
 
         let shutdown_timeout = Duration::from_secs(parse_or(get, "SHUTDOWN_TIMEOUT_SECS", 30));
-        let migrate_on_start = parse_bool_or(get, "MIGRATE_ON_START", true);
+        // Strict: a typo must not quietly turn a single server into one that
+        // waits, not ready, for a migration nobody runs.
+        let migrate_on_start = match get("MIGRATE_ON_START")
+            .map(|v| v.trim().to_ascii_lowercase())
+            .as_deref()
+        {
+            None | Some("" | "1" | "true" | "yes" | "on") => true,
+            Some("0" | "false" | "no" | "off") => false,
+            Some(other) => anyhow::bail!("MIGRATE_ON_START must be true or false, not {other:?}"),
+        };
         let default_drain = if get("KUBERNETES_SERVICE_HOST").is_some() {
             5
         } else {
@@ -964,8 +973,8 @@ mod config_tests {
     }
 
     /// The drain defaults to a Kubernetes endpoint update only under Kubernetes;
-    /// an explicit value wins either way. `MIGRATE_ON_START` reads like any
-    /// other boolean setting.
+    /// an explicit value wins either way. `MIGRATE_ON_START` reads strictly:
+    /// a value that is not a boolean fails startup.
     #[test]
     fn drain_and_migrate_on_start_settings() {
         let k8s = ("KUBERNETES_SERVICE_HOST", "10.0.0.1");
@@ -980,6 +989,17 @@ mod config_tests {
         );
         assert!(!with_db(&[("MIGRATE_ON_START", "false")]).migrate_on_start);
         assert!(with_db(&[("MIGRATE_ON_START", "true")]).migrate_on_start);
+        assert!(with_db(&[("MIGRATE_ON_START", "")]).migrate_on_start);
+        let err = config_from(&[
+            ("DATABASE_URL", "postgres://localhost/x"),
+            ("MIGRATE_ON_START", "ture"),
+        ])
+        .expect_err("a typo fails")
+        .to_string();
+        assert!(
+            err.contains("MIGRATE_ON_START") && err.contains("ture"),
+            "{err}"
+        );
         assert_eq!(
             with_db(&[("HEALTH_TOKEN", "t0ken")])
                 .health_token

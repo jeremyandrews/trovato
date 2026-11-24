@@ -37,7 +37,9 @@ pub async fn get_applied_migrations(
 /// Returns the list of newly applied migration names.
 ///
 /// Takes the migration lock ([`crate::migrate::MigrationLock`]) for the run,
-/// so two processes never apply the same file.
+/// so two processes never apply the same file, and refuses, as
+/// [`crate::migrate::run_plugins`] does, when a newer release applied a
+/// migration of this plugin named incompatible.
 pub async fn run_plugin_migrations(
     pool: &PgPool,
     plugin_name: &str,
@@ -45,13 +47,17 @@ pub async fn run_plugin_migrations(
     plugin_dir: &Path,
 ) -> Result<Vec<String>> {
     let mut lock = crate::migrate::MigrationLock::acquire(pool).await?;
-    let applied = run_plugin_migrations_on(lock.conn(), plugin_name, info, plugin_dir).await?;
+    let result = async {
+        crate::migrate::refuse_plugin_problems(lock.conn(), [(plugin_name, info)]).await?;
+        run_plugin_migrations_on(lock.conn(), plugin_name, info, plugin_dir).await
+    }
+    .await;
     lock.release().await?;
-    Ok(applied)
+    result
 }
 
 /// [`run_plugin_migrations`] on a connection that already holds the lock.
-pub async fn run_plugin_migrations_on(
+async fn run_plugin_migrations_on(
     conn: &mut PgConnection,
     plugin_name: &str,
     info: &PluginInfo,
