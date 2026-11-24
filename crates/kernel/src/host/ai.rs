@@ -183,6 +183,8 @@ async fn execute_ai_request(
         },
     );
     span.record("gen_ai.request.model", resolved.model.as_str());
+    // Not `telemetry::send`: this span carries the provider and model too, so
+    // it is opened above and the send is instrumented with it here.
     let response = tracing::Instrument::instrument(req.send(), span.clone()).await;
     if let Ok(r) = response.as_ref() {
         span.record("http.response.status_code", r.status().as_u16());

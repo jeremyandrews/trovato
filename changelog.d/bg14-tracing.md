@@ -16,9 +16,9 @@ An administrator's responses carry the counts and durations in
 gets `total;dur=` exactly as before. `SERVER_TIMING=all` shows them to every
 visitor and `SERVER_TIMING=off` to no one. The slow request line now carries
 the route template and the same breakdown. `db_query_duration_seconds` and
-`tap_duration_seconds`, registered since the start and never fed, are fed now,
-and `http_request_db_queries` (statements per request by route) and
-`cache_sets_total` are new.
+`tap_duration_seconds`, registered since the start and never fed, are now fed
+while serving a request, and `http_request_db_queries` (statements per request
+by route) and `cache_sets_total` are new.
 
 The request span `tower_http` logs now carries the matched route template
 instead of the URI. The default `RUST_LOG` prints that span on every log line

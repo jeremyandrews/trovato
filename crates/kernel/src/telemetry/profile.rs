@@ -272,11 +272,12 @@ mod tests {
 
     #[tokio::test]
     async fn counts_land_in_the_profile_in_scope_only() {
+        // Outside a profile a count is a no-op, and does not panic.
         count_cache_get(true);
         assert!(!active());
 
         let profile = Arc::new(RequestProfile::new(None, true));
-        scope(profile.clone(), async {
+        let wall = scope(profile.clone(), async {
             assert!(active());
             count_query(Duration::from_millis(2), || {
                 Some("SELECT * FROM item WHERE id = 'x'".into())
@@ -289,15 +290,18 @@ mod tests {
             count_gather();
             count_outgoing();
             // Only the outermost render adds its time: a nested one counted
-            // too would make the total at least twice the sleep.
+            // too would make the total about twice the wall time.
+            let started = std::time::Instant::now();
             let v = render(|| {
                 render(|| {
                     std::thread::sleep(Duration::from_millis(30));
                     7
                 })
             });
+            let wall = started.elapsed();
             assert_eq!(v, 7);
             note_user(Uuid::nil());
+            wall
         })
         .await;
 
@@ -309,8 +313,8 @@ mod tests {
         assert_eq!(s.plugin_calls, 1);
         assert_eq!(s.host_calls, 1);
         assert!(
-            s.render_time >= Duration::from_millis(30) && s.render_time < Duration::from_millis(60),
-            "{:?}",
+            s.render_time >= Duration::from_millis(30) && s.render_time <= wall,
+            "{:?} for a wall time of {wall:?}",
             s.render_time
         );
         assert_eq!(s.gathers, 1);

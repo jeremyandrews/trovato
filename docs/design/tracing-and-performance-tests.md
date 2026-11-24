@@ -78,7 +78,7 @@ telemetry; see "No personal data" below.
 
 ## Decisions
 
-### 1. Where to instrument: five choke points, not call sites
+### 1. Where to instrument: choke points, not call sites
 
 | What | Choke point | Why it sees everything |
 |---|---|---|
@@ -110,18 +110,23 @@ tracing is off and no span exists. Work a request spawns onto another task
 also what keeps the counts deterministic.
 
 The query listener is a per-layer filter that passes the `sqlx::query` event
-to the listener only while a profile is in scope. Its presence still changes
-what sqlx does with every statement: sqlx asks `tracing::enabled!` before
-building its event. With the listener interested in the callsite, a registry
-with per-layer filters answers yes even when every filter then declines,
-which is a limit of `tracing-subscriber` and not something a filter can veto.
-So sqlx builds the event for every statement, inside a request or not. It
-takes the first four words and copies the SQL, as it does when its statement
-log is on, and the listener drops the event outside a request. That is a few
-microseconds next to a database round trip, and the log output is unchanged.
-The only alternative, a plain layer that vetoes the event globally, would
-also silence sqlx for the fmt layer and the site log, which is a behaviour
-change. The cost is measured against `main` and stated in "Measurements".
+to the listener only while a profile is in scope. Its presence can change what
+sqlx does with every statement. sqlx builds its event when `log::log_enabled!`
+or `tracing::enabled!` says yes for `sqlx::query`. With per-layer filters the
+registry answers yes once the level passes, even when every filter then
+declines; that is a limit of `tracing-subscriber`, and no filter can veto it.
+Under the default `RUST_LOG`, whose `tower_http=debug` already puts the `log`
+bridge at DEBUG, sqlx builds the event for every statement on `main` too, so
+nothing changes. Under a `RUST_LOG` with no DEBUG directive (for example
+`docker-compose.cluster.yml`), the listener's DEBUG level hint raises the
+global `tracing` and `log` maximum level to DEBUG. sqlx then builds the event
+for every statement, inside a request or not: the first four words and a copy
+of the SQL, a few microseconds next to a round trip. Every `log::debug!` in a
+dependency also reaches the dispatcher before it is dropped. The log output is
+unchanged. The only alternative, a plain layer that vetoes the event globally,
+would also silence sqlx's slow statement warnings outside requests, which is a
+behaviour change. The cost is measured against `main` (see "Measurements" in
+the report of each part).
 
 **Fingerprints.** A fingerprint names a statement without its values:
 `<verb>:<first table>:<8 hex of the SHA-256 of the normalised SQL>`, for

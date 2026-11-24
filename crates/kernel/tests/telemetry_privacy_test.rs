@@ -284,6 +284,10 @@ fn no_secret_reaches_any_telemetry() {
             output.contains("request{method="),
             "no request span in the log"
         );
+        assert!(
+            output.contains("route=\"/search\""),
+            "the request span does not carry the matched route"
+        );
         // The metrics this part feeds are there.
         let db_count: u64 = metrics_body
             .lines()

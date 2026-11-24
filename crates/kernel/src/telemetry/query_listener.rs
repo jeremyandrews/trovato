@@ -7,13 +7,14 @@
 //! for that event.
 //!
 //! Its filter passes the event to the listener only while a request profile is
-//! in scope on the current task. sqlx builds the event for every statement
-//! either way: it asks `tracing::enabled!` first, and with per-layer filters
-//! the registry says yes once any filter is interested in the callsite, even
-//! if that filter then declines. That is what sqlx does with its statement log
-//! on (the first four words and a copy of the SQL); outside a request the event
-//! is dropped. See "2. Per-request counters" in
-//! `docs/design/tracing-and-performance-tests.md`.
+//! in scope on the current task. sqlx builds the event when `log` or `tracing`
+//! says the level is enabled, and with per-layer filters the registry says yes
+//! once any filter is interested, even if that filter then declines. Under the
+//! default `RUST_LOG` (`tower_http=debug`) sqlx already builds it on `main`;
+//! under a filter with no DEBUG directive this layer's DEBUG hint makes sqlx
+//! build it for every statement (the first four words and a copy of the SQL),
+//! and the event is dropped outside a request. See "2. Per-request counters"
+//! in `docs/design/tracing-and-performance-tests.md`.
 
 use std::time::Duration;
 
@@ -62,7 +63,9 @@ impl<S: Subscriber> Filter<S> for WhileProfiling {
     }
 
     fn max_level_hint(&self) -> Option<LevelFilter> {
-        // sqlx's statements log at DEBUG, slow ones at WARN.
+        // sqlx's statements log at DEBUG and slow ones at WARN. A pool set to
+        // `log_statements(Trace)` would go uncounted; nothing sets it, and a
+        // TRACE hint would raise the global maximum level for every crate.
         Some(LevelFilter::DEBUG)
     }
 }
@@ -144,6 +147,7 @@ mod tests {
         let subscriber = tracing_subscriber::registry().with(query_listener());
         let _guard = tracing::subscriber::set_default(subscriber);
 
+        // Outside a profile the event is dropped (and nothing panics).
         emit_like_sqlx("SELECT 1", "");
 
         let profile = Arc::new(RequestProfile::new(None, true));
