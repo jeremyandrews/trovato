@@ -1,0 +1,127 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block content %}
+{% if owner %}
+{{ list::header(title="Blog mail") }}
+<p>The mail this blog sent and is sending, kept for 90 days.</p>
+{% else %}
+{{ list::header(title="Mail log") }}
+<p>Every message the network sent and is sending, kept for 90 days. <a href="/admin/reports/mail/suppressions">Suppressed addresses</a></p>
+{% endif %}
+
+{% if flash %}
+<div class="messages"><div class="message message--success" role="status">{{ flash }}</div></div>
+{% endif %}
+
+<div class="admin-card">
+    <form class="filter-form" method="get" action="{{ path }}">
+        <div class="filter-row">
+            <div class="filter-item">
+                <label for="mail-status">Status</label>
+                <select id="mail-status" name="status">
+                    <option value="">- Any -</option>
+                    {% for s in statuses %}
+                    <option value="{{ s }}" {% if status_filter == s %}selected{% endif %}>{{ s }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="filter-item">
+                <label for="mail-kind">Kind</label>
+                <select id="mail-kind" name="kind">
+                    <option value="">- Any -</option>
+                    {% for k in kinds %}
+                    <option value="{{ k }}" {% if kind_filter == k %}selected{% endif %}>{{ k }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            {% if not owner %}
+            <div class="filter-item">
+                <label for="mail-blog">Blog</label>
+                <select id="mail-blog" name="blog">
+                    <option value="">- Any -</option>
+                    {% for b in blogs %}
+                    <option value="{{ b.id }}" {% if blog_filter == b.id %}selected{% endif %}>{{ b.name }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            {% endif %}
+            <div class="filter-item">
+                <label for="mail-category">Category</label>
+                <input type="text" id="mail-category" name="category" value="{{ category_filter }}">
+            </div>
+            <div class="filter-item">
+                <label for="mail-recipient">Recipient address</label>
+                <input type="text" id="mail-recipient" name="recipient" value="{{ recipient_filter }}" autocomplete="off" spellcheck="false">
+            </div>
+            <div class="filter-item">
+                <button type="submit" class="button button--secondary">Filter</button>
+            </div>
+        </div>
+    </form>
+</div>
+
+<div class="admin-card">
+    <nav aria-label="Messages by status">
+        <ul class="mail-counts">
+            <li><a href="{{ path }}{% if filter_qs %}?{{ filter_qs }}{% endif %}"{% if not status_filter %} aria-current="page"{% endif %}>All ({{ all_count }})</a></li>
+            {% for c in counts %}
+            <li><a href="{{ path }}?status={{ c.status }}{% if filter_qs %}&amp;{{ filter_qs }}{% endif %}"{% if status_filter == c.status %} aria-current="page"{% endif %}>{{ c.status | capitalize }} ({{ c.count }})</a></li>
+            {% endfor %}
+        </ul>
+    </nav>
+
+    {% if rows %}
+    <table class="table">
+        <caption class="visually-hidden">Messages, newest first</caption>
+        <thead>
+            <tr>
+                <th scope="col">Queued (UTC)</th>
+                {% if not owner %}<th scope="col">Blog</th>{% endif %}
+                <th scope="col">To</th>
+                <th scope="col">Subject</th>
+                <th scope="col">Kind</th>
+                <th scope="col">Status</th>
+                <th scope="col">Attempts</th>
+                <th scope="col">Detail</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for m in rows %}
+            <tr>
+                <td class="log-time">{{ m.created_at }}</td>
+                {% if not owner %}<td>{{ m.blog }}</td>{% endif %}
+                <td>{{ m.recipient }}</td>
+                <td>{% if owner %}{{ m.subject }}{% else %}<a href="/admin/reports/mail/{{ m.id }}">{{ m.subject }}</a>{% endif %}
+                    <span class="mail-note">{{ m.category }}</span></td>
+                <td>{{ m.kind }}</td>
+                <td><span class="mail-status mail-status--{{ m.status }}">{{ m.status }}</span>
+                    {% if m.bounced %}<span class="mail-note">bounced</span>{% endif %}
+                    {% if m.complained %}<span class="mail-note">reported as spam</span>{% endif %}</td>
+                <td>{{ m.attempts }}</td>
+                <td>
+                    {% if m.sent_at %}<span class="mail-note">sent {{ m.sent_at }}</span>{% endif %}
+                    {% if m.held_reason %}<span class="mail-note">held: {{ m.held_reason }}</span>{% endif %}
+                    {% if m.last_error %}<span class="mail-note">{{ m.last_error }}</span>{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {% if total_pages > 1 %}
+    <nav class="pagination" aria-label="Pages">
+        {% if page > 1 %}
+        <a href="?page={{ page - 1 }}{% if status_filter %}&amp;status={{ status_filter }}{% endif %}{% if filter_qs %}&amp;{{ filter_qs }}{% endif %}" class="button button--secondary">&laquo; Previous</a>
+        {% endif %}
+        <span class="pagination-info">Page {{ page }} of {{ total_pages }} ({{ total }} messages)</span>
+        {% if page < total_pages %}
+        <a href="?page={{ page + 1 }}{% if status_filter %}&amp;status={{ status_filter }}{% endif %}{% if filter_qs %}&amp;{{ filter_qs }}{% endif %}" class="button button--secondary">Next &raquo;</a>
+        {% endif %}
+    </nav>
+    {% endif %}
+    {% else %}
+    {{ list::empty(message="No message matches.") }}
+    {% endif %}
+</div>
+{% endblock %}

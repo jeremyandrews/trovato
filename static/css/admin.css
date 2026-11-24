@@ -317,6 +317,69 @@
     white-space: nowrap;
 }
 
+/* Mail log (BG18) */
+.filter-item input {
+    padding: 0.375rem 0.5rem;
+    border: 1px solid #767676;
+    border-radius: 0.25rem;
+}
+.mail-counts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 1rem;
+    margin: 0 0 1rem;
+    padding: 0;
+    list-style: none;
+}
+.mail-counts a[aria-current="page"] {
+    font-weight: 700;
+}
+.mail-status {
+    display: inline-block;
+    padding: 0.125rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.8125rem;
+    font-weight: 600;
+    background: #e5e7eb;
+    color: #1f2937;
+}
+.mail-status--sent {
+    background: #d4edda;
+    color: #155724;
+}
+.mail-status--failed {
+    background: #f8d7da;
+    color: #721c24;
+}
+.mail-status--suppressed {
+    background: #fff3cd;
+    color: #664d03;
+}
+.mail-status--queued,
+.mail-status--sending {
+    background: #d1ecf1;
+    color: #0c5460;
+}
+.mail-note {
+    display: block;
+    font-size: 0.8125rem;
+    color: #4b5563;
+}
+.mail-body {
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 30rem;
+    overflow: auto;
+    padding: 0.75rem;
+    background: var(--gray-50);
+    border: 1px solid var(--gray-200);
+}
+.mail-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 1rem;
+}
+
 /* Access rules (B108) */
 .access-rule-status {
     display: inline-block;

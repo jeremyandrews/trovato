@@ -1,0 +1,84 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block content %}
+{{ list::header(title="Message " ~ message.id) }}
+<p><a href="/admin/reports/mail">Back to the mail log</a></p>
+
+{% if flash %}
+<div class="messages"><div class="message message--success" role="status">{{ flash }}</div></div>
+{% endif %}
+
+<div class="admin-card">
+    <h3 class="report-heading">Status</h3>
+    <table class="table report-facts">
+        <tbody>
+            <tr><th scope="row">Status</th><td><span class="mail-status mail-status--{{ message.status }}">{{ message.status }}</span>
+                {% if message.bounced_at %} bounced {{ message.bounced_at }} UTC{% endif %}
+                {% if message.complained_at %} reported as spam {{ message.complained_at }} UTC{% endif %}</td></tr>
+            <tr><th scope="row">Attempts</th><td>{{ message.attempts }} of {{ message.max_attempts }}</td></tr>
+            {% if message.last_error %}<tr><th scope="row">Last error</th><td>{{ message.last_error }}</td></tr>{% endif %}
+            {% if message.held_reason %}<tr><th scope="row">Held</th><td>{{ message.held_reason }}</td></tr>{% endif %}
+            <tr><th scope="row">Queued</th><td>{{ message.created_at }} UTC</td></tr>
+            {% if message.status == "queued" or message.status == "sending" %}
+            <tr><th scope="row">Next attempt</th><td>{{ message.next_attempt_at }} UTC</td></tr>
+            {% endif %}
+            {% if message.locked_by %}<tr><th scope="row">Claimed by</th><td>{{ message.locked_by }}{% if message.locked_until %} until {{ message.locked_until }} UTC{% endif %}</td></tr>{% endif %}
+            {% if message.sent_at %}<tr><th scope="row">Sent</th><td>{{ message.sent_at }} UTC</td></tr>{% endif %}
+            {% if message.finished_at %}<tr><th scope="row">Finished</th><td>{{ message.finished_at }} UTC</td></tr>{% endif %}
+        </tbody>
+    </table>
+
+    {% if can_retry or can_cancel %}
+    <div class="mail-actions">
+        {% if can_retry %}
+        <form method="post" action="/admin/reports/mail/{{ message.id }}/retry">
+            <input type="hidden" name="_token" value="{{ csrf_token }}">
+            <button type="submit" class="button button--primary">Retry</button>
+        </form>
+        {% endif %}
+        {% if can_cancel %}
+        <form method="post" action="/admin/reports/mail/{{ message.id }}/cancel">
+            <input type="hidden" name="_token" value="{{ csrf_token }}">
+            <button type="submit" class="button button--secondary">Cancel this message</button>
+        </form>
+        {% endif %}
+    </div>
+    {% endif %}
+</div>
+
+<div class="admin-card">
+    <h3 class="report-heading">Headers</h3>
+    <table class="table report-facts">
+        <tbody>
+            <tr><th scope="row">To</th><td>{{ message.recipient }}</td></tr>
+            <tr><th scope="row">Subject</th><td>{{ message.subject }}</td></tr>
+            <tr><th scope="row">Blog</th><td>{{ message.blog }}</td></tr>
+            {% if message_id %}<tr><th scope="row">Message-ID</th><td><code>&lt;{{ message_id }}&gt;</code></td></tr>{% endif %}
+            <tr><th scope="row">Kind</th><td>{{ message.kind }} (priority {{ message.priority }})</td></tr>
+            <tr><th scope="row">Category</th><td>{{ message.category }}</td></tr>
+            {% if message.dedupe_key %}<tr><th scope="row">Dedupe key</th><td><code>{{ message.dedupe_key }}</code></td></tr>{% endif %}
+            <tr><th scope="row">One time secret</th><td>{% if message.has_secret %}minted when sent, never stored{% else %}none{% endif %}</td></tr>
+            <tr><th scope="row">List-Unsubscribe</th><td>{% if message.has_unsubscribe %}yes{% else %}no{% endif %}</td></tr>
+            {% if message.attachments %}
+            <tr><th scope="row">Attachments</th><td><ul class="report-list">{% for a in message.attachments %}<li>{{ a.filename }} ({{ a.content_type }})</li>{% endfor %}</ul></td></tr>
+            {% endif %}
+        </tbody>
+    </table>
+</div>
+
+<div class="admin-card">
+    <h3 class="report-heading" id="mail-body-heading">Body</h3>
+    {% if message.text_body %}
+    <pre class="mail-body" tabindex="0" aria-labelledby="mail-body-heading">{{ message.text_body }}</pre>
+    {% if message.html_body %}
+    <details>
+        <summary>HTML part (source)</summary>
+        <pre class="mail-body" tabindex="0" aria-label="HTML part source">{{ message.html_body }}</pre>
+    </details>
+    {% endif %}
+    {% else %}
+    <p>Cleared by retention{% if message.body_purged_at %} on {{ message.body_purged_at }} UTC{% endif %}.</p>
+    {% endif %}
+</div>
+{% endblock %}

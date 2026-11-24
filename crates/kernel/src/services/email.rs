@@ -289,6 +289,13 @@ impl NewMail {
     }
 }
 
+/// The `Message-ID` message `id` is sent with from `from_email`'s domain,
+/// without angle brackets. See [`EmailService::message_id`].
+pub fn message_id(from_email: &str, id: i64) -> String {
+    let domain = from_email.rsplit_once('@').map_or("localhost", |(_, d)| d);
+    format!("outbox-{id}@{domain}")
+}
+
 /// Whether `s` holds a control character (CR and LF above all).
 pub fn has_control(s: &str) -> bool {
     s.chars().any(char::is_control)
@@ -332,6 +339,13 @@ impl EmailService {
     /// The network's sending address.
     pub fn sender_address(&self) -> &str {
         &self.from_email
+    }
+
+    /// The `Message-ID` (without angle brackets) message `id` is sent with,
+    /// every attempt: `outbox-{id}@{sending domain}`. A provider's bounce
+    /// report names it ([`crate::services::mail_log::outbox_id_from_message_id`]).
+    pub fn message_id(&self, id: i64) -> String {
+        message_id(&self.from_email, id)
     }
 
     /// The transport the workers send through.

@@ -1095,6 +1095,7 @@ pub fn router() -> Router<AppState> {
         .merge(super::admin_search_report::router())
         // The cron report and the site log (B107)
         .merge(super::admin_reports::router())
+        .merge(super::admin_mail::router())
         // Access rules (B108)
         .merge(super::admin_access_rules::router())
         // Text formats (B108)

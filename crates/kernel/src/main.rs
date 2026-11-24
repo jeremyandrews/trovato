@@ -603,6 +603,7 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         .merge(routes::user_delete::router())
         .merge(routes::admin::router())
         .merge(routes::password_reset::router())
+        .merge(routes::mail_webhook::router())
         .merge(routes::webauthn::router())
         .merge(routes::sessions::router())
         .merge(routes::recovery::router())

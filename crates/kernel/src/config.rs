@@ -608,6 +608,19 @@ pub struct MailConfig {
     /// Bulk messages for the whole network per hour
     /// (`MAIL_NETWORK_HOURLY_LIMIT`, 20000).
     pub network_hourly_limit: i64,
+    /// The mail provider's webhook signing key (`MAIL_WEBHOOK_SIGNING_KEY`).
+    /// Unset, the bounce webhook answers 404.
+    pub webhook_signing_key: Option<WebhookKey>,
+}
+
+/// A webhook signing key: a secret, so its `Debug` never prints it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct WebhookKey(pub String);
+
+impl std::fmt::Debug for WebhookKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WebhookKey(..)")
+    }
 }
 
 impl Default for MailConfig {
@@ -634,6 +647,10 @@ impl MailConfig {
             blog_daily_limit: count("MAIL_BLOG_DAILY_LIMIT", 5000),
             blog_transactional_hourly_limit: count("MAIL_BLOG_TRANSACTIONAL_HOURLY_LIMIT", 500),
             network_hourly_limit: count("MAIL_NETWORK_HOURLY_LIMIT", 20000),
+            webhook_signing_key: lookup("MAIL_WEBHOOK_SIGNING_KEY")
+                .map(|k| k.trim().to_string())
+                .filter(|k| !k.is_empty())
+                .map(WebhookKey),
         }
     }
 }
