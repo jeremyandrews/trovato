@@ -272,11 +272,16 @@ async fn main() -> Result<()> {
         }
     };
     // The spans still waiting in the export batch are sent before the
-    // process ends.
+    // process ends, for at most a few seconds: a collector that is down must
+    // not hold the shutdown past its budget.
     if telemetry::export::active() {
-        tokio::task::spawn_blocking(telemetry::export::shutdown)
+        let flush = tokio::task::spawn_blocking(telemetry::export::shutdown);
+        if tokio::time::timeout(EXPORT_FLUSH_LIMIT, flush)
             .await
-            .ok();
+            .is_err()
+        {
+            warn!("trace export did not flush in time; its last spans are dropped");
+        }
     }
     result
 }
@@ -1347,6 +1352,9 @@ fn build_cors_layer(config: &Config) -> CorsLayer {
             .allow_credentials(true)
     }
 }
+
+/// How long shutdown waits for the last exported spans to be sent.
+const EXPORT_FLUSH_LIMIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 fn init_tracing() -> Result<system_log::SystemLogReceiver> {
     let filter = EnvFilter::try_from_default_env()

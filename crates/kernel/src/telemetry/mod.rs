@@ -60,11 +60,7 @@ where
         .with(query_listener::query_listener())
         .with(log.with_filter(tracing_subscriber::filter::LevelFilter::INFO));
     match export {
-        Some(provider) => {
-            let dispatch = tracing::Dispatch::new(base.with(export::install(provider)));
-            export::set_dispatch(&dispatch);
-            dispatch
-        }
+        Some(provider) => tracing::Dispatch::new(base.with(export::install(provider))),
         None => tracing::Dispatch::new(base),
     }
 }
@@ -128,6 +124,27 @@ pub async fn send_with(
     response
 }
 
+/// The method as telemetry names it, in the request spans (Gander's and the
+/// log's) and the `method` label of the request metrics: one of the standard
+/// methods, or `_OTHER` (the OpenTelemetry convention). An invented method is
+/// text the client chose, so it must not reach a span, a log line or a metric,
+/// where it would also add a series per method for the life of the process.
+pub fn method_label(method: &axum::http::Method) -> &'static str {
+    use axum::http::Method;
+    match *method {
+        Method::GET => "GET",
+        Method::HEAD => "HEAD",
+        Method::POST => "POST",
+        Method::PUT => "PUT",
+        Method::DELETE => "DELETE",
+        Method::CONNECT => "CONNECT",
+        Method::OPTIONS => "OPTIONS",
+        Method::TRACE => "TRACE",
+        Method::PATCH => "PATCH",
+        _ => "_OTHER",
+    }
+}
+
 /// The span `TraceLayer` makes for each request: the method and the matched
 /// route template, never the URI.
 ///
@@ -146,7 +163,7 @@ pub fn http_trace_span<B>(request: &axum::http::Request<B>) -> tracing::Span {
     tracing::debug_span!(
         target: "tower_http::trace::make_span",
         "request",
-        method = %request.method(),
+        method = method_label(request.method()),
         route = route,
         version = ?request.version(),
     )

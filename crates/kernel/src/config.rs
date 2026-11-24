@@ -1058,14 +1058,12 @@ mod config_tests {
             Some(token)
         );
         assert!(with_db(&[("HEALTH_TOKEN", " ")]).health_token.is_none());
-        assert!(
-            config_from(&[
-                ("DATABASE_URL", "postgres://localhost/x"),
-                ("METRICS_TOKEN", &token[1..])
-            ])
-            .is_err(),
-            "a 31 character metrics token is too short"
-        );
+        let err = config_from(&[
+            ("DATABASE_URL", "postgres://localhost/x"),
+            ("METRICS_TOKEN", &token[1..]),
+        ])
+        .expect_err("a 31 character metrics token is too short");
+        assert!(err.to_string().contains("METRICS_TOKEN"), "{err}");
         assert_eq!(
             with_db(&[("METRICS_TOKEN", token)])
                 .runtime

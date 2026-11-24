@@ -131,7 +131,9 @@ async fn send(
 fn no_secret_reaches_any_telemetry() {
     let captured = Captured::default();
     let writer = captured.clone();
-    // Export on, as `TRACING_EXPORT=otlp` sets it up, into memory.
+    // Export on, into memory: a simple exporter and every trace sampled, so
+    // what is exported is complete when a request returns.
+    // `export_stack_test` checks the production stack itself.
     let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
     let export_layer = trovato_kernel::telemetry::export::install(
         opentelemetry_sdk::trace::SdkTracerProvider::builder()
@@ -152,7 +154,6 @@ fn no_secret_reaches_any_telemetry() {
         )
         .with(trovato_kernel::telemetry::query_listener::query_listener());
     let dispatch = tracing::Dispatch::new(subscriber);
-    trovato_kernel::telemetry::export::set_dispatch(&dispatch);
     tracing::dispatcher::set_global_default(dispatch).expect("one subscriber per test binary");
 
     run_test(async move {
@@ -260,7 +261,7 @@ fn no_secret_reaches_any_telemetry() {
         )
         .await;
         // A method the client made up is text of its own: it must not become
-        // a span name or a metric label.
+        // a span name, a log field or a metric label.
         let invented_method = format!("INVENTED-{tag}");
         send(
             &app,
@@ -407,8 +408,7 @@ fn no_secret_reaches_any_telemetry() {
         assert!(timings.iter().any(|t| t.contains("queries")), "{timings:?}");
 
         // The user id and name are in the existing login audit line ("user
-        // logged in", for the site log), and `tower_http`'s request span in the
-        // log prints the method, so these are checked against what this
+        // logged in", for the site log), so they are checked against what this
         // telemetry adds: the Gander spans and events, Server-Timing, /metrics
         // and the exported spans.
         let added = output
@@ -424,7 +424,6 @@ fn no_secret_reaches_any_telemetry() {
         for (what, value) in [
             ("user id", user_id.as_str()),
             ("username", username.as_str()),
-            ("invented method", invented_method.as_str()),
         ] {
             if let Some(line) = added.lines().find(|l| l.contains(value)) {
                 panic!("the {what} reached telemetry:\n{line}");
@@ -442,6 +441,7 @@ fn no_secret_reaches_any_telemetry() {
             ("reset token", reset_token.as_str()),
             ("API token", api_token.as_str()),
             ("search term", search_term.as_str()),
+            ("invented method", invented_method.as_str()),
         ] {
             if let Some(at) = everything.find(secret) {
                 let start = everything[..at].rfind('\n').map_or(0, |p| p + 1);

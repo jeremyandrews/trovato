@@ -68,7 +68,8 @@ accept. There is no gRPC.
 
 Spans are sent by a batch processor on a thread of its own: a request never
 waits on the collector, and a collector that is down costs dropped spans, not
-slow pages. On shutdown the spans still in the batch are sent.
+slow pages. On shutdown the spans still in the batch are sent, for up to 3
+seconds; a collector that is down then costs those spans, not a late exit.
 
 A failed export is not logged: an endpoint that is wrong or down, or a hosted
 backend that refuses the API key in `OTEL_EXPORTER_OTLP_HEADERS`, shows as
@@ -130,7 +131,8 @@ It answers an operator only:
   same host), or
 - a request with `Authorization: Bearer <METRICS_TOKEN>`, from anywhere.
 
-Anything else gets a 404, as if the route did not exist.
+Anything else gets a 404, as if the route did not exist. Both answers are
+sent with `Cache-Control: no-store`.
 
 A reverse proxy on the same host connects from a loopback address too. It
 must add `X-Forwarded-For`, `X-Real-IP` or `Forwarded` to every request it

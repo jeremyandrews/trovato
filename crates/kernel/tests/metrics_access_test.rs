@@ -24,12 +24,21 @@ async fn scrape(app: &TestApp, headers: &[(&str, &str)]) -> (StatusCode, String)
 }
 
 async fn send(app: &TestApp, method: Method, headers: &[(&str, &str)]) -> (StatusCode, String) {
+    // Every answer, given or refused, is marked never to be stored.
     let mut request = Request::builder().method(method).uri("/metrics");
     for (name, value) in headers {
         request = request.header(*name, *value);
     }
     let response = app.request(request.body(Body::empty()).unwrap()).await;
     let status = response.status();
+    assert_eq!(
+        response
+            .headers()
+            .get("cache-control")
+            .and_then(|v| v.to_str().ok()),
+        Some("no-store"),
+        "{status}"
+    );
     let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     (status, String::from_utf8_lossy(&body).into_owned())
 }
@@ -73,8 +82,10 @@ fn metrics_answer_an_operator_and_nobody_else() {
         .await;
         assert_eq!(status, StatusCode::OK);
         assert!(body.contains("# TYPE http_requests counter"));
+        // The token on a same-host scrape: the API token and JWT middleware
+        // leave an operator's bearer alone rather than refusing it as theirs.
         let (status, _) = scrape(&app, &[("authorization", bearer.as_str())]).await;
-        assert_eq!(status, StatusCode::OK, "the token alone");
+        assert_eq!(status, StatusCode::OK, "the token from the same host");
 
         // HEAD follows the same rule as GET.
         let (status, _) = send(&app, Method::HEAD, &[]).await;

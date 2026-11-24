@@ -35,7 +35,7 @@ use tracing::Instrument;
 use tracing::field::Empty;
 
 use crate::state::AppState;
-use crate::telemetry::{self, RequestProfile, RequestProfileSnapshot};
+use crate::telemetry::{self, RequestProfile, RequestProfileSnapshot, method_label};
 
 /// Who sees the detailed `Server-Timing` header.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -142,27 +142,6 @@ async fn shows_detail(state: &AppState, profile: &RequestProfile) -> bool {
             ),
             None => false,
         },
-    }
-}
-
-/// The method as telemetry names it, in the request span and the `method`
-/// label of the request metrics: one of the standard methods, or `_OTHER`
-/// (the OpenTelemetry convention). An invented method is text the client
-/// chose, so it must not reach a span or a metric, where it would also add a
-/// series per method for the life of the process.
-fn method_label(method: &axum::http::Method) -> &'static str {
-    use axum::http::Method;
-    match *method {
-        Method::GET => "GET",
-        Method::HEAD => "HEAD",
-        Method::POST => "POST",
-        Method::PUT => "PUT",
-        Method::DELETE => "DELETE",
-        Method::CONNECT => "CONNECT",
-        Method::OPTIONS => "OPTIONS",
-        Method::TRACE => "TRACE",
-        Method::PATCH => "PATCH",
-        _ => "_OTHER",
     }
 }
 

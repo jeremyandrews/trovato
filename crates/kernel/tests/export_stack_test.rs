@@ -55,8 +55,9 @@ fn a_statement_is_exported_under_its_request_and_only_when_sampled() {
     });
 
     tracing::dispatcher::with_default(&dispatch, || {
-        // A request sampling left out: its trace is not sampled (here because
-        // its parent says so), and its statements are not even normalised.
+        // A request sampling left out (here because its parent says so; the
+        // ratio sampler's own decision is in `export`'s unit tests): a
+        // statement in it finds no parent, so it is not exported.
         let request = tracing::trace_span!(target: TARGET, "http.request", otel.name = "GET /y");
         let unsampled = SpanContext::new(
             TraceId::from(7_u128),
@@ -80,6 +81,18 @@ fn a_statement_is_exported_under_its_request_and_only_when_sampled() {
     let names: Vec<&str> = spans.iter().map(|s| s.name.as_ref()).collect();
     assert_eq!(names, ["db.query", "GET /x"], "{spans:#?}");
     let (query, request) = (&spans[0], &spans[1]);
+    // Nothing beyond the span's own fields: no source location, thread,
+    // level or target attributes.
+    for kv in &request.attributes {
+        let key = kv.key.as_str();
+        assert!(
+            !key.starts_with("code.")
+                && !key.starts_with("thread.")
+                && key != "level"
+                && key != "target",
+            "{key} was exported on the request span"
+        );
+    }
     assert_eq!(query.parent_span_id, request.span_context.span_id());
     assert_eq!(
         query.span_context.trace_id(),

@@ -22,7 +22,6 @@ use opentelemetry::trace::{Span as _, SpanKind, TraceContextExt as _, Tracer as 
 use opentelemetry::{KeyValue, trace::TracerProvider as _};
 use opentelemetry_sdk::Resource;
 use opentelemetry_sdk::trace::{Sampler, SdkTracer, SdkTracerProvider, SpanExporter};
-use tracing::dispatcher::WeakDispatch;
 use tracing_subscriber::Layer;
 use tracing_subscriber::filter::Targets;
 use tracing_subscriber::registry::LookupSpan;
@@ -96,9 +95,6 @@ impl ExportSettings {
 static TRACER: OnceLock<SdkTracer> = OnceLock::new();
 /// Its provider, kept to flush on shutdown.
 static PROVIDER: OnceLock<SdkTracerProvider> = OnceLock::new();
-/// The exporting dispatcher, for finding a statement's parent span (see
-/// [`sampled_parent`]).
-static DISPATCH: OnceLock<WeakDispatch> = OnceLock::new();
 
 /// Whether spans are being exported.
 pub fn active() -> bool {
@@ -166,13 +162,6 @@ where
         .with_filter(Targets::new().with_target(TARGET, tracing::Level::TRACE))
 }
 
-/// Remember the exporting dispatcher, so [`sampled_parent`] can find a
-/// statement's parent without asking for the current dispatcher, which a layer cannot do
-/// from inside one of its own callbacks.
-pub fn set_dispatch(dispatch: &tracing::Dispatch) {
-    let _ = DISPATCH.set(dispatch.downgrade());
-}
-
 /// Flush and stop the exporter: the spans still in the batch are sent.
 pub fn shutdown() {
     if let Some(provider) = PROVIDER.get()
@@ -187,9 +176,15 @@ pub fn shutdown() {
 /// sampled. `None` with export off, outside any exported span (a statement
 /// outside any request has no trace to join), and in a request sampling left
 /// out, so such a statement is never normalised at all.
+///
+/// The exporting layer makes each Gander span's OTel context the thread's
+/// current one while the span is entered (`tracing-opentelemetry`'s context
+/// activation), and no other span touches it, so the current context is that
+/// innermost exported span, even when the registry's current span is one only
+/// the log sees (`tower_http`'s request span, say).
 pub fn sampled_parent() -> Option<opentelemetry::Context> {
-    let dispatch = DISPATCH.get().and_then(WeakDispatch::upgrade)?;
-    current_otel_context(&dispatch).filter(|cx| cx.span().span_context().is_sampled())
+    opentelemetry::Context::map_current(|cx| cx.span().span_context().is_sampled())
+        .then(opentelemetry::Context::current)
 }
 
 /// Export one finished statement, `sql` as sqlx ran it, as a `db.query` span
@@ -223,20 +218,6 @@ pub fn db_query(parent: &opentelemetry::Context, elapsed: Duration, sql: &str, r
         .with_attributes(attributes)
         .start_with_context(tracer, parent);
     span.end_with_timestamp(end);
-}
-
-/// The OTel context of the innermost exported span the current thread is in.
-/// The registry's current span may be one only the log sees (`tower_http`'s
-/// request span, say), so the scope is walked outwards to the first span the
-/// exporting layer knows.
-fn current_otel_context(dispatch: &tracing::Dispatch) -> Option<opentelemetry::Context> {
-    let current = dispatch.current_span();
-    let id = current.id()?;
-    let registry = dispatch.downcast_ref::<tracing_subscriber::Registry>()?;
-    registry.span(id)?.scope().find_map(|span| {
-        tracing_opentelemetry::get_otel_context(&span.id(), dispatch)
-            .filter(|cx| cx.span().span_context().is_valid())
-    })
 }
 
 #[cfg(test)]

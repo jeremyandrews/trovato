@@ -136,7 +136,7 @@ pub(crate) fn is_operator(request: &Request, token: Option<&str>) -> bool {
     let loopback = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
-        .is_some_and(|ConnectInfo(addr)| addr.ip().is_loopback());
+        .is_some_and(|ConnectInfo(addr)| addr.ip().to_canonical().is_loopback());
     let forwarded = ["x-forwarded-for", "forwarded", "x-real-ip"]
         .iter()
         .any(|h| headers.contains_key(*h));
