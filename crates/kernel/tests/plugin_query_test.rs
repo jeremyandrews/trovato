@@ -299,16 +299,30 @@ async fn stage(app: &TestApp, visibility: &str) -> Uuid {
     id
 }
 
+/// Advisory-lock key serializing the creation of [`own_table`]'s table.
+const VOTES_CREATE_LOCK: i64 = 0x_B80F_0000_0001;
+
 /// This file's own table, with rows whose `status` is 0: an item predicate
 /// applied by mistake would drop them.
+///
+/// `CREATE TABLE IF NOT EXISTS` is not atomic: two tests creating the table at
+/// once both find it missing and the second fails on Postgres's catalog. So
+/// the create runs under an advisory lock, in a transaction that releases it.
 async fn own_table(app: &TestApp, item_id: Uuid) {
+    let mut tx = app.db.begin().await.expect("begin table create");
+    sqlx::query("SELECT pg_advisory_xact_lock($1)")
+        .bind(VOTES_CREATE_LOCK)
+        .execute(&mut *tx)
+        .await
+        .expect("take table create lock");
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS b80q_votes \
          (id uuid PRIMARY KEY, item_id uuid NOT NULL, status smallint NOT NULL, score integer NOT NULL)",
     )
-    .execute(&app.db)
+    .execute(&mut *tx)
     .await
     .expect("create own table");
+    tx.commit().await.expect("commit table create");
     sqlx::query("INSERT INTO b80q_votes (id, item_id, status, score) VALUES ($1, $2, 0, 5)")
         .bind(Uuid::now_v7())
         .bind(item_id)

@@ -189,10 +189,11 @@ jobs:
       # test binary only 182 MB -> 172 MB, ~5%, nowhere near enough.
       #
       # In the background: the deletion took 0.9 to 1.7 minutes of every
-      # shard's critical path (run 45316035626), and nothing before the first
-      # large build needs the space. The toolchain, the cache restore and the
-      # WASM build run meanwhile; "Wait for the disk space" below is the point
-      # past which the space is needed, and it waits for this to finish.
+      # shard's critical path (run 45316035626), and nothing before the
+      # integration build needs the space. The toolchain, the cache restore,
+      # the WASM build and the unit or doc step run meanwhile; "Wait for the
+      # disk space" below is the point past which the space is needed, and it
+      # waits for this to finish.
       - name: Free up runner disk space (in the background)
         run: |
           df -h /
@@ -279,12 +280,6 @@ jobs:
           cp target/wasm32-wasip1/release/test_form_taps_b.wasm plugins/test_form_taps_b/
           cp target/wasm32-wasip1/release/test_owned_vocabulary.wasm plugins/test_owned_vocabulary/
 
-      - name: Wait for the disk space
-        run: |
-          until [ -f "$RUNNER_TEMP/disk-reclaimed" ]; do sleep 2; done
-          cat "$RUNNER_TEMP/disk-reclaim.log"
-          df -h /
-
       # The expand-then-contract rule (docs/design/upgrades-and-probes.md §3):
       # a new migration that would break the previous release fails here unless
       # it carries `-- trovato:contract <release>: <reason>`. First, on its own,
@@ -325,6 +320,16 @@ jobs:
       - name: Doc tests
         if: matrix.shard == 3
         run: cargo test --all --doc
+
+      # Here, not before the first build: the unit or doc step builds into
+      # the ~14 GB the runner starts with while the deletion runs (it took
+      # 74 to 108 s of waiting in run 45406677098), and is done long before
+      # the 60-odd integration binaries below need the reclaimed space.
+      - name: Wait for the disk space
+        run: |
+          until [ -f "$RUNNER_TEMP/disk-reclaimed" ]; do sleep 2; done
+          cat "$RUNNER_TEMP/disk-reclaim.log"
+          df -h /
 
       # Integration tests, split across shards so no single runner has to link
       # all 50+ test binaries onto one 33 GB volume. The enumeration and the

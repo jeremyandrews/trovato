@@ -484,6 +484,7 @@ async fn statements_for(app: &TestApp, path: &str, cookies: &str) -> Vec<String>
     use tracing::instrument::WithSubscriber;
     use tracing_subscriber::layer::SubscriberExt;
 
+    common::scoped_subscribers_see_every_callsite();
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let subscriber = tracing_subscriber::registry().with(Statements(seen.clone()));
     get(app, path, cookies).with_subscriber(subscriber).await;

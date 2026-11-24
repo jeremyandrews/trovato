@@ -206,42 +206,18 @@ manual_let_else = "warn"
 uninlined_format_args = "warn"
 semicolon_if_nothing_returned = "warn"
 
-# The WebAssembly compiler, optimized even in debug and test builds.
+# Every dependency optimized, even in debug and test builds.
 #
-# Every test target that builds a `TestApp` compiles the in-tree plugins with
-# Cranelift when it starts, and an unoptimized Cranelift spends three
-# CPU-seconds doing it where an optimized one spends under two (measured on
-# front_page_test). CI starts a TestApp about 120 times per shard, so that is
-# minutes of every pull request, and a `cargo run` of a debug kernel starts
-# faster too. Only these dependencies change: the kernel and the plugins build
-# exactly as before, and the dependency cache absorbs the extra compile time.
-[profile.dev.package.cranelift-codegen]
-opt-level = 3
-[profile.dev.package.cranelift-frontend]
-opt-level = 3
-[profile.dev.package.cranelift-entity]
-opt-level = 3
-[profile.dev.package.cranelift-bforest]
-opt-level = 3
-[profile.dev.package.cranelift-bitset]
-opt-level = 3
-[profile.dev.package.cranelift-control]
-opt-level = 3
-[profile.dev.package.cranelift-native]
-opt-level = 3
-[profile.dev.package.cranelift-assembler-x64]
-opt-level = 3
-[profile.dev.package.regalloc2]
-opt-level = 3
-[profile.dev.package.wasmparser]
-opt-level = 3
-[profile.dev.package.wasmtime]
-opt-level = 3
-[profile.dev.package.wasmtime-environ]
-opt-level = 3
-[profile.dev.package.wasmtime-internal-cranelift]
-opt-level = 3
-[profile.dev.package.wasmtime-internal-core]
-opt-level = 3
-[profile.dev.package.pulley-interpreter]
-opt-level = 3
+# The tests spend most of their CPU inside dependencies, not in the kernel:
+# argon2 hashing a password on every user created and every login, and
+# Cranelift compiling the in-tree plugins on every `TestApp` start. Unoptimized,
+# integration_test takes 18 CPU-seconds and session_management_test 9.5; with
+# this, 2.3 and 1.6 (measured locally, 2026-11-24), which is most of a CI
+# shard's run time. A debug `cargo run` starts faster too.
+#
+# Only dependencies change: `"*"` never matches a workspace member, so the
+# kernel and the plugins build, and step in a debugger, exactly as before. The
+# cost is a slower first build of the dependencies, which the CI cache and a
+# local target directory pay once per `Cargo.lock`.
+[profile.dev.package."*"]
+opt-level = 2

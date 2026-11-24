@@ -482,6 +482,12 @@ fn menu_links_to_a_protected_gather_are_drawn_only_for_a_viewer_who_may_follow_t
         footer_link(app, &url_alias, &aliased, None).await;
         footer_link(app, &format!("/gperm-child-{stamp}"), &child, Some(parent)).await;
         footer_link(app, &format!("/gperm-public-{stamp}"), &public, None).await;
+        // The rows went in by SQL, past the menu service, so the process-wide
+        // menu cache has not heard of them; drop it the way an admin save
+        // does. Run alone this passed without it only because nothing
+        // happened to render a page, and so refill the cache, between the
+        // inserts and the request below; any test running beside it can.
+        trovato_kernel::menu::navigation::invalidate_config_menus();
 
         let (status, _, body) = get(app, "/user/login", "").await;
         assert_eq!(status, StatusCode::OK);

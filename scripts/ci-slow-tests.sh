@@ -60,7 +60,9 @@ PY
 done
 
 echo "slowest entries:"
-sort -t "$(printf '\t')" -k2,2 -rn "$ENTRIES" | head -10 | awk -F '\t' '{ printf "  %8.1f s  %s\n", $2, $1 }'
+# awk takes the first ten rather than `head`, which exits early and, under
+# pipefail, fails the script on sort's SIGPIPE.
+sort -t "$(printf '\t')" -k2,2 -rn "$ENTRIES" | awk -F '\t' 'NR <= 10 { printf "  %8.1f s  %s\n", $2, $1 }'
 
 # Allowlist lines: `<name> | <recorded seconds> | <reason>`; `#` starts a comment.
 FAILED=$(awk -F '\t' -v limit="$LIMIT" -v allow="$ALLOW" '

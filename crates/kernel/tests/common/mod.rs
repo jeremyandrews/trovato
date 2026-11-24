@@ -1231,6 +1231,31 @@ pub async fn grant_via_role(app: &TestApp, user_id: Uuid, permissions: &[&str]) 
     app.state.permissions().invalidate_user(user_id);
 }
 
+/// Make a scoped subscriber (`.with_subscriber(..)` on one request) see every
+/// event that request emits, while other tests run requests at the same time.
+///
+/// Call it before creating the scoped subscriber.
+///
+/// tracing-core caches each callsite's interest the first time the callsite
+/// fires. When exactly one dispatcher is alive, it asks the default subscriber
+/// *of the thread the callsite fired on*, not the live one. A binary with no
+/// global subscriber and one scoped capture is in that state. A concurrent
+/// test's request on another thread then fixes `never` on `sqlx::query`, the
+/// response trace or a warning, and the capture misses them for the rest of
+/// the run. It sees no statements and no warnings, and only when the tests
+/// run in parallel.
+///
+/// A global no-op subscriber is never dropped. With it there are always two
+/// dispatchers while a capture is alive, and every interest is asked of all
+/// of them. It enables nothing, so the binary logs nothing it did not
+/// before.
+pub fn scoped_subscribers_see_every_callsite() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(tracing::subscriber::NoSubscriber::new());
+    });
+}
+
 /// Wait until the cache generations bumped by this test's writes so far have
 /// been seen and cleared.
 ///
