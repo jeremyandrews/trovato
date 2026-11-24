@@ -92,14 +92,17 @@ dates, authors and tags all come from the seed and the row number. It writes:
 - members `gen_user_1` to `gen_user_<users>` (default 1000) with addresses
   under `example.invalid`;
 - an administrator, `gen_admin`;
-- `--tags` terms in the `tags` vocabulary (default 500, slugs `topic-<n>`);
+- `--tags` terms in the `tags` vocabulary (default 500, an even number, slugs
+  `topic-<n>`), two to a post;
 - `--items` published blog posts with one revision each;
 - `--comments` comments, spread over the newest posts first (default one per
   post).
 
 It then sets the front page to `/blog` and analyses the tables. Every
-generated account has the `--admin-password` password. There is no default, so
-no generated site has a known administrator login.
+generated account has the `--admin-password` password, at least 12 characters.
+There is no default, so no generated site has a known administrator login. The
+password hash is salted, so it is the one value that differs between two runs
+with the same arguments.
 
 The work is done in Postgres: one `INSERT ... SELECT ... FROM generate_series`
 statement per `--batch` rows (default 20,000), `--parallel` statements at a
@@ -107,7 +110,7 @@ time (default 16). Running it again with the same site arguments does nothing,
 whatever `--batch` and `--parallel` say. Running it with different ones on a
 generated database is refused.
 
-Comment text is not added to search. See the BG14 measurements for how long
-`--items 20000000` takes on a Mac Studio (under an hour).
+Comment text is not added to search. `--items 20000000`, with the default
+20,000,000 comments, takes about half an hour on a Mac Studio.
 
 The blog plugin must be on the plugin path: the posts are its `blog` type.

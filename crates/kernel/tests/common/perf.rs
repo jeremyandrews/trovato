@@ -75,7 +75,8 @@ impl Visitor {
 /// The caches' state when the measured request starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Caches {
-    /// Every in-process cache cleared and the Redis cache emptied.
+    /// Every in-process cache cleared and the Redis cache emptied, except the
+    /// cache generation counters and the visitors' sessions.
     Cold,
     /// The same request made once just before.
     Warm,
@@ -509,12 +510,17 @@ pub fn expected(key: &str) -> Option<Counts> {
     map.get(key).cloned()
 }
 
-/// The expectations file, parsed; empty if there is none.
+/// The expectations file, parsed; empty if there is none. A file that does
+/// not parse is a failure, not an empty file: recording over it would drop
+/// every table the run did not visit.
 fn read_expectations() -> BTreeMap<String, Counts> {
-    std::fs::read_to_string(expectations_path())
-        .ok()
-        .and_then(|text| toml::from_str(&text).ok())
-        .unwrap_or_default()
+    let path = expectations_path();
+    match std::fs::read_to_string(&path) {
+        Ok(text) => toml::from_str(&text)
+            .unwrap_or_else(|e| panic!("{} does not parse: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
+        Err(e) => panic!("cannot read {}: {e}", path.display()),
+    }
 }
 
 /// Record `counts` under `key` and rewrite the file (record mode only). The

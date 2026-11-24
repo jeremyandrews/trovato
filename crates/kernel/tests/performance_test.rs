@@ -4,7 +4,7 @@
 //! Each test loads one page of a generated site (see `common::perf`) as each
 //! kind of visitor it has, with cold and with warm caches, and compares the
 //! database statements, cache lookups, cache misses, cache writes, plugin
-//! calls, host calls and the statements' fingerprints with
+//! calls, host calls, gathers, renders and the statements' fingerprints with
 //! `tests/fixtures/performance_counts.toml`. Counts, not timings, so the result
 //! is the same on every machine and every run.
 //!
@@ -22,8 +22,16 @@ use common::run_test;
 const BOTH: [Caches; 2] = [Caches::Cold, Caches::Warm];
 
 /// Visit `path` as each of `visitors`, cold and warm, check the counts, and
-/// check the page is the real one: it shows every one of `shows`.
-async fn measure(site: &PerfSite, page: &str, visitors: &[Visitor], path: &str, shows: &[&str]) {
+/// check the page is the real one: it shows every one of `shows` and none of
+/// `hides`.
+async fn measure(
+    site: &PerfSite,
+    page: &str,
+    visitors: &[Visitor],
+    path: &str,
+    shows: &[&str],
+    hides: &[&str],
+) {
     for &visitor in visitors {
         for caches in BOTH {
             let visit = site.visit(page, visitor, caches, path).await;
@@ -31,6 +39,13 @@ async fn measure(site: &PerfSite, page: &str, visitors: &[Visitor], path: &str, 
                 assert!(
                     visit.body.contains(wanted),
                     "{} does not show {wanted:?}",
+                    visit.key
+                );
+            }
+            for unwanted in hides {
+                assert!(
+                    !visit.body.contains(unwanted),
+                    "{} shows {unwanted:?}",
                     visit.key
                 );
             }
@@ -50,6 +65,7 @@ fn front_page() {
             &[Visitor::Anonymous, Visitor::User],
             "/",
             &["Post 1:"],
+            &[],
         )
         .await;
     });
@@ -72,6 +88,7 @@ fn item_page_with_comments() {
                 "Comment 41 on post 1.",
                 "Comment 81 on post 1.",
             ],
+            &[],
         )
         .await;
     });
@@ -86,8 +103,10 @@ fn category_page() {
             "category",
             &[Visitor::Anonymous, Visitor::User],
             "/blog/tag/topic-1",
-            // The newest post tagged topic-1.
+            // The newest post tagged topic-1; post 1 is tagged topic-2 and
+            // topic-3, so a listing that ignored the tag would show it.
             &["Post 3:"],
+            &["Post 1:"],
         )
         .await;
     });
@@ -103,6 +122,7 @@ fn feed() {
             &[Visitor::Anonymous],
             "/blog/feed.xml",
             &["<item>", "Post 1:"],
+            &[],
         )
         .await;
     });
@@ -119,6 +139,7 @@ fn search() {
             "/search?q=river",
             // The one post with "river" in its title.
             &["Post 39:"],
+            &[],
         )
         .await;
     });
@@ -134,6 +155,7 @@ fn login_page() {
             &[Visitor::Anonymous],
             "/user/login",
             &["name=\"password\""],
+            &[],
         )
         .await;
     });
@@ -149,6 +171,7 @@ fn admin_content_list() {
             &[Visitor::Admin],
             "/admin/content",
             &["Post 1:"],
+            &[],
         )
         .await;
     });
@@ -207,7 +230,7 @@ fn the_generated_site_is_what_was_asked_for() {
         let db = &site.app.db;
         let options = common::perf::site_options();
 
-        let again = trovato_kernel::generate::generate(db, &options, "unused", |_| {})
+        let again = trovato_kernel::generate::generate(db, &options, "unused-password-0", |_| {})
             .await
             .expect("the same options again");
         assert!(again.already_present, "the same options wrote again");
@@ -217,7 +240,7 @@ fn the_generated_site_is_what_was_asked_for() {
             ..options.clone()
         };
         assert!(
-            trovato_kernel::generate::generate(db, &other, "unused", |_| {})
+            trovato_kernel::generate::generate(db, &other, "unused-password-0", |_| {})
                 .await
                 .is_err(),
             "different options on a generated site were not refused"
@@ -259,5 +282,80 @@ fn the_generated_site_is_what_was_asked_for() {
             .await,
             0
         );
+
+        // Every generated row is what the seed gives, not just its id: a
+        // digest of the posts, their revisions and the comments, against the
+        // one recorded when the generator was written.
+        let digest = |sql: &'static str| async move {
+            sqlx::query_scalar::<_, String>(sql)
+                .fetch_one(db)
+                .await
+                .unwrap()
+        };
+        assert_eq!(
+            digest(
+                "SELECT md5(string_agg(concat_ws('|', id, current_revision_id, title, author_id, \
+                 status, created, changed, fields, comment_count), ',' ORDER BY id)) \
+                 FROM item WHERE type = 'blog'"
+            )
+            .await,
+            ITEM_DIGEST
+        );
+        assert_eq!(
+            digest(
+                "SELECT md5(string_agg(concat_ws('|', id, item_id, author_id, title, fields, \
+                 created), ',' ORDER BY id)) FROM item_revision"
+            )
+            .await,
+            REVISION_DIGEST
+        );
+        assert_eq!(
+            digest(
+                "SELECT md5(string_agg(concat_ws('|', id, item_id, author_id, body, status, \
+                 created, depth), ',' ORDER BY id)) FROM comment"
+            )
+            .await,
+            COMMENT_DIGEST
+        );
+    });
+}
+
+/// What `site_options()` generates, as digests of the rows (see above). A
+/// change to the generator's output changes these in the same commit.
+const ITEM_DIGEST: &str = "8cce5aec48e03bb29cf0e599ca71506a";
+const REVISION_DIGEST: &str = "520f7c8627fd8bf298b2b9ba47d780a0";
+const COMMENT_DIGEST: &str = "e6ec1a320125e00c01e046c88cd65dd6";
+
+/// A database with anything in it the generator did not write is refused
+/// before a row is written: a real site is never generated into.
+#[test]
+fn generate_refuses_a_database_it_did_not_generate() {
+    run_test(async {
+        let db = trovato_test_utils::ScratchDb::create("genrefuse").await;
+        trovato_kernel::db::run_migrations(db.pool()).await.unwrap();
+        sqlx::query(
+            "INSERT INTO users (id, name, pass, mail, status) \
+             VALUES (gen_random_uuid(), 'someone', 'x', 'someone@example.invalid', 1)",
+        )
+        .execute(db.pool())
+        .await
+        .unwrap();
+        let err = trovato_kernel::generate::generate(
+            db.pool(),
+            &common::perf::site_options(),
+            "perf-refuse-password-0",
+            |_| {},
+        )
+        .await
+        .expect_err("a database with a user in it was not refused");
+        assert!(err.to_string().contains("did not write"), "{err}");
+        let written: i64 = sqlx::query_scalar(
+            "SELECT (SELECT count(*) FROM users WHERE name LIKE 'gen\\_%') \
+             + (SELECT count(*) FROM category_tag WHERE slug LIKE 'topic-%')",
+        )
+        .fetch_one(db.pool())
+        .await
+        .unwrap();
+        assert_eq!(written, 0);
     });
 }

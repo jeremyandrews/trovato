@@ -133,8 +133,14 @@ pub async fn generate(
     if options.items == 0 {
         bail!("--items must be at least 1");
     }
-    if options.users == 0 || options.tags < 2 {
-        bail!("--users must be at least 1 and --tags at least 2");
+    // An even number of tags keeps a post's two tags apart: the second is
+    // `1 + (11n + 3) % tags` against `1 + 7n % tags`, equal only when
+    // `tags` divides the odd `4n + 3`.
+    if options.users == 0 || options.tags < 2 || !options.tags.is_multiple_of(2) {
+        bail!("--users must be at least 1 and --tags an even number of at least 2");
+    }
+    if admin_password.chars().count() < 12 {
+        bail!("--admin-password must be at least 12 characters");
     }
     let wanted = serde_json::to_value(options)?;
     let existing: Option<serde_json::Value> =
@@ -191,7 +197,7 @@ pub async fn generate(
         "INSERT INTO users (id, name, pass, mail, is_admin, status, created) \
          SELECT {id}, 'gen_user_' || n, $1, 'gen_user_' || n || '@example.invalid', false, 1, \
                 to_timestamp($2 - n * 3600) \
-         FROM generate_series(1, $3::bigint) n ON CONFLICT DO NOTHING",
+         FROM generate_series(1, $3::bigint) n",
         id = id_sql(seed, "user", "n")
     )))
     .bind(&pass)
@@ -202,8 +208,7 @@ pub async fn generate(
     .context("writing users")?;
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "INSERT INTO users (id, name, pass, mail, is_admin, status, created) \
-         VALUES ({id}, 'gen_admin', $1, 'gen_admin@example.invalid', true, 1, to_timestamp($2)) \
-         ON CONFLICT DO NOTHING",
+         VALUES ({id}, 'gen_admin', $1, 'gen_admin@example.invalid', true, 1, to_timestamp($2))",
         id = id_sql(seed, "admin", "0")
     )))
     .bind(&pass)
@@ -223,7 +228,7 @@ pub async fn generate(
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "INSERT INTO category_tag (id, category_id, label, weight, created, changed, slug) \
          SELECT {id}, 'tags', 'Topic ' || n, 0, $1, $1, 'topic-' || n \
-         FROM generate_series(1, $2::bigint) n ON CONFLICT DO NOTHING",
+         FROM generate_series(1, $2::bigint) n",
         id = id_sql(seed, "tag", "n")
     )))
     .bind(now)
@@ -233,7 +238,7 @@ pub async fn generate(
     .context("writing tags")?;
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "INSERT INTO category_tag_hierarchy (tag_id, parent_id) \
-         SELECT {id}, NULL FROM generate_series(1, $1::bigint) n ON CONFLICT DO NOTHING",
+         SELECT {id}, NULL FROM generate_series(1, $1::bigint) n",
         id = id_sql(seed, "tag", "n")
     )))
     .bind(i64::try_from(options.tags)?)
@@ -310,13 +315,6 @@ pub async fn generate(
     // `comment_count` the posts were written with already.
     if comments > 0 {
         let started = Instant::now();
-        for trigger in POST_TRIGGERS {
-            sqlx::query(sqlx::AssertSqlSafe(format!(
-                "ALTER TABLE comment DISABLE TRIGGER {trigger}"
-            )))
-            .execute(pool)
-            .await?;
-        }
         let comment_sql = format!(
             "INSERT INTO comment (id, item_id, author_id, body, body_format, status, created, changed, depth) \
              SELECT {id}, {item}, {author}, \
@@ -327,15 +325,26 @@ pub async fn generate(
             item = id_sql(seed, "item", "1 + (n - 1) % $3::bigint"),
             author = id_sql(seed, "user", &format!("1 + (n * 3) % {}", options.users)),
         );
-        let result = run_batches(
-            pool,
-            "comments",
-            comments,
-            options,
-            &progress,
-            comment_sql,
-            vec![now, i64::try_from(items)?],
-        )
+        let extra = vec![now, i64::try_from(items)?];
+        let result = async {
+            for trigger in POST_TRIGGERS {
+                sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "ALTER TABLE comment DISABLE TRIGGER {trigger}"
+                )))
+                .execute(pool)
+                .await?;
+            }
+            run_batches(
+                pool,
+                "comments",
+                comments,
+                options,
+                &progress,
+                comment_sql,
+                extra,
+            )
+            .await
+        }
         .await;
         // Both, whatever happens to either: a trigger left off is a database
         // that drifts.
@@ -352,8 +361,18 @@ pub async fn generate(
                 enabled = Err(e);
             }
         }
-        result.context("writing comments")?;
-        enabled.context("re-enabling the comment triggers")?;
+        match (result, enabled) {
+            (Err(e), Err(enable)) => {
+                return Err(e.context(format!(
+                    "writing comments; re-enabling the comment triggers failed too ({enable}), \
+                     and the next `trovato generate` turns them back on"
+                )));
+            }
+            (result, enabled) => {
+                result.context("writing comments")?;
+                enabled.context("re-enabling the comment triggers")?;
+            }
+        }
         report.phases.push(PhaseReport {
             name: "comments",
             rows: comments,

@@ -46,8 +46,9 @@ database of its own. It is built once per test binary:
 with what the request did:
 
 - `visitor` is `Visitor::Anonymous`, `Visitor::User` or `Visitor::Admin`.
-- `caches` is `Caches::Cold`, which clears every in-process cache and every
-  Redis key except sessions and the session index first, or `Caches::Warm`, which makes the same
+- `caches` is `Caches::Cold`, which first clears every in-process cache and
+  every Redis key except the sessions, the session index and the cache
+  generation counters (`cache:gen`), or `Caches::Warm`, which makes the same
   request once just before.
 
 Visits run one at a time, even when the tests in the binary run in parallel,

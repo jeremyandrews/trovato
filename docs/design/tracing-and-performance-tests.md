@@ -322,8 +322,9 @@ that did not finish, a real site) is refused. A run that crashed with the
 triggers off has them turned back on by the next run. There is no default
 password, so no generated site has a known administrator login.
 
-With `--items 20000000` it finished in under an hour on the Mac Studio (see
-the measurements in the report). The data generator lives in the kernel
+With `--items 20000000` (and the default 20,000,000 comments) it took 30
+minutes 27 seconds on the Mac Studio: 1,558 s for the posts and their
+revisions, 266 s for the comments, 2 s for the rest. The data generator lives in the kernel
 binary because it needs the kernel's own `AppState::new` (migrations, plugin
 installation, content types) before it writes. Later runs reuse it to seed
 their benchmarks.
