@@ -72,6 +72,18 @@ pub struct FormBuilder {
     /// as the edit form is decided: edit access to this item, and the owner
     /// stored on it.
     item_id: Option<uuid::Uuid>,
+    /// The `RecordReference` placeholder text for each target type this
+    /// content type's fields point at, already resolved to a human label and
+    /// translated — never the machine name. The route builds this (it alone
+    /// knows every other content type's label and the request's language);
+    /// `widget` only looks a value up by `target_type`.
+    placeholders: std::collections::HashMap<String, String>,
+    /// The placeholder for a `RecordReference` widget whose target has no
+    /// known label.
+    default_placeholder: String,
+    /// The hint a `category_term` field limited to `vocabulary_owner` shows
+    /// in place of suggestions while the form's owner field is empty.
+    owner_hint: String,
     /// Per-field render mode, keyed by field name. A field with no entry is
     /// [`FieldMode::Editable`].
     field_modes: std::collections::HashMap<String, FieldMode>,
@@ -101,6 +113,9 @@ impl FormBuilder {
             permitted_formats: Vec::new(),
             reference_titles: std::collections::HashMap::new(),
             item_id: None,
+            placeholders: std::collections::HashMap::new(),
+            default_placeholder: "Search...".to_string(),
+            owner_hint: "Choose the owner first".to_string(),
             field_modes: std::collections::HashMap::new(),
             publish_allowed: false,
         }
@@ -143,6 +158,30 @@ impl FormBuilder {
     /// Name the item the form edits (see the `item_id` field).
     pub fn with_item_id(mut self, item_id: Option<uuid::Uuid>) -> Self {
         self.item_id = item_id;
+        self
+    }
+
+    /// Supply the already-localized `RecordReference` placeholder text, keyed
+    /// by target type (see the `placeholders` field).
+    pub fn with_placeholders(
+        mut self,
+        placeholders: std::collections::HashMap<String, String>,
+    ) -> Self {
+        self.placeholders = placeholders;
+        self
+    }
+
+    /// Set the placeholder a `RecordReference` widget falls back to when its
+    /// target type has no known label.
+    pub fn with_default_placeholder(mut self, default_placeholder: String) -> Self {
+        self.default_placeholder = default_placeholder;
+        self
+    }
+
+    /// Set the hint an owner-limited `category_term` field shows while its
+    /// owner field is empty.
+    pub fn with_owner_hint(mut self, owner_hint: String) -> Self {
+        self.owner_hint = owner_hint;
         self
     }
 
@@ -385,9 +424,15 @@ impl FormBuilder {
                     .map(str::to_string)
                     .or_else(|| self.reference_titles.get(&id).cloned())
                     .unwrap_or_default();
+                let placeholder = self
+                    .placeholders
+                    .get(target_type)
+                    .cloned()
+                    .unwrap_or_else(|| self.default_placeholder.clone());
                 let mut element = FormElement::widget("record_reference")
                     .attribute("data-target-type", target_type.clone())
-                    .attribute("data-display", display);
+                    .attribute("data-display", display)
+                    .attribute("data-placeholder", placeholder);
                 // A term search is decided per field: which field of which
                 // type, on which item, and — for a field limited to the item's
                 // owner — the form's owner field. The widget sends these.
@@ -400,7 +445,9 @@ impl FormBuilder {
                     }
                     if let Some(limit) = crate::content::owned_vocabulary::limit_of(&field.settings)
                     {
-                        element = element.attribute("data-owner-field", limit.owner_field);
+                        element = element
+                            .attribute("data-owner-field", limit.owner_field)
+                            .attribute("data-owner-hint", self.owner_hint.clone());
                     }
                 }
                 element.default_value(id)
@@ -779,5 +826,60 @@ mod tests {
             input.contains(r#"data-owner-field="field_club""#),
             "{input}"
         );
+    }
+
+    /// A `RecordReference` widget's placeholder shows a human label, resolved
+    /// by the route and handed to the builder — never the raw target type
+    /// machine name — and falls back to a plain "Search..." when the target's
+    /// label was not supplied (B190).
+    #[test]
+    fn a_record_reference_placeholder_shows_a_human_label() {
+        let ct = ContentTypeDefinition {
+            machine_name: "club_post".to_string(),
+            label: "Club post".to_string(),
+            description: String::new(),
+            title_label: None,
+            fields: vec![
+                FieldDefinition::new("field_author", FieldType::RecordReference("person".into())),
+                FieldDefinition::new(
+                    "field_topics",
+                    FieldType::RecordReference("category_term".into()),
+                ),
+                FieldDefinition::new(
+                    "field_unlabeled",
+                    FieldType::RecordReference("mystery_type".into()),
+                ),
+            ],
+        };
+        let placeholders = [
+            ("person".to_string(), "Search people...".to_string()),
+            ("category_term".to_string(), "Search terms...".to_string()),
+        ]
+        .into_iter()
+        .collect();
+        let html = render(
+            &FormBuilder::new(ct)
+                .with_placeholders(placeholders)
+                .build_add_form("/x"),
+        );
+
+        let placeholder_of = |html: &str, field: &str| -> String {
+            let needle = format!(r#"id="{field}_autocomplete""#);
+            let at = html.find(&needle).unwrap_or_else(|| panic!("{html}"));
+            let tag_end = at + html[at..].find('>').unwrap();
+            let tag = &html[at..tag_end];
+            let p = tag
+                .find("placeholder=\"")
+                .unwrap_or_else(|| panic!("{tag}"));
+            let start = p + "placeholder=\"".len();
+            let end = start + tag[start..].find('"').unwrap();
+            tag[start..end].to_string()
+        };
+
+        assert_eq!(placeholder_of(&html, "field_author"), "Search people...");
+        assert_eq!(placeholder_of(&html, "field_topics"), "Search terms...");
+        assert_eq!(placeholder_of(&html, "field_unlabeled"), "Search...");
+        assert!(!html.contains("Search person..."), "{html}");
+        assert!(!html.contains("Search mystery_type..."), "{html}");
     }
 }

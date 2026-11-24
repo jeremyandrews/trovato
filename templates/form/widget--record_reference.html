@@ -10,9 +10,9 @@
            {% if element.attributes['data-item-type'] %}data-item-type="{{ element.attributes['data-item-type'] }}"{% endif %}
            {% if element.attributes['data-field'] %}data-field="{{ element.attributes['data-field'] }}"{% endif %}
            {% if element.attributes['data-item'] %}data-item="{{ element.attributes['data-item'] }}"{% endif %}
-           {% if element.attributes['data-owner-field'] %}data-owner-field="{{ element.attributes['data-owner-field'] }}"{% endif %}
+           {% if element.attributes['data-owner-field'] %}data-owner-field="{{ element.attributes['data-owner-field'] }}" data-owner-hint="{{ element.attributes['data-owner-hint'] }}"{% endif %}
            value="{{ element.attributes['data-display'] | default(value='') }}"
-           placeholder="Search {{ element.attributes['data-target-type'] | default(value='') }}..."
+           placeholder="{{ element.attributes['data-placeholder'] | default(value='Search...') }}"
            autocomplete="off"
            {% if element.required %}required{% endif %}{% if element.disabled %} disabled{% endif %}>
     <div class="record-ref-results" id="{{ name }}_results"></div>

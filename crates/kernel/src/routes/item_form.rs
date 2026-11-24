@@ -58,10 +58,18 @@ pub(crate) async fn build(
         Some(item) => reference_titles(state, user, content_type, item, &modes).await,
         None => HashMap::new(),
     };
+    let language = active_language(state, session).await;
     let builder = FormBuilder::new(content_type.clone())
         .with_permitted_formats(permitted_text_formats(user))
         .with_reference_titles(titles)
         .with_item_id(item.map(|i| i.id))
+        .with_placeholders(record_reference_placeholders(
+            state,
+            content_type,
+            &language,
+        ))
+        .with_default_placeholder(translate(state, "Search...", &language))
+        .with_owner_hint(translate(state, "Choose the owner first", &language))
         .with_field_modes(modes)
         .with_publish_allowed(user.can(PUBLISH_CONTENT) && moderation.is_none());
     let mut extra = extra;
@@ -217,6 +225,71 @@ async fn reference_titles(
         }
     }
     titles
+}
+
+/// The language a `RecordReference` placeholder or hint is translated into:
+/// the session's override, the same one `negotiate_language` reads, else the
+/// site default. A form is built well after that middleware has run, and
+/// nothing here carries its resolved [`ResolvedLanguage`] forward, so this
+/// reads the same session key directly rather than widen every route handler
+/// between it and here to thread the extension through.
+///
+/// [`ResolvedLanguage`]: crate::middleware::language::ResolvedLanguage
+async fn active_language(state: &AppState, session: &Session) -> String {
+    session
+        .get::<Option<String>>(crate::middleware::language::SESSION_ACTIVE_LANGUAGE)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+        .unwrap_or_else(|| state.default_language().to_string())
+}
+
+/// Translate an interface string the way every other one in the locale table
+/// will, once something else uses it too: unchanged when no locale service is
+/// configured.
+fn translate(state: &AppState, source: &str, language: &str) -> String {
+    match state.locale() {
+        Some(locale) => locale.translate(source, "form", language),
+        None => source.to_string(),
+    }
+}
+
+/// The `RecordReference` placeholder for each target type `content_type`'s
+/// fields point at, keyed by target type: a human label, never the machine
+/// name. `category_term` always means "terms"; any other target type is
+/// another content type, whose own label this reads from the registry. A
+/// target type nothing can name (a stale field pointing at a removed type)
+/// is left out, so the widget falls back to the builder's default
+/// placeholder.
+///
+/// The label itself is not translated — it is the site's own data, the same
+/// as a menu title or a tile's text, not an interface string — only the
+/// surrounding "Search %s..." phrase is, through [`translate`].
+fn record_reference_placeholders(
+    state: &AppState,
+    content_type: &ContentTypeDefinition,
+    language: &str,
+) -> HashMap<String, String> {
+    let template = translate(state, "Search %s...", language);
+    let mut placeholders = HashMap::new();
+    for field in &content_type.fields {
+        let FieldType::RecordReference(target) = &field.field_type else {
+            continue;
+        };
+        if placeholders.contains_key(target) {
+            continue;
+        }
+        let label = if target == "category_term" {
+            Some(translate(state, "terms", language))
+        } else {
+            state.content_types().get(target).map(|ct| ct.label)
+        };
+        if let Some(label) = label.filter(|l| !l.trim().is_empty()) {
+            placeholders.insert(target.clone(), template.replacen("%s", &label, 1));
+        }
+    }
+    placeholders
 }
 
 /// What the item form needs of content moderation, on a moderated type.
@@ -513,7 +586,8 @@ pub(crate) async fn ajax(
 
     let response = match request.trigger.strip_prefix("add_") {
         Some(field) if form_state.rendered_fields.iter().any(|f| f == field) => {
-            add_another(state, &mut form_state, field)
+            let language = active_language(state, session).await;
+            add_another(state, &mut form_state, field, &language)
         }
         _ => {
             state
@@ -563,6 +637,7 @@ fn add_another(
     state: &AppState,
     form_state: &mut FormState,
     field: &str,
+    language: &str,
 ) -> crate::form::AjaxResponse {
     use crate::form::AjaxResponse;
 
@@ -596,8 +671,12 @@ fn add_another(
         ));
     }
 
+    let placeholders = record_reference_placeholders(state, &content_type, language);
     let mut widget = FormBuilder::new(content_type)
         .with_item_id(form_state.item_id)
+        .with_placeholders(placeholders)
+        .with_default_placeholder(translate(state, "Search...", language))
+        .with_owner_hint(translate(state, "Choose the owner first", language))
         .widget(&definition, None, FieldMode::Editable);
     widget.title = None;
     widget.required = false;
