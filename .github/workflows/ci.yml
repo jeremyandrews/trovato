@@ -135,8 +135,14 @@ jobs:
   test:
     name: Test (shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
-    # BUDGET: provisional, set from the first measured run.
-    timeout-minutes: 40
+    # BUDGET: expected time plus half, to catch a hang, not to time a run.
+    # Expected 20 minutes, warm (16-20 in run 45438628822, before the
+    # weights were refreshed from it). A cold dependency cache, which only a
+    # toolchain or a dev profile change causes (rust-cache falls back to the
+    # last cache when Cargo.lock changes), took up to 30 (run 45432520463):
+    # if one is ever cancelled here, raise this for that one run so the cache
+    # can save, rather than retrying. docs/testing-ci.md has the budgets.
+    timeout-minutes: 30
     strategy:
       # One shard's failure should not hide another's.
       fail-fast: false
@@ -1005,8 +1011,11 @@ jobs:
   cluster:
     name: Cluster (two nodes)
     runs-on: ubuntu-latest
-    # BUDGET: provisional, set from the first measured run.
-    timeout-minutes: 45
+    # BUDGET: expected time plus half, to catch a hang, not to time a run.
+    # Expected 24 minutes: the path a pull request that changes Cargo.lock
+    # always takes, since the cached dependency layer is main's and no longer
+    # matches (24 in run 45432520463). With the layer, 13 (run 45438628822).
+    timeout-minutes: 36
     env:
       TROVATO_CLUSTER_URL: http://localhost:8095
       TROVATO_CLUSTER_DATABASE_URL: postgres://trovato:trovato@localhost:56432/trovato

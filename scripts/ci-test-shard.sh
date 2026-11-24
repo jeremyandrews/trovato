@@ -64,7 +64,9 @@ echo "Discovered $TOTAL integration test targets across the workspace."
 # Deterministic: ties go to the lower shard, and equal weights to the target
 # that sorts first, so every runner computes the same partition. A target the
 # weights file does not list gets the `@default` weight, so a new test file is
-# still scheduled, just not cleverly until its time is recorded.
+# still scheduled, just not cleverly until its time is recorded. Every target
+# also costs `@per_target` seconds on top, for building and linking its test
+# binary, which the first pass pays whatever the target's run time.
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 WEIGHTS="${WEIGHTS:-$ROOT/.config/ci-test-weights.txt}"
 if [ ! -r "$WEIGHTS" ]; then
@@ -74,17 +76,18 @@ fi
 
 PLAN=$(printf '%s\n' "$ALL" | awk -v n="$TOTAL_SHARDS" -v wf="$WEIGHTS" '
   BEGIN {
-    dflt = 10
+    dflt = 10; per = 0
     while ((getline line < wf) > 0) {
       sub(/#.*/, "", line)
       if (line !~ /[^ \t]/) continue
       k = split(line, f, " ")
       if (f[1] == "@default") dflt = f[2] + 0
+      else if (f[1] == "@per_target") per = f[2] + 0
       else if (f[1] ~ /^@shard[0-9]+$/) base[substr(f[1], 7) + 0] = f[2] + 0
       else w[f[1]] = f[2] + 0
     }
   }
-  { pkg[NR] = $1; tgt[NR] = $2; key = $1 "::" $2; cost[NR] = (key in w) ? w[key] : dflt }
+  { pkg[NR] = $1; tgt[NR] = $2; key = $1 "::" $2; cost[NR] = ((key in w) ? w[key] : dflt) + per }
   END {
     for (s = 1; s <= n; s++) load[s] = base[s] + 0
     for (i = 1; i <= NR; i++) done[i] = 0

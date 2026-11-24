@@ -119,8 +119,8 @@ plugin enabled, enable it; never rely on a target that sorts before it.
 | --- | --- | --- |
 | One test | 30 s, else on the allowlist with its time and reason | `scripts/ci-slow-tests.sh`, `.config/slow-tests.txt` |
 | An allowlisted test | twice its recorded time | the same |
-| A Test shard | TEST_BUDGET | `timeout-minutes` on the Test job |
-| Cluster | CLUSTER_BUDGET | `timeout-minutes` on the Cluster job |
+| A Test shard | 30 minutes: expected 20, plus half | `timeout-minutes` on the Test job |
+| Cluster | 36 minutes: expected 24 (a pull request that changes `Cargo.lock`), plus half | `timeout-minutes` on the Cluster job |
 
 nextest marks a test SLOW in the log after 10 s (`slow-timeout` in the `ci`
 profile, `.config/nextest.toml`). That is a warning; the 30 s line is the gate.
@@ -137,8 +137,17 @@ Each shard uploads its timings as the `test-timings-shard-N` artifact: one
 line per integration target per pass, and the nextest JUnit report. To
 rebalance, take a recent run's artifacts and set each target's weight to the
 sum of its two passes; set the `@shard` lines to what each shard's unit or doc
-step took. The partition is longest first onto the least loaded shard, so the
-weights only need to be right relative to each other.
+step took, and `@per_target` to what building one test binary costs (pass 1's
+step time minus its targets' own times, over the number of targets). The
+partition is longest first onto the least loaded shard, so the weights only
+need to be right relative to each other.
+
+The timeouts are budgets for a hang, not for a slow run: if the expected times
+move, move them too, to the new expected time plus half, and say so in their
+comments. A cold dependency cache (a new toolchain, a change to the dev
+profile) takes the Test shards close to their 30 minutes; if one is cancelled,
+raise the limit for that run so the cache can save, rather than retrying,
+because a cancelled job saves nothing and the next run is as cold.
 
 Locally, with Postgres and Redis up (`docker compose up -d postgres redis`):
 

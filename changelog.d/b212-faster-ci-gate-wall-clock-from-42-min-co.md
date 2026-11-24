@@ -1,4 +1,4 @@
-A pull request's CI run finishes in AFTER_WALL minutes of wall clock instead of
+A pull request's CI run finishes in about 20 minutes of wall clock instead of
 42, every test still runs with the same assertions, and a budget in CI keeps it
 there. Three causes set the old number, none of them a slow test.
 
@@ -25,16 +25,24 @@ their tests in parallel inside each target, four at a time, as a local
 and each is fixed at its cause in test code: a lock released before the
 test's deferred cleanup restored what it guarded (`common::hold_until_cleanup`
 now holds it through cleanup), raw writes that skipped a cache a concurrent
-request refilled, plugin tables created concurrently without a lock, and a
-tracing capture that missed events because another thread registered the
-callsite first (`common::scoped_subscribers_see_every_callsite`).
+request refilled or a concurrent render filled stale, site-wide settings one
+test switched while another relied on them, plugin tables created concurrently
+without a lock, and a tracing capture that missed events because another
+thread registered the callsite first
+(`common::scoped_subscribers_see_every_callsite`).
 
 argon2 and Cranelift now build optimized in the dev profile (`Cargo.toml`).
 Most of a test's CPU was spent in them unoptimized; optimized, the same targets
-use about a third of it. The workspace's own crates build as before.
-The Cluster job, 26 minutes of which 0.6 were tests, builds its image on the
-dependency layer `docker-publish` already caches (the Dockerfile now builds the
-dependencies in their own layer) and builds the test binary at the same time.
+use about a third of it. The workspace's own crates build as before. The
+dependency cache of the Test, Coverage and Cluster jobs is now keyed on the dev
+profile too; it was not, so a profile change was rebuilt in every run and
+never saved.
+
+The Cluster job, 26 minutes of which 0.6 were tests, now builds its image on a
+cached dependency layer (the Dockerfile builds the dependencies in a layer of
+their own, with cargo-chef, written to the cache on pushes to `main`), builds
+the test binary at the same time, and waits until the proxy balances to both
+nodes before the first test: 13 minutes.
 
 The budget: a test over 30 s fails CI unless `.config/slow-tests.txt` names it
 with its measured time and a reason, and an allowlisted one fails at twice its
