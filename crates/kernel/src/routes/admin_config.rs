@@ -395,24 +395,29 @@ async fn test_email(
     }
 
     if let Some(email_service) = state.email() {
-        match email_service
-            .send(
-                &site_mail,
-                "Trovato test email",
-                "This is a test email from your Trovato site.\n\n\
-                 If you received this, SMTP is configured correctly.",
-            )
-            .await
-        {
-            Ok(()) => {
+        let message = crate::services::email::NewMail::notification(
+            "smtp_test",
+            &site_mail,
+            "Trovato test email",
+            "This is a test email from your Trovato site.\n\n\
+             If you received this, SMTP is configured correctly.",
+        );
+        match email_service.queue_now(message).await {
+            Ok(_) => {
                 let _ = session
-                    .insert(FLASH_KEY, &format!("Test email sent to {site_mail}."))
+                    .insert(
+                        FLASH_KEY,
+                        &format!(
+                            "Test email queued to {site_mail}. Whether it was sent, and any \
+                             error from the mail server, shows in the mail log."
+                        ),
+                    )
                     .await;
             }
             Err(e) => {
-                tracing::error!(error = %e, "test email failed");
+                tracing::error!(error = %e, "test email could not be queued");
                 let _ = session
-                    .insert(FLASH_KEY, &format!("Failed to send test email: {e}"))
+                    .insert(FLASH_KEY, &format!("Failed to queue the test email: {e}"))
                     .await;
             }
         }

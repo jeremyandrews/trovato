@@ -47,12 +47,15 @@
 //!
 //! # Delivery
 //!
-//! The send goes through the site's one
-//! [`EmailService`](crate::services::email::EmailService), so it uses the SMTP
-//! transport, the `from` address and — importantly — the **shared circuit
-//! breaker** the kernel's own mail uses. A plugin cannot configure its own
-//! delivery, and cannot keep hammering an SMTP host the kernel has already given
-//! up on.
+//! The message is queued in the site's one outbox
+//! ([`EmailService`](crate::services::email::EmailService), BG18) and sent by
+//! the kernel's mail workers, with the transport, `from` address, retries,
+//! per blog limits and suppression the kernel's own mail gets. **A return of 0
+//! means accepted for delivery, not delivered**; `ERR_MAIL_SEND_FAILED` means it
+//! could not be queued. A plugin cannot configure its own delivery, and cannot
+//! hammer an SMTP host: its mail waits in the queue like everyone else's.
+//! Mail to the site contact address is transactional; mail to a member is
+//! bulk, so a member's spam complaint stops it.
 
 use anyhow::Result;
 use base64::Engine as _;
@@ -64,7 +67,7 @@ use super::trace::TracedLinker;
 
 use super::read_string_from_memory;
 use crate::plugin::{PluginState, WasmtimeExt};
-use crate::services::email::Attachment;
+use crate::services::email::{Attachment, has_control};
 use trovato_sdk::host_errors;
 
 /// Most attachments one message may carry.
@@ -76,8 +79,8 @@ pub const MAX_ATTACHMENTS: usize = 5;
 /// contact form, not so a plugin can move files through the site's SMTP relay.
 pub const MAX_ATTACHMENT_BYTES: usize = 1024 * 1024;
 
-/// Longest subject accepted, in bytes.
-pub const MAX_SUBJECT_BYTES: usize = 512;
+/// Longest subject accepted, in bytes: the outbox's own limit.
+pub use crate::services::email::MAX_SUBJECT_BYTES;
 
 /// Longest body accepted, in bytes.
 pub const MAX_BODY_BYTES: usize = 256 * 1024;
@@ -214,15 +217,20 @@ pub fn register_mail_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                         }
                     };
 
-                    match email
-                        .send_with_attachments(&recipient, subject, body, &attachments)
-                        .await
-                    {
-                        Ok(()) => {
+                    let count = attachments.len();
+                    let message = crate::services::email::NewMail::notification(
+                        &format!("plugin:{plugin_name}"),
+                        &recipient,
+                        subject,
+                        body,
+                    )
+                    .attachments(attachments);
+                    match email.queue_now(message).await {
+                        Ok(_) => {
                             info!(
                                 plugin = %plugin_name,
-                                attachments = attachments.len(),
-                                "plugin sent mail to the site contact address"
+                                attachments = count,
+                                "plugin queued mail to the site contact address"
                             );
                             0
                         }
@@ -230,7 +238,7 @@ pub fn register_mail_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                             warn!(
                                 plugin = %plugin_name,
                                 error = %e,
-                                "plugin mail send failed"
+                                "plugin mail could not be queued"
                             );
                             host_errors::ERR_MAIL_SEND_FAILED
                         }
@@ -403,19 +411,22 @@ async fn send_to_user(
          To stop receiving this kind of mail, open:\n{unsubscribe_url}\n"
     );
 
-    match email
-        .send_with_unsubscribe(&address, subject, &body, &unsubscribe_url)
-        .await
-    {
-        Ok(()) => {
-            info!(plugin = %plugin, user_id = %user_id, "plugin sent mail to a member");
+    let message = crate::services::email::NewMail::bulk(
+        &format!("plugin:{plugin}"),
+        &address,
+        subject,
+        &body,
+        &unsubscribe_url,
+    );
+    match email.queue_now(message).await {
+        Ok(_) => {
+            info!(plugin = %plugin, user_id = %user_id, "plugin queued mail to a member");
             0
         }
         Err(e) => {
-            // The transport's own error can quote the recipient (an SMTP
-            // server's "550 <address>: rejected"), so it stays below info.
-            debug!(plugin = %plugin, user_id = %user_id, error = %e, "member mail send error");
-            warn!(plugin = %plugin, user_id = %user_id, "plugin mail to a member failed");
+            // The error can quote the recipient, so it stays below info.
+            debug!(plugin = %plugin, user_id = %user_id, error = %e, "member mail queue error");
+            warn!(plugin = %plugin, user_id = %user_id, "plugin mail to a member could not be queued");
             host_errors::ERR_MAIL_SEND_FAILED
         }
     }
@@ -433,7 +444,7 @@ fn validate(request: &MailRequest) -> Result<(&str, &str, Vec<Attachment>), i32>
     // A newline in a header value is header injection: it would let a plugin
     // append its own headers, including a Bcc, and get the relay this interface
     // exists to withhold.
-    if contains_control(subject) {
+    if has_control(subject) {
         return Err(host_errors::ERR_MAIL_INVALID_REQUEST);
     }
 
@@ -451,7 +462,7 @@ fn validate(request: &MailRequest) -> Result<(&str, &str, Vec<Attachment>), i32>
         if !is_usable_filename(&attachment.filename) {
             return Err(host_errors::ERR_MAIL_INVALID_REQUEST);
         }
-        if attachment.content_type.trim().is_empty() || contains_control(&attachment.content_type) {
+        if attachment.content_type.trim().is_empty() || has_control(&attachment.content_type) {
             return Err(host_errors::ERR_MAIL_INVALID_REQUEST);
         }
 
@@ -488,14 +499,6 @@ fn validate(request: &MailRequest) -> Result<(&str, &str, Vec<Attachment>), i32>
     Ok((subject, &request.body, attachments))
 }
 
-/// Whether a string carries a character that must not reach a message header.
-///
-/// CR and LF are the injection vector; the rest of the C0 range has no business
-/// in a subject or a MIME type either.
-fn contains_control(value: &str) -> bool {
-    value.chars().any(|c| c.is_control())
-}
-
 /// Whether a filename can be offered to a recipient as-is.
 ///
 /// Rejects an empty name, control characters, a quote (which would break out of
@@ -504,7 +507,7 @@ fn contains_control(value: &str) -> bool {
 fn is_usable_filename(filename: &str) -> bool {
     !filename.is_empty()
         && filename.len() <= MAX_FILENAME_BYTES
-        && !contains_control(filename)
+        && !has_control(filename)
         && !filename.contains('"')
         && !filename.contains('/')
         && !filename.contains('\\')

@@ -296,7 +296,10 @@ pub fn subject_too_long(subject: &str) -> bool {
 
 impl Comment {
     /// Create a new comment.
-    pub async fn create(pool: &PgPool, input: CreateComment) -> Result<Self> {
+    pub async fn create<'e, E: sqlx::PgExecutor<'e>>(
+        executor: E,
+        input: CreateComment,
+    ) -> Result<Self> {
         let id = Uuid::now_v7();
         let now = chrono::Utc::now().timestamp();
         let body_format = input
@@ -323,7 +326,7 @@ impl Comment {
         .bind(status)
         .bind(now)
         .bind(now)
-        .fetch_one(pool)
+        .fetch_one(executor)
         .await
         .context("failed to create comment")?;
 
@@ -331,12 +334,15 @@ impl Comment {
     }
 
     /// Find a comment by ID.
-    pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Self>> {
+    pub async fn find_by_id<'e, E: sqlx::PgExecutor<'e>>(
+        executor: E,
+        id: Uuid,
+    ) -> Result<Option<Self>> {
         let comment = sqlx::query_as::<_, Comment>(
             "SELECT id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth FROM comment WHERE id = $1",
         )
         .bind(id)
-        .fetch_optional(pool)
+        .fetch_optional(executor)
         .await
         .context("failed to fetch comment by id")?;
 
@@ -525,7 +531,20 @@ impl Comment {
 
     /// Update a comment.
     pub async fn update(pool: &PgPool, id: Uuid, input: UpdateComment) -> Result<Option<Self>> {
-        let Some(existing) = Self::find_by_id(pool, id).await? else {
+        let mut conn = pool
+            .acquire()
+            .await
+            .context("failed to acquire a connection")?;
+        Self::update_in(&mut conn, id, input).await
+    }
+
+    /// [`Self::update`] on `conn`, which may be a transaction.
+    pub async fn update_in(
+        conn: &mut sqlx::PgConnection,
+        id: Uuid,
+        input: UpdateComment,
+    ) -> Result<Option<Self>> {
+        let Some(existing) = Self::find_by_id(&mut *conn, id).await? else {
             return Ok(None);
         };
 
@@ -551,7 +570,7 @@ impl Comment {
         .bind(now)
         .bind(&subject)
         .bind(id)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *conn)
         .await
         .context("failed to update comment")?;
 

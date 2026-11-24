@@ -19,6 +19,11 @@ mod common;
 use common::perf::{Caches, PerfSite, Visitor, check, expected, shared_site};
 use common::run_test;
 
+/// Held by a test that adds a comment row for a while (the measured comment
+/// post, BG18) and by the test that counts the generated site's comments: the
+/// tests in a target run in parallel.
+static COMMENT_ROWS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 const BOTH: [Caches; 2] = [Caches::Cold, Caches::Warm];
 
 /// Visit `path` as each of `visitors`, cold and warm, check the counts, and
@@ -227,6 +232,7 @@ fn one_more_query_on_the_item_page_fails_its_test() {
 #[test]
 fn the_generated_site_is_what_was_asked_for() {
     run_test(async {
+        let _rows = COMMENT_ROWS.lock().await;
         let site = shared_site();
         let db = &site.app.db;
         let options = common::perf::site_options();
@@ -361,5 +367,86 @@ fn generate_refuses_a_database_it_did_not_generate() {
         .await
         .unwrap();
         assert_eq!(written, 0);
+    });
+}
+
+/// Signing up writes the account and queues its verification mail in one
+/// transaction (BG18): the queue adds one insert to the write, and the counts
+/// say so.
+#[test]
+fn signup() {
+    run_test(async {
+        // Registration was opened when the site was built (common/perf.rs).
+        let site = shared_site();
+        let name = format!("perf_{}", uuid::Uuid::now_v7().simple());
+        let mail = format!("{name}@perf.example.test");
+        let visit = site
+            .submit(
+                "signup",
+                Visitor::Anonymous,
+                "/user/register/json",
+                serde_json::json!({
+                    "username": name,
+                    "mail": mail,
+                    "password": "Perf-Password-123",
+                }),
+            )
+            .await;
+        assert_eq!(visit.status, 200, "{}", visit.body);
+        let queued: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM mail_outbox
+             WHERE recipient = $1 AND category = 'registration_verify'",
+        )
+        .bind(&mail)
+        .fetch_one(&site.app.db)
+        .await
+        .unwrap();
+        assert_eq!(queued, 1, "the measured request queued the verification");
+        check(&visit);
+    });
+}
+
+/// Posting a visible comment on someone else's post queues the author's
+/// notification in the comment's own transaction (BG18).
+#[test]
+fn comment() {
+    run_test(async {
+        // Its comment exists between the measured post and the delete below;
+        // the generated-site check counts every comment, so it waits.
+        let _rows = COMMENT_ROWS.lock().await;
+        let site = shared_site();
+        // The second newest post: the item page test measures the newest, and
+        // must not find a fourth comment on it.
+        let item: uuid::Uuid = sqlx::query_scalar("SELECT md5('1:item:2')::uuid")
+            .fetch_one(&site.app.db)
+            .await
+            .unwrap();
+        let visit = site
+            .submit(
+                "comment",
+                Visitor::Admin,
+                &format!("/api/item/{item}/comments"),
+                serde_json::json!({ "body": "A measured comment" }),
+            )
+            .await;
+        assert_eq!(visit.status, 200, "{}", visit.body);
+        let comment: serde_json::Value = serde_json::from_str(&visit.body).unwrap();
+        let queued: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM mail_outbox WHERE dedupe_key = $1")
+                .bind(format!(
+                    "comment-published:{}",
+                    comment["id"].as_str().unwrap()
+                ))
+                .fetch_one(&site.app.db)
+                .await
+                .unwrap();
+        assert_eq!(queued, 1, "the measured request queued the notification");
+        // The generated site is counted by another test: leave it as it was.
+        sqlx::query("DELETE FROM comment WHERE id = $1::uuid")
+            .bind(comment["id"].as_str().unwrap())
+            .execute(&site.app.db)
+            .await
+            .unwrap();
+        check(&visit);
     });
 }

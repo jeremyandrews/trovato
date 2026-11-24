@@ -25,14 +25,21 @@ pub struct Envelope {
 pub struct SmtpSink {
     pub port: u16,
     messages: Arc<Mutex<Vec<Envelope>>>,
+    accept: tokio::task::JoinHandle<()>,
 }
 
 impl SmtpSink {
     /// Bind an ephemeral port and start accepting.
     pub async fn start() -> Self {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        Self::start_on(0).await
+    }
+
+    /// Bind `port` (0 for any) and start accepting. A fixed port lets a test
+    /// bring the sink back where an app already points, after [`Self::stop`].
+    pub async fn start_on(port: u16) -> Self {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", port))
             .await
-            .expect("bind an ephemeral port for the SMTP sink");
+            .expect("bind a port for the SMTP sink");
         let port = listener
             .local_addr()
             .expect("read the sink's local address")
@@ -40,7 +47,7 @@ impl SmtpSink {
         let messages: Arc<Mutex<Vec<Envelope>>> = Arc::new(Mutex::new(Vec::new()));
 
         let accepted = Arc::clone(&messages);
-        tokio::spawn(async move {
+        let accept = tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else {
                     return;
@@ -52,7 +59,26 @@ impl SmtpSink {
             }
         });
 
-        Self { port, messages }
+        Self {
+            port,
+            messages,
+            accept,
+        }
+    }
+
+    /// Stop listening: from now on a connection to the port is refused, as a
+    /// mail server that is down refuses it.
+    pub async fn stop(self) {
+        self.accept.abort();
+        let _ = self.accept.await;
+    }
+
+    /// A loopback port nothing listens on (bound, then released).
+    pub async fn free_port() -> u16 {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind an ephemeral port");
+        listener.local_addr().expect("local address").port()
     }
 
     /// Every message received so far.
@@ -89,8 +115,20 @@ async fn serve_one_session(stream: tokio::net::TcpStream, messages: Arc<Mutex<Ve
         let reply: &[u8] = if upper.starts_with("EHLO") || upper.starts_with("HELO") {
             b"250 sink.test\r\n"
         } else if upper.starts_with("RCPT TO") {
-            envelope.recipients.push(address_in(&command));
-            b"250 OK\r\n"
+            let address = address_in(&command);
+            // A recipient whose local part starts with `bounce` does not exist:
+            // the permanent refusal a real server gives an unknown mailbox. One
+            // starting with `authfail` gets the 5xx a server gives bad
+            // credentials, which is the site's fault, not the message's.
+            let lower = address.to_ascii_lowercase();
+            if lower.starts_with("bounce") {
+                b"550 5.1.1 No such user here\r\n"
+            } else if lower.starts_with("authfail") {
+                b"535 5.7.8 Authentication credentials invalid\r\n"
+            } else {
+                envelope.recipients.push(address);
+                b"250 OK\r\n"
+            }
         } else if upper.starts_with("DATA") {
             if write
                 .write_all(b"354 End data with <CR><LF>.<CR><LF>\r\n")

@@ -47,6 +47,47 @@ async fn config_flag(pool: &PgPool, key: &str, default: bool) -> bool {
         .unwrap_or(default)
 }
 
+/// Mint an emailed recovery code for `flow_id` and store its hash, replacing
+/// any earlier challenge for the flow. Called by the mail worker immediately
+/// before it sends the code (BG18), so the code exists only in memory and in
+/// the message.
+///
+/// Bound to the FLOW, not merely to the account: a code minted for one
+/// recovery attempt is not redeemable in another.
+///
+/// `None` when the flow's challenge was already used: a late or repeated send
+/// must not open it again.
+///
+/// # Errors
+///
+/// When the challenge cannot be stored.
+pub(crate) async fn mint_email_code(
+    pool: &PgPool,
+    user_id: Uuid,
+    flow_id: &str,
+) -> anyhow::Result<Option<String>> {
+    let code = generate_secret(EMAIL_CODE_LEN);
+    let expires_at = Utc::now() + chrono::Duration::seconds(FLOW_TTL_SECS);
+    let stored = sqlx::query(
+        r#"
+        INSERT INTO recovery_email_challenges (user_id, flow_id, code_hash, expires_at)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (flow_id) DO UPDATE
+            SET code_hash = EXCLUDED.code_hash,
+                expires_at = EXCLUDED.expires_at
+            WHERE recovery_email_challenges.used_at IS NULL
+        "#,
+    )
+    .bind(user_id)
+    .bind(flow_id)
+    .bind(hash_secret(&code))
+    .bind(expires_at)
+    .execute(pool)
+    .await
+    .map_err(|e| anyhow::anyhow!("failed to store an email recovery challenge: {e}"))?;
+    Ok((stored.rows_affected() > 0).then_some(code))
+}
+
 // ─── Emailed one-time code ───────────────────────────────────────────────────
 
 /// The built-in emailed-code recovery path.
@@ -133,32 +174,17 @@ impl RecoveryProvider for EmailRecoveryProvider {
                     });
                 }
 
-                let code = generate_secret(EMAIL_CODE_LEN);
-                let expires_at = Utc::now() + chrono::Duration::seconds(FLOW_TTL_SECS);
-
-                // Bound to the FLOW, not merely to the account: a code minted for
-                // one recovery attempt is not redeemable in another. The upsert
-                // replaces any earlier challenge for this flow, so re-initiating
-                // invalidates the previous code rather than leaving two live.
-                let stored = sqlx::query(
-                    r#"
-                    INSERT INTO recovery_email_challenges (user_id, flow_id, code_hash, expires_at)
-                    VALUES ($1, $2, $3, $4)
-                    ON CONFLICT (flow_id) DO UPDATE
-                        SET code_hash = EXCLUDED.code_hash,
-                            expires_at = EXCLUDED.expires_at,
-                            used_at = NULL
-                    "#,
-                )
-                .bind(account.user_id)
-                .bind(flow_id)
-                .bind(hash_secret(&code))
-                .bind(expires_at)
-                .execute(&self.pool)
-                .await;
-
-                if let Err(e) = stored {
-                    tracing::error!(error = %e, "failed to store an email recovery challenge");
+                // The code is minted by the mail worker immediately before the
+                // send (`mint_email_code`), so it is never stored in the clear,
+                // not even in the outbox. Re-initiating drops the earlier
+                // challenge for this flow now, so two codes are never live.
+                if let Err(e) =
+                    sqlx::query("DELETE FROM recovery_email_challenges WHERE flow_id = $1")
+                        .bind(flow_id)
+                        .execute(&self.pool)
+                        .await
+                {
+                    tracing::error!(error = %e, "failed to clear an email recovery challenge");
                     return Some(RecoveryTapResult::Initiated {
                         status: "unavailable".to_string(),
                         challenge_hint: "Could not start email recovery.".to_string(),
@@ -173,17 +199,21 @@ impl RecoveryProvider for EmailRecoveryProvider {
                      If this was not you, ignore this email and consider changing your \
                      password — someone knows or guessed your account name.\n",
                     site = self.site_name,
+                    code = crate::services::email::SECRET_MARKER,
                     minutes = FLOW_TTL_SECS / 60,
                 );
-                if let Err(e) = email_service
-                    .send(
-                        &user.mail,
-                        &format!("Account recovery code for {}", self.site_name),
-                        &body,
-                    )
-                    .await
-                {
-                    tracing::error!(error = %e, "failed to send a recovery code email");
+                let mail = crate::services::email::NewMail::account(
+                    "recovery_code",
+                    &user.mail,
+                    &format!("Account recovery code for {}", self.site_name),
+                    &body,
+                )
+                .secret(crate::services::email::MailSecret::RecoveryCode {
+                    user_id: account.user_id,
+                    flow_id: flow_id.clone(),
+                });
+                if let Err(e) = email_service.queue_now(mail).await {
+                    tracing::error!(error = %e, "failed to queue a recovery code email");
                     return Some(RecoveryTapResult::Initiated {
                         status: "unavailable".to_string(),
                         challenge_hint: "Could not send the recovery email.".to_string(),

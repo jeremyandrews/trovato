@@ -47,9 +47,9 @@ async fn metrics(State(state): State<AppState>, request: Request) -> Response {
     m.ai_circuit_breaker_state.set(breaker_state_value(
         state.ai_providers().circuit_breaker().state_name(),
     ));
-    if let Some(email) = state.email() {
+    if let Some(breaker) = state.email().and_then(|e| e.transport().breaker_state()) {
         m.email_circuit_breaker_state
-            .set(breaker_state_value(email.circuit_breaker().state_name()));
+            .set(breaker_state_value(breaker));
     }
 
     let output = state.metrics().encode();

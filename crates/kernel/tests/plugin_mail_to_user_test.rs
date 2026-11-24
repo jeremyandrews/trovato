@@ -146,7 +146,26 @@ async fn mail_user_query(app: &TestApp, query: &str) -> (serde_json::Value, Stri
     assert_eq!(response.status(), StatusCode::OK);
     let text = text_body(response).await;
     let json = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+    deliver_queued(app).await;
     (json, text)
+}
+
+/// Send what this plugin queued (BG18: plugin mail is queued, and a worker
+/// sends it). The plugin's category names its rows, and its recipients are
+/// this binary's own members.
+async fn deliver_queued(app: &TestApp) {
+    if app.state.email().is_none() {
+        return;
+    }
+    let recipients: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT recipient FROM mail_outbox WHERE category = $1 AND status = 'queued'",
+    )
+    .bind(format!("plugin:{PLUGIN}"))
+    .fetch_all(&app.db)
+    .await
+    .unwrap();
+    let recipients: Vec<&str> = recipients.iter().map(String::as_str).collect();
+    app.deliver_mail_to(&recipients).await;
 }
 
 fn messages_for(sink: &SmtpSink, subject: &str) -> Vec<Envelope> {
@@ -252,7 +271,12 @@ fn a_member_is_mailed_with_an_unsubscribe_link_and_headers() {
         let message = &messages[0];
         assert_eq!(message.recipients, vec![address.clone()]);
         let data = unfolded(message);
-        assert!(data.contains(&format!("From: {SITE_FROM}")), "{data}");
+        assert!(
+            data.lines()
+                .any(|l| l.starts_with("From: ")
+                    && l.trim_end().ends_with(&format!("<{SITE_FROM}>"))),
+            "{data}"
+        );
         assert!(data.contains("Hello member"), "{data}");
         let path = unsubscribe_path(message);
         let header_line = data
@@ -277,6 +301,10 @@ fn without_the_capability_the_send_is_denied() {
     common::run_test(async {
         let fixture = without_capability();
         let app = &fixture.app;
+        // Held although this test queues nothing: its call still drains what
+        // this plugin queued, and must not send another test's row to this
+        // fixture's sink.
+        common::hold_until_cleanup(BUCKET_LOCK.lock().await);
         let (user, _) = member(app, "bl94-denied").await;
         let subject = subject("Denied");
 

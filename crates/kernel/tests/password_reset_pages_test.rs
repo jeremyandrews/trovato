@@ -178,9 +178,16 @@ fn mail_to(sink: &SmtpSink, address: &str) -> Vec<Envelope> {
         .collect()
 }
 
-/// Wait for the spawned send to reach the sink, up to five seconds.
-async fn wait_for_mail(sink: &SmtpSink, address: &str, count: usize) -> Vec<Envelope> {
+/// Wait for the spawned request to queue the mail, sending what is queued for
+/// `address` as a worker would (BG18), up to five seconds.
+async fn wait_for_mail(
+    app: &TestApp,
+    sink: &SmtpSink,
+    address: &str,
+    count: usize,
+) -> Vec<Envelope> {
     for _ in 0..50 {
+        app.deliver_mail_to(&[address]).await;
         let found = mail_to(sink, address);
         if found.len() >= count {
             return found;
@@ -293,7 +300,7 @@ fn every_request_gets_the_same_page_and_only_a_known_address_is_mailed() {
             "the page must not echo the address"
         );
 
-        let mails = wait_for_mail(&fixture.sink, &known, 1).await;
+        let mails = wait_for_mail(app, &fixture.sink, &known, 1).await;
         assert_eq!(mails.len(), 1, "the known address gets one mail");
         let data = &mails[0].data;
         assert!(
@@ -301,6 +308,18 @@ fn every_request_gets_the_same_page_and_only_a_known_address_is_mailed() {
             "sent with the password_reset template (text and HTML): {data}"
         );
         assert!(data.contains("/user/password-reset/"), "{data}");
+        // Mail is queued, then sent by a worker (BG18): send whatever is
+        // queued for the unknown address, and look at the outbox too, or the
+        // sink check proves nothing.
+        app.deliver_mail_to(&[&unknown]).await;
+        let queued_unknown: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM mail_outbox WHERE lower(recipient) = lower($1)",
+        )
+        .bind(&unknown)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+        assert_eq!(queued_unknown, 0, "an unknown address is never queued");
         assert!(
             mail_to(&fixture.sink, &unknown).is_empty(),
             "an unknown address gets nothing"
@@ -315,10 +334,21 @@ fn every_request_gets_the_same_page_and_only_a_known_address_is_mailed() {
             over_page = request_reset_page(app, &known, &ip).await.1;
         }
         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        app.deliver_mail_to(&[&known]).await;
         assert_eq!(over_page, known_page, "over the limit, the same page");
         assert!(
             mail_to(&fixture.sink, &known).len() <= before + 2,
             "the per-address limit (3 an hour) holds on the page path"
+        );
+        // The reset mail's dedupe key alone would also hold the count above, so
+        // check the limiter itself: the page path spent the address's budget.
+        assert!(
+            app.state
+                .rate_limiter()
+                .check("reset_mail", &known.to_lowercase())
+                .await
+                .is_err(),
+            "the per-address limit (3 an hour) was spent on the page path"
         );
         reset_limits(app, &ip_known, &known).await;
     });
@@ -339,7 +369,7 @@ fn the_mailed_link_opens_a_set_password_form() {
         let ip = ip_for(&format!("{email}-link"));
         reset_limits(app, &ip, &email).await;
         request_reset_page(app, &email, &ip).await;
-        let mails = wait_for_mail(&fixture.sink, &email, 1).await;
+        let mails = wait_for_mail(app, &fixture.sink, &email, 1).await;
         let link = reset_path(mails.last().expect("a reset mail"));
 
         let response = app

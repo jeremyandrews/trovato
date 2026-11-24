@@ -88,8 +88,38 @@ impl CommentService {
     /// Create a comment with `tap_comment_insert` invocation.
     pub async fn create(&self, input: CreateComment, user: &UserContext) -> Result<Comment> {
         let comment = Comment::create(&self.inner.pool, input).await?;
+        self.created(&comment, user).await?;
+        Ok(comment)
+    }
 
-        let json = serde_json::to_string(&comment).context("serialize comment")?;
+    /// [`Self::create`], queueing the mail `mail` builds for the new comment in
+    /// the same transaction as the insert (BG18), so the notification commits
+    /// or rolls back with the comment.
+    ///
+    /// # Errors
+    ///
+    /// When the insert or queueing fails; then neither happened.
+    pub async fn create_with_mail(
+        &self,
+        input: CreateComment,
+        user: &UserContext,
+        email: &crate::services::email::EmailService,
+        mail: impl FnOnce(&Comment) -> Option<crate::services::email::NewMail>,
+    ) -> Result<Comment> {
+        let mut tx = self.inner.pool.begin().await?;
+        let comment = Comment::create(&mut *tx, input).await?;
+        if let Some(message) = mail(&comment) {
+            email.queue(&mut *tx, message).await?;
+        }
+        tx.commit().await?;
+        email.wake();
+        self.created(&comment, user).await?;
+        Ok(comment)
+    }
+
+    /// What follows a committed insert: `tap_comment_insert`, search, audit.
+    async fn created(&self, comment: &Comment, user: &UserContext) -> Result<()> {
+        let json = serde_json::to_string(comment).context("serialize comment")?;
         let state = self.tap_state(user);
         let _ = self
             .inner
@@ -97,12 +127,12 @@ impl CommentService {
             .dispatch("tap_comment_insert", &json, state)
             .await;
 
-        self.request_search_rebuild(None, Some(&comment)).await;
+        self.request_search_rebuild(None, Some(comment)).await;
 
         info!(comment_id = %comment.id, item_id = %comment.item_id, "comment created");
         self.audit("create", comment.id, Some(comment.item_id), user)
             .await;
-        Ok(comment)
+        Ok(())
     }
 
     /// Update a comment with `tap_comment_update` invocation.
@@ -114,9 +144,49 @@ impl CommentService {
     ) -> Result<Option<Comment>> {
         let before = self.load(id).await?;
         let comment = Comment::update(&self.inner.pool, id, input).await?;
+        self.updated(before.as_ref(), comment.as_ref(), user)
+            .await?;
+        Ok(comment)
+    }
 
-        if let Some(ref c) = comment {
-            self.request_search_rebuild(before.as_ref(), Some(c)).await;
+    /// [`Self::update`], queueing the mail `mail` builds from the comment as it
+    /// was and as it is in the same transaction as the update (BG18).
+    ///
+    /// # Errors
+    ///
+    /// When the update or queueing fails; then neither happened.
+    pub async fn update_with_mail(
+        &self,
+        id: Uuid,
+        input: UpdateComment,
+        user: &UserContext,
+        email: &crate::services::email::EmailService,
+        mail: impl FnOnce(Option<&Comment>, &Comment) -> Option<crate::services::email::NewMail>,
+    ) -> Result<Option<Comment>> {
+        let mut tx = self.inner.pool.begin().await?;
+        let before = Comment::find_by_id(&mut *tx, id).await?;
+        let comment = Comment::update_in(&mut tx, id, input).await?;
+        if let Some(c) = &comment
+            && let Some(message) = mail(before.as_ref(), c)
+        {
+            email.queue(&mut *tx, message).await?;
+        }
+        tx.commit().await?;
+        email.wake();
+        self.updated(before.as_ref(), comment.as_ref(), user)
+            .await?;
+        Ok(comment)
+    }
+
+    /// What follows a committed update: search, `tap_comment_update`, audit.
+    async fn updated(
+        &self,
+        before: Option<&Comment>,
+        comment: Option<&Comment>,
+        user: &UserContext,
+    ) -> Result<()> {
+        if let Some(c) = comment {
+            self.request_search_rebuild(before, Some(c)).await;
             let json = serde_json::to_string(c).context("serialize comment")?;
             let state = self.tap_state(user);
             let _ = self
@@ -125,11 +195,10 @@ impl CommentService {
                 .dispatch("tap_comment_update", &json, state)
                 .await;
 
-            info!(comment_id = %id, "comment updated");
-            self.audit("update", id, Some(c.item_id), user).await;
+            info!(comment_id = %c.id, "comment updated");
+            self.audit("update", c.id, Some(c.item_id), user).await;
         }
-
-        Ok(comment)
+        Ok(())
     }
 
     /// Delete a comment with `tap_comment_delete` invocation (before delete).

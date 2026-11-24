@@ -263,10 +263,15 @@ impl Default for QueueRunnerConfig {
 /// Exponential backoff for a failed attempt: `BASE * 2^(attempts-1)`, capped at
 /// [`QUEUE_BACKOFF_CAP_SECS`]. `attempts` is the post-claim count (>= 1).
 fn backoff_secs(attempts: i32) -> i64 {
+    exponential_backoff_secs(QUEUE_BACKOFF_BASE_SECS, QUEUE_BACKOFF_CAP_SECS, attempts)
+}
+
+/// `base * 2^(attempts-1)`, capped at `cap`. `attempts` is the post-claim count
+/// (>= 1). Shared by the plugin queue and the mail outbox (BG18), which adds
+/// jitter on top.
+pub(crate) fn exponential_backoff_secs(base: i64, cap: i64, attempts: i32) -> i64 {
     let exp = attempts.saturating_sub(1).clamp(0, 16) as u32;
-    QUEUE_BACKOFF_BASE_SECS
-        .saturating_mul(1i64 << exp)
-        .min(QUEUE_BACKOFF_CAP_SECS)
+    base.saturating_mul(1i64 << exp).min(cap)
 }
 
 /// Read the declared `concurrency` of each queue from a `tap_queue_info` result.
@@ -1094,6 +1099,21 @@ impl CronService {
                 tasks_run.push(format!("cleanup_expired_locks: {count}"));
             }
             Err(e) => warn!(error = %e, "failed to cleanup locks"),
+            _ => {}
+        }
+
+        // Mail retention (BG18)
+        match self.tasks.purge_mail_outbox().await {
+            Ok((cleared, deleted)) if cleared + deleted > 0 => {
+                info!(
+                    cleared,
+                    deleted, "mail retention: bodies cleared, old messages deleted"
+                );
+                tasks_run.push(format!(
+                    "purge_mail_outbox: {cleared} cleared, {deleted} deleted"
+                ));
+            }
+            Err(e) => warn!(error = %e, "failed to apply mail retention"),
             _ => {}
         }
 

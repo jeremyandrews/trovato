@@ -481,18 +481,6 @@ async fn create_comment_inner(
         body_format: Some("filtered_html".to_string()),
         status: Some(status.as_i16()),
     };
-    let comment = state
-        .comments()
-        .create(input, &user_ctx)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to create comment");
-            AppError::with_status(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to create comment",
-            )
-        })?;
-
     // Get commenter info
     let commenter = state
         .users()
@@ -508,14 +496,32 @@ async fn create_comment_inner(
     // Notify the content author, but only if this comment is visible. A comment
     // created into the review queue must not mail its full text to the author:
     // that would deliver every held comment, including the ones moderation
-    // exists to catch.
-    notify_if_published(
-        state,
-        &comment,
-        None,
-        &item,
-        commenter.as_ref().map(|a| a.name.as_str()),
-    );
+    // exists to catch. The notification is queued in the comment's own
+    // transaction (BG18).
+    let mail_ctx = if should_notify_on_publish(None, status.as_i16(), user_id, item.author_id) {
+        comment_mail_context(state, &item, commenter.as_ref().map(|a| a.name.as_str())).await
+    } else {
+        None
+    };
+    let created = match (state.email(), mail_ctx) {
+        (Some(email), Some(ctx)) => {
+            let tera = state.theme().tera();
+            state
+                .comments()
+                .create_with_mail(input, &user_ctx, email, |c| {
+                    comment_notification(tera, &ctx, c, None)
+                })
+                .await
+        }
+        _ => state.comments().create(input, &user_ctx).await,
+    };
+    let comment = created.map_err(|e| {
+        tracing::error!(error = %e, "failed to create comment");
+        AppError::with_status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to create comment",
+        )
+    })?;
 
     let body_html = render_comment_body(&comment);
 
@@ -1375,98 +1381,86 @@ pub(crate) fn should_notify_on_publish(
     becomes_visible && !was_visible && comment_author != item_author
 }
 
-/// Mail the content author if this comment has just become visible.
-///
-/// `previous` is the status before the change, or `None` for a comment that has
-/// just been created. Spawns the send, so a slow or dead SMTP server cannot hold
-/// up the response.
-pub(crate) fn notify_if_published(
-    state: &AppState,
-    comment: &Comment,
-    previous: Option<i16>,
-    item: &crate::models::Item,
-    commenter_name: Option<&str>,
-) {
-    if !should_notify_on_publish(previous, comment.status, comment.author_id, item.author_id) {
-        return;
-    }
-
-    let Some(email_service) = state.email() else {
-        return;
-    };
-
-    let notification_state = state.clone();
-    let email = email_service.clone();
-    let comment_subject = comment.subject.clone();
-    let comment_body = comment.body.clone();
-    let item_title = item.title.clone();
-    let item_author_id = item.author_id;
-    let item_id = item.id;
-    let commenter_name = commenter_name.unwrap_or("Someone").to_string();
-
-    tokio::spawn(async move {
-        send_comment_notification(
-            &notification_state,
-            &email,
-            item_author_id,
-            &commenter_name,
-            &item_title,
-            comment_subject.as_deref(),
-            &comment_body,
-            item_id,
-        )
-        .await;
-    });
+/// What a comment notification needs besides the comment: loaded before the
+/// write, so the message can be queued inside the write's transaction (BG18).
+pub(crate) struct CommentMail {
+    to: String,
+    site_name: String,
+    action_url: String,
+    item_title: String,
+    item_author_id: uuid::Uuid,
+    commenter_name: String,
 }
 
-/// Send a comment notification email to the content author.
-///
-/// This is called in a background task and must not panic. All errors
-/// are logged but silently swallowed.
-#[allow(clippy::too_many_arguments)]
-async fn send_comment_notification(
+/// Load what [`comment_notification`] needs to mail `item`'s author, or `None`
+/// when there is no mail to send: mail is not configured, or the author is
+/// gone or has no address.
+pub(crate) async fn comment_mail_context(
     state: &AppState,
-    email_service: &std::sync::Arc<crate::services::email::EmailService>,
-    item_author_id: uuid::Uuid,
-    commenter_name: &str,
-    item_title: &str,
-    comment_subject: Option<&str>,
-    comment_text: &str,
-    item_id: uuid::Uuid,
-) {
-    // Load the content author's email
-    let author = match state.users().find_by_id(item_author_id).await {
+    item: &crate::models::Item,
+    commenter_name: Option<&str>,
+) -> Option<CommentMail> {
+    let email_service = state.email()?;
+    let author = match state.users().find_by_id(item.author_id).await {
         Ok(Some(u)) => u,
         Ok(None) => {
             tracing::debug!("comment notification: author not found");
-            return;
+            return None;
         }
         Err(e) => {
             tracing::warn!(error = %e, "comment notification: failed to load author");
-            return;
+            return None;
         }
     };
-
     if author.mail.is_empty() {
-        return;
+        return None;
     }
-
     let site_name = crate::models::SiteConfig::site_name(state.db())
         .await
         .unwrap_or_else(|_| "Trovato".to_string());
-    let site_url = email_service.site_url();
-    let action_url = format!("{site_url}/item/{item_id}");
+    Some(CommentMail {
+        to: author.mail,
+        site_name,
+        action_url: format!("{}/item/{}", email_service.site_url(), item.id),
+        item_title: item.title.clone(),
+        item_author_id: item.author_id,
+        commenter_name: commenter_name.unwrap_or("Someone").to_string(),
+    })
+}
+
+/// The notification mailing the content author that `comment` has just become
+/// visible, or `None` when [`should_notify_on_publish`] says it has not.
+/// `previous` is the status before the change, `None` for a new comment.
+///
+/// One message per comment: the dedupe key makes a second approval, or a
+/// retried request, queue nothing.
+pub(crate) fn comment_notification(
+    tera: &tera::Tera,
+    ctx: &CommentMail,
+    comment: &Comment,
+    previous: Option<i16>,
+) -> Option<crate::services::email::NewMail> {
+    if !should_notify_on_publish(
+        previous,
+        comment.status,
+        comment.author_id,
+        ctx.item_author_id,
+    ) {
+        return None;
+    }
     // The comment's own subject when it has one; otherwise the mail's own
     // subject text, as it has always read.
-    let subject = comment_subject
+    let subject = comment
+        .subject
+        .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
-        .unwrap_or_else(|| format!("New comment on \"{item_title}\" at {site_name}"));
+        .unwrap_or_else(|| format!("New comment on \"{}\" at {}", ctx.item_title, ctx.site_name));
 
     // Truncate comment preview for email. Walks back to a char boundary: a
-    // multi-byte character straddling byte 500 would panic a bare slice, and
-    // this runs in a spawned task where that takes the task down silently.
+    // multi-byte character straddling byte 500 would panic a bare slice.
+    let comment_text = comment.body.as_str();
     let preview: &str = if comment_text.len() > 500 {
         let mut end = 500;
         while end > 0 && !comment_text.is_char_boundary(end) {
@@ -1478,25 +1472,36 @@ async fn send_comment_notification(
     };
 
     let mut context = tera::Context::new();
-    context.insert("site_name", &site_name);
-    context.insert("commenter_name", commenter_name);
-    context.insert("content_title", item_title);
+    context.insert("site_name", &ctx.site_name);
+    context.insert("commenter_name", &ctx.commenter_name);
+    context.insert("content_title", &ctx.item_title);
     context.insert("comment_text", preview);
-    context.insert("action_url", &action_url);
+    context.insert("action_url", &ctx.action_url);
     context.insert("subject", &subject);
 
-    let tera = state.theme().tera();
     match crate::services::email_templates::render(tera, "comment_notification", &context) {
         Ok((html, text)) => {
-            if let Err(e) = email_service
-                .send_templated(&author.mail, &subject, &text, html.as_deref())
-                .await
-            {
-                tracing::warn!(error = %e, "comment notification: failed to send email");
+            let message = crate::services::email::NewMail::notification(
+                "comment_notification",
+                &ctx.to,
+                &subject,
+                &text,
+            )
+            .html(html)
+            .dedupe(format!("comment-published:{}", comment.id));
+            // A notification that cannot be sent (an author address the mail
+            // library will not parse) must not cost the commenter their comment.
+            match message.validate() {
+                Ok(()) => Some(message),
+                Err(e) => {
+                    tracing::warn!(error = %e, comment_id = %comment.id, "comment notification cannot be sent; comment kept");
+                    None
+                }
             }
         }
         Err(e) => {
             tracing::warn!(error = %e, "comment notification: failed to render template");
+            None
         }
     }
 }

@@ -301,6 +301,11 @@ impl PerfSite {
             c.plugins_dirs = vec![plugins];
             c.disabled_plugins = Vec::new();
             c.runtime.profile_fingerprints = true;
+            // Mail configured, so the signup and comment paths queue their
+            // messages (BG18); no worker runs in a test, so nothing is sent.
+            c.smtp_host = Some("127.0.0.1".to_string());
+            c.smtp_port = 9;
+            c.smtp_encryption = "none".to_string();
         })
         .await;
         for name in KERNEL_FEATURE_PLUGINS {
@@ -311,6 +316,14 @@ impl PerfSite {
         trovato_kernel::generate::generate(&app.db, &site_options(), PASSWORD, |_| {})
             .await
             .expect("generate the performance site");
+        // Open registration for the signup measurement (BG18) here, before
+        // anything is measured: saved from the test, it would land inside
+        // another test's measured request, as tests in a target run in
+        // parallel.
+        trovato_kernel::models::RegistrationMode::Open
+            .save(&app.db)
+            .await
+            .expect("open registration");
         // The generator wrote site settings the app had already read.
         app.state.clear_local_caches().await;
 
@@ -427,6 +440,57 @@ impl PerfSite {
         (status, snapshot, body)
     }
 
+    /// POST `json` to `path` as `visitor` and say what the write did, under
+    /// the key `page.visitor.post` (BG18: the signup and comment paths, where
+    /// queueing mail must add one insert and nothing else).
+    ///
+    /// The front page is loaded first, for the CSRF token a signed-in API
+    /// write needs; that request is not measured.
+    pub async fn submit(
+        &self,
+        page: &str,
+        visitor: Visitor,
+        path: &str,
+        json: serde_json::Value,
+    ) -> Visit {
+        let _turn = self.one_at_a_time.lock().await;
+        let (_, _, html) = self.request(visitor, "/", false).await;
+        let marker = "name=\"csrf-token\" content=\"";
+        let token = html
+            .find(marker)
+            .and_then(|start| html[start + marker.len()..].split('"').next())
+            .unwrap_or_default()
+            .to_string();
+        super::settle_cache_generations().await;
+
+        let mut request = Request::post(path)
+            .header("content-type", "application/json")
+            .header("x-csrf-token", token);
+        let cookies = self.cookies(visitor);
+        if !cookies.is_empty() {
+            request = request.header("cookie", cookies);
+        }
+        let response = self
+            .app
+            .request(request.body(Body::from(json.to_string())).expect("request"))
+            .await;
+        let status = response.status().as_u16();
+        let snapshot = response
+            .extensions()
+            .get::<RequestProfileSnapshot>()
+            .cloned()
+            .expect("the timing layer leaves a profile in every response");
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default();
+        Visit {
+            status,
+            counts: Counts::of(&snapshot),
+            key: format!("{page}.{}.post", visitor.key()),
+            body,
+        }
+    }
     /// Load `path` as `visitor` with `caches`, and say what the request did.
     pub async fn visit(&self, page: &str, visitor: Visitor, caches: Caches, path: &str) -> Visit {
         self.visit_with(page, visitor, caches, path, false).await

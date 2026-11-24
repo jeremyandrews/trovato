@@ -1366,3 +1366,33 @@ pub fn item_service_with_ref_plugin(pool: PgPool) -> trovato_kernel::content::It
         Default::default(),
     )
 }
+
+impl TestApp {
+    /// Send the mail queued for `recipients` now, through this app's transport
+    /// (BG18). Mail is queued in `mail_outbox` and sent by workers; a test app
+    /// runs none, because the outbox is shared by every test using the
+    /// database and a worker would send their messages through this app's
+    /// sink. Draining by recipient touches this test's messages only.
+    ///
+    /// Panics when the app has no mail configured.
+    pub async fn deliver_mail_to(
+        &self,
+        recipients: &[&str],
+    ) -> trovato_kernel::services::mail_worker::DrainStats {
+        use trovato_kernel::services::mail_worker::{DrainScope, Lane, MailWorker};
+        let email = self.state.email().expect("this app has mail configured");
+        let scope = DrainScope::Recipients(recipients.iter().map(|r| r.to_string()).collect());
+        let stats = MailWorker::new(email, Lane::Any, scope)
+            .drain()
+            .await
+            .expect("drain the outbox");
+        // Held means the blog's hourly limit was reached, which on a
+        // long-lived local database can follow many suite runs in one hour.
+        // Say so here rather than as a confusing sink assertion later.
+        assert_eq!(
+            stats.held, 0,
+            "test mail was held by a sending limit (a long-lived database? recreate it): {stats:?}"
+        );
+        stats
+    }
+}

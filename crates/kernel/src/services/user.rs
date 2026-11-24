@@ -172,12 +172,46 @@ impl UserService {
         acting_user: &UserContext,
     ) -> Result<User> {
         let user = User::create_with_status(&self.inner.pool, input, status).await?;
+        self.created_with_status(&user, status, acting_user).await;
+        Ok(user)
+    }
+
+    /// [`Self::create_with_status`], queueing the mail `mail` builds for the new
+    /// account in the same transaction as the insert (BG18): a registration
+    /// that rolls back sends nothing, and one that commits always sends.
+    ///
+    /// # Errors
+    ///
+    /// When the insert or queueing a message fails; then neither happened.
+    pub async fn create_with_status_and_mail(
+        &self,
+        input: CreateUser,
+        status: i16,
+        acting_user: &UserContext,
+        email: &crate::services::email::EmailService,
+        mail: impl FnOnce(&User) -> Vec<crate::services::email::NewMail>,
+    ) -> Result<User> {
+        // Hash before BEGIN: Argon2 takes a while, and a pooled connection
+        // must not sit idle in a transaction meanwhile.
+        let pass = crate::models::user::hash_password(&input.password)?;
+        let mut tx = self.inner.pool.begin().await?;
+        let user = User::insert_hashed(&mut *tx, input, &pass, status).await?;
+        for message in mail(&user) {
+            email.queue(&mut *tx, message).await?;
+        }
+        tx.commit().await?;
+        email.wake();
+        self.created_with_status(&user, status, acting_user).await;
+        Ok(user)
+    }
+
+    /// What follows a committed insert: cache, `tap_user_register`, audit.
+    async fn created_with_status(&self, user: &User, status: i16, acting_user: &UserContext) {
         self.inner.cache.insert(user.id, user.clone());
         self.dispatch_tap("tap_user_register", user.id, acting_user)
             .await;
         info!(user_id = %user.id, name = %user.name, status, "user created with status");
-        self.audit_created(&user, acting_user).await;
-        Ok(user)
+        self.audit_created(user, acting_user).await;
     }
 
     /// Update a user with `tap_user_update` invocation.

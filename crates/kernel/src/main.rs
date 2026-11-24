@@ -535,6 +535,19 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         }
     }
 
+    // The mail workers (BG18): whenever a transport is configured, so a
+    // queued message is sent within seconds with nothing else to enable. On the
+    // same token as the queue runner: they take no new message from SIGTERM on,
+    // put back what they claimed and did not start, and a killed process's
+    // claims return when their leases expire.
+    let mail_workers = state
+        .email()
+        .map(|email| services::mail_worker::spawn_workers(email, &workers_token))
+        .unwrap_or_default();
+    if !mail_workers.is_empty() {
+        info!(workers = mail_workers.len(), "Mail workers started");
+    }
+
     // Create session layer
     let same_site = match config.cookie_same_site.as_str() {
         "lax" => SameSite::Lax,
@@ -821,6 +834,15 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         warn!(
             "The queue runner did not finish its batch; its claims are reclaimed when their leases expire"
         );
+    }
+    // Always waited for, within the deadline: a mail worker stops after at most
+    // the one send in flight, and putting its other claims back now saves them
+    // the lease (MAIL_CLAIM_LEASE_SECS) before another process may send them.
+    for worker in mail_workers {
+        if tokio::time::timeout_at(deadline, worker).await.is_err() {
+            warn!("A mail worker did not stop in time; its claims return when their leases expire");
+            break;
+        }
     }
 
     // Give background tasks a moment to finish their current iteration.
