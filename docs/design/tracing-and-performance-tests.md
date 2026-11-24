@@ -90,7 +90,7 @@ telemetry; see "No personal data" below.
 | Gather | `GatherService::run_definition` | Every `execute*` entry point, a site's and a plugin's, lands there. |
 | Templates | `ThemeEngine::render_page`, `render_item`, `render_element` and `routes::helpers::render_admin_template` | The entry points that turn a page, an item, an element or an admin screen into HTML. About twenty handlers (login, password reset, comments, error and maintenance pages) still call `tera().render` themselves and are not counted as renders; their queries and cache calls are counted all the same. |
 | Queue jobs | `cron::run_queue_job` | Every claimed plugin queue job runs through it, from cron and from the resident runner. A job gets a span, not a request profile: nothing would read its counts. |
-| Outgoing HTTP | `telemetry::send`, which every kernel `send()` now goes through (a plugin's `http-request` and `http-open`, the AI provider calls of the services, search and the assistant, the release check); `host::ai` opens the same span itself to add its provider and model | One function, so a new send site that bypasses it is visible in review as a bare `.send()`. |
+| Outgoing HTTP | `telemetry::send`, which every kernel `send()` now goes through (a plugin's `http-request` and `http-open`, the AI provider calls of the services, search and the assistant, the release check); `host::ai` uses its `send_with` variant to add its provider and model to the span | One function, so a new send site that bypasses it is visible in review as a bare `.send()`. |
 
 Nothing is instrumented call site by call site.
 
@@ -130,9 +130,10 @@ the report of each part).
 
 **Fingerprints.** A fingerprint names a statement without its values:
 `<verb>:<first table>:<8 hex of the SHA-256 of the normalised SQL>`, for
-example `select:item:3fa2c1d0`. Normalising lowercases everything outside quoted identifiers, replaces
-string and number literals with `?`, collapses `$1, $2, ...` lists to `$?`
-(so an `IN` list does not change the fingerprint with its length) and squeezes
+example `select:item:3fa2c1d0`. Normalising lowercases everything outside
+quoted identifiers, drops comments (nested block comments whole), replaces
+string and number literals with `?`, collapses `$1, $2, ...` lists to `$?` (so
+an `IN` list does not change the fingerprint with its length) and squeezes
 whitespace. Fingerprints are only computed when something reads them: the
 performance tests (a `Config` field the test sets, with no environment
 variable) or span export.
@@ -147,6 +148,9 @@ variable) or span export.
   Administrators only by default because counts and durations per request are
   a timing oracle for anyone else. The administrator check runs after the
   counters are read, through the cached user, so it never shows in the counts.
+  It does run on every signed-in request under `admin`: a user cache hit (one
+  more in `cache_hits_total{cache="user"}`), or a query on a miss, after
+  `total` is measured.
 - The slow request line gains `route`, `status`, `queries`, `db_ms`,
   `cache_gets`, `cache_misses`, `plugin_calls`, `plugin_ms`, `render_ms` and
   `outgoing_calls`: the breakdown

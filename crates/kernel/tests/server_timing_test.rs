@@ -79,19 +79,19 @@ fn only_an_administrator_sees_the_counts() {
         assert!(profile.queries > 0, "{profile:?}");
 
         let member = username("st_member");
-        let member_cookies = app
-            .create_and_login_user(&member, PASSWORD, &format!("{member}@example.com"))
+        app.create_test_user(&member, PASSWORD, &format!("{member}@example.com"))
             .await;
         forget(&app, &member);
+        let member_cookies = app.login(&member, PASSWORD).await;
         let (header, profile) = front(&app, &member_cookies).await;
         assert!(is_total_only(&header), "a member got {header:?}");
         assert!(profile.queries > 0, "{profile:?}");
 
         let admin = username("st_admin");
-        let admin_cookies = app
-            .create_and_login_admin(&admin, PASSWORD, &format!("{admin}@example.com"))
+        app.create_test_admin(&admin, PASSWORD, &format!("{admin}@example.com"))
             .await;
         forget(&app, &admin);
+        let admin_cookies = app.login(&admin, PASSWORD).await;
         let (header, profile) = front(&app, &admin_cookies).await;
         assert!(
             header.starts_with("total;dur=")
@@ -123,10 +123,10 @@ fn off_shows_the_counts_to_no_one() {
     run_test(async {
         let app = TestApp::with_config(|c| c.runtime.server_timing = ServerTimingDetail::Off).await;
         let admin = username("st_off_admin");
-        let cookies = app
-            .create_and_login_admin(&admin, PASSWORD, &format!("{admin}@example.com"))
+        app.create_test_admin(&admin, PASSWORD, &format!("{admin}@example.com"))
             .await;
         forget(&app, &admin);
+        let cookies = app.login(&admin, PASSWORD).await;
         let (header, _) = front(&app, &cookies).await;
         assert!(
             is_total_only(&header),

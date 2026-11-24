@@ -10,9 +10,9 @@
 //! - a `Server-Timing` header, with the detail shown to everyone;
 //! - `/metrics`.
 //!
-//! The signed-in user's id is checked against the spans, the header and
-//! `/metrics` only: the existing login audit line records it for the site
-//! log, as it should.
+//! The signed-in user's id and name are checked against the spans, the header
+//! and `/metrics` only: the existing login audit line records them for the
+//! site log.
 //!
 //! Every request is logged as slow (a zero threshold), so the slow request
 //! line with its breakdown is in the captured output too. The test also checks
@@ -316,8 +316,8 @@ fn no_secret_reaches_any_telemetry() {
         assert!(!search.fingerprints.is_empty());
         assert!(timings.iter().any(|t| t.contains("queries")), "{timings:?}");
 
-        // The user id is in the existing login audit line ("user logged in",
-        // for the site log), so it is checked against what this telemetry
+        // The user id and name are in the existing login audit line ("user
+        // logged in", for the site log), so they are checked against what this telemetry
         // adds: the Gander spans and events, Server-Timing and /metrics.
         let added = output
             .lines()
@@ -328,8 +328,13 @@ fn no_secret_reaches_any_telemetry() {
             .chain(metrics_body.lines())
             .collect::<Vec<_>>()
             .join("\n");
-        if let Some(line) = added.lines().find(|l| l.contains(user_id.as_str())) {
-            panic!("the user id reached telemetry:\n{line}");
+        for (what, value) in [
+            ("user id", user_id.as_str()),
+            ("username", username.as_str()),
+        ] {
+            if let Some(line) = added.lines().find(|l| l.contains(value)) {
+                panic!("the {what} reached telemetry:\n{line}");
+            }
         }
         let everything = format!("{output}\n{}\n{metrics_body}", timings.join("\n"));
         for (what, secret) in [

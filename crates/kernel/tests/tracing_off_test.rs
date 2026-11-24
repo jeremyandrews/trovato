@@ -51,9 +51,12 @@ fn allocations() -> u64 {
     ALLOCATIONS.with(Cell::get)
 }
 
-/// Every Gander span and event a test can reach, once: the outgoing call
-/// span, the render span, and the in-process cache lookup event and Redis
-/// set counter, which run on every cache lookup.
+/// The Gander spans and events reachable from outside the crate, once each:
+/// the outgoing call span, the render span, and the in-process cache lookup
+/// event and Redis set counter, which run on every cache lookup. The other
+/// spans (`cache`, `plugin.tap`, `plugin.host_call`, `gather.execute`,
+/// `queue.job`, `http.request`) are built with the same `trace_span!` and
+/// lazily evaluated fields.
 fn make_spans(metrics: &trovato_kernel::metrics::Metrics) -> bool {
     use trovato_kernel::metrics::CacheName;
     metrics.count_cache(CacheName::Item, true);

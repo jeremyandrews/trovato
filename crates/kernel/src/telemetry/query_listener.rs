@@ -177,6 +177,7 @@ mod tests {
     /// listener is tied to sqlx's actual event and not to a copy of it.
     #[tokio::test]
     async fn a_real_sqlx_statement_is_counted() {
+        const LONG: &str = "SELECT $1::int4 + 1 AS total, 2 AS other";
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(1)
             .connect(&trovato_test_utils::env::database_url())
@@ -186,7 +187,9 @@ mod tests {
         let _guard = tracing::subscriber::set_default(subscriber);
         let profile = Arc::new(RequestProfile::new(None, true));
         scope(profile.clone(), async {
-            let _: (i32,) = sqlx::query_as("SELECT 1 + $1")
+            // Longer than sqlx's four-word summary, so the text comes from
+            // `db.statement`, as it does for nearly every real statement.
+            let _: (i32, i32) = sqlx::query_as(LONG)
                 .bind(1i32)
                 .fetch_one(&pool)
                 .await
@@ -197,7 +200,7 @@ mod tests {
         assert_eq!(s.queries, 1, "{s:?}");
         assert_eq!(
             s.fingerprints,
-            vec![crate::telemetry::fingerprint::fingerprint("SELECT 1 + $1")]
+            vec![crate::telemetry::fingerprint::fingerprint(LONG)]
         );
     }
 }

@@ -51,16 +51,29 @@ pub fn outgoing_span(method: &str, url: &str) -> tracing::Span {
 }
 
 /// Send an outgoing request inside its `http.client` span, counted into the
-/// request in scope: the one way the kernel sends HTTP (`host::ai` adds its
-/// provider and model to the same span itself).
+/// request in scope: the one way the kernel sends HTTP.
 ///
 /// # Errors
 ///
 /// Whatever building or sending the request returns.
 pub async fn send(builder: reqwest::RequestBuilder) -> reqwest::Result<reqwest::Response> {
+    send_with(builder, |_| {}).await
+}
+
+/// [`send`], letting `annotate` record more fields on the span first (the AI
+/// host function records the provider and the model).
+///
+/// # Errors
+///
+/// Whatever building or sending the request returns.
+pub async fn send_with(
+    builder: reqwest::RequestBuilder,
+    annotate: impl FnOnce(&tracing::Span),
+) -> reqwest::Result<reqwest::Response> {
     let (client, request) = builder.build_split();
     let request = request?;
     let span = outgoing_span(request.method().as_str(), request.url().as_str());
+    annotate(&span);
     let response = tracing::Instrument::instrument(client.execute(request), span.clone()).await;
     if let Ok(r) = response.as_ref() {
         span.record("http.response.status_code", r.status().as_u16());

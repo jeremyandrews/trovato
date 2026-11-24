@@ -38,13 +38,24 @@ pub fn normalize(sql: &str) -> String {
                 }
                 pending_space = true;
             }
-            // Block comment.
+            // Block comment. Postgres nests them.
             b'/' if bytes.get(i + 1) == Some(&b'*') => {
                 i += 2;
-                while i + 1 < bytes.len() && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
-                    i += 1;
+                let mut depth = 1;
+                while i < bytes.len() && depth > 0 {
+                    match (bytes[i], bytes.get(i + 1)) {
+                        (b'/', Some(b'*')) => {
+                            depth += 1;
+                            i += 2;
+                        }
+                        (b'*', Some(b'/')) => {
+                            depth -= 1;
+                            i += 2;
+                        }
+                        _ => i += 1,
+                    }
                 }
-                i = (i + 2).min(bytes.len());
+                i = i.min(bytes.len());
                 pending_space = true;
             }
             c if c.is_ascii_whitespace() => {
@@ -295,6 +306,14 @@ mod tests {
         assert_eq!(
             fingerprint("select  id\n  from item -- note\n where x = $1"),
             fingerprint("SELECT id /* c */ FROM item WHERE x = $1"),
+        );
+    }
+
+    #[test]
+    fn nested_block_comments_are_dropped_whole() {
+        assert_eq!(
+            normalize("SELECT 1 /* a /* b */ secret */ FROM t"),
+            "select ? from t"
         );
     }
 
