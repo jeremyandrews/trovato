@@ -208,6 +208,37 @@ this way. It is user input, so print it with autoescape on, never with `| safe`.
 It is set wherever `user_authenticated` is, which is every page template rendered
 through `inject_site_context`; an item template gets neither.
 
+### The Author on the Item Template, and on a Gather Row
+
+An item template gets `author`, resolved through `UserService::author_views`,
+which reads the same user cache `/api/item`'s `include=author` uses, so a theme
+prints who wrote the page without hardcoding a name or printing
+`item.author_id`. The shipped `elements/item.html` and `elements/item--blog.html`
+print it:
+
+| Key | What it holds |
+|---|---|
+| `author.name` | The author's display name (`users.name`). A deleted account's content is reattributed to the kernel's anonymous sentinel account, which has its own row and its own name; an id matching no user row at all gets the kernel's anonymous display name. Never empty. |
+| `author.url` | `/user/{id}`, present only when this viewer holds `access user profiles`. Absent — not an empty string — otherwise, and always absent for the anonymous sentinel: there is no profile to send a visitor to. |
+
+```jinja
+{% if author %}
+  <span class="item__author">by
+    {% if author.url %}<a href="{{ author.url }}">{{ author.name }}</a>
+    {% else %}{{ author.name }}{% endif %}
+  </span>
+{% endif %}
+```
+
+A gather row carries the same shape under `row.author`. Authors the user cache
+holds cost no query; the rest of the page's authors load in one query together
+(never one per row), the way `resolve_row_urls` already resolves `row.url`. See
+`gather/row.html` and `gather/query--blog_listing.html`. A gather that defines its own include named
+`author` keeps it: the byline never replaces a key the gather already set. Only the display name and this
+access-checked URL ever reach either template: no mail address, no other
+`User` field, and no distinction between a login name and a display name (the
+kernel has one name, not two).
+
 ### Plugin Output on the Item Template
 
 An item template gets two strings of rendered HTML:

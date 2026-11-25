@@ -63,6 +63,23 @@ pub struct AuthorResponse {
     pub name: String,
 }
 
+/// One item's author for `/api/item`'s `include=author`: `None` when the id
+/// matches no user row at all. Resolved through `UserService::find_many`, the
+/// one cached author lookup the item page and a gather row
+/// (`UserService::author_views`) go through too.
+async fn resolve_author(state: &AppState, author_id: Uuid) -> Option<AuthorResponse> {
+    state
+        .users()
+        .find_many(&[author_id])
+        .await
+        .ok()?
+        .remove(&author_id)
+        .map(|user| AuthorResponse {
+            id: user.id,
+            name: user.name,
+        })
+}
+
 /// Query parameters for listing items.
 #[derive(Debug, Deserialize)]
 pub struct ListItemsQuery {
@@ -651,6 +668,18 @@ async fn view_item(
     // The viewer this route already loaded, so the item template can name it
     // and `inject_site_context_for` below does not load it again.
     context.insert("viewer", &crate::theme::Viewer::of(&user));
+    // The author's display name, and a profile link only when this viewer may
+    // see one — so a theme prints "by {{ author.name }}" without hardcoding
+    // it. A single id costs no query beyond the cached lookup `/api/item`
+    // already pays for (`UserService::author_views`).
+    if let Some(author) = state
+        .users()
+        .author_views(&[item.author_id], &user)
+        .await
+        .remove(&item.author_id)
+    {
+        context.insert("author", &author);
+    }
     context.insert("referenced_items", &referenced_items);
     context.insert("referenced_files", &referenced_files);
     context.insert("reverse_references", &reverse_references);
@@ -1809,7 +1838,9 @@ async fn revision_authors(
         std::collections::HashMap::new()
     });
     for id in ids {
-        names.entry(id).or_insert_with(|| "anonymous".to_string());
+        names
+            .entry(id)
+            .or_insert_with(|| crate::models::user::ANONYMOUS_DISPLAY_NAME.to_string());
     }
     names
 }
@@ -2305,13 +2336,7 @@ async fn get_item_api(
         .unwrap_or(false);
 
     let author = if include_author {
-        match state.users().find_by_id(item.author_id).await {
-            Ok(Some(user)) => Some(AuthorResponse {
-                id: user.id,
-                name: user.name,
-            }),
-            _ => None,
-        }
+        resolve_author(&state, item.author_id).await
     } else {
         None
     };

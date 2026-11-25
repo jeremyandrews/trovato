@@ -12,6 +12,14 @@ use uuid::Uuid;
 /// Anonymous user UUID (nil UUID).
 pub const ANONYMOUS_USER_ID: Uuid = Uuid::nil();
 
+/// Display name for authored content with no resolvable account: an id that
+/// matches no row at all (the anonymous sentinel itself has one — see
+/// `20260212000001_create_users.sql` — and resolves to its own `name` without
+/// reaching this constant). The one spelling every author-name call site
+/// uses, so a theme never has to guess between this and a template's own
+/// `default()` fallback.
+pub const ANONYMOUS_DISPLAY_NAME: &str = "anonymous";
+
 /// User record.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct User {
@@ -89,6 +97,18 @@ impl User {
             .context("failed to fetch user by id")?;
 
         Ok(user)
+    }
+
+    /// The users among `ids`, in one query. An id with no row is absent.
+    pub async fn find_by_ids(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Self>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ANY($1)")
+            .bind(ids)
+            .fetch_all(pool)
+            .await
+            .context("failed to fetch users by id")
     }
 
     /// The names of the users among `ids`, in one query.
