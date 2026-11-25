@@ -72,6 +72,13 @@ parallel tests have to be right for that lock to work:
   do, and a concurrent test's request refills the cache in between. Invalidate
   it (`menu::navigation::invalidate_config_menus()`), or wait for the
   generations with `common::settle_cache_generations()`.
+- **A restore must outlast the bumps it follows.** A save through an admin
+  route bumps a cache kind, and every server acts on the bump at its next
+  poll; for the themes cache that means reloading the active theme from the
+  database. A cleanup that deletes the stored setting and releases the lock at
+  once lets that reload arrive in the next test's turn, over whatever it has
+  just set. End such a cleanup with `common::settle_cache_generations().await`
+  (`restore_stock_on_exit` in `appearance_test`).
 - **An invalidation is not enough for a cache read back at once.** A render
   that began reading the menus before your write can fill the cache after
   your invalidation, without your link, for the cache's whole TTL. A test

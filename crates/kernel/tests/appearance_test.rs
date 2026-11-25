@@ -120,6 +120,12 @@ fn restore_stock_on_exit(app: &'static TestApp) {
             let _ = SiteConfig::delete(&app.db, key).await;
         }
         app.state.theme().set_active(ActiveThemes::default());
+        // A theme the test saved bumped the themes cache, and every server
+        // reloads the active theme from the database when it sees the bump,
+        // on its next poll. Seen after the lock is handed on, that reload
+        // read the keys deleted above and put stock back over the theme the
+        // next test had just made active. Let it land while the lock is held.
+        common::settle_cache_generations().await;
     });
 }
 

@@ -54,6 +54,12 @@ inside an allowlisted target. Doc tests are timed crate by crate, and every
 shard's budget step requires every report it should have, so a test cannot
 drop out of the budget because its report went missing; the parser fails on a
 target that reports no time, and the shard script refuses a target name two
-packages share. `scripts/ci-scripts-test.sh` tests all of it. Each Test shard and the Cluster job has a timeout set at its
+packages share. `scripts/ci-scripts-test.sh` tests all of it.
+
+One more race of the parallel tests: `appearance_test`'s restore of the stock
+theme released its lock before the themes cache bump from the test's own save
+had been seen, and the reload that bump triggers read the restored, empty
+setting in the next test's turn and put the stock theme back over the one that
+test had just made active. The restore now waits for the bump to land. Each Test shard and the Cluster job has a timeout set at its
 expected time plus half. `docs/testing-ci.md` describes the split, where new
 tests go, and how to remeasure.
