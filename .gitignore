@@ -62,3 +62,8 @@ tests/admin-a11y/node_modules/
 tests/admin-a11y/.auth/
 tests/admin-a11y/test-results/
 tests/admin-a11y/playwright-report/
+
+# The search index the kernel builds by default (PAGEFIND_OUTPUT_DIR is
+# ./static/pagefind): generated, never source.
+/static/pagefind/
+/static/.pagefind_build_*/

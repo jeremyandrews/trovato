@@ -29,12 +29,17 @@ directory, if it cannot. A broken mount fails the deploy, not the first
 upload.
 
 The Pagefind index is rebuilt by whichever server's cron run takes the lock.
-It builds beside `PAGEFIND_OUTPUT_DIR`, in the same parent directory, then
-renames the old index aside and the new one into place. Every server serves
-`/static/pagefind/` from that directory. This swap has been tested on a Docker
-volume only; on NFS or EFS, check that a rename within one directory is atomic
-before relying on it, and keep `PAGEFIND_OUTPUT_DIR` below the mount point
-rather than at it, because a mount point cannot be renamed.
+The kernel writes it itself, in Pagefind 1.3.0's format, so no `pagefind`
+binary is needed on any server or in the image. It builds the new index in a
+directory beside `PAGEFIND_OUTPUT_DIR` (the parent must be writable), then
+moves its files into `PAGEFIND_OUTPUT_DIR` one by one: the new index files,
+whose names are content hashes and so never overwrite a file a reader is
+using, then `pagefind-entry.json` last, with a rename. A browser that loaded
+the previous index keeps finding its files, because a file the new index no
+longer uses is deleted only after 24 hours. Every server serves
+`/static/pagefind/` from that directory. Only renames of single files within
+`PAGEFIND_OUTPUT_DIR` need to be atomic; when the build directory is on a
+different filesystem, each file is copied to a temporary name there first.
 
 Everything else every server needs is in the image: plugins, templates and
 static files. Give every server the same image and the same environment.

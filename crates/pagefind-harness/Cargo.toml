@@ -45,3 +45,8 @@ serde_json = "1"
 tokio = { version = "1", features = ["full"] }
 uuid = { version = "1", features = ["v7", "serde"] }
 trovato-kernel = { path = "../kernel" }
+# The native codec: its vendored tokenizer, encoder and decoder are what the
+# parity tests now prove against the `pagefind` crate and CLI.
+trovato-search-index = { path = "../search-index" }
+# `measure-native --cold` empties the term cache between runs.
+sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "postgres"] }

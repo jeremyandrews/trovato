@@ -102,6 +102,7 @@ mod tests {
             location: String::new(),
             event_dates: String::new(),
             created_display: String::new(),
+            language: String::new(),
         }
     }
 

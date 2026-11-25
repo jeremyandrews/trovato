@@ -126,6 +126,9 @@ pub fn documents() -> Vec<IndexDocument> {
                     "page".into()
                 },
                 title: format!("Stress {i}: {}", text(i, 6)),
+                // Rendered with `<html lang="en">`, as the native build renders
+                // every page now, so the proof covers the English stemmer too.
+                language: "en".into(),
                 url: if i % 4 == 0 {
                     format!("/item/{id}")
                 } else {

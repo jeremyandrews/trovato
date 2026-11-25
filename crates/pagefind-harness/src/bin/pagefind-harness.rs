@@ -5,8 +5,12 @@
 //! pagefind-harness export --out /tmp/site [--sample 60]
 //! # Time today's full rebuild, three runs, split into export, CLI and swap.
 //! pagefind-harness measure --runs 3 --output /tmp/pagefind-out
+//! # The same, through the native build that replaced the CLI (B217).
+//! pagefind-harness measure-native --runs 3 --output /tmp/pagefind-native [--cold]
 //! # The tokenizer proof over a directory of exported pages.
 //! pagefind-harness parity --site crates/pagefind-harness/corpus
+//! # Regenerate the vendored browser bundle from the pinned crate.
+//! pagefind-harness bundle --out crates/search-index/assets/pagefind-1.3.0
 //! ```
 //!
 //! `export` and `measure` read the site the usual way (`DATABASE_URL`,
@@ -58,11 +62,33 @@ enum Command {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Time the native full build (B217): `indexable_documents`, then the
+    /// ledger, term cache, encode and publish, as cron now runs it.
+    MeasureNative {
+        /// How many rebuilds.
+        #[arg(long, default_value_t = 3)]
+        runs: usize,
+        /// The directory the index is published into (stands in for
+        /// `PAGEFIND_OUTPUT_DIR`).
+        #[arg(long)]
+        output: PathBuf,
+        /// Empty the term cache before every run, so every page is tokenized.
+        #[arg(long)]
+        cold: bool,
+    },
     /// Per page tokenizing against a full CLI build (and the crate's own).
     Parity {
         /// A directory of exported `<id>.html` pages.
         #[arg(long)]
         site: PathBuf,
+    },
+    /// Write the pinned crate's browser bundle (runtime files and every
+    /// language's WASM) into a directory, as `crates/search-index/assets/`
+    /// holds it. Run on a Pagefind bump.
+    Bundle {
+        /// Directory to write into.
+        #[arg(long)]
+        out: PathBuf,
     },
     /// Write the deterministic stress corpus (see `stress.rs`) into a directory.
     Stress {
@@ -81,7 +107,11 @@ fn main() -> Result<()> {
         match cli.command {
             Command::Export { out, sample } => export(&out, sample).await,
             Command::Measure { runs, output } => measure(runs, &output).await,
+            Command::MeasureNative { runs, output, cold } => {
+                measure_native(runs, &output, cold).await
+            }
             Command::Parity { site } => parity(&site).await,
+            Command::Bundle { out } => bundle(&out).await,
             Command::Stress { out } => {
                 trovato_pagefind_harness::stress::write(&out)?;
                 println!(
@@ -281,20 +311,34 @@ async fn parity(site: &Path) -> Result<()> {
     );
 
     let own = against_crate(&pages).await?;
-    println!(
-        "per page vs the crate's full build: {} pages, {} postings, {} positions, {} mismatches",
-        own.pages_compared,
-        own.postings_compared,
-        own.positions_compared,
-        own.mismatches.len()
-    );
+    for (label, report) in [
+        ("crate per page", &own.crate_pages),
+        ("vendored per page", &own.vendored_pages),
+    ] {
+        println!(
+            "{label} vs the crate's full build: {} pages, {} postings, {} positions, {} mismatches",
+            report.pages_compared,
+            report.postings_compared,
+            report.positions_compared,
+            report.mismatches.len()
+        );
+    }
+    print_bytes("native build vs the crate's full build", &own.native_bytes);
+    let own_ok = own.crate_pages.is_identical()
+        && own.vendored_pages.is_identical()
+        && own.native_bytes.index_identical();
 
     let Some(bin) = find_cli() else {
         println!("SKIPPED the CLI comparison: no pagefind CLI (set PAGEFIND_BIN)");
-        return if own.is_identical() {
+        return if own_ok {
             Ok(())
         } else {
-            bail!("mismatches: {:#?}", own.mismatches)
+            bail!(
+                "mismatches: {:#?} {:#?} {:#?}",
+                own.crate_pages.mismatches,
+                own.vendored_pages.mismatches,
+                own.native_bytes
+            )
         };
     };
     let cli = against_cli(&bin, site).await?;
@@ -303,31 +347,57 @@ async fn parity(site: &Path) -> Result<()> {
         "CLI languages: {:?}, meta files: {:?}",
         cli.languages, cli.meta_files
     );
-    println!(
-        "per page vs the CLI: {} pages, {} postings, {} positions, {} mismatches",
-        cli.pages.pages_compared,
-        cli.pages.postings_compared,
-        cli.pages.positions_compared,
-        cli.pages.mismatches.len()
+    for (label, report) in [("crate", &cli.pages), ("vendored", &cli.vendored_pages)] {
+        println!(
+            "{label} per page vs the CLI: {} pages, {} postings, {} positions, {} mismatches",
+            report.pages_compared,
+            report.postings_compared,
+            report.positions_compared,
+            report.mismatches.len()
+        );
+    }
+    for m in cli
+        .pages
+        .mismatches
+        .iter()
+        .chain(&cli.vendored_pages.mismatches)
+        .chain(&own.crate_pages.mismatches)
+        .chain(&own.vendored_pages.mismatches)
+        .take(20)
+    {
+        println!("  MISMATCH {}: {}", m.url, m.what);
+    }
+    print_bytes(
+        "crate in CLI page order vs the CLI",
+        &cli.bytes_in_cli_order,
     );
-    let b = &cli.bytes_in_cli_order;
+    print_bytes(
+        "native build in CLI page order vs the CLI",
+        &cli.native_bytes_in_cli_order,
+    );
+    if own_ok
+        && cli.pages.is_identical()
+        && cli.vendored_pages.is_identical()
+        && cli.bytes_in_cli_order.index_identical()
+        && cli.native_bytes_in_cli_order.index_identical()
+    {
+        println!("PASS");
+        Ok(())
+    } else {
+        bail!("FAIL")
+    }
+}
+
+/// One byte for byte comparison, with every differing file named.
+fn print_bytes(label: &str, b: &trovato_pagefind_harness::compare::ByteReport) {
     println!(
-        "crate in CLI page order vs the CLI, byte for byte: {} of {} files identical, {} differ, {} only in CLI, {} only in crate",
+        "{label}, byte for byte: {} of {} files identical, {} differ, {} only in the reference, {} only in the candidate",
         b.identical,
         b.reference_files,
         b.differing.len(),
         b.only_reference.len(),
         b.only_candidate.len()
     );
-    for m in cli
-        .pages
-        .mismatches
-        .iter()
-        .chain(own.mismatches.iter())
-        .take(20)
-    {
-        println!("  MISMATCH {}: {}", m.url, m.what);
-    }
     for f in b
         .differing
         .iter()
@@ -343,13 +413,81 @@ async fn parity(site: &Path) -> Result<()> {
         println!("  BYTES DIFFER {f} ({kind})");
     }
     println!(
-        "index files byte identical: {}",
+        "  index files byte identical: {}",
         if b.index_identical() { "yes" } else { "NO" }
     );
-    if cli.pages.is_identical() && own.is_identical() && b.index_identical() {
-        println!("PASS");
-        Ok(())
-    } else {
-        bail!("FAIL")
+}
+
+/// Write the browser bundle the pinned `pagefind` crate writes (every runtime
+/// file, and the WASM backend of every language it ships) into `out`, under
+/// the names `crates/search-index/assets/pagefind-1.3.0/` uses.
+async fn bundle(out: &Path) -> Result<()> {
+    let files = trovato_pagefind_harness::bundle::crate_runtime_files().await?;
+    for (name, bytes) in &files {
+        let path = out.join(name);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&path, bytes)?;
     }
+    println!("wrote {} runtime files to {}", files.len(), out.display());
+    Ok(())
+}
+
+async fn measure_native(runs: usize, output: &Path, cold: bool) -> Result<()> {
+    let init = Instant::now();
+    let state = app_state().await?;
+    println!(
+        "AppState init (not part of a rebuild): {:.2?}",
+        init.elapsed()
+    );
+    println!(
+        "| run | items | export | tokenize{} | encode | publish | total |",
+        if cold { " (cold)" } else { "" }
+    );
+    println!("|---|---|---|---|---|---|---|");
+    for run in 1..=runs {
+        if cold {
+            sqlx_delete_terms(&state).await?;
+        }
+        let total = Instant::now();
+        let t = Instant::now();
+        let snapshot = trovato_kernel::cron::search_index_generation(state.db()).await?;
+        let documents = indexable_documents(state.db(), state.items()).await?;
+        let export_time = t.elapsed();
+        let report =
+            trovato_kernel::cron::search_index_full_build(state.db(), output, &documents, snapshot)
+                .await?;
+        println!(
+            "| {run} | {} | {:.0} ms | {} ms ({} tokenized, {} cached) | {} ms | {} ms | {:.0} ms |",
+            report.pages,
+            export_time.as_secs_f64() * 1000.0,
+            report.tokenize_ms,
+            report.tokenized,
+            report.cached,
+            report.encode_ms,
+            report.publish_ms,
+            total.elapsed().as_secs_f64() * 1000.0,
+        );
+    }
+    println!();
+    println!("index at {}:", output.display());
+    for (kind, (n, b)) in sizes(output)? {
+        println!("  .{kind}: {n} files, {b} bytes");
+    }
+    println!(
+        "  entry: {}",
+        std::fs::read_to_string(output.join("pagefind-entry.json"))?
+    );
+    Ok(())
+}
+
+/// Empty the term cache, so the next build tokenizes every page.
+async fn sqlx_delete_terms(state: &AppState) -> Result<()> {
+    let pool = state.db();
+    sqlx::query("DELETE FROM search_page_terms")
+        .execute(pool)
+        .await
+        .context("empty the term cache")?;
+    Ok(())
 }
