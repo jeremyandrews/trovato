@@ -15,4 +15,5 @@ account's content is reattributed to the kernel's anonymous account, which
 shows its own name and is never linked; an id matching no user row at all
 shows the kernel's anonymous display name. Only the display name and an
 access-checked URL reach a template, never the mail address or anything else
-a `User` record carries.
+a `User` record carries. A gather that defines its own include named `author` keeps
+that include's result; the byline never replaces it.

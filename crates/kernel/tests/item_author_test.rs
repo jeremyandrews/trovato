@@ -230,3 +230,29 @@ fn the_item_page_never_prints_the_authors_email() {
         assert!(!html.contains(&mail), "got {html}");
     });
 }
+
+/// `/api/item`'s `include=author` resolves through the same cached lookup as
+/// the item page, and still answers with the author's id and display name.
+#[test]
+fn the_item_api_includes_the_author() {
+    run_test(async {
+        let app = shared_app().await;
+        let (author_id, _) = user_holding(app, "b166api", &[]).await;
+        let name: String = sqlx::query_scalar("SELECT name FROM users WHERE id = $1")
+            .bind(author_id)
+            .fetch_one(&app.db)
+            .await
+            .expect("author name");
+        let id = item_by(app, author_id, "B166 api author").await;
+
+        let (status, body) = get(app, "", &format!("/api/item/{id}?include=author")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let json: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert_eq!(json["author"]["id"], author_id.to_string(), "{body}");
+        assert_eq!(json["author"]["name"], name, "{body}");
+
+        let (_, body) = get(app, "", &format!("/api/item/{id}")).await;
+        let json: serde_json::Value = serde_json::from_str(&body).expect("json");
+        assert!(json.get("author").is_none_or(|a| a.is_null()), "{body}");
+    });
+}

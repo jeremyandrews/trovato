@@ -1339,6 +1339,10 @@ impl GatherService {
     /// base-table column survives field filtering); an explicit-field gather
     /// needs it in its own output fields, exactly as `url` needs `id` — a row
     /// without one gets no `author` rather than a wrong one.
+    ///
+    /// A row that already has an `author` key keeps it: a gather may define
+    /// an include by that name, and its result is not this byline's to
+    /// replace. Such a gather's templates read the include instead.
     async fn resolve_row_authors(&self, rows: &mut [serde_json::Value], viewer: &UserContext) {
         if rows.is_empty() {
             return;
@@ -1360,7 +1364,11 @@ impl GatherService {
             let Some(view) = views.get(&id) else {
                 continue;
             };
-            if let Some(object) = row.as_object_mut() {
+            // A gather's own `author` (an include of that name, which has
+            // already run) is what its author asked for: never replace it.
+            if let Some(object) = row.as_object_mut()
+                && !object.contains_key("author")
+            {
                 object.insert(
                     "author".to_string(),
                     serde_json::to_value(view).unwrap_or(serde_json::Value::Null),

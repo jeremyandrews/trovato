@@ -21,8 +21,8 @@ use common::{TestApp, run_test, shared_app};
 use tracing::instrument::WithSubscriber;
 use tracing_subscriber::layer::SubscriberExt;
 use trovato_kernel::gather::{
-    DisplayFormat, FilterOperator, FilterValue, PagerConfig, PagerStyle, QueryContext,
-    QueryDefinition, QueryDisplay, QueryField, QueryFilter,
+    DisplayFormat, FilterOperator, FilterValue, IncludeDefinition, PagerConfig, PagerStyle,
+    QueryContext, QueryDefinition, QueryDisplay, QueryField, QueryFilter,
 };
 use trovato_kernel::models::CreateItem;
 use trovato_kernel::models::stage::LIVE_STAGE_ID;
@@ -242,6 +242,16 @@ fn a_row_links_the_author_when_the_viewer_may_see_profiles() {
             Some(format!("/user/{author_id}").as_str()),
             "got {rows:?}"
         );
+        // The whole object, not just the keys a template happens to print:
+        // no mail, no other account field, ever.
+        let mut keys: Vec<&str> = rows[0]["author"]
+            .as_object()
+            .expect("author is an object")
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(keys, ["name", "url"], "got {rows:?}");
     });
 }
 
@@ -322,6 +332,92 @@ fn a_mixed_result_set_resolves_every_row() {
         assert_eq!(names.len(), 2, "every row carries an author: {rows:?}");
         assert!(names.contains(&name.as_str()), "got {names:?}");
         assert!(names.contains(&"anonymous"), "got {names:?}");
+    });
+}
+
+/// A gather that defines its own include named `author` keeps what that
+/// include returned: the byline does not replace a key the gather's author
+/// configured, and its templates and API consumers see the shape they asked
+/// for.
+#[test]
+fn a_gathers_own_author_include_is_not_replaced() {
+    run_test(async {
+        let app = shared_app().await;
+        let marker = format!("rowauthor{}", Uuid::now_v7().simple());
+        let name = format!("b166gatherinclude-{}", Uuid::now_v7().simple());
+        app.create_test_user(&name, "test-password-123", &format!("{name}@example.com"))
+            .await;
+        let author_id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE name = $1")
+            .bind(&name)
+            .fetch_one(&app.db)
+            .await
+            .expect("author id");
+        let item_id = create_item(app, &marker, "included", author_id).await;
+
+        // Each row includes itself, as a list, under `author`.
+        let child = QueryDefinition {
+            base_table: "item".to_string(),
+            item_type: Some(ITEM_TYPE.to_string()),
+            stage_aware: true,
+            ..Default::default()
+        };
+        let mut includes = HashMap::new();
+        includes.insert(
+            "author".to_string(),
+            IncludeDefinition {
+                definition: child,
+                parent_field: "id".to_string(),
+                child_field: "id".to_string(),
+                singular: false,
+                display: None,
+            },
+        );
+        let definition = QueryDefinition {
+            base_table: "item".to_string(),
+            item_type: Some(ITEM_TYPE.to_string()),
+            filters: vec![QueryFilter {
+                field: "title".to_string(),
+                operator: FilterOperator::Contains,
+                value: FilterValue::String(marker.clone()),
+                exposed: false,
+                exposed_label: None,
+                widget: Default::default(),
+            }],
+            includes,
+            stage_aware: true,
+            ..Default::default()
+        };
+        let ctx = QueryContext {
+            current_user_id: None,
+            viewer: Some(profile_viewer()),
+            url_args: HashMap::new(),
+            language: None,
+        };
+        let rows = app
+            .state
+            .gather()
+            .execute_definition(
+                &definition,
+                &display(),
+                1,
+                HashMap::new(),
+                LIVE_STAGE_ID,
+                &ctx,
+            )
+            .await
+            .expect("gather executes")
+            .items;
+
+        assert_eq!(rows.len(), 1);
+        let included = rows[0]["author"]
+            .as_array()
+            .unwrap_or_else(|| panic!("the include's list survives: {rows:?}"));
+        assert_eq!(included.len(), 1, "got {rows:?}");
+        assert_eq!(
+            included[0]["id"].as_str(),
+            Some(item_id.to_string().as_str()),
+            "got {rows:?}"
+        );
     });
 }
 

@@ -233,7 +233,8 @@ print it:
 A gather row carries the same shape under `row.author`. Authors the user cache
 holds cost no query; the rest of the page's authors load in one query together
 (never one per row), the way `resolve_row_urls` already resolves `row.url`. See
-`gather/row.html` and `gather/query--blog_listing.html`. Only the display name and this
+`gather/row.html` and `gather/query--blog_listing.html`. A gather that defines its own include named
+`author` keeps it: the byline never replaces a key the gather already set. Only the display name and this
 access-checked URL ever reach either template: no mail address, no other
 `User` field, and no distinction between a login name and a display name (the
 kernel has one name, not two).

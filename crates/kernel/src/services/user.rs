@@ -652,6 +652,35 @@ mod tests {
         assert!(s.contains(&id.to_string()));
     }
 
+    /// Everything an item template's `author` and a gather row's `row.author`
+    /// carry is this serialization: a field added to `AuthorView` (a mail
+    /// address, a login name) reaches every theme, rendered or not, so the
+    /// key set is pinned here.
+    #[test]
+    fn an_author_view_serializes_only_its_name_and_url() {
+        let keys = |view: &AuthorView| -> Vec<String> {
+            let mut keys: Vec<String> = serde_json::to_value(view)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
+            keys.sort();
+            keys
+        };
+        let linked = AuthorView {
+            name: "Jeremy".to_string(),
+            url: Some("/user/x".to_string()),
+        };
+        let unlinked = AuthorView {
+            name: "Jeremy".to_string(),
+            url: None,
+        };
+        assert_eq!(keys(&linked), ["name", "url"]);
+        assert_eq!(keys(&unlinked), ["name"]);
+    }
+
     fn make_test_user(id: Uuid, name: &str) -> User {
         User {
             id,

@@ -64,15 +64,16 @@ pub struct AuthorResponse {
 }
 
 /// One item's author for `/api/item`'s `include=author`: `None` when the id
-/// matches no user row at all, the same cached lookup the item page and a
-/// gather row resolve through (`UserService::author_views`'s single-id path).
+/// matches no user row at all. Resolved through `UserService::find_many`, the
+/// one cached author lookup the item page and a gather row
+/// (`UserService::author_views`) go through too.
 async fn resolve_author(state: &AppState, author_id: Uuid) -> Option<AuthorResponse> {
     state
         .users()
-        .find_by_id(author_id)
+        .find_many(&[author_id])
         .await
-        .ok()
-        .flatten()
+        .ok()?
+        .remove(&author_id)
         .map(|user| AuthorResponse {
             id: user.id,
             name: user.name,
