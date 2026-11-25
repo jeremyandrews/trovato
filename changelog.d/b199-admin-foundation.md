@@ -35,7 +35,11 @@ Every word the admin shows goes through one translation function, `t`, which
 handles placeholders, plurals by CLDR category and context. It is registered
 whether or not the locale plugin is enabled, and it returns the English source
 when there is no translation. Flash messages are stored as messages, not as
-sentences, so they are translated in the language of the page that shows them.
+sentences, so they are translated in the language of the page that shows them,
+and one that reports a failure (a bulk action that changed nothing or only
+part of the selection, a plugin that could not be switched, a test email that
+could not be sent) is shown as an error and announced at once, not labelled
+"Done:".
 A marker-mode test opens every admin page type and fails on any text,
 `aria-label`, `title`, `placeholder` or `alt` that did not go through `t`.
 `TROVATO_PSEUDO_LOCALES=1` adds an accented and a right-to-left pseudo

@@ -135,7 +135,9 @@
             <div class="notice notice--status" role="status"><strong class="notice__label">{{ t(s="Done:") }}</strong> {{ t(s=message.text) }}</div>
             {% endif %}
             {% endfor %}
-            {% if flash %}
+            {% if flash and flash is object and flash.kind | default(value="") == "error" %}
+            <div class="notice notice--error" role="alert"><strong class="notice__label">{{ t(s="Error:") }}</strong> {{ t_message(m=flash) }}</div>
+            {% elif flash %}
             <div class="notice notice--status" role="status"><strong class="notice__label">{{ t(s="Done:") }}</strong> {{ t_message(m=flash) }}</div>
             {% endif %}
             {% if error_message %}

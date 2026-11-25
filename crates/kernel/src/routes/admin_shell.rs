@@ -197,7 +197,8 @@ async fn preferences_save(
     prefs.language =
         (!lang.is_empty() && lang != state.default_language()).then(|| lang.to_string());
 
-    if let Err(e) = prefs.save(state.db(), user.id).await {
+    let changes = serde_json::json!({ "theme": prefs.theme, "language": prefs.language });
+    if let Err(e) = Preferences::merge(state.db(), user.id, changes).await {
         tracing::error!(error = %e, "failed to save admin preferences");
         return super::helpers::render_server_error("Your preferences could not be saved.");
     }
@@ -243,7 +244,6 @@ async fn save_nav_state(
     if fetch_site != "same-origin" && fetch_site != "none" {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let mut prefs = Preferences::load(state.db(), user.id).await;
     let mut collapsed: Vec<String> = body
         .collapsed
         .into_iter()
@@ -251,8 +251,8 @@ async fn save_nav_state(
         .collect();
     collapsed.sort();
     collapsed.dedup();
-    prefs.collapsed = collapsed;
-    match prefs.save(state.db(), user.id).await {
+    let changes = serde_json::json!({ "collapsed": collapsed });
+    match Preferences::merge(state.db(), user.id, changes).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to save the sidebar state");

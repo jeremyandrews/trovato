@@ -443,16 +443,24 @@ async fn flash_after(app: &TestApp, cookies: &str, bucket: &str) -> String {
         )
         .await;
     let html = body_of(page).await;
-    // The admin shell prints a status message as `<strong>Done:</strong> text`.
-    let Some(at) = html.find("notice--status") else {
+    // The admin shell prints a message as `<div class="notice notice--KIND"
+    // role=ROLE><strong ...>Label:</strong> text`, in its messages area.
+    // Returned as "Label: text"; a failure must be an alert labelled Error.
+    let Some(area) = html.find("class=\"admin-messages\"") else {
         return String::new();
     };
-    let start = at
-        + html[at..]
-            .find("</strong>")
-            .map_or(0, |i| i + "</strong>".len());
+    let at = area + html[area..].find("class=\"notice notice--").unwrap();
+    let tag = &html[at..at + html[at..].find('>').unwrap()];
+    let label_at = at + html[at..].find("notice__label\">").unwrap() + "notice__label\">".len();
+    let label = &html[label_at..label_at + html[label_at..].find('<').unwrap()];
+    let start = label_at + html[label_at..].find("</strong>").unwrap() + "</strong>".len();
     let end = start + html[start..].find('<').unwrap_or(0);
-    html[start..end].trim().to_string()
+    assert_eq!(
+        tag.contains("role=\"alert\""),
+        label == "Error:",
+        "an error is an alert and nothing else is: {tag}"
+    );
+    format!("{label} {}", html[start..end].trim())
 }
 
 #[test]
@@ -477,7 +485,7 @@ fn bulk_publish_and_unpublish_change_exactly_the_selected_items() {
         );
         assert_eq!(
             flash_after(app, &cookies, bucket).await,
-            "2 items published."
+            "Done: 2 items published."
         );
 
         let (status, body) = bulk(app, &cookies, bucket, "unpublish", &[first, second]).await;
@@ -486,7 +494,7 @@ fn bulk_publish_and_unpublish_change_exactly_the_selected_items() {
         assert_eq!(stored_status(app, second).await, Some(0));
         assert_eq!(
             flash_after(app, &cookies, bucket).await,
-            "2 items unpublished."
+            "Done: 2 items unpublished."
         );
     });
 }
@@ -520,7 +528,10 @@ fn bulk_delete_removes_exactly_the_selected_items() {
             Some(0),
             "an item that was not selected must not be deleted"
         );
-        assert_eq!(flash_after(app, &cookies, bucket).await, "2 items deleted.");
+        assert_eq!(
+            flash_after(app, &cookies, bucket).await,
+            "Done: 2 items deleted."
+        );
     });
 }
 
@@ -539,7 +550,7 @@ fn an_id_naming_no_item_is_counted_as_failed_and_the_rest_still_happen() {
         assert_eq!(stored_status(app, real).await, Some(1));
         assert_eq!(
             flash_after(app, &cookies, bucket).await,
-            "1 item published. Failed: 1."
+            "Error: 1 item published. Failed: 1."
         );
     });
 }
@@ -588,7 +599,8 @@ fn a_selection_with_an_unreadable_id_writes_nothing() {
         );
         let flash = flash_after(app, &cookies, bucket).await;
         assert!(
-            flash.contains("not a valid item id"),
+            flash.starts_with("Error: Nothing was changed:")
+                && flash.contains("not a valid item id"),
             "the refusal is reported on the list screen, got {flash:?}"
         );
     });

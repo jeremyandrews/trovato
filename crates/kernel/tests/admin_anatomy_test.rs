@@ -409,6 +409,52 @@ fn the_sidebar_remembers_which_groups_are_collapsed() {
     });
 }
 
+/// The preferences form (theme, language) and the sidebar's remembered
+/// groups are saved by different requests. Saved at the same moment, neither
+/// puts back the other's old value: each writes only its own fields.
+#[test]
+fn saving_the_sidebar_state_and_the_theme_together_keeps_both() {
+    run_test(async {
+        let app = shared_app().await;
+        let name = common::username("b199race");
+        app.create_test_admin(
+            &name,
+            "correct-horse-battery-staple",
+            &format!("{name}@test.local"),
+        )
+        .await;
+        let user = common::user_id_of(app, &name).await;
+        use trovato_kernel::routes::admin_nav::Preferences;
+
+        for round in 0..25 {
+            let theme = if round % 2 == 0 { "dark" } else { "light" };
+            let group = if round % 2 == 0 { "people" } else { "reports" };
+            let (a, b) = tokio::join!(
+                Preferences::merge(
+                    &app.db,
+                    user,
+                    serde_json::json!({ "theme": theme, "language": null })
+                ),
+                Preferences::merge(&app.db, user, serde_json::json!({ "collapsed": [group] })),
+            );
+            a.unwrap();
+            b.unwrap();
+            let prefs = Preferences::load(&app.db, user).await;
+            assert_eq!(
+                prefs.theme.as_deref(),
+                Some(theme),
+                "round {round}: the theme was lost"
+            );
+            assert_eq!(
+                prefs.collapsed,
+                vec![group.to_string()],
+                "round {round}: the groups were lost"
+            );
+        }
+        forget(app, "b199race").await;
+    });
+}
+
 /// The sidebar marks the current page, and the current group's disclosure
 /// starts open.
 #[test]

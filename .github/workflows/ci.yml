@@ -1099,7 +1099,7 @@ jobs:
         run: cargo build -p trovato-kernel --bin trovato
       - name: Build the plugins whose admin pages are checked
         run: |
-          PLUGINS="trovato_blog trovato_categories trovato_comments trovato_audit_log trovato_media trovato_locale trovato_content_translation trovato_search trovato_redirects"
+          PLUGINS=$(cat tests/admin-a11y/scripts/seed-plugins.txt)
           cargo build $(printf -- '-p %s ' $PLUGINS) --target wasm32-wasip1 --release
           for p in $PLUGINS; do
             cp "target/wasm32-wasip1/release/$p.wasm" "plugins/$p/"

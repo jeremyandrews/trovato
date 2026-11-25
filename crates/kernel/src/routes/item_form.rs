@@ -160,8 +160,16 @@ pub(crate) async fn render_preview(
     // The preview's own words in the admin language on an admin page
     // (`page_path`), the English source on the front end.
     let text = super::admin_nav::AdminText::for_page(state, user, page_path).await;
+    // An admin page already has its one h1 (the shell's "Create …" or
+    // "Edit …"), so there the previewed title is a level below it. The front
+    // end's form page keeps the h1 it always had.
+    let heading = if page_path == "/admin" || page_path.starts_with("/admin/") {
+        "h2"
+    } else {
+        "h1"
+    };
     format!(
-        r#"<section class="item-preview" aria-label="{}"><p class="item-preview__notice">{}</p><article class="item item--preview item--{}"><h1 class="item__title">{}</h1>{}</article></section>"#,
+        r#"<section class="item-preview" aria-label="{}"><p class="item-preview__notice">{}</p><article class="item item--preview item--{}"><{heading} class="item__title">{}</{heading}>{}</article></section>"#,
         text.html("Preview", &[]),
         text.html("This is a preview. It has not been saved.", &[]),
         super::helpers::html_escape(&content_type.machine_name),

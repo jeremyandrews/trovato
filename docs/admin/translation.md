@@ -78,7 +78,11 @@ templates the front end shares with the admin.
 
 Translations come from the locale service (`trovato_locale`): import a `.po`
 file as for any interface string. Plural forms are stored under the singular
-and plural joined by a NUL (`i18n::plural_source_key`).
+and plural joined by the ASCII unit separator, U+001F
+(`i18n::plural_source_key`), and its translation is the language's forms joined
+the same way, one per CLDR category in the order zero, one, two, few, many,
+other. Not the NUL a compiled gettext catalogue uses: PostgreSQL text cannot
+hold one.
 
 ## Pseudo locales
 

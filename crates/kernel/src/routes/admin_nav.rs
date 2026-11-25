@@ -1205,14 +1205,27 @@ impl Preferences {
             .unwrap_or_default()
     }
 
-    /// Store these as `user`'s preferences.
-    pub async fn save(&self, pool: &sqlx::PgPool, user: uuid::Uuid) -> anyhow::Result<()> {
+    /// Store the fields in `changes` (a JSON object with some of
+    /// `theme`, `language`, `collapsed`) as `user`'s, leaving the others
+    /// as they are.
+    ///
+    /// The merge happens in the one statement, not by reading the row, changing
+    /// it and writing it all back: the preferences form and the sidebar's
+    /// remembered groups are saved by different requests, and a whole-row write
+    /// from one would put back the other's old value if both read first.
+    pub async fn merge(
+        pool: &sqlx::PgPool,
+        user: uuid::Uuid,
+        changes: serde_json::Value,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(changes.is_object(), "preference changes are a JSON object");
         sqlx::query(
             "INSERT INTO admin_preference (user_id, prefs, changed) VALUES ($1, $2, now()) \
-             ON CONFLICT (user_id) DO UPDATE SET prefs = EXCLUDED.prefs, changed = now()",
+             ON CONFLICT (user_id) DO UPDATE \
+             SET prefs = admin_preference.prefs || EXCLUDED.prefs, changed = now()",
         )
         .bind(user)
-        .bind(serde_json::to_value(self)?)
+        .bind(changes)
         .execute(pool)
         .await?;
         Ok(())

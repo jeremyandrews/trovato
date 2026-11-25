@@ -29,8 +29,13 @@ ADMIN_A11Y_RECORD_ARIA=1 npx playwright test --project=light specs/aria.spec.mjs
 ```
 
 A parameterised route (an edit page) is opened at an address found by
-following links from its listing; one with nothing seeded to open is reported
-as skipped, by name. A plugin's pages are skipped when the plugin is off.
+following links from its listing. Only the routes in `EXPECTED_UNSEEDED`
+(`tests/admin-a11y/routes.mjs`) may go unopened, each with the reason the
+generated site has nothing to open; any other route with no address fails, so a
+listing that stops linking to its pages fails the job rather than dropping
+them. A plugin page may answer 404 only when the plugin is not one the site
+installs (`scripts/seed-plugins.txt`, read by both the seed script and the
+checks).
 
 ## What a screen reader user hears
 

@@ -140,13 +140,18 @@ impl<'a> Message<'a> {
     }
 }
 
+/// What joins a plural string's forms in the catalogue: the ASCII unit
+/// separator. Not the NUL a compiled gettext catalogue uses, because
+/// PostgreSQL `text` cannot hold a NUL and the forms live in
+/// `locale_string`.
+pub const PLURAL_SEPARATOR: char = '\u{1F}';
+
 /// The key a plural string is stored under in `locale_string.source`: the
-/// singular and the plural joined by a NUL, as gettext's `msgid` and
-/// `msgid_plural` are in a compiled catalogue. Its `translation` is the
-/// language's forms, one per CLDR category the language uses, in the order
-/// zero, one, two, few, many, other, joined by NULs.
+/// singular and the plural joined by [`PLURAL_SEPARATOR`]. Its `translation`
+/// is the language's forms, one per CLDR category the language uses, in the
+/// order zero, one, two, few, many, other, joined the same way.
 pub fn plural_source_key(singular: &str, plural: &str) -> String {
-    format!("{singular}\u{0}{plural}")
+    format!("{singular}{PLURAL_SEPARATOR}{plural}")
 }
 
 /// Translate `message` into `lang` and fill its placeholders from `args`.
@@ -174,7 +179,7 @@ pub fn translate(
             Some(plural) => {
                 let key = plural_source_key(message.source, plural);
                 let forms = service.lookup_translation(&key, message.context, lang)?;
-                let forms: Vec<&str> = forms.split('\u{0}').collect();
+                let forms: Vec<&str> = forms.split(PLURAL_SEPARATOR).collect();
                 let categories = plural_categories(lang);
                 let wanted = plural_category(lang, count.unwrap_or(0));
                 categories
@@ -848,6 +853,11 @@ pub struct UiMessage {
     /// (source, translatable) text, which may use the same placeholders.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<(String, String)>,
+    /// `Some("error")` for a message saying something failed or nothing was
+    /// done: the shell shows it as an error (an alert, "Error:"), not as the
+    /// "Done:" status a plain message gets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
 }
 
 impl UiMessage {
@@ -868,6 +878,12 @@ impl UiMessage {
     pub fn plural(mut self, plural: impl Into<String>, count: i64) -> Self {
         self.plural = Some(plural.into());
         self.count = Some(count);
+        self
+    }
+
+    /// Mark the message as a failure: shown as an error, not "Done:".
+    pub fn error(mut self) -> Self {
+        self.kind = Some("error".to_string());
         self
     }
 

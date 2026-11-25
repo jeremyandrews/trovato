@@ -957,8 +957,10 @@ async fn admin_recovery_save_form(state: &AppState, session: &Session, body: &[u
         return refusal;
     }
     // Parsed by axum's own form extractor, so the encoding rules are the
-    // ones every other admin form is read with.
+    // ones every other admin form is read with. The method must be POST:
+    // for any other the extractor reads the query string, not the body.
     let request = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
         .header(
             axum::http::header::CONTENT_TYPE,
             "application/x-www-form-urlencoded",

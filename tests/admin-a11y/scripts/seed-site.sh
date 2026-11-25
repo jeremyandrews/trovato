@@ -14,8 +14,9 @@ TROVATO="${TROVATO:-target/debug/trovato}"
 : "${ADMIN_A11Y_PASSWORD:?set ADMIN_A11Y_PASSWORD}"
 
 # The plugins with admin pages of their own, and those generate writes for.
-PLUGINS=(trovato_blog trovato_categories trovato_comments trovato_audit_log
-         trovato_media trovato_locale trovato_content_translation trovato_search trovato_redirects)
+# The browser checks read the same list: a 404 from one of these plugins'
+# pages is a failure, not a plugin that is off.
+read -r -d "" -a PLUGINS < "$(dirname "$0")/seed-plugins.txt" || true
 
 "$TROVATO" migrate
 for plugin in "${PLUGINS[@]}"; do

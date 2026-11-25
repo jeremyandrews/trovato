@@ -1080,7 +1080,8 @@ async fn bulk_content_action(
             .insert(
                 CONTENT_FLASH_KEY,
                 crate::i18n::UiMessage::new("Unknown action: {action}")
-                    .arg("action", form.action.chars().take(64).collect::<String>()),
+                    .arg("action", form.action.chars().take(64).collect::<String>())
+                    .error(),
             )
             .await
         {
@@ -1099,7 +1100,8 @@ async fn bulk_content_action(
                 crate::i18n::UiMessage::new(
                     "Nothing was changed: \"{value}\" is not a valid item id.",
                 )
-                .arg("value", shown),
+                .arg("value", shown)
+                .error(),
             )
             .await
         {
@@ -1110,7 +1112,10 @@ async fn bulk_content_action(
 
     if form.ids.is_empty() {
         if let Err(e) = session
-            .insert(CONTENT_FLASH_KEY, "No items selected.")
+            .insert(
+                CONTENT_FLASH_KEY,
+                crate::i18n::UiMessage::new("No items selected.").error(),
+            )
             .await
         {
             tracing::warn!(error = %e, "failed to set flash message");
@@ -1130,7 +1135,10 @@ async fn bulk_content_action(
             Some(stage) => Some(stage),
             None => {
                 if let Err(e) = session
-                    .insert(CONTENT_FLASH_KEY, "Nothing was moved: choose a stage.")
+                    .insert(
+                        CONTENT_FLASH_KEY,
+                        crate::i18n::UiMessage::new("Nothing was moved: choose a stage.").error(),
+                    )
                     .await
                 {
                     tracing::warn!(error = %e, "failed to set flash message");
@@ -1270,6 +1278,7 @@ async fn bulk_content_action(
                 i64::from(success_count),
             )
             .arg("failed", fail_count.to_string())
+            .error()
     } else {
         crate::i18n::UiMessage::new(one).plural(many, i64::from(success_count))
     };
