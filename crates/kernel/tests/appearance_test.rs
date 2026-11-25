@@ -254,8 +254,9 @@ fn a_themes_base_html_carries_both_feed_autodiscovery_links() {
             engine.tera().render("base.html", &context)
         };
 
-        let rss = r#"<link rel="alternate" type="application/rss+xml" title="Blog" href="/blog/feed.xml">"#;
-        let atom = r#"<link rel="alternate" type="application/atom+xml" title="Blog" href="/blog/feed.atom">"#;
+        // Tera autoescapes `/` in an attribute value, as it does on every page.
+        let rss = r#"<link rel="alternate" type="application/rss+xml" title="Blog" href="&#x2F;blog&#x2F;feed.xml">"#;
+        let atom = r#"<link rel="alternate" type="application/atom+xml" title="Blog" href="&#x2F;blog&#x2F;feed.atom">"#;
 
         let stock_html = scope_request("/", async { render() }).await.unwrap();
         assert!(stock_html.contains(rss), "{stock_html}");

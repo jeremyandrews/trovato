@@ -1066,6 +1066,7 @@ impl Validators {
     /// counter, read once by the caller: it stands in for every term's label
     /// without a query, at the cost of invalidating every feed's `ETag` on any
     /// tag or category write, not only ones naming a term an entry carries.
+    #[allow(clippy::too_many_arguments)] // each is a distinct input the hash covers
     fn compute(
         config: &FeedConfig,
         format: FeedFormat,
