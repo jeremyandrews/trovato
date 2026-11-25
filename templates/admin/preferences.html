@@ -1,4 +1,5 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 {#- Your admin preferences: colour theme and admin language. Context: theme,
     language, languages (value, label, native), default_language, csrf_token,
     flash, error_message, from routes::admin_shell. -#}
@@ -7,18 +8,11 @@
 <form class="form" id="admin-preferences" method="post" action="/admin/preferences" novalidate>
     <input type="hidden" name="_token" value="{{ csrf_token }}">
 
-    <fieldset class="fieldset">
-        <legend class="fieldset__legend">{{ t(s="Colour theme") }}</legend>
-        <p class="field__hint" id="theme-hint">{{ t(s="System follows your device's light or dark setting.") }}</p>
-        <div class="choices">
-            {% for choice in ["system", "light", "dark"] %}
-            <div class="choice">
-                <input class="choice__input" type="radio" id="theme-{{ choice }}" name="theme" value="{{ choice }}" aria-describedby="theme-hint"{% if theme == choice %} checked{% endif %}>
-                <label class="choice__label" for="theme-{{ choice }}">{% if choice == "system" %}{{ t(s="System") }}{% elif choice == "light" %}{{ t(s="Light") }}{% else %}{{ t(s="Dark") }}{% endif %}</label>
-            </div>
-            {% endfor %}
-        </div>
-    </fieldset>
+    {% set theme_system = ["system", t(s="System")] %}
+    {% set theme_light = ["light", t(s="Light")] %}
+    {% set theme_dark = ["dark", t(s="Dark")] %}
+    {% set theme_options = [theme_system, theme_light, theme_dark] %}
+    {{ form::choices(name="theme", legend=t(s="Colour theme"), options=theme_options, value=theme, hint=t(s="System follows your device's light or dark setting.")) }}
 
     <div class="field">
         <label class="field__label" for="admin-language">{{ t(s="Administration language") }}</label>
@@ -30,15 +24,13 @@
         </select>
     </div>
 
-    <p class="form__effect">{{ t(s="What this changes: only how this administration looks and reads for you. Nobody else is affected.") }}</p>
-    <div class="form__actions">
-        <button class="button button--primary" type="submit">{{ t(s="Save preferences") }}</button>
-    </div>
+    {{ form::effect(text=t(s="only how this administration looks and reads for you. Nobody else is affected.")) }}
+    {{ form::actions(submit_label=t(s="Save preferences")) }}
 </form>
 
 <section class="sign-out" aria-labelledby="sign-out-heading">
     <h2 id="sign-out-heading">{{ t(s="Sign out") }}</h2>
-    <form method="post" action="/user/logout">
+    <form method="post" action="/user/logout" novalidate>
         <input type="hidden" name="_token" value="{{ csrf_token }}">
         <button class="button" type="submit">{{ t(s="Log out") }}</button>
     </form>

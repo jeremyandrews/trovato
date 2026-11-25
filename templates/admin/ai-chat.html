@@ -1,85 +1,37 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 
 {% block page_title %}{{ t(s="AI Chat Configuration") }}{% endblock page_title %}
 
 {% block content %}
 <div class="admin-card">
-    <form method="post" action="/admin/system/ai-chat">
+    <form method="post" action="/admin/system/ai-chat" novalidate>
         <input type="hidden" name="_token" value="{{ csrf_token }}">
 
-        <div class="form-item">
-            <label for="system_prompt" class="form-item__label">{{ t(s="System prompt") }}</label>
-            <p class="form-item__description" id="system_prompt-hint">{{ t(s="Use {placeholder} as a placeholder for the site name. This prompt is sent to the AI provider as context before user messages.", placeholder="{site_name}") }}</p>
-            <textarea id="system_prompt" name="system_prompt" rows="6" class="form-control" aria-describedby="system_prompt-hint">{{ config.system_prompt }}</textarea>
-        </div>
+        {{ form::textarea(name="system_prompt", label=t(s="System prompt"), value=config.system_prompt, rows=6, hint=t(s="Use {placeholder} as a placeholder for the site name. This prompt is sent to the AI provider as context before user messages.", placeholder="{site_name}")) }}
 
-        <h2>{{ t(s="RAG (Retrieval-Augmented Generation)") }}</h2>
+        {{ form::fieldset_start(legend=t(s="RAG (Retrieval-Augmented Generation)")) }}
+            {{ form::checkbox(name="rag_enabled", label=t(s="Enable RAG context injection"), checked=config.rag_enabled, hint=t(s="When enabled, relevant site content is included as context for the AI to reference.")) }}
+            {{ form::field(name="rag_max_results", type="number", label=t(s="Max search results"), value=config.rag_max_results, width="4", attrs='min="1" max="20"') }}
+            {{ form::field(name="rag_min_score", type="number", label=t(s="Minimum relevance score"), value=config.rag_min_score, hint=t(s="Results below this score are excluded (0.0 = include all, 1.0 = only exact matches)."), width="10", attrs='min="0" max="1" step="0.01"') }}
+        {{ form::fieldset_end() }}
 
-        <div class="form-item">
-            <div class="form-checkbox-wrapper">
-                <input type="checkbox" id="rag_enabled" name="rag_enabled" value="1" aria-describedby="rag_enabled-hint"
-                       {% if config.rag_enabled %}checked{% endif %}>
-                <label for="rag_enabled">{{ t(s="Enable RAG context injection") }}</label>
-            </div>
-            <p class="form-item__description" id="rag_enabled-hint">{{ t(s="When enabled, relevant site content is included as context for the AI to reference.") }}</p>
-        </div>
+        {{ form::fieldset_start(legend=t(s="AI Model")) }}
+            {{ form::field(name="max_tokens", type="number", label=t(s="Max tokens"), value=config.max_tokens, hint=t(s="Maximum number of tokens the AI can generate per response (64–16384)."), width="10", attrs='min="64" max="16384"') }}
+            {% if config.temperature is number %}{% set temperature = config.temperature %}{% else %}{% set temperature = "" %}{% endif %}
+            {{ form::field(name="temperature", type="number", label=t(s="Temperature"), value=temperature, hint=t(s="Controls randomness. Lower values (0.0) are more deterministic, higher values (2.0) are more creative. Leave blank to send none and let the model use its own default; current Anthropic models (newer than Claude Sonnet 4.6) refuse a request that sets one."), width="10", attrs='min="0" max="2" step="0.1"') }}
+        {{ form::fieldset_end() }}
 
-        <div class="form-item">
-            <label for="rag_max_results" class="form-item__label">{{ t(s="Max search results") }}</label>
-            <input type="number" id="rag_max_results" name="rag_max_results"
-                   value="{{ config.rag_max_results }}"
-                   min="1" max="20" class="form-control">
-        </div>
+        {{ form::fieldset_start(legend=t(s="Conversation")) }}
+            {{ form::field(name="max_history_turns", type="number", label=t(s="Max history turns"), value=config.max_history_turns, hint=t(s="Number of previous conversation turns to include (0 = no history)."), width="4", attrs='min="0" max="20"') }}
+        {{ form::fieldset_end() }}
 
-        <div class="form-item">
-            <label for="rag_min_score" class="form-item__label">{{ t(s="Minimum relevance score") }}</label>
-            <p class="form-item__description" id="rag_min_score-hint">{{ t(s="Results below this score are excluded (0.0 = include all, 1.0 = only exact matches).") }}</p>
-            <input type="number" id="rag_min_score" name="rag_min_score"
-                   value="{{ config.rag_min_score }}"
-                   min="0" max="1" step="0.01" class="form-control" aria-describedby="rag_min_score-hint">
-        </div>
+        {{ form::fieldset_start(legend=t(s="Rate Limiting")) }}
+            {{ form::field(name="rate_limit_per_hour", type="number", label=t(s="Requests per hour per user"), value=config.rate_limit_per_hour, hint=t(s="Maximum chat requests per user per hour (0 = unlimited)."), width="10", attrs='min="0" max="1000"') }}
+        {{ form::fieldset_end() }}
 
-        <h2>{{ t(s="AI Model") }}</h2>
-
-        <div class="form-item">
-            <label for="max_tokens" class="form-item__label">{{ t(s="Max tokens") }}</label>
-            <p class="form-item__description" id="max_tokens-hint">{{ t(s="Maximum number of tokens the AI can generate per response (64–16384).") }}</p>
-            <input type="number" id="max_tokens" name="max_tokens"
-                   value="{{ config.max_tokens }}"
-                   min="64" max="16384" class="form-control" aria-describedby="max_tokens-hint">
-        </div>
-
-        <div class="form-item">
-            <label for="temperature" class="form-item__label">{{ t(s="Temperature") }}</label>
-            <p class="form-item__description" id="temperature-hint">{{ t(s="Controls randomness. Lower values (0.0) are more deterministic, higher values (2.0) are more creative. Leave blank to send none and let the model use its own default; current Anthropic models (newer than Claude Sonnet 4.6) refuse a request that sets one.") }}</p>
-            <input type="number" id="temperature" name="temperature"
-                   value="{% if config.temperature is number %}{{ config.temperature }}{% endif %}"
-                   min="0" max="2" step="0.1" class="form-control" aria-describedby="temperature-hint">
-        </div>
-
-        <h2>{{ t(s="Conversation") }}</h2>
-
-        <div class="form-item">
-            <label for="max_history_turns" class="form-item__label">{{ t(s="Max history turns") }}</label>
-            <p class="form-item__description" id="max_history_turns-hint">{{ t(s="Number of previous conversation turns to include (0 = no history).") }}</p>
-            <input type="number" id="max_history_turns" name="max_history_turns"
-                   value="{{ config.max_history_turns }}"
-                   min="0" max="20" class="form-control" aria-describedby="max_history_turns-hint">
-        </div>
-
-        <h2>{{ t(s="Rate Limiting") }}</h2>
-
-        <div class="form-item">
-            <label for="rate_limit_per_hour" class="form-item__label">{{ t(s="Requests per hour per user") }}</label>
-            <p class="form-item__description" id="rate_limit_per_hour-hint">{{ t(s="Maximum chat requests per user per hour (0 = unlimited).") }}</p>
-            <input type="number" id="rate_limit_per_hour" name="rate_limit_per_hour"
-                   value="{{ config.rate_limit_per_hour }}"
-                   min="0" max="1000" class="form-control" aria-describedby="rate_limit_per_hour-hint">
-        </div>
-
-        <div class="form-actions">
-            <button type="submit" class="button button--primary">{{ t(s="Save configuration") }}</button>
-        </div>
+        {{ form::effect(text=t(s="what the site's AI chat tells the provider, how much site content it adds as context, and how often each person may ask, for every chat message from now on.")) }}
+        {{ form::actions(submit_label=t(s="Save configuration")) }}
     </form>
 </div>
 {% endblock content %}

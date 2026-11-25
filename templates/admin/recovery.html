@@ -1,4 +1,5 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 {#- Account recovery settings: which built-in recovery paths the site offers.
     An ordinary form, so it works with JavaScript off; routes::recovery
     accepts it beside the JSON body scripts send. Context: csrf_token,
@@ -13,38 +14,22 @@
     <p>{{ t(s="A passkey sign-in cannot be phished; an emailed recovery code can. Whichever recovery paths you leave on set the real strength of every account on this site. A high-assurance deployment should turn email recovery off and require saved codes or a plugin-provided method.") }}</p>
 </div>
 
-<form class="admin-card" method="post" action="/admin/recovery">
+<form class="admin-card" method="post" action="/admin/recovery" novalidate>
     <input type="hidden" name="_token" value="{{ csrf_token }}">
-    <fieldset class="fieldset">
-        <legend class="fieldset__legend">{{ t(s="Recovery paths offered") }}</legend>
+    {{ form::fieldset_start(legend=t(s="Recovery paths offered")) }}
+        {% if smtp_configured %}
+        {{ form::checkbox(name="email_enabled", id="email-enabled", label=t(s="Emailed recovery code"), checked=email_enabled, hint=t(s="Sends a one-time code to the address on the account. Phishable.")) }}
+        {% else %}
+        {{ form::checkbox(name="email_enabled", id="email-enabled", label=t(s="Emailed recovery code"), checked=email_enabled, disabled=true, hint=t(s="SMTP is not configured, so this path is inert regardless of this setting.")) }}
+        {#- A disabled checkbox is not sent, so its value travels here and
+            saving the form cannot switch the path off by accident. -#}
+        {% if email_enabled %}<input type="hidden" name="email_enabled" value="1">{% endif %}
+        {% endif %}
 
-        <div class="form-item">
-            <div class="form-checkbox-wrapper">
-                <input type="checkbox" id="email-enabled" name="email_enabled" value="1" aria-describedby="email-enabled-hint"{% if email_enabled %} checked{% endif %}{% if not smtp_configured %} disabled{% endif %}>
-                <label for="email-enabled">{{ t(s="Emailed recovery code") }}</label>
-            </div>
-            {% if not smtp_configured %}
-            {#- A disabled checkbox is not sent, so its value travels here and
-                saving the form cannot switch the path off by accident. -#}
-            {% if email_enabled %}<input type="hidden" name="email_enabled" value="1">{% endif %}
-            <p class="form-item__description" id="email-enabled-hint">{{ t(s="SMTP is not configured, so this path is inert regardless of this setting.") }}</p>
-            {% else %}
-            <p class="form-item__description" id="email-enabled-hint">{{ t(s="Sends a one-time code to the address on the account. Phishable.") }}</p>
-            {% endif %}
-        </div>
+        {{ form::checkbox(name="codes_enabled", id="codes-enabled", label=t(s="Saved recovery codes"), checked=codes_enabled, hint=t(s="Users generate codes and keep them. No email, no second device.")) }}
+    {{ form::fieldset_end() }}
 
-        <div class="form-item">
-            <div class="form-checkbox-wrapper">
-                <input type="checkbox" id="codes-enabled" name="codes_enabled" value="1" aria-describedby="codes-enabled-hint"{% if codes_enabled %} checked{% endif %}>
-                <label for="codes-enabled">{{ t(s="Saved recovery codes") }}</label>
-            </div>
-            <p class="form-item__description" id="codes-enabled-hint">{{ t(s="Users generate codes and keep them. No email, no second device.") }}</p>
-        </div>
-    </fieldset>
-
-    <p class="form__effect">{{ t(s="What this changes: which ways back into an account the sign-in page offers to everyone who has lost access.") }}</p>
-    <div class="form-actions">
-        <button class="button button--primary" type="submit">{{ t(s="Save recovery settings") }}</button>
-    </div>
+    {{ form::effect(text=t(s="which ways back into an account the sign-in page offers to everyone who has lost access.")) }}
+    {{ form::actions(submit_label=t(s="Save recovery settings")) }}
 </form>
 {% endblock content %}

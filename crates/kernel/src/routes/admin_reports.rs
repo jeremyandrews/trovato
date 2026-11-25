@@ -86,6 +86,8 @@ async fn cron_report(State(state): State<AppState>, session: Session) -> Respons
         }
     };
 
+    // The builder's words ("Run cron now") in the viewer's admin language.
+    let text = super::admin_nav::AdminText::for_page(&state, &viewer, "/admin/").await;
     let mut form_state = FormState::new("cron_run_now_form", "");
     form_state.user_id = Some(user.id);
     let form_html = match state
@@ -97,7 +99,7 @@ async fn cron_report(State(state): State<AppState>, session: Session) -> Respons
             form_state,
         )
         .await
-        .and_then(|form| state.theme().render_form(&form))
+        .and_then(|form| text.scope(|| state.theme().render_form(&form)))
     {
         Ok(html) => html,
         Err(e) => {

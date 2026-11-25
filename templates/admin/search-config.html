@@ -1,4 +1,5 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 
 {% block page_title %}{{ t(s="Search configuration: {type}", type=content_type.label) }}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="Whether this content type is in site search, and how much a match in each of its fields counts.") }}</p>{% endblock page_intro %}
@@ -53,7 +54,7 @@
                     </td>
                     <td>
                         {% if weight %}
-                        <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/{{ field.field_name }}/delete" class="inline-form">
+                        <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/{{ field.field_name }}/delete" class="inline-form" novalidate>
                             <input type="hidden" name="_token" value="{{ csrf_token }}">
                             <button type="submit" class="link-button">{{ t(s="Remove the weight of {name}", name=field.label) }}</button>
                         </form>
@@ -75,33 +76,24 @@
 {% if fields %}
 <section class="admin-card" aria-labelledby="weight-field-heading">
     <h2 id="weight-field-heading">{{ t(s="Weight a field") }}</h2>
-    <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/add">
+    <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/add" novalidate>
         <input type="hidden" name="_token" value="{{ csrf_token }}">
         <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
+        {% set errs = errors | default(value=[]) %}
+        {{ form::error_summary(errors=errs) }}
+
+        {#- The fields with no weight yet, as [name, label] pairs. -#}
+        {% set_global unweighted = [] %}
+        {% for field in fields %}{% if not search_configs[field.field_name] %}{% set pair = [field.field_name, field.label] %}{% set_global unweighted = unweighted | concat(with=[pair]) %}{% endif %}{% endfor %}
+        {% set weight_b = ["B", t(s="B - High priority")] %}
+        {% set weight_c = ["C", t(s="C - Normal priority")] %}
+        {% set weight_d = ["D", t(s="D - Low priority")] %}
+        {% set weights = [weight_b, weight_c, weight_d] %}
 
         <div class="inline-fields">
-            <div class="form-item">
-                <label for="field_name" class="form-item__label">{{ t(s="Field") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
-                <select id="field_name" name="field_name" class="form-select" required>
-                    <option value="">{{ t(s="- Select field -") }}</option>
-                    {% for field in fields %}
-                    {% if not search_configs[field.field_name] %}
-                    <option value="{{ field.field_name }}">{{ field.label }}</option>
-                    {% endif %}
-                    {% endfor %}
-                </select>
-            </div>
-
-            <div class="form-item">
-                <label for="weight" class="form-item__label">{{ t(s="Weight") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
-                <select id="weight" name="weight" class="form-select" required>
-                    <option value="B">{{ t(s="B - High priority") }}</option>
-                    <option value="C" selected>{{ t(s="C - Normal priority") }}</option>
-                    <option value="D">{{ t(s="D - Low priority") }}</option>
-                </select>
-            </div>
-
-            <div class="form-item inline-fields__submit">
+            {{ form::select(name="field_name", label=t(s="Field"), options=unweighted, empty=t(s="- Select field -"), required=true, errors=errs) }}
+            {{ form::select(name="weight", label=t(s="Weight"), options=weights, value="C", required=true, errors=errs) }}
+            <div class="inline-fields__submit">
                 <button type="submit" class="button button--primary">{{ t(s="Set weight") }}</button>
             </div>
         </div>
@@ -112,7 +104,7 @@
 <section class="admin-card" aria-labelledby="reindex-heading">
     <h2 id="reindex-heading">{{ t(s="Reindex content") }}</h2>
     <p>{{ t(s="After changing search configuration, reindex all content of this type to apply the changes.") }}</p>
-    <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/reindex">
+    <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/reindex" novalidate>
         <input type="hidden" name="_token" value="{{ csrf_token }}">
         <button type="submit" class="button button--secondary" data-confirm="{{ t(s='This will update the search index for all {type} content. Continue?', type=content_type.label) }}">
             {{ t(s="Reindex all {type} content", type=content_type.label) }}
