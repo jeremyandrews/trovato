@@ -55,3 +55,11 @@ identical, the index decodes equal to the pinned CLI's, and the stock
 installs the pinned CLI and Node for the last two and fails if either skips.
 The pagefind harness now compares the vendored tokenizer and the native build
 with the CLI as well, and gains `measure-native` and `bundle` commands.
+
+`ai_usage_budget_test`'s `one_call_on_each_path_records_its_real_usage`
+failed intermittently, on `main` as well, counting three anonymous search rows
+where it expected two. It counted usage rows by `created >= now()`, and
+`created` is whole seconds, so the 60-token row
+`anonymous_search_is_held_to_a_site_level_cap` writes was counted whenever
+that test had finished within the same second. It now also leaves out, by id,
+the rows already there when it starts.

@@ -257,14 +257,36 @@ async fn post_json(
 /// `(source, operation, user_id, prompt, completion, total, model)`.
 type Row = (String, String, Option<Uuid>, i32, i32, i32, String);
 
-async fn rows_since(app: &TestApp, since: i64) -> Vec<Row> {
+/// A point to count usage rows from. `created` is whole seconds, so a row an
+/// earlier test wrote in the same second would pass `created >= second`; the
+/// rows already there at the mark are left out by id.
+struct Since {
+    second: i64,
+    earlier: Vec<Uuid>,
+}
+
+async fn mark(app: &TestApp) -> Since {
+    let second = now();
+    let earlier =
+        sqlx::query_scalar("SELECT id FROM ai_usage_log WHERE provider_id = $1 AND created >= $2")
+            .bind(PROVIDER)
+            .bind(second)
+            .fetch_all(&app.db)
+            .await
+            .unwrap();
+    Since { second, earlier }
+}
+
+async fn rows_since(app: &TestApp, since: &Since) -> Vec<Row> {
     sqlx::query_as(
         "SELECT plugin_name, operation, user_id, prompt_tokens, completion_tokens, total_tokens, \
                 model \
-         FROM ai_usage_log WHERE provider_id = $1 AND created >= $2 ORDER BY created, id",
+         FROM ai_usage_log WHERE provider_id = $1 AND created >= $2 AND id <> ALL($3) \
+         ORDER BY created, id",
     )
     .bind(PROVIDER)
-    .bind(since)
+    .bind(since.second)
+    .bind(&since.earlier)
     .fetch_all(&app.db)
     .await
     .unwrap()
@@ -272,7 +294,7 @@ async fn rows_since(app: &TestApp, since: i64) -> Vec<Row> {
 
 /// The rows from `source`, waiting up to five seconds for `count` of them
 /// (the sentiment worker writes off the request path).
-async fn rows_from(app: &TestApp, since: i64, source: &str, count: usize) -> Vec<Row> {
+async fn rows_from(app: &TestApp, since: &Since, source: &str, count: usize) -> Vec<Row> {
     for _ in 0..50 {
         let rows: Vec<Row> = rows_since(app, since)
             .await
@@ -312,7 +334,7 @@ fn one_call_on_each_path_records_its_real_usage() {
         let app = shared_app().await;
         let _serial = SERIAL.lock().await;
         let (base_url, _hits) = stub().await;
-        let since = now();
+        let since = mark(app).await;
         let restore = configure(
             app,
             &base_url,
@@ -429,8 +451,8 @@ fn one_call_on_each_path_records_its_real_usage() {
             .expect("an embedding provider is configured");
         assert_eq!(embedded.vector.len(), 3);
 
-        let sentiment = rows_from(app, since, "kernel_search_sentiment", 1).await;
-        let rows = rows_since(app, since).await;
+        let sentiment = rows_from(app, &since, "kernel_search_sentiment", 1).await;
+        let rows = rows_since(app, &since).await;
         restore.restore().await;
 
         println!("\nai_usage_log, provider {PROVIDER}, one call on each path:");
