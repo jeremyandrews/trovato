@@ -5,8 +5,6 @@
 //! AI-transformed text. Used by the form AI Assist buttons injected by
 //! the `trovato_ai` plugin's `tap_form_alter`.
 
-use std::time::Instant;
-
 use axum::Json;
 use axum::extract::State;
 use axum::http::HeaderMap;
@@ -16,11 +14,21 @@ use tower_sessions::Session;
 
 use crate::error::AppError;
 use crate::routes::helpers::require_csrf_header;
-use crate::services::ai_provider::{AiOperationType, ProviderProtocol};
+use crate::services::ai_provider::{AiCaller, AiOperationType, ChatRequest};
 use crate::state::AppState;
 
 /// Supported AI assist operations.
 const VALID_OPERATIONS: &[&str] = &["rewrite", "expand", "shorten", "translate", "tone"];
+
+/// The writing assistant's instructions.
+const WRITING_ASSISTANT_PROMPT: &str = "You are a writing assistant. Respond with only the \
+    transformed text — no explanations, no markdown formatting, no quotes around the text.";
+
+/// The most tokens one transformation may use.
+const ASSIST_MAX_TOKENS: u32 = 1000;
+
+/// What the usage log records the writing assistant's calls as.
+const ASSIST_USAGE_SOURCE: &str = "trovato_ai";
 
 /// Request body for AI assist.
 #[derive(Debug, Deserialize)]
@@ -131,70 +139,26 @@ async fn ai_assist_handler(
         }
     };
 
-    // Build and send the request
-    let start = Instant::now();
-    let user_prompt = build_operation_prompt(&body);
-
-    let (url, request_body, auth_headers) = build_provider_request(
-        &resolved,
-        "You are a writing assistant. Respond with only the transformed text \
-         — no explanations, no markdown formatting, no quotes around the text.",
-        &user_prompt,
+    let request = ChatRequest::system_and_user(
+        WRITING_ASSISTANT_PROMPT,
+        &build_operation_prompt(&body),
+        ASSIST_MAX_TOKENS,
     );
-
-    let mut req = ai_providers
-        .http()
-        .post(&url)
-        .timeout(std::time::Duration::from_secs(60))
-        .header("content-type", "application/json")
-        .body(request_body);
-
-    for (key, value) in &auth_headers {
-        req = req.header(key.as_str(), value.as_str());
-    }
-
-    let response = match crate::telemetry::send(req).await {
-        Ok(r) => r,
+    let caller = AiCaller::user(uid, ASSIST_USAGE_SOURCE);
+    let completion = match ai_providers.chat_once(&resolved, &caller, &request).await {
+        Ok(completion) => completion,
         Err(e) => {
-            tracing::error!(error = %e, "AI assist HTTP request failed");
-            return AppError::service_unavailable("AI", "AI request failed").into_response();
+            tracing::warn!(error = %e, operation = %body.operation, "AI assist failed");
+            return AppError::service_unavailable("AI", e.user_message()).into_response();
         }
     };
-
-    if !response.status().is_success() {
-        let status = response.status();
-        let body_text = response.text().await.unwrap_or_default();
-        crate::services::ai_provider::log_provider_failure(
-            "ai_assist",
-            &resolved,
-            status.as_u16(),
-            &body_text,
-        );
-        return AppError::service_unavailable("AI", "AI provider returned an error")
-            .into_response();
-    }
-
-    let latency_ms = start.elapsed().as_millis() as i64;
-    let response_text = match response.text().await {
-        Ok(t) => t,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to read AI response body");
-            return AppError::service_unavailable("AI", "Failed to read AI response")
-                .into_response();
-        }
-    };
-
-    // Parse the provider response
-    let (content, tokens_used) = match resolved.config.protocol {
-        ProviderProtocol::OpenAiCompatible => parse_openai_response(&response_text),
-        ProviderProtocol::Anthropic => parse_anthropic_response(&response_text),
-    };
+    let (prompt_tokens, completion_tokens, total_tokens) = completion.usage;
 
     tracing::info!(
         operation = %body.operation,
-        model = %resolved.model,
-        latency_ms,
-        tokens = tokens_used,
+        model = %completion.model,
+        latency_ms = completion.latency_ms,
+        tokens = total_tokens,
         "AI assist completed"
     );
 
@@ -202,25 +166,32 @@ async fn ai_assist_handler(
     // (P11c / D-44).
     let cost_estimate = state
         .ai_budgets()
-        .estimate_cost(&resolved.model, 0, i64::from(tokens_used))
+        .estimate_call_cost(
+            &resolved.model,
+            &completion.model,
+            i64::from(prompt_tokens),
+            i64::from(completion_tokens),
+        )
         .await;
     let entry = crate::services::ai_token_budget::UsageLogEntry {
         user_id: Some(uid),
-        plugin_name: "trovato_ai".to_string(),
+        plugin_name: ASSIST_USAGE_SOURCE.to_string(),
         provider_id: resolved.config.id.clone(),
         operation: "Chat".to_string(),
-        model: resolved.model.clone(),
-        prompt_tokens: 0,
-        completion_tokens: tokens_used as i32,
-        total_tokens: tokens_used as i32,
-        latency_ms,
+        model: completion.model.clone(),
+        prompt_tokens: prompt_tokens.min(i32::MAX as u32) as i32,
+        completion_tokens: completion_tokens.min(i32::MAX as u32) as i32,
+        total_tokens: total_tokens.min(i32::MAX as u32) as i32,
+        latency_ms: completion.latency_ms.min(i64::MAX as u64) as i64,
         cost_estimate,
     };
-    let _ = state.ai_budgets().record_usage(state.db(), entry).await;
+    if let Err(e) = state.ai_budgets().record_usage(state.db(), entry).await {
+        tracing::warn!(error = %e, "failed to record AI assist usage");
+    }
 
     Json(AiAssistResponse {
-        result: content.trim().to_string(),
-        tokens_used,
+        result: completion.text.unwrap_or_default().trim().to_string(),
+        tokens_used: total_tokens,
     })
     .into_response()
 }
@@ -258,96 +229,12 @@ fn build_operation_prompt(body: &AiAssistRequest) -> String {
     }
 }
 
-/// Build a non-streaming chat request for the given provider.
-///
-/// No `temperature`: nothing configures one for the writing assistant, and
-/// Anthropic models newer than `claude-sonnet-4-6` answer 400 to a request that
-/// carries it at all.
-fn build_provider_request(
-    resolved: &crate::services::ai_provider::ResolvedProvider,
-    system_prompt: &str,
-    user_prompt: &str,
-) -> (String, String, Vec<(String, String)>) {
-    let mut headers = Vec::new();
-
-    match resolved.config.protocol {
-        ProviderProtocol::OpenAiCompatible => {
-            let url = format!("{}/chat/completions", resolved.config.base_url);
-            if let Some(ref key) = resolved.api_key {
-                headers.push(("Authorization".to_string(), format!("Bearer {key}")));
-            }
-            let body = serde_json::json!({
-                "model": resolved.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "max_tokens": 1000
-            });
-            (url, body.to_string(), headers)
-        }
-        ProviderProtocol::Anthropic => {
-            let url = format!("{}/messages", resolved.config.base_url);
-            if let Some(ref key) = resolved.api_key {
-                headers.push(("x-api-key".to_string(), key.clone()));
-            }
-            headers.push(("anthropic-version".to_string(), "2023-06-01".to_string()));
-            let body = serde_json::json!({
-                "model": resolved.model,
-                "system": system_prompt,
-                "messages": [
-                    {"role": "user", "content": user_prompt}
-                ],
-                "max_tokens": 1000
-            });
-            (url, body.to_string(), headers)
-        }
-    }
-}
-
-/// Parse an OpenAI-compatible chat completion response.
-fn parse_openai_response(body: &str) -> (String, u32) {
-    let json: serde_json::Value = match serde_json::from_str(body) {
-        Ok(v) => v,
-        Err(_) => return (String::new(), 0),
-    };
-
-    let content = json["choices"]
-        .get(0)
-        .and_then(|c| c["message"]["content"].as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let tokens = json["usage"]["total_tokens"].as_u64().unwrap_or(0) as u32;
-
-    (content, tokens)
-}
-
-/// Parse an Anthropic Messages API response.
-fn parse_anthropic_response(body: &str) -> (String, u32) {
-    let json: serde_json::Value = match serde_json::from_str(body) {
-        Ok(v) => v,
-        Err(_) => return (String::new(), 0),
-    };
-
-    let content = json["content"]
-        .get(0)
-        .and_then(|c| c["text"].as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let input_tokens = json["usage"]["input_tokens"].as_u64().unwrap_or(0);
-    let output_tokens = json["usage"]["output_tokens"].as_u64().unwrap_or(0);
-
-    (content, (input_tokens + output_tokens) as u32)
-}
-
 #[cfg(test)]
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use crate::services::ai_provider::{AiProviderConfig, ResolvedProvider};
+    use crate::services::ai_provider::{AiProviderConfig, ProviderProtocol, ResolvedProvider};
 
     fn resolved(protocol: ProviderProtocol) -> ResolvedProvider {
         ResolvedProvider {
@@ -374,8 +261,9 @@ mod tests {
             ProviderProtocol::Anthropic,
             ProviderProtocol::OpenAiCompatible,
         ] {
-            let (_, body, _) = build_provider_request(&resolved(protocol), "sys", "user");
-            let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let request = ChatRequest::system_and_user("sys", "user", ASSIST_MAX_TOKENS);
+            let (_, body, _) =
+                crate::services::ai_tools::build_chat_request(&resolved(protocol), &request, false);
             assert!(body.get("temperature").is_none(), "{protocol:?}: {body}");
         }
     }

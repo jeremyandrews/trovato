@@ -955,7 +955,7 @@ v0.102.0. A reviewer who needs it should ask for that repository.
 | Id | Severity as stated | Finding | Status |
 |---|---|---|---|
 | G-QUERY-RAW-FIRST-KEYWORD (BL-61) | Medium, security | `is_read_only` checks only the first keyword, so a data modifying CTE passes the `query-raw` guard and writes. Argus depends on it | **open**, class 1.0.x. No explicit status line in M4 |
-| G-AI-BASEURL-UNCHECKED (BL-57) | Medium, security | `validate_base_url` is not called on the `ai-request` path and `save_provider` does not call it; string only, misses bracketed IPv6 | **open**, class 1.0 |
+| G-AI-BASEURL-UNCHECKED (BL-57) | Medium, security | `validate_base_url` is not called on the `ai-request` path and `save_provider` does not call it; string only, misses bracketed IPv6 | **partly closed**: since B89 every AI send (`AiProviderService::chat_once`, `chat_stream`, `embed_with`, which every chat, search, assist, assistant, embedding and plugin call goes through) calls it at send time. `save_provider` still does not; class 1.0 |
 | G-SSRF-NO-TEST-ALLOWANCE | High, residual | The fence blocks loopback, so no local stub provider or fixture feed server is reachable and success paths are untestable on one machine | **open / residual**, recommended post 1.0. Earlier filed as G-SSRF-LOCAL and "accepted as a documented 1.0 limitation" |
 | G-VIEW-OUTPUT-JSON-ENCODED | High | A `String` returning view tap was JSON serialized and appended undecoded, so plugin markup landed on the page with stray quotes | **closed** by the batch that shipped in 0.99.0, but re-filed as residual by netgrasp |
 | G-CSRF-NO-BEARER-BYPASS (BL-60) | decided | Whether a bearer authenticated plugin api write needs a CSRF token | **fixed**, `2ff3a62`, closed. Decided rather than deferred |

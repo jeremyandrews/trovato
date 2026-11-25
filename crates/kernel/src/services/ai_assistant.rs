@@ -58,9 +58,9 @@ use crate::models::SiteConfig;
 use crate::models::assistant::{
     Conversation, PROPOSAL_PROPOSED, Proposal, TranscriptEntry, now as epoch_now,
 };
-use crate::services::ai_provider::{AiOperationType, ResolvedProvider};
+use crate::services::ai_provider::{AiCaller, AiOperationType, ChatRequest, ResolvedProvider};
 use crate::services::ai_token_budget::UsageLogEntry;
-use crate::services::ai_tools::{ChatCompletion, ChatMessage, ToolCall, ToolSpec, chat_complete};
+use crate::services::ai_tools::{ChatCompletion, ChatMessage, ToolCall, ToolSpec};
 use crate::state::AppState;
 use crate::tap::{RequestState, UserContext};
 
@@ -796,16 +796,20 @@ pub fn run_turn(
             );
             let specs = tool_specs(&scope);
 
-            let completion: ChatCompletion = match chat_complete(
-                state.ai_providers(),
-                &resolved,
-                &messages,
-                &specs,
-                config.temperature,
-                config.max_response_tokens,
-                config.call_timeout(),
-            )
-            .await
+            let request = ChatRequest {
+                messages,
+                tools: specs,
+                temperature: config.temperature,
+                max_tokens: Some(config.max_response_tokens),
+                // The assistant's own per-call timeout, which its settings
+                // screen configures.
+                timeout: Some(config.call_timeout()),
+                ..ChatRequest::default()
+            };
+            let completion: ChatCompletion = match state
+                .ai_providers()
+                .chat_once(&resolved, &AiCaller::user(user.id, USAGE_PLUGIN), &request)
+                .await
             {
                 Ok(completion) => completion,
                 Err(e) => {

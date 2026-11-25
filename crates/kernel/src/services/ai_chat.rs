@@ -8,7 +8,6 @@
 //! Conversation history is stored in the user's Redis session.
 
 use std::fmt;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -24,8 +23,10 @@ use crate::models::item::Item;
 use crate::models::stage::LIVE_STAGE_ID;
 use crate::search::SearchService;
 use crate::services::ai_provider::{
-    AiOperationType, AiProviderService, ProviderProtocol, ResolvedProvider,
+    AiCallError, AiCaller, AiOperationType, AiProviderService, ChatEventStream, ChatRequest,
+    ResolvedProvider,
 };
+use crate::services::ai_tools::ChatMessage;
 use crate::tap::UserContext;
 
 // =============================================================================
@@ -436,78 +437,47 @@ impl ChatService {
     /// TOCTOU race where the provider could change between budget check and
     /// request execution.
     ///
-    /// Returns a pinned stream of `ChatStreamEvent`s. The caller wraps this
-    /// in an SSE response.
+    /// Sent through [`AiProviderService::chat_stream`], the one streaming send:
+    /// base URL check, configured timeout, chat breaker. Returns a pinned stream
+    /// of `ChatStreamEvent`s, which the caller wraps in an SSE response.
     pub async fn execute_streaming(
         &self,
         messages: Vec<AiMessage>,
         config: &ChatConfig,
         resolved: &ResolvedProvider,
-    ) -> Result<(
-        Pin<Box<dyn futures_core::Stream<Item = ChatStreamEvent> + Send>>,
-        StreamMeta,
-    )> {
-        let protocol = resolved.config.protocol;
-        let provider_id = resolved.config.id.clone();
-        let model = resolved.model.clone();
-
-        let (url, body_str, headers) = match protocol {
-            ProviderProtocol::OpenAiCompatible => {
-                build_streaming_openai_request(resolved, &messages, config)
-            }
-            ProviderProtocol::Anthropic => {
-                build_streaming_anthropic_request(resolved, &messages, config)
-            }
-        };
-
-        debug!(url = %url, protocol = ?protocol, "sending streaming chat request");
-
-        let mut req = self
+        caller: &AiCaller,
+    ) -> Result<(ChatEventStream, StreamMeta), AiCallError> {
+        let request = chat_request(&messages, config);
+        debug!(protocol = ?resolved.config.protocol, "sending streaming chat request");
+        let stream = self
             .ai_providers
-            .http()
-            .post(&url)
-            .timeout(Duration::from_secs(120))
-            .header("content-type", "application/json")
-            .body(body_str);
-
-        for (key, value) in &headers {
-            req = req.header(key.as_str(), value.as_str());
-        }
-
-        let response = crate::telemetry::send(req)
-            .await
-            .context("streaming chat request failed")?;
-
-        let status = response.status();
-        if !status.is_success() {
-            let body = response.text().await.unwrap_or_default();
-            crate::services::ai_provider::log_provider_failure(
-                "chat_stream",
-                resolved,
-                status.as_u16(),
-                &body,
-            );
-            let truncated = if body.len() > 200 {
-                let mut end = 200;
-                while end > 0 && !body.is_char_boundary(end) {
-                    end -= 1;
-                }
-                format!("{}...", &body[..end])
-            } else {
-                body
-            };
-            anyhow::bail!("Provider returned HTTP {status}: {truncated}");
-        }
-
-        let meta = StreamMeta { provider_id, model };
-
-        let stream: Pin<Box<dyn futures_core::Stream<Item = ChatStreamEvent> + Send>> =
-            match protocol {
-                ProviderProtocol::OpenAiCompatible => Box::pin(parse_openai_stream(response)),
-                ProviderProtocol::Anthropic => Box::pin(parse_anthropic_stream(response)),
-            };
-
+            .chat_stream(resolved, caller, &request)
+            .await?;
+        let meta = StreamMeta {
+            provider_id: resolved.config.id.clone(),
+            model: resolved.model.clone(),
+        };
         Ok((stream, meta))
+    }
+}
+
+/// The send path's request for a chatbot conversation.
+fn chat_request(messages: &[AiMessage], config: &ChatConfig) -> ChatRequest {
+    ChatRequest {
+        messages: messages
+            .iter()
+            .map(|m| match m.role.as_str() {
+                ROLE_SYSTEM => ChatMessage::System(m.content.clone()),
+                ROLE_USER => ChatMessage::User(m.content.clone()),
+                _ => ChatMessage::Assistant {
+                    text: Some(m.content.clone()),
+                    tool_calls: Vec::new(),
+                },
+            })
+            .collect(),
+        max_tokens: Some(config.max_tokens),
+        temperature: config.temperature,
+        ..ChatRequest::default()
     }
 }
 
@@ -517,106 +487,6 @@ pub struct StreamMeta {
     pub provider_id: String,
     /// Model identifier.
     pub model: String,
-}
-
-// =============================================================================
-// Streaming request builders
-// =============================================================================
-
-/// Build a streaming OpenAI-compatible chat completions request.
-fn build_streaming_openai_request(
-    resolved: &ResolvedProvider,
-    messages: &[AiMessage],
-    config: &ChatConfig,
-) -> (String, String, Vec<(String, String)>) {
-    let url = format!(
-        "{}/chat/completions",
-        resolved.config.base_url.trim_end_matches('/')
-    );
-
-    let msg_values: Vec<serde_json::Value> = messages
-        .iter()
-        .map(|m| {
-            serde_json::json!({
-                "role": m.role,
-                "content": m.content,
-            })
-        })
-        .collect();
-
-    let mut body = serde_json::json!({
-        "model": &resolved.model,
-        "messages": msg_values,
-        "stream": true,
-        "stream_options": {"include_usage": true},
-        "max_tokens": config.max_tokens,
-    });
-    if let Some(temperature) = config.temperature {
-        body["temperature"] = serde_json::json!(temperature);
-    }
-
-    let mut headers = Vec::new();
-    if let Some(ref key) = resolved.api_key {
-        headers.push(("authorization".to_string(), format!("Bearer {key}")));
-    }
-
-    // Infallible: serde_json::Value serialization to string cannot fail.
-    let body_str = serde_json::to_string(&body).unwrap_or_default();
-    (url, body_str, headers)
-}
-
-/// Build a streaming Anthropic Messages API request.
-fn build_streaming_anthropic_request(
-    resolved: &ResolvedProvider,
-    messages: &[AiMessage],
-    config: &ChatConfig,
-) -> (String, String, Vec<(String, String)>) {
-    let url = format!(
-        "{}/messages",
-        resolved.config.base_url.trim_end_matches('/')
-    );
-
-    // Anthropic: system messages go in a separate "system" field.
-    let mut system_parts: Vec<&str> = Vec::new();
-    let msg_values: Vec<serde_json::Value> = messages
-        .iter()
-        .filter_map(|m| {
-            if m.role == ROLE_SYSTEM {
-                system_parts.push(&m.content);
-                None
-            } else {
-                Some(serde_json::json!({
-                    "role": m.role,
-                    "content": m.content,
-                }))
-            }
-        })
-        .collect();
-
-    let mut body = serde_json::json!({
-        "model": &resolved.model,
-        "messages": msg_values,
-        "stream": true,
-        "max_tokens": config.max_tokens,
-    });
-    // Only when a site set one: current Anthropic models refuse the key.
-    if let Some(temperature) = config.temperature {
-        body["temperature"] = serde_json::json!(temperature);
-    }
-
-    if !system_parts.is_empty() {
-        body["system"] = serde_json::json!(system_parts.join("\n"));
-    }
-
-    let mut headers = Vec::new();
-    if let Some(ref key) = resolved.api_key {
-        headers.push(("x-api-key".to_string(), key.clone()));
-    }
-    headers.push(("anthropic-version".to_string(), "2023-06-01".to_string()));
-
-    // Infallible: serde_json::Value serialization to string cannot fail.
-    let body_str = serde_json::to_string(&body).unwrap_or_default();
-    (url, body_str, headers)
 }
 
 // =============================================================================
@@ -636,7 +506,7 @@ const CHUNK_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 /// Each SSE `data:` line is a JSON object with `choices[0].delta.content`.
 /// The final chunk (with `stream_options.include_usage`) has usage data.
 /// The stream terminates with `data: [DONE]`.
-fn parse_openai_stream(
+pub(crate) fn parse_openai_stream(
     response: reqwest::Response,
 ) -> impl futures_core::Stream<Item = ChatStreamEvent> + Send {
     async_stream::stream! {
@@ -758,7 +628,7 @@ fn parse_openai_stream(
 /// Anthropic uses named events: `content_block_delta` for text tokens,
 /// `message_delta` for stop reason and usage, `message_stop` for stream end,
 /// and `error` for provider-side errors.
-fn parse_anthropic_stream(
+pub(crate) fn parse_anthropic_stream(
     response: reqwest::Response,
 ) -> impl futures_core::Stream<Item = ChatStreamEvent> + Send {
     async_stream::stream! {
@@ -1015,6 +885,7 @@ fn field_key_to_label(key: &str) -> String {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::services::ai_provider::ProviderProtocol;
 
     #[test]
     fn chat_config_default_roundtrip() {
@@ -1087,21 +958,25 @@ mod tests {
     #[test]
     fn default_chat_config_sends_no_temperature() {
         let config = ChatConfig::default();
-        let (_, body, _) = build_streaming_anthropic_request(
+        let request = chat_request(&test_messages(), &config);
+        let (_, body, _) = crate::services::ai_tools::build_chat_request(
             &test_resolved(ProviderProtocol::Anthropic),
-            &test_messages(),
-            &config,
+            &request,
+            true,
         );
-        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert!(body.get("temperature").is_none(), "anthropic: {body}");
+        assert_eq!(body["stream"], true, "anthropic: {body}");
 
-        let (_, body, _) = build_streaming_openai_request(
+        let (_, body, _) = crate::services::ai_tools::build_chat_request(
             &test_resolved(ProviderProtocol::OpenAiCompatible),
-            &test_messages(),
-            &config,
+            &request,
+            true,
         );
-        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert!(body.get("temperature").is_none(), "openai: {body}");
+        assert_eq!(
+            body["stream_options"]["include_usage"], true,
+            "openai: {body}"
+        );
     }
 
     /// A stored config with a number in it keeps working and still sends it.
@@ -1118,12 +993,11 @@ mod tests {
             "temperature": 0.4
         });
         let config: ChatConfig = serde_json::from_value(json).unwrap();
-        let (_, body, _) = build_streaming_anthropic_request(
+        let (_, body, _) = crate::services::ai_tools::build_chat_request(
             &test_resolved(ProviderProtocol::Anthropic),
-            &test_messages(),
-            &config,
+            &chat_request(&test_messages(), &config),
+            true,
         );
-        let body: serde_json::Value = serde_json::from_str(&body).unwrap();
         let sent = body["temperature"].as_f64().expect("temperature sent");
         assert!((sent - 0.4).abs() < 1e-6, "{sent}");
     }
