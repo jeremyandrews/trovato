@@ -34,7 +34,10 @@ use std::process::Command;
 use common::{defer_cleanup, run_test, shared_app};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
-use trovato_kernel::cron::{IndexDocument, IndexedField, render_fragment, search_index_full_build};
+use trovato_kernel::cron::{
+    FullBuildReport, IndexDocument, IndexedField, RebuildAgain, render_fragment,
+    search_index_full_build, search_index_generation,
+};
 use trovato_search_index::decode::{Bundle, PageView, decode_bundle, read_bundle};
 use uuid::Uuid;
 
@@ -198,6 +201,11 @@ const LEDGER_TABLES: &[&str] = &[
 /// A pool whose `search_path` puts a fresh copy of the four search index
 /// tables ahead of `public`, dropped when the test ends.
 async fn isolated_ledger(db: &PgPool) -> PgPool {
+    isolated_ledger_with(db, 4).await
+}
+
+/// [`isolated_ledger`] with a pool of `connections`.
+async fn isolated_ledger_with(db: &PgPool, connections: u32) -> PgPool {
     let schema = format!("search_gate_{}", Uuid::now_v7().simple());
     // The schema name is a fresh UUID, never input.
     sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
@@ -216,7 +224,7 @@ async fn isolated_ledger(db: &PgPool) -> PgPool {
         .clone()
         .options([("search_path", format!("{schema},public"))]);
     let pool = PgPoolOptions::new()
-        .max_connections(4)
+        .max_connections(connections)
         .connect_with(options)
         .await
         .expect("connect to the gate schema");
@@ -245,13 +253,21 @@ fn scratch(label: &str) -> PathBuf {
     dir
 }
 
-/// One native full build into a new output directory, read back.
-async fn native(
+/// One full build of `docs` into `out`, as cron runs it: the generation read
+/// first, then the build.
+async fn build(
     pool: &PgPool,
+    out: &Path,
     docs: &[IndexDocument],
-) -> (trovato_kernel::cron::FullBuildReport, Bundle) {
+) -> anyhow::Result<FullBuildReport> {
+    let snapshot = search_index_generation(pool).await?;
+    search_index_full_build(pool, out, docs, snapshot).await
+}
+
+/// One native full build into a new output directory, read back.
+async fn native(pool: &PgPool, docs: &[IndexDocument]) -> (FullBuildReport, Bundle) {
     let out = scratch("native").join("pagefind");
-    let report = search_index_full_build(pool, &out, docs)
+    let report = build(pool, &out, docs)
         .await
         .expect("the native full build");
     (report, read_bundle(&out).expect("read the native bundle"))
@@ -437,8 +453,8 @@ fn a_republish_keeps_every_file_and_old_files_survive_the_window() {
         let docs = fixture();
         let out = scratch("live").join("pagefind");
 
-        let first = search_index_full_build(&pool, &out, &docs).await.unwrap();
-        let second = search_index_full_build(&pool, &out, &docs).await.unwrap();
+        let first = build(&pool, &out, &docs).await.unwrap();
+        let second = build(&pool, &out, &docs).await.unwrap();
         assert!(first.written > 0);
         assert_eq!(
             second.written, 0,
@@ -452,7 +468,7 @@ fn a_republish_keeps_every_file_and_old_files_survive_the_window() {
         let mut edited = docs.clone();
         edited[0].title = "RustConf keynote recap, revised".into();
         let old = read_bundle(&out).unwrap();
-        let third = search_index_full_build(&pool, &out, &edited).await.unwrap();
+        let third = build(&pool, &out, &edited).await.unwrap();
         assert_eq!(third.expired, 0);
         let now = read_bundle(&out).unwrap();
         for name in old.keys() {
@@ -472,7 +488,7 @@ fn a_republish_keeps_every_file_and_old_files_survive_the_window() {
             .execute(&pool)
             .await
             .unwrap();
-        let fourth = search_index_full_build(&pool, &out, &edited).await.unwrap();
+        let fourth = build(&pool, &out, &edited).await.unwrap();
         assert_eq!(fourth.expired as i64, unreferenced);
         let entry: serde_json::Value =
             serde_json::from_slice(&std::fs::read(out.join("pagefind-entry.json")).unwrap())
@@ -480,6 +496,133 @@ fn a_republish_keeps_every_file_and_old_files_survive_the_window() {
         // Everything the live entry names is still there.
         decode_bundle(&read_bundle(&out).unwrap()).expect("the live bundle decodes");
         assert!(entry["languages"]["en"]["hash"].is_string());
+    });
+}
+
+/// The URLs the live entry in `out` reaches.
+fn live_urls(out: &Path) -> BTreeSet<String> {
+    decode_bundle(&read_bundle(out).unwrap())
+        .unwrap()
+        .iter()
+        .flat_map(|index| index.pages().unwrap().into_keys())
+        .collect()
+}
+
+/// A slow build that exported its documents before a faster one published
+/// must not publish over it: the slower export can hold an item the faster
+/// one removed.
+#[test]
+fn a_build_that_exported_before_another_published_is_dropped() {
+    run_test(async {
+        let app = shared_app().await;
+        let pool = isolated_ledger(&app.db).await;
+        let docs = fixture();
+        let out = scratch("race").join("pagefind");
+        build(&pool, &out, &docs).await.unwrap();
+        let removed = format!("/{}.html", docs[0].id);
+        assert!(live_urls(&out).contains(&removed));
+
+        // The slow build reads the generation and exports, item 0 included.
+        let slow_snapshot = search_index_generation(&pool).await.unwrap();
+        let slow_docs = docs.clone();
+        // The fast build exports after item 0 left search, and publishes.
+        build(&pool, &out, &docs[1..]).await.unwrap();
+        let entry = std::fs::read(out.join("pagefind-entry.json")).unwrap();
+
+        let err = search_index_full_build(&pool, &out, &slow_docs, slow_snapshot)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<RebuildAgain>(),
+                Some(RebuildAgain::Superseded { .. })
+            ),
+            "{err:#}"
+        );
+        assert_eq!(
+            std::fs::read(out.join("pagefind-entry.json")).unwrap(),
+            entry,
+            "the newer publication stays"
+        );
+        assert!(
+            !live_urls(&out).contains(&removed),
+            "the removed item stays out"
+        );
+        let held: i64 = sqlx::query_scalar("SELECT count(*) FROM search_page WHERE item_id = $1")
+            .bind(docs[0].id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(held, 0, "the ledger is the newer build's");
+    });
+}
+
+/// When the entry is live but recording it fails, the build says so in a way
+/// the caller turns into another rebuild, and the next build brings the
+/// database and the live entry back into agreement.
+#[test]
+fn a_publish_that_is_not_recorded_asks_for_another_build() {
+    run_test(async {
+        let app = shared_app().await;
+        let pool = isolated_ledger(&app.db).await;
+        let docs = fixture();
+        let out = scratch("unrecorded").join("pagefind");
+        build(&pool, &out, &docs).await.unwrap();
+
+        // The retention bookkeeping fails after the flip.
+        sqlx::query("ALTER TABLE search_index_file RENAME COLUMN unreferenced_at TO broken")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut edited = docs.clone();
+        edited[0].title = "RustConf keynote recap, revised".into();
+        let err = build(&pool, &out, &edited).await.unwrap_err();
+        assert!(
+            matches!(
+                err.downcast_ref::<RebuildAgain>(),
+                Some(RebuildAgain::Unrecorded(_))
+            ),
+            "{err:#}"
+        );
+
+        sqlx::query("ALTER TABLE search_index_file RENAME COLUMN broken TO unreferenced_at")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let report = build(&pool, &out, &edited).await.unwrap();
+        let entry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(out.join("pagefind-entry.json")).unwrap())
+                .unwrap();
+        let recorded: serde_json::Value =
+            sqlx::query_scalar("SELECT entry_meta FROM search_index_state WHERE id")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        for (language, meta) in recorded.as_object().unwrap() {
+            assert_eq!(&entry["languages"][language]["hash"], meta);
+        }
+        assert_eq!(report.pages, docs.len());
+    });
+}
+
+/// An empty index is built on the transaction's own connection: with a pool of
+/// one, asking the pool for another while holding it would never return.
+#[test]
+fn an_empty_index_builds_through_a_pool_of_one() {
+    run_test(async {
+        let app = shared_app().await;
+        let pool = isolated_ledger_with(&app.db, 1).await;
+        let out = scratch("empty").join("pagefind");
+        let report =
+            tokio::time::timeout(std::time::Duration::from_secs(10), build(&pool, &out, &[]))
+                .await
+                .expect("the empty build finished")
+                .unwrap();
+        assert_eq!(report.pages, 0);
+        let entry: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(out.join("pagefind-entry.json")).unwrap())
+                .unwrap();
+        assert_eq!(entry["languages"].as_object().unwrap().len(), 1);
     });
 }
 
@@ -606,6 +749,40 @@ const DE_QUERIES: &[&str] = &[
     "\"freie software\"",
     "konf",
 ];
+
+/// The queries `pagefind_web` 1.3.0 itself fails on, on any index of these
+/// pages, as (language, query). It cuts a query term at a byte length to
+/// compare it with chunk bounds when no chunk matches exactly
+/// (`pagefind_web/src/lib.rs`, lines 232-236), which panics inside a multi-byte
+/// character. Only these may fail, and they must fail on both indexes; any
+/// other failure fails the gate. A Pagefind bump that fixes it shows up here.
+const UPSTREAM_FAILURES: &[(&str, &str)] = &[("de", "zürich")];
+
+/// At least this many queries must return results on both sides, so the gate
+/// compares results and not, say, the same failure everywhere.
+const MIN_QUERIES_WITH_RESULTS: usize = 20;
+
+/// Whether a query's results are the pseudo result for a failed search.
+fn failed(results: &[(String, f64)]) -> bool {
+    results
+        .first()
+        .is_some_and(|(url, _)| url.starts_with("ERROR: "))
+}
+
+/// Fail unless a query that failed on either side is a known upstream failure
+/// that failed on both.
+fn check_failure(language: &str, query: &str, ours: &[(String, f64)], theirs: &[(String, f64)]) {
+    if failed(ours) || failed(theirs) {
+        assert!(
+            UPSTREAM_FAILURES.contains(&(language, query)),
+            "[{language}] {query}: the search failed ({ours:?} / {theirs:?}), which is not a known pagefind_web failure"
+        );
+        assert!(
+            failed(ours) && failed(theirs),
+            "[{language}] {query}: failed on one index only ({ours:?} / {theirs:?})"
+        );
+    }
+}
 
 /// One result: (url, score).
 type Results = BTreeMap<String, Vec<(String, f64)>>;
@@ -767,6 +944,7 @@ fn gate_3_the_stock_pagefind_js_returns_the_same_results() {
         let old_bundle = cli(&bin, &unlanguaged);
 
         let mut queries_run = 0;
+        let (mut with_results, mut upstream_failed) = (0, 0);
         let mut differences_from_old = Vec::new();
         println!(
             "gate 3, dense: query | native results | CLI | equal | before this change (no lang)"
@@ -793,6 +971,12 @@ fn gate_3_the_stock_pagefind_js_returns_the_same_results() {
                     labels(b)
                 );
                 assert!(equal, "{query}: native {o:?} != CLI {t:?}");
+                check_failure(language, query, o, t);
+                if failed(o) {
+                    upstream_failed += 1;
+                } else if !o.is_empty() {
+                    with_results += 1;
+                }
                 if o.iter().map(|r| &r.0).ne(b.iter().map(|r| &r.0)) {
                     differences_from_old.push(format!(
                         "[{language}] {query}: before [{}], now [{}]",
@@ -803,8 +987,18 @@ fn gate_3_the_stock_pagefind_js_returns_the_same_results() {
                 queries_run += 1;
             }
         }
+        assert_eq!(
+            upstream_failed,
+            UPSTREAM_FAILURES.len(),
+            "exactly the known pagefind_web failures fail"
+        );
+        assert!(
+            with_results >= MIN_QUERIES_WITH_RESULTS,
+            "only {with_results} queries returned results"
+        );
         println!(
-            "gate 3, dense: PASS: {queries_run} queries, native equal to the CLI on every one"
+            "gate 3, dense: PASS: {queries_run} queries, native equal to the CLI on every one; \
+             {with_results} returned results, {upstream_failed} failed in pagefind_web on both (known)"
         );
         println!(
             "gate 3: results that differ from the site before this change (language and stemming):"
@@ -833,6 +1027,7 @@ fn gate_3_the_stock_pagefind_js_returns_the_same_results() {
             let theirs = run_queries(&node, &cli_fewer, language, queries);
             for query in queries.iter() {
                 let (o, t) = (&ours[*query], &theirs[*query]);
+                check_failure(language, query, o, t);
                 let a: BTreeSet<_> = o.iter().map(|r| &r.0).collect();
                 let b: BTreeSet<_> = t.iter().map(|r| &r.0).collect();
                 if a != b {

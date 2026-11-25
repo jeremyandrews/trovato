@@ -14,7 +14,7 @@
 //! tombstone fragment (empty url, content and meta), so no meta file ever
 //! names a missing file and no word posts to it.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::{Result, bail};
 
@@ -66,6 +66,23 @@ pub fn tombstone_fragment() -> String {
 /// Build one language's index from its slots, page number `i` being
 /// `slots[i]`.
 pub fn build_language(language: &str, slots: &[Slot<'_>]) -> Result<LanguageIndex> {
+    build_language_avoiding(language, slots, &BTreeSet::new())
+}
+
+/// [`build_language`], treating every bundle path in `taken` as already used
+/// by different bytes: a file whose name would be one of them gets a longer
+/// name, by the same extension rule as a collision inside the build.
+///
+/// File names carry 7 characters of a hash, so a file published earlier, and
+/// still on disk for the retention window, can share a name with a new file
+/// of different content. Publishing never overwrites a content addressed
+/// file, so without this the new meta would point at the old bytes. With
+/// `taken` empty the output is exactly Pagefind's.
+pub fn build_language_avoiding(
+    language: &str,
+    slots: &[Slot<'_>],
+    taken: &BTreeSet<String>,
+) -> Result<LanguageIndex> {
     if u32::try_from(slots.len()).is_err() {
         bail!(
             "Language {language} has too many documents to index, must be < {}",
@@ -113,6 +130,11 @@ pub fn build_language(language: &str, slots: &[Slot<'_>]) -> Result<LanguageInde
             match fragment_names.get(&short) {
                 Some(existing) if *existing == full => break,
                 Some(_) => short = prefix_chars(&full, short.len() + 1),
+                None if short.len() < full.len()
+                    && taken.contains(&format!("fragment/{short}.pf_fragment")) =>
+                {
+                    short = prefix_chars(&full, short.len() + 1);
+                }
                 None => {
                     fragment_names.insert(short.clone(), full.clone());
                     fragment_files.insert(
@@ -142,7 +164,8 @@ pub fn build_language(language: &str, slots: &[Slot<'_>]) -> Result<LanguageInde
         // Upstream's word chunk collision rule, as written: two characters
         // longer per step (`&hash[0..=short.len() + 1]`), stopping at the full
         // name.
-        while chunk_names.contains_key(&short) {
+        while chunk_names.contains_key(&short) || taken.contains(&format!("index/{short}.pf_index"))
+        {
             short = prefix_chars(&hash, short.len() + 2);
             if short.len() == hash.len() {
                 break;
@@ -163,7 +186,16 @@ pub fn build_language(language: &str, slots: &[Slot<'_>]) -> Result<LanguageInde
         sorts: Vec::new(),
     };
     let meta_bytes = to_cbor(&meta)?;
-    let meta_hash = meta_name(&meta_bytes, language);
+    let mut meta_hash = meta_name(&meta_bytes, language);
+    if taken.contains(&format!("pagefind.{meta_hash}.pf_meta")) {
+        // The meta file is cut from the bare hash; lengthen that cut.
+        let bare = full_hash(&meta_bytes);
+        let mut n = language.len() + 8;
+        while taken.contains(&format!("pagefind.{meta_hash}.pf_meta")) && n < bare.len() {
+            n += 1;
+            meta_hash = format!("{language}_{}", prefix_chars(&bare, n));
+        }
+    }
     files.insert(format!("pagefind.{meta_hash}.pf_meta"), pack(&meta_bytes)?);
 
     Ok(LanguageIndex {

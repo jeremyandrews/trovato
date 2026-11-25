@@ -16,9 +16,11 @@
 //!    no item holds any more becomes a tombstone, and a new item takes the
 //!    lowest tombstone in its language before a new number is added;
 //! 3. encodes every language's index into a staging directory beside
-//!    `PAGEFIND_OUTPUT_DIR`, bumps `search_index_state.generation` only if it
-//!    is still the generation read under the lock, and publishes: data files
-//!    first, `pagefind-entry.json` last by rename
+//!    `PAGEFIND_OUTPUT_DIR`, naming no file after a different one still on
+//!    disk, bumps `search_index_state.generation` only if it is still the
+//!    generation the caller read before exporting the documents (otherwise
+//!    nothing changes and [`RebuildAgain`] asks for a fresh build), and
+//!    publishes: data files first, `pagefind-entry.json` last by rename
 //!    ([`trovato_search_index::publish::publish`]). A staged bundle without an
 //!    entry file is refused before the live directory is touched;
 //! 4. records every index file the new entry no longer reaches
@@ -78,6 +80,45 @@ pub struct FullBuildReport {
     pub encode_ms: u128,
     /// Milliseconds staging, publishing and sweeping, under the lock.
     pub publish_ms: u128,
+}
+
+/// A build that ended without leaving the published index and the database in
+/// agreement with the current content. Either way the fix is another full
+/// build from fresh content, so the caller asks for one.
+#[doc(hidden)]
+#[derive(Debug, thiserror::Error)]
+pub enum RebuildAgain {
+    /// Another build published since this one read its starting generation
+    /// (before it exported the documents), so its documents may be older than
+    /// what is live. Nothing was changed.
+    #[error(
+        "the search index was published by another build since generation {snapshot} \
+         (now {current}); this build is dropped"
+    )]
+    Superseded {
+        /// The generation this build started from.
+        snapshot: i64,
+        /// The generation found under the lock.
+        current: i64,
+    },
+    /// The new entry file is live but the transaction recording it (ledger,
+    /// term cache, generation, retention) did not commit. The live index is
+    /// complete and self-consistent; the ledger behind it is the previous one.
+    #[error("the search index was published but not recorded: {0:#}")]
+    Unrecorded(anyhow::Error),
+}
+
+/// The published generation, 0 before the first publish. A build reads it
+/// before exporting its documents and passes it to [`full_build`], which
+/// publishes only if no other build has published since.
+#[doc(hidden)]
+pub async fn generation(pool: &PgPool) -> Result<i64> {
+    let generation: Option<i64> =
+        sqlx::query_scalar("SELECT generation FROM search_index_state WHERE id")
+            .fetch_optional(pool)
+            .await
+            .context("read the search index generation")?;
+    Ok(generation.unwrap_or(0))
 }
 
 /// One term cache row.
@@ -162,19 +203,28 @@ fn plan_ledger(rows: &[LedgerRow], wanted: &BTreeMap<Uuid, String>) -> LedgerPla
         .map(|(item, language)| (language, item))
         .collect();
     new_items.sort();
+    // Each language's free list (lowest first) and next new number, found once,
+    // so placing n items costs O(n log n) rather than a scan per item.
+    let mut free_lists: HashMap<String, (BTreeSet<i32>, i32)> = HashMap::new();
     for (language, item) in new_items {
         let pages = ledger.entry(language.clone()).or_default();
-        let free = pages
-            .iter()
-            .find(|(_, holder)| holder.is_none())
-            .map(|(page, _)| *page);
-        match free {
+        let (free, next) = free_lists.entry(language.clone()).or_insert_with(|| {
+            let free = pages
+                .iter()
+                .filter(|(_, holder)| holder.is_none())
+                .map(|(page, _)| *page)
+                .collect();
+            let next = pages.keys().next_back().map_or(0, |last| last + 1);
+            (free, next)
+        });
+        match free.pop_first() {
             Some(page) => {
                 pages.insert(page, Some(*item));
                 plan.reuse.push((language.clone(), page, *item));
             }
             None => {
-                let page = pages.keys().next_back().map_or(0, |last| last + 1);
+                let page = *next;
+                *next += 1;
                 pages.insert(page, Some(*item));
                 plan.insert.push((language.clone(), page, *item));
             }
@@ -196,10 +246,13 @@ fn plan_ledger(rows: &[LedgerRow], wanted: &BTreeMap<Uuid, String>) -> LedgerPla
 }
 
 /// The site's default language as a Pagefind key, for an index with no pages.
-async fn default_language(pool: &PgPool) -> Result<String> {
+/// Read on the build's own connection: the transaction already holds one, and
+/// asking the pool for another while holding the publish lock can wait forever
+/// on a small or busy pool.
+async fn default_language(conn: &mut sqlx::PgConnection) -> Result<String> {
     let id: Option<String> =
         sqlx::query_scalar("SELECT id FROM language WHERE is_default = true LIMIT 1")
-            .fetch_optional(pool)
+            .fetch_optional(conn)
             .await
             .context("read the default language")?;
     Ok(id
@@ -223,11 +276,17 @@ impl Drop for StagingGuard {
 
 /// Build the whole index from `documents` through the ledger and publish it
 /// into `output_dir`. See the module documentation for the steps.
+///
+/// `snapshot` is [`generation`] as read before `documents` were exported. If
+/// another build has published since, this one fails with
+/// [`RebuildAgain::Superseded`] before changing anything, so an older export
+/// never replaces a newer one.
 #[doc(hidden)]
 pub async fn full_build(
     pool: &PgPool,
     output_dir: &Path,
     documents: &[IndexDocument],
+    snapshot: i64,
 ) -> Result<FullBuildReport> {
     let mut report = FullBuildReport::default();
     let started = Instant::now();
@@ -331,6 +390,13 @@ pub async fn full_build(
             .fetch_one(&mut *tx)
             .await
             .context("read the search index generation")?;
+    if read_generation != snapshot {
+        return Err(RebuildAgain::Superseded {
+            snapshot,
+            current: read_generation,
+        }
+        .into());
+    }
 
     let rows = sqlx::query_as::<_, LedgerRow>(
         "SELECT language, page_number, item_id FROM search_page ORDER BY language, page_number",
@@ -347,7 +413,7 @@ pub async fn full_build(
     if slots.is_empty() {
         // Nothing searchable: publish an empty index rather than none, so the
         // browser finds an index and returns no results.
-        slots.insert(default_language(pool).await?, Vec::new());
+        slots.insert(default_language(&mut tx).await?, Vec::new());
     }
     report.languages = slots.iter().map(|(l, s)| (l.clone(), s.len())).collect();
     report.pages = wanted.len();
@@ -357,6 +423,7 @@ pub async fn full_build(
         .sum();
 
     let encode_started = Instant::now();
+    let live = output_dir.to_path_buf();
     let (indexes, bundle) = tokio::task::spawn_blocking(move || {
         let numbered: BTreeMap<String, Vec<Slot<'_>>> = slots
             .iter()
@@ -371,7 +438,9 @@ pub async fn full_build(
                 (language.clone(), slots)
             })
             .collect();
-        trovato_search_index::build_bundle(&numbered)
+        // Named so that no file takes the name of a different one still on
+        // disk from an earlier publish.
+        trovato_search_index::build_bundle_for_live(&numbered, &live)
     })
     .await
     .context("the index encoder task failed")??;
@@ -424,10 +493,14 @@ pub async fn full_build(
 
     // 4. Retention: record what the new entry no longer reaches; delete what
     // has gone unreferenced for the window.
-    report.expired = sweep(&mut tx, output_dir, &published.referenced).await?;
-    tx.commit()
+    // The entry is live from here on: a failure now leaves the database behind
+    // the published index, which the caller mends with another build.
+    report.expired = sweep(&mut tx, output_dir, &published.referenced)
         .await
-        .context("commit the search index publish")?;
+        .map_err(RebuildAgain::Unrecorded)?;
+    tx.commit().await.map_err(|e| {
+        RebuildAgain::Unrecorded(anyhow::Error::new(e).context("commit the search index publish"))
+    })?;
     report.publish_ms = publish_started.elapsed().as_millis();
 
     info!(
@@ -696,6 +769,44 @@ mod tests {
             vec![("en".into(), 1, id(8)), ("en".into(), 3, id(9))]
         );
         assert!(plan.insert.is_empty());
+    }
+
+    /// Placing items must not scan the language's pages once per item: a fresh
+    /// build of 200,000 pages in one language would be 2 * 10^10 holder
+    /// checks, far past the 30 s test budget. Linear placement takes well under
+    /// a second.
+    #[test]
+    fn placing_many_new_items_does_not_rescan_the_ledger_per_item() {
+        const N: u128 = 200_000;
+        let many: BTreeMap<Uuid, String> = (0..N).map(|n| (id(n), "en".to_string())).collect();
+        let plan = plan_ledger(&[], &many);
+        assert_eq!(plan.insert.len(), N as usize);
+        assert!(
+            plan.insert
+                .iter()
+                .enumerate()
+                .all(|(i, (_, page, item))| *page as usize == i && *item == id(i as u128))
+        );
+
+        // And with half of a full ledger freed, the new items fill the
+        // tombstones lowest first, then continue after the last page.
+        let rows: Vec<LedgerRow> = (0..N)
+            .map(|n| row("en", n as i32, (n % 2 == 0).then_some(n)))
+            .collect();
+        let mut wanted: BTreeMap<Uuid, String> = (0..N)
+            .step_by(2)
+            .map(|n| (id(n), "en".to_string()))
+            .collect();
+        wanted.extend((N..N + N / 2 + 1).map(|n| (id(n), "en".to_string())));
+        let plan = plan_ledger(&rows, &wanted);
+        assert_eq!(plan.reuse.len(), (N / 2) as usize);
+        assert!(
+            plan.reuse
+                .iter()
+                .enumerate()
+                .all(|(i, (_, page, _))| *page as usize == 2 * i + 1)
+        );
+        assert_eq!(plan.insert, vec![("en".into(), N as i32, id(N + N / 2))]);
     }
 
     #[test]

@@ -6,7 +6,9 @@
 //!    that entry names. Until this passes, nothing in the live directory is
 //!    touched; a build that wrote nothing leaves the published index as it was.
 //! 2. The fragments and word chunks, each moved in under its content hash name.
-//!    A file already there under that name has the same bytes and is kept.
+//!    A file already there under that name with the same bytes is kept; one
+//!    with different bytes (two contents sharing a short hash) refuses the
+//!    whole publish before anything moves, see [`conflicting_names`].
 //! 3. The meta files, the same way.
 //! 4. The fixed-name runtime files, each written to a temporary name and
 //!    renamed over the old one.
@@ -130,6 +132,14 @@ pub fn publish(staged: &Path, live: &Path, tmp_suffix: &str) -> Result<Published
     let metas = staged_meta_files(staged)?;
 
     let staged_bundle = crate::decode::read_bundle(staged)?;
+    let clashes = conflicting_names(&staged_bundle, live)?;
+    if !clashes.is_empty() {
+        bail!(
+            "the new index reuses the name of a different file already published ({}); \
+             build it against the live directory so those names are avoided",
+            clashes.into_iter().collect::<Vec<_>>().join(", ")
+        );
+    }
     let mut published = Published::default();
     let mut runtime = Vec::new();
     let mut data_files = Vec::new();
@@ -173,6 +183,30 @@ pub fn publish(staged: &Path, live: &Path, tmp_suffix: &str) -> Result<Published
     // The flip.
     move_into_place(&staged.join(ENTRY_FILE), &live.join(ENTRY_FILE), tmp_suffix)?;
     Ok(published)
+}
+
+/// The content addressed paths of `bundle` that `live` already holds with
+/// different bytes: a short hash name shared by two contents. Packing is
+/// deterministic, so the same content always has the same bytes, and a file
+/// with the same name and bytes is the same file.
+pub fn conflicting_names(bundle: &Bundle, live: &Path) -> Result<BTreeSet<String>> {
+    let mut clashes = BTreeSet::new();
+    for (path, bytes) in bundle {
+        if !is_content_addressed(path) {
+            continue;
+        }
+        match std::fs::read(live.join(path)) {
+            Ok(existing) if existing != *bytes => {
+                clashes.insert(path.clone());
+            }
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                return Err(e).with_context(|| format!("read {}", live.join(path).display()));
+            }
+        }
+    }
+    Ok(clashes)
 }
 
 /// Every content addressed file in `live` that `referenced` does not name, by

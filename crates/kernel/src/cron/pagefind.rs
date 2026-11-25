@@ -232,6 +232,22 @@ pub async fn maybe_rebuild_index(
             Ok(true)
         }
         Err(e) => {
+            // A build that lost to another publisher, or published without
+            // recording it, is mended by building again from fresh content.
+            let again = e.downcast_ref::<super::search_index::RebuildAgain>();
+            if again.is_some() {
+                sqlx::query(
+                    "UPDATE pagefind_index_status SET rebuild_requested = true WHERE id = 1",
+                )
+                .execute(pool)
+                .await
+                .context("failed to request another pagefind rebuild")?;
+            }
+            if let Some(super::search_index::RebuildAgain::Superseded { .. }) = again {
+                info!(reason = %e, "pagefind index build superseded; another rebuild requested");
+                return Ok(false);
+            }
+
             let error_msg = format!("{e:#}");
             sqlx::query("UPDATE pagefind_index_status SET last_error = $1 WHERE id = 1")
                 .bind(&error_msg)
@@ -252,8 +268,11 @@ pub async fn maybe_rebuild_index(
 /// `CronService::apply_runtime_config`: the index needs exactly one
 /// destination.
 async fn build_index(pool: &PgPool, output_dir: &Path, items: &ItemService) -> Result<usize> {
+    // Read before the export: a build that publishes in between makes this
+    // export the older one, and this build is then dropped.
+    let snapshot = super::search_index::generation(pool).await?;
     let documents = indexable_documents(pool, items).await?;
-    let report = super::search_index::full_build(pool, output_dir, &documents).await?;
+    let report = super::search_index::full_build(pool, output_dir, &documents, snapshot).await?;
     Ok(report.pages)
 }
 

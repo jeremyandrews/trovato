@@ -17,10 +17,16 @@ item in its language takes. Each item's tokenized terms are cached in
 `search_page_terms`, keyed by a hash of the HTML it was indexed from, so a
 rebuild re-tokenizes only what changed. `search_index_state` records the
 published generation and the Pagefind version, and `search_index_file` when
-each index file stopped being used. A rebuild holds a Postgres advisory lock,
-stages the new index beside `PAGEFIND_OUTPUT_DIR`, and publishes it only if no
-other server published in the meantime: data files first, then the meta file,
-then `pagefind-entry.json` last, by rename. The old index is no longer moved
+each index file stopped being used. A rebuild reads the published generation before it
+exports the content, holds a Postgres advisory lock, stages the new index beside
+`PAGEFIND_OUTPUT_DIR`, and publishes it only if no other build published since
+that read: data files first, then the meta file, then `pagefind-entry.json`
+last, by rename. A build that lost to another one changes nothing and asks for
+another rebuild, so an older export never replaces a newer one; so does a
+build whose entry went live but whose database transaction then failed. File
+names are seven hash characters, so the build names its files against the live
+directory, and a name already used there by a different file is lengthened
+rather than reused. The old index is no longer moved
 aside: a browser that loaded it keeps finding its files, which are deleted 24
 hours after the published index stops using them. A build that wrote no entry
 file, or an entry naming a missing meta file, is refused before the published

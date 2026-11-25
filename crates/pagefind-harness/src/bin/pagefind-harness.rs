@@ -452,10 +452,12 @@ async fn measure_native(runs: usize, output: &Path, cold: bool) -> Result<()> {
         }
         let total = Instant::now();
         let t = Instant::now();
+        let snapshot = trovato_kernel::cron::search_index_generation(state.db()).await?;
         let documents = indexable_documents(state.db(), state.items()).await?;
         let export_time = t.elapsed();
         let report =
-            trovato_kernel::cron::search_index_full_build(state.db(), output, &documents).await?;
+            trovato_kernel::cron::search_index_full_build(state.db(), output, &documents, snapshot)
+                .await?;
         println!(
             "| {run} | {} | {:.0} ms | {} ms ({} tokenized, {} cached) | {} ms | {} ms | {:.0} ms |",
             report.pages,

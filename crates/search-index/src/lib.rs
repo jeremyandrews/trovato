@@ -29,11 +29,12 @@ pub mod publish;
 pub mod tokenize;
 pub mod vendor;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 
-pub use assemble::{LanguageIndex, Slot, build_language};
+pub use assemble::{LanguageIndex, Slot, build_language, build_language_avoiding};
 pub use bundle::{Bundle, assemble_bundle};
 pub use tokenize::{PageTerms, tokenize};
 
@@ -47,10 +48,47 @@ pub const PAGEFIND_VERSION: &str = "1.3.0";
 pub fn build_bundle(
     languages: &BTreeMap<String, Vec<Slot<'_>>>,
 ) -> Result<(Vec<LanguageIndex>, Bundle)> {
+    build_bundle_avoiding(languages, &BTreeSet::new())
+}
+
+/// [`build_bundle`] with the bundle paths in `taken` treated as used by
+/// different bytes (see [`build_language_avoiding`]).
+pub fn build_bundle_avoiding(
+    languages: &BTreeMap<String, Vec<Slot<'_>>>,
+    taken: &BTreeSet<String>,
+) -> Result<(Vec<LanguageIndex>, Bundle)> {
     let mut indexes = Vec::with_capacity(languages.len());
     for (language, slots) in languages {
-        indexes.push(build_language(language, slots)?);
+        indexes.push(build_language_avoiding(language, slots, taken)?);
     }
     let bundle = assemble_bundle(&indexes)?;
     Ok((indexes, bundle))
+}
+
+/// How many times [`build_bundle_for_live`] re-encodes before giving up. Each
+/// round lengthens only names that clashed, so one round is the norm and a
+/// second needs a further 7-character clash on a lengthened name.
+const MAX_NAMING_ROUNDS: usize = 8;
+
+/// Build the bundle to be published into `live`: [`build_bundle`], then again
+/// with every name that `live` already holds with different bytes avoided,
+/// until no name clashes. On a directory with no clash, or none at all, the
+/// output is exactly [`build_bundle`]'s.
+pub fn build_bundle_for_live(
+    languages: &BTreeMap<String, Vec<Slot<'_>>>,
+    live: &Path,
+) -> Result<(Vec<LanguageIndex>, Bundle)> {
+    let mut taken = BTreeSet::new();
+    for _ in 0..MAX_NAMING_ROUNDS {
+        let (indexes, bundle) = build_bundle_avoiding(languages, &taken)?;
+        let clashes = publish::conflicting_names(&bundle, live)?;
+        if clashes.is_empty() {
+            return Ok((indexes, bundle));
+        }
+        taken.extend(clashes);
+    }
+    bail!(
+        "could not name the index files apart from {} after {MAX_NAMING_ROUNDS} rounds",
+        live.display()
+    )
 }

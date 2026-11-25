@@ -675,17 +675,36 @@ on every Pagefind bump:
   table, `search_index_file`, records when each content addressed file stopped
   being referenced, for the retention window.
 * **The full build** (`crates/kernel/src/cron/search_index.rs`, called by the
-  cron rebuild in place of the CLI): render every indexable item's fragment,
-  hash it, reuse the cached terms when the hash matches and the state row's
-  version is 1.3.0, and tokenize the rest. Then, in one transaction holding
-  `pg_advisory_xact_lock(hashtext('search_index'))`: read the generation,
-  tombstone the slots of items no longer indexable, give each new item the
-  lowest tombstone in its language (new items taken in id order) or the next
-  slot, store the terms, encode, stage the bundle in a directory beside
-  `PAGEFIND_OUTPUT_DIR`, bump the generation only if it is still the one read,
+  cron rebuild in place of the CLI): read the published generation, export the
+  indexable items, render every item's fragment, hash it, reuse the cached
+  terms when the hash matches and the state row's version is 1.3.0, and
+  tokenize the rest. Then, in one transaction holding
+  `pg_advisory_xact_lock(hashtext('search_index'))`: check that the generation
+  is still the one read before the export, and if not, change nothing and ask
+  for another rebuild (another build published a newer export, or an older
+  one that the next build replaces). Tombstone the slots of items no longer
+  indexable, give each new item the lowest tombstone in its language (new
+  items taken in id order) or the next slot, store the terms, encode, stage
+  the bundle in a directory beside `PAGEFIND_OUTPUT_DIR`, bump the generation,
   publish, sweep, commit. A language left with no live page loses its ledger
   rows and its index. An empty site publishes an empty index in the default
   language.
+* **File names against the live directory.** Names carry seven hash
+  characters, and a published file stays on disk for 24 hours after it stops
+  being referenced, so a new file can share a name with an older file of
+  different content. Publishing never overwrites a content addressed file, so
+  the build names its files against the live directory: a name the directory
+  holds with different bytes is lengthened, by Pagefind's own extension rule,
+  and `publish` refuses a bundle that would still reuse one. With no such
+  clash, which is almost always, the names are exactly Pagefind's.
+* **Publishing is not transactional with the database.** Once
+  `pagefind-entry.json` is renamed in, a failure to record the publish
+  (sweep, commit, a crash) leaves a complete live index whose ledger,
+  generation and `entry_meta` were rolled back. The build reports that as a
+  rebuild to request, and the next full build re-derives everything and
+  brings the two back into agreement. Part 3's updater must not start from a
+  ledger whose `entry_meta` differs from the live entry; it should run a full
+  build first.
 * **Language** comes from `item.language`, falling back to the default row of
   `language` (then `en`) when it is empty or `und`, and is written as
   `<html lang>`. Every page has one, so the "no lang merges into the most
@@ -707,7 +726,9 @@ on every Pagefind bump:
   scores may come back in a different order with identical scores. Within a
   run of equal scores the URL sets must match; across runs the order must. At
   5% tombstones the bound is 10% of result positions moved outside their tie
-  group, and every query's result set must be unchanged.
+  group, and every query's result set must be unchanged. A query may fail only if it is
+  on the gate's list of `pagefind_web` failures (German `zürich`, below) and
+  fails on both indexes, and at least 20 queries must return results.
 * **Gates in CI.** `crates/kernel/tests/search_index_gates_test.rs` runs all
   three over a 60 item fixture in English and German. Gates 2 and 3 skip
   without a CLI or Node; the Test job installs the pinned CLI and sets

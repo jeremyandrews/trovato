@@ -19,7 +19,10 @@ pub use pagefind::{
 /// The native search index build, for the gate tests: build an index from a
 /// given set of documents through the ledger and publish it.
 #[doc(hidden)]
-pub use search_index::{FullBuildReport, RETENTION_HOURS, full_build as search_index_full_build};
+pub use search_index::{
+    FullBuildReport, RETENTION_HOURS, RebuildAgain, full_build as search_index_full_build,
+    generation as search_index_generation,
+};
 
 pub use tasks::UpdateCheckConfig;
 
