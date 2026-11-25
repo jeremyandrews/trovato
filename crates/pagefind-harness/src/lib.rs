@@ -23,6 +23,7 @@
 pub mod build;
 pub mod compare;
 pub mod decode;
+pub mod export;
 pub mod parity;
 pub mod stress;
 

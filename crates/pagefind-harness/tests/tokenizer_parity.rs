@@ -12,8 +12,9 @@
 //! * against the `pagefind` CLI: needs the CLI (`$PAGEFIND_BIN`, else
 //!   `pagefind` on `PATH`) and **skips with a message** without it.
 //!
-//! This crate is its own workspace, excluded from the root one, so CI does not
-//! run either (see docs/design/incremental-search-index.md). Run it with
+//! This crate is its own workspace, excluded from the root one. CI's `Pagefind
+//! Harness` job runs both, with the pinned CLI downloaded, and fails if either
+//! skips (see docs/design/incremental-search-index.md). Locally, run it with
 //!
 //!   ```text
 //!   PAGEFIND_BIN=/path/to/pagefind-1.3.0 cargo test \

@@ -414,16 +414,18 @@ fn a_theme_that_does_not_parse_cannot_be_activated() {
         restore_stock_on_exit(app);
         let (_, cookies) = user_holding(app, "b138cracked", &["administer themes"]).await;
 
-        // A theme switch made by an earlier test in this binary bumps the
-        // themes generation from a background task, and this server's watcher
-        // answers it by reloading the stored choice, which cleanup has deleted,
-        // so stock. Let that land before setting Lakeside below, or it can
-        // arrive in the middle of this test and replace it (seen in CI: "the
-        // previous theme stays active", left "stock", right "lakeside").
-        common::settle_cache_generations().await;
-
         // Lakeside is the default before the attempt, so "the previous theme
-        // stays active" is a real theme and not just the fallback.
+        // stays active" is a real theme and not just the fallback. It is stored
+        // as well as applied. A theme switch made by an earlier test in this
+        // binary bumps the themes generation from a background task, and every
+        // server's watcher answers a bump by reloading the stored choice. With
+        // nothing stored, a late reload would put stock back in the middle of
+        // this test (seen in CI: left "stock", right "lakeside"). With Lakeside
+        // stored, any reload, whenever it lands, restores exactly what the test
+        // expects.
+        SiteConfig::set(&app.db, DEFAULT_THEME_KEY, serde_json::json!("lakeside"))
+            .await
+            .unwrap();
         app.state.theme().set_active(ActiveThemes {
             default: "lakeside".into(),
             admin: "stock".into(),
@@ -464,10 +466,23 @@ fn a_theme_that_does_not_parse_cannot_be_activated() {
             "lakeside",
             "the previous theme stays active"
         );
+        // What a late generation bump does on arrival: reload the stored
+        // choice. Landing now, after the refusal, it must change nothing.
+        registry::load_active(&app.db, app.state.theme()).await;
+        assert_eq!(
+            app.state.theme().active().default,
+            "lakeside",
+            "a reload of the stored choice keeps the previous theme"
+        );
         assert_eq!(
             SiteConfig::get(&app.db, DEFAULT_THEME_KEY).await.unwrap(),
+            Some(serde_json::json!("lakeside")),
+            "the stored default is not replaced by the broken theme"
+        );
+        assert_eq!(
+            SiteConfig::get(&app.db, ADMIN_THEME_KEY).await.unwrap(),
             None,
-            "nothing is stored"
+            "and nothing else is stored"
         );
 
         // The site still renders, on the theme that was active.

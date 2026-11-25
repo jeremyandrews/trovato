@@ -125,7 +125,7 @@ the product ships and audits from. Passing the audit would then have meant the
 first two entries in `.cargo/audit.toml`'s empty ignore list. Kept apart, the
 root lockfile is unchanged, the kernel's dependency graph never contains
 either crate (`cargo tree -p trovato-kernel -i actix-files` finds nothing),
-and CI compiles nothing extra.
+and the harness is built and tested by its own CI job (see below).
 
 **Part 2 inherits this.** A production codec that depends on the `pagefind`
 crate at runtime would ship `actix-web` and both advisories in the kernel.
@@ -222,7 +222,10 @@ not need to.
 PAGEFIND_BIN=/path/to/pagefind-1.3.0 \
   cargo test --manifest-path crates/pagefind-harness/Cargo.toml --test tokenizer_parity -- --nocapture
 
-# Over any export (DATABASE_URL, REDIS_URL and PLUGINS_DIR as for the server):
+# Over any export. Run from the repository root, against a copy of a site
+# (DATABASE_URL, REDIS_URL and PLUGINS_DIR as for the server). Start-up
+# migrations are switched off, but the server state still starts as `serve`
+# would. The output directory must be new or empty.
 cargo run --release --manifest-path crates/pagefind-harness/Cargo.toml -- export --out /tmp/site
 PAGEFIND_BIN=/path/to/pagefind-1.3.0 \
   cargo run --release --manifest-path crates/pagefind-harness/Cargo.toml -- parity --site /tmp/site
@@ -232,13 +235,19 @@ PAGEFIND_BIN=... cargo run --release --manifest-path crates/pagefind-harness/Car
   measure --runs 3 --output /tmp/pagefind-out
 ```
 
-**CI does not run these tests**, because the harness is not a member of the
-root workspace, and CI has no Pagefind CLI anyway. Locally, the crate-only
-comparisons (on `corpus/` and the stress set), the decoder's unit tests and the
-corpus check always run. The two CLI comparisons print
-`SKIPPED: no pagefind CLI ...` and pass when no CLI is found. Part 2 moves the
-gates into CI along with the codec, by downloading the pinned release in the
-job.
+**CI runs all of these tests, the CLI comparisons included.** The harness is not
+a root workspace member, so no other job builds it. The `Pagefind Harness` job
+in `ci.yml` does it on its own manifest and lockfile:
+
+* it downloads the pinned `pagefind` 1.3.0 Linux release and sets
+  `PAGEFIND_BIN`;
+* it runs `fmt`, `clippy -D warnings` and `cargo test --locked`;
+* it fails if any CLI comparison printed `SKIPPED`.
+
+Without a CLI (on a laptop, say), the crate-only comparisons on `corpus/` and
+the stress set, the decoder and export unit tests and the corpus check still
+run. The two CLI comparisons then print `SKIPPED: no pagefind CLI ...` and
+pass.
 
 ## What Pagefind 1.3.0 actually writes
 
@@ -387,13 +396,33 @@ All writes go into the live directory. Every file except
    one. This is the single atomic pointer flip. Before it, readers see the old
    meta, whose files are all still present. After it, readers see the new meta,
    whose files were all written first.
-4. Delete superseded files: the chunks, fragments and meta no longer referenced
-   by the current entry **or by the previous generation**. Delete them only
-   after a grace period of at least an hour. `pagefind_web` reads the meta once,
-   at `init()`, so a tab opened before the flip keeps asking for the old chunk
-   names until it reloads.
+4. Delete superseded files by age, not by generation count. Record when each
+   file stopped being referenced by the current meta (in the state tables, at
+   the flip). Delete it once it has gone unreferenced for the **retention
+   window**, 24 hours, however many generations have been published since.
 
-A reader therefore never sees a meta file pointing at a missing chunk.
+At the moment of each flip, the published meta never names a missing file:
+everything it names was written in steps 1 and 2. A reader is a different
+matter. `pagefind_web` reads the meta once, at `init()`, and keeps asking for
+the chunk and fragment names that meta lists until the page reloads. Counting
+generations cannot bound that, because a busy site publishes many in an hour.
+The age-based window can, but only for readers younger than the window. A tab
+left open for longer than 24 hours can still ask for a deleted chunk.
+
+No retention policy can rule that out, because nothing on the server knows how
+long a tab has been open. So the guarantee has two parts:
+
+* **Retention.** Any reader that loaded its meta within the last 24 hours finds
+  every file that meta names.
+* **Recovery.** An older reader that hits a missing file reloads the index:
+  `scolta.js` catches a failed search, calls `pagefind.destroy()` and
+  `pagefind.init()` again, which fetch the current entry and meta, and repeats
+  the search once. That is a small change to `scolta.js` in part 3; the browser
+  bundle itself is untouched.
+
+Until part 3 ships the recovery, the retention window is the whole guarantee.
+That is still far better than today, where the swap deletes the old index at
+once.
 `pagefind-entry.json` is fetched as `pagefind-entry.json?ts=<now>` (in
 `coupled_search.ts`), so browser caching of it does not delay the flip.
 
@@ -456,7 +485,9 @@ Notes on the table:
 * The TF columns are the BM25 TF factor relative to the same page with no
   tombstones.
 
-At 1% the effects are under half a percent, which is noise. At 5% they reach
+At 1% every effect is about 1% or less: at most 0.6% on TF, and 1.1% on a
+common term's IDF (0.2% on a rare one). That is too small to reorder any but
+near-tied results. At 5% they reach
 about 3% on TF and about 6% on a common term's IDF. That is enough to swap two
 results that were within a few percent of each other, but it will not reorder a
 page list wholesale. That is why 5% is the trigger. At 10% a long page loses
@@ -477,6 +508,14 @@ CREATE TABLE search_index_queue (
     reason      text      NOT NULL,    -- 'item_update', 'comment', 'type_settings', ...
     enqueued_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- One row: what is published, for the single-writer check below.
+CREATE TABLE search_index_state (
+    id               boolean PRIMARY KEY DEFAULT true CHECK (id),
+    generation       bigint  NOT NULL,   -- bumped by every publish
+    pagefind_version text    NOT NULL,   -- the pinned version that wrote it
+    entry_meta       jsonb   NOT NULL    -- language -> meta file named in the entry
+);
 ```
 
 * **Enqueuing.** Callers enqueue item ids instead of calling
@@ -489,13 +528,39 @@ CREATE TABLE search_index_queue (
   An upsert of an item that is no longer searchable is a delete. The updater
   decides searchability with the same `indexable_documents` seam, restricted to
   the queued ids.
-* **Draining.** Cron drains the queue in batches. It takes the batch
-  `FOR UPDATE SKIP LOCKED`, coalesces it by item (the last op wins), renders,
-  tokenizes and applies the batch, follows the write order above, and deletes
-  the rows in the same transaction as the ledger, term cache and chunk updates.
-  If the process crashes, the rows are still there and the next run redoes them.
-  That is safe because the files are content addressed and the updates are
-  idempotent.
+* **Draining.** There is **one publisher for the whole index at a time**. It
+  is not one per language, because `pagefind-entry.json` lists every language and is shared
+  between them. Each drain
+  runs in a single transaction that does the following, in order:
+  1. Takes `pg_advisory_xact_lock(hashtext('search_index'))`
+     before reading anything. A second drainer, on this server or another,
+     blocks there until the first commits or rolls back. It then reads the
+     state the first one published and builds on it, rather than on the
+     generation both started from.
+  2. Reads `search_index_state.generation` (one row for the index), and the batch:
+     queue rows, coalesced by item, last op wins.
+  3. Renders, tokenizes and applies the batch, and follows the write order
+     above.
+  4. Updates the ledger, term cache, chunk rows and state with
+     `UPDATE search_index_state SET generation = generation + 1 … WHERE
+     generation = $read`.
+  5. Deletes the queue rows it applied, and commits.
+
+  The `WHERE generation = $read` is a second guard, independent of the lock:
+  if anything else published in between, the update touches no row. The drain
+  then rolls back, leaving its queue rows in place, and the batch is retried
+  from the new state. The files it already wrote are content addressed and
+  merely unreferenced, so retention removes them.
+
+  The entry file is renamed in step 3, under the lock and before the commit.
+  If the commit then fails, the entry may name a meta the database does not
+  record. The next drain sees the mismatch (the meta named in the entry is not
+  the state row's) and takes a loud full rebuild. If the process crashes, the
+  rows are still there and the next run redoes them.
+
+  `FOR UPDATE SKIP LOCKED` is not used. With one publisher for the index there
+  is nothing to skip, and concurrent drainers each publishing a partial entry
+  is exactly what the lock prevents.
 * **The full rebuild stays as a fallback.** It is the full build through the
   ledger, and it is **taken loudly**: a `warn` log line naming the reason
   whenever a precondition fails. The preconditions are:
@@ -593,3 +658,10 @@ on every Pagefind bump:
   "Install with: npm install -g pagefind". That installs the latest release,
   not the 1.3.0 the Dockerfile pins, so a host that follows the advice builds
   with a different Pagefind from production.
+* **The rebuild can swap in nothing.** `build_index_inner` moves the old index
+  aside whenever it exists, and then moves the new one in only if
+  `_pagefind` exists, before deleting the backup. A CLI that exits 0 without
+  writing an index therefore leaves the site with no index at all. The
+  harness's `measure` checks for the new `pagefind-entry.json` before touching
+  the old index (`export::swap_into`). The kernel's swap goes away in part 3,
+  so it is left as it is here, with no kernel behaviour change in this part.

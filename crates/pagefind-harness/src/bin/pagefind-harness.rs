@@ -12,8 +12,11 @@
 //! `export` and `measure` read the site the usual way (`DATABASE_URL`,
 //! `REDIS_URL`, `PLUGINS_DIR`, …) and build the full `AppState`, so the export
 //! goes through the same `indexable_documents` and `render_fragment`, the same
-//! access seam and the same plugins as the cron job. Neither writes to the
-//! database. The CLI is `$PAGEFIND_BIN`, else `pagefind` on `PATH`.
+//! access seam and the same plugins as the cron job. Both turn
+//! `MIGRATE_ON_START` off, so neither changes the schema; they still start the
+//! server state as `serve` would (plugin discovery included), so run them
+//! against a copy of a site, not the site. `export` refuses a non-empty
+//! directory. The CLI is `$PAGEFIND_BIN`, else `pagefind` on `PATH`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -93,38 +96,13 @@ fn main() -> Result<()> {
 }
 
 async fn app_state() -> Result<AppState> {
-    let config = Config::from_env().context("load configuration")?;
+    let mut config = Config::from_env().context("load configuration")?;
+    // Never change the schema from a dev tool: a pending kernel or plugin
+    // migration is `trovato migrate`'s job, not an export's.
+    config.migrate_on_start = false;
     AppState::new(&config)
         .await
         .context("initialize application state")
-}
-
-/// Every `len / n`-th of `docs`, in order: a systematic sample, so each content
-/// type appears in proportion to its share.
-fn every_kth(docs: Vec<IndexDocument>, n: usize) -> Vec<IndexDocument> {
-    if n == 0 || docs.is_empty() {
-        return Vec::new();
-    }
-    let len = docs.len();
-    let wanted: std::collections::BTreeSet<usize> =
-        (0..n.min(len)).map(|i| i * len / n.min(len)).collect();
-    docs.into_iter()
-        .enumerate()
-        .filter(|(i, _)| wanted.contains(i))
-        .map(|(_, d)| d)
-        .collect()
-}
-
-/// A deterministic sample of `n`: a quarter drawn systematically from the
-/// items that have visible comments, the rest systematically from the others,
-/// both in id order.
-fn sample(mut docs: Vec<IndexDocument>, n: usize) -> Vec<IndexDocument> {
-    docs.sort_by_key(|d| d.id);
-    let (with, without): (Vec<_>, Vec<_>) = docs.into_iter().partition(|d| !d.comments.is_empty());
-    let from_with = (n / 4).min(with.len());
-    let mut chosen = every_kth(with, from_with);
-    chosen.extend(every_kth(without, n - chosen.len()));
-    chosen
 }
 
 /// Write documents as `build_index_inner` does.
@@ -144,9 +122,9 @@ async fn export(out: &Path, sample_size: Option<usize>) -> Result<()> {
     let mut documents = indexable_documents(state.db(), state.items()).await?;
     let total = documents.len();
     if let Some(n) = sample_size {
-        documents = sample(documents, n);
+        documents = trovato_pagefind_harness::export::sample(documents, n);
     }
-    tokio::fs::create_dir_all(out).await?;
+    trovato_pagefind_harness::export::prepare_empty_dir(out)?;
     write_documents(out, &documents).await?;
     let with_comments = documents.iter().filter(|d| !d.comments.is_empty()).count();
     let comments: usize = documents.iter().map(|d| d.comments.len()).sum();
@@ -246,16 +224,11 @@ async fn measure(runs: usize, output: &Path) -> Result<()> {
         let cli_time = t.elapsed();
 
         let t = Instant::now();
-        if output.exists() {
-            tokio::fs::rename(output, &backup).await?;
-        }
-        if output_path.exists() {
-            tokio::fs::rename(&output_path, output).await?;
-        }
-        if backup.exists() {
-            tokio::fs::remove_dir_all(&backup).await.ok();
-        }
+        // The kernel's swap, except that the new index is checked first, so a
+        // CLI that exits 0 without writing one leaves the old index in place.
+        let swapped = trovato_pagefind_harness::export::swap_into(&output_path, output, &backup);
         tokio::fs::remove_dir_all(&temp).await.ok();
+        swapped?;
         let swap_time = t.elapsed();
 
         println!(
