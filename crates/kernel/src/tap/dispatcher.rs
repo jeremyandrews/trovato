@@ -991,6 +991,19 @@ mod tests {
               (i64.const 8388609))))
     "#;
 
+    /// A runtime for one echo plugin. Each instance slot in the pooling
+    /// allocator reserves address space up front, and the default's 1000 slots
+    /// reserve terabytes: several of those alive at once in one test process
+    /// ran the address space out (`failed to create memory pool mapping`) for
+    /// unrelated tests. One plugin instance at a time needs two slots at most.
+    fn echo_runtime() -> PluginRuntime {
+        PluginRuntime::new(&PluginConfig {
+            max_instances: 2,
+            ..PluginConfig::default()
+        })
+        .unwrap()
+    }
+
     /// One call's full wallclock/epoch budget, factored out so every B181 test
     /// below asks for the same (generous, request-scoped) allowance instead of
     /// repeating the pair of numbers four times.
@@ -1013,7 +1026,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_abi_plugin_tap_output_200kb_arrives_intact() {
-        let mut runtime = PluginRuntime::new(&PluginConfig::default()).unwrap();
+        let mut runtime = echo_runtime();
         let plugin = load_wat_plugin(&mut runtime, "echo_200kb", ECHO_WAT);
         let payload = "a".repeat(200 * 1024);
 
@@ -1025,7 +1038,7 @@ mod tests {
 
     #[tokio::test]
     async fn new_abi_plugin_tap_output_2mb_arrives_intact() {
-        let mut runtime = PluginRuntime::new(&PluginConfig::default()).unwrap();
+        let mut runtime = echo_runtime();
         let plugin = load_wat_plugin(&mut runtime, "echo_2mb", ECHO_WAT);
         let payload = "b".repeat(2 * 1024 * 1024);
 
@@ -1040,7 +1053,7 @@ mod tests {
         // The pre-B181 protocol wrote input at a hardcoded offset capped at
         // 65536 bytes; a large form body (the ApiRequest JSON a plugin route
         // receives) routinely exceeds that. 100 KB is comfortably past it.
-        let mut runtime = PluginRuntime::new(&PluginConfig::default()).unwrap();
+        let mut runtime = echo_runtime();
         let plugin = load_wat_plugin(&mut runtime, "echo_100kb_input", ECHO_WAT);
         let payload = "c".repeat(100 * 1024);
 
@@ -1052,7 +1065,7 @@ mod tests {
 
     #[tokio::test]
     async fn tap_output_over_the_documented_limit_is_refused_not_truncated() {
-        let mut runtime = PluginRuntime::new(&PluginConfig::default()).unwrap();
+        let mut runtime = echo_runtime();
         let plugin = load_wat_plugin(&mut runtime, "liar", LIAR_WAT);
 
         let err = call_echo(&runtime, &plugin, "{}")
