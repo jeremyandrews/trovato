@@ -1,0 +1,332 @@
+- link "Skip to main content":
+  - /url: "#main"
+- banner:
+  - link "Trovato Administration":
+    - /url: /admin
+    - img "Trovato"
+    - text: Administration
+  - search:
+    - text: Search the administration
+    - searchbox "Search the administration"
+    - button "Search"
+  - list:
+    - listitem:
+      - link "View site":
+        - /url: /
+    - listitem:
+      - link "Your preferences":
+        - /url: /admin/preferences
+- navigation "Administration":
+  - list:
+    - listitem:
+      - link "Dashboard":
+        - /url: /admin
+    - listitem:
+      - heading "Content" [level=2]:
+        - button "Content" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/content/overview
+        - listitem:
+          - link "Content":
+            - /url: /admin/content
+        - listitem:
+          - link "Add content":
+            - /url: /admin/content/add
+        - listitem:
+          - link "Moderated content":
+            - /url: /admin/content/moderated
+        - listitem:
+          - link "Comments":
+            - /url: /admin/content/comments
+        - listitem:
+          - link "Files":
+            - /url: /admin/content/files
+        - listitem:
+          - link "Media":
+            - /url: /admin/media
+    - listitem:
+      - heading "Structure" [level=2]:
+        - button "Structure" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/structure/overview
+        - listitem:
+          - link "Content types":
+            - /url: /admin/structure/types
+        - listitem:
+          - link "Record types":
+            - /url: /admin/structure/records
+        - listitem:
+          - link "Gathers":
+            - /url: /admin/gather
+        - listitem:
+          - link "Menus":
+            - /url: /admin/structure/menus
+        - listitem:
+          - link "Tiles":
+            - /url: /admin/structure/tiles
+        - listitem:
+          - link "Categories":
+            - /url: /admin/structure/categories
+        - listitem:
+          - link "URL aliases":
+            - /url: /admin/structure/aliases
+        - listitem:
+          - link "URL alias patterns":
+            - /url: /admin/config/pathauto
+    - listitem:
+      - heading "Appearance" [level=2]:
+        - button "Appearance" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/appearance/overview
+        - listitem:
+          - link "Themes":
+            - /url: /admin/appearance
+    - listitem:
+      - heading "People" [level=2]:
+        - button "People" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/people/overview
+        - listitem:
+          - link "Users":
+            - /url: /admin/people
+        - listitem:
+          - link "Roles":
+            - /url: /admin/people/roles
+        - listitem:
+          - link "Permissions":
+            - /url: /admin/people/permissions
+        - listitem:
+          - link "Access rules":
+            - /url: /admin/people/rules
+    - listitem:
+      - heading "Extend" [level=2]:
+        - button "Extend" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/extend/overview
+        - listitem:
+          - link "Plugins":
+            - /url: /admin/plugins
+        - listitem:
+          - link "AI providers":
+            - /url: /admin/system/ai-providers
+        - listitem:
+          - link "AI budgets":
+            - /url: /admin/system/ai-budgets
+        - listitem:
+          - link "AI chat":
+            - /url: /admin/system/ai-chat
+        - listitem:
+          - link "AI assistant":
+            - /url: /admin/system/ai-assistant
+    - listitem:
+      - heading "Configuration" [level=2]:
+        - button "Configuration" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/config/overview
+        - listitem:
+          - link "Site settings":
+            - /url: /admin/config/site
+        - listitem:
+          - link "Text formats":
+            - /url: /admin/config/formats
+        - listitem:
+          - link "Search settings":
+            - /url: /admin/config/search
+        - listitem:
+          - link "Stages":
+            - /url: /admin/structure/stages
+        - listitem:
+          - link "Redirects":
+            - /url: /admin/config/redirects
+        - listitem:
+          - link "Account recovery":
+            - /url: /admin/recovery
+    - listitem:
+      - heading "Reports" [level=2]:
+        - button "Reports" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/reports/overview
+        - listitem:
+          - link "Recent log messages":
+            - /url: /admin/reports/log
+        - listitem:
+          - link "Audit log":
+            - /url: /admin/reports/audit
+        - listitem:
+          - link "Cron":
+            - /url: /admin/reports/cron
+        - listitem:
+          - link "Search report":
+            - /url: /admin/reports/search
+- main:
+  - heading "Dashboard" [level=1]
+  - paragraph: What needs your attention, and a way into every area you may use.
+  - heading "Areas you may use" [level=2]
+  - region "Content":
+    - heading "Content" [level=3]
+    - paragraph: Write, find, review and publish what the site says, and the files it uses.
+    - list:
+      - listitem:
+        - link "Content":
+          - /url: /admin/content
+      - listitem:
+        - link "Add content":
+          - /url: /admin/content/add
+      - listitem:
+        - link "Moderated content":
+          - /url: /admin/content/moderated
+      - listitem:
+        - link "Comments":
+          - /url: /admin/content/comments
+      - listitem:
+        - link "Files":
+          - /url: /admin/content/files
+      - listitem:
+        - link "Media":
+          - /url: /admin/media
+  - region "Structure":
+    - heading "Structure" [level=3]
+    - paragraph: "Shape the site: content types and fields, listings, menus, regions, categories and addresses."
+    - list:
+      - listitem:
+        - link "Content types":
+          - /url: /admin/structure/types
+      - listitem:
+        - link "Record types":
+          - /url: /admin/structure/records
+      - listitem:
+        - link "Gathers":
+          - /url: /admin/gather
+      - listitem:
+        - link "Menus":
+          - /url: /admin/structure/menus
+      - listitem:
+        - link "Tiles":
+          - /url: /admin/structure/tiles
+      - listitem:
+        - link "Categories":
+          - /url: /admin/structure/categories
+      - listitem:
+        - link "URL aliases":
+          - /url: /admin/structure/aliases
+      - listitem:
+        - link "URL alias patterns":
+          - /url: /admin/config/pathauto
+  - region "Appearance":
+    - heading "Appearance" [level=3]
+    - paragraph: Choose how the site and this administration look.
+    - list:
+      - listitem:
+        - link "Themes":
+          - /url: /admin/appearance
+  - region "People":
+    - heading "People" [level=3]
+    - paragraph: Accounts, roles, what each role may do, and who may register.
+    - list:
+      - listitem:
+        - link "Users":
+          - /url: /admin/people
+      - listitem:
+        - link "Roles":
+          - /url: /admin/people/roles
+      - listitem:
+        - link "Permissions":
+          - /url: /admin/people/permissions
+      - listitem:
+        - link "Access rules":
+          - /url: /admin/people/rules
+  - region "Extend":
+    - heading "Extend" [level=3]
+    - paragraph: Plugins, the pages they add, and the AI services the site may call.
+    - list:
+      - listitem:
+        - link "Plugins":
+          - /url: /admin/plugins
+      - listitem:
+        - link "AI providers":
+          - /url: /admin/system/ai-providers
+      - listitem:
+        - link "AI budgets":
+          - /url: /admin/system/ai-budgets
+      - listitem:
+        - link "AI chat":
+          - /url: /admin/system/ai-chat
+      - listitem:
+        - link "AI assistant":
+          - /url: /admin/system/ai-assistant
+  - region "Configuration":
+    - heading "Configuration" [level=3]
+    - paragraph: "Site wide settings: identity, text formats, search, editorial stages and account recovery."
+    - list:
+      - listitem:
+        - link "Site settings":
+          - /url: /admin/config/site
+      - listitem:
+        - link "Text formats":
+          - /url: /admin/config/formats
+      - listitem:
+        - link "Search settings":
+          - /url: /admin/config/search
+      - listitem:
+        - link "Stages":
+          - /url: /admin/structure/stages
+      - listitem:
+        - link "Redirects":
+          - /url: /admin/config/redirects
+      - listitem:
+        - link "Account recovery":
+          - /url: /admin/recovery
+  - region "Reports":
+    - heading "Reports" [level=3]
+    - paragraph: "What the site has been doing: its log, audit trail, scheduled tasks and searches."
+    - list:
+      - listitem:
+        - link "Recent log messages":
+          - /url: /admin/reports/log
+      - listitem:
+        - link "Audit log":
+          - /url: /admin/reports/audit
+      - listitem:
+        - link "Cron":
+          - /url: /admin/reports/cron
+      - listitem:
+        - link "Search report":
+          - /url: /admin/reports/search
+  - region "Create":
+    - heading "Create" [level=3]
+    - list:
+      - listitem:
+        - link "Add Blog Post":
+          - /url: /item/add/blog
+      - listitem:
+        - link "Add Media":
+          - /url: /item/add/media
+      - listitem:
+        - link "Add Basic Page":
+          - /url: /item/add/page
+  - region "You":
+    - heading "You" [level=3]
+    - paragraph: Signed in as gen_admin.
+    - list:
+      - listitem:
+        - link "Your preferences":
+          - /url: /admin/preferences
+      - listitem:
+        - 'link "Health check: database and Redis status"':
+          - /url: /health
+      - listitem:
+        - button "Log out"

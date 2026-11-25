@@ -1,4 +1,4 @@
-//! Building and checking a kernel admin form through `FormService` (B108).
+//! Building and checking a kernel admin         .and_then(|form| text.scope(|| state.theme().render_form_with_errors(&form, errors))) through `FormService` (B108).
 //!
 //! The admin screens added for access rules, text formats, appearance and
 //! owned vocabularies all do the same two things: build a [`Form`] for the
@@ -25,6 +25,10 @@ pub async fn render(
     errors: &[ValidationError],
 ) -> Result<String, Response> {
     let viewer = super::helpers::user_context_for(state, user).await;
+    // The form templates' own words (a select's "- Select -", "Add
+    // another") in the viewer's admin language: every form here is an
+    // admin form.
+    let text = super::admin_nav::AdminText::for_page(state, &viewer, "/admin/").await;
     let mut form_state = FormState::new(form.form_id.clone(), "");
     form_state.user_id = Some(user.id);
     state
@@ -36,7 +40,7 @@ pub async fn render(
             form_state,
         )
         .await
-        .and_then(|form| state.theme().render_form_with_errors(&form, errors))
+        .and_then(|form| text.scope(|| state.theme().render_form_with_errors(&form, errors)))
         .map_err(|e| {
             tracing::error!(error = %e, "failed to build an admin form");
             render_server_error("The form could not be displayed.")

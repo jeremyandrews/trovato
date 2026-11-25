@@ -23,6 +23,7 @@ pub mod form;
 pub mod gather;
 pub mod generate;
 pub mod host;
+pub mod i18n;
 pub mod lockout;
 pub mod menu;
 pub mod metrics;

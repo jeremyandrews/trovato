@@ -1,0 +1,9 @@
+trovato_blog
+trovato_categories
+trovato_comments
+trovato_audit_log
+trovato_media
+trovato_locale
+trovato_content_translation
+trovato_search
+trovato_redirects

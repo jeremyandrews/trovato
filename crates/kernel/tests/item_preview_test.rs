@@ -172,6 +172,24 @@ fn a_preview_renders_the_submission_and_saves_nothing() {
             assert_eq!(status, StatusCode::OK, "{path}: {page}");
             assert!(page.contains("This is a preview"), "{path}: no preview");
             assert!(page.contains(&title), "{path}: the title is not previewed");
+            // An admin page has one h1, the shell's ("Create …"), so the
+            // previewed title sits under it; the front end keeps its h1.
+            let title_heading = if path.starts_with("/admin") {
+                "h2"
+            } else {
+                "h1"
+            };
+            assert!(
+                page.contains(&format!(r#"<{title_heading} class="item__title">"#)),
+                "{path}: the previewed title is not an {title_heading}"
+            );
+            if path.starts_with("/admin") {
+                assert_eq!(
+                    page.matches("<h1").count(),
+                    1,
+                    "{path}: an admin page has exactly one h1"
+                );
+            }
             assert!(
                 page.contains("Seen before saving"),
                 "{path}: the field is not previewed"

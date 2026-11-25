@@ -1,11 +1,10 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/form.html" as form %}
 
-{% block content %}
-<div class="admin-header">
-    <h2>{% if editing %}Edit stage{% else %}Add stage{% endif %}</h2>
-</div>
+{% block page_title %}{% if editing %}{{ t(s="Edit stage {label}", label=values.label | default(value="")) }}{% else %}{{ t(s="Add stage") }}{% endif %}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="A stage is a step content passes through on its way to being published.") }}</p>{% endblock page_intro %}
 
+{% block content %}
 <div class="admin-card">
     <form id="stage-form" method="post" action="{{ action }}">
         {{ form::csrf(csrf_token=csrf_token) }}
@@ -13,72 +12,61 @@
         {{ form::errors(errors=errors) }}
 
         {% if is_live %}
-        <p class="form-item__description"><strong>This is the Live stage.</strong> Its
-        visibility cannot be changed: published content is resolved through the one
-        public stage, so making this one internal would take the site's published
-        content off the site.</p>
+        <p class="form-item__description">{{ t(s="This is the Live stage. Its visibility cannot be changed: published content is resolved through the one public stage, so making this one internal would take the site's published content off the site.") }}</p>
         {% endif %}
 
         <div class="form-item">
-            <label for="machine_name" class="form-item__label form-item__label--required">Machine name</label>
+            <label for="machine_name" class="form-item__label">{{ t(s="Machine name") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
+            <p class="form-item__description" id="machine_name-hint">{{ t(s="Lowercase letters, numbers and underscores, starting with a letter. This is what config files and workflow definitions refer to the stage by.") }}</p>
             <input type="text" id="machine_name" name="machine_name" class="form-text"
                    value="{{ values.machine_name | default(value='') }}"
-                   placeholder="review" required>
-            <p class="form-item__description">Lowercase letters, numbers and
-            underscores, starting with a letter. This is what config files and
-            workflow definitions refer to the stage by.</p>
+                   aria-describedby="machine_name-hint" required>
         </div>
 
         <div class="form-item">
-            <label for="label" class="form-item__label form-item__label--required">Label</label>
+            <label for="label" class="form-item__label">{{ t(s="Label") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
             <input type="text" id="label" name="label" class="form-text"
-                   value="{{ values.label | default(value='') }}"
-                   placeholder="Review" required>
+                   value="{{ values.label | default(value='') }}" required>
         </div>
 
         <div class="form-item">
-            <label for="description" class="form-item__label">Description</label>
+            <label for="description" class="form-item__label">{{ t(s="Description") }}</label>
+            <p class="form-item__description" id="description-hint">{{ t(s="Optional. Shown to editors in the stage listing.") }}</p>
             <input type="text" id="description" name="description" class="form-text"
-                   value="{{ values.description | default(value='') }}">
-            <p class="form-item__description">Optional. Shown to editors in the
-            stage listing.</p>
+                   value="{{ values.description | default(value='') }}" aria-describedby="description-hint">
         </div>
 
         <div class="form-item">
-            <label for="visibility" class="form-item__label form-item__label--required">Visibility</label>
-            <select id="visibility" name="visibility" class="form-select">
+            <label for="visibility" class="form-item__label">{{ t(s="Visibility") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
+            <p class="form-item__description" id="visibility-hint">{{ t(s="Only one stage can be public, and it is the Live stage.") }}</p>
+            <select id="visibility" name="visibility" class="form-select" aria-describedby="visibility-hint">
                 {% for pair in visibilities %}
-                <option value="{{ pair.0 }}"{% if values.visibility | default(value='internal') == pair.0 %} selected{% endif %}>{{ pair.1 }}</option>
+                <option value="{{ pair.0 }}"{% if values.visibility | default(value='internal') == pair.0 %} selected{% endif %}>{{ t(s=pair.1) }}</option>
                 {% endfor %}
             </select>
-            <p class="form-item__description">Only one stage can be public, and it is
-            the Live stage.</p>
         </div>
 
         <div class="form-item">
-            <label for="is_default" class="form-item__label">
-                <input type="checkbox" id="is_default" name="is_default" value="1"
+            <div class="form-checkbox-wrapper">
+                <input type="checkbox" id="is_default" name="is_default" value="1" aria-describedby="is_default-hint"
                        {% if values.is_default | default(value=false) %}checked{% endif %}>
-                Default stage for new content
-            </label>
-            <p class="form-item__description">Exactly one stage is the default.
-            Checking this here clears it on whichever stage holds it now. It cannot
-            be cleared without giving it to another stage: new content has to land
-            somewhere.</p>
+                <label for="is_default">{{ t(s="Default stage for new content") }}</label>
+            </div>
+            <p class="form-item__description" id="is_default-hint">{{ t(s="Exactly one stage is the default. Checking this here clears it on whichever stage holds it now. It cannot be cleared without giving it to another stage: new content has to land somewhere.") }}</p>
         </div>
 
         <div class="form-item">
-            <label for="weight" class="form-item__label">Weight</label>
+            <label for="weight" class="form-item__label">{{ t(s="Weight") }}</label>
+            <p class="form-item__description" id="weight-hint">{{ t(s="Lower sorts first in the listing.") }}</p>
             <input type="number" id="weight" name="weight" class="form-text"
-                   value="{{ values.weight | default(value=0) }}" step="1">
-            <p class="form-item__description">Lower sorts first in the listing.</p>
+                   value="{{ values.weight | default(value=0) }}" step="1" aria-describedby="weight-hint">
         </div>
 
         {% if editing %}
-        {{ form::actions(submit_label="Save changes", cancel_url="/admin/structure/stages") }}
+        {{ form::actions(submit_label=t(s="Save changes"), cancel_url="/admin/structure/stages") }}
         {% else %}
-        {{ form::actions(submit_label="Create stage", cancel_url="/admin/structure/stages") }}
+        {{ form::actions(submit_label=t(s="Create stage"), cancel_url="/admin/structure/stages") }}
         {% endif %}
     </form>
 </div>
-{% endblock %}
+{% endblock content %}

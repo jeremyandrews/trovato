@@ -1259,8 +1259,15 @@ async fn submitted_fields(
         // and nothing saved.
         Ok((_, fields)) if super::item_form::wants_preview(posted) => {
             let title = posted.get("title").unwrap_or_default().trim().to_string();
-            let preview =
-                super::item_form::render_preview(state, user, content_type, &title, &fields).await;
+            let preview = super::item_form::render_preview(
+                state,
+                user,
+                content_type,
+                &title,
+                &fields,
+                "/item",
+            )
+            .await;
             Ok(Submitted::Refused(
                 item_form_page(
                     state,

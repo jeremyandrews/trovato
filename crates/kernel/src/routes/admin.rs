@@ -502,18 +502,22 @@ async fn ajax_callback(
 ) -> Response {
     // Who is asking comes before whether the request is forged, so nobody
     // gets the 401 the refusal rule promises rather than a CSRF 403.
-    if request.trigger == "add_field"
-        && let Err(refusal) =
-            super::helpers::require_permission_json(&state, &session, "administer site").await
-    {
-        return refusal.into_response();
+    let mut admin_lang = state.default_language().to_string();
+    if request.trigger == "add_field" {
+        match super::helpers::require_permission_json(&state, &session, "administer site").await {
+            Ok(user) => {
+                let prefs = super::admin_nav::Preferences::load(state.db(), user.id).await;
+                admin_lang = super::admin_nav::admin_language(&state, &prefs);
+            }
+            Err(refusal) => return refusal.into_response(),
+        }
     }
     if let Err(refusal) = super::helpers::require_csrf_header(&session, &headers).await {
         return refusal.into_response();
     }
 
     let mut response = if request.trigger == "add_field" {
-        super::admin_content_type::handle_ajax_add_field(&state, &request).await
+        super::admin_content_type::handle_ajax_add_field(&state, &request, &admin_lang).await
     } else {
         super::item_form::ajax(&state, &session, &request).await
     };
@@ -1097,6 +1101,7 @@ pub fn router() -> Router<AppState> {
         .merge(super::admin_config::router())
         // Search settings and the search report
         .merge(super::admin_search::router())
+        .merge(super::admin_shell::router())
         .merge(super::admin_search_report::router())
         // The cron report and the site log (B107)
         .merge(super::admin_reports::router())

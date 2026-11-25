@@ -234,6 +234,15 @@ semicolon_if_nothing_returned = "warn"
 # runs 45406677098 and 45412845837), and a cold cache is common enough there
 # to matter. The kernel and the plugins build, and step in a debugger, exactly
 # as before.
+#
+# Tera and pest, its parser, belong on the list too: every `TestApp` and every
+# CLI command parses all the templates at start, and since the admin passes
+# its words through `t()` that parse is most of a debug start (ThemeEngine::new
+# 1.29 s unoptimized, 0.29 s with these, measured locally 2026-11-25).
+[profile.dev.package.tera]
+opt-level = 3
+[profile.dev.package.pest]
+opt-level = 3
 [profile.dev.package.cranelift-codegen]
 opt-level = 3
 [profile.dev.package.cranelift-frontend]

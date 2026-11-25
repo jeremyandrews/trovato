@@ -19,7 +19,7 @@
     {% if element.attributes and element.attributes["data-add-another"] %}
     <button type="button" class="button button--secondary form-container__add"
             data-ajax-trigger="{{ element.attributes['data-add-another'] }}"
-            {% if element.attributes["data-full"] %}hidden{% endif %}>Add another</button>
+            {% if element.attributes["data-full"] %}hidden{% endif %}>{{ t(s="Add another") }}</button>
     {% endif %}
 
     {% if field_error %}

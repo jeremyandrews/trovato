@@ -1,122 +1,120 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/form.html" as form %}
+{% import "admin/macros/list.html" as list %}
+
+{% block page_title %}{{ t(s="AI Providers") }}{% endblock page_title %}
+{% block page_actions %}{{ list::add_link(url="/admin/system/ai-providers/add", label=t(s="Add provider")) }}{% endblock page_actions %}
 
 {% block content %}
-
-<div class="admin-header">
-    <h2>AI Providers</h2>
-    <a href="/admin/system/ai-providers/add" class="button button--primary">Add provider</a>
-</div>
-
-{% if flash %}
-<div class="message message--info" role="status">{{ flash }}</div>
-{% endif %}
-
-<div class="admin-card">
-    {% if providers | length > 0 %}
+{% if providers | length > 0 %}
+<div class="table-scroll" role="region" aria-labelledby="ai-providers-caption" tabindex="0">
     <table class="table">
+        <caption id="ai-providers-caption">{{ t(s="AI providers") }}</caption>
         <thead>
             <tr>
-                <th>Label</th>
-                <th>Protocol</th>
-                <th>Base URL</th>
-                <th>API Key</th>
-                <th>Models</th>
-                <th>Status</th>
-                <th>Operations</th>
+                <th scope="col">{{ t(s="Label") }}</th>
+                <th scope="col">{{ t(s="Protocol") }}</th>
+                <th scope="col">{{ t(s="Base URL") }}</th>
+                <th scope="col">{{ t(s="API Key") }}</th>
+                <th scope="col">{{ t(s="Models") }}</th>
+                <th scope="col">{{ t(s="Status") }}</th>
+                <th scope="col">{{ t(s="Operations") }}</th>
             </tr>
         </thead>
         <tbody>
             {% for provider in providers %}
             <tr>
-                <td>{{ provider.label }}</td>
-                <td>{{ provider.protocol }}</td>
+                <th scope="row">{{ provider.label }}</th>
+                <td>{{ t(s=provider.protocol) }}</td>
                 <td><code>{{ provider.base_url }}</code></td>
                 <td>
                     {% if provider.key_is_set %}
-                    <span style="color: var(--success, green);">{{ provider.api_key_status }}</span>
+                    <span class="badge badge--success">{{ provider.api_key_status }}</span>
                     {% else %}
-                    <span style="color: var(--warning, #b45309);">{{ provider.api_key_status }}</span>
+                    <span class="badge badge--warning">{{ provider.api_key_status }}</span>
                     {% endif %}
                 </td>
                 <td>
-                    {% for model in provider.models %}
-                    <span>{{ model.operation }}: <code>{{ model.model }}</code></span>{% if not loop.last %}<br>{% endif %}
-                    {% endfor %}
+                    {% if provider.models %}
+                    <ul class="ai-model-list">
+                        {% for model in provider.models %}
+                        <li>{{ t(s="{operation}: {model}", operation=t(s=model.operation), model=model.model) }}</li>
+                        {% endfor %}
+                    </ul>
+                    {% endif %}
                 </td>
                 <td>
                     {% if provider.enabled %}
-                    <span style="color: var(--success, green); font-weight: 600;">Enabled</span>
+                    <span class="badge badge--success">{{ t(s="Enabled") }}</span>
                     {% else %}
-                    <span style="color: var(--warning, #b45309); font-weight: 600;">Disabled</span>
+                    <span class="badge badge--warning">{{ t(s="Disabled") }}</span>
                     {% endif %}
                 </td>
-                <td>
-                    <a href="/admin/system/ai-providers/{{ provider.id }}/edit">Edit</a>
-                    &middot;
-                    <form method="post" action="/admin/system/ai-providers/{{ provider.id }}/test" style="display: inline;" class="js-test-connection" data-provider-id="{{ provider.id }}">
+                <td class="operations">
+                    <a href="/admin/system/ai-providers/{{ provider.id }}/edit">{{ t(s="Edit {name}", name=provider.label) }}</a>
+                    <form method="post" action="/admin/system/ai-providers/{{ provider.id }}/test" class="inline-form js-test-connection" data-provider-id="{{ provider.id }}">
                         {{ form::csrf(csrf_token=csrf_token) }}
-                        <button type="submit" class="link-button">Test</button>
+                        <button type="submit" class="link-button">{{ t(s="Test {name}", name=provider.label) }}</button>
                     </form>
-                    &middot;
-                    <form method="post" action="/admin/system/ai-providers/{{ provider.id }}/delete" style="display: inline;" onsubmit="return confirm('Are you sure you want to delete this provider?');">
-                        {{ form::csrf(csrf_token=csrf_token) }}
-                        <button type="submit" class="link-button" style="color: var(--danger, red);">Delete</button>
-                    </form>
+                    {{ list::delete_button(action="/admin/system/ai-providers/" ~ provider.id ~ "/delete", label=t(s="Delete {name}", name=provider.label), confirm_text=t(s="Delete the {name} provider?", name=provider.label), csrf_token=csrf_token) }}
                 </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
-    {% else %}
-    <p>No AI providers configured. <a href="/admin/system/ai-providers/add">Add a provider</a> to get started.</p>
-    {% endif %}
 </div>
+{% else %}
+{{ list::empty(message=t(s="No AI providers configured."), add_url="/admin/system/ai-providers/add", add_label=t(s="Add a provider")) }}
+{% endif %}
 
-<div id="test-result" style="display: none; margin-top: 1rem;" class="admin-card">
-    <h3>Connection Test Result</h3>
+{#- Shown by static/js/ai-admin.js, which sets its display style. -#}
+<section id="test-result" class="admin-card ai-test-result" aria-labelledby="test-result-heading" aria-live="polite">
+    <h2 id="test-result-heading">{{ t(s="Connection Test Result") }}</h2>
     <p id="test-message"></p>
     <p id="test-latency"></p>
-</div>
+</section>
 
 {% if providers | length > 0 %}
-<div class="admin-card" style="margin-top: 2rem;">
-    <h3>Default Providers</h3>
-    <p>Assign a default provider for each operation type. Plugins will use these unless they specify an override.</p>
+<section class="admin-card" aria-labelledby="default-providers-heading">
+    <h2 id="default-providers-heading">{{ t(s="Default Providers") }}</h2>
+    <p>{{ t(s="Assign a default provider for each operation type. Plugins will use these unless they specify an override.") }}</p>
 
     <form method="post" action="/admin/system/ai-providers/defaults">
         {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
 
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>Operation</th>
-                    <th>Default Provider</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for op in operation_defaults %}
-                <tr>
-                    <td>{{ op.label }}</td>
-                    <td>
-                        <select name="default_{{ op.key }}">
-                            <option value="">— None —</option>
-                            {% for provider in providers %}
-                            {% if provider.enabled %}
-                            <option value="{{ provider.id }}" {% if op.default_provider == provider.id %}selected{% endif %}>{{ provider.label }}</option>
-                            {% endif %}
-                            {% endfor %}
-                        </select>
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+        <div class="table-scroll" role="region" aria-labelledby="default-providers-caption" tabindex="0">
+            <table class="table">
+                <caption id="default-providers-caption">{{ t(s="Default provider for each operation") }}</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">{{ t(s="Operation") }}</th>
+                        <th scope="col">{{ t(s="Default Provider") }}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for op in operation_defaults %}
+                    <tr>
+                        <th scope="row"><label for="default_{{ op.key }}">{{ t(s=op.label) }}</label></th>
+                        <td>
+                            <select id="default_{{ op.key }}" name="default_{{ op.key }}">
+                                <option value="">{{ t(s="— None —") }}</option>
+                                {% for provider in providers %}
+                                {% if provider.enabled %}
+                                <option value="{{ provider.id }}" {% if op.default_provider == provider.id %}selected{% endif %}>{{ provider.label }}</option>
+                                {% endif %}
+                                {% endfor %}
+                            </select>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
 
-        {{ form::actions(submit_label="Save defaults", cancel_url="/admin/system/ai-providers") }}
+        {{ form::actions(submit_label=t(s="Save defaults"), cancel_url="/admin/system/ai-providers") }}
     </form>
-</div>
+</section>
 {% endif %}
+{% endblock content %}
 
-<script src="/static/js/ai-admin.js"></script>
-{% endblock %}
+{% block scripts %}<script src="/static/js/ai-admin.js"></script>{% endblock scripts %}

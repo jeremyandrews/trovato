@@ -128,9 +128,10 @@ async fn list_plugins(State(state): State<AppState>, session: Session) -> Respon
     let csrf_token = generate_csrf_token(&session).await;
 
     // Read and clear flash message
-    let flash: Option<String> = session.get(FLASH_KEY).await.ok().flatten();
+    // A plain sentence, or an i18n::UiMessage for a failure.
+    let flash: Option<serde_json::Value> = session.get(FLASH_KEY).await.ok().flatten();
     if flash.is_some() {
-        let _ = session.remove::<String>(FLASH_KEY).await;
+        let _ = session.remove::<serde_json::Value>(FLASH_KEY).await;
     }
 
     let mut context = tera::Context::new();
@@ -216,10 +217,12 @@ async fn toggle_plugin(
             };
             for dep in &info.dependencies {
                 if !enabled.contains(dep) {
-                    let msg = format!(
-                        "Cannot enable '{}': depends on '{}' which is not enabled.",
-                        form.plugin_name, dep
-                    );
+                    let msg = crate::i18n::UiMessage::new(
+                        "Cannot enable {plugin}: it depends on {dependency}, which is not enabled.",
+                    )
+                    .arg("plugin", form.plugin_name.clone())
+                    .arg("dependency", dep.clone())
+                    .error();
                     let _ = session.insert(FLASH_KEY, &msg).await;
                     return Redirect::to("/admin/plugins").into_response();
                 }
@@ -246,12 +249,20 @@ async fn toggle_plugin(
             let _ = session.insert(FLASH_KEY, &msg).await;
         }
         Ok(false) => {
-            let _ = session.insert(FLASH_KEY, "Plugin not found.").await;
+            let _ = session
+                .insert(
+                    FLASH_KEY,
+                    crate::i18n::UiMessage::new("Plugin not found.").error(),
+                )
+                .await;
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to toggle plugin status");
             let _ = session
-                .insert(FLASH_KEY, "Failed to update plugin status.")
+                .insert(
+                    FLASH_KEY,
+                    crate::i18n::UiMessage::new("Failed to update plugin status.").error(),
+                )
                 .await;
         }
     }

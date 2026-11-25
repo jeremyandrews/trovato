@@ -1,72 +1,54 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/list.html" as list %}
 
-{% block content %}
-{{ list::header(title="Users", add_url="/admin/people/add", add_label="Add user") }}
+{% block page_title %}{{ t(s="Users") }}{% endblock page_title %}
+{% block page_actions %}{{ list::add_link(url="/admin/people/add", label=t(s="Add user")) }}{% endblock page_actions %}
 
+{% block content %}
 {% if warning %}
-<div class="messages"><div class="message message--warning" role="status">{{ warning }}</div></div>
+<div class="notice notice--warning" role="status"><strong class="notice__label">{{ t(s="Warning:") }}</strong> {{ t(s=warning) }}</div>
 {% endif %}
 
-<div class="admin-card">
-    {% if users %}
+{% if users %}
+<div class="table-scroll" role="region" aria-labelledby="users-caption" tabindex="0">
     <table class="table">
+        <caption id="users-caption">{{ t(s="User accounts") }}</caption>
         <thead>
             <tr>
-                <th>Username</th>
-                <th>Email</th>
-                <th>Status</th>
-                <th>Admin</th>
-                <th>Operations</th>
+                <th scope="col">{{ t(s="Username") }}</th>
+                <th scope="col">{{ t(s="Email") }}</th>
+                <th scope="col">{{ t(s="Status") }}</th>
+                <th scope="col">{{ t(s="Admin") }}</th>
+                <th scope="col">{{ t(s="Operations") }}</th>
             </tr>
         </thead>
         <tbody>
             {% for user in users %}
             <tr>
-                <td>
+                <th scope="row">
                     <a href="/admin/people/{{ user.id }}/edit">{{ user.name }}</a>
-                </td>
+                </th>
                 <td>{{ user.mail }}</td>
                 <td>
                     {% if user.status == 1 %}
-                    <span class="status status--active">Active</span>
+                    <span class="status status--active">{{ t(s="Active") }}</span>
                     {% else %}
-                    <span class="status status--inactive">Blocked</span>
+                    <span class="status status--inactive">{{ t(s="Blocked") }}</span>
                     {% endif %}
                 </td>
-                <td>
-                    {% if user.is_admin %}Yes{% else %}No{% endif %}
-                </td>
-                <td>
-                    <a href="/admin/people/{{ user.id }}/edit">Edit</a>
+                <td>{% if user.is_admin %}{{ t(s="Yes") }}{% else %}{{ t(s="No") }}{% endif %}</td>
+                <td class="operations">
+                    <a href="/admin/people/{{ user.id }}/edit">{{ t(s="Edit {name}", name=user.name) }}</a>
                     {% if user.id != "00000000-0000-0000-0000-000000000000" %}
-                    &middot;
-                    {{ list::delete_button(action="/admin/people/" ~ user.id ~ "/delete", confirm_text="Are you sure you want to delete this user?", csrf_token=csrf_token) }}
+                    {{ list::delete_button(action="/admin/people/" ~ user.id ~ "/delete", label=t(s="Delete {name}", name=user.name), confirm_text=t(s="Delete the user {name}?", name=user.name), csrf_token=csrf_token) }}
                     {% endif %}
                 </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
-    {% else %}
-    {{ list::empty(message="No users found.", add_url="/admin/people/add") }}
-    {% endif %}
 </div>
-
-<style>
-    .status {
-        display: inline-block;
-        padding: 0.25rem 0.5rem;
-        border-radius: 0.25rem;
-        font-size: 0.875rem;
-    }
-    .status--active {
-        background: #d4edda;
-        color: #155724;
-    }
-    .status--inactive {
-        background: #f8d7da;
-        color: #721c24;
-    }
-</style>
-{% endblock %}
+{% else %}
+{{ list::empty(message=t(s="No users found."), add_url="/admin/people/add", add_label=t(s="Add user")) }}
+{% endif %}
+{% endblock content %}

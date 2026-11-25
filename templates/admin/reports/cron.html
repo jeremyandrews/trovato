@@ -1,46 +1,42 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/list.html" as list %}
 
+{% block page_title %}{{ t(s="Cron") }}{% endblock page_title %}
+
 {% block content %}
-{{ list::header(title="Cron") }}
-
-{% if flash %}
-<div class="messages"><div class="message message--success" role="status">{{ flash }}</div></div>
-{% endif %}
-
-<div class="admin-card">
-    <h3 class="report-heading">Last run</h3>
+<section class="admin-card" aria-labelledby="cron-last-run">
+    <h2 id="cron-last-run" class="report-heading">{{ t(s="Last run") }}</h2>
     {% if last_run %}
     <table class="table report-facts">
         <tbody>
-            <tr><th scope="row">When</th><td>{{ last_run.timestamp | format_date(format="%Y-%m-%d %H:%M:%S") }} UTC</td></tr>
-            <tr><th scope="row">Server</th><td>{{ last_run.hostname }}</td></tr>
-            <tr><th scope="row">Result</th><td>{% if last_run.status %}{{ last_run.status }}{% else %}{{ last_run.result }}{% endif %}</td></tr>
+            <tr><th scope="row">{{ t(s="When") }}</th><td>{{ t(s="{time} UTC", time=last_run.timestamp | format_date(format="%Y-%m-%d %H:%M:%S")) }}</td></tr>
+            <tr><th scope="row">{{ t(s="Server") }}</th><td>{{ last_run.hostname }}</td></tr>
+            <tr><th scope="row">{{ t(s="Result") }}</th><td>{% if last_run.status %}{{ t(s=last_run.status) }}{% else %}{{ last_run.result }}{% endif %}</td></tr>
             {% if last_run.duration_ms is number %}
-            <tr><th scope="row">Duration</th><td>{{ last_run.duration_ms }} ms</td></tr>
+            <tr><th scope="row">{{ t(s="Duration") }}</th><td>{{ t(s="{ms} ms", ms=last_run.duration_ms) }}</td></tr>
             {% endif %}
             <tr>
-                <th scope="row">Tasks</th>
+                <th scope="row">{{ t(s="Tasks") }}</th>
                 <td>
                     {% if last_run.tasks %}
                     <ul class="report-list">
                         {% for task in last_run.tasks %}<li>{{ task }}</li>{% endfor %}
                     </ul>
                     {% else %}
-                    None reported.
+                    {{ t(s="None reported.") }}
                     {% endif %}
                 </td>
             </tr>
         </tbody>
     </table>
     {% else %}
-    {{ list::empty(message="Cron has not run in the last day.") }}
+    {{ list::empty(message=t(s="Cron has not run in the last day.")) }}
     {% endif %}
-</div>
+</section>
 
-<div class="admin-card">
-    <h3 class="report-heading">Run now</h3>
-    <p>Runs every cron task in this server's process, now, and records the run here.</p>
+<section class="admin-card" aria-labelledby="cron-run-now">
+    <h2 id="cron-run-now" class="report-heading">{{ t(s="Run now") }}</h2>
+    <p>{{ t(s="Runs every cron task in this server's process, now, and records the run here.") }}</p>
     {{ run_now_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
-</div>
-{% endblock %}
+</section>
+{% endblock content %}

@@ -1,14 +1,9 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block page_title %}{{ t(s="URL alias patterns") }}{% endblock page_title %}
 
 {% block content %}
-<div class="admin-header">
-    <h2>Pathauto configuration</h2>
-</div>
-
-{% if flash %}
-<div class="message message--status" role="status">{{ flash }}</div>
-{% endif %}
-
 {#
   Regenerate forms are declared here, OUTSIDE the save form below.
   HTML5 forbids nested <form> elements, so each regenerate form is placed
@@ -26,45 +21,40 @@
 </form>
 {% endfor %}
 
-<div class="admin-card">
-    <p class="description">
-        Configure automatic URL alias patterns for each content type.
-        Use tokens like <code>[title]</code>, <code>[type]</code>, <code>[yyyy]</code>,
-        <code>[mm]</code>, and <code>[dd]</code>. Leave a field blank to disable
-        automatic alias generation for that type.
-    </p>
-    <p class="description">
-        <strong>Save patterns before regenerating.</strong> Clicking "Regenerate aliases"
-        uses the last <em>saved</em> pattern — unsaved edits in the text field are not used.
-    </p>
+<p>{{ t(s="Configure automatic URL alias patterns for each content type. Use tokens like {examples}. Leave a field blank to disable automatic alias generation for that type.", examples="[title], [type], [yyyy], [mm], [dd]") }}</p>
+<p><strong>{{ t(s="Save patterns before regenerating.") }}</strong> {{ t(s="Regenerate aliases uses the last saved pattern; unsaved edits in the text field are not used.") }}</p>
 
-    <form method="post" action="/admin/config/pathauto">
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
+{% if content_types %}
+<form method="post" action="/admin/config/pathauto">
+    <input type="hidden" name="_token" value="{{ csrf_token }}">
 
+    <div class="table-scroll" role="region" aria-labelledby="patterns-caption" tabindex="0">
         <table class="table">
+            <caption id="patterns-caption">{{ t(s="URL pattern per content type") }}</caption>
             <thead>
                 <tr>
-                    <th>Content type</th>
-                    <th>URL pattern</th>
-                    <th>Operations</th>
+                    <th scope="col">{{ t(s="Content type") }}</th>
+                    <th scope="col">{{ t(s="URL pattern") }}</th>
+                    <th scope="col">{{ t(s="Operations") }}</th>
                 </tr>
             </thead>
             <tbody>
                 {% for ct in content_types %}
                 <tr>
-                    <td>
+                    <th scope="row">
                         <strong>{{ ct.label }}</strong>
-                        <div class="text-muted" style="font-size: 0.875rem;">{{ ct.machine_name }}</div>
-                    </td>
+                        <span class="text-muted">{{ ct.machine_name }}</span>
+                    </th>
                     <td>
+                        <label class="visually-hidden" for="pattern-{{ ct.machine_name }}">{{ t(s="URL pattern for {type}", type=ct.label) }}</label>
                         <input type="text"
+                               id="pattern-{{ ct.machine_name }}"
                                name="pattern.{{ ct.machine_name }}"
                                value="{{ patterns[ct.machine_name] }}"
-                               placeholder="e.g. {{ ct.machine_name }}s/[title]"
-                               class="form-text"
-                               style="width: 100%;">
+                               placeholder="{{ t(s='e.g. {example}', example=ct.machine_name ~ 's/[title]') }}"
+                               class="form-text pathauto-pattern">
                     </td>
-                    <td style="white-space: nowrap;">
+                    <td class="operations pathauto-operations">
                         {#
                           form= targets the matching regenerate form declared above
                           (outside this save form), satisfying the HTML5 no-nested-
@@ -73,78 +63,62 @@
                         <button type="submit"
                                 form="regen-{{ ct.machine_name }}"
                                 class="button button--secondary button--small"
-                                data-confirm="Save pattern changes first. Regenerate aliases for all {{ ct.label }} items using the saved pattern?">
-                            Regenerate aliases
-                        </button>
+                                data-confirm="{{ t(s='Save pattern changes first. Regenerate aliases for all {type} items using the saved pattern?', type=ct.label) }}">{{ t(s="Regenerate aliases for {type}", type=ct.label) }}</button>
                     </td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
+    </div>
 
-        {% if not content_types %}
-        <p>No content types are registered. <a href="/admin/structure/types/add">Create one</a> first.</p>
-        {% endif %}
+    <div class="form-actions">
+        <button type="submit" class="button button--primary">{{ t(s="Save configuration") }}</button>
+    </div>
+</form>
+{% else %}
+{{ list::empty(message=t(s="No content types are registered. Create one first."), add_url="/admin/structure/types/add", add_label=t(s="Create a content type")) }}
+{% endif %}
 
-        {% if content_types %}
-        <div style="margin-top: 1rem;">
-            <button type="submit" class="button button--primary">Save configuration</button>
-        </div>
-        {% endif %}
-    </form>
-</div>
-
-<div class="admin-card" style="margin-top: 1rem;">
-    <h3 style="margin-top: 0;">Token reference</h3>
-    <table class="table">
-        <thead>
-            <tr>
-                <th>Token</th>
-                <th>Description</th>
-                <th>Example output</th>
-            </tr>
-        </thead>
-        <tbody>
-            <tr>
-                <td><code>[title]</code></td>
-                <td>Item title, lowercased and hyphenated</td>
-                <td><code>rustconf-2026</code></td>
-            </tr>
-            <tr>
-                <td><code>[type]</code></td>
-                <td>Content type machine name</td>
-                <td><code>conference</code></td>
-            </tr>
-            <tr>
-                <td><code>[yyyy]</code></td>
-                <td>Four-digit year from the item's created date</td>
-                <td><code>2026</code></td>
-            </tr>
-            <tr>
-                <td><code>[mm]</code></td>
-                <td>Two-digit month from the item's created date</td>
-                <td><code>09</code></td>
-            </tr>
-            <tr>
-                <td><code>[dd]</code></td>
-                <td>Two-digit day from the item's created date</td>
-                <td><code>07</code></td>
-            </tr>
-        </tbody>
-    </table>
-</div>
-
-<style>
-    .description {
-        color: var(--gray-600);
-        margin-bottom: 1rem;
-    }
-    .text-muted {
-        color: var(--gray-400);
-    }
-    .button--small {
-        font-size: 0.875rem;
-        padding: 0.25rem 0.5rem;
-    }
-</style>
-{% endblock %}
+<section class="admin-card" aria-labelledby="token-reference-heading">
+    <h2 id="token-reference-heading">{{ t(s="Token reference") }}</h2>
+    <div class="table-scroll" role="region" aria-labelledby="tokens-caption" tabindex="0">
+        <table class="table">
+            <caption id="tokens-caption">{{ t(s="Tokens a pattern may use") }}</caption>
+            <thead>
+                <tr>
+                    <th scope="col">{{ t(s="Token") }}</th>
+                    <th scope="col">{{ t(s="Description") }}</th>
+                    <th scope="col">{{ t(s="Example output") }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <th scope="row"><code>{{ "[title]" }}</code></th>
+                    <td>{{ t(s="Item title, lowercased and hyphenated") }}</td>
+                    <td><code>{{ "rustconf-2026" }}</code></td>
+                </tr>
+                <tr>
+                    <th scope="row"><code>{{ "[type]" }}</code></th>
+                    <td>{{ t(s="Content type machine name") }}</td>
+                    <td><code>{{ "conference" }}</code></td>
+                </tr>
+                <tr>
+                    <th scope="row"><code>{{ "[yyyy]" }}</code></th>
+                    <td>{{ t(s="Four-digit year from the item's created date") }}</td>
+                    <td><code>2026</code></td>
+                </tr>
+                <tr>
+                    <th scope="row"><code>{{ "[mm]" }}</code></th>
+                    <td>{{ t(s="Two-digit month from the item's created date") }}</td>
+                    <td><code>09</code></td>
+                </tr>
+                <tr>
+                    <th scope="row"><code>{{ "[dd]" }}</code></th>
+                    <td>{{ t(s="Two-digit day from the item's created date") }}</td>
+                    <td><code>07</code></td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+</section>
+{% endblock content %}
