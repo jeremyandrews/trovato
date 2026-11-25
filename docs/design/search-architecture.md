@@ -563,3 +563,4 @@ The tutorial teaches query expansion first because it's simpler and demonstrates
 - [The Practical Path to AI Search](https://www.tag1.com/how-to/the-practical-path-to-ai-search/) -- Source article. Tag1's production implementation.
 - [Pagefind](https://pagefind.app/) -- Rust/WASM static search library
 - [AI Integration Design](ai-integration.md) -- Full AI design document
+- [Incremental search index](incremental-search-index.md) -- Design for updating the Pagefind index per item instead of rebuilding it (B216)

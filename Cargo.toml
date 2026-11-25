@@ -96,6 +96,13 @@ members = [
     # through tap_vocabulary_owner_access; built with --target wasm32-wasip1.
     "plugins/test_owned_vocabulary",
 ]
+# B216 dev tool: decodes Pagefind indexes and proves per page tokenizing
+# matches a full CLI build. Its own workspace and lockfile, not a member: the
+# `pagefind` crate it pins (=1.3.0) carries actix-web for `pagefind --serve`,
+# and with it RUSTSEC-2026-0443 (actix-files) and RUSTSEC-2026-0258 (h2 0.3),
+# which have no fix inside pagefind 1.3.0's version ranges. Kept out of this
+# lockfile, they never reach the shipped dependency graph or its audit.
+exclude = ["crates/pagefind-harness"]
 # Guest WASM crate must be built separately with --target wasm32-wasip1
 # Plugin cdylibs (goose) excluded — build with --target wasm32-wasip1
 default-members = [
