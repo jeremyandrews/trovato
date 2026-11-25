@@ -62,6 +62,7 @@ use tower_sessions::Session;
 use tower_sessions::cookie::SameSite;
 use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, Layer as _, layer::SubscriberExt, util::SubscriberInitExt};
+use uuid::Uuid;
 
 use crate::cache::generation::CacheKind;
 use crate::config::Config;
@@ -99,6 +100,11 @@ enum Commands {
     Cache {
         #[command(subcommand)]
         action: CacheAction,
+    },
+    /// Item and revision management commands.
+    Item {
+        #[command(subcommand)]
+        action: ItemAction,
     },
     /// Apply pending kernel and plugin migrations, under one lock.
     ///
@@ -246,6 +252,23 @@ enum UserAction {
 }
 
 #[derive(Subcommand)]
+enum ItemAction {
+    /// Delete a past revision of an item: what an operator reaches for a
+    /// revision nothing in the UI should offer deleting through a browser (a
+    /// test edit, a private draft caught in history). Refused the same way
+    /// the route is: the current revision (exit nonzero), one that does not
+    /// belong to the item or does not exist (exit nonzero). Runs as an
+    /// administrator, the same bypass `user role-add` and the rest of this
+    /// CLI run as: whoever can reach the database already has it.
+    RevisionDelete {
+        /// The item's id.
+        item: Uuid,
+        /// The revision's id.
+        revision: Uuid,
+    },
+}
+
+#[derive(Subcommand)]
 enum PluginAction {
     /// Scaffold a new plugin in the plugins/ directory.
     New {
@@ -293,6 +316,7 @@ async fn main() -> Result<()> {
         Some(Commands::Config { action }) => run_config_command(action).await,
         Some(Commands::User { action }) => run_user_command(action).await,
         Some(Commands::Cache { action }) => run_cache_command(action).await,
+        Some(Commands::Item { action }) => run_item_command(action).await,
         Some(Commands::Migrate {
             status,
             dry_run,
@@ -1494,6 +1518,55 @@ async fn create_user_from_cli(
         "{}",
         bump_from_cli(config, &[CacheKind::Users, CacheKind::Permissions]).await
     );
+    Ok(())
+}
+
+/// `trovato item`: an operator acting directly on an item, the same database
+/// access every other command here already has.
+async fn run_item_command(action: ItemAction) -> Result<()> {
+    let config = Config::from_env().context("failed to load configuration")?;
+    let state = AppState::new(&config)
+        .await
+        .context("failed to initialize application state")?;
+
+    match action {
+        ItemAction::RevisionDelete { item, revision } => {
+            // The operator bypass every CLI command runs with (`user
+            // role-add`'s own doc, `docs/admin-permissions.md`): whoever can
+            // reach the database already has it, so `delete revisions` and
+            // delete access on the item are not asked again here.
+            let operator = tap::UserContext::administrator(Uuid::nil(), Vec::new());
+            match state
+                .items()
+                .delete_revision(item, revision, &operator)
+                .await
+            {
+                Ok(()) => {
+                    println!("Revision '{revision}' of item '{item}' deleted.");
+                }
+                Err(content::RevisionDeleted::NotFound) => {
+                    anyhow::bail!(
+                        "No such revision '{revision}' of item '{item}' (or no such item)."
+                    );
+                }
+                Err(content::RevisionDeleted::Forbidden) => {
+                    // The administrator bypass makes this unreachable; kept
+                    // so a future change to `may_delete_revisions` that adds
+                    // a real refusal here fails loudly instead of silently.
+                    anyhow::bail!("Refused to delete revision '{revision}' of item '{item}'.");
+                }
+                Err(content::RevisionDeleted::Current) => {
+                    anyhow::bail!(
+                        "Revision '{revision}' is item '{item}''s current revision and cannot be deleted."
+                    );
+                }
+                Err(content::RevisionDeleted::Failed(e)) => {
+                    return Err(e.context("failed to delete revision"));
+                }
+            }
+        }
+    }
+
     Ok(())
 }
 

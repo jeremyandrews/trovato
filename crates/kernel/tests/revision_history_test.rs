@@ -226,6 +226,16 @@ fn the_list_marks_the_current_revision_and_deletes_a_past_one() {
             revision_exists(app, current).await,
             "the current revision stays"
         );
+
+        // The confirm page refuses the current revision the same way the POST
+        // does, rather than showing a Delete button that would 409.
+        let (status, _) = get(
+            app,
+            &cookies,
+            &format!("/item/{id}/revisions/{current}/delete"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
     });
 }
 
@@ -283,6 +293,12 @@ fn deleting_a_revision_needs_delete_revisions_and_delete_access() {
             let (_, cookies) = common::user_holding(app, prefix, &permissions).await;
             let (_, html) = get(app, &cookies, &format!("/item/{id}/revisions")).await;
             assert!(!html.contains(&path), "{prefix}: Delete offered");
+            let (confirm_status, _) = get(app, &cookies, &path).await;
+            assert_eq!(
+                confirm_status,
+                StatusCode::FORBIDDEN,
+                "{prefix}: confirm page"
+            );
             let token = session_token(app, &cookies).await;
             let status = post_form(
                 app,
@@ -308,7 +324,16 @@ fn deleting_a_revision_needs_delete_revisions_and_delete_access() {
         .await;
         let (_, html) = get(app, &cookies, &format!("/item/{id}/revisions")).await;
         assert!(html.contains(&path), "Delete offered");
-        let token = token_after(&html, &path);
+
+        // The list's Delete link opens a confirm page, which carries the form
+        // that actually deletes it.
+        let (confirm_status, confirm_html) = get(app, &cookies, &path).await;
+        assert_eq!(confirm_status, StatusCode::OK, "confirm page opens");
+        assert!(
+            confirm_html.contains("History probe one"),
+            "confirm page names the revision being deleted"
+        );
+        let token = token_after(&confirm_html, &path);
         let status = post_form(
             app,
             &cookies,
@@ -317,6 +342,40 @@ fn deleting_a_revision_needs_delete_revisions_and_delete_access() {
         )
         .await;
         assert!(status.is_redirection(), "delete refused: {status}");
+        assert!(!revision_exists(app, oldest).await);
+    });
+}
+
+/// The database refuses the current revision independently of the service:
+/// `item.current_revision_id` is a foreign key into `item_revision` with no
+/// `ON DELETE` action, so a `DELETE` reaching Postgres by any other path than
+/// `ItemService::delete_revision` — a script, a bypass of it — fails too.
+#[test]
+fn the_database_refuses_to_delete_the_current_revision() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_type(app).await;
+        let (_id, revisions) = seed_item(app).await;
+        let current = *revisions.last().unwrap();
+
+        let err = sqlx::query("DELETE FROM item_revision WHERE id = $1")
+            .bind(current)
+            .execute(&app.db)
+            .await
+            .expect_err("the foreign key refuses this delete");
+        assert!(
+            err.to_string().contains("fk_item_current_revision"),
+            "unexpected error: {err}"
+        );
+        assert!(revision_exists(app, current).await, "the row stays");
+
+        // A past revision carries no such reference and deletes cleanly.
+        let oldest = revisions[0];
+        sqlx::query("DELETE FROM item_revision WHERE id = $1")
+            .bind(oldest)
+            .execute(&app.db)
+            .await
+            .expect("a non-current revision deletes");
         assert!(!revision_exists(app, oldest).await);
     });
 }

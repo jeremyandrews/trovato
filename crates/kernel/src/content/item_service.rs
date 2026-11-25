@@ -3097,6 +3097,11 @@ impl ItemService {
         if !deleted {
             return Err(RevisionDeleted::NotFound);
         }
+        // The item row itself did not change, but `item_revision` is part of
+        // what `CacheKind::Items` covers (`cache::generation::CacheKind::for_table`),
+        // so every server bumps its generation here too, the same as any other
+        // write that touches this item.
+        self.invalidate(item_id);
         info!(item_id = %item_id, revision_id = %revision_id, "revision deleted");
         self.audit(
             "delete_revision",
