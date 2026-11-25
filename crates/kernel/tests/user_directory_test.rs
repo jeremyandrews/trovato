@@ -108,6 +108,56 @@ async fn load(app: &TestApp, ids: &[String]) -> serde_json::Value {
     })
 }
 
+/// GET `/test-members/find-by-name?name=...` and return the JSON answer.
+async fn find_by_name(app: &TestApp, name: &str) -> serde_json::Value {
+    let response = app
+        .request(
+            Request::get(format!(
+                "/test-members/find-by-name?name={}",
+                urlencoding::encode(name)
+            ))
+            .header("x-forwarded-for", common::test_ip_for(BUCKET))
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 4_000_000)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+        panic!(
+            "the fixture answers JSON: {}",
+            String::from_utf8_lossy(&bytes)
+        )
+    })
+}
+
+/// GET `/test-members/find-by-name-prefix?prefix=...` and return the JSON answer.
+async fn find_by_name_prefix(app: &TestApp, prefix: &str) -> serde_json::Value {
+    let response = app
+        .request(
+            Request::get(format!(
+                "/test-members/find-by-name-prefix?prefix={}",
+                urlencoding::encode(prefix)
+            ))
+            .header("x-forwarded-for", common::test_ip_for(BUCKET))
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = axum::body::to_bytes(response.into_body(), 4_000_000)
+        .await
+        .unwrap();
+    serde_json::from_slice(&bytes).unwrap_or_else(|_| {
+        panic!(
+            "the fixture answers JSON: {}",
+            String::from_utf8_lossy(&bytes)
+        )
+    })
+}
+
 /// An active user and a blocked one; returns their ids and names.
 async fn two_users(app: &TestApp) -> ((Uuid, String), (Uuid, String)) {
     let active = common::username("dir-active");
@@ -230,6 +280,112 @@ fn a_malformed_id_is_refused() {
         assert_eq!(
             answer["code"],
             host_errors::ERR_USER_IDS_INVALID,
+            "{answer}"
+        );
+    });
+}
+
+/// `find-user-by-name` answers the account's public facts, case-insensitively,
+/// through the real wasm boundary.
+#[test]
+fn find_by_name_answers_public_fields_case_insensitively() {
+    common::run_test(async {
+        let app = capable();
+        let ((active_id, active), _) = two_users(app).await;
+
+        let answer = find_by_name(app, &active.to_uppercase()).await;
+
+        let user = &answer["user"];
+        assert_eq!(user["id"], active_id.to_string(), "{answer}");
+        assert_eq!(user["name"], active.as_str(), "{answer}");
+        let keys: std::collections::BTreeSet<&str> = user
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        assert_eq!(
+            keys,
+            ["created", "id", "language", "name", "status", "timezone"]
+                .into_iter()
+                .collect(),
+            "public fields only: {user}"
+        );
+    });
+}
+
+/// A name with no account answers `null`, not an error.
+#[test]
+fn find_by_name_answers_null_for_no_such_user() {
+    common::run_test(async {
+        let app = capable();
+
+        let answer = find_by_name(app, &format!("nosuchuser-{}", Uuid::now_v7())).await;
+
+        assert!(answer["user"].is_null(), "{answer}");
+    });
+}
+
+/// Without `user_directory` the call is refused, like `load-users`.
+#[test]
+fn find_by_name_without_the_capability_is_denied() {
+    common::run_test(async {
+        let app = without_capability();
+
+        let answer = find_by_name(app, "anyone").await;
+
+        assert_eq!(
+            answer["code"],
+            host_errors::ERR_USER_DIRECTORY_DENIED,
+            "{answer}"
+        );
+    });
+}
+
+/// `find-users-by-name-prefix` answers a sorted, capped list through the real
+/// wasm boundary, and never an address.
+#[test]
+fn find_by_name_prefix_answers_a_sorted_capped_list() {
+    common::run_test(async {
+        let app = capable();
+        let stem = Uuid::now_v7().simple().to_string();
+        let prefix = format!("dirpfx-{stem}-");
+        for i in 0..3 {
+            let name = format!("{prefix}{i}");
+            app.create_test_user(
+                &name,
+                "dir-Password-123",
+                &format!("{name}@dirpfx.example.test"),
+            )
+            .await;
+        }
+
+        let answer = find_by_name_prefix(app, &prefix).await;
+
+        let users = answer["users"]
+            .as_array()
+            .unwrap_or_else(|| panic!("expected users: {answer}"));
+        assert_eq!(users.len(), 3, "{answer}");
+        let names: Vec<&str> = users.iter().map(|u| u["name"].as_str().unwrap()).collect();
+        let mut sorted = names.clone();
+        sorted.sort_by_key(|n| n.to_lowercase());
+        assert_eq!(names, sorted, "not sorted: {names:?}");
+        let text = answer.to_string();
+        assert!(!text.contains("@dirpfx.example.test"), "no address: {text}");
+    });
+}
+
+/// An empty prefix is refused, rather than answering every account.
+#[test]
+fn find_by_name_prefix_empty_is_refused() {
+    common::run_test(async {
+        let app = capable();
+
+        let answer = find_by_name_prefix(app, "").await;
+
+        assert_eq!(
+            answer["code"],
+            host_errors::ERR_USER_NAME_PREFIX_INVALID,
             "{answer}"
         );
     });

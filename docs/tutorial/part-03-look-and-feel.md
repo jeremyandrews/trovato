@@ -391,7 +391,7 @@ The YAML config files in `docs/tutorial/config/` document the tile configuration
 
 ### Tile Visibility Rules
 
-Each tile can have path-based and role-based visibility rules. For example, the open CFPs sidebar tile might only appear on conference-related pages:
+Each tile can have path-based, role-based and audience-based visibility rules. For example, the open CFPs sidebar tile might only appear on conference-related pages:
 
 ```json
 {
@@ -400,6 +400,24 @@ Each tile can have path-based and role-based visibility rules. For example, the 
 ```
 
 Visiting `/speakers/jane-doe` would not show the CFP tile because the path doesn't match any pattern.
+
+A login tile is the classic case for `audience`: it should appear for a
+signed-out visitor and disappear once they sign in. `roles` cannot express
+that — every viewer, signed in or not, carries the `anonymous user` role in
+the list a tile's visibility is matched against, so `{"roles": ["anonymous
+user"]}` would match everyone. `audience` is decided from whether the viewer
+is actually signed in, not from that role list:
+
+```json
+{
+  "audience": "anonymous"
+}
+```
+
+`{"audience": "authenticated"}` is the reverse — shown only once signed in.
+Leaving `audience` out of the visibility JSON (or any other rule) shows the
+tile to everyone, same as `{}`. The tile admin form exposes this as a "Show
+to" field: Everyone, Anonymous visitors only, or Signed-in users only.
 
 ### Breadcrumbs
 

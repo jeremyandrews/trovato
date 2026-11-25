@@ -469,6 +469,28 @@ fn tap_cron(_input: serde_json::Value) -> Result<(), String> {
 }
 ```
 
+### Tap and route size limit
+
+A tap or a plugin-served route (`tap_api`) may send and receive up to
+**8 MiB** each way — the input the kernel hands it and the JSON (or, for
+`tap_api`, the body) it returns. Both directions share one ceiling,
+`trovato_sdk::abi::PLUGIN_IO_MAX_BYTES`. Send or return more than that and the
+kernel refuses the call with a documented error rather than truncating it
+silently.
+
+8 MiB is comfortably above any real page — the motivating case was a 54 KB
+field the kernel's old 64 KB cap already refused to render — and well inside
+the 64 MiB a plugin may use in total for its own code, data and working set in
+one call, so a call that uses the whole ceiling still leaves room to run.
+There is nothing to opt into: every tap and `tap_api` route gets the same
+limit, and a plugin built against the current SDK gets it automatically (see
+`crates/plugin-sdk/src/abi.rs` for plugins built before this limit existed,
+which keep working at the old 64 KB ceiling until rebuilt).
+
+If a tap legitimately needs to send more than 8 MiB — a large export, for
+instance — paginate it across multiple calls rather than asking for a larger
+limit; nothing in the protocol changes to accommodate one call that large.
+
 ### Available Taps
 
 #### Content Type Definition
@@ -862,9 +884,37 @@ for user in users.iter().filter(|u| u.status == "active") {
 
 Look a digest's recipients up in batches of 100, not one at a time.
 
-ABI: a new function, `load-users`, in the existing `user-api` interface and a
-new manifest capability, `user_directory` (B73, after 0.104.0). No existing
-signature changed.
+`host::find_user_by_name` and `host::find_users_by_name_prefix` answer the
+same shape, by name instead of by id, so a plugin can resolve a name a person
+typed to the account it names — the groups plugin's "add member by name"
+could not do this before B179: it could only match names it had already seen
+in its own tables, so an account created straight on the site answered "no
+such user". Both need the same capability as `load_users`; no new manifest key.
+
+```rust
+// Exact match, case-insensitive the same way login matches a name.
+match host::find_user_by_name("jsmith") {
+    Ok(Some(user)) => { /* user.id, user.name, ... */ }
+    Ok(None) => { /* no such user */ }
+    Err(code) => { /* refused; see plugin-error-codes.md */ }
+}
+
+// A short, sorted list for an autocomplete widget as the plugin's user
+// types; at most 10 results, not caller-configurable.
+let matches = host::find_users_by_name_prefix("js")?;
+```
+
+Neither call filters a blocked account or the anonymous account out of its
+answer: the visibility rule is the one `load_users` already has — nothing
+beyond the `user_directory` capability gate itself, the same rule the
+kernel's own `/admin/people` listing uses for an administrator. A plugin that
+only wants to offer active accounts checks `user.status == "active"` itself,
+the same way the `load_users` example above does.
+
+ABI: `load-users` is in the existing `user-api` interface, with a new
+manifest capability, `user_directory` (B73, after 0.104.0). `find-user-by-name`
+and `find-users-by-name-prefix` are two more functions in the same interface,
+sharing that capability (B179, after 0.107.0). No existing signature changed.
 
 ### Mailing a Member
 
@@ -1259,6 +1309,73 @@ A page is an admin page when its path starts with `/admin`
 (`ThemeEngine::is_admin_path`, the rule the kernel already uses to pick
 `page--admin.html` and to theme an admin error page). Any such page, kernel or
 plugin, gets the sidebar; a plugin page elsewhere does not.
+
+---
+
+### Serving a Request Directly (`tap_api`), and Accepting a File
+
+A `MenuRoute` with `handler_type = "api"` and a `callback` is not a page the
+theme renders — it is a request the kernel dispatches straight to your
+plugin's `tap_api`, with the method, path, query, params, body and caller
+already resolved:
+
+```rust
+#[plugin_tap]
+fn tap_menu() -> Vec<MenuRoute> {
+    vec![
+        MenuRoute::api("POST", "/my-plugin/upload", "upload_logo")
+            .title("Upload a logo")
+            .permission("create my_article content"),
+    ]
+}
+
+#[plugin_tap]
+fn tap_api(request: ApiRequest) -> ApiResponse {
+    match request.callback.as_str() {
+        "upload_logo" => upload_logo(&request),
+        other => ApiResponse::error(404, &format!("no such callback: {other}")),
+    }
+}
+```
+
+CSRF is already enforced before your tap runs: a state-changing method needs
+an `X-CSRF-Token` header or a `_token` field (multipart or form-urlencoded),
+unless the caller authenticated with an `Authorization: Bearer` token. The
+body size cap (`MAX_REQUEST_BODY`, the 8 MiB plugin I/O ceiling) applies to
+this case exactly as it always has, because `request.body` still crosses the
+WASM boundary.
+
+**A file in the form is different.** When the request's `Content-Type` is
+`multipart/form-data`, the kernel parses it itself before dispatch: every part
+carrying a filename is stored through the same `FileService` `/file/upload`
+uses — the same size limit, MIME allowlist and magic-byte check — and handed
+to you in `request.files: Vec<UploadedFile>` as an id and metadata, never raw
+bytes. The form's other fields arrive in `request.body`, re-encoded as a JSON
+object, so `request.json::<T>()` works the same whether the caller posted JSON
+or a multipart form.
+
+```rust
+fn upload_logo(request: &ApiRequest) -> ApiResponse {
+    let Some(upload) = request.files.first() else {
+        return ApiResponse::error(400, "no file uploaded");
+    };
+    // The id is what a File field holds. Attaching it through `save-item` is
+    // what promotes the file out of `Temporary` — do not touch file storage
+    // yourself, there is no host call for it and this is why.
+    match host::save_item(&serde_json::json!({
+        "id": request.params.get("id"),
+        "fields": { "field_logo": upload.id },
+    })) {
+        Ok(Some(item)) => ApiResponse::json(&serde_json::json!({ "item_id": item.id })).unwrap(),
+        Ok(None) => ApiResponse::error(404, "item not found"),
+        Err(code) => ApiResponse::error(500, &format!("save failed: {code}")),
+    }
+}
+```
+
+A file your route stores but never references from an item stays `Temporary`
+and is removed by the kernel's temporary-file cleanup — a plugin cannot leak
+storage by accepting an upload nobody attaches.
 
 ---
 

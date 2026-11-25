@@ -241,9 +241,13 @@ struct AppStateInner {
 
     /// The WebAuthn relying party (FR-7a / D-34).
     ///
-    /// Non-optional: auth is core infrastructure, and a WASM plugin can neither
-    /// hold ceremony state nor speak the browser WebAuthn API.
-    webauthn: Arc<webauthn_rs::Webauthn>,
+    /// Kernel infrastructure, not a plugin concern: a WASM plugin can neither
+    /// hold ceremony state nor speak the browser WebAuthn API. `None` when
+    /// `SITE_URL` cannot be a WebAuthn relying party (a bare IP address, most
+    /// commonly — browsers refuse WebAuthn on an IP origin anyway) — passkeys
+    /// are disabled rather than refusing to start. See
+    /// [`services::webauthn::build_webauthn`].
+    webauthn: Option<Arc<webauthn_rs::Webauthn>>,
 
     /// The per-user session index backing multi-device session management
     /// (FR-7b / D-36). Extends tower-sessions; does not fork it.
@@ -1174,14 +1178,26 @@ impl AppState {
 
         // The WebAuthn relying party, derived from SITE_URL so the RP ID and the
         // origin can never drift apart (a mismatch silently invalidates every
-        // registered credential).
+        // registered credential). A SITE_URL that cannot be a relying party — a
+        // bare IP address is the common case, since webauthn-rs refuses an IP as
+        // an effective domain and no browser allows WebAuthn on an IP origin
+        // anyway — disables passkeys for this run rather than failing startup.
         let site_name = crate::models::SiteConfig::site_name(&db)
             .await
             .unwrap_or_else(|_| "Trovato".to_string());
-        let webauthn = Arc::new(
-            services::webauthn::build_webauthn(&config.site_url, &site_name)
-                .context("failed to initialize the WebAuthn relying party")?,
-        );
+        let webauthn = match services::webauthn::build_webauthn(&config.site_url, &site_name) {
+            Ok(w) => Some(Arc::new(w)),
+            Err(e) => {
+                tracing::warn!(
+                    site_url = %config.site_url,
+                    error = %e,
+                    "SITE_URL cannot be a WebAuthn relying party; passkeys are disabled for \
+                     this site. Browsers do not support WebAuthn on an IP address — use a \
+                     hostname in SITE_URL to enable passkeys."
+                );
+                None
+            }
+        };
 
         // The per-user session index. Its TTL matches the session's own
         // inactivity expiry so the registry and the sessions it describes
@@ -1810,9 +1826,11 @@ impl AppState {
         &self.inner.security_audit
     }
 
-    /// The WebAuthn relying party (FR-7a / D-34).
-    pub fn webauthn(&self) -> &Arc<webauthn_rs::Webauthn> {
-        &self.inner.webauthn
+    /// The WebAuthn relying party (FR-7a / D-34), or `None` when `SITE_URL`
+    /// cannot be a relying party (a bare IP address) and passkeys are disabled
+    /// for this run.
+    pub fn webauthn(&self) -> Option<&Arc<webauthn_rs::Webauthn>> {
+        self.inner.webauthn.as_ref()
     }
 
     /// The per-user session index (FR-7b / D-36).

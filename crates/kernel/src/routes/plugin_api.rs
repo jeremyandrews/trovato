@@ -62,8 +62,21 @@
 //!   response body — a plugin that emits HTML is responsible for escaping it,
 //!   the same contract view taps have — and `content_type` defaults to
 //!   `application/json` for that reason.
-//! - **Body size.** Capped at [`MAX_REQUEST_BODY`], because the body crosses the
-//!   WASM boundary through the tap I/O buffer.
+//! - **Body size.** Capped at [`MAX_REQUEST_BODY`] — [`trovato_sdk::abi::
+//!   PLUGIN_IO_MAX_BYTES`], the one ceiling the whole tap/route memory
+//!   protocol shares (B181) — because the body crosses the WASM boundary
+//!   through that same channel. Axum refuses a [`Bytes`] body over 2 MB by
+//!   default, below this cap, so the router raises its limit explicitly
+//!   ([`build_plugin_api_router`]) rather than silently capping every plugin
+//!   route at the framework default. A `multipart/form-data` request is the
+//!   one exception (**G-FILE-NO-HOST-API**, BL-107): the kernel parses it
+//!   itself, stores each file part through [`crate::file::FileService`] — the
+//!   same size limit, MIME allowlist and magic-byte check `/file/upload` gets —
+//!   and hands the plugin [`ApiRequest::files`], a list of ids and metadata, in
+//!   place of the bytes. No file's bytes cross the WASM boundary; the overall
+//!   request is capped at [`crate::file::MAX_UPLOAD_BODY_SIZE`] by the router's
+//!   own body limit, same as a direct upload. The request's other fields still
+//!   reach the plugin, re-encoded as a JSON object in [`ApiRequest::body`].
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -71,26 +84,30 @@ use std::sync::Arc;
 use axum::{
     Extension, Router,
     body::Bytes,
-    extract::{OriginalUri, Path, Query, State},
+    extract::{DefaultBodyLimit, FromRequest, Multipart, OriginalUri, Path, Query, Request, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
 };
 use tower_sessions::Session;
 
+use crate::file::MAX_UPLOAD_BODY_SIZE;
 use crate::menu::MenuDefinition;
 use crate::middleware::api_token::ApiTokenAuth;
 use crate::middleware::language::ResolvedLanguage;
 use crate::state::AppState;
 use crate::tap::RequestState;
-use trovato_sdk::types::{ApiRequest, ApiResponse};
+use trovato_sdk::types::{ApiRequest, ApiResponse, UploadedFile};
 
 /// Largest request body handed to a plugin, in bytes.
 ///
 /// The body crosses the WASM boundary through the tap I/O buffer, so an
-/// unbounded body is a self-inflicted truncation bug. Sized well under the
-/// 1 MiB payload cap the freeze records as TUNABLE.
-pub const MAX_REQUEST_BODY: usize = 256 * 1024;
+/// unbounded body is a self-inflicted truncation bug. Equal to
+/// [`trovato_sdk::abi::PLUGIN_IO_MAX_BYTES`] (B181) rather than an
+/// independent number: it is the same channel `tap_api`'s request and
+/// response travel over, and a plugin author should not have to remember a
+/// different ceiling for each end of one call.
+pub const MAX_REQUEST_BODY: usize = trovato_sdk::abi::PLUGIN_IO_MAX_BYTES;
 
 /// The `handler_type` value that marks a menu entry as plugin-served.
 const API_HANDLER_TYPE: &str = "api";
@@ -169,12 +186,21 @@ pub fn build_plugin_api_router(menus: &[MenuDefinition]) -> Router<AppState> {
                   method: Method,
                   params: Path<HashMap<String, String>>,
                   query: Query<HashMap<String, String>>,
-                  body: Bytes| {
+                  http_request: Request| {
                 let config = Arc::clone(&config);
                 async move {
                     serve(
-                        config, state, session, bearer, language, headers, uri, method, params,
-                        query, body,
+                        config,
+                        state,
+                        session,
+                        bearer,
+                        language,
+                        headers,
+                        uri,
+                        method,
+                        params,
+                        query,
+                        http_request,
                     )
                     .await
                 }
@@ -198,7 +224,16 @@ pub fn build_plugin_api_router(menus: &[MenuDefinition]) -> Router<AppState> {
         router = router.route(&entry.path, route);
     }
 
-    router
+    // Axum refuses a body over its 2 MB framework default before any handler
+    // runs, whatever this module checks later, so the ceiling is raised here
+    // to admit both cases `serve` handles: a body up to `MAX_REQUEST_BODY`
+    // (B181), and a `multipart/form-data` upload up to `MAX_UPLOAD_BODY_SIZE`,
+    // the number `/file/upload` is layered with. Neither is loosened: `serve`
+    // still enforces `MAX_REQUEST_BODY` on a non-multipart body and
+    // `MAX_UPLOAD_BODY_SIZE` on a multipart one, after this layer admits it.
+    router.layer(DefaultBodyLimit::max(
+        MAX_REQUEST_BODY.max(MAX_UPLOAD_BODY_SIZE),
+    ))
 }
 
 /// A plugin `api` menu entry the kernel serves, with its method upper-cased
@@ -289,7 +324,7 @@ async fn serve(
     method: Method,
     Path(params): Path<HashMap<String, String>>,
     Query(query): Query<HashMap<String, String>>,
-    body: Bytes,
+    http_request: Request,
 ) -> Response {
     // A disabled plugin serves nothing, the same 404 the gated kernel routes
     // give — a route registered at startup must not outlive its plugin.
@@ -310,34 +345,63 @@ async fn serve(
         return error_response(status, "Access denied");
     }
 
-    // CSRF, with the bearer exemption argued in the module docs.
-    //
-    // The token is accepted from the `X-CSRF-Token` header or from a `_token`
-    // field in a form-urlencoded body, because a plain HTML `<form>` can only
-    // do the second. The body is borrowed here rather than decoded: a
-    // non-UTF-8 body yields no field, so it is refused by this gate with 403
-    // exactly as it was before, and the 400 below still names the real problem
-    // for a caller that got the token right.
-    if is_state_changing(&method) && bearer.is_none() {
-        let body_str = std::str::from_utf8(&body).unwrap_or("");
-        if crate::routes::helpers::require_csrf_header_or_field(&session, &headers, body_str)
-            .await
-            .is_err()
+    // A `multipart/form-data` request is parsed and its files stored here,
+    // before dispatch; everything else keeps the exact body handling this
+    // route always had. See `read_multipart_fields` for the CSRF and storage
+    // ordering this branch relies on.
+    let (body, files) = if is_multipart_content_type(&headers) {
+        match read_multipart_fields(
+            &state,
+            &session,
+            &headers,
+            is_state_changing(&method) && bearer.is_none(),
+            user.id,
+            http_request,
+        )
+        .await
         {
-            return error_response(
-                StatusCode::FORBIDDEN,
-                "Invalid or missing CSRF token. Include an X-CSRF-Token header, a _token \
-                 field in a form-urlencoded body, or authenticate with an \
-                 Authorization: Bearer token.",
-            );
+            Ok(parsed) => parsed,
+            Err(response) => return response,
         }
-    }
+    } else {
+        let body = match Bytes::from_request(http_request, &state).await {
+            Ok(body) => body,
+            // `Bytes` only rejects when the body exceeds the router's layered
+            // limit or fails to read off the wire; its `IntoResponse` already
+            // answers with the right status.
+            Err(rejection) => return rejection.into_response(),
+        };
 
-    if body.len() > MAX_REQUEST_BODY {
-        return error_response(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large");
-    }
-    let Ok(body) = String::from_utf8(body.to_vec()) else {
-        return error_response(StatusCode::BAD_REQUEST, "Request body is not valid UTF-8");
+        // CSRF, with the bearer exemption argued in the module docs.
+        //
+        // The token is accepted from the `X-CSRF-Token` header or from a
+        // `_token` field in a form-urlencoded body, because a plain HTML
+        // `<form>` can only do the second. The body is borrowed here rather
+        // than decoded: a non-UTF-8 body yields no field, so it is refused by
+        // this gate with 403 exactly as it was before, and the 400 below
+        // still names the real problem for a caller that got the token right.
+        if is_state_changing(&method) && bearer.is_none() {
+            let body_str = std::str::from_utf8(&body).unwrap_or("");
+            if crate::routes::helpers::require_csrf_header_or_field(&session, &headers, body_str)
+                .await
+                .is_err()
+            {
+                return error_response(
+                    StatusCode::FORBIDDEN,
+                    "Invalid or missing CSRF token. Include an X-CSRF-Token header, a _token \
+                     field in a form-urlencoded body, or authenticate with an \
+                     Authorization: Bearer token.",
+                );
+            }
+        }
+
+        if body.len() > MAX_REQUEST_BODY {
+            return error_response(StatusCode::PAYLOAD_TOO_LARGE, "Request body too large");
+        }
+        let Ok(body) = String::from_utf8(body.to_vec()) else {
+            return error_response(StatusCode::BAD_REQUEST, "Request body is not valid UTF-8");
+        };
+        (body, Vec::new())
     };
 
     // A token for the plugin to embed in a form it serves.
@@ -371,6 +435,7 @@ async fn serve(
     request.query = query;
     request.body = body;
     request.csrf_token = csrf_token;
+    request.files = files;
 
     let Ok(payload) = serde_json::to_string(&request) else {
         return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
@@ -425,6 +490,191 @@ async fn serve(
             error_response(StatusCode::BAD_GATEWAY, "Plugin handler failed")
         }
     }
+}
+
+/// Whether `headers` declare a `multipart/form-data` body. Matches on the
+/// media type alone, the same way `routes::helpers::is_form_urlencoded`
+/// matches its content type, so a `boundary` or `charset` parameter does not
+/// change the answer.
+fn is_multipart_content_type(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or("")
+                .trim()
+                .eq_ignore_ascii_case("multipart/form-data")
+        })
+        .unwrap_or(false)
+}
+
+/// Fields and files read out of one multipart part stream, before any
+/// authorization decision is made from them.
+#[derive(Default)]
+struct RawMultipart {
+    /// Every non-file field, last value wins on a repeated name — the same
+    /// rule [`ApiRequest::query`] and [`ApiRequest::params`] already apply to
+    /// the request context.
+    fields: HashMap<String, String>,
+    /// Every value a field named [`crate::routes::helpers::CSRF_FORM_FIELD`]
+    /// carried, in arrival order. More than one is a forged or malformed body,
+    /// not a coin flip — resolved the same way the url-encoded body's
+    /// `single_form_field` resolves a duplicate.
+    token_values: Vec<String>,
+    /// File parts, in arrival order: field name, filename, declared content
+    /// type, bytes. Not yet stored — storing happens only once the caller's
+    /// CSRF token has been checked.
+    files: Vec<(String, String, Option<String>, Vec<u8>)>,
+}
+
+/// Read every part of a multipart body into memory, without storing any file
+/// yet.
+///
+/// A body past the router's layered limit, or a malformed stream, fails here;
+/// either way the answer is the same shape `read_upload_part` in
+/// `routes::file` gives: 413 when the limit is what stopped it, 400 otherwise.
+async fn read_raw_multipart(multipart: &mut Multipart) -> Result<RawMultipart, Response> {
+    let mut raw = RawMultipart::default();
+    loop {
+        let field = match multipart.next_field().await {
+            Ok(Some(field)) => field,
+            Ok(None) => break,
+            Err(e) if e.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+                return Err(error_response(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    &format!("Request body too large (max {MAX_UPLOAD_BODY_SIZE} bytes)"),
+                ));
+            }
+            Err(_) => {
+                return Err(error_response(
+                    StatusCode::BAD_REQUEST,
+                    "Failed to read multipart data",
+                ));
+            }
+        };
+        let name = field.name().unwrap_or("").to_string();
+        if let Some(filename) = field.file_name().map(str::to_string) {
+            let content_type = field.content_type().map(str::to_string);
+            let data = match field.bytes().await {
+                Ok(bytes) => bytes.to_vec(),
+                Err(e) if e.status() == StatusCode::PAYLOAD_TOO_LARGE => {
+                    return Err(error_response(
+                        StatusCode::PAYLOAD_TOO_LARGE,
+                        &format!("Request body too large (max {MAX_UPLOAD_BODY_SIZE} bytes)"),
+                    ));
+                }
+                Err(_) => {
+                    return Err(error_response(
+                        StatusCode::BAD_REQUEST,
+                        "Failed to read multipart data",
+                    ));
+                }
+            };
+            raw.files.push((name, filename, content_type, data));
+        } else {
+            let Ok(value) = field.text().await else {
+                return Err(error_response(
+                    StatusCode::BAD_REQUEST,
+                    "Failed to read multipart data",
+                ));
+            };
+            if name == crate::routes::helpers::CSRF_FORM_FIELD {
+                raw.token_values.push(value.clone());
+            }
+            raw.fields.insert(name, value);
+        }
+    }
+    Ok(raw)
+}
+
+/// Parse a multipart plugin-served request: check CSRF against whatever
+/// `_token` field it carried, then store each file part through
+/// [`crate::file::FileService`] and return the non-file fields re-encoded as a
+/// JSON object (the body a JSON caller would have sent) alongside the stored
+/// files' ids and metadata.
+///
+/// **Ordering matters.** The whole body is read into memory first (buffering
+/// cost no different from the `Bytes` branch, which already reads the whole
+/// non-multipart body before anything is checked), but no file is written
+/// through `FileService` — and so nothing is durable — until *after* the CSRF
+/// check passes. A request failing that check costs memory, never storage.
+async fn read_multipart_fields(
+    state: &AppState,
+    session: &Session,
+    headers: &HeaderMap,
+    needs_csrf: bool,
+    uploader: uuid::Uuid,
+    http_request: Request,
+) -> Result<(String, Vec<UploadedFile>), Response> {
+    let mut multipart = match Multipart::from_request(http_request, state).await {
+        Ok(multipart) => multipart,
+        Err(rejection) => return Err(rejection.into_response()),
+    };
+    let raw = read_raw_multipart(&mut multipart).await?;
+
+    if needs_csrf {
+        let token = match raw.token_values.as_slice() {
+            [one] => Some(one.as_str()),
+            _ => None,
+        };
+        if crate::routes::helpers::require_csrf_header_or_resolved_field(session, headers, token)
+            .await
+            .is_err()
+        {
+            return Err(error_response(
+                StatusCode::FORBIDDEN,
+                "Invalid or missing CSRF token. Include an X-CSRF-Token header, a _token \
+                 field in the multipart body, or authenticate with an \
+                 Authorization: Bearer token.",
+            ));
+        }
+    }
+
+    let mut files = Vec::with_capacity(raw.files.len());
+    for (field, filename, content_type, data) in raw.files {
+        let mime_type = crate::file::resolve_mime_type(content_type.as_deref(), &filename);
+        match state
+            .files()
+            .upload(uploader, &filename, &mime_type, &data)
+            .await
+        {
+            Ok(stored) => files.push(UploadedFile::new(
+                field,
+                stored.id.to_string(),
+                stored.filename,
+                stored.mime_type,
+                stored.size,
+                stored.url,
+            )),
+            Err(e) => {
+                let status = crate::routes::file::upload_error_status(&e);
+                if status == StatusCode::INTERNAL_SERVER_ERROR {
+                    tracing::warn!(error = %e, field = %field, "plugin-served file upload failed");
+                }
+                return Err(error_response(status, &e.to_string()));
+            }
+        }
+    }
+
+    let mut fields = raw.fields;
+    fields.remove(crate::routes::helpers::CSRF_FORM_FIELD);
+    let Ok(body) = serde_json::to_string(&fields) else {
+        return Err(error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error",
+        ));
+    };
+    if body.len() > MAX_REQUEST_BODY {
+        return Err(error_response(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "Request body too large",
+        ));
+    }
+
+    Ok((body, files))
 }
 
 /// Decode a plugin's `tap_api` output.

@@ -306,6 +306,19 @@ entries and children go through the same rule.
 matches, and the menus already built), so a tile never reloads what the page
 has.
 
+**Tile visibility** (`Tile::is_visible`) combines `paths`/`paths_exclude`,
+`roles` and `audience` rules in a tile's `visibility` JSON; a tile with none of
+these, or `{}`, is visible to everyone. `audience` (`"anonymous"` or
+`"authenticated"`) is the login-tile case — shown only to a signed-out visitor,
+or only to a signed-in one — decided from the viewer's actual signed-in state,
+not from `user_roles`: every viewer, signed in or not, can carry the
+`anonymous user` role there (`routes::helpers::inject_site_context` seeds it
+unconditionally, then adds `authenticated user` and `administrator` as they
+apply), so a role rule alone cannot mean "anonymous only". The tile admin form
+exposes `audience` as a "Show to" field, merged into the tile's stored
+`visibility` so an existing `paths` or `roles` rule (set through `config
+import`, which the form has no control for) survives an edit.
+
 ### Gather Tiles
 
 **A gather tile** (`tile_type: gather_query`) lists the first rows of the

@@ -1598,6 +1598,21 @@ mod tests {
         }
     }
 
+    /// B144: a site reached by IP address still builds absolute feed links —
+    /// `SITE_URL` feeds `Entry::from_row` as a plain string, with no dependency
+    /// on WebAuthn's effective-domain rule.
+    #[test]
+    fn a_feed_entry_link_is_absolute_under_an_ip_site_url() {
+        let entry = Entry::from_row(
+            &blog_row(),
+            "http://10.20.250.7",
+            &meta(Some("jeremy"), 1_700_000_500),
+            &terms(),
+            false,
+        );
+        assert_eq!(entry.link, "http://10.20.250.7/blog/a-post");
+    }
+
     /// The defect: an entry carried title, link, description and date only.
     #[test]
     fn an_entry_has_a_creator_categories_and_a_uuid_id() {
