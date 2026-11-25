@@ -290,8 +290,8 @@ channel (256 jobs) and returns. One background worker, owned by `AppState`
 (`search::sentiment::SentimentQueue`), drains it: it re-reads the settings,
 resolves the Chat provider the same way the endpoints do, sends the
 `CLASSIFY_SENTIMENT` prompt (`search/prompts.rs`, resolved through
-`prompts::resolve`) through `api_search::complete` (the one send and parse path
-all four AI search calls now share), and adds the label to the day's counter
+`prompts::resolve`) through `api_search::complete`, which sends it through
+`AiProviderService::chat_once`, the kernel's one send path, and adds the label to the day's counter
 through the analytics aggregator. A reply that is not exactly one of the three
 words counts nothing and logs one warning, without the reply text. A full channel
 drops the job; the number dropped is logged at the next analytics flush. Provider

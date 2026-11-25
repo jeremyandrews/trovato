@@ -1979,6 +1979,9 @@ impl GatherService {
         Ok(definition)
     }
 
+    /// What the usage log records a semantic filter's query embedding as.
+    const SEMANTIC_SEARCH_USAGE_SOURCE: &'static str = "kernel_semantic_search";
+
     /// Embed a semantic filter's query text and return the ranked candidate
     /// item ids from pgvector, or `None` on any degradation path.
     ///
@@ -2001,7 +2004,11 @@ impl GatherService {
             return None;
         }
 
-        let embedding = match ai.embed(query_text).await {
+        let caller = crate::services::ai_provider::AiCaller::kernel(
+            Self::SEMANTIC_SEARCH_USAGE_SOURCE,
+            false,
+        );
+        let embedding = match ai.embed(query_text, &caller).await {
             Ok(Some(result)) => result,
             Ok(None) => return None,
             Err(e) => {

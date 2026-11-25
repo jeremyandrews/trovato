@@ -19,6 +19,7 @@ use tower_sessions::Session;
 use crate::error::AppError;
 use crate::routes::helpers::require_csrf_header;
 use crate::services::ai_chat::{ChatRole, ChatStreamEvent, ChatTurn};
+use crate::services::ai_provider::AiCaller;
 use crate::services::ai_token_budget::{BudgetAction, UsageLogEntry};
 use crate::state::AppState;
 
@@ -73,6 +74,9 @@ pub struct ChatInput {
     /// User's chat message.
     pub message: String,
 }
+
+/// What the usage log records the chatbot's calls as.
+const CHAT_USAGE_SOURCE: &str = "kernel_chat";
 
 /// Session key for conversation history.
 const CHAT_HISTORY_KEY: &str = "chat_history";
@@ -160,7 +164,8 @@ async fn chat_handler(
     let resolved = match state.ai_chat().resolve_chat_provider().await {
         Ok(r) => r,
         Err(e) => {
-            return AppError::service_unavailable("AI", format!("Failed to connect: {e}"))
+            tracing::warn!(error = %e, "no chat provider resolved");
+            return AppError::service_unavailable("AI", "No AI provider is configured for chat")
                 .into_response();
         }
     };
@@ -252,15 +257,18 @@ async fn chat_handler(
     }
 
     // Execute streaming request using the same resolved provider used for budget check (no TOCTOU).
+    // A failed start shows a sentence: the provider's own text is in the log
+    // (`log_provider_failure`), never in the browser (B55).
+    let caller = AiCaller::user(uid, CHAT_USAGE_SOURCE);
     let (stream, meta) = match state
         .ai_chat()
-        .execute_streaming(messages, &config, &resolved)
+        .execute_streaming(messages, &config, &resolved, &caller)
         .await
     {
         Ok(s) => s,
         Err(e) => {
-            return AppError::service_unavailable("AI", format!("Failed to start stream: {e}"))
-                .into_response();
+            tracing::warn!(error = %e, provider = %provider_id, "AI chat stream failed to start");
+            return AppError::service_unavailable("AI", e.user_message()).into_response();
         }
     };
 
@@ -336,7 +344,7 @@ async fn chat_handler(
                         .await;
                     let entry = UsageLogEntry {
                         user_id: Some(uid),
-                        plugin_name: "kernel_chat".to_string(),
+                        plugin_name: CHAT_USAGE_SOURCE.to_string(),
                         provider_id: stream_provider_id.clone(),
                         operation: "Chat".to_string(),
                         model: model.clone(),

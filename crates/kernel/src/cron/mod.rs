@@ -680,7 +680,8 @@ async fn run_embed_job(
     // The kernel calls the embedding provider directly (no plugin principal —
     // kernel-initiated embedding is always authorized). `AiProviderService::embed`
     // applies the P11c per-op timeout + circuit breaker internally.
-    match ai.embed(&text).await {
+    let caller = crate::services::ai_provider::AiCaller::kernel(KERNEL_EMBED_PLUGIN, true);
+    match ai.embed(&text, &caller).await {
         Ok(Some(result)) => {
             match vector_store {
                 Some(store) if store.is_available().await => {

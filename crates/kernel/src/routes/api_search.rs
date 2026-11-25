@@ -13,13 +13,9 @@
 //! the stock page's use of it. The follow-up endpoint also enforces the turn cap
 //! there.
 
-use std::convert::Infallible;
-use std::time::Duration;
-
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
@@ -28,7 +24,7 @@ use crate::models::SiteConfig;
 use crate::search::analytics::Counter;
 use crate::search::{SearchSettings, normalize_query, prompts};
 use crate::services::ai_provider::{
-    AiOperationType, AiProviderService, ProviderProtocol, ResolvedProvider,
+    AiCaller, AiOperationType, AiProviderService, ChatRequest, ResolvedProvider,
 };
 use crate::state::AppState;
 
@@ -175,12 +171,13 @@ async fn expand_query(State(state): State<AppState>, Json(body): Json<ExpandRequ
     let system_prompt = prompts::resolve(prompts::EXPAND_QUERY, &site_name, &site_slogan);
 
     // Make the AI request
+    let caller = AiCaller::anonymous(SEARCH_USAGE_SOURCE);
     let Some(content) = complete(
         ai_providers,
         &resolved,
+        &caller,
         &system_prompt,
         &body.query,
-        Duration::from_secs(15),
     )
     .await
     else {
@@ -425,12 +422,13 @@ async fn json_ai_response_with_key(
         .unwrap_or_default();
     let system_prompt = prompts::resolve(prompt_template, &site_name, &site_slogan);
 
+    let caller = AiCaller::anonymous(SEARCH_USAGE_SOURCE);
     let Some(content) = complete(
         ai_providers,
         &resolved,
+        &caller,
         &system_prompt,
         user_prompt,
-        Duration::from_secs(30),
     )
     .await
     else {
@@ -442,192 +440,31 @@ async fn json_ai_response_with_key(
     Json(serde_json::Value::Object(result)).into_response()
 }
 
-/// Stream an AI response as SSE events (kept for future use).
-#[allow(dead_code)]
-async fn stream_ai_response(
-    state: &AppState,
-    prompt_template: &str,
-    user_prompt: &str,
-) -> Response {
-    let ai_providers = state.ai_providers();
-    let Ok(Some(resolved)) = ai_providers
-        .resolve_provider(AiOperationType::Chat, None)
-        .await
-    else {
-        return AppError::service_unavailable("AI", "AI provider not configured").into_response();
-    };
+/// The most tokens a search answer may use.
+const SEARCH_MAX_TOKENS: u32 = 500;
 
-    let site_name = SiteConfig::site_name(state.db())
-        .await
-        .unwrap_or_else(|_| "Trovato".to_string());
-    let site_slogan = SiteConfig::site_slogan(state.db())
-        .await
-        .unwrap_or_default();
-    let system_prompt = prompts::resolve(prompt_template, &site_name, &site_slogan);
+/// What the usage log records the search endpoints' calls as.
+pub(crate) const SEARCH_USAGE_SOURCE: &str = "kernel_search";
 
-    // Non-streaming request for simplicity (scolta.js handles the display)
-    let Some(content) = complete(
-        ai_providers,
-        &resolved,
-        &system_prompt,
-        user_prompt,
-        Duration::from_secs(30),
-    )
-    .await
-    else {
-        return AppError::service_unavailable("AI", "AI request failed").into_response();
-    };
-
-    // Return as SSE event (single chunk for non-streaming providers)
-    let stream = async_stream::stream! {
-        yield Ok::<_, Infallible>(
-            Event::default()
-                .event("message")
-                .data(serde_json::json!({"summary": content}).to_string()),
-        );
-    };
-
-    Sse::new(stream)
-        .keep_alive(KeepAlive::default())
-        .into_response()
-}
-
-/// Send one chat completion to `resolved` and return its text.
+/// Send one search prompt through the send path and return the answer's text.
 ///
-/// The one send and parse path for every AI search call: the three endpoints
-/// and the sentiment classifier. A provider error is logged through
-/// [`log_provider_failure`](crate::services::ai_provider::log_provider_failure)
-/// and a transport error at warn; both return `None`.
+/// For the three endpoints and the sentiment classifier. A failure is logged
+/// by the send path, the provider's own words included, and comes back as
+/// `None`: the caller answers with a generic 503.
 pub(crate) async fn complete(
     ai_providers: &AiProviderService,
     resolved: &ResolvedProvider,
+    caller: &AiCaller,
     system_prompt: &str,
     user_prompt: &str,
-    timeout: Duration,
 ) -> Option<String> {
-    let (url, request_body, auth_headers) =
-        build_chat_request(resolved, system_prompt, user_prompt);
-
-    let response = match crate::telemetry::send(
-        ai_providers
-            .http()
-            .post(&url)
-            .timeout(timeout)
-            .header("content-type", "application/json")
-            .body(request_body)
-            .headers_from_vec(&auth_headers),
-    )
-    .await
-    {
-        Ok(r) if r.status().is_success() => r,
-        Ok(r) => {
-            let status = r.status().as_u16();
-            let body = r.text().await.unwrap_or_default();
-            crate::services::ai_provider::log_provider_failure("search", resolved, status, &body);
-            return None;
-        }
+    let request = ChatRequest::system_and_user(system_prompt, user_prompt, SEARCH_MAX_TOKENS);
+    match ai_providers.chat_once(resolved, caller, &request).await {
+        Ok(completion) => Some(completion.text.unwrap_or_default()),
         Err(e) => {
-            tracing::warn!(error = %e, "AI search request failed");
-            return None;
+            tracing::warn!(error = %e, source = %caller.source, "AI search request failed");
+            None
         }
-    };
-
-    let response_text = response.text().await.unwrap_or_default();
-    let (content, _tokens) = match resolved.config.protocol {
-        ProviderProtocol::OpenAiCompatible => parse_openai_response(&response_text),
-        ProviderProtocol::Anthropic => parse_anthropic_response(&response_text),
-    };
-    Some(content)
-}
-
-/// Build a non-streaming chat request for the given provider.
-///
-/// No `temperature`: nothing configures one for search, and Anthropic models
-/// newer than `claude-sonnet-4-6` answer 400 to a request that carries it.
-fn build_chat_request(
-    resolved: &ResolvedProvider,
-    system_prompt: &str,
-    user_prompt: &str,
-) -> (String, String, Vec<(String, String)>) {
-    let mut headers = Vec::new();
-
-    match resolved.config.protocol {
-        ProviderProtocol::OpenAiCompatible => {
-            let url = format!("{}/chat/completions", resolved.config.base_url);
-            if let Some(ref key) = resolved.api_key {
-                headers.push(("Authorization".to_string(), format!("Bearer {key}")));
-            }
-            let body = serde_json::json!({
-                "model": resolved.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "max_tokens": 500
-            });
-            (url, body.to_string(), headers)
-        }
-        ProviderProtocol::Anthropic => {
-            let url = format!("{}/messages", resolved.config.base_url);
-            if let Some(ref key) = resolved.api_key {
-                headers.push(("x-api-key".to_string(), key.clone()));
-            }
-            headers.push(("anthropic-version".to_string(), "2023-06-01".to_string()));
-            let body = serde_json::json!({
-                "model": resolved.model,
-                "system": system_prompt,
-                "messages": [
-                    {"role": "user", "content": user_prompt}
-                ],
-                "max_tokens": 500
-            });
-            (url, body.to_string(), headers)
-        }
-    }
-}
-
-/// Parse an OpenAI-compatible chat completion response.
-fn parse_openai_response(body: &str) -> (String, u32) {
-    let json: serde_json::Value = match serde_json::from_str(body) {
-        Ok(v) => v,
-        Err(_) => return (String::new(), 0),
-    };
-    let content = json["choices"]
-        .get(0)
-        .and_then(|c| c["message"]["content"].as_str())
-        .unwrap_or("")
-        .to_string();
-    let tokens = json["usage"]["total_tokens"].as_u64().unwrap_or(0) as u32;
-    (content, tokens)
-}
-
-/// Parse an Anthropic Messages API response.
-fn parse_anthropic_response(body: &str) -> (String, u32) {
-    let json: serde_json::Value = match serde_json::from_str(body) {
-        Ok(v) => v,
-        Err(_) => return (String::new(), 0),
-    };
-    let content = json["content"]
-        .get(0)
-        .and_then(|c| c["text"].as_str())
-        .unwrap_or("")
-        .to_string();
-    let input = json["usage"]["input_tokens"].as_u64().unwrap_or(0);
-    let output = json["usage"]["output_tokens"].as_u64().unwrap_or(0);
-    (content, (input + output) as u32)
-}
-
-/// Extension trait to add headers from a Vec to a reqwest RequestBuilder.
-trait RequestBuilderExt {
-    fn headers_from_vec(self, headers: &[(String, String)]) -> Self;
-}
-
-impl RequestBuilderExt for reqwest::RequestBuilder {
-    fn headers_from_vec(mut self, headers: &[(String, String)]) -> Self {
-        for (key, value) in headers {
-            self = self.header(key.as_str(), value.as_str());
-        }
-        self
     }
 }
 
@@ -636,6 +473,7 @@ impl RequestBuilderExt for reqwest::RequestBuilder {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::services::ai_provider::ProviderProtocol;
 
     fn resolved(protocol: ProviderProtocol) -> crate::services::ai_provider::ResolvedProvider {
         crate::services::ai_provider::ResolvedProvider {
@@ -662,8 +500,9 @@ mod tests {
             ProviderProtocol::Anthropic,
             ProviderProtocol::OpenAiCompatible,
         ] {
-            let (_, body, _) = build_chat_request(&resolved(protocol), "sys", "user");
-            let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let request = ChatRequest::system_and_user("sys", "user", SEARCH_MAX_TOKENS);
+            let (_, body, _) =
+                crate::services::ai_tools::build_chat_request(&resolved(protocol), &request, false);
             assert!(body.get("temperature").is_none(), "{protocol:?}: {body}");
         }
     }

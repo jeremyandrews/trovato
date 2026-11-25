@@ -9,10 +9,12 @@
 //! model calls `read_widget`, then answers with text" and watch what the kernel
 //! does about it.
 //!
-//! That the provider's `base_url` is a loopback address is deliberate and is the
-//! seam these tests use: the admin form refuses a loopback URL as SSRF
-//! prevention, and the chat paths do not re-validate at call time, so writing
-//! the config row directly reaches the same code a real provider would.
+//! The provider's `base_url` is a loopback address, which both the admin form
+//! and the send path refuse as SSRF prevention. The scripted provider allows its
+//! own exact URL through the send path's test seam
+//! (`allow_loopback_provider_for_tests`), so writing the config row directly
+//! reaches the same code a real provider would; any other loopback URL is still
+//! refused, which `the_tools_path_refuses_a_private_ip_literal_base_url` pins.
 //!
 //! `test_assistant_scope` is `default_enabled = false`, so this file installs it
 //! and builds its **own** `TestApp`: `AppState` resolves the enabled plugin set,
@@ -144,9 +146,9 @@ static SITE_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 /// Point the site at a fresh scripted provider and return its recorder.
 ///
 /// The `base_url` is a loopback address, which the admin form refuses as SSRF
-/// prevention and the chat paths do not re-validate at call time. Writing the
-/// config row directly is therefore the seam that lets a test drive the real
-/// outbound path.
+/// prevention; the scripted provider allows its exact URL past the send path's
+/// own check. Writing the config row directly is therefore the seam that lets a
+/// test drive the real outbound path.
 async fn use_provider(app: &TestApp, protocol: &str) -> Recorder {
     let (base_url, recorder) = start().await;
     let providers = serde_json::json!([{
@@ -2364,5 +2366,84 @@ fn every_post_returns_a_fresh_token_that_the_next_post_can_use() {
             )
             .await;
         assert_eq!(response.status(), StatusCode::OK);
+    });
+}
+
+// =============================================================================
+// The send path checks the base URL (B89, B50)
+// =============================================================================
+
+/// **B50, tools.** A provider row naming a private IP literal, written past the
+/// admin form, is refused when the assistant's tool-calling call sends: the
+/// provider is never contacted and the person gets a sentence, not the
+/// provider's words.
+#[test]
+fn the_tools_path_refuses_a_private_ip_literal_base_url() {
+    common::run_test(async {
+        let app = app();
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
+        set_config(app, base_config()).await;
+
+        // A loopback listener that counts what reaches it. Not the scripted
+        // provider: nothing here allows its address.
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&hits);
+        let stub = axum::Router::new().route(
+            "/chat/completions",
+            axum::routing::post(move || {
+                let counter = std::sync::Arc::clone(&counter);
+                async move {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    axum::Json(serde_json::json!({
+                        "model": "test-model",
+                        "choices": [{"message": {"role": "assistant", "content": "reached"},
+                                     "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                    }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, stub).await;
+        });
+        SiteConfig::set(
+            &app.db,
+            "ai_providers",
+            serde_json::json!([{
+                "id": "scripted",
+                "label": "Private literal",
+                "protocol": "open_ai_compatible",
+                "base_url": format!("http://{addr}"),
+                "api_key_env": "",
+                "models": [{"operation": "chat", "model": "test-model"}],
+                "rate_limit_rpm": 0,
+                "enabled": true,
+            }]),
+        )
+        .await
+        .expect("write ai_providers");
+        SiteConfig::set(
+            &app.db,
+            "ai_defaults",
+            serde_json::json!({"chat": "scripted"}),
+        )
+        .await
+        .expect("write ai_defaults");
+
+        let cookies = admin_who_may_configure(app, &common::username("b50_tools")).await;
+        let conversation = open_conversation(app, &cookies, "b50-tools").await;
+        let sse = send_message(app, &cookies, conversation, "hello").await;
+
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the tools path must not connect to a private address: {sse}"
+        );
+        assert!(
+            event_types(&sse).iter().any(|t| t == "error"),
+            "the person is told the call failed: {sse}"
+        );
     });
 }
