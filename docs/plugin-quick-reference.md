@@ -71,6 +71,10 @@ fn tap_cron(_input: serde_json::Value) -> Result<(), String> {
 }
 ```
 
+**Size limit:** a tap or `tap_api` route may send and receive up to **8 MiB**
+each way (`trovato_sdk::abi::PLUGIN_IO_MAX_BYTES`). Over that, the kernel
+refuses the call with a documented error rather than truncating it.
+
 ---
 
 ## Available Taps

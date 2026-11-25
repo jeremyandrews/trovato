@@ -499,12 +499,28 @@ async fn call_export_in_store(
         })
 }
 
-/// Call a resolved export with JSON input.
+/// Largest input a plugin built before B181 can receive.
 ///
-/// This handles the memory protocol:
-/// 1. Write input JSON to WASM memory
-/// 2. Call the function with ptr and len
-/// 3. Read output JSON from returned ptr<<32|len
+/// The frozen pre-B181 protocol wrote input at a hardcoded offset 0, which was
+/// only safe because a fresh module's first page happened to be free scratch
+/// space — true at 64 KiB, not provably true at any larger size. A plugin
+/// that exports [`trovato_sdk::abi::ALLOC_EXPORT_NAME`] (every plugin rebuilt
+/// against the current SDK) is not subject to this ceiling: the host asks it
+/// for scratch space instead of guessing an offset. See `crates/plugin-sdk/
+/// src/abi.rs` for the full before/after.
+const LEGACY_TAP_INPUT_MAX_BYTES: usize = 65536;
+
+/// Call a resolved export with JSON input, handling the memory protocol.
+///
+/// A plugin that exports `__trovato_alloc` (every plugin built against the
+/// current SDK) gets the new protocol: the host asks the plugin to allocate
+/// its own input scratch space, writes into that, calls the tap export, and
+/// reads the output from wherever the plugin says it leaked it, bounded by
+/// [`trovato_sdk::abi::PLUGIN_IO_MAX_BYTES`] in both directions. A plugin
+/// built before B181 has no such export; it is run through the frozen
+/// pre-B181 protocol unchanged — input written at offset 0, capped at
+/// [`LEGACY_TAP_INPUT_MAX_BYTES`] — so an already-compiled `.wasm` keeps
+/// working exactly as it did before this change.
 async fn call_export_function(
     instance: &Instance,
     store: &mut Store<PluginState>,
@@ -515,19 +531,56 @@ async fn call_export_function(
         .get_memory(&mut *store, "memory")
         .context("plugin missing memory export")?;
 
-    // Simple memory protocol: write input at offset 0, output at offset 65536
-    let input_offset = 0i32;
-    let _output_offset = 65536i32;
     let input_bytes = input_json.as_bytes();
 
-    // Write input to memory
+    let alloc = instance
+        .get_typed_func::<i32, i32>(&mut *store, trovato_sdk::abi::ALLOC_EXPORT_NAME)
+        .ok();
+
+    let input_offset = match &alloc {
+        Some(alloc) => {
+            if input_bytes.len() > trovato_sdk::abi::PLUGIN_IO_MAX_BYTES {
+                anyhow::bail!(
+                    "input too large: {} bytes (limit {})",
+                    input_bytes.len(),
+                    trovato_sdk::abi::PLUGIN_IO_MAX_BYTES
+                );
+            }
+            let ptr = alloc
+                .call_async(&mut *store, input_bytes.len() as i32)
+                .await
+                .into_anyhow()
+                .context("plugin allocator call failed")?;
+            if ptr == 0 && !input_bytes.is_empty() {
+                anyhow::bail!(
+                    "plugin allocator returned null for {} bytes",
+                    input_bytes.len()
+                );
+            }
+            ptr
+        }
+        None => {
+            if input_bytes.len() > LEGACY_TAP_INPUT_MAX_BYTES {
+                anyhow::bail!(
+                    "input too large for a plugin built before B181: {} bytes (limit {}; \
+                     rebuild the plugin against the current SDK for the larger ceiling)",
+                    input_bytes.len(),
+                    LEGACY_TAP_INPUT_MAX_BYTES
+                );
+            }
+            0i32
+        }
+    };
+
+    // Write input to memory, into whichever region was reserved for it above.
     {
         let data = memory.data_mut(&mut *store);
-        if input_bytes.len() > 65536 {
-            anyhow::bail!("input too large: {} bytes", input_bytes.len());
+        let start = input_offset as usize;
+        let end = start + input_bytes.len();
+        if end > data.len() {
+            anyhow::bail!("plugin memory too small for input: {end} > {}", data.len());
         }
-        data[input_offset as usize..input_offset as usize + input_bytes.len()]
-            .copy_from_slice(input_bytes);
+        data[start..end].copy_from_slice(input_bytes);
     }
 
     // Call the function
@@ -543,6 +596,12 @@ async fn call_export_function(
 
     if output_len < 0 {
         anyhow::bail!("tap returned error code: {output_len}");
+    }
+    if output_len as usize > trovato_sdk::abi::PLUGIN_IO_MAX_BYTES {
+        anyhow::bail!(
+            "tap output too large: {output_len} bytes (limit {})",
+            trovato_sdk::abi::PLUGIN_IO_MAX_BYTES
+        );
     }
 
     // Read output from memory
@@ -893,5 +952,134 @@ mod tests {
             dispatcher.registry().handler_count("tap_cron"),
             registry.handler_count("tap_cron")
         );
+    }
+
+    // --- B181: plugin tap/route output past the frozen 64 KiB ceiling --------
+
+    /// A "new ABI" (B181) plugin: it exports `__trovato_alloc`, always handing
+    /// back the same fixed scratch offset — sound here because every test
+    /// below makes exactly one call per fresh `Store`/instance (`instantiate_
+    /// and_call_export` instantiates once per call) — and a tap that echoes
+    /// its input back out unchanged via the returned ptr/len. Round-tripping
+    /// input through to output in one step proves both halves of the channel
+    /// at once: the host placed N bytes wherever the plugin's own allocator
+    /// said to, and read back exactly those N bytes from wherever the plugin
+    /// said they ended up.
+    const ECHO_WAT: &str = r#"
+        (module
+          (memory (export "memory") 200)
+          (func (export "__trovato_alloc") (param $len i32) (result i32)
+            (i32.const 65536))
+          (func (export "run") (param $ptr i32) (param $len i32) (result i64)
+            (i64.or
+              (i64.shl (i64.extend_i32_u (local.get $ptr)) (i64.const 32))
+              (i64.extend_i32_u (local.get $len)))))
+    "#;
+
+    /// A new-ABI plugin that claims an output one byte over the documented
+    /// 8 MiB ceiling regardless of what it actually wrote — the case the
+    /// host-side length check exists to catch, since nothing stops a buggy or
+    /// hostile guest from returning whatever `(ptr, len)` it likes.
+    const LIAR_WAT: &str = r#"
+        (module
+          (memory (export "memory") 2)
+          (func (export "__trovato_alloc") (param $len i32) (result i32)
+            (i32.const 1024))
+          (func (export "run") (param i32 i32) (result i64)
+            (i64.or
+              (i64.shl (i64.const 1024) (i64.const 32))
+              (i64.const 8388609))))
+    "#;
+
+    /// A runtime for one echo plugin. Each instance slot in the pooling
+    /// allocator reserves address space up front, and the default's 1000 slots
+    /// reserve terabytes: several of those alive at once in one test process
+    /// ran the address space out (`failed to create memory pool mapping`) for
+    /// unrelated tests. One plugin instance at a time needs two slots at most.
+    fn echo_runtime() -> PluginRuntime {
+        PluginRuntime::new(&PluginConfig {
+            max_instances: 2,
+            ..PluginConfig::default()
+        })
+        .unwrap()
+    }
+
+    /// One call's full wallclock/epoch budget, factored out so every B181 test
+    /// below asks for the same (generous, request-scoped) allowance instead of
+    /// repeating the pair of numbers four times.
+    async fn call_echo(
+        runtime: &PluginRuntime,
+        plugin: &Arc<CompiledPlugin>,
+        input: &str,
+    ) -> std::result::Result<String, ExportCallError> {
+        instantiate_and_call_export(
+            runtime,
+            plugin,
+            "run",
+            input,
+            RequestState::default(),
+            10,
+            std::time::Duration::from_secs(crate::plugin::limits::REQUEST_WALLCLOCK_CEILING_SECS),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn new_abi_plugin_tap_output_200kb_arrives_intact() {
+        let mut runtime = echo_runtime();
+        let plugin = load_wat_plugin(&mut runtime, "echo_200kb", ECHO_WAT);
+        let payload = "a".repeat(200 * 1024);
+
+        let result = call_echo(&runtime, &plugin, &payload)
+            .await
+            .expect("a 200 KB tap output must arrive intact");
+        assert_eq!(result, payload, "output bytes must round-trip exactly");
+    }
+
+    #[tokio::test]
+    async fn new_abi_plugin_tap_output_2mb_arrives_intact() {
+        let mut runtime = echo_runtime();
+        let plugin = load_wat_plugin(&mut runtime, "echo_2mb", ECHO_WAT);
+        let payload = "b".repeat(2 * 1024 * 1024);
+
+        let result = call_echo(&runtime, &plugin, &payload)
+            .await
+            .expect("a 2 MB tap output must arrive intact");
+        assert_eq!(result, payload, "output bytes must round-trip exactly");
+    }
+
+    #[tokio::test]
+    async fn new_abi_plugin_tap_input_over_the_old_64kb_cap_arrives_intact() {
+        // The pre-B181 protocol wrote input at a hardcoded offset capped at
+        // 65536 bytes; a large form body (the ApiRequest JSON a plugin route
+        // receives) routinely exceeds that. 100 KB is comfortably past it.
+        let mut runtime = echo_runtime();
+        let plugin = load_wat_plugin(&mut runtime, "echo_100kb_input", ECHO_WAT);
+        let payload = "c".repeat(100 * 1024);
+
+        let result = call_echo(&runtime, &plugin, &payload)
+            .await
+            .expect("input over the old 64 KiB cap must arrive intact");
+        assert_eq!(result, payload);
+    }
+
+    #[tokio::test]
+    async fn tap_output_over_the_documented_limit_is_refused_not_truncated() {
+        let mut runtime = echo_runtime();
+        let plugin = load_wat_plugin(&mut runtime, "liar", LIAR_WAT);
+
+        let err = call_echo(&runtime, &plugin, "{}")
+            .await
+            .expect_err("a claimed output over the documented limit must be refused");
+        match err {
+            ExportCallError::Failed(e) => {
+                let msg = format!("{e:#}");
+                assert!(
+                    msg.contains("too large"),
+                    "the error must name the problem rather than silently truncating, got: {msg}"
+                );
+            }
+            other => panic!("expected a clean Failed error, got {other:?}"),
+        }
     }
 }
