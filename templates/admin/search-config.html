@@ -1,101 +1,89 @@
 {% extends "page--admin.html" %}
 
+{% block page_title %}{{ t(s="Search configuration: {type}", type=content_type.label) }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="Whether this content type is in site search, and how much a match in each of its fields counts.") }}</p>{% endblock page_intro %}
+{% block page_actions %}
+<a href="/admin/structure/types/{{ content_type.machine_name }}/fields" class="button button--secondary">{{ t(s="Manage fields") }}</a>
+<a href="/admin/structure/types/{{ content_type.machine_name }}/edit" class="button button--secondary">{{ t(s="Edit content type") }}</a>
+{% endblock page_actions %}
+
 {% block content %}
-<div class="admin-header">
-    <h2>Search configuration: {{ content_type.label }}</h2>
-    <div style="display: flex; gap: 0.5rem;">
-        <a href="/admin/structure/types/{{ content_type.machine_name }}/fields" class="button button--secondary">Manage fields</a>
-        <a href="/admin/structure/types/{{ content_type.machine_name }}/edit" class="button button--secondary">Edit content type</a>
-    </div>
-</div>
+<section class="admin-card search-switches" aria-labelledby="search-switches-heading">
+    <h2 id="search-switches-heading">{{ t(s="What site search includes") }}</h2>
+    <p class="description">{{ t(s="Only content an anonymous visitor may see is in the public search index, whatever is checked here.") }}</p>
+    {{ switches_form | safe }} {# SAFE: built by the kernel's form builder, every value escaped there #}
+</section>
 
-{% if flash %}
-<div class="admin-card messages messages--status" role="status">{{ flash }}</div>
-{% endif %}
+<section class="admin-card" aria-labelledby="search-weights-heading">
+    <h2 id="search-weights-heading">{{ t(s="Field weights") }}</h2>
+    <p class="description">{{ t(s="The title, every text field and every published comment are searched. Give a field a weight to rank a match in it higher: A is highest (the title is always A), D is lowest, and a text field with no weight here counts as D.") }}</p>
 
-<div class="admin-card search-switches">
-    <h3 style="margin-top: 0;">What site search includes</h3>
-    <p class="description">
-        Only content an anonymous visitor may see is in the public search index, whatever is checked here.
-    </p>
-    {{ switches_form | safe }}
-</div>
-
-<div class="admin-card" style="margin-top: 1rem;">
-    <p class="description">
-        The title, every text field and every published comment are searched. Give a field a
-        weight to rank a match in it higher: <strong>A</strong> is highest (the title is always A),
-        <strong>D</strong> is lowest, and a text field with no weight here counts as D.
-    </p>
-
-    <table class="table">
-        <thead>
-            <tr>
-                <th>Field</th>
-                <th>Type</th>
-                <th>Search Weight</th>
-                <th>Operations</th>
-            </tr>
-        </thead>
-        <tbody>
-            <tr>
-                <td><strong>Title</strong></td>
-                <td>Text</td>
-                <td><span class="weight weight--A">A (Highest)</span></td>
-                <td><em>Always indexed</em></td>
-            </tr>
-            {% for field in fields %}
-            <tr>
-                <td>{{ field.label }}</td>
-                <td>{{ field.field_type }}</td>
-                <td>
-                    {% if search_configs[field.field_name] %}
-                        <span class="weight weight--{{ search_configs[field.field_name] }}">
-                            {{ search_configs[field.field_name] }}
-                            {% if search_configs[field.field_name] == "A" %}(Highest)
-                            {% elif search_configs[field.field_name] == "B" %}(High)
-                            {% elif search_configs[field.field_name] == "C" %}(Normal)
-                            {% elif search_configs[field.field_name] == "D" %}(Low)
-                            {% endif %}
-                        </span>
-                    {% elif field.field_name in text_fields %}
-                        <span class="weight weight--D">D (Low, default)</span>
-                    {% else %}
-                        <span class="weight weight--none">Not text, not searched</span>
-                    {% endif %}
-                </td>
-                <td>
-                    {% if search_configs[field.field_name] %}
-                        <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/{{ field.field_name }}/delete" style="display: inline;">
+    <div class="table-scroll" role="region" aria-labelledby="search-weights-caption" tabindex="0">
+        <table class="table">
+            <caption id="search-weights-caption">{{ t(s="Search weight of each field") }}</caption>
+            <thead>
+                <tr>
+                    <th scope="col">{{ t(s="Field") }}</th>
+                    <th scope="col">{{ t(s="Type") }}</th>
+                    <th scope="col">{{ t(s="Search Weight") }}</th>
+                    <th scope="col">{{ t(s="Operations") }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                <tr>
+                    <th scope="row"><strong>{{ t(s="Title") }}</strong></th>
+                    <td>{{ t(s="Text") }}</td>
+                    <td><span class="badge weight weight--A">{{ t(s="A (Highest)") }}</span></td>
+                    <td><em>{{ t(s="Always indexed") }}</em></td>
+                </tr>
+                {% for field in fields %}
+                {% set weight = search_configs[field.field_name] | default(value="") %}
+                <tr>
+                    <th scope="row">{{ field.label }}</th>
+                    <td>{{ t(s=field.field_type | field_type_label) }}</td>
+                    <td>
+                        {% if weight == "A" %}<span class="badge weight weight--A">{{ t(s="A (Highest)") }}</span>
+                        {% elif weight == "B" %}<span class="badge weight weight--B">{{ t(s="B (High)") }}</span>
+                        {% elif weight == "C" %}<span class="badge weight weight--C">{{ t(s="C (Normal)") }}</span>
+                        {% elif weight == "D" %}<span class="badge weight weight--D">{{ t(s="D (Low)") }}</span>
+                        {% elif weight %}<span class="badge weight">{{ weight }}</span>
+                        {% elif field.field_name in text_fields %}<span class="badge weight weight--D">{{ t(s="D (Low, default)") }}</span>
+                        {% else %}<span class="weight weight--none">{{ t(s="Not text, not searched") }}</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if weight %}
+                        <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/{{ field.field_name }}/delete" class="inline-form">
                             <input type="hidden" name="_token" value="{{ csrf_token }}">
-                            <button type="submit" class="link-button">Remove</button>
+                            <button type="submit" class="link-button">{{ t(s="Remove the weight of {name}", name=field.label) }}</button>
                         </form>
-                    {% else %}
+                        {% else %}
                         <span class="text-muted">-</span>
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 
     {% if not fields %}
-    <p>No custom fields defined. <a href="/admin/structure/types/{{ content_type.machine_name }}/fields">Add fields</a> first.</p>
+    <p>{{ t(s="No custom fields defined.") }} <a href="/admin/structure/types/{{ content_type.machine_name }}/fields">{{ t(s="Add fields first") }}</a></p>
     {% endif %}
-</div>
+</section>
 
 {% if fields %}
-<div class="admin-card" style="margin-top: 1rem;">
-    <h3 style="margin-top: 0;">Weight a field</h3>
+<section class="admin-card" aria-labelledby="weight-field-heading">
+    <h2 id="weight-field-heading">{{ t(s="Weight a field") }}</h2>
     <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/add">
         <input type="hidden" name="_token" value="{{ csrf_token }}">
         <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
 
-        <div style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: flex-end;">
-            <div class="form-item" style="flex: 1; min-width: 200px;">
-                <label for="field_name" class="form-item__label form-item__label--required">Field</label>
+        <div class="inline-fields">
+            <div class="form-item">
+                <label for="field_name" class="form-item__label">{{ t(s="Field") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
                 <select id="field_name" name="field_name" class="form-select" required>
-                    <option value="">- Select field -</option>
+                    <option value="">{{ t(s="- Select field -") }}</option>
                     {% for field in fields %}
                     {% if not search_configs[field.field_name] %}
                     <option value="{{ field.field_name }}">{{ field.label }}</option>
@@ -104,79 +92,31 @@
                 </select>
             </div>
 
-            <div class="form-item" style="flex: 1; min-width: 200px;">
-                <label for="weight" class="form-item__label form-item__label--required">Weight</label>
+            <div class="form-item">
+                <label for="weight" class="form-item__label">{{ t(s="Weight") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
                 <select id="weight" name="weight" class="form-select" required>
-                    <option value="B">B - High priority</option>
-                    <option value="C" selected>C - Normal priority</option>
-                    <option value="D">D - Low priority</option>
+                    <option value="B">{{ t(s="B - High priority") }}</option>
+                    <option value="C" selected>{{ t(s="C - Normal priority") }}</option>
+                    <option value="D">{{ t(s="D - Low priority") }}</option>
                 </select>
             </div>
 
-            <div class="form-item">
-                <button type="submit" class="button button--primary">Set weight</button>
+            <div class="form-item inline-fields__submit">
+                <button type="submit" class="button button--primary">{{ t(s="Set weight") }}</button>
             </div>
         </div>
     </form>
-</div>
+</section>
 {% endif %}
 
-<div class="admin-card" style="margin-top: 1rem;">
-    <h3 style="margin-top: 0;">Reindex content</h3>
-    <p>After changing search configuration, reindex all content of this type to apply the changes.</p>
+<section class="admin-card" aria-labelledby="reindex-heading">
+    <h2 id="reindex-heading">{{ t(s="Reindex content") }}</h2>
+    <p>{{ t(s="After changing search configuration, reindex all content of this type to apply the changes.") }}</p>
     <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/reindex">
         <input type="hidden" name="_token" value="{{ csrf_token }}">
-        <button type="submit" class="button button--secondary" data-confirm="This will update the search index for all {{ content_type.label }} content. Continue?">
-            Reindex all {{ content_type.label }} content
+        <button type="submit" class="button button--secondary" data-confirm="{{ t(s='This will update the search index for all {type} content. Continue?', type=content_type.label) }}">
+            {{ t(s="Reindex all {type} content", type=content_type.label) }}
         </button>
     </form>
-</div>
-
-<style>
-    .description {
-        color: var(--gray-600);
-        margin-bottom: 1rem;
-    }
-    .weight {
-        display: inline-block;
-        padding: 0.25rem 0.5rem;
-        border-radius: 0.25rem;
-        font-size: 0.875rem;
-        font-weight: 500;
-    }
-    .weight--A {
-        background: #dbeafe;
-        color: #1e40af;
-    }
-    .weight--B {
-        background: #dcfce7;
-        color: #166534;
-    }
-    .weight--C {
-        background: #fef9c3;
-        color: #854d0e;
-    }
-    .weight--D {
-        background: #f3f4f6;
-        color: #4b5563;
-    }
-    .weight--none {
-        background: #f3f4f6;
-        color: #9ca3af;
-    }
-    .link-button {
-        background: none;
-        border: none;
-        color: var(--primary);
-        cursor: pointer;
-        padding: 0;
-        font: inherit;
-    }
-    .link-button:hover {
-        text-decoration: underline;
-    }
-    .text-muted {
-        color: var(--gray-400);
-    }
-</style>
-{% endblock %}
+</section>
+{% endblock content %}

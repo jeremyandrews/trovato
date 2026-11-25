@@ -212,11 +212,7 @@ fn validate(def: &AdminNavDefinition, seen_hrefs: &HashSet<String>) -> Result<()
     // A kernel link owns its href and every prefix in its `also` list: a
     // plugin link at one of those would tie with the kernel link for the
     // active highlight on every page beneath it.
-    if seen_hrefs.contains(&def.href)
-        || crate::routes::admin_nav::LINKS
-            .iter()
-            .any(|l| l.href == def.href || l.also.contains(&def.href.as_str()))
-    {
+    if seen_hrefs.contains(&def.href) || crate::routes::admin_nav::kernel_claims(&def.href) {
         return Err("another admin nav link already uses this href".to_string());
     }
     Ok(())

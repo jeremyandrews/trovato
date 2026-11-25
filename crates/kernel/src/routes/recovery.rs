@@ -873,30 +873,53 @@ async fn admin_recovery_page(State(state): State<AppState>, session: Session) ->
     let csrf_token = crate::form::csrf::generate_csrf_token(&session).await;
     let mut context = tera::Context::new();
     context.insert("csrf_token", &csrf_token);
+    let flash: Option<String> = session.remove(RECOVERY_FLASH).await.ok().flatten();
+    context.insert("flash", &flash);
+    context.insert("path", "/admin/recovery");
     context.insert("email_enabled", &email_enabled);
     context.insert("codes_enabled", &codes_enabled);
     // An admin needs to know that email recovery is the weakest link, at the
     // moment they are deciding whether to leave it on.
     context.insert("smtp_configured", &state.email().is_some());
-    crate::routes::helpers::inject_site_context(&state, &session, &mut context, "/admin/recovery")
-        .await;
-
-    match state.theme().tera().render("admin/recovery.html", &context) {
-        Ok(html) => Html(html).into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "failed to render the recovery admin page");
-            render_server_error("Could not render the recovery settings.")
-        }
-    }
+    // In the admin shell, like every other admin page: it used to render into
+    // the front end `page.html`, with no sidebar and no admin styles.
+    let viewer = crate::routes::helpers::get_user_context(&session, &state).await;
+    crate::routes::helpers::render_admin_template(&state, &viewer, "admin/recovery.html", context)
+        .await
 }
 
-/// `POST /admin/recovery` — save the recovery configuration.
+/// Session key for the saved message.
+const RECOVERY_FLASH: &str = "admin_recovery_flash";
+
+/// The form the page posts with JavaScript off: an unchecked checkbox is
+/// absent, so both fields are optional.
+#[derive(Deserialize)]
+struct RecoveryConfigForm {
+    #[serde(rename = "_token", default)]
+    token: String,
+    #[serde(default)]
+    email_enabled: Option<String>,
+    #[serde(default)]
+    codes_enabled: Option<String>,
+}
+
+/// `POST /admin/recovery` — save the recovery configuration: an ordinary
+/// form post from the page (JavaScript off or on), answered with a redirect
+/// and a message, or the JSON body scripts and the tests send, answered with
+/// JSON as before.
 async fn admin_recovery_save(
     State(state): State<AppState>,
     session: Session,
     headers: HeaderMap,
-    Json(body): Json<RecoveryConfigRequest>,
+    body: axum::body::Bytes,
 ) -> Response {
+    let is_form = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|ct| ct.starts_with("application/x-www-form-urlencoded"));
+    if is_form {
+        return admin_recovery_save_form(&state, &session, &body).await;
+    }
     if let Err(refusal) =
         crate::routes::helpers::require_permission_json(&state, &session, "administer users").await
     {
@@ -905,30 +928,94 @@ async fn admin_recovery_save(
     if let Err(refusal) = require_csrf_header(&session, &headers).await {
         return refusal.into_response();
     }
+    let body: RecoveryConfigRequest = match serde_json::from_slice(&body) {
+        Ok(body) => body,
+        Err(_) => {
+            return crate::error::AppError::with_status(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "Expected a JSON body with email_enabled and codes_enabled.",
+            )
+            .into_response();
+        }
+    };
+    match save_recovery_config(&state, body.email_enabled, body.codes_enabled).await {
+        Ok(()) => Json(serde_json::json!({ "success": true })).into_response(),
+        Err(()) => crate::error::AppError::with_status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Could not save the recovery settings.",
+        )
+        .into_response(),
+    }
+}
 
+/// The form half of [`admin_recovery_save`]: the HTML permission and CSRF
+/// checks every admin form makes, then a redirect back with a message.
+async fn admin_recovery_save_form(state: &AppState, session: &Session, body: &[u8]) -> Response {
+    if let Err(refusal) =
+        crate::routes::helpers::require_permission(state, session, "administer users").await
+    {
+        return refusal;
+    }
+    // Parsed by axum's own form extractor, so the encoding rules are the
+    // ones every other admin form is read with.
+    let request = axum::http::Request::builder()
+        .header(
+            axum::http::header::CONTENT_TYPE,
+            "application/x-www-form-urlencoded",
+        )
+        .body(axum::body::Body::from(body.to_vec()));
+    let parsed = match request {
+        Ok(request) => {
+            <axum::Form<RecoveryConfigForm> as axum::extract::FromRequest<()>>::from_request(
+                request,
+                &(),
+            )
+            .await
+            .ok()
+        }
+        Err(_) => None,
+    };
+    let Some(axum::Form(form)) = parsed else {
+        return crate::routes::helpers::render_error(
+            "The form could not be read. Please try again.",
+        );
+    };
+    if let Err(refusal) = crate::routes::helpers::require_csrf(session, &form.token).await {
+        return refusal;
+    }
+    if save_recovery_config(
+        state,
+        form.email_enabled.is_some(),
+        form.codes_enabled.is_some(),
+    )
+    .await
+    .is_err()
+    {
+        return render_server_error("Could not save the recovery settings.");
+    }
+    if let Err(e) = session
+        .insert(RECOVERY_FLASH, "The recovery settings were saved.")
+        .await
+    {
+        warn!(error = %e, "failed to set the recovery settings message");
+    }
+    axum::response::Redirect::to("/admin/recovery").into_response()
+}
+
+/// Store the two built-in recovery switches.
+async fn save_recovery_config(state: &AppState, email: bool, codes: bool) -> Result<(), ()> {
     for (key, value) in [
-        (
-            crate::services::recovery_flow::CONFIG_EMAIL_ENABLED,
-            body.email_enabled,
-        ),
-        (
-            crate::services::recovery_flow::CONFIG_CODES_ENABLED,
-            body.codes_enabled,
-        ),
+        (crate::services::recovery_flow::CONFIG_EMAIL_ENABLED, email),
+        (crate::services::recovery_flow::CONFIG_CODES_ENABLED, codes),
     ] {
         if let Err(e) =
             crate::models::SiteConfig::set(state.db(), key, serde_json::Value::Bool(value)).await
         {
             tracing::error!(error = %e, key = key, "failed to save a recovery setting");
-            return crate::error::AppError::with_status(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Could not save the recovery settings.",
-            )
-            .into_response();
+            return Err(());
         }
     }
-
-    Json(serde_json::json!({ "success": true })).into_response()
+    Ok(())
 }
 
 /// The recovery router.

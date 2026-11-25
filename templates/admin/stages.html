@@ -1,54 +1,50 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/list.html" as list %}
 
+{% block page_title %}{{ t(s="Stages") }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="A stage is where content sits in an editorial workflow. Live is the one public stage: it cannot be deleted or made internal, because published content is resolved through it.") }}</p>{% endblock page_intro %}
+{% block page_actions %}{{ list::add_link(url="/admin/structure/stages/add", label=t(s="Add stage")) }}{% endblock page_actions %}
+
 {% block content %}
-{{ list::header(title="Editorial stages", add_url="/admin/structure/stages/add", add_label="Add stage") }}
+<p>{{ t(s="Exactly one stage is the default, which is where new content lands.") }}</p>
 
-<div class="admin-card">
-    <p>A stage is where content sits in an editorial workflow. <strong>Live</strong>
-    is the published stage: it is the one public stage, it cannot be deleted, and it
-    cannot be made internal, because published content is resolved through it.
-    Exactly one stage is the default, which is where new content lands.</p>
-
+<div class="table-scroll" role="region" aria-labelledby="stages-caption" tabindex="0">
     <table class="table">
+        <caption id="stages-caption">{{ t(s="Editorial stages") }}</caption>
         <thead>
             <tr>
-                <th>Machine name</th>
-                <th>Label</th>
-                <th>Visibility</th>
-                <th>Default</th>
-                <th>Weight</th>
-                <th>In use by</th>
-                <th>Operations</th>
+                <th scope="col">{{ t(s="Label") }}</th>
+                <th scope="col">{{ t(s="Machine name") }}</th>
+                <th scope="col">{{ t(s="Visibility") }}</th>
+                <th scope="col">{{ t(s="Default") }}</th>
+                <th scope="col">{{ t(s="Weight") }}</th>
+                <th scope="col">{{ t(s="In use by") }}</th>
+                <th scope="col">{{ t(s="Operations") }}</th>
             </tr>
         </thead>
         <tbody>
             {% for stage in stages %}
             <tr>
-                <td>
-                    <code>{{ stage.machine_name }}</code>
-                    {% if stage.is_live %}<span class="badge badge--system">Live</span>{% endif %}
-                </td>
-                <td>
+                <th scope="row">
                     <a href="/admin/structure/stages/{{ stage.id }}/edit">{{ stage.label }}</a>
+                    {% if stage.is_live %}<span class="badge">{{ t(s="Live") }}</span>{% endif %}
                     {% if stage.description %}<br><small>{{ stage.description }}</small>{% endif %}
-                </td>
-                <td>{{ stage.visibility }}</td>
-                <td>{% if stage.is_default %}Yes{% else %}No{% endif %}</td>
+                </th>
+                <td><code>{{ stage.machine_name }}</code></td>
+                <td>{{ t(s=stage.visibility) }}</td>
+                <td>{% if stage.is_default %}{{ t(s="Yes") }}{% else %}{{ t(s="No") }}{% endif %}</td>
                 <td>{{ stage.weight }}</td>
                 <td>{{ stage.references_summary }}</td>
-                <td>
-                    <a href="/admin/structure/stages/{{ stage.id }}/edit">Edit</a>
+                <td class="operations">
+                    <a href="/admin/structure/stages/{{ stage.id }}/edit">{{ t(s="Edit {name}", name=stage.label) }}</a>
                     {% if stage.deletable %}
-                    &middot;
                     {% if stage.references.items > 0 or stage.references.url_aliases > 0 or stage.references.menu_links > 0 or stage.references.tiles > 0 %}
-                    {{ list::delete_button(action="/admin/structure/stages/" ~ stage.id ~ "/delete", confirm_text="This stage is still used by " ~ stage.references_summary ~ ". Deleting it will be refused until that content is moved. Try anyway?", csrf_token=csrf_token) }}
+                    {{ list::delete_button(action="/admin/structure/stages/" ~ stage.id ~ "/delete", label=t(s="Delete {name}", name=stage.label), confirm_text=t(s="This stage is still used by {uses}. Deleting it will be refused until that content is moved. Try anyway?", uses=stage.references_summary), csrf_token=csrf_token) }}
                     {% else %}
-                    {{ list::delete_button(action="/admin/structure/stages/" ~ stage.id ~ "/delete", confirm_text="Delete the " ~ stage.label ~ " stage?", csrf_token=csrf_token) }}
+                    {{ list::delete_button(action="/admin/structure/stages/" ~ stage.id ~ "/delete", label=t(s="Delete {name}", name=stage.label), confirm_text=t(s="Delete the {name} stage?", name=stage.label), csrf_token=csrf_token) }}
                     {% endif %}
                     {% else %}
-                    &middot;
-                    <span title="The Live stage, the default stage and the public stage cannot be deleted.">Not deletable</span>
+                    <span>{{ t(s="Not deletable: the Live stage, the default stage and the public stage stay.") }}</span>
                     {% endif %}
                 </td>
             </tr>
@@ -56,18 +52,4 @@
         </tbody>
     </table>
 </div>
-
-<style>
-    .badge {
-        display: inline-block;
-        padding: 0.125rem 0.375rem;
-        border-radius: 0.25rem;
-        font-size: 0.75rem;
-        margin-left: 0.5rem;
-    }
-    .badge--system {
-        background: #e2e3e5;
-        color: #383d41;
-    }
-</style>
-{% endblock %}
+{% endblock content %}

@@ -55,3 +55,10 @@ target/
 
 # Node dependencies of the page builder editor (the built bundle is committed under static/)
 node_modules/
+
+# The admin accessibility harness (tests/admin-a11y): its dependencies, the
+# signed-in session it saves, and its run output.
+tests/admin-a11y/node_modules/
+tests/admin-a11y/.auth/
+tests/admin-a11y/test-results/
+tests/admin-a11y/playwright-report/

@@ -118,8 +118,10 @@ fn the_translation_list_renders_each_language_and_its_state() {
             html.contains(&format!("/admin/content/{item}/translate/it")),
             "an existing translation links to its edit screen"
         );
+        // Since B199 the link names what it adds (WCAG 2.4.4), as one
+        // translatable sentence.
         assert!(
-            html.contains(">Add<"),
+            html.contains(">Add the he translation<"),
             "an untranslated language offers to add"
         );
     });
@@ -162,7 +164,9 @@ fn the_translation_page_renders_an_existing_and_a_missing_translation() {
         )
         .await;
         assert_eq!(status, StatusCode::OK, "missing translation: {html}");
-        assert!(html.contains("has no <code>he</code> translation"));
+        // The language code is a placeholder in one translatable sentence
+        // since B199, no longer set in <code> mid-sentence.
+        assert!(html.contains("This item has no he translation yet."));
     });
 }
 

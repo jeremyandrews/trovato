@@ -1,0 +1,88 @@
+// The pages to check: every GET route in docs/admin/inventory.md's kernel
+// table. A route with a parameter is opened at an address found by following
+// links from the page that lists it (its path up to the parameter); a route
+// with no seeded instance is reported as skipped, never guessed.
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const doc = fs.readFileSync(path.join(here, '../../docs/admin/inventory.md'), 'utf8');
+const kernel = doc.split('<!-- kernel routes -->')[1].split('<!-- end kernel routes -->')[0];
+
+/** Not pages: an image and JSON endpoints. */
+const NOT_PAGES = new Set(['/admin/appearance/{theme}/screenshot', '/admin/stage/current', '/admin/embed/status']);
+
+export const routes = kernel
+  .split('\n')
+  .filter((l) => l.startsWith('| `/admin'))
+  .map((l) => {
+    const cells = l.split(' | ').map((c) => c.replace(/^\| /, '').trim());
+    return { path: cells[0].replaceAll('`', ''), methods: cells[1], group: cells[2] };
+  })
+  .filter((r) => /GET/.test(r.methods) && !NOT_PAGES.has(r.path));
+
+/** Pages that link to no instance of a route, and where one is found. */
+const SOURCES = {
+  '/admin/users/{user_id}/sessions': '/admin/people/{id}/edit',
+  '/admin/content/{id}/translate': '/admin/content/{id}/edit',
+  '/admin/structure/types/{type}/search': '/admin/structure/types/{type}/edit',
+  '/admin/structure/categories/{id}/tags/add': '/admin/structure/categories/{id}/tags',
+  '/admin/system/ai-budgets/user/{id}': '/admin/people/{id}/edit',
+};
+
+const toRegex = (pattern) => new RegExp('^' + pattern.replace(/\{[^}]+\}/g, '[^/?#]+') + '$');
+const resolved = new Map();
+
+async function linksOn(page, address) {
+  const response = await page.goto(address);
+  if (!response || response.status() !== 200) return [];
+  const hrefs = await page.$$eval('a[href]', (as) => as.map((a) => a.getAttribute('href')));
+  return hrefs.map((h) => h.split(/[?#]/)[0]);
+}
+
+/** A concrete address for `pattern`, or null. */
+async function concrete(page, pattern) {
+  if (!pattern.includes('{')) return pattern;
+  if (resolved.has(pattern)) return resolved.get(pattern);
+  let found = null;
+  if (SOURCES[pattern]) {
+    // The sibling's parameter values, in order, put into this pattern.
+    const sibling = SOURCES[pattern];
+    const source = await concrete(page, sibling);
+    if (source) {
+      const values = sibling.split('/').map((p, i) => (p.startsWith('{') ? source.split('/')[i] : null)).filter(Boolean);
+      let i = 0;
+      const candidate = pattern.replace(/{[^}]+}/g, () => values[i++]);
+      const response = await page.goto(candidate);
+      if (response && response.status() === 200) found = candidate;
+    }
+  } else {
+    const parts = pattern.split('/');
+    let last = -1;
+    parts.forEach((p, i) => { if (p.startsWith('{')) last = i; });
+    const listing = await concrete(page, parts.slice(0, last).join('/') || '/admin');
+    if (listing) {
+      const links = await linksOn(page, listing);
+      const full = toRegex(pattern);
+      found = links.find((h) => full.test(h)) || null;
+      if (!found) {
+        // A link to the instance itself, then the rest of the path.
+        const head = toRegex(parts.slice(0, last + 1).join('/'));
+        const base = links.find((h) => head.test(h));
+        if (base) {
+          const candidate = [base, ...parts.slice(last + 1)].join('/');
+          const response = await page.goto(candidate);
+          if (response && response.status() === 200) found = candidate;
+        }
+      }
+    }
+  }
+  resolved.set(pattern, found);
+  return found;
+}
+
+/** The address to open for `route`, or null when nothing seeded matches. */
+export async function addressFor(page, route) {
+  return concrete(page, route.path);
+}

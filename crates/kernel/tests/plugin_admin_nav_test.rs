@@ -76,7 +76,7 @@ async fn get(app: &TestApp, cookies: &str, uri: &str) -> (StatusCode, String) {
 /// uses.
 fn sidebar_links(html: &str) -> Vec<String> {
     let start = html
-        .find(r#"<nav aria-label="Admin navigation">"#)
+        .find(r#"<nav class="admin-sidebar" id="admin-nav" aria-label="Administration">"#)
         .expect("the admin layout has its sidebar");
     let end = start + html[start..].find("</nav>").unwrap();
     html[start..end]
@@ -118,7 +118,9 @@ fn a_plugin_admin_page_renders_the_kernel_sidebar_with_the_plugins_own_link() {
         let (status, html) = get(app, &cookies, DASHBOARD_PATH).await;
         assert_eq!(status, StatusCode::OK);
         assert!(
-            html.contains(r#"<nav aria-label="Admin navigation">"#),
+            html.contains(
+                r#"<nav class="admin-sidebar" id="admin-nav" aria-label="Administration">"#
+            ),
             "the plugin's admin page must render inside the kernel admin shell: {html}"
         );
         let links = sidebar_links(&html);
@@ -132,13 +134,13 @@ fn a_plugin_admin_page_renders_the_kernel_sidebar_with_the_plugins_own_link() {
         );
         assert!(
             html.contains(&format!(
-                r#"<a href="{DASHBOARD_PATH}" class="active" aria-current="page">"#
+                r#"<a class="admin-nav__link" href="{DASHBOARD_PATH}" aria-current="page">"#
             )),
             "the plugin's link must be the highlighted one on its own page"
         );
         assert!(
-            html.contains(r#"<div class="admin-header"><h2>TPA Dashboard</h2></div>"#),
-            "the plugin's admin page must carry the same header a kernel admin page does"
+            html.contains(r#"<h1 class="page-title">TPA Dashboard</h1>"#),
+            "the plugin's admin page must carry the same heading a kernel admin page does"
         );
         assert!(
             html.contains("tpa-admin-content"),
@@ -263,10 +265,11 @@ fn dashboard_card_titles(html: &str) -> Vec<String> {
         .find(r#"<div class="dashboard-grid">"#)
         .expect("the dashboard has its card grid");
     html[start..]
-        .split(r#"<section class="admin-card dashboard-card">"#)
+        .split(r#"<section class="admin-card dashboard-card""#)
         .skip(1)
         .filter_map(|card| {
-            let from = card.find("<h3>")? + 4;
+            let open = card.find("<h3")?;
+            let from = open + card[open..].find('>')? + 1;
             let to = card[from..].find("</h3>")? + from;
             Some(card[from..to].trim().to_string())
         })

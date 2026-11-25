@@ -1,12 +1,15 @@
-{#- Admin form macros — shared structure for admin form pages. -#}
+{#- Admin form macros — shared structure for admin form pages. Part 2 of the
+    redesign (docs/admin/design.md section 8) replaces the error list with the
+    error summary pattern. -#}
 
-{#- Form error list display. -#}
+{#- Form error list: interrupts (role=alert) and says what it is in words. -#}
 {% macro errors(errors) %}
 {% if errors is defined and errors %}
-<div class="form__errors">
+<div class="notice notice--error form__errors" role="alert">
+    <h2 class="notice__heading">{{ t(s="There is a problem") }}</h2>
     <ul>
         {% for error in errors %}
-        <li>{{ error }}</li>
+        <li>{{ t(s=error) }}</li>
         {% endfor %}
     </ul>
 </div>
@@ -26,10 +29,11 @@
 {% endif %}
 {% endmacro hidden_fields %}
 
-{#- Form action buttons (submit + cancel). -#}
+{#- Form action buttons: the primary action first, then Cancel. The submit
+    label arrives translated. -#}
 {% macro actions(submit_label, cancel_url) %}
 <div class="form-actions">
     <button type="submit" class="button button--primary">{{ submit_label }}</button>
-    <a href="{{ cancel_url }}" class="button button--secondary">Cancel</a>
+    <a href="{{ cancel_url }}" class="button button--secondary">{{ t(s="Cancel") }}</a>
 </div>
 {% endmacro actions %}

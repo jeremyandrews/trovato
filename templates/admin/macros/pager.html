@@ -1,0 +1,36 @@
+{#- The admin pager: page links for a long list. The admin's own copy of
+    macros/pager.html (which the front end keeps as it is), with every word
+    translated and each link saying which page it opens. -#}
+{% macro pager(current_page, total_pages, base_url, window=2) %}
+{% if total_pages > 1 %}
+<nav class="pagination" aria-label="{{ t(s='Pages') }}">
+    <ul class="pagination__list">
+        {% if current_page > 1 %}
+        <li><a class="pagination__link" href="{{ base_url }}?page={{ current_page - 1 }}" rel="prev">{{ t(s="Previous page") }}</a></li>
+        {% endif %}
+        {% if current_page > window + 1 %}
+        <li><a class="pagination__link" href="{{ base_url }}?page=1" aria-label="{{ t(s='Page {number}', number=1) }}">{{ 1 }}</a></li>
+        {% if current_page > window + 2 %}<li aria-hidden="true">{{ "…" }}</li>{% endif %}
+        {% endif %}
+        {% for page in range(start=1, end=total_pages + 1) %}
+        {% if page >= current_page - window and page <= current_page + window %}
+        <li>
+            {% if page == current_page %}
+            <a class="pagination__link" aria-current="page" aria-label="{{ t(s='Page {number}', number=page) }}">{{ page }}</a>
+            {% else %}
+            <a class="pagination__link" href="{{ base_url }}?page={{ page }}" aria-label="{{ t(s='Page {number}', number=page) }}">{{ page }}</a>
+            {% endif %}
+        </li>
+        {% endif %}
+        {% endfor %}
+        {% if current_page < total_pages - window %}
+        {% if current_page < total_pages - window - 1 %}<li aria-hidden="true">{{ "…" }}</li>{% endif %}
+        <li><a class="pagination__link" href="{{ base_url }}?page={{ total_pages }}" aria-label="{{ t(s='Page {number}', number=total_pages) }}">{{ total_pages }}</a></li>
+        {% endif %}
+        {% if current_page < total_pages %}
+        <li><a class="pagination__link" href="{{ base_url }}?page={{ current_page + 1 }}" rel="next">{{ t(s="Next page") }}</a></li>
+        {% endif %}
+    </ul>
+</nav>
+{% endif %}
+{% endmacro %}

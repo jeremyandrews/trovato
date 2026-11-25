@@ -1,68 +1,160 @@
-{% extends "base.html" %}
+<!DOCTYPE html>
+{#- The administration shell: every admin page, kernel and plugin alike.
 
-{% block head %}
-{# The admin styles live in a static file rather than inline here, so a site
-   theme that replaces base.html keeps them: base.html is the one template a
-   theme is most likely to override, and the admin layout must not depend on
-   what it puts in <head>. admin.css also carries the kernel base component
-   sheet in a cascade layer; see the comment at its top. #}
-<link rel="stylesheet" href="/static/css/admin.css?v={{ asset_version() }}">
-{% endblock %}
+    A complete document, not an extension of base.html, so a site theme's
+    base.html, base.css and theme.css never reach the admin and nothing here
+    changes front end output. The anatomy is docs/admin/design.md section 3.
 
-{% block body %}
-<div class="admin-layout">
-    <aside class="admin-sidebar">
-        {# The on-dark lockup: the sidebar is --gray-900, so the white wordmark
-           with the clay-light dot. Width is set here and the height follows the
-           viewBox; do not set both independently or the locked gap between mark
-           and wordmark distorts. See assets/brand/BRAND.md. #}
-        <h1 class="admin-brand">
-            <a href="/admin">
-                <img src="/static/brand/trovato-lockup-horizontal-white.svg"
-                     alt="Trovato" width="170" height="46">
-                <span class="visually-hidden">Admin</span>
-            </a>
-        </h1>
-        {# Each active link carries aria-current="page" alongside the class:
-           the class is styling, which assistive technology cannot see. #}
-        <nav aria-label="Admin navigation">
-            {# Built by `routes::admin_nav::sidebar`: only the screens this
-               viewer may open, each gated on what its own page asks for. #}
-            <ul class="admin-nav">
-                {% for section in admin_nav | default(value=[]) %}
-                {% if section.title %}<div class="admin-nav-section">{{ section.title }}</div>{% endif %}
-                {% for link in section.links %}
-                <li><a href="{{ link.href | safe }}"{% if link.active %} class="active" aria-current="page"{% endif %}>{{ link.label }}</a></li> {# SAFE: each href is either a constant in `routes::admin_nav::LINKS` or a plugin's own `tap_admin_nav` declaration, validated at boot — never user text #}
-                {% endfor %}
-                {% endfor %}
-            </ul>
-        </nav>
-    </aside>
+    Context from `routes::admin_nav::insert_context`: admin_nav (sidebar),
+    admin_place (group, breadcrumbs, intro, title), admin_lang, admin_dir,
+    admin_theme, site_name. A child template sets:
+      page_title    the h1 text (and so the <title> and last breadcrumb)
+      page_intro    one or two sentences under it (default: the registry's)
+      page_actions  the primary action beside the heading
+      local_tasks   the View / Edit / Translate / Revisions links
+      content       the page
+    A plugin page or the error page passes `content` (and `page_heading`). -#}
+<html lang="{{ admin_lang | default(value='en') }}" dir="{{ admin_dir | default(value='ltr') }}" data-theme="{{ admin_theme | default(value='system') }}" class="no-js">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    {% if csrf_token is defined %}<meta name="csrf-token" content="{{ csrf_token }}">{% endif %}
+    {#- The heading's text replaces the marker after rendering, so the title
+        always leads with what the h1 says (routes::admin_nav::finish_page). -#}
+    <title><!--trovato:admin-title-->{% if admin_place.group and admin_place.group != admin_place.title %}, {{ t(s=admin_place.group) }}{% endif %}, {{ site_name | default(value="Trovato") }}</title>
+    <link rel="icon" type="image/svg+xml" href="/static/brand/trovato-favicon.svg">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/favicon-32.png">
+    <link rel="stylesheet" href="/static/css/admin.css?v={{ asset_version() }}">
+    {#- The admin theme's own stylesheets, when the Themes page names one:
+        what lets that setting restyle the admin. -#}
+    {% for href in admin_theme_stylesheets | default(value=[]) %}<link rel="stylesheet" href="{{ href }}">{% endfor %}
+    {#- Loaded in the head, not deferred, so the `js` class is on <html> before
+        the first paint and the sidebar never flashes open then shut. -#}
+    <script src="/static/js/admin-shell.js?v={{ asset_version() }}"></script>
+    {% block head %}{% endblock %}
+</head>
+<body class="admin">
+<a class="skip-link" href="#main">{{ t(s="Skip to main content") }}</a>
 
-    <main class="admin-content">
-        {% block messages %}
-        {% if messages %}
-        <div class="messages">
-            {% for message in messages %}
-            <div class="message message--{{ message.type | default(value='info') }}" role="status">
-                {{ message.text }}
-            </div>
+<header class="admin-masthead">
+    <a class="admin-brand" href="/admin">
+        <img class="admin-brand__mark admin-brand__mark--light" src="/static/brand/trovato-lockup-horizontal.svg" alt="{{ t(s='Trovato') }}" width="112" height="30">
+        <img class="admin-brand__mark admin-brand__mark--dark" src="/static/brand/trovato-lockup-horizontal-white.svg" alt="{{ t(s='Trovato') }}" width="112" height="30">
+        <span class="admin-brand__label">{{ t(s="Administration") }}</span>
+    </a>
+
+    {#- The narrow-screen menu button: shown by the script, below 48rem only.
+        Without JavaScript the sidebar is simply always shown. -#}
+    <button type="button" class="admin-menu-toggle" aria-expanded="false" aria-controls="admin-nav" hidden>
+        <svg aria-hidden="true" focusable="false" width="20" height="20" viewBox="0 0 20 20"><path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg>
+        <span>{{ t(s="Menu") }}</span>
+    </button>
+
+    <form class="admin-search" role="search" action="/admin/search" method="get">
+        <label class="visually-hidden" for="admin-search-q">{{ t(s="Search the administration") }}</label>
+        <input class="admin-search__input" id="admin-search-q" type="search" name="q" value="{{ q | default(value='') }}" autocomplete="off" spellcheck="false">
+        <button class="button admin-search__button" type="submit">{{ t(s="Search") }}</button>
+    </form>
+
+    <ul class="admin-account">
+        <li><a href="/">{{ t(s="View site") }}</a></li>
+        <li><a href="/admin/preferences"{% if admin_current_path | default(value="") == "/admin/preferences" %} aria-current="page"{% endif %}>{{ t(s="Your preferences") }}</a></li>
+    </ul>
+</header>
+
+<div class="admin-frame">
+    <nav class="admin-sidebar" id="admin-nav" aria-label="{{ t(s='Administration') }}">
+        {#- Built by `routes::admin_nav::sidebar`: only the pages this viewer may
+            open, each gated on what its own page asks for. One list: the
+            Dashboard, then one item per group, each an h2 holding a disclosure
+            button followed by the group's own list. -#}
+        <ul class="admin-nav">
+            {% for section in admin_nav | default(value=[]) %}
+            {% if not section.title %}
+            {% for link in section.links %}
+            <li class="admin-nav__item"><a class="admin-nav__link" href="{{ link.href | safe }}"{% if link.active %} aria-current="page"{% endif %}>{{ t(s=link.label) }}</a></li> {# SAFE: each href is either a constant in `routes::admin_nav::LINKS` or a plugin's own `tap_admin_nav` declaration, validated at boot — never user text #}
             {% endfor %}
+            {% else %}
+            <li class="admin-nav__group" data-group="{{ section.slug }}">
+                <h2 class="admin-nav__heading">
+                    <button type="button" class="admin-nav__toggle" aria-expanded="{% if section.current %}true{% else %}false{% endif %}" aria-controls="admin-nav-{{ section.slug }}" hidden>
+                        <svg class="admin-nav__chevron" aria-hidden="true" focusable="false" width="12" height="12" viewBox="0 0 12 12"><path d="M4 2.5 7.5 6 4 9.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                        <span>{{ t(s=section.title) }}</span>
+                    </button>
+                    <span class="admin-nav__heading-text">{{ t(s=section.title) }}</span>
+                </h2>
+                <ul class="admin-nav__list" id="admin-nav-{{ section.slug }}"{% if not section.current %} data-collapsed{% endif %}>
+                    <li class="admin-nav__item"><a class="admin-nav__link admin-nav__link--overview" href="{{ section.href | safe }}"{% if section.landing_active %} aria-current="page"{% endif %}>{{ t(s="Overview") }}</a></li> {# SAFE: a landing page address built from a constant group slug #}
+                    {% for link in section.links %}
+                    <li class="admin-nav__item"><a class="admin-nav__link" href="{{ link.href | safe }}"{% if link.active %} aria-current="page"{% endif %}>{{ t(s=link.label) }}</a></li> {# SAFE: as above, a registry constant or a validated plugin declaration #}
+                    {% endfor %}
+                </ul>
+            </li>
+            {% endif %}
+            {% endfor %}
+        </ul>
+    </nav>
+
+    <main class="admin-main" id="main" tabindex="-1">
+        {% if admin_place and not admin_place.dashboard and admin_place.crumbs %}
+        <nav class="breadcrumb" aria-label="{{ t(s='Breadcrumb') }}">
+            <ol class="breadcrumb__list">
+                {% for crumb in admin_place.crumbs %}
+                <li class="breadcrumb__item"><a href="{{ crumb.href | safe }}">{{ t(s=crumb.label) }}</a></li> {# SAFE: registry constants and validated plugin declarations #}
+                {% endfor %}
+                <li class="breadcrumb__item" aria-current="page"><!--trovato:admin-title--></li>
+            </ol>
+        </nav>
+        {% endif %}
+
+        {% block page_header %}
+        {% if error_title is not defined %}
+        <div class="page-header">
+            <div class="page-header__text">
+                <h1 class="page-title">{% block page_title %}{% if page_heading is defined and page_heading %}{{ page_heading }}{% elif admin_place and admin_place.title %}{{ t(s=admin_place.title) }}{% endif %}{% endblock page_title %}</h1>
+                {% block page_intro %}{% if admin_place and admin_place.intro %}<p class="page-intro">{{ t(s=admin_place.intro) }}</p>{% endif %}{% endblock page_intro %}
+            </div>
+            <div class="page-header__actions">{% block page_actions %}{% endblock page_actions %}</div>
         </div>
         {% endif %}
-        {% endblock %}
+        {% endblock page_header %}
+
+        {% block local_tasks %}{% endblock local_tasks %}
+
+        {% block messages %}
+        {#- Rendered once, here. Each message says what it is in words, not only
+            in colour; errors interrupt (role=alert), the rest do not. -#}
+        {% if messages or flash or error_message %}
+        <div class="admin-messages">
+            {% for message in messages | default(value=[]) %}
+            {% if message.type == "error" %}
+            <div class="notice notice--error" role="alert"><strong class="notice__label">{{ t(s="Error:") }}</strong> {{ t(s=message.text) }}</div>
+            {% elif message.type == "warning" %}
+            <div class="notice notice--warning" role="status"><strong class="notice__label">{{ t(s="Warning:") }}</strong> {{ t(s=message.text) }}</div>
+            {% else %}
+            <div class="notice notice--status" role="status"><strong class="notice__label">{{ t(s="Done:") }}</strong> {{ t(s=message.text) }}</div>
+            {% endif %}
+            {% endfor %}
+            {% if flash %}
+            <div class="notice notice--status" role="status"><strong class="notice__label">{{ t(s="Done:") }}</strong> {{ t_message(m=flash) }}</div>
+            {% endif %}
+            {% if error_message %}
+            <div class="notice notice--error" role="alert"><strong class="notice__label">{{ t(s="Error:") }}</strong> {{ t(s=error_message) }}</div>
+            {% endif %}
+        </div>
+        {% endif %}
+        {% endblock messages %}
 
         {% block content %}
-        {# Only a plugin's themed admin page sets `page_heading`: every kernel
-           admin template overrides this block and draws its own header. #}
-        {% if page_heading is defined and page_heading %}<div class="admin-header"><h2>{{ page_heading }}</h2></div>{% endif %}
-        {{ content | safe }} {# SAFE: kernel render pipeline output — admin page content already rendered and sanitized #}
-        {% endblock %}
+        {{ content | safe }} {# SAFE: kernel render pipeline output — a plugin's admin page body or the rendered error page #}
+        {% endblock content %}
     </main>
 </div>
-{% endblock %}
 
-{% block scripts %}
-{{ super() }}
-<script src="/static/js/admin-helpers.js"></script>
-{% endblock %}
+<div class="visually-hidden" id="trovato-announcements" aria-live="polite"></div>
+
+{% block scripts %}{% endblock scripts %}
+<script src="/static/js/trovato.js"></script>
+<script src="/static/js/admin-helpers.js?v={{ asset_version() }}"></script>
+</body>
+</html>

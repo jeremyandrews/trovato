@@ -443,10 +443,14 @@ async fn flash_after(app: &TestApp, cookies: &str, bucket: &str) -> String {
         )
         .await;
     let html = body_of(page).await;
-    let Some(at) = html.find("message--status") else {
+    // The admin shell prints a status message as `<strong>Done:</strong> text`.
+    let Some(at) = html.find("notice--status") else {
         return String::new();
     };
-    let start = at + html[at..].find('>').map_or(0, |i| i + 1);
+    let start = at
+        + html[at..]
+            .find("</strong>")
+            .map_or(0, |i| i + "</strong>".len());
     let end = start + html[start..].find('<').unwrap_or(0);
     html[start..end].trim().to_string()
 }
@@ -473,7 +477,7 @@ fn bulk_publish_and_unpublish_change_exactly_the_selected_items() {
         );
         assert_eq!(
             flash_after(app, &cookies, bucket).await,
-            "2 item(s) published."
+            "2 items published."
         );
 
         let (status, body) = bulk(app, &cookies, bucket, "unpublish", &[first, second]).await;
@@ -482,7 +486,7 @@ fn bulk_publish_and_unpublish_change_exactly_the_selected_items() {
         assert_eq!(stored_status(app, second).await, Some(0));
         assert_eq!(
             flash_after(app, &cookies, bucket).await,
-            "2 item(s) unpublished."
+            "2 items unpublished."
         );
     });
 }
@@ -516,10 +520,7 @@ fn bulk_delete_removes_exactly_the_selected_items() {
             Some(0),
             "an item that was not selected must not be deleted"
         );
-        assert_eq!(
-            flash_after(app, &cookies, bucket).await,
-            "2 item(s) deleted."
-        );
+        assert_eq!(flash_after(app, &cookies, bucket).await, "2 items deleted.");
     });
 }
 
@@ -538,7 +539,7 @@ fn an_id_naming_no_item_is_counted_as_failed_and_the_rest_still_happen() {
         assert_eq!(stored_status(app, real).await, Some(1));
         assert_eq!(
             flash_after(app, &cookies, bucket).await,
-            "1 item(s) published. 1 item(s) failed."
+            "1 item published. Failed: 1."
         );
     });
 }

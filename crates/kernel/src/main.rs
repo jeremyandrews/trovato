@@ -24,6 +24,7 @@ mod form;
 mod gather;
 mod generate;
 mod host;
+mod i18n;
 mod lockout;
 mod menu;
 mod metrics;

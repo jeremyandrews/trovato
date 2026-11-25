@@ -483,13 +483,15 @@ pub async fn render_admin_template(
         .and_then(|p| p.as_str())
         .unwrap_or_default()
         .to_string();
-    super::admin_nav::insert_context(state, viewer, &path, &mut context);
+    let shell = super::admin_nav::insert_context(state, viewer, &path, &mut context).await;
     // Ensure "errors" is always available for form templates that use form::errors().
     if context.get("errors").is_none() {
         let empty: Vec<String> = Vec::new();
         context.insert("errors", &empty);
     }
-    match crate::telemetry::render("admin", || state.theme().tera().render(template, &context)) {
+    match crate::telemetry::render("admin", || {
+        shell.render(|| state.theme().tera().render(template, &context))
+    }) {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
             tracing::error!(error = %e, template = %template, "failed to render template");

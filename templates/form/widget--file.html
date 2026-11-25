@@ -6,15 +6,15 @@
     <div class="file-upload-widget" data-field="{{ name }}">
         <input type="hidden" id="{{ name }}" name="{{ name }}" value="{{ file_val }}"{% if element.disabled %} disabled{% endif %}>
         <div class="file-upload-widget__preview"{% if not file_val %} style="display:none"{% endif %}>
-            {% if file_val %}<span class="file-upload-widget__filename">File attached</span>{% endif %}
-            <button type="button" class="button button--small file-upload-widget__remove">Remove</button>
+            {% if file_val %}<span class="file-upload-widget__filename">{{ t(s="File attached") }}</span>{% endif %}
+            <button type="button" class="button button--small file-upload-widget__remove">{{ t(s="Remove") }}</button>
         </div>
         <div class="file-upload-widget__input"{% if file_val %} style="display:none"{% endif %}>
             <input type="file" class="file-upload-widget__file" accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.zip,.gz">
-            <button type="button" class="button button--small media-picker-browse" data-target="{{ name }}">Browse media</button>
+            <button type="button" class="button button--small media-picker-browse" data-target="{{ name }}">{{ t(s="Browse media") }}</button>
             <span class="file-upload-widget__status"></span>
         </div>
-        <p class="form-item__description">Max 10 MB. Allowed: images, PDFs, documents, archives.</p>
+        <p class="form-item__description">{{ t(s="Max 10 MB. Allowed: images, PDFs, documents, archives.") }}</p>
     </div>
     {% if field_error %}<div id="error-{{ name }}" class="form-item__error" role="alert">{{ field_error }}</div>{% endif %}
 </div>

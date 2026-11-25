@@ -79,7 +79,8 @@ pub(crate) async fn build(
     extra.extend(publishing_element(state, user, type_name, item).await);
     let mode = preview_mode(state, type_name).await;
     if mode != PreviewMode::Disabled {
-        extra.push(preview_button());
+        let text = super::admin_nav::AdminText::for_page(state, user, action).await;
+        extra.push(preview_button(&text.html("Preview", &[])));
     }
     let mut form = match item {
         Some(item) => builder.build_edit_form(item, action),
@@ -120,11 +121,14 @@ pub(crate) async fn preview_mode(state: &AppState, type_name: &str) -> PreviewMo
 
 /// The Preview button. A `<button>` the form submits like Save, by name: the
 /// routes see `preview` in the submission and render it instead of saving.
-fn preview_button() -> (String, FormElement) {
+///
+/// `label` is the button's text, escaped: "Preview" in the viewer's admin
+/// language on an admin page, the English source elsewhere.
+fn preview_button(label: &str) -> (String, FormElement) {
     (
         preview::BUTTON.to_string(),
         FormElement::markup(format!(
-            r#"<div class="form-actions form-actions--preview"><button name="{}" value="1" class="button button--secondary">Preview</button></div>"#,
+            r#"<div class="form-actions form-actions--preview"><button name="{}" value="1" class="button button--secondary">{label}</button></div>"#,
             preview::BUTTON
         ))
         .weight(crate::content::SUBMIT_WEIGHT),
@@ -144,6 +148,7 @@ pub(crate) async fn render_preview(
     content_type: &ContentTypeDefinition,
     title: &str,
     fields: &Map<String, Value>,
+    page_path: &str,
 ) -> String {
     let (fields_html, _stylesheets, _page_root) = super::item::render_item_fields(
         state,
@@ -152,10 +157,19 @@ pub(crate) async fn render_preview(
         &content_type.fields,
     )
     .await;
+    // The preview's own words in the admin language on an admin page
+    // (`page_path`), the English source on the front end.
+    let text = super::admin_nav::AdminText::for_page(state, user, page_path).await;
     format!(
-        r#"<section class="item-preview" aria-label="Preview"><p class="item-preview__notice">This is a preview. It has not been saved.</p><article class="item item--preview item--{}"><h1 class="item__title">{}</h1>{}</article></section>"#,
+        r#"<section class="item-preview" aria-label="{}"><p class="item-preview__notice">{}</p><article class="item item--preview item--{}"><h1 class="item__title">{}</h1>{}</article></section>"#,
+        text.html("Preview", &[]),
+        text.html("This is a preview. It has not been saved.", &[]),
         super::helpers::html_escape(&content_type.machine_name),
-        super::helpers::html_escape(title),
+        if crate::i18n::markers_enabled() {
+            crate::i18n::data_html(title)
+        } else {
+            super::helpers::html_escape(title)
+        },
         fields_html
     )
 }

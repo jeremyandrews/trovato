@@ -896,6 +896,20 @@ impl ThemeEngine {
             },
         );
 
+        // `t`: the interface translation function, on every engine whether or
+        // not `trovato_locale` is enabled (see `crate::i18n`). Without a locale
+        // service it returns the source with its placeholders filled.
+        tera.register_function("t", crate::i18n::TranslateFunction::new(locale.clone()));
+        tera.register_function(
+            "t_message",
+            crate::i18n::TranslateMessageFunction::new(locale.clone()),
+        );
+        // Marker mode (tests only): every printed value is wrapped so a test
+        // can tell interface text that skipped `t` from data.
+        if crate::i18n::markers_enabled() {
+            tera.set_escape_fn(crate::i18n::marker_escape);
+        }
+
         // Filter for translating interface strings via LocaleService.
         // Usage: {{ "Subscribe" | trans(lang=active_language) }}
         if let Some(locale_service) = locale {

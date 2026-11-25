@@ -1,22 +1,22 @@
 {% extends "page--admin.html" %}
 
-{% block content %}
-<div class="admin-header">
-    <h2>Delete revision: {{ item_title }}</h2>
-    <a href="/item/{{ item_id }}/revisions" class="button">Back to history</a>
-</div>
+{% block page_title %}{{ t(s="Delete revision: {title}", title=item_title) }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="Removes one saved version from this item's history. The item itself and its other revisions stay.") }}</p>{% endblock page_intro %}
+{% block page_actions %}<a href="/item/{{ item_id }}/revisions" class="button">{{ t(s="Back to history") }}</a>{% endblock page_actions %}
 
+{% block content %}
 <div class="admin-card">
     <p>
-        Delete the revision of {{ revision.date }} by {{ revision.author }}
-        ({{ revision.title }})?
-        {% if revision.log %}Log message: {{ revision.log }}.{% endif %}
-        This cannot be undone.
+        {{ t(s="Delete the revision of {date} by {author} ({title})?", date=revision.date, author=revision.author, title=revision.title) }}
+        {% if revision.log %}{{ t(s="Log message: {log}.", log=revision.log) }}{% endif %}
+        {{ t(s="This cannot be undone.") }}
     </p>
     <form method="post" action="/item/{{ item_id }}/revisions/{{ revision.id }}/delete">
         <input type="hidden" name="_token" value="{{ csrf_token }}">
-        <button type="submit" class="button button--danger">Delete</button>
-        <a href="/item/{{ item_id }}/revisions" class="button">Cancel</a>
+        <div class="form-actions">
+            <button type="submit" class="button button--danger">{{ t(s="Delete the revision of {date}", date=revision.date) }}</button>
+            <a href="/item/{{ item_id }}/revisions" class="button button--secondary">{{ t(s="Cancel") }}</a>
+        </div>
     </form>
 </div>
-{% endblock %}
+{% endblock content %}

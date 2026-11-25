@@ -292,22 +292,19 @@ async fn admin_sessions_page(
     context.insert("user", &subject);
     context.insert("sessions", &views);
     context.insert("is_admin_view", &true);
-    crate::routes::helpers::inject_site_context(
-        &state,
-        &session,
-        &mut context,
-        &format!("/admin/users/{user_id}/sessions"),
-    )
-    .await;
+    let flash: Option<String> = session.remove(ADMIN_SESSIONS_FLASH).await.ok().flatten();
+    context.insert("flash", &flash);
+    context.insert("path", &format!("/admin/users/{user_id}/sessions"));
 
-    match state.theme().tera().render("user/sessions.html", &context) {
-        Ok(html) => Html(html).into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "failed to render the admin sessions page");
-            render_server_error("Could not render the sessions page.")
-        }
-    }
+    // In the admin shell, like every other admin page; it used to render the
+    // account owner's own front end page.
+    let viewer = crate::routes::helpers::get_user_context(&session, &state).await;
+    crate::routes::helpers::render_admin_template(&state, &viewer, "admin/sessions.html", context)
+        .await
 }
+
+/// Session key for the admin sessions page's message.
+const ADMIN_SESSIONS_FLASH: &str = "admin_sessions_flash";
 
 /// `POST /admin/users/{user_id}/sessions/{device_id}/revoke` — admin remote
 /// logout of any account's session.
@@ -317,14 +314,41 @@ async fn admin_revoke_session(
     Path((user_id, device_id)): Path<(Uuid, Uuid)>,
     axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     headers: HeaderMap,
+    body: axum::body::Bytes,
 ) -> Response {
-    let admin = match require_permission_json(&state, &session, "administer users").await {
-        Ok(u) => u,
-        Err(refusal) => return refusal.into_response(),
+    // The admin page posts an ordinary form, so signing a device out works
+    // with JavaScript off; a script (and the tests) send the CSRF header and
+    // get JSON back, as before.
+    let form_token = headers
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .filter(|ct| ct.starts_with("application/x-www-form-urlencoded"))
+        .map(|_| {
+            url::form_urlencoded::parse(&body)
+                .find(|(k, _)| k == "_token")
+                .map(|(_, v)| v.into_owned())
+                .unwrap_or_default()
+        });
+    let back = format!("/admin/users/{user_id}/sessions");
+    let admin = if let Some(token) = &form_token {
+        let admin = match require_permission(&state, &session, "administer users").await {
+            Ok(u) => u,
+            Err(refusal) => return refusal,
+        };
+        if let Err(refusal) = crate::routes::helpers::require_csrf(&session, token).await {
+            return refusal;
+        }
+        admin
+    } else {
+        let admin = match require_permission_json(&state, &session, "administer users").await {
+            Ok(u) => u,
+            Err(refusal) => return refusal.into_response(),
+        };
+        if let Err(refusal) = require_csrf_header(&session, &headers).await {
+            return refusal.into_response();
+        }
+        admin
     };
-    if let Err(refusal) = require_csrf_header(&session, &headers).await {
-        return refusal.into_response();
-    }
     // The trusted-proxy-gated client address, not raw `X-Forwarded-For`,
     // which a client writes for itself.
     let ip = client_ip.0;
@@ -353,8 +377,18 @@ async fn admin_revoke_session(
                         .detail("device_name", entry.device_name),
                 )
                 .await;
+            if form_token.is_some() {
+                if let Err(e) = session
+                    .insert(ADMIN_SESSIONS_FLASH, "The device was signed out.")
+                    .await
+                {
+                    tracing::warn!(error = %e, "failed to set the sessions message");
+                }
+                return axum::response::Redirect::to(&back).into_response();
+            }
             Json(serde_json::json!({ "success": true })).into_response()
         }
+        Ok(None) if form_token.is_some() => render_not_found(),
         Ok(None) => crate::error::AppError::with_status(StatusCode::NOT_FOUND, "No such session.")
             .into_response(),
         Err(e) => {

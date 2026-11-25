@@ -12,9 +12,9 @@ use crate::models::CreateItem;
 use crate::state::AppState;
 
 use super::helpers::{
-    CsrfOnlyForm, admin_user_context, build_local_tasks, html_escape, render_admin_template,
-    render_error, render_forbidden, render_not_found, render_server_error, require_csrf,
-    require_permission, single_form_field,
+    CsrfOnlyForm, admin_user_context, build_local_tasks, render_admin_template, render_error,
+    render_forbidden, render_not_found, render_server_error, require_csrf, require_permission,
+    single_form_field,
 };
 
 /// Session key for flash messages on the content list page.
@@ -72,7 +72,7 @@ async fn list_content(
     let csrf_token = generate_csrf_token(&session).await;
 
     // Read and clear flash message
-    let flash: Option<String> = session.get(CONTENT_FLASH_KEY).await.ok().flatten();
+    let flash: Option<serde_json::Value> = session.get(CONTENT_FLASH_KEY).await.ok().flatten();
     if flash.is_some()
         && let Err(e) = session.remove::<String>(CONTENT_FLASH_KEY).await
     {
@@ -283,8 +283,15 @@ async fn render_content_preview(
     fields: &serde_json::Map<String, serde_json::Value>,
 ) -> Response {
     let title = posted.get("title").unwrap_or_default().trim().to_string();
-    let preview =
-        super::item_form::render_preview(state, user_ctx, content_type, &title, fields).await;
+    let preview = super::item_form::render_preview(
+        state,
+        user_ctx,
+        content_type,
+        &title,
+        fields,
+        "/admin/content",
+    )
+    .await;
     render_content_form_page(
         state,
         session,
@@ -316,11 +323,13 @@ async fn render_content_form_page(
         Some(item) => format!("/admin/content/{}/edit", item.id),
         None => format!("/admin/content/add/{type_name}"),
     };
+    let text = super::admin_nav::AdminText::for_page(state, user_ctx, &path).await;
     let mut extra = vec![(
         "cancel".to_string(),
-        crate::form::FormElement::markup(
-            r#"<a href="/admin/content" class="button button--secondary">Cancel</a>"#,
-        )
+        crate::form::FormElement::markup(format!(
+            r#"<a href="/admin/content" class="button button--secondary">{}</a>"#,
+            text.html("Cancel", &[])
+        ))
         .weight(crate::content::SUBMIT_WEIGHT + 1),
     )];
     if let Some(item) = item {
@@ -347,7 +356,9 @@ async fn render_content_form_page(
     if let Some(posted) = posted {
         super::item_form::redisplay(&mut form, posted);
     }
-    let form_html = match state.theme().render_form_with_errors(&form, errors) {
+    // In the viewer's admin language: the form templates' own words go
+    // through `t`.
+    let form_html = match text.scope(|| state.theme().render_form_with_errors(&form, errors)) {
         Ok(html) => html,
         Err(e) => {
             tracing::error!(error = %e, "failed to render the content form");
@@ -513,12 +524,10 @@ async fn add_content_submit(
             tracing::info!(item_id = %item.id, "content created");
 
             // Flash success message with link to edit the created item
-            let msg = format!(
-                "{} <a href=\"/admin/content/{}/edit\">{}</a> has been created.",
-                html_escape(&content_type.label),
-                item.id,
-                html_escape(&item.title),
-            );
+            let msg = crate::i18n::UiMessage::new("{type} {title} has been created.")
+                .arg("type", content_type.label.clone())
+                .arg("title", item.title.clone())
+                .link(format!("/admin/content/{}/edit", item.id), "Edit {title}");
             if let Err(e) = session.insert(CONTENT_FLASH_KEY, &msg).await {
                 tracing::warn!(error = %e, "failed to set flash message");
             }
@@ -798,12 +807,10 @@ async fn edit_content_submit(
             tracing::info!(item_id = %item_id, "content updated");
 
             if let Some(ref updated_item) = updated {
-                let msg = format!(
-                    "{} <a href=\"/admin/content/{}/edit\">{}</a> has been updated.",
-                    html_escape(&content_type.label),
-                    item_id,
-                    html_escape(&updated_item.title),
-                );
+                let msg = crate::i18n::UiMessage::new("{type} {title} has been updated.")
+                    .arg("type", content_type.label.clone())
+                    .arg("title", updated_item.title.clone())
+                    .link(format!("/admin/content/{item_id}/edit"), "Edit {title}");
                 if let Err(e) = session.insert(CONTENT_FLASH_KEY, &msg).await {
                     tracing::warn!(error = %e, "failed to set flash message");
                 }
@@ -1072,7 +1079,8 @@ async fn bulk_content_action(
         if let Err(e) = session
             .insert(
                 CONTENT_FLASH_KEY,
-                format!("Unknown action: {}", html_escape(&form.action)),
+                crate::i18n::UiMessage::new("Unknown action: {action}")
+                    .arg("action", form.action.chars().take(64).collect::<String>()),
             )
             .await
         {
@@ -1088,10 +1096,10 @@ async fn bulk_content_action(
         if let Err(e) = session
             .insert(
                 CONTENT_FLASH_KEY,
-                format!(
-                    "Nothing was changed: \"{}\" is not a valid item id.",
-                    html_escape(&shown)
-                ),
+                crate::i18n::UiMessage::new(
+                    "Nothing was changed: \"{value}\" is not a valid item id.",
+                )
+                .arg("value", shown),
             )
             .await
         {
@@ -1232,21 +1240,38 @@ async fn bulk_content_action(
         _ => unreachable!(), // Validated above
     }
 
-    let action_label = match form.action.as_str() {
-        "publish" => "published",
-        "unpublish" => "unpublished",
-        "delete" => "deleted",
-        "move_to_stage" => "moved",
-        "promote" => "promoted to the front page",
-        "demote" => "removed from the front page",
-        "sticky" => "made sticky",
-        "unsticky" => "made not sticky",
+    // One whole sentence per action, singular and plural, so each can be
+    // translated; the failures are a second sentence of their own.
+    let (one, many) = match form.action.as_str() {
+        "publish" => ("{count} item published.", "{count} items published."),
+        "unpublish" => ("{count} item unpublished.", "{count} items unpublished."),
+        "delete" => ("{count} item deleted.", "{count} items deleted."),
+        "move_to_stage" => ("{count} item moved.", "{count} items moved."),
+        "promote" => (
+            "{count} item promoted to the front page.",
+            "{count} items promoted to the front page.",
+        ),
+        "demote" => (
+            "{count} item removed from the front page.",
+            "{count} items removed from the front page.",
+        ),
+        "sticky" => ("{count} item made sticky.", "{count} items made sticky."),
+        "unsticky" => (
+            "{count} item made not sticky.",
+            "{count} items made not sticky.",
+        ),
         _ => unreachable!(),
     };
     let msg = if fail_count > 0 {
-        format!("{success_count} item(s) {action_label}. {fail_count} item(s) failed.")
+        // The failures follow as a number: "2 items published. Failed: 1."
+        crate::i18n::UiMessage::new(format!("{one} Failed: {{failed}}."))
+            .plural(
+                format!("{many} Failed: {{failed}}."),
+                i64::from(success_count),
+            )
+            .arg("failed", fail_count.to_string())
     } else {
-        format!("{success_count} item(s) {action_label}.")
+        crate::i18n::UiMessage::new(one).plural(many, i64::from(success_count))
     };
     if let Err(e) = session.insert(CONTENT_FLASH_KEY, msg).await {
         tracing::warn!(error = %e, "failed to set flash message");

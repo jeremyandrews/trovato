@@ -84,6 +84,30 @@ impl LocaleService {
             .context("failed to load locale translations")
     }
 
+    /// Load `language` unless it is loaded already: the admin renders in the
+    /// viewer's chosen language, which need not be the site default the
+    /// server loaded at start.
+    pub async fn ensure_loaded(&self, language: &str) {
+        if self.languages.lock().contains(language) {
+            return;
+        }
+        if let Err(e) = self.load_language(language).await {
+            tracing::warn!(error = %e, language, "failed to load locale translations");
+        }
+    }
+
+    /// The translation of `source`, or `None` when there is none: the
+    /// lookup [`crate::i18n::translate`] makes, which falls back itself.
+    pub fn lookup_translation(
+        &self,
+        source: &str,
+        context: &str,
+        language: &str,
+    ) -> Option<String> {
+        let found = self.lookup(source, context, language);
+        self.metrics.cache_lookup(CacheName::Locale, found)
+    }
+
     /// Translate a source string.
     ///
     /// Falls back to the source string if no translation is found.

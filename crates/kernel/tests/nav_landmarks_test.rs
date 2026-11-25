@@ -291,9 +291,11 @@ fn the_admin_sidebar_marks_the_current_screen() {
         let (status, html) = get(app, &cookies, "/admin").await;
         assert_eq!(status, StatusCode::OK);
 
-        let active_at = html
-            .find("class=\"active\"")
-            .expect("the dashboard link must render as active on /admin");
+        let nav_at = html.find(r#"id="admin-nav""#).expect("the admin sidebar");
+        let active_at = nav_at
+            + html[nav_at..]
+                .find(r#"href="/admin""#)
+                .expect("the dashboard link must be in the sidebar on /admin");
         let tag_start = html[..active_at].rfind('<').expect("an opening tag");
         let tag_end = html[active_at..].find('>').expect("a tag end") + active_at;
 

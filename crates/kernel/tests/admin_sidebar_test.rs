@@ -29,7 +29,7 @@ async fn get(app: &TestApp, cookies: &str, uri: &str) -> (StatusCode, String) {
 /// The `href`s inside the admin sidebar.
 fn sidebar_links(html: &str) -> Vec<String> {
     let start = html
-        .find(r#"<nav aria-label="Admin navigation">"#)
+        .find(r#"<nav class="admin-sidebar" id="admin-nav" aria-label="Administration">"#)
         .expect("the admin layout has its sidebar");
     let end = start + html[start..].find("</nav>").unwrap();
     html[start..end]

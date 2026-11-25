@@ -1,111 +1,78 @@
 {% extends "page--admin.html" %}
 
-{% block content %}
-<div class="admin-header">
-    <h2>Plugins</h2>
-</div>
+{% block page_title %}{{ t(s="Plugins") }}{% endblock page_title %}
 
-{% if flash %}
-<div class="messages">
-    <div class="message message--info" role="status">
-        {{ flash }}
-    </div>
-</div>
+{% block content %}
+<p class="plugin-restart-notice" id="plugin-restart-notice" role="note">{{ t(s=restart_notice) }}</p>
+{% if raw_sql_count > 0 %}
+<p class="plugin-raw-sql-note" id="plugin-raw-sql-note">
+    <span class="badge badge--raw-sql">{{ t(s="raw SQL") }}</span>
+    {{ t(s="{count} plugin holds {capability}: SQL the kernel does not compile, which can read any table outside the protected floor with no viewer, stage or language applied.", plural="{count} plugins hold {capability}: SQL the kernel does not compile, which can read any table outside the protected floor with no viewer, stage or language applied.", count=raw_sql_count, capability="raw_sql") }}
+    {{ t(s="Grant it only to a plugin you trust with all of the site's content.") }}
+    {{ t(s="See {document}.", document="docs/plugin-capabilities.md") }}
+</p>
 {% endif %}
 
-<div class="admin-card">
-    <p class="plugin-restart-notice" id="plugin-restart-notice" role="note">{{ restart_notice }}</p>
-    {% if raw_sql_count > 0 %}
-    <p class="plugin-raw-sql-note" id="plugin-raw-sql-note">
-        <span class="badge badge--raw-sql">raw SQL</span>
-        {{ raw_sql_count }} {% if raw_sql_count == 1 %}plugin holds{% else %}plugins hold{% endif %} <code>raw_sql</code>: SQL the kernel does not compile, which can read any table outside the protected floor with no viewer, stage or language applied. Grant it only to a plugin you trust with all of the site's content. See <code>docs/plugin-capabilities.md</code>.
-    </p>
-    {% endif %}
-    {% if plugins | length > 0 %}
+{% if plugins | length > 0 %}
+<div class="table-scroll" role="region" aria-labelledby="plugins-caption" tabindex="0">
     <table class="table">
+        <caption id="plugins-caption">{{ t(s="Available plugins") }}</caption>
         <thead>
             <tr>
-                <th>Plugin</th>
-                <th>Description</th>
-                <th>Version</th>
-                <th>Dependencies</th>
-                <th>Status</th>
-                <th>Operations</th>
+                <th scope="col">{{ t(s="Plugin") }}</th>
+                <th scope="col">{{ t(s="Description") }}</th>
+                <th scope="col">{{ t(s="Version") }}</th>
+                <th scope="col">{{ t(s="Dependencies") }}</th>
+                <th scope="col">{{ t(s="Status") }}</th>
+                <th scope="col">{{ t(s="Operations") }}</th>
             </tr>
         </thead>
         <tbody>
             {% for plugin in plugins %}
             <tr>
-                <td><code>{{ plugin.name }}</code>{% if plugin.raw_sql %}<span class="badge badge--raw-sql" data-raw-sql="{{ plugin.name }}" title="Holds raw_sql: runs SQL the kernel does not compile">raw SQL</span>{% endif %}</td>
+                <th scope="row"><code>{{ plugin.name }}</code>{% if plugin.raw_sql %} <span class="badge badge--raw-sql" data-raw-sql="{{ plugin.name }}" title="{{ t(s='Holds raw_sql: runs SQL the kernel does not compile') }}">{{ t(s="raw SQL") }}</span>{% endif %}</th>
                 <td>{{ plugin.description }}</td>
                 <td>{{ plugin.version }}</td>
                 <td>{{ plugin.dependencies }}</td>
                 <td>
                     {% if plugin.status == "Enabled" %}
-                    <span style="color: var(--success, green); font-weight: 600;">Enabled</span>
+                    <span class="status status--active">{{ t(s="Enabled") }}</span>
                     {% elif plugin.status == "Disabled" %}
-                    <span style="color: var(--warning, #b45309); font-weight: 600;">Disabled</span>
+                    <span class="status">{{ t(s="Disabled") }}</span>
                     {% else %}
-                    <span style="color: var(--gray-500, #6b7280);">Not installed</span>
+                    <span class="status">{{ t(s="Not installed") }}</span>
                     {% endif %}
                     {% if plugin.pending_restart %}
-                    <span class="plugin-pending-restart" data-pending-restart="{{ plugin.name }}">Waiting for restart</span>
+                    <span class="plugin-pending-restart" data-pending-restart="{{ plugin.name }}">{{ t(s="Waiting for restart") }}</span>
                     {% endif %}
                 </td>
-                <td>
+                <td class="operations">
                     {% if plugin.is_installed %}
                         {% if plugin.status == "Enabled" %}
-                        <form method="post" action="/admin/plugins/toggle" style="display: inline;">
+                        <form method="post" action="/admin/plugins/toggle" class="inline-form">
                             <input type="hidden" name="_token" value="{{ csrf_token }}">
                             <input type="hidden" name="plugin_name" value="{{ plugin.name }}">
                             <input type="hidden" name="action" value="disable">
-                            <button type="submit" class="link-button">Disable</button>
+                            <button type="submit" class="link-button">{{ t(s="Disable {name}", name=plugin.name) }}</button>
                         </form>
                         {% else %}
-                        <form method="post" action="/admin/plugins/toggle" style="display: inline;">
+                        <form method="post" action="/admin/plugins/toggle" class="inline-form">
                             <input type="hidden" name="_token" value="{{ csrf_token }}">
                             <input type="hidden" name="plugin_name" value="{{ plugin.name }}">
                             <input type="hidden" name="action" value="enable">
-                            <button type="submit" class="link-button">Enable</button>
+                            <button type="submit" class="link-button">{{ t(s="Enable {name}", name=plugin.name) }}</button>
                         </form>
                         {% endif %}
                     {% else %}
-                    <span style="color: var(--gray-500, #6b7280); font-size: 0.875rem;">Use CLI to install</span>
+                    <span class="plugin-install-hint">{{ t(s="Use CLI to install") }}</span>
                     {% endif %}
                 </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
-    {% else %}
-    <p>No plugins found.</p>
-    {% endif %}
 </div>
-
-<style>
-    .badge {
-        display: inline-block;
-        padding: 0.125rem 0.375rem;
-        border-radius: 0.25rem;
-        font-size: 0.75rem;
-        margin-left: 0.5rem;
-    }
-    .badge--raw-sql {
-        background: #fff3cd;
-        color: #664d03;
-        font-weight: 600;
-    }
-    .plugin-restart-notice {
-        font-weight: 600;
-    }
-    .plugin-pending-restart {
-        display: block;
-        font-size: 0.75rem;
-        color: var(--gray-500, #6b7280);
-    }
-    .plugin-raw-sql-note .badge {
-        margin-left: 0;
-        margin-right: 0.25rem;
-    }
-</style>
-{% endblock %}
+{% else %}
+<div class="empty-state"><p>{{ t(s="No plugins found.") }}</p></div>
+{% endif %}
+{% endblock content %}

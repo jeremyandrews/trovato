@@ -2,78 +2,64 @@
 
 {% block content %}
 {% if update_status %}
-{# Two levels on purpose: "a newer release exists" and "act now" are different
-   messages, and the release title is what distinguishes them. #}
+{#- Two levels on purpose: "a newer release exists" and "act now" are different
+    messages, and the release title is what distinguishes them. -#}
 <div class="update-banner{% if update_status.is_security %} update-banner--security{% endif %}" role="{% if update_status.is_security %}alert{% else %}status{% endif %}">
     {% if update_status.is_security %}
-    <strong>Security release available.</strong>
-    Trovato {{ update_status.latest_version }} is a security release and this site
-    runs {{ running_version }}.
+    <p><strong>{{ t(s="Security release available.") }}</strong> {{ t(s="Trovato {latest} is a security release and this site runs {running}.", latest=update_status.latest_version, running=running_version) }}</p>
     {% else %}
-    <strong>Update available.</strong>
-    Trovato {{ update_status.latest_version }} is out and this site runs
-    {{ running_version }}.
+    <p><strong>{{ t(s="Update available.") }}</strong> {{ t(s="Trovato {latest} is out and this site runs {running}.", latest=update_status.latest_version, running=running_version) }}</p>
     {% endif %}
-    <a href="https://github.com/jeremyandrews/trovato/releases/latest" rel="noopener noreferrer">Release notes</a>
+    <p><a href="https://github.com/jeremyandrews/trovato/releases/latest" rel="noopener noreferrer">{{ t(s="Read the release notes") }}</a></p>
 </div>
 {% endif %}
 
-<div class="admin-header">
-    <h2>Administration</h2>
-</div>
-
+<h2 class="visually-hidden">{{ t(s="Areas you may use") }}</h2>
 <div class="dashboard-grid">
-    {# Built by `routes::admin_nav::dashboard`: one card per administration
-       area, each link under the same gate and plugin check as the sidebar.
-       The dashboard is admission to the section, not authority inside it, so
-       a role delegated one screen is shown that screen and not a door that
-       answers 403. #}
+    {#- Built by `routes::admin_nav::dashboard`: one card per group the viewer
+        may use, each link under the same gate and plugin check as the sidebar.
+        The dashboard is admission to the section, not authority inside it, so
+        a role delegated one page is shown that page and not a door that
+        answers 403. -#}
     {% for card in dashboard_cards | default(value=[]) %}
-    <section class="admin-card dashboard-card">
-        <h3>{{ card.title }}</h3>
-        <p class="dashboard-card__description">{{ card.description }}</p>
+    <section class="admin-card dashboard-card" aria-labelledby="dashboard-card-{{ loop.index }}">
+        <h3 id="dashboard-card-{{ loop.index }}">{{ t(s=card.title) }}</h3>
+        <p class="dashboard-card__description">{{ t(s=card.description) }}</p>
         <ul class="dashboard-card__links">
             {% for link in card.links %}
-            <li><a href="{{ link.href | safe }}">{{ link.label }}</a></li> {# SAFE: each href is either a constant in `routes::admin_nav::CARDS` or a plugin's own `tap_admin_nav` declaration, validated at boot — never user text #}
+            <li><a href="{{ link.href | safe }}">{{ t(s=link.label) }}</a></li> {# SAFE: each href is either a constant in `routes::admin_nav::LINKS` or a plugin's own `tap_admin_nav` declaration, validated at boot — never user text #}
             {% endfor %}
         </ul>
     </section>
     {% endfor %}
 
-    {# `content_types` holds only the types this viewer may create: the handler
-       filters on the same `create {type} content` string `/item/add/{type}`
-       checks. An empty list means no card rather than an empty one. #}
+    {#- `content_types` holds only the types this viewer may create: the handler
+        filters on the same `create {type} content` string `/item/add/{type}`
+        checks. An empty list means no card rather than an empty one. -#}
     {% if content_types %}
-    <section class="admin-card dashboard-card">
-        <h3>Create</h3>
+    <section class="admin-card dashboard-card" aria-labelledby="dashboard-card-create">
+        <h3 id="dashboard-card-create">{{ t(s="Create") }}</h3>
         <ul class="dashboard-card__links">
             {% for content_type in content_types %}
-            <li><a href="/item/add/{{ content_type.machine_name }}">Add {{ content_type.label }}</a></li>
+            <li><a href="/item/add/{{ content_type.machine_name }}">{{ t(s="Add {type}", type=content_type.label) }}</a></li>
             {% endfor %}
         </ul>
     </section>
     {% endif %}
 
-    <section class="admin-card dashboard-card">
-        <h3>System</h3>
+    <section class="admin-card dashboard-card" aria-labelledby="dashboard-card-you">
+        <h3 id="dashboard-card-you">{{ t(s="You") }}</h3>
+        {% if user %}<p class="dashboard-card__description">{{ t(s="Signed in as {name}.", name=user.name) }}</p>{% endif %}
         <ul class="dashboard-card__links">
-            <li>
-                <a href="/health">Health check</a>
-                <p class="dashboard-card__description">Database and Redis status</p>
-            </li>
+            <li><a href="/admin/preferences">{{ t(s="Your preferences") }}</a></li>
+            <li><a href="/health">{{ t(s="Health check: database and Redis status") }}</a></li>
             <li>
                 <form method="post" action="/user/logout" class="dashboard-inline-form">
                     <input type="hidden" name="_token" value="{{ csrf_token }}">
-                    <button type="submit" class="link-button">Log out</button>
+                    <button type="submit" class="link-button">{{ t(s="Log out") }}</button>
                 </form>
             </li>
         </ul>
     </section>
 </div>
-
-{% if user %}
-<div class="dashboard-whoami">
-    <p>Logged in as <strong>{{ user.name }}</strong></p>
-</div>
-{% endif %}
-{% endblock %}
+{% endblock content %}

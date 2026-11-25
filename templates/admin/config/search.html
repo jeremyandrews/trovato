@@ -1,14 +1,17 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/form.html" as form %}
 
+{#- A number field from the kernel's ranking table. `n.label` is a fixed
+    English label from Rust, translated here. -#}
 {% macro number(n, step="any") %}
 <div class="form-item">
-    <label for="{{ n.field }}" class="form-item__label">{{ n.label }}</label>
-    <input type="number" id="{{ n.field }}" name="{{ n.field }}" class="form-text" value="{{ n.value }}" min="{{ n.min }}" max="{{ n.max }}" step="{{ step }}">
-    <div class="form-item__description">From {{ n.min }} to {{ n.max }}.</div>
+    <label for="{{ n.field }}" class="form-item__label">{{ t(s=n.label) }}</label>
+    <p class="form-item__description" id="{{ n.field }}-hint">{{ t(s="From {min} to {max}.", min=n.min, max=n.max) }}</p>
+    <input type="number" id="{{ n.field }}" name="{{ n.field }}" class="form-text" value="{{ n.value }}" min="{{ n.min }}" max="{{ n.max }}" step="{{ step }}" aria-describedby="{{ n.field }}-hint">
 </div>
 {% endmacro number %}
 
+{#- A checkbox; `label` arrives translated. -#}
 {% macro switch(name, label, checked) %}
 <div class="form-checkbox-wrapper">
     <input type="checkbox" id="{{ name }}" name="{{ name }}" value="on" {% if checked %}checked{% endif %}>
@@ -16,15 +19,9 @@
 </div>
 {% endmacro switch %}
 
+{% block page_title %}{{ t(s="Search settings") }}{% endblock page_title %}
+
 {% block content %}
-<div class="admin-header">
-    <h2>Search Settings</h2>
-</div>
-
-{% if flash %}
-<div class="message message--info" role="status">{{ flash }}</div>
-{% endif %}
-
 <div class="admin-card">
     <form method="post" action="/admin/config/search">
         {{ form::csrf(csrf_token=csrf_token) }}
@@ -34,11 +31,9 @@
         {% endif %}
 
         <fieldset class="fieldset" id="search-ranking">
-            <legend>Ranking signals</legend>
+            <legend>{{ t(s="Ranking signals") }}</legend>
             <div class="fieldset__content">
-                <p class="form-item__description">Applied in the browser to Pagefind results.
-                A result's score is its Pagefind position plus the recency, title and excerpt
-                signals, multiplied by its type boost and any priority page boost.</p>
+                <p class="form-item__description">{{ t(s="Applied in the browser to Pagefind results. A result's score is its Pagefind position plus the recency, title and excerpt signals, multiplied by its type boost and any priority page boost.") }}</p>
                 {{ self::number(n=numbers.recency_boost_max) }}
                 {{ self::number(n=numbers.recency_half_life_days) }}
                 {{ self::number(n=numbers.recency_penalty_after_days) }}
@@ -53,59 +48,58 @@
         </fieldset>
 
         <fieldset class="fieldset" id="search-type-boosts">
-            <legend>Type boosts</legend>
+            <legend>{{ t(s="Type boosts") }}</legend>
             <div class="fieldset__content">
-                <p class="form-item__description">A multiplier on every result of the type,
-                in the browser and in server search alike. Leave empty for 1 (no boost);
-                from {{ type_boost_min }} to {{ type_boost_max }}. Which fields of a type are
-                searched, and at what weight, is set on that type's own search screen.</p>
-                <table class="admin-table">
-                    <thead><tr><th scope="col">Type</th><th scope="col">Boost</th><th scope="col">Field weights</th></tr></thead>
-                    <tbody>
-                    {% for t in types %}
-                    <tr>
-                        <td><label for="type_boost_{{ t.machine_name }}">{{ t.label }}</label> <code>{{ t.machine_name }}</code></td>
-                        <td><input type="number" id="type_boost_{{ t.machine_name }}" name="type_boost[{{ t.machine_name }}]" class="form-text" value="{{ t.value }}" min="{{ type_boost_min }}" max="{{ type_boost_max }}" step="any" placeholder="1"></td>
-                        <td><a href="/admin/structure/types/{{ t.machine_name }}/search">Field weights</a></td>
-                    </tr>
-                    {% endfor %}
-                    </tbody>
-                </table>
+                <p class="form-item__description">{{ t(s="A multiplier on every result of the type, in the browser and in server search alike. Leave empty for 1 (no boost); from {min} to {max}. Which fields of a type are searched, and at what weight, is set on that type's own search screen.", min=type_boost_min, max=type_boost_max) }}</p>
+                <div class="table-scroll" role="region" aria-labelledby="type-boosts-caption" tabindex="0">
+                    <table class="table">
+                        <caption id="type-boosts-caption">{{ t(s="Boost per content type") }}</caption>
+                        <thead><tr><th scope="col">{{ t(s="Type") }}</th><th scope="col">{{ t(s="Boost") }}</th><th scope="col">{{ t(s="Field weights") }}</th></tr></thead>
+                        <tbody>
+                        {% for ty in types %}
+                        <tr>
+                            <th scope="row"><label for="type_boost_{{ ty.machine_name }}">{{ ty.label }}</label> <code>{{ ty.machine_name }}</code></th>
+                            <td><input type="number" id="type_boost_{{ ty.machine_name }}" name="type_boost[{{ ty.machine_name }}]" class="form-text" value="{{ ty.value }}" min="{{ type_boost_min }}" max="{{ type_boost_max }}" step="any" placeholder="1"></td>
+                            <td><a href="/admin/structure/types/{{ ty.machine_name }}/search">{{ t(s="Field weights for {type}", type=ty.label) }}</a></td>
+                        </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
             </div>
         </fieldset>
 
         <fieldset class="fieldset" id="search-priority-pages">
-            <legend>Priority pages</legend>
+            <legend>{{ t(s="Priority pages") }}</legend>
             <div class="fieldset__content">
-                <p class="form-item__description">When a query contains the keyword as a whole
-                word, the result at that path is boosted. Applied in the browser. Paths start
-                with <code>/</code>; at most 50 rows.</p>
+                <p class="form-item__description">{{ t(s="When a query contains the keyword as a whole word, the result at that path is boosted. Applied in the browser. Paths start with {slash}; at most 50 rows.", slash="/") }}</p>
                 {{ self::number(n=numbers.priority_boost) }}
-                <table class="admin-table">
-                    <thead><tr><th scope="col">Keyword</th><th scope="col">Path</th></tr></thead>
-                    <tbody>
-                    {% for row in priority_rows %}
-                    <tr>
-                        <td><input type="text" name="priority_keyword" class="form-text" value="{{ row.keyword }}" maxlength="100" aria-label="Keyword {{ loop.index }}"></td>
-                        <td><input type="text" name="priority_path" class="form-text" value="{{ row.path }}" maxlength="255" placeholder="/about" aria-label="Path {{ loop.index }}"></td>
-                    </tr>
-                    {% endfor %}
-                    </tbody>
-                </table>
-                <div class="form-item__description">Save to get more empty rows. Empty rows are ignored.</div>
+                <div class="table-scroll" role="region" aria-labelledby="priority-pages-caption" tabindex="0">
+                    <table class="table">
+                        <caption id="priority-pages-caption">{{ t(s="Keywords and the pages they boost") }}</caption>
+                        <thead><tr><th scope="col">{{ t(s="Keyword") }}</th><th scope="col">{{ t(s="Path") }}</th></tr></thead>
+                        <tbody>
+                        {% for row in priority_rows %}
+                        <tr>
+                            <td><input type="text" name="priority_keyword" class="form-text" value="{{ row.keyword }}" maxlength="100" aria-label="{{ t(s='Keyword {n}', n=loop.index) }}"></td>
+                            <td><input type="text" name="priority_path" class="form-text" value="{{ row.path }}" maxlength="255" placeholder="{{ t(s='/about') }}" aria-label="{{ t(s='Path {n}', n=loop.index) }}"></td>
+                        </tr>
+                        {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+                <p class="form-item__description">{{ t(s="Save to get more empty rows. Empty rows are ignored.") }}</p>
             </div>
         </fieldset>
 
         <fieldset class="fieldset" id="search-ai">
-            <legend>AI stages</legend>
+            <legend>{{ t(s="AI stages") }}</legend>
             <div class="fieldset__content">
-                <p class="form-item__description">Each stage calls the configured AI provider and
-                costs tokens. A stage switched off here is refused by the server, not only hidden
-                on the search page.</p>
-                <div class="form-item form-item--checkbox">
-                    {{ self::switch(name="expand", label="Query expansion: related terms searched alongside the query", checked=switches.expand) }}
-                    {{ self::switch(name="summarize", label="Summary: an AI answer above the results", checked=switches.summarize) }}
-                    {{ self::switch(name="followup", label="Follow-up questions after the summary", checked=switches.followup) }}
+                <p class="form-item__description">{{ t(s="Each stage calls the configured AI provider and costs tokens. A stage switched off here is refused by the server, not only hidden on the search page.") }}</p>
+                <div class="form-item">
+                    {{ self::switch(name="expand", label=t(s="Query expansion: related terms searched alongside the query"), checked=switches.expand) }}
+                    {{ self::switch(name="summarize", label=t(s="Summary: an AI answer above the results"), checked=switches.summarize) }}
+                    {{ self::switch(name="followup", label=t(s="Follow-up questions after the summary"), checked=switches.followup) }}
                 </div>
                 {{ self::number(n=numbers.max_followups, step="1") }}
                 {{ self::number(n=numbers.ai_summary_top_n, step="1") }}
@@ -114,35 +108,29 @@
         </fieldset>
 
         <fieldset class="fieldset" id="search-analytics">
-            <legend>Analytics</legend>
+            <legend>{{ t(s="Analytics") }}</legend>
             <div class="fieldset__content">
-                <p class="form-item__description">Counts queries per day for the search report:
-                the query text with email addresses and long numbers removed, how often it was
-                searched and how often it found nothing. Nothing that identifies a visitor is
-                stored: no IP address, account, session, browser or time finer than the day.</p>
-                <div class="form-item form-item--checkbox">
-                    {{ self::switch(name="analytics_enabled", label="Record search analytics", checked=switches.analytics_enabled) }}
+                <p class="form-item__description">{{ t(s="Counts queries per day for the search report: the query text with email addresses and long numbers removed, how often it was searched and how often it found nothing. Nothing that identifies a visitor is stored: no IP address, account, session, browser or time finer than the day.") }}</p>
+                <div class="form-item">
+                    {{ self::switch(name="analytics_enabled", label=t(s="Record search analytics"), checked=switches.analytics_enabled) }}
                 </div>
                 {{ self::number(n=numbers.analytics_retention_days, step="1") }}
             </div>
         </fieldset>
 
         <fieldset class="fieldset" id="search-sentiment">
-            <legend>Sentiment</legend>
+            <legend>{{ t(s="Sentiment") }}</legend>
             <div class="fieldset__content">
-                <p class="form-item__description"><strong>Sends follow-up text to the configured
-                AI provider and costs tokens.</strong> Each follow-up question is classified as
-                satisfied, confused or unmet, after the answer has been sent, and only the count
-                of each label is kept. Needs analytics switched on. Off by default.</p>
-                <div class="form-item form-item--checkbox">
-                    {{ self::switch(name="sentiment_enabled", label="Classify follow-up sentiment", checked=switches.sentiment_enabled) }}
+                <p class="form-item__description"><strong>{{ t(s="Sends follow-up text to the configured AI provider and costs tokens.") }}</strong> {{ t(s="Each follow-up question is classified as satisfied, confused or unmet, after the answer has been sent, and only the count of each label is kept. Needs analytics switched on. Off by default.") }}</p>
+                <div class="form-item">
+                    {{ self::switch(name="sentiment_enabled", label=t(s="Classify follow-up sentiment"), checked=switches.sentiment_enabled) }}
                 </div>
             </div>
         </fieldset>
 
         <div class="form-actions">
-            <button type="submit" class="button button--primary">Save settings</button>
+            <button type="submit" class="button button--primary">{{ t(s="Save settings") }}</button>
         </div>
     </form>
 </div>
-{% endblock %}
+{% endblock content %}

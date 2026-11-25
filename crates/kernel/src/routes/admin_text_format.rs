@@ -270,6 +270,7 @@ fn format_form(
     editing: Option<&TextFormat>,
     roles: &[(Uuid, String, bool)],
     roles_editable: bool,
+    text: &super::admin_nav::AdminText,
 ) -> crate::form::Form {
     let mut form = crate::form::Form::new(FORMAT_FORM_ID)
         .action(action)
@@ -300,8 +301,8 @@ fn format_form(
         Some(format) => form.element(
             "format_markup",
             FormElement::markup(format!(
-                "<p class=\"form-item__description\">Machine name: <code>{}</code></p>",
-                html_escape(&format.format)
+                "<p class=\"form-item__description\">{}</p>",
+                text.html("Machine name: {name}", &[("name", &format.format)])
             ))
             .weight(1),
         ),
@@ -311,10 +312,16 @@ fn format_form(
         form.element(
             "filter_markup",
             FormElement::markup(format!(
-                "<p class=\"form-item__description\">Filter: {} (fixed for a built-in format)</p>",
-                FilterKind::parse(&values.filter)
-                    .map(FilterKind::label)
-                    .unwrap_or_default()
+                "<p class=\"form-item__description\">{}</p>",
+                text.html(
+                    "Filter: {filter} (fixed for a built-in format)",
+                    &[(
+                        "filter",
+                        FilterKind::parse(&values.filter)
+                            .map(FilterKind::label)
+                            .unwrap_or_default()
+                    )]
+                )
             ))
             .weight(2),
         )
@@ -452,11 +459,13 @@ async fn render_format_form(
         text_format::permission_for(&values.format).unwrap_or_else(|| "use new format".to_string());
     let roles = role_grants(state, &permission).await.unwrap_or_default();
     let roles_editable = editing.is_none() || may_grant(state, user, &permission).await;
+    let viewer = super::helpers::user_context_for(state, user).await;
+    let text = super::admin_nav::AdminText::for_page(state, &viewer, &action).await;
     let form_html = match admin_form::render(
         state,
         session,
         user,
-        format_form(&action, values, editing, &roles, roles_editable),
+        format_form(&action, values, editing, &roles, roles_editable, &text),
         errors,
     )
     .await
@@ -464,15 +473,9 @@ async fn render_format_form(
         Ok(html) => html,
         Err(response) => return response,
     };
-    let viewer = super::helpers::user_context_for(state, user).await;
     let mut context = tera::Context::new();
-    context.insert(
-        "title",
-        &match editing {
-            Some(f) => format!("Edit text format: {}", f.name),
-            None => "Add text format".to_string(),
-        },
-    );
+    // The heading is the template's, one translatable sentence each way.
+    context.insert("editing_name", &editing.map(|f| f.name.clone()));
     context.insert("form", &form_html);
     context.insert("path", &action);
     render_admin_template(state, &viewer, "admin/text-format-form.html", context).await
