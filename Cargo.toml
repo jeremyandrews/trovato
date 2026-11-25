@@ -67,6 +67,10 @@ members = [
     # U40 background item-api fixture: save-item and delete-item from tap_cron
     # and tap_queue_worker under item_background; built with --target wasm32-wasip1.
     "plugins/test_item_background",
+    # B218 search index fixture: a raw item write from tap_cron, then the
+    # search-index-enqueue host call plugins use to say so; built with
+    # --target wasm32-wasip1.
+    "plugins/test_search_enqueue",
     # B80 site fixture: a site plugin's listings, sitemap, docs and translation
     # sync through `query` and item-api, with no raw_sql; built with
     # --target wasm32-wasip1.

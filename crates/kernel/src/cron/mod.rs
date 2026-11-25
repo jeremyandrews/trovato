@@ -6,6 +6,7 @@
 mod pagefind;
 mod queue;
 mod search_index;
+mod search_update;
 mod tasks;
 
 /// The Pagefind export seam, for tests that assert which items and which text
@@ -13,15 +14,24 @@ mod tasks;
 /// is private.
 #[doc(hidden)]
 pub use pagefind::{
-    IndexDocument, IndexedField, indexable_documents, render_fragment,
-    request_rebuild as request_search_index_rebuild,
+    IndexDocument, IndexedField, ItemDocuments, indexable_documents, indexable_documents_for,
+    render_fragment, request_rebuild as request_search_index_rebuild,
 };
 /// The native search index build, for the gate tests: build an index from a
 /// given set of documents through the ledger and publish it.
 #[doc(hidden)]
 pub use search_index::{
-    FullBuildReport, RETENTION_HOURS, RebuildAgain, full_build as search_index_full_build,
+    FullBuildOptions, FullBuildReport, RETENTION_HOURS, RebuildAgain,
+    full_build as search_index_full_build, full_build_with as search_index_full_build_with,
     generation as search_index_generation,
+};
+/// The incremental search index update and the cron run over it, for the gate
+/// tests.
+#[doc(hidden)]
+pub use search_update::{
+    BATCH_SIZE as SEARCH_INDEX_BATCH_SIZE, DEFAULT_COMPACTION_PERCENT, DocumentSource, RunOptions,
+    RunReport, UpdateOutcome, UpdateReport, incremental_update as search_index_incremental_update,
+    run_index as search_index_run,
 };
 
 pub use tasks::UpdateCheckConfig;
@@ -1267,8 +1277,17 @@ impl CronService {
         // Rebuild Pagefind index if the trovato_search plugin is enabled and requested it
         if self.pagefind_enabled {
             if let Some(items) = self.items.clone() {
-                match pagefind::maybe_rebuild_index(&self.pool, &self.pagefind_output_dir, &items)
-                    .await
+                let compaction = match self.search {
+                    Some(ref search) => search.settings().await.index_compaction_percent,
+                    None => DEFAULT_COMPACTION_PERCENT,
+                };
+                match pagefind::maybe_rebuild_index(
+                    &self.pool,
+                    &self.pagefind_output_dir,
+                    &items,
+                    compaction,
+                )
+                .await
                 {
                     Ok(true) => tasks_run.push("pagefind_rebuild".to_string()),
                     Ok(false) => {}

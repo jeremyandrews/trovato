@@ -1456,6 +1456,45 @@ let affected = host::execute_raw(
 )?;
 ```
 
+### The static search index: queue what you change
+
+The site's static search index (Pagefind, under `/pagefind/`) is updated item by
+item. Each write that changes what an item's search page is built from queues
+that item, and the next cron run rewrites only the queued items' part of the
+index. Nothing polls for changes, so a write that queues nothing is never seen.
+
+**The rule:** a plugin that writes any of the following without going through
+the kernel's services must call `host::search_index_enqueue` after the write,
+with the ids of the items it changed:
+
+* the `item` row: its title, fields, status, stage or language;
+* a comment on the item;
+* the item's URL alias.
+
+```rust
+host::execute_raw(
+    "UPDATE item SET fields = jsonb_set(fields, '{field_rating}', $1) WHERE id = $2::uuid",
+    &[json!(rating), json!(id)],
+)?;
+host::search_index_enqueue(&[id.as_str()])?;   // Ok(rows queued)
+```
+
+* `host::save_item`, `host::delete_item` and `host::save_translation` queue the
+  item already, and so do the kernel's comment and alias services. You do not
+  need the call after them.
+* Queuing twice is harmless. Queuing an item that is not searchable (a draft, a
+  workspace item, one anonymous visitors cannot see) is also harmless: the
+  updater takes it out of the index or leaves it out.
+* It needs the `db` host interface and takes up to 10,000 ids per call. An id
+  that is not a UUID is `-14` (`ERR_PARAM_DESERIALIZE`), and more than 10,000
+  ids is `-82` (`ERR_DB_BATCH_TOO_LARGE`).
+* The queue row records the reason as `plugin:<your plugin name>`, so an
+  operator can see who queued what.
+
+Without the call, the change reaches search only at the next full rebuild. That
+happens after compaction or when an operator runs `trovato search rebuild`,
+which may be days away.
+
 ---
 
 ## Caching

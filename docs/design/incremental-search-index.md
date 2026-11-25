@@ -1,8 +1,10 @@
 # Incremental search index
 
-Status: part 2 of 3 built (B217): the codec and the native full build through
-the ledger, with no `pagefind` binary; see "Part 2 as built" for where it
-differs from the design below. Part 3 builds the updater and the change queue.
+Status: built. Part 2 (B217) is the codec and the native full build through
+the ledger, with no `pagefind` binary. Part 3 (B218) is the change queue, the
+incremental updater, compaction and reader recovery. "Part 2 as built" and
+"Part 3 as built" say where each differs from the design below, which is kept
+as written.
 
 ## The problem
 
@@ -239,6 +241,12 @@ PAGEFIND_BIN=... cargo run --release --manifest-path crates/pagefind-harness/Car
 # the term cache before every run.
 cargo run --release --manifest-path crates/pagefind-harness/Cargo.toml -- \
   measure-native --runs 3 --output /tmp/pagefind-native [--cold]
+
+# Time to searchable after one title edit and one comment, through the item
+# and comment services and the cron updater, against a full build (part 3).
+# It writes items and comments: point it at a copy.
+cargo run --release --manifest-path crates/pagefind-harness/Cargo.toml -- \
+  measure-update --runs 3 --output /tmp/pagefind-update
 ```
 
 **CI runs all of these tests, the CLI comparisons included.** The harness is not
@@ -426,9 +434,7 @@ long a tab has been open. So the guarantee has two parts:
   the search once. That is a small change to `scolta.js` in part 3; the browser
   bundle itself is untouched.
 
-Until part 3 ships the recovery, the retention window is the whole guarantee.
-That is still far better than today, where the swap deletes the old index at
-once.
+Part 3 shipped the recovery in `scolta.js` (see "Part 3 as built" below).
 `pagefind-entry.json` is fetched as `pagefind-entry.json?ts=<now>` (in
 `coupled_search.ts`), so browser caching of it does not delay the flip.
 
@@ -734,6 +740,219 @@ on every Pagefind bump:
   without a CLI or Node; the Test job installs the pinned CLI and sets
   `TROVATO_REQUIRE_PAGEFIND_CLI`, which turns a skip into a failure.
 
+## Part 3 as built
+
+Part 3 replaces "every change asks for a full rebuild" with a change queue and
+an updater that rewrites only what a change touched.
+
+### Measured
+
+These numbers come from the same corpus as part 1: a `pg_dump` copy of bg14's
+`trovato_test` in a private container, 1,237 searchable pages, with this
+branch's migrations applied. The tool is `pagefind-harness measure-update
+--runs 3`, a release build on this machine. Each change is a real write
+through the item or comment service, so it is queued as on a site. Then one
+cron run of the index (`run_index`, as `maybe_rebuild_index` calls it) applies
+it. Finally the published index is decoded to check that the new word finds
+the item.
+
+| change | write | cron update | time to searchable | pages changed | files written | chunks rewritten |
+|---|---|---|---|---|---|---|
+| title edit | 17 ms | 21 ms | 45 ms | 1 | 5 | 2 |
+| title edit | 13 ms | 22 ms | 41 ms | 1 | 5 | 2 |
+| title edit | 13 ms | 20 ms | 40 ms | 1 | 5 | 2 |
+| comment | 13 ms | 21 ms | 40 ms | 1 | 5 | 2 |
+| comment | 6 ms | 21 ms | 34 ms | 1 | 5 | 2 |
+| comment | 7 ms | 20 ms | 34 ms | 1 | 5 | 2 |
+| title edit, then a full build (the old path) | 12 ms | 248 ms | 260 ms | 1,237 | 9 | all |
+| title edit, then a full build (the old path) | 10 ms | 254 ms | 264 ms | 1,237 | 11 | all |
+| title edit, then a full build (the old path) | 12 ms | 266 ms | 277 ms | 1,237 | 12 | all |
+
+How to read the table:
+
+* **Time to searchable** runs from the start of the write to the end of the
+  cron run that publishes it. Cron itself is triggered from outside, so on a
+  site you add the wait for the next cron run on top.
+* **Files written per update: 5.** They are the item's fragment, the two word
+  chunks its old and new words are in, the language's meta file, and
+  `pagefind-entry.json`. Before part 2, the CLI rebuild rewrote all 1,248 files
+  and took 1.8 to 2.2 s. The part 2 full build is content addressed too, so it
+  writes only the files whose bytes changed, but it still exports, renders,
+  hashes and re-encodes all 1,237 pages and every chunk. Because it re-cuts the
+  chunk plan, it also changes more chunk files than the update does.
+* **A full build on its own** (`measure-update`'s first table) took 248 to
+  320 ms. The first one into an empty directory writes 1,241 files.
+
+### What was built
+
+* **The queue.** It lives in `search_index_queue`, in migration
+  `20261203000001_search_index_queue.sql`.
+  * There is one row per item, keyed by `item_id`, with the item's `language`,
+    an `op` (1 upsert, 2 delete), a `reason` and a `seq` from a sequence.
+  * A second write to an item before the drain replaces its row and its `seq`.
+    Coalescing therefore happens at enqueue time (last write wins), not at
+    drain time.
+  * A drain deletes exactly the `(item_id, seq)` pairs it read. A write queued
+    while a drain runs stays for the next run.
+  * Enqueuing is `crate::search::index_queue`: `enqueue`, `enqueue_type` (one
+    `INSERT … SELECT` for a whole type) and `enqueue_stage_publish`.
+* **The writers.** Each queues the items it changed, with a reason:
+  * **The item service** (`item`), on create, edit, publish, unpublish, a move
+    off Live, and delete (op 2).
+  * **The comment service** (`comment`), queuing the comment's item.
+  * **The content type search switches** (`type_settings`), **the search field
+    weights** (`field_config`) and **the reindex button** (`reindex`). Each
+    queues every item of the type that is published on Live or holds a page.
+  * **Workspace publishing** (`stage_publish`), inside the publish's own
+    transaction and before anything leaves the stage. It queues every item on
+    the stage, every item the publish deletes, and every item whose alias
+    moves.
+  * **URL alias writes** (`url_alias`), because the alias is the result's link.
+    They queue the item the alias names (`/item/<id>`), the old and the new
+    one on an update.
+  * **Plugins** (`plugin:<name>`), through the new `db` host function
+    `search-index-enqueue` (`host::search_index_enqueue` in the SDK). The rule
+    for plugin authors is in
+    [plugin-development.md](../plugin-development.md#the-static-search-index-queue-what-you-change).
+  * **Scheduled publishing** now finds what is due with a raw read and writes
+    each change through `host::save_item`. It is therefore an item service
+    write: it is queued, a revision is recorded, the write taps fire and the
+    item cache drops the item. It used to write `item.status` with raw SQL,
+    which nothing saw.
+  * **`trovato_search`'s `tap_cron` no longer polls `MAX(changed)`.** With
+    every writer queuing, that poll would have turned each edit back into a
+    full rebuild. It now reports the queue length.
+* **Full rebuild requests** are kept for what really is site wide:
+  `trovato search rebuild` (new), `trovato generate`, and config import.
+* **The updater** is `trovato_search_index::update::update_language`, which
+  works on one language's meta, chunk plan and changed slots.
+  * It reads the live meta and only the chunks a change touches.
+  * It removes each changed page's old postings (from the term cache) and adds
+    its new ones.
+  * It routes a word in a gap to the nearer neighbour, with the tie going to
+    the lower chunk. A word before the first chunk widens the first; one after
+    the last widens the last.
+  * It splits a chunk past 40,000 locations and drops a chunk that empties.
+  * It re-encodes only the touched chunks, and writes a new meta.
+  * New file names are chosen against the live directory and the files the
+    same update already produced, by Pagefind's extension rule.
+* **The drain** is `cron/search_update.rs`.
+  * Each cron run drains up to 50 batches of 200 queued items, oldest first.
+  * Each batch exports just its items through the same seam as a full build
+    (`indexable_documents_for`, the access decision included), renders and
+    hashes them, and tokenizes only the fragments whose hash the term cache
+    lacks.
+  * Then, in one transaction holding
+    `pg_advisory_xact_lock(hashtext('search_index'))`, it checks the
+    preconditions below and frees or reuses page slots (lowest tombstone
+    first, as the full build does). It stages the changed files, records the
+    ledger, terms, chunk plan and generation, deletes the drained rows,
+    publishes (data files, then metas, then the entry by rename), sweeps and
+    commits.
+  * The cron Redis lock already keeps two cron runs on one site apart; the
+    advisory lock and the generation check cover everything else.
+* **The full build is taken, logged at `warn` with its reason,** in these
+  cases:
+  * there is no state row or no entry file;
+  * the live entry names a meta other than the state row's `entry_meta` (a
+    crash between the flip and the commit);
+  * the recorded Pagefind version differs from the pinned one;
+  * a meta or chunk the update needs does not read, or a meta's slot count
+    differs from the ledger's;
+  * a cached term set is missing;
+  * a batch puts a page in a language with no index yet, or leaves a language
+    with no page;
+  * more than 1,000 items are queued and that is more than a quarter of the
+    index's slots, where a full build is cheaper.
+* **Compaction** is a site setting, `index_compaction_percent` in
+  `SearchSettings`, edited at `/admin/config/search`. It defaults to 5 and
+  takes 0.5 to 50.
+  * After draining, a language whose tombstones are above it is compacted:
+    one full build from an empty ledger, logged at `info` with the measured
+    ratio.
+* **Reader recovery** is in `scolta.js`, so a tab older than the 24 hour
+  window now recovers.
+  * A search that fails on a missing chunk or fragment (Pagefind throws when
+    the 404 body does not decompress) calls `pagefind.destroy()` and
+    `pagefind.init()` once and runs the search again.
+  * Searches that fail at the same time share one reload.
+
+### Where this differs from the design above
+
+* **The queue is one row per item, not one row per write.** It also stores the
+  item's language and a `seq`. Coalescing by item is what the drain wanted
+  anyway, and the `seq` keeps a write that lands during a drain from being
+  deleted with the batch.
+* **`search_chunk` stores each chunk's real first and last word, not the
+  meta's prefixes.** Routing needs the real words. The prefixes are recomputed
+  from adjacent pairs with `get_prefixes` whenever a meta is encoded, so the
+  meta file is what Pagefind writes.
+* **Compaction renumbers in (language, item id) order.** The design said live
+  items keep their relative order. Renumbering in a fixed order makes a
+  compacted index byte for byte a first build of the same content, which gate
+  1 checks.
+* **A batch that empties a language takes a full build** (which removes that
+  language from the entry), as well as one that adds a language.
+* **Gate 1 compares decoded indexes before compaction, and bytes only after
+  it.** The design asked for byte equality between the updater's output and a
+  full build of the same state. That cannot hold while the updater keeps the
+  chunk ranges frozen and a full build re-cuts them: the same postings land in
+  differently bounded chunks, so the file bytes and names differ. The
+  comparison that matters to a reader is the decoded one: every slot's
+  fragment and word count, and every word's postings. Byte equality is checked
+  where it can hold, after compaction against a first build from an empty
+  ledger. The B218 brief asked for gate 1 in exactly this form.
+* **The B218 brief asked for a full rebuild on a content type settings
+  change.** This follows the design instead and queues every item of the
+  type. The backlog rule above still turns a very large type into a full
+  build.
+
+### The proofs
+
+* **Gate 1, incremental** (`search_index_gates_test.rs`,
+  `gate_1_incremental_updates_equal_a_full_build_of_the_same_state`). It
+  starts from a full build of the 60 page English and German fixture.
+  * 60 batches apply 250 random changes through the queue and the updater:
+    inserts, long pages, title and body edits, deletes, language moves, and
+    comments added and removed.
+  * After every 6th batch and the last, the published index decodes equal to a
+    full build of the same state through a copy of the same ledger. No batch
+    takes a fallback, and a chunk splits along the way.
+  * Compaction at 0% then gives an index byte for byte equal to a first build
+    of the final state from an empty ledger, with an equal term cache.
+  * The crate's own `random_updates_decode_equal_to_a_full_build` runs 150
+    batches the same way without a database.
+* **Gate 3, incremental** (`gate_3_pagefind_js_finds_each_change_right_after_its_update`).
+  The stock `pagefind.js` in Node, after each kind of change (a title edit, a
+  comment added and removed, a delete, a slot reused, a language move), finds
+  the change and returns the same results as a full rebuild of the same
+  state.
+* **Readers never see a meta pointing at a missing file**
+  (`crates/search-index/tests/incremental.rs`).
+  * One test stops a publish between every pair of writes and checks, at each
+    point, that the entry's metas and every file they name exist.
+  * Another runs the publish in a child process and `SIGKILL`s it at a random
+    moment, 30 times. Each time the directory holds either the old index or
+    the new one, complete.
+* **Concurrency.** `two_runners_at_once_apply_every_queued_item_exactly_once`
+  runs two drains at once. A live entry the database did not record takes a
+  full build.
+* **One test per writer** (`search_index_writers_test.rs`). Each write goes
+  through the real service, the test asserts the queue row and its reason,
+  then moves the row into a private index and checks the search after one
+  update. The paths covered:
+  * the item service (create, title edit, unpublish, delete);
+  * the comment service (create, edit, delete);
+  * field weights for a whole type;
+  * URL alias create, update and delete;
+  * workspace publishing;
+  * scheduled publish and unpublish through the real cron and plugin. A
+    scheduled unpublish takes the item out of the results;
+  * a plugin's raw write, which is stale without `search_index_enqueue` and
+    found with it.
+
+  The type search switches screen is covered by `search_switches_test.rs`.
+
 ## Found and not fixed here
 
 * **`pagefind_web` 1.3.0 panics on some non-ASCII queries.** When no chunk
@@ -743,6 +962,19 @@ on every Pagefind bump:
   fixture index hits it, with the CLI's index as well as the native one, and
   the search throws `unreachable` in the browser. Fixing it means a patched
   `pagefind_web`, which is a different WASM from the pinned release.
+* **Site-wide changes to what anonymous visitors may see queue nothing.** A
+  change to the anonymous role's permissions, an access plugin enabled or
+  disabled, or a new default language can change which items are searchable,
+  or under which language, without writing any item. They never triggered a
+  rebuild before either, since the `MAX(changed)` poll did not see them. After
+  one, run `trovato search rebuild`.
+* **A plugin that writes with raw SQL and does not call
+  `search_index_enqueue` is stale until the next full build.** The rule is
+  documented, and the SDK and WIT carry it, but nothing detects a write that
+  breaks it.
+* **Time to searchable includes the wait for the next cron run,** which is
+  triggered from outside the server. The update itself is about 20 ms on the
+  measured corpus.
 
 Fixed in part 2, from the list part 1 left here:
 

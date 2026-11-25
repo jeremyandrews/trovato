@@ -204,3 +204,70 @@ impl DecodedIndex {
         Ok(pages.into_iter().map(|p| p.url).collect())
     }
 }
+
+/// Every file a reader of the published index in `dir` can be sent to, by
+/// bundle path: `pagefind-entry.json`, each meta file it names, and every
+/// fragment and word chunk those metas name.
+///
+/// This is the reader's invariant, checked: it fails if the entry is missing
+/// or unreadable, or if any meta it names, or any file such a meta names, is
+/// not on disk. Publishing keeps it true at every moment, including between
+/// any two writes of an interrupted publish.
+pub fn published_files(dir: &Path) -> Result<std::collections::BTreeSet<String>> {
+    let entry_path = dir.join(crate::bundle::ENTRY_FILE);
+    let entry: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&entry_path).with_context(|| format!("read {}", entry_path.display()))?,
+    )
+    .context("parse pagefind-entry.json")?;
+    let languages = entry
+        .get("languages")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| anyhow!("pagefind-entry.json has no languages"))?;
+    let mut files = std::collections::BTreeSet::new();
+    files.insert(crate::bundle::ENTRY_FILE.to_string());
+    for (language, lang) in languages {
+        let hash = lang
+            .get("hash")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow!("language {language} has no hash"))?;
+        let meta_file = format!("pagefind.{hash}.pf_meta");
+        let bytes = std::fs::read(dir.join(&meta_file))
+            .with_context(|| format!("the entry names {meta_file}, which is not on disk"))?;
+        let meta: MetaIndex =
+            minicbor::decode(&unpack(&bytes)?).map_err(|e| anyhow!("decode {meta_file}: {e}"))?;
+        files.insert(meta_file.clone());
+        let named = meta
+            .index_chunks
+            .iter()
+            .map(|c| format!("index/{}.pf_index", c.hash))
+            .chain(
+                meta.pages
+                    .iter()
+                    .map(|p| format!("fragment/{}.pf_fragment", p.hash)),
+            )
+            .chain(
+                meta.filters
+                    .iter()
+                    .map(|f| format!("filter/{}.pf_filter", f.hash)),
+            );
+        for path in named {
+            if !dir.join(&path).is_file() {
+                bail!("{meta_file} names {path}, which is not on disk");
+            }
+            files.insert(path);
+        }
+    }
+    Ok(files)
+}
+
+/// The published index in `dir` as a bundle: exactly the files
+/// [`published_files`] lists, without the runtime and without anything kept
+/// on disk only for older readers.
+pub fn read_published(dir: &Path) -> Result<Bundle> {
+    let mut out = Bundle::new();
+    for path in published_files(dir)? {
+        let bytes = std::fs::read(dir.join(&path)).with_context(|| format!("read {path}"))?;
+        out.insert(path, bytes);
+    }
+    Ok(out)
+}

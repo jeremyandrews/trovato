@@ -22,7 +22,10 @@ files = [
 # the host interfaces named here (plus baseline WASI). Derived from the
 # compiled .wasm import section.
 [capabilities]
-host_interfaces = ["db", "logging"]
-# Uses the raw-SQL host functions (query-raw/execute-raw). WASM-2 field
-# (declared now, enforced later); inert under WASM-1.
+# `db` for the read that finds what is due (query-raw), `item-api` for the
+# writes: each publish and unpublish is an item service update, so the item
+# write taps fire, a revision is recorded and the item is queued for the search
+# index, as for an editor's save. From cron that needs `item_background`.
+host_interfaces = ["db", "logging", "item-api"]
 raw_sql = true
+item_background = true

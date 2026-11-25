@@ -1,76 +1,37 @@
 //! Trovato Search plugin — Pagefind client-side search index.
 //!
-//! Detects content changes via `tap_cron` and signals the kernel to
-//! rebuild the Pagefind search index when published live-stage content
-//! has been modified since the last index build.
+//! Installing this plugin is what switches the static search index on: its
+//! `pagefind_index_status` table is the kernel's signal that the site wants
+//! the index, and carries an operator's request for a full rebuild.
 //!
-//! The kernel's item and comment write services set the same flag themselves
-//! after every write that changes the public index, including the ones this
-//! poll cannot see (a delete, an unpublish, any comment). The poll stays for
-//! writes that bypass those services, such as a scheduled publish.
+//! The index itself is kept up to date by the kernel. Every write that changes
+//! what it holds queues the items it touched (the item and comment services,
+//! the content type and search field admin, workspace publishing, URL alias
+//! writes, and plugins through `host::search_index_enqueue`), and the kernel's
+//! cron rewrites only those items' part of the index.
+//!
+//! This plugin used to poll `MAX(changed)` over published items each cron run
+//! and ask for a full rebuild when it moved. With every writer queuing its own
+//! items that poll would turn each edit back into a full rebuild, so its
+//! `tap_cron` now only reports how many items are waiting.
 
 use trovato_sdk::host;
 use trovato_sdk::prelude::*;
-use trovato_sdk::types::LIVE_STAGE_UUID;
 
-/// Check for content changes and request a Pagefind index rebuild if needed.
-///
-/// Compares `MAX(changed)` of published live-stage items against the
-/// stored `last_indexed_at` timestamp. If content is newer, sets
-/// `rebuild_requested = true` so the kernel cron task picks it up.
+/// Report how many items are queued for the search index.
 #[plugin_tap]
 pub fn tap_cron(_input: CronInput) -> serde_json::Value {
-    // Get the most recent change timestamp for published live-stage items
-    let max_changed_json = host::query_raw(
-        "SELECT COALESCE(MAX(changed), 0) as max_changed \
-         FROM item WHERE status = 1 AND stage_id = $1::uuid",
-        &[serde_json::json!(LIVE_STAGE_UUID)],
-    );
-
-    let max_changed: i64 = match max_changed_json {
-        Ok(json_str) => {
-            let rows: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
+    let queued = host::query_raw("SELECT count(*) AS queued FROM search_index_queue", &[])
+        .ok()
+        .and_then(|json| serde_json::from_str::<Vec<serde_json::Value>>(&json).ok())
+        .and_then(|rows| {
             rows.first()
-                .and_then(|r| r.get("max_changed"))
+                .and_then(|r| r.get("queued"))
                 .and_then(|v| v.as_i64())
-                .unwrap_or(0)
-        }
-        Err(_) => return serde_json::json!({"error": "failed to query max changed"}),
-    };
-
-    // Get the last indexed timestamp
-    let status_json = host::query_raw(
-        "SELECT last_indexed_at, rebuild_requested \
-         FROM pagefind_index_status WHERE id = 1",
-        &[],
-    );
-
-    let (last_indexed_at, already_requested) = match status_json {
-        Ok(json_str) => {
-            let rows: Vec<serde_json::Value> = serde_json::from_str(&json_str).unwrap_or_default();
-            let row = rows.first();
-            let ts = row
-                .and_then(|r| r.get("last_indexed_at"))
-                .and_then(|v| v.as_i64())
-                .unwrap_or(0);
-            let req = row
-                .and_then(|r| r.get("rebuild_requested"))
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false);
-            (ts, req)
-        }
-        Err(_) => return serde_json::json!({"error": "failed to query index status"}),
-    };
-
-    // If content is newer than last index and no rebuild already pending
-    if max_changed > last_indexed_at && !already_requested {
-        let _ = host::execute_raw(
-            "UPDATE pagefind_index_status SET rebuild_requested = true WHERE id = 1",
-            &[],
-        );
-        serde_json::json!({"rebuild_requested": true, "max_changed": max_changed, "last_indexed_at": last_indexed_at})
-    } else {
-        serde_json::json!({"rebuild_requested": false, "max_changed": max_changed, "last_indexed_at": last_indexed_at})
+        });
+    match queued {
+        Some(queued) => serde_json::json!({"queued": queued}),
+        None => serde_json::json!({"error": "failed to read the search index queue"}),
     }
 }
 
@@ -88,8 +49,8 @@ mod tests {
         let result = __inner_tap_cron(input);
         // Stub host functions return errors, so we get the error path
         assert!(
-            result.get("error").is_some() || result.get("rebuild_requested").is_some(),
-            "Should return either error or rebuild status"
+            result.get("error").is_some() || result.get("queued").is_some(),
+            "Should return either error or the queue length"
         );
     }
 }

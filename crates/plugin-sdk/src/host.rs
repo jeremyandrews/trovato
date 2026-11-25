@@ -30,6 +30,9 @@ unsafe extern "C" {
     #[link_name = "execute-raw"]
     fn __db_execute_raw(sql_ptr: i32, sql_len: i32, params_ptr: i32, params_len: i32) -> i64;
 
+    #[link_name = "search-index-enqueue"]
+    fn __db_search_index_enqueue(ids_ptr: i32, ids_len: i32) -> i64;
+
     #[link_name = "query-raw"]
     fn __db_query_raw(
         sql_ptr: i32,
@@ -445,6 +448,50 @@ pub fn execute_raw(sql: &str, params: &[serde_json::Value]) -> Result<u64, i32> 
     } else {
         Ok(result as u64)
     }
+}
+
+/// Queue items for the static search index.
+///
+/// **The rule for plugins:** a plugin that writes, behind the item API,
+/// anything an item's search page is built from — the `item` row (title,
+/// fields, status, stage, language), the item's comments, or its URL alias —
+/// calls this with the ids of the items it changed, after the write. Cron then
+/// rewrites only those items' part of the index, within one cron pass. A write
+/// through [`save_item`] or [`delete_item`] queues its item already, and so do
+/// the kernel's comment and alias services; queuing twice is harmless, and so
+/// is queuing an id that is not, or is no longer, searchable (it is simply
+/// taken out of the index).
+///
+/// Without this call a raw write is invisible to search until the next full
+/// rebuild.
+///
+/// Needs the `db` host interface. At most 10,000 ids per call. Returns how
+/// many were queued.
+///
+/// # Errors
+///
+/// [`ERR_PARAM_DESERIALIZE`](crate::host_errors::ERR_PARAM_DESERIALIZE) when
+/// an id is not a UUID,
+/// [`ERR_DB_BATCH_TOO_LARGE`](crate::host_errors::ERR_DB_BATCH_TOO_LARGE)
+/// past 10,000, [`ERR_SQL_FAILED`](crate::host_errors::ERR_SQL_FAILED) when
+/// the queue cannot be written.
+#[cfg(target_arch = "wasm32")]
+pub fn search_index_enqueue(item_ids: &[&str]) -> Result<u64, i32> {
+    let json =
+        serde_json::to_string(item_ids).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)?;
+    let result = unsafe { __db_search_index_enqueue(json.as_ptr() as i32, json.len() as i32) };
+    if result < 0 {
+        Err(result as i32)
+    } else {
+        Ok(result as u64)
+    }
+}
+
+/// Queue items for the static search index (stub for native testing: queues
+/// nothing and reports every id queued).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn search_index_enqueue(item_ids: &[&str]) -> Result<u64, i32> {
+    Ok(item_ids.len() as u64)
 }
 
 /// Execute a SELECT query, return JSON result string.

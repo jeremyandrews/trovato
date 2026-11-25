@@ -329,6 +329,13 @@ let n = db::insert_many("my_votes", &rows)?;                      // ≤ 500, al
 language; the admin listing and the boot log name every holder. Before asking
 for it, read [plugin-capabilities.md](plugin-capabilities.md#raw_sql).
 
+After a write to an item, its comments or its URL alias that skips `save_item`
+and the kernel services, queue the items for the static search index, or search
+never sees the change ([the rule](plugin-development.md#the-static-search-index-queue-what-you-change)):
+```rust
+host::search_index_enqueue(&[id.as_str()])?;                      // ≤ 10,000 ids; Err(-14), Err(-82)
+```
+
 ### Inter-Plugin
 ```rust
 if host::plugin::exists("other_plugin") {
@@ -410,6 +417,8 @@ host::cache::set("views", &cache_key, &result, json!(["tag:items"]));
 - Concatenate SQL strings
 - Expose secrets in errors
 - Return HTML a user wrote without `host::filter_text`
+- Write an item, its comments or its alias with raw SQL and forget
+  `host::search_index_enqueue`
 
 ## Do
 
