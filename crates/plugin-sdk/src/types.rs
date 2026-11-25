@@ -925,6 +925,60 @@ impl From<MenuDefinition> for MenuRoute {
     }
 }
 
+/// One file a plugin-served multipart request uploaded, handed to `tap_api` in
+/// [`ApiRequest::files`] (**G-FILE-NO-HOST-API**, BL-107).
+///
+/// Before this existed, a plugin route's body was UTF-8 text capped at 256 KiB
+/// for the trip across the WASM boundary, so a multipart upload was either
+/// refused by that cap or arrived as bytes no plugin could make sense of —
+/// there was no host call a plugin could store them through either. The file
+/// named here is not that: it already exists in the kernel's file storage,
+/// `Temporary`, by the time the plugin sees this.
+///
+/// `#[non_exhaustive]`: construct with [`UploadedFile::new`] (the kernel is the
+/// only producer) and match with `..`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct UploadedFile {
+    /// The multipart field name the file arrived under, e.g. `"attachment"`.
+    pub field: String,
+    /// The `file_managed` id, as a uuid string — the value a File field holds.
+    /// Put this in one to attach the file to an item through `host::save_item`.
+    pub id: String,
+    /// The name the uploader's browser sent.
+    pub filename: String,
+    /// The validated MIME type: the multipart part's declared `Content-Type`
+    /// when that was understood, otherwise the one the filename's extension
+    /// gives.
+    pub mime_type: String,
+    /// Size in bytes.
+    pub size: i64,
+    /// The URL the file is served from once it is referenced.
+    pub url: String,
+}
+
+impl UploadedFile {
+    /// Construct one. The kernel is the only caller; a plugin only ever reads
+    /// a value handed to it in [`ApiRequest::files`].
+    pub fn new(
+        field: impl Into<String>,
+        id: impl Into<String>,
+        filename: impl Into<String>,
+        mime_type: impl Into<String>,
+        size: i64,
+        url: impl Into<String>,
+    ) -> Self {
+        Self {
+            field: field.into(),
+            id: id.into(),
+            filename: filename.into(),
+            mime_type: mime_type.into(),
+            size,
+            url: url.into(),
+        }
+    }
+}
+
 /// One HTTP request handed to a plugin's `tap_api` (**G-NO-PLUGIN-HTTP**).
 ///
 /// Before `KERNEL_API_VERSION (0,99)` there was **no surface through which a
@@ -998,6 +1052,34 @@ pub struct ApiRequest {
     /// from a kernel that does not send it deserializes with it empty.
     #[serde(default)]
     pub csrf_token: String,
+    /// Files the kernel stored on this request's behalf before dispatch
+    /// (**G-FILE-NO-HOST-API**, BL-107).
+    ///
+    /// Populated only when the request's `Content-Type` was
+    /// `multipart/form-data`; empty for every other request, JSON and
+    /// form-urlencoded included. Each file was already validated and written
+    /// through the kernel's `FileService` — the same size limit, MIME
+    /// allowlist and magic-byte check a direct `/file/upload` gets — and
+    /// stored `Temporary`, so its bytes never cross the WASM boundary and
+    /// [`Self::body`] never holds them.
+    ///
+    /// To attach one: put [`UploadedFile::id`] (a string) in a File field's
+    /// value when calling `host::save_item`. The kernel's existing item-write
+    /// path indexes the reference and promotes the file out of `Temporary`,
+    /// exactly as it does for a kernel form's own upload widget — a plugin
+    /// does not promote a file itself.
+    ///
+    /// For a multipart request, [`Self::body`] carries the request's other
+    /// (non-file) fields re-encoded as a JSON object — the same shape
+    /// [`Self::json`] already expects from a JSON POST — so a handler reads
+    /// one shape regardless of how the browser encoded the form. The `_token`
+    /// field, if the form carried one, is consumed by the CSRF check and is
+    /// not included.
+    ///
+    /// `#[serde(default)]`: a payload from a kernel built before this field
+    /// existed deserializes with it empty.
+    #[serde(default)]
+    pub files: Vec<UploadedFile>,
 }
 
 impl ApiRequest {
@@ -1019,6 +1101,7 @@ impl ApiRequest {
             user_id: user_id.into(),
             authenticated,
             csrf_token: String::new(),
+            files: Vec::new(),
         }
     }
 
