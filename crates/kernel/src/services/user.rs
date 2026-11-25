@@ -159,15 +159,52 @@ impl UserService {
         User::names_by_ids(&self.inner.pool, ids).await
     }
 
+    /// The users among `ids`, through the same cache as [`Self::find_by_id`]:
+    /// every id the cache holds costs no query, and the rest cost one query
+    /// together however many there are. A lone miss takes `find_by_id`'s own
+    /// statement. An id with no row is absent from the map.
+    pub async fn find_many(&self, ids: &[Uuid]) -> Result<HashMap<Uuid, User>> {
+        let mut found = HashMap::with_capacity(ids.len());
+        let mut missing = Vec::new();
+        for &id in ids {
+            if found.contains_key(&id) || missing.contains(&id) {
+                continue;
+            }
+            match self
+                .inner
+                .metrics
+                .cache_lookup(CacheName::User, self.inner.cache.get(&id))
+            {
+                Some(user) => {
+                    found.insert(id, user);
+                }
+                None => missing.push(id),
+            }
+        }
+        let loaded = match missing.as_slice() {
+            [] => Vec::new(),
+            [one] => User::find_by_id(&self.inner.pool, *one)
+                .await?
+                .into_iter()
+                .collect(),
+            many => User::find_by_ids(&self.inner.pool, many).await?,
+        };
+        for user in loaded {
+            self.inner.cache.insert(user.id, user.clone());
+            found.insert(user.id, user);
+        }
+        Ok(found)
+    }
+
     /// Resolve `ids` to [`AuthorView`]s for a template: the item page and a
     /// gather row. `/api/item`'s `include=author` resolves the same id
-    /// through the sibling single-id lookup this uses ([`Self::find_by_id`]).
+    /// through the same user cache ([`Self::find_by_id`]).
     ///
-    /// One id goes through the cached [`Self::find_by_id`] — the same lookup
-    /// `/api/item` already pays for, so an item page adds no query beyond a
-    /// cold cache miss any other author lookup would also cost. More than one
-    /// goes through [`Self::names_by_ids`], one query however many ids there
-    /// are — a 20-row gather never queries once per row.
+    /// Every id goes through [`Self::find_many`]: an id the user cache holds
+    /// costs no query, so a warm item page or listing adds none. A cold item
+    /// page pays the one `find_by_id` statement any author lookup would; a
+    /// cold gather pays one query for all of its uncached authors together —
+    /// a 20-row gather never queries once per row.
     ///
     /// An id with no row (the kernel's own anonymous account normally has
     /// one — see `20260212000001_create_users.sql` — so this is a genuinely
@@ -185,19 +222,12 @@ impl UserService {
         unique.sort_unstable();
         unique.dedup();
 
-        let found: HashMap<Uuid, String> = match unique.as_slice() {
-            [] => HashMap::new(),
-            [single] => {
-                let mut m = HashMap::new();
-                if let Ok(Some(user)) = self.find_by_id(*single).await {
-                    m.insert(*single, user.name);
-                }
-                m
-            }
-            many => self.names_by_ids(many).await.unwrap_or_else(|e| {
+        let found: HashMap<Uuid, String> = match self.find_many(&unique).await {
+            Ok(users) => users.into_iter().map(|(id, u)| (id, u.name)).collect(),
+            Err(e) => {
                 tracing::warn!(error = %e, "failed to load author names");
                 HashMap::new()
-            }),
+            }
         };
 
         let may_link = viewer.can(VIEW_PROFILES_PERMISSION);

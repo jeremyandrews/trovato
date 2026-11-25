@@ -116,7 +116,12 @@ async fn get(app: &TestApp, cookies: &str, path: &str) -> (StatusCode, String) {
     let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
         .await
         .expect("read body");
-    (status, String::from_utf8_lossy(&bytes).into_owned())
+    // Autoescape writes `/` in an attribute as `&#x2F;`; undo it so a needle
+    // like `href="/user/{id}"` matches, and its absence means something.
+    (
+        status,
+        String::from_utf8_lossy(&bytes).replace("&#x2F;", "/"),
+    )
 }
 
 /// The problem this fixes: an item page named nobody, so a theme had to

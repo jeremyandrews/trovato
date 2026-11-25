@@ -210,9 +210,11 @@ through `inject_site_context`; an item template gets neither.
 
 ### The Author on the Item Template, and on a Gather Row
 
-An item template gets `author`, resolved through `UserService::author_views` —
-the same cached lookup `/api/item`'s `include=author` uses — so a theme prints
-who wrote the page without hardcoding a name or printing `item.author_id`:
+An item template gets `author`, resolved through `UserService::author_views`,
+which reads the same user cache `/api/item`'s `include=author` uses, so a theme
+prints who wrote the page without hardcoding a name or printing
+`item.author_id`. The shipped `elements/item.html` and `elements/item--blog.html`
+print it:
 
 | Key | What it holds |
 |---|---|
@@ -228,9 +230,10 @@ who wrote the page without hardcoding a name or printing `item.author_id`:
 {% endif %}
 ```
 
-A gather row carries the same shape under `row.author`, resolved for the whole
-page in one query (never one per row), the way `resolve_row_urls` already
-resolves `row.url` — see `gather/row.html`. Only the display name and this
+A gather row carries the same shape under `row.author`. Authors the user cache
+holds cost no query; the rest of the page's authors load in one query together
+(never one per row), the way `resolve_row_urls` already resolves `row.url`. See
+`gather/row.html` and `gather/query--blog_listing.html`. Only the display name and this
 access-checked URL ever reach either template: no mail address, no other
 `User` field, and no distinction between a login name and a display name (the
 kernel has one name, not two).

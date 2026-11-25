@@ -99,6 +99,18 @@ impl User {
         Ok(user)
     }
 
+    /// The users among `ids`, in one query. An id with no row is absent.
+    pub async fn find_by_ids(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Self>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ANY($1)")
+            .bind(ids)
+            .fetch_all(pool)
+            .await
+            .context("failed to fetch users by id")
+    }
+
     /// The names of the users among `ids`, in one query.
     ///
     /// An id with no row is absent from the map. Deleted accounts never are:

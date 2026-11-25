@@ -124,7 +124,7 @@ pub struct GatherService {
     /// gather is an Item gather and this is never consulted.
     record_types: OnceLock<Arc<RecordTypeRegistry>>,
     /// The user service (B166), late-bound like [`Self::item_access`]: author
-    /// resolution needs its cache and its batched `names_by_ids`, and
+    /// resolution needs its cache and its batched `find_many`, and
     /// `UserService` is constructed after `GatherService` in `AppState`. When
     /// unset (a narrow test harness), rows get no `author` key at all, same as
     /// an unwired `item_access` skips the access pass rather than failing.
