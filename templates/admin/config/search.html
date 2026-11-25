@@ -119,13 +119,9 @@
         </fieldset>
 
         <fieldset class="fieldset" id="search-index">
-            <legend>Search index</legend>
+            <legend>{{ t(s="Search index") }}</legend>
             <div class="fieldset__content">
-                <p class="form-item__description">Each change to content rewrites only its own
-                part of the search index. A deleted or unpublished item leaves a freed slot that
-                the next new item reuses; while freed slots are left over they shift ranking
-                slightly, so past this share of a language's slots the whole index is rebuilt
-                densely at the next cron run.</p>
+                <p class="form-item__description">{{ t(s="Each change to content rewrites only its own part of the search index. A deleted or unpublished item leaves a freed slot that the next new item reuses; while freed slots are left over they shift ranking slightly, so past this share of a language's slots the whole index is rebuilt densely at the next cron run.") }}</p>
                 {{ self::number(n=numbers.index_compaction_percent, step="0.5") }}
             </div>
         </fieldset>
