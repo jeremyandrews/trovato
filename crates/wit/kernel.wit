@@ -549,6 +549,13 @@ world plugin {
     export tap-menu: func() -> string;
     export tap-perm: func() -> string;
 
+    // Admin navigation (returns a JSON array of AdminNavDefinition: section,
+    // label, path, permission, optional card description). Dispatched once at
+    // boot like tap-menu and tap-perm; the kernel merges the entries into the
+    // admin sidebar and /admin dashboard under the same permission filter its
+    // own links use. Display only: the route still checks its own access.
+    export tap-admin-nav: func() -> string;
+
     // Serves one HTTP request for a `tap-menu` entry whose handler-type is
     // "api" and which names a callback (G-NO-PLUGIN-HTTP; added in the 0.99
     // series). Input is an ApiRequest JSON object

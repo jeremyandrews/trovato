@@ -555,6 +555,7 @@ use `tap_form_validate` for that.
 |-----|-------|--------|-------------|
 | `tap_menu` | None | `Vec<MenuDefinition>` | Register routes |
 | `tap_perm` | None | `Vec<PermissionDefinition>` | Define permissions |
+| `tap_admin_nav` | None | `Vec<AdminNavDefinition>` | Admin sidebar links and dashboard cards ([below](#admin-sidebar-links-and-dashboard-cards)) |
 | `tap_cron` | None | `Result<(), String>` | Background tasks |
 | `tap_queue_info` | None | `[{name, concurrency}]` | Declare owned queues + worker concurrency ([queue docs](plugin-queue.md)) |
 | `tap_queue_worker` | Job payload | Any (return) / trap (fail) | Process one queued job — **must be idempotent** ([queue docs](plugin-queue.md)) |
@@ -1166,6 +1167,89 @@ fn tap_perm() -> Vec<PermissionDefinition> {
     types.iter().flat_map(|t| PermissionDefinition::crud_for_type(t)).collect()
 }
 ```
+
+### Admin sidebar links and dashboard cards
+
+A plugin's own `/admin/...` page renders inside the kernel's `page--admin.html`,
+with the same sidebar and dashboard every kernel admin page gets — filtered to
+what the signed-in viewer may actually open. A plugin adds its own entry to
+that sidebar and to the `/admin` dashboard through `tap_admin_nav`, the same
+shape `tap_menu` and `tap_perm` already use: a declaration collected once at
+boot, not queried per request.
+
+```rust
+#[plugin_tap]
+fn tap_admin_nav() -> Vec<AdminNavDefinition> {
+    vec![
+        AdminNavDefinition::new(
+            "Structure",             // section heading — joins an existing
+                                      // one by this name, or starts a new one
+            "Groups",                // link text, and the card's title
+            "/admin/groups",         // must start with /admin
+            "administer groups",     // permission that gates the link and card
+        )
+        .card("Manage user groups."), // optional: also show a dashboard card
+    ]
+}
+```
+
+`permission` is display filtering only, exactly like every kernel sidebar
+link: a viewer who does not hold it does not see the link or the card, but
+the route itself still has to check the permission on every request — the
+sidebar never substitutes for that check. Gate the two on the same
+permission, as above, so they cannot disagree about who may reach the screen.
+
+A disabled plugin contributes no link and no card. The declaration is read
+when the server starts, from the plugins enabled then, so enabling or
+disabling a plugin (from `/admin/plugins` or `trovato plugin enable|disable`)
+changes its link and card at the next restart, the same moment its routes
+appear or go. The permission, by contrast, is checked against the viewer on
+every request, exactly as for the kernel's own links.
+
+`href` must be the plugin's own path below `/admin/` (`/admin/groups`, not
+`/administrator` or `/admin/../groups`: no empty, `.` or `..` segments, encoded or
+not, and no backslash), and distinct from every kernel link, every prefix a
+kernel link already highlights for (Categories owns `/admin/structure/tags`),
+and every other plugin's declared href. A declaration that breaks any of these
+is dropped (logged, not fatal) rather than sending the viewer somewhere else or
+shadowing an existing screen.
+
+For the admin page itself to pick up the kernel's chrome, serve it from a
+`tap_api` route under `/admin` and answer with `ApiResponse::themed(title,
+body)`, the same way any themed plugin page does. Gate the route on the same
+permission the link declares:
+
+```rust
+#[plugin_tap]
+fn tap_menu() -> Vec<MenuRoute> {
+    vec![
+        MenuRoute::api("GET", "/admin/groups", "groups_admin")
+            .title("Groups")
+            .permission("administer groups"),
+    ]
+}
+
+#[plugin_tap]
+fn tap_api(request: ApiRequest) -> ApiResponse {
+    match request.callback.as_str() {
+        "groups_admin" => ApiResponse::themed("Groups", "<p>…manage groups here…</p>"),
+        other => ApiResponse::error(404, &format!("no such callback: {other}")),
+    }
+}
+```
+
+List the tap in the plugin's info file next to the others, or the kernel never
+calls it:
+
+```toml
+[taps]
+implements = ["tap_perm", "tap_menu", "tap_api", "tap_admin_nav"]
+```
+
+A page is an admin page when its path starts with `/admin`
+(`ThemeEngine::is_admin_path`, the rule the kernel already uses to pick
+`page--admin.html` and to theme an admin error page). Any such page, kernel or
+plugin, gets the sidebar; a plugin page elsewhere does not.
 
 ---
 

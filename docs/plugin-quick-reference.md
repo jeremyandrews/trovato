@@ -93,6 +93,7 @@ fn tap_cron(_input: serde_json::Value) -> Result<(), String> {
 | **Forms** | `tap_form_ajax` | `{trigger, form_id, values}` (CSRF, form access checked; full host API) | `{"commands": [...]}` or `{}` |
 | **System** | `tap_menu` | - | `Vec<MenuDefinition>` |
 | **System** | `tap_perm` | - | `Vec<PermissionDefinition>` |
+| **System** | `tap_admin_nav` | - | `Vec<AdminNavDefinition>` |
 | **System** | `tap_cron` | - | `Result<(), String>` |
 | **Lifecycle** | `tap_install` | - | `Result<(), String>` |
 | **Lifecycle** | `tap_enable` | - | `Result<(), String>` |

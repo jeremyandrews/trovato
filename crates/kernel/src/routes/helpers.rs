@@ -476,19 +476,14 @@ pub async fn render_admin_template(
     template: &str,
     mut context: tera::Context,
 ) -> Response {
-    let mut enabled: Vec<String> = state.enabled_plugins().into_iter().collect();
-    enabled.sort();
-    // The sidebar holds only the screens this viewer may open (BL-117).
+    // The sidebar holds only the screens this viewer may open (BL-117), kernel
+    // and plugin-declared alike (BL-162).
     let path = context
         .get("path")
         .and_then(|p| p.as_str())
         .unwrap_or_default()
         .to_string();
-    context.insert(
-        "admin_nav",
-        &super::admin_nav::sidebar(viewer, &enabled, &path),
-    );
-    context.insert("enabled_plugins", &enabled);
+    super::admin_nav::insert_context(state, viewer, &path, &mut context);
     // Ensure "errors" is always available for form templates that use form::errors().
     if context.get("errors").is_none() {
         let empty: Vec<String> = Vec::new();

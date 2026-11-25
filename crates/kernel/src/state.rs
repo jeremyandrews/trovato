@@ -128,6 +128,10 @@ struct AppStateInner {
     /// Permissions plugins declared through `tap_perm`, collected once at boot.
     plugin_permissions: Arc<crate::plugin::permission_registry::PluginPermissionRegistry>,
 
+    /// Admin sidebar links and dashboard cards plugins declared through
+    /// `tap_admin_nav`, collected once at boot.
+    plugin_admin_nav: Arc<crate::plugin::admin_nav_registry::AdminNavRegistry>,
+
     /// Content type registry.
     content_types: Arc<ContentTypeRegistry>,
 
@@ -758,6 +762,28 @@ impl AppState {
             Arc::new(registry)
         };
 
+        // Admin sidebar links and dashboard cards, collected the same way and
+        // for the same reason: a declaration is a constant, so it is gathered
+        // once here rather than asked for during a request. Dispatched
+        // without services, like `tap_menu` and `tap_perm` — a plugin names a
+        // path and a permission, it does not need a DB handle to do that.
+        let plugin_admin_nav = {
+            let admin_nav_state = RequestState::without_services(UserContext::anonymous());
+            let results = tap_dispatcher
+                .dispatch("tap_admin_nav", "{}", admin_nav_state)
+                .await;
+            let registry = crate::plugin::admin_nav_registry::AdminNavRegistry::from_tap_results(
+                results
+                    .into_iter()
+                    .map(|r| (r.plugin_name, r.output))
+                    .collect(),
+            );
+            if !registry.is_empty() {
+                info!(count = registry.len(), "registered plugin admin nav links");
+            }
+            Arc::new(registry)
+        };
+
         // Assistant scopes, collected the same way and for the same reason: a
         // scope names a route the kernel has to serve and a permission it has to
         // check, so it must be known before the first request. Dispatched
@@ -1325,6 +1351,7 @@ impl AppState {
                 menu_registry,
                 openapi,
                 plugin_permissions,
+                plugin_admin_nav,
                 assistant_scopes,
                 content_types,
                 record_types,
@@ -1590,6 +1617,17 @@ impl AppState {
         &self,
     ) -> &Arc<crate::plugin::permission_registry::PluginPermissionRegistry> {
         &self.inner.plugin_permissions
+    }
+
+    /// The admin sidebar links and dashboard cards plugins declared through
+    /// `tap_admin_nav`.
+    ///
+    /// Read by [`crate::routes::admin_nav::sidebar`] and
+    /// [`crate::routes::admin_nav::dashboard`], merged with the kernel's own
+    /// [`crate::routes::admin_nav::LINKS`] and [`crate::routes::admin_nav::CARDS`]
+    /// under the same permission and plugin-enablement filter.
+    pub fn plugin_admin_nav(&self) -> &Arc<crate::plugin::admin_nav_registry::AdminNavRegistry> {
+        &self.inner.plugin_admin_nav
     }
 
     /// Get the content type registry.

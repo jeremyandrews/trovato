@@ -9,6 +9,7 @@
 //! - Plugin-declared SQL migrations
 //! - CLI commands for plugin management
 
+pub mod admin_nav_registry;
 pub mod cli;
 pub mod db_policy;
 mod dependency;

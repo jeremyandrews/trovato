@@ -467,6 +467,8 @@ pub const KNOWN_TAPS: &[&str] = &[
     // (G-NO-PLUGIN-HTTP; added in KERNEL_API_VERSION (0,99)).
     "tap_api",
     "tap_perm",
+    // Admin sidebar links and dashboard cards (BL-162).
+    "tap_admin_nav",
     // Theme
     "tap_theme",
     "tap_preprocess_item",
