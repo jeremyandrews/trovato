@@ -1,62 +1,66 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block page_title %}{{ t(s="Moderated content") }}{% endblock page_title %}
+{% block page_actions %}<a href="/admin/content" class="button button--secondary">{{ t(s="All content") }}</a>{% endblock page_actions %}
 
 {% block content %}
-<div class="admin-header">
-    <h2>Moderated content</h2>
-    <a href="/admin/content" class="button">All content</a>
-</div>
-
 <div class="admin-card">
     <form class="filter-form" method="get" action="/admin/content/moderated">
-        <div class="filter-item">
-            <label for="state">Moderation state</label>
-            <select id="state" name="state">
-                <option value="">- Any not published -</option>
-                <option value="draft" {% if state_filter == "draft" %}selected{% endif %}>Draft</option>
-                <option value="archived" {% if state_filter == "archived" %}selected{% endif %}>Archived</option>
-            </select>
+        <div class="filter-row">
+            <div class="filter-item">
+                <label for="state">{{ t(s="Moderation state") }}</label>
+                <select id="state" name="state">
+                    <option value="">{{ t(s="- Any not published -") }}</option>
+                    <option value="draft" {% if state_filter == "draft" %}selected{% endif %}>{{ t(s="Draft") }}</option>
+                    <option value="archived" {% if state_filter == "archived" %}selected{% endif %}>{{ t(s="Archived") }}</option>
+                </select>
+            </div>
+            <div class="filter-item">
+                <button type="submit" class="button button--secondary">{{ t(s="Filter") }}</button>
+            </div>
         </div>
-        <button type="submit" class="button button--small">Filter</button>
     </form>
+</div>
 
+{% if items %}
+<div class="table-scroll" role="region" aria-labelledby="moderated-caption" tabindex="0">
     <table class="table moderated-content">
+        <caption id="moderated-caption">{{ t(s="Content not yet published") }}</caption>
         <thead>
             <tr>
-                <th>Title</th>
-                <th>Type</th>
-                <th>Author</th>
-                <th>Moderation state</th>
-                <th>Updated</th>
-                <th>Operations</th>
+                <th scope="col">{{ t(s="Title") }}</th>
+                <th scope="col">{{ t(s="Type") }}</th>
+                <th scope="col">{{ t(s="Author") }}</th>
+                <th scope="col">{{ t(s="Moderation state") }}</th>
+                <th scope="col">{{ t(s="Updated") }}</th>
+                <th scope="col">{{ t(s="Operations") }}</th>
             </tr>
         </thead>
         <tbody>
             {% for item in items %}
             <tr>
-                <td>
+                <th scope="row">
                     {% if item.ahead %}
                     <a href="/item/{{ item.id }}/latest">{{ item.title }}</a>
                     {% else %}
                     <a href="/item/{{ item.id }}">{{ item.title }}</a>
                     {% endif %}
-                </td>
+                </th>
                 <td>{{ item.type }}</td>
                 <td>{{ item.author }}</td>
-                <td>{{ item.state }}{% if item.ahead %} (ahead of the published version){% endif %}</td>
+                <td>{% if item.ahead %}{{ t(s="{state} (ahead of the published version)", state=t(s=item.state)) }}{% else %}{{ t(s=item.state) }}{% endif %}</td>
                 <td>{{ item.changed }}</td>
-                <td>
-                    <a href="/item/{{ item.id }}/edit">Edit</a>
-                    &middot;
-                    <a href="/item/{{ item.id }}/revisions">Revisions</a>
+                <td class="operations">
+                    <a href="/item/{{ item.id }}/edit">{{ t(s="Edit {title}", title=item.title) }}</a>
+                    <a href="/item/{{ item.id }}/revisions">{{ t(s="Revisions of {title}", title=item.title) }}</a>
                 </td>
             </tr>
             {% endfor %}
-            {% if not items %}
-            <tr>
-                <td colspan="6">No moderated content available.</td>
-            </tr>
-            {% endif %}
         </tbody>
     </table>
 </div>
-{% endblock %}
+{% else %}
+{{ list::empty(message=t(s="No moderated content available."), add_url="/admin/content", add_label=t(s="All content")) }}
+{% endif %}
+{% endblock content %}

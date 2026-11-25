@@ -126,6 +126,16 @@ interface db {
     insert-many: func(table: string, rows-json: string) -> result<u64, string>;
     query-raw: func(sql: string, params-json: string) -> result<string, string>;
     execute-raw: func(sql: string, params-json: string) -> result<u64, string>;
+
+    /// Queue items for the static search index after changing something that
+    /// decides what their search page holds and that no table trigger sees,
+    /// such as data a plugin's `tap-field-access` reads. Writes to the
+    /// `item`, `comment` and `url_alias` tables are queued by the database.
+    /// `item-ids-json` is a JSON array of item UUIDs, at most 10,000 (-82 past
+    /// that, -14 when it is not such an array); returns how many were queued.
+    /// Cron rewrites only those items' part of the index. Added by B218: a new
+    /// function, no signature changed.
+    search-index-enqueue: func(item-ids-json: string) -> result<u64, string>;
 }
 
 /// Persistent key-value configuration.

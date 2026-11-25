@@ -1,55 +1,52 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block page_title %}{{ t(s="Tiles") }}{% endblock page_title %}
+{% block page_actions %}{{ list::add_link(url="/admin/structure/tiles/add", label=t(s="Add tile")) }}{% endblock page_actions %}
 
 {% block content %}
-<div class="admin-header">
-    <h2>Tiles</h2>
-    <a href="/admin/structure/tiles/add" class="btn btn-primary">Add tile</a>
-</div>
-
 {% if tiles | length == 0 %}
-<div class="admin-card">
-    <p>No tiles have been created yet.</p>
-</div>
+{{ list::empty(message=t(s="No tiles have been created yet."), add_url="/admin/structure/tiles/add", add_label=t(s="Add tile")) }}
 {% else %}
 {% set current_region = "" %}
 {% for tile in tiles %}
 {% if tile.region != current_region %}
-{% if current_region != "" %}</tbody></table></div>{% endif %}
+{% if current_region != "" %}</tbody></table></div></section>{% endif %}
 {% set_global current_region = tile.region %}
-<div class="admin-card">
-    <h3>Region: {{ tile.region }}</h3>
+<section class="admin-card" aria-labelledby="region-{{ tile.region }}-heading">
+    <h2 id="region-{{ tile.region }}-heading">{{ t(s="Region: {region}", region=tile.region) }}</h2>
+    <div class="table-scroll" role="region" aria-labelledby="region-{{ tile.region }}-caption" tabindex="0">
     <table class="table">
+        <caption id="region-{{ tile.region }}-caption">{{ t(s="Tiles in the {region} region", region=tile.region) }}</caption>
         <thead>
             <tr>
-                <th>Label</th>
-                <th>Machine name</th>
-                <th>Type</th>
-                <th>Weight</th>
-                <th>Status</th>
-                <th>Actions</th>
+                <th scope="col">{{ t(s="Label") }}</th>
+                <th scope="col">{{ t(s="Machine name") }}</th>
+                <th scope="col">{{ t(s="Type") }}</th>
+                <th scope="col">{{ t(s="Weight") }}</th>
+                <th scope="col">{{ t(s="Status") }}</th>
+                <th scope="col">{{ t(s="Actions") }}</th>
             </tr>
         </thead>
         <tbody>
 {% endif %}
             <tr>
-                <td>{{ tile.label }}</td>
+                <th scope="row">{{ tile.label }}</th>
                 <td><code>{{ tile.machine_name }}</code></td>
-                <td>{{ tile.tile_type }}</td>
+                <td><code>{{ tile.tile_type }}</code></td>
                 <td>{{ tile.weight }}</td>
-                <td>{% if tile.status == 1 %}Active{% else %}Disabled{% endif %}</td>
-                <td>
-                    <a href="/admin/structure/tiles/{{ tile.id }}/edit">Edit</a>
-                    <form method="post" action="/admin/structure/tiles/{{ tile.id }}/delete" style="display:inline">
-                        <input type="hidden" name="_token" value="{{ csrf_token }}">
-                        <button type="submit" class="btn-link" data-confirm="Delete this tile?">Delete</button>
-                    </form>
+                <td>{% if tile.status == 1 %}{{ t(s="Active") }}{% else %}{{ t(s="Disabled") }}{% endif %}</td>
+                <td class="operations">
+                    <a href="/admin/structure/tiles/{{ tile.id }}/edit">{{ t(s="Edit {name}", name=tile.label) }}</a>
+                    {{ list::delete_button(action="/admin/structure/tiles/" ~ tile.id ~ "/delete", label=t(s="Delete {name}", name=tile.label), confirm_text=t(s="Delete this tile?"), csrf_token=csrf_token) }}
                 </td>
             </tr>
 {% if loop.last %}
         </tbody>
     </table>
-</div>
+    </div>
+</section>
 {% endif %}
 {% endfor %}
 {% endif %}
-{% endblock %}
+{% endblock content %}

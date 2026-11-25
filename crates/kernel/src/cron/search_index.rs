@@ -50,7 +50,7 @@ use super::pagefind::{IndexDocument, render_fragment};
 pub const RETENTION_HOURS: i32 = 24;
 
 /// The advisory lock every publisher takes, as `hashtext(LOCK_KEY)`.
-const LOCK_KEY: &str = "search_index";
+pub(super) const LOCK_KEY: &str = "search_index";
 
 /// What one full build did.
 #[doc(hidden)]
@@ -74,6 +74,8 @@ pub struct FullBuildReport {
     pub expired: usize,
     /// The generation published.
     pub generation: i64,
+    /// Whether this build renumbered the pages densely (compaction).
+    pub compacted: bool,
     /// Milliseconds rendering, hashing and tokenizing (cache misses only).
     pub tokenize_ms: u128,
     /// Milliseconds encoding the bundle.
@@ -123,43 +125,55 @@ pub async fn generation(pool: &PgPool) -> Result<i64> {
 
 /// One term cache row.
 #[derive(sqlx::FromRow)]
-struct TermRow {
-    item_id: Uuid,
-    language: String,
-    content_hash: Vec<u8>,
-    word_count: i32,
-    fragment: String,
-    words: Vec<u8>,
+pub(super) struct TermRow {
+    pub(super) item_id: Uuid,
+    pub(super) language: String,
+    pub(super) content_hash: Vec<u8>,
+    pub(super) word_count: i32,
+    pub(super) fragment: String,
+    pub(super) words: Vec<u8>,
 }
 
 /// One ledger row.
 #[derive(sqlx::FromRow, Debug, Clone)]
-struct LedgerRow {
-    language: String,
-    page_number: i32,
-    item_id: Option<Uuid>,
+pub(super) struct LedgerRow {
+    pub(super) language: String,
+    pub(super) page_number: i32,
+    pub(super) item_id: Option<Uuid>,
 }
 
 /// The URL Pagefind gives a page: its export file's path, `/<id>.html`, as
 /// the CLI derived it from `<id>.html`. Result cards link through the `url`
 /// meta, which carries the alias.
-fn page_url(id: Uuid) -> String {
+pub(super) fn page_url(id: Uuid) -> String {
     format!("/{id}.html")
+}
+
+/// The words a term cache entry holds, or `None`, logged, when its bytes do
+/// not decode. A caller treats that as a cache miss.
+pub(super) fn cached_words(id: Uuid, bytes: &[u8]) -> Option<BTreeMap<String, Vec<i32>>> {
+    match PageTerms::words_from_cbor(bytes) {
+        Ok(words) => Some(words),
+        Err(e) => {
+            warn!(item_id = %id, error = %e, "the cached search terms do not decode");
+            None
+        }
+    }
 }
 
 /// The changes a full build makes to the ledger, and the slots it publishes.
 #[derive(Debug, Default, PartialEq)]
-struct LedgerPlan {
+pub(super) struct LedgerPlan {
     /// Items whose page numbers become tombstones.
-    free: Vec<Uuid>,
+    pub(super) free: Vec<Uuid>,
     /// Tombstones taken by an item: (language, page number, item).
-    reuse: Vec<(String, i32, Uuid)>,
+    pub(super) reuse: Vec<(String, i32, Uuid)>,
     /// New page numbers: (language, page number, item).
-    insert: Vec<(String, i32, Uuid)>,
+    pub(super) insert: Vec<(String, i32, Uuid)>,
     /// Languages left with no live page, whose rows are deleted.
-    drop_languages: Vec<String>,
+    pub(super) drop_languages: Vec<String>,
     /// Every published language's slots in page number order.
-    slots: BTreeMap<String, Vec<Option<Uuid>>>,
+    pub(super) slots: BTreeMap<String, Vec<Option<Uuid>>>,
 }
 
 /// Number the wanted items (item, language) through the ledger rows.
@@ -169,7 +183,7 @@ struct LedgerPlan {
 /// language then id order, each take the lowest tombstone in their language,
 /// then numbers after the highest. A language with no live page left is
 /// dropped from the ledger and not published.
-fn plan_ledger(rows: &[LedgerRow], wanted: &BTreeMap<Uuid, String>) -> LedgerPlan {
+pub(super) fn plan_ledger(rows: &[LedgerRow], wanted: &BTreeMap<Uuid, String>) -> LedgerPlan {
     let mut plan = LedgerPlan::default();
     // language -> page number -> holder
     let mut ledger: BTreeMap<String, BTreeMap<i32, Option<Uuid>>> = BTreeMap::new();
@@ -262,7 +276,7 @@ async fn default_language(conn: &mut sqlx::PgConnection) -> Result<String> {
 }
 
 /// Removes a staging directory when dropped, whatever happened.
-struct StagingGuard(PathBuf);
+pub(super) struct StagingGuard(pub(super) PathBuf);
 
 impl Drop for StagingGuard {
     fn drop(&mut self) {
@@ -288,7 +302,43 @@ pub async fn full_build(
     documents: &[IndexDocument],
     snapshot: i64,
 ) -> Result<FullBuildReport> {
-    let mut report = FullBuildReport::default();
+    full_build_with(
+        pool,
+        output_dir,
+        documents,
+        snapshot,
+        &FullBuildOptions::default(),
+    )
+    .await
+}
+
+/// How a full build runs beyond the default.
+#[doc(hidden)]
+#[derive(Debug, Clone, Default)]
+pub struct FullBuildOptions {
+    /// Renumber every page densely, as a build from an empty ledger would:
+    /// the tombstones go, the free list empties, and the live items take page
+    /// numbers in (language, id) order. The output is then byte for byte a
+    /// first build of the same content.
+    pub compact: bool,
+    /// Queue rows, `(item_id, seq)`, read before `documents` were exported:
+    /// this build covers them, so it deletes them when it publishes.
+    pub drained: Vec<(Uuid, i64)>,
+}
+
+/// [`full_build`] with options.
+#[doc(hidden)]
+pub async fn full_build_with(
+    pool: &PgPool,
+    output_dir: &Path,
+    documents: &[IndexDocument],
+    snapshot: i64,
+    options: &FullBuildOptions,
+) -> Result<FullBuildReport> {
+    let mut report = FullBuildReport {
+        compacted: options.compact,
+        ..FullBuildReport::default()
+    };
     let started = Instant::now();
 
     // 1. Render, hash, and tokenize what the term cache does not hold.
@@ -324,10 +374,14 @@ pub async fn full_build(
     let mut changed: Vec<(Uuid, Vec<u8>)> = Vec::new();
     let mut to_tokenize: Vec<(Uuid, String, Vec<u8>)> = Vec::new();
     for (id, html, hash) in rendered {
-        match cache.remove(&id) {
-            Some(row) if row.content_hash == hash => {
-                let words = PageTerms::words_from_cbor(&row.words)
-                    .with_context(|| format!("decode the cached terms of {id}"))?;
+        // A cache entry that does not decode is a miss: the page is tokenized
+        // again and its entry rewritten, so one bad row cannot fail every build.
+        let cached = cache
+            .remove(&id)
+            .filter(|row| row.content_hash == hash)
+            .and_then(|row| cached_words(id, &row.words).map(|words| (row, words)));
+        match cached {
+            Some((row, words)) => {
                 terms.insert(
                     id,
                     PageTerms {
@@ -339,7 +393,7 @@ pub async fn full_build(
                 );
                 report.cached += 1;
             }
-            _ => to_tokenize.push((id, html, hash)),
+            None => to_tokenize.push((id, html, hash)),
         }
     }
     report.tokenized = to_tokenize.len();
@@ -404,7 +458,16 @@ pub async fn full_build(
     .fetch_all(&mut *tx)
     .await
     .context("read the search page ledger")?;
-    let plan = plan_ledger(&rows, &wanted);
+    let plan = if options.compact {
+        // Every row goes; the plan numbers from an empty ledger.
+        sqlx::query("DELETE FROM search_page")
+            .execute(&mut *tx)
+            .await
+            .context("clear the search page ledger for compaction")?;
+        plan_ledger(&[], &wanted)
+    } else {
+        plan_ledger(&rows, &wanted)
+    };
     apply_ledger_plan(&mut tx, &plan).await?;
     store_terms(&mut tx, &terms, &changed).await?;
 
@@ -456,6 +519,16 @@ pub async fn full_build(
             .await
             .context("the staging task failed")??;
     }
+
+    store_chunk_plans(
+        &mut tx,
+        None,
+        indexes
+            .iter()
+            .map(|index| (index.language.as_str(), index.plan.as_slice())),
+    )
+    .await?;
+    delete_drained(&mut tx, &options.drained).await?;
 
     let entry_meta: BTreeMap<&str, &str> = indexes
         .iter()
@@ -513,6 +586,7 @@ pub async fn full_build(
         kept = report.kept,
         expired = report.expired,
         generation = report.generation,
+        compacted = report.compacted,
         tokenize_ms = report.tokenize_ms,
         encode_ms = report.encode_ms,
         publish_ms = report.publish_ms,
@@ -523,7 +597,7 @@ pub async fn full_build(
 }
 
 /// Write a ledger plan.
-async fn apply_ledger_plan(
+pub(super) async fn apply_ledger_plan(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     plan: &LedgerPlan,
 ) -> Result<()> {
@@ -639,7 +713,7 @@ async fn store_terms(
 /// Record the index files in `live` that the published entry no longer
 /// reaches, and delete those unreferenced for [`RETENTION_HOURS`]. Returns how
 /// many were deleted.
-async fn sweep(
+pub(super) async fn sweep(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     live: &Path,
     referenced: &BTreeSet<String>,
@@ -698,6 +772,87 @@ async fn sweep(
             .context("forget deleted search index files")?;
     }
     Ok(deleted.len())
+}
+
+/// Replace the stored chunk plan of `only` (one language), or of every
+/// language when `None`, with `plans`.
+pub(super) async fn store_chunk_plans<'a>(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    only: Option<&[String]>,
+    plans: impl Iterator<Item = (&'a str, &'a [trovato_search_index::ChunkPlan])>,
+) -> Result<()> {
+    match only {
+        None => {
+            sqlx::query("DELETE FROM search_chunk")
+                .execute(&mut **tx)
+                .await
+        }
+        Some(languages) => {
+            sqlx::query("DELETE FROM search_chunk WHERE language = ANY($1)")
+                .bind(languages)
+                .execute(&mut **tx)
+                .await
+        }
+    }
+    .context("clear the search chunk plan")?;
+    let mut languages = Vec::new();
+    let mut ordinals = Vec::new();
+    let mut firsts = Vec::new();
+    let mut lasts = Vec::new();
+    let mut locations = Vec::new();
+    let mut hashes = Vec::new();
+    for (language, plan) in plans {
+        for (ordinal, chunk) in plan.iter().enumerate() {
+            languages.push(language.to_string());
+            ordinals.push(i32::try_from(ordinal).context("too many word chunks")?);
+            firsts.push(chunk.first.clone());
+            lasts.push(chunk.last.clone());
+            locations.push(i64::try_from(chunk.locations).unwrap_or(i64::MAX));
+            hashes.push(chunk.hash.clone());
+        }
+    }
+    if languages.is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "INSERT INTO search_chunk (language, ordinal, first_word, last_word, locations, hash) \
+         SELECT * FROM UNNEST($1::text[], $2::int[], $3::text[], $4::text[], $5::bigint[], \
+                              $6::text[])",
+    )
+    .bind(&languages)
+    .bind(&ordinals)
+    .bind(&firsts)
+    .bind(&lasts)
+    .bind(&locations)
+    .bind(&hashes)
+    .execute(&mut **tx)
+    .await
+    .context("store the search chunk plan")?;
+    Ok(())
+}
+
+/// Delete exactly the queue rows a publish covered: each `(item_id, seq)` it
+/// read before exporting. A row queued again since has a new `seq` and stays.
+pub(super) async fn delete_drained(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    drained: &[(Uuid, i64)],
+) -> Result<u64> {
+    if drained.is_empty() {
+        return Ok(0);
+    }
+    let ids: Vec<Uuid> = drained.iter().map(|(id, _)| *id).collect();
+    let seqs: Vec<i64> = drained.iter().map(|(_, seq)| *seq).collect();
+    let deleted = sqlx::query(
+        "DELETE FROM search_index_queue q \
+         USING UNNEST($1::uuid[], $2::bigint[]) AS d(item_id, seq) \
+         WHERE q.item_id = d.item_id AND q.seq = d.seq",
+    )
+    .bind(&ids)
+    .bind(&seqs)
+    .execute(&mut **tx)
+    .await
+    .context("delete the drained search index queue rows")?;
+    Ok(deleted.rows_affected())
 }
 
 #[cfg(test)]

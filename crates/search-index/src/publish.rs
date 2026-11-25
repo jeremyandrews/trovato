@@ -129,6 +129,20 @@ fn move_into_place(from: &Path, to: &Path, tmp_suffix: &str) -> Result<()> {
 /// Fails before touching `live` when the staged bundle has no entry file or
 /// is missing a meta file its entry names.
 pub fn publish(staged: &Path, live: &Path, tmp_suffix: &str) -> Result<Published> {
+    publish_with(staged, live, tmp_suffix, &mut |_| Ok(()))
+}
+
+/// [`publish`], calling `before_write` with each bundle path just before it is
+/// moved into `live`, the entry last. An error from it stops the publish
+/// there, as a crash between two writes would: the tests use it to prove that
+/// a reader of `live` never meets a meta file naming a missing file, wherever
+/// a publish stops.
+pub fn publish_with(
+    staged: &Path,
+    live: &Path,
+    tmp_suffix: &str,
+    before_write: &mut dyn FnMut(&str) -> Result<()>,
+) -> Result<Published> {
     let metas = staged_meta_files(staged)?;
 
     let staged_bundle = crate::decode::read_bundle(staged)?;
@@ -169,6 +183,7 @@ pub fn publish(staged: &Path, live: &Path, tmp_suffix: &str) -> Result<Published
             std::fs::create_dir_all(parent)
                 .with_context(|| format!("create {}", parent.display()))?;
         }
+        before_write(path)?;
         move_into_place(&staged.join(path), &to, tmp_suffix)?;
         published.written += 1;
     }
@@ -178,9 +193,11 @@ pub fn publish(staged: &Path, live: &Path, tmp_suffix: &str) -> Result<Published
         if std::fs::read(&to).ok().as_deref() == staged_bundle.get(path).map(Vec::as_slice) {
             continue;
         }
+        before_write(path)?;
         move_into_place(&staged.join(path), &to, tmp_suffix)?;
     }
     // The flip.
+    before_write(ENTRY_FILE)?;
     move_into_place(&staged.join(ENTRY_FILE), &live.join(ENTRY_FILE), tmp_suffix)?;
     Ok(published)
 }

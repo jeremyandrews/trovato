@@ -944,7 +944,8 @@ const SEARCH_SWITCHES_FLASH: &str = "search_switches_flash";
 ///
 /// Stores them in the type's `settings` (merged, so nothing else there
 /// changes), recomputes the type's full text vectors so `/search` follows at
-/// once, and asks for a Pagefind rebuild at the next cron run.
+/// once, and queues every item of the type for the Pagefind index, which the
+/// next cron run updates.
 async fn save_search_switches(
     State(state): State<AppState>,
     session: Session,
@@ -998,7 +999,12 @@ async fn save_search_switches(
     if let Err(e) = state.search().reindex_bundle(&type_name).await {
         tracing::error!(error = %e, content_type = %type_name, "failed to reindex after search switches");
     }
-    crate::cron::request_search_index_rebuild(state.db()).await;
+    // Every page of the type may change, or leave the index: queue them all.
+    if let Err(e) =
+        crate::search::index_queue::enqueue_type(state.db(), &type_name, "type_settings").await
+    {
+        tracing::error!(error = %e, content_type = %type_name, "failed to queue the type for the search index");
+    }
 
     tracing::info!(
         log_type = "config",
@@ -1153,6 +1159,7 @@ async fn reindex_content_type(
 pub(crate) async fn handle_ajax_add_field(
     state: &AppState,
     request: &crate::form::AjaxRequest,
+    lang: &str,
 ) -> Response {
     use crate::form::{AjaxCommand, AjaxResponse};
 
@@ -1234,21 +1241,39 @@ pub(crate) async fn handle_ajax_add_field(
 
     tracing::info!(content_type = %type_name, field = %name, "field added via AJAX");
 
-    // Build the new row HTML
+    // The new row, as `admin/field-list.html` draws one, in the viewer's
+    // admin language. Strings are stripped of i18n markers: this HTML never
+    // passes through a template.
+    if let Some(locale) = state.locale() {
+        locale.ensure_loaded(lang).await;
+    }
+    let tr = |source: &str, args: &[(String, String)]| {
+        crate::i18n::strip_markers(&crate::i18n::translate(
+            state.locale().map(|l| l.as_ref()),
+            lang,
+            &crate::i18n::Message::new(source),
+            args,
+        ))
+    };
     let row_html = format!(
         r#"<tr data-field="{name_esc}">
-            <td>{label_esc}</td>
+            <th scope="row">{label_esc}</th>
             <td><code>{name_esc}</code></td>
             <td>{type_esc}</td>
-            <td>No</td>
-            <td>
-                <a href="/admin/structure/types/{ct_esc}/fields/{name_esc}/edit">Edit</a>
+            <td>{no}</td>
+            <td class="operations">
+                <a href="/admin/structure/types/{ct_esc}/fields/{name_esc}/edit">{edit}</a>
             </td>
         </tr>"#,
         name_esc = html_escape(name),
         label_esc = html_escape(label),
         type_esc = html_escape(field_type),
         ct_esc = html_escape(type_name),
+        no = html_escape(&tr("No", &[])),
+        edit = html_escape(&tr(
+            "Edit {name}",
+            &[("name".to_string(), label.to_string())]
+        )),
     );
 
     // Return AJAX response to append row and reset form

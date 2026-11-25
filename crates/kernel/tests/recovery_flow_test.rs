@@ -735,6 +735,83 @@ fn an_admin_can_switch_a_built_in_path_off() {
     });
 }
 
+/// The page's own form, posted as a browser posts it (URL-encoded, with the
+/// form's `_token`), saves both switches and redirects back.
+#[test]
+fn the_recovery_settings_form_saves_both_switches() {
+    common::run_test(async {
+        let app = common::shared_app().await;
+        common::hold_until_cleanup(RECOVERY_CONFIG.write().await);
+        let name = common::username("rec_form");
+        let cookies = app
+            .create_and_login_admin(&name, "test-password-123", &format!("{name}@example.com"))
+            .await;
+
+        async fn post_form(app: &TestApp, cookies: &str, fields: &str) -> StatusCode {
+            let page = app
+                .request_with_cookies(
+                    Request::get("/admin/recovery").body(Body::empty()).unwrap(),
+                    cookies,
+                )
+                .await;
+            let html = axum::body::to_bytes(page.into_body(), 2_000_000)
+                .await
+                .unwrap();
+            let html = String::from_utf8_lossy(&html);
+            let at = html
+                .find("name=\"_token\" value=\"")
+                .expect("the form's token")
+                + 21;
+            let token = &html[at..at + html[at..].find('"').unwrap()];
+            app.request_with_cookies(
+                Request::post("/admin/recovery")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(format!("_token={token}{fields}")))
+                    .unwrap(),
+                cookies,
+            )
+            .await
+            .status()
+        }
+        async fn setting(app: &TestApp, key: &str) -> Option<serde_json::Value> {
+            trovato_kernel::models::SiteConfig::get(&app.db, key)
+                .await
+                .unwrap()
+        }
+        use trovato_kernel::services::recovery_flow::{CONFIG_CODES_ENABLED, CONFIG_EMAIL_ENABLED};
+
+        // Email off (its box unticked), codes on.
+        let status = post_form(app, &cookies, "&codes_enabled=1").await;
+        assert_eq!(
+            status,
+            StatusCode::SEE_OTHER,
+            "the form saves and redirects"
+        );
+        assert_eq!(
+            setting(app, CONFIG_EMAIL_ENABLED).await,
+            Some(serde_json::json!(false))
+        );
+        assert_eq!(
+            setting(app, CONFIG_CODES_ENABLED).await,
+            Some(serde_json::json!(true))
+        );
+
+        // And back, both on, so the shared fixture keeps its defaults.
+        let status = post_form(app, &cookies, "&email_enabled=1&codes_enabled=1").await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(
+            setting(app, CONFIG_EMAIL_ENABLED).await,
+            Some(serde_json::json!(true))
+        );
+
+        sqlx::query("DELETE FROM users WHERE name = $1")
+            .bind(&name)
+            .execute(&app.db)
+            .await
+            .unwrap();
+    });
+}
+
 #[test]
 fn a_non_admin_cannot_change_the_recovery_configuration() {
     common::run_test(async {

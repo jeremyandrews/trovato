@@ -1,28 +1,31 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+{% import "admin/macros/tabs.html" as tabs %}
+
+{% block page_title %}{{ t(s="Revisions: {title}", title=item_title) }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="Every saved version of this item, newest first. Pick two to compare them, or view, revert to or delete an earlier one.") }}</p>{% endblock page_intro %}
+{% block page_actions %}<a href="/item/{{ item_id }}" class="button">{{ t(s="View item") }}</a>{% endblock page_actions %}
+{% block local_tasks %}{% if local_tasks is defined %}{{ tabs::tab_bar(local_tasks=local_tasks) }}{% endif %}{% endblock local_tasks %}
 
 {% block content %}
-<div class="admin-header">
-    <h2>Revisions: {{ item_title }}</h2>
-    <a href="/item/{{ item_id }}" class="button">View item</a>
-</div>
-
 {# The compare form stands alone: each row's Revert is a form of its own, and
    a form nested in another is ended by the browser at the inner one. The radio
    buttons and the submit button join it through their form attribute. #}
 <form id="revision-compare" method="get" action="/item/{{ item_id }}/revisions/compare"></form>
 
-<div class="admin-card">
-    <div class="revision-table-wrap">
-    <table class="admin-table">
+{% if revisions %}
+<div class="table-scroll" role="region" aria-labelledby="revisions-caption" tabindex="0">
+    <table class="table">
+        <caption id="revisions-caption">{{ t(s="Revisions of {title}", title=item_title) }}</caption>
         <thead>
             <tr>
-                <th scope="col">From</th>
-                <th scope="col">To</th>
-                <th scope="col">Date</th>
-                <th scope="col">Author</th>
-                <th scope="col">Title</th>
-                <th scope="col">Log message</th>
-                <th scope="col">Actions</th>
+                <th scope="col">{{ t(s="From") }}</th>
+                <th scope="col">{{ t(s="To") }}</th>
+                <th scope="col">{{ t(s="Date") }}</th>
+                <th scope="col">{{ t(s="Author") }}</th>
+                <th scope="col">{{ t(s="Title") }}</th>
+                <th scope="col">{{ t(s="Log message") }}</th>
+                <th scope="col">{{ t(s="Actions") }}</th>
             </tr>
         </thead>
         <tbody>
@@ -30,51 +33,43 @@
             <tr>
                 <td>
                     <input type="radio" name="from" value="{{ rev.id }}" form="revision-compare"
-                        aria-label="Compare from the revision of {{ rev.date }}"
+                        aria-label="{{ t(s='Compare from the revision of {date}', date=rev.date) }}"
                         {% if loop.index == 2 or (loop.first and loop.last) %}checked{% endif %}>
                 </td>
                 <td>
                     <input type="radio" name="to" value="{{ rev.id }}" form="revision-compare"
-                        aria-label="Compare to the revision of {{ rev.date }}"
+                        aria-label="{{ t(s='Compare to the revision of {date}', date=rev.date) }}"
                         {% if loop.first %}checked{% endif %}>
                 </td>
-                <td>
-                    {{ rev.date }}
-                </td>
+                <th scope="row">{{ rev.date }}</th>
                 <td>{{ rev.author }}</td>
-                <td>{{ rev.title }}{% if rev.state %} <span class="badge">{{ rev.state }}</span>{% endif %}</td>
+                <td>{{ rev.title }}{% if rev.state %} <span class="badge">{{ t(s=rev.state) }}</span>{% endif %}</td>
                 <td>{{ rev.log | default(value="-") }}</td>
-                <td>
-                    <a href="/item/{{ item_id }}/revisions/{{ rev.id }}" class="button button--small">View</a>
+                <td class="operations">
+                    <a href="/item/{{ item_id }}/revisions/{{ rev.id }}" class="button button--small">{{ t(s="View the revision of {date}", date=rev.date) }}</a>
                     {% if rev.is_current %}
-                    <em class="revision-current">Current revision</em>
+                    <em class="revision-current">{{ t(s="Current revision") }}</em>
                     {% else %}
                     {% if may_revert %}
-                    <form method="post" action="/item/{{ item_id }}/revert/{{ rev.id }}" style="display:inline">
+                    <form method="post" action="/item/{{ item_id }}/revert/{{ rev.id }}" class="inline-form">
                         <input type="hidden" name="_token" value="{{ csrf_token }}">
-                        <button type="submit" class="button button--small">Revert</button>
+                        <button type="submit" class="button button--small">{{ t(s="Revert to the revision of {date}", date=rev.date) }}</button>
                     </form>
                     {% endif %}
                     {% if may_delete %}
-                    <a href="/item/{{ item_id }}/revisions/{{ rev.id }}/delete" class="button button--small button--danger">Delete</a>
+                    <a href="/item/{{ item_id }}/revisions/{{ rev.id }}/delete" class="button button--small button--danger">{{ t(s="Delete the revision of {date}", date=rev.date) }}</a>
                     {% endif %}
                     {% endif %}
                 </td>
             </tr>
             {% endfor %}
-            {% if not revisions %}
-            <tr>
-                <td colspan="7">No revisions found.</td>
-            </tr>
-            {% endif %}
         </tbody>
     </table>
-    </div>
-    {% if revisions | length > 1 %}
-    <p><button type="submit" class="button" form="revision-compare">Compare selected</button></p>
-    {% endif %}
 </div>
-<style>
-    .revision-table-wrap { overflow-x: auto; }
-</style>
-{% endblock %}
+{% if revisions | length > 1 %}
+<p><button type="submit" class="button" form="revision-compare">{{ t(s="Compare selected") }}</button></p>
+{% endif %}
+{% else %}
+{{ list::empty(message=t(s="No revisions found.")) }}
+{% endif %}
+{% endblock content %}

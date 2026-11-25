@@ -3,38 +3,38 @@
 
 {#- An owner's vocabularies (B108): served under the owner route a plugin
     declares, e.g. /group/{owner}/categories. -#}
-{% block content %}
-{{ list::header(title=owner_label ~ " categories") }}
+{% block page_title %}{{ t(s="{owner} categories", owner=owner_label) }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="The categories that belong to this {owner}, and the tags in each.", owner=owner_label | lower) }}</p>{% endblock page_intro %}
 
-<div class="admin-card">
-    {% if vocabularies %}
+{% block content %}
+{% if vocabularies %}
+<div class="table-scroll" role="region" aria-labelledby="vocabularies-caption" tabindex="0">
     <table class="table">
+        <caption id="vocabularies-caption">{{ t(s="{owner} categories", owner=owner_label) }}</caption>
         <thead>
             <tr>
-                <th>Name</th>
-                <th>Description</th>
-                <th>Tags</th>
-                <th>Operations</th>
+                <th scope="col">{{ t(s="Name") }}</th>
+                <th scope="col">{{ t(s="Description") }}</th>
+                <th scope="col">{{ t(s="Tags") }}</th>
+                <th scope="col">{{ t(s="Operations") }}</th>
             </tr>
         </thead>
         <tbody>
             {% for vocabulary in vocabularies %}
             <tr>
-                <td><a href="{{ base }}/{{ vocabulary.id }}">{{ vocabulary.label }}</a></td>
+                <th scope="row"><a href="{{ base }}/{{ vocabulary.id }}">{{ vocabulary.label }}</a></th>
                 <td>{{ vocabulary.description | default(value="") }}</td>
                 <td>{{ tag_counts[vocabulary.id] | default(value=0) }}</td>
-                <td>
-                    <a href="{{ base }}/{{ vocabulary.id }}">List tags</a>
-                    &middot;
-                    <a href="{{ base }}/{{ vocabulary.id }}/add">Add tag</a>
+                <td class="operations">
+                    <a href="{{ base }}/{{ vocabulary.id }}">{{ t(s="List tags in {name}", name=vocabulary.label) }}</a>
+                    <a href="{{ base }}/{{ vocabulary.id }}/add">{{ t(s="Add tag to {name}", name=vocabulary.label) }}</a>
                 </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
-    {% else %}
-    {% set owner_name = owner_label | lower %}
-    {{ list::empty(message="This " ~ owner_name ~ " has no categories yet.") }}
-    {% endif %}
 </div>
-{% endblock %}
+{% else %}
+{{ list::empty(message=t(s="This {owner} has no categories yet.", owner=owner_label | lower)) }}
+{% endif %}
+{% endblock content %}

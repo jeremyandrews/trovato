@@ -1,36 +1,37 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/list.html" as list %}
 
-{% block content %}
-{{ list::header(title="Lightweight Records") }}
+{% block page_title %}{{ t(s="Record types") }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="Read-only view of plugin-declared lightweight-record types. Plugins own writes to these tables; the kernel serves gather, listing, field access, and reference resolution over them.") }}</p>{% endblock page_intro %}
 
-<div class="admin-card">
-    <p>Read-only view of plugin-declared lightweight-record types. Plugins own writes to these tables; the kernel serves gather, listing, field access, and reference resolution over them.</p>
-    {% if record_types %}
+{% block content %}
+{% if record_types %}
+<div class="table-scroll" role="region" aria-labelledby="record-types-caption" tabindex="0">
     <table class="table">
+        <caption id="record-types-caption">{{ t(s="Lightweight record types") }}</caption>
         <thead>
             <tr>
-                <th>Type</th>
-                <th>Plugin</th>
-                <th>Table</th>
-                <th>Published gate</th>
-                <th>Mapped fields</th>
+                <th scope="col">{{ t(s="Type") }}</th>
+                <th scope="col">{{ t(s="Plugin") }}</th>
+                <th scope="col">{{ t(s="Table") }}</th>
+                <th scope="col">{{ t(s="Published gate") }}</th>
+                <th scope="col">{{ t(s="Mapped fields") }}</th>
             </tr>
         </thead>
         <tbody>
             {% for rt in record_types %}
             <tr>
-                <td><a href="/admin/structure/records/{{ rt.name }}">{{ rt.name }}</a></td>
+                <th scope="row"><a href="/admin/structure/records/{{ rt.name }}">{{ rt.name }}</a></th>
                 <td><code>{{ rt.plugin }}</code></td>
                 <td><code>{{ rt.table }}</code></td>
-                <td>{% if rt.published %}yes{% else %}always published{% endif %}</td>
+                <td>{% if rt.published %}{{ t(s="yes") }}{% else %}{{ t(s="always published") }}{% endif %}</td>
                 <td>{{ rt.field_count }}</td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
-    {% else %}
-    {{ list::empty(message="No lightweight-record types are declared by any enabled plugin.") }}
-    {% endif %}
 </div>
-{% endblock %}
+{% else %}
+{{ list::empty(message=t(s="No lightweight-record types are declared by any enabled plugin.")) }}
+{% endif %}
+{% endblock content %}

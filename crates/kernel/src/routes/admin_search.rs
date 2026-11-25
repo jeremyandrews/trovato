@@ -221,6 +221,7 @@ fn set_number(settings: &mut SearchSettings, field: &str, n: f64) -> Result<(), 
         "ai_summary_max_chars" => settings.ai_summary_max_chars = whole()?,
         "max_followups" => settings.max_followups = whole()?,
         "analytics_retention_days" => settings.analytics_retention_days = whole()?,
+        "index_compaction_percent" => settings.index_compaction_percent = n,
         _ => {}
     }
     Ok(())

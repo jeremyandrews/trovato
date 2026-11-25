@@ -8,6 +8,7 @@
 pub const MAX_QUERY_LENGTH: usize = 1000;
 
 pub mod analytics;
+pub mod index_queue;
 pub mod prompts;
 pub mod sentiment;
 pub mod settings;
@@ -422,6 +423,8 @@ impl SearchService {
         .execute(&self.pool)
         .await
         .context("failed to configure search field")?;
+        // A weight is in every page of the type, as data-pagefind-weight.
+        crate::search::index_queue::enqueue_type(&self.pool, bundle, "field_config").await?;
 
         debug!(bundle = %bundle, field = %field_name, weight = %weight, "search field configured");
         Ok(())
@@ -440,6 +443,9 @@ impl SearchService {
         .execute(&self.pool)
         .await
         .context("failed to remove search field config")?;
+        if result.rows_affected() > 0 {
+            crate::search::index_queue::enqueue_type(&self.pool, bundle, "field_config").await?;
+        }
 
         Ok(result.rows_affected() > 0)
     }
@@ -499,6 +505,8 @@ impl SearchService {
         .await
         .context("failed to reindex bundle")?;
         crate::cache::generation::bump(crate::cache::generation::CacheKind::Items);
+        // And the static index: every page of the type is rebuilt from the item.
+        crate::search::index_queue::enqueue_type(&self.pool, bundle, "reindex").await?;
 
         debug!(bundle = %bundle, count = %result.rows_affected(), "bundle reindexed");
         Ok(result.rows_affected())

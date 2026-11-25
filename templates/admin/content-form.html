@@ -1,14 +1,12 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/tabs.html" as tabs %}
 
+{% block page_title %}{% if editing %}{{ t(s="Edit {type}", type=content_type.label) }}{% else %}{{ t(s="Create {type}", type=content_type.label) }}{% endif %}{% endblock page_title %}
+{% block page_intro %}{% if editing %}<p class="page-intro">{{ t(s="Change this item's fields and publishing options, then save.") }}</p>{% else %}<p class="page-intro">{{ t(s="Fill in the fields and save to create the item.") }}</p>{% endif %}{% endblock page_intro %}
+{% block local_tasks %}{% if local_tasks is defined %}{{ tabs::tab_bar(local_tasks=local_tasks) }}{% endif %}{% endblock local_tasks %}
+
 {% block content %}
-<div class="admin-header">
-    <h2>{% if editing %}Edit {{ content_type.label }}{% else %}Create {{ content_type.label }}{% endif %}</h2>
-</div>
-
-{% if local_tasks is defined %}{{ tabs::tab_bar(local_tasks=local_tasks) }}{% endif %}
-
-{% if content_lock is defined %}{% include "elements/content-lock.html" %}{% endif %}
+{% if content_lock is defined %}{% include "admin/elements/content-lock.html" %}{% endif %}
 
 {% if preview_html is defined %}
 <div class="admin-card">
@@ -22,4 +20,4 @@
        `tap_form_alter`. #}
     {{ form_html | safe }} {# SAFE: kernel form renderer output — every value in it is escaped by the form templates #}
 </div>
-{% endblock %}
+{% endblock content %}

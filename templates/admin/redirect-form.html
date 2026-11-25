@@ -1,11 +1,10 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/form.html" as form %}
 
-{% block content %}
-<div class="admin-header">
-    <h2>{% if editing %}Edit redirect{% else %}Add redirect{% endif %}</h2>
-</div>
+{% block page_title %}{% if editing %}{{ t(s="Edit redirect") }}{% else %}{{ t(s="Add redirect") }}{% endif %}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="A redirect sends a visitor who asks for an old address on to the page that lives somewhere else now.") }}</p>{% endblock page_intro %}
 
+{% block content %}
 <div class="admin-card">
     <form id="redirect-form" method="post" action="{{ action }}">
         {{ form::csrf(csrf_token=csrf_token) }}
@@ -13,56 +12,48 @@
         {{ form::errors(errors=errors) }}
 
         <div class="form-item">
-            <label for="source" class="form-item__label form-item__label--required">Source path</label>
+            <label for="source" class="form-item__label">{{ t(s="Source path") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
+            <p class="form-item__description" id="source-hint">{{ t(s="The old path to redirect from, with an optional query string, for example {example}. A source with a query matches only a request with that query; a source with no query matches any query. Parameter order and percent-encoding are normalized, so the source is shown back as it is stored.", example="/article.php?sid=123") }}</p>
             <input type="text" id="source" name="source" class="form-text"
                    value="{{ values.source | default(value='') }}"
-                   placeholder="/article.php?sid=123"
+                   aria-describedby="source-hint"
                    required>
-            <p class="form-item__description">
-                The legacy path to redirect from, with an optional query string
-                (e.g., /article.php?sid=123). A source with a query matches only
-                a request with that query; a source with no query matches any
-                query. Parameter order and percent-encoding are normalized, so
-                the source is shown back as it is stored.
-            </p>
         </div>
 
         <div class="form-item">
-            <label for="destination" class="form-item__label form-item__label--required">Destination</label>
+            <label for="destination" class="form-item__label">{{ t(s="Destination") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
+            <p class="form-item__description" id="destination-hint">{{ t(s="A path on this site, such as {example}, or an http or https address.", example="/blog/the-new-page") }}</p>
             <input type="text" id="destination" name="destination" class="form-text"
                    value="{{ values.destination | default(value='') }}"
-                   placeholder="/blog/the-new-page"
+                   aria-describedby="destination-hint"
                    required>
-            <p class="form-item__description">A relative path, or an http(s) URL.</p>
         </div>
 
         <div class="form-item">
-            <label for="status_code" class="form-item__label">Redirect type</label>
+            <label for="status_code" class="form-item__label">{{ t(s="Redirect type") }}</label>
             <select id="status_code" name="status_code" class="form-select">
                 {% set current_status = values.status_code | default(value=301) %}
-                <option value="301" {% if current_status == 301 %}selected{% endif %}>301 Moved Permanently</option>
-                <option value="302" {% if current_status == 302 %}selected{% endif %}>302 Found</option>
-                <option value="303" {% if current_status == 303 %}selected{% endif %}>303 See Other</option>
-                <option value="307" {% if current_status == 307 %}selected{% endif %}>307 Temporary Redirect</option>
-                <option value="308" {% if current_status == 308 %}selected{% endif %}>308 Permanent Redirect</option>
+                <option value="301" {% if current_status == 301 %}selected{% endif %}>{{ t(s="301 Moved Permanently") }}</option>
+                <option value="302" {% if current_status == 302 %}selected{% endif %}>{{ t(s="302 Found") }}</option>
+                <option value="303" {% if current_status == 303 %}selected{% endif %}>{{ t(s="303 See Other") }}</option>
+                <option value="307" {% if current_status == 307 %}selected{% endif %}>{{ t(s="307 Temporary Redirect") }}</option>
+                <option value="308" {% if current_status == 308 %}selected{% endif %}>{{ t(s="308 Permanent Redirect") }}</option>
             </select>
         </div>
 
         <div class="form-item">
-            <label for="language" class="form-item__label">Language</label>
+            <label for="language" class="form-item__label">{{ t(s="Language") }}</label>
+            <p class="form-item__description" id="language-hint">{{ t(s="A language code, such as {example}. Leave blank to match every language.", example="en") }}</p>
             <input type="text" id="language" name="language" class="form-text"
                    value="{{ values.language | default(value='') }}"
-                   placeholder="en">
-            <p class="form-item__description">
-                Leave blank to match every language.
-            </p>
+                   aria-describedby="language-hint">
         </div>
 
         {% if editing %}
-        {{ form::actions(submit_label="Save changes", cancel_url="/admin/config/redirects") }}
+        {{ form::actions(submit_label=t(s="Save changes"), cancel_url="/admin/config/redirects") }}
         {% else %}
-        {{ form::actions(submit_label="Create redirect", cancel_url="/admin/config/redirects") }}
+        {{ form::actions(submit_label=t(s="Create redirect"), cancel_url="/admin/config/redirects") }}
         {% endif %}
     </form>
 </div>
-{% endblock %}
+{% endblock content %}

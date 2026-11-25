@@ -71,3 +71,73 @@ test('character references decode once, unknown ones stay as written', () => {
   assert.equal(htmlToText('&#x263A; &#9731; &bogus;'), '☺ ☃ &bogus;');
   assert.equal(htmlToText('1 < 2 and 3 > 2'), '1 < 2 and 3 > 2');
 });
+
+// B218: the index is updated in place, and a file a tab's old meta names is
+// deleted 24 hours after it stops being referenced. A search that fails on one
+// reloads the index (destroy, init) once and runs again.
+const { withIndexReload, setPagefind } = Scolta._index;
+
+function fakePagefind() {
+  const calls = [];
+  return {
+    calls,
+    destroy: async () => calls.push('destroy'),
+    init: async () => calls.push('init'),
+  };
+}
+
+test('a failed search reloads the index once and runs again', async () => {
+  const pf = fakePagefind();
+  setPagefind(pf);
+  let runs = 0;
+  const result = await withIndexReload(async () => {
+    runs += 1;
+    if (runs === 1) throw new Error('404 index/en_abc.pf_index');
+    return 'found';
+  });
+  assert.equal(result, 'found');
+  assert.equal(runs, 2);
+  assert.deepEqual(pf.calls, ['destroy', 'init']);
+});
+
+test('a search that fails again after the reload fails', async () => {
+  const pf = fakePagefind();
+  setPagefind(pf);
+  await assert.rejects(
+    withIndexReload(async () => {
+      throw new Error('still broken');
+    }),
+    /still broken/,
+  );
+  assert.deepEqual(pf.calls, ['destroy', 'init'], 'one reload, not a loop');
+});
+
+test('searches failing at once share one reload', async () => {
+  const pf = fakePagefind();
+  setPagefind(pf);
+  const failOnce = () => {
+    let failed = false;
+    return async () => {
+      if (!failed) {
+        failed = true;
+        throw new Error('gone');
+      }
+      return 'ok';
+    };
+  };
+  const results = await Promise.all([
+    withIndexReload(failOnce()),
+    withIndexReload(failOnce()),
+    withIndexReload(failOnce()),
+  ]);
+  assert.deepEqual(results, ['ok', 'ok', 'ok']);
+  assert.deepEqual(pf.calls, ['destroy', 'init']);
+});
+
+test('a search that works does not reload', async () => {
+  const pf = fakePagefind();
+  setPagefind(pf);
+  assert.equal(await withIndexReload(async () => 1), 1);
+  assert.deepEqual(pf.calls, []);
+  setPagefind(null);
+});

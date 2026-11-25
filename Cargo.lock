@@ -5432,6 +5432,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "test_search_enqueue"
+version = "0.107.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "test_site_queries"
 version = "0.105.0"
 dependencies = [

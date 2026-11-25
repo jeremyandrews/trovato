@@ -1,33 +1,35 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/list.html" as list %}
 
-{% block content %}
-{{ list::header(title=record_type ~ " records") }}
+{% block page_title %}{{ t(s="{type} records", type=record_type) }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="The rows of this lightweight-record type, declared by the {plugin} plugin. They are read-only here.", plugin=plugin) }}</p>{% endblock page_intro %}
+{% block page_actions %}<a href="/admin/structure/records" class="button button--secondary">{{ t(s="All record types") }}</a>{% endblock page_actions %}
 
-<div class="admin-card">
-    <p><a href="/admin/structure/records">&larr; All record types</a> &middot; plugin <code>{{ plugin }}</code></p>
-    {% if records %}
+{% block content %}
+{% if records %}
+<div class="table-scroll" role="region" aria-labelledby="records-caption" tabindex="0">
     <table class="table">
+        <caption id="records-caption">{{ t(s="{type} records", type=record_type) }}</caption>
         <thead>
             <tr>
-                <th>Title</th>
-                <th>ID</th>
+                <th scope="col">{{ t(s="Title") }}</th>
+                <th scope="col">{{ t(s="ID") }}</th>
             </tr>
         </thead>
         <tbody>
             {% for r in records %}
             <tr>
-                <td><a href="/admin/structure/records/{{ record_type }}/{{ r.id }}">{{ r.title | default(value="(untitled)") }}</a></td>
+                <th scope="row"><a href="/admin/structure/records/{{ record_type }}/{{ r.id }}">{% if r.title %}{{ r.title }}{% else %}{{ t(s="(untitled)") }}{% endif %}</a></th>
                 <td><code>{{ r.id }}</code></td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
-    {% if truncated %}
-    <p><em>Showing the most recently changed records only.</em></p>
-    {% endif %}
-    {% else %}
-    {{ list::empty(message="This record type has no rows yet.") }}
-    {% endif %}
 </div>
-{% endblock %}
+{% if truncated %}
+<p><em>{{ t(s="Showing the most recently changed records only.") }}</em></p>
+{% endif %}
+{% else %}
+{{ list::empty(message=t(s="This record type has no rows yet.")) }}
+{% endif %}
+{% endblock content %}

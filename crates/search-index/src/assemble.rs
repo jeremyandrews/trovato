@@ -52,8 +52,51 @@ pub struct LanguageIndex {
     /// Every file, by its path in the bundle, gzipped as Pagefind writes it:
     /// the meta file, the fragments and the word chunks.
     pub files: BTreeMap<String, Vec<u8>>,
-    /// The word chunk plan this build cut, in order.
+    /// The word chunk boundaries this build cut, in order, as the meta file
+    /// lists them (prefixes).
     pub chunks: Vec<MetaChunk>,
+    /// The same chunks with their real first and last words and their size,
+    /// which the incremental updater routes new words by
+    /// ([`crate::update`]).
+    pub plan: Vec<ChunkPlan>,
+}
+
+/// One word chunk as the incremental updater needs it: the real first and
+/// last word (the meta file holds only distinguishing prefixes), its size by
+/// Pagefind's measure, and its file name stem.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChunkPlan {
+    /// The chunk's first word.
+    pub first: String,
+    /// The chunk's last word.
+    pub last: String,
+    /// The sum over its postings of `locs.len() + 1`, the 20,000 rule's
+    /// measure.
+    pub locations: u64,
+    /// The `index/<hash>.pf_index` stem.
+    pub hash: String,
+}
+
+impl ChunkPlan {
+    /// The plan entry for a chunk's words (in byte order), named `hash`.
+    pub fn of(words: &[PackedWord], hash: String) -> Self {
+        Self {
+            first: words.first().map_or(String::new(), |w| w.word.clone()),
+            last: words.last().map_or(String::new(), |w| w.word.clone()),
+            locations: locations(words),
+            hash,
+        }
+    }
+}
+
+/// The 20,000 rule's measure of a run of words: the sum over their postings
+/// of `locs.len() + 1`.
+pub fn locations(words: &[PackedWord]) -> u64 {
+    words
+        .iter()
+        .flat_map(|w| w.pages.iter())
+        .map(|p| p.locs.len() as u64 + 1)
+        .sum()
 }
 
 /// The fragment a tombstone slot points at: Pagefind's `PageFragmentData`
@@ -156,8 +199,10 @@ pub fn build_language_avoiding(
     let mut chunk_meta = chunk_meta(&chunks);
 
     let mut files = fragment_files;
+    let mut plan = Vec::with_capacity(chunks.len());
     let mut chunk_names: HashMap<String, ()> = HashMap::new();
     for (i, chunk) in chunks.into_iter().enumerate() {
+        let mut entry = ChunkPlan::of(&chunk, String::new());
         let bytes = to_cbor(&WordIndex { words: chunk })?;
         let hash = format!("{language}_{}", full_hash(&bytes));
         let mut short = short_name(&hash, language);
@@ -173,6 +218,8 @@ pub fn build_language_avoiding(
         }
         chunk_names.insert(short.clone(), ());
         files.insert(format!("index/{short}.pf_index"), pack(&bytes)?);
+        entry.hash.clone_from(&short);
+        plan.push(entry);
         if let Some(meta) = chunk_meta.get_mut(i) {
             meta.hash = short;
         }
@@ -205,12 +252,13 @@ pub fn build_language_avoiding(
         word_count,
         files,
         chunks: chunk_meta,
+        plan,
     })
 }
 
 /// Upstream's `chunk_index`: words in byte order, a cut whenever the running
 /// sum over postings of `locs.len() + 1` reaches `chunk_size`.
-fn chunk_index(mut words: Vec<PackedWord>, chunk_size: usize) -> Vec<Vec<PackedWord>> {
+pub(crate) fn chunk_index(mut words: Vec<PackedWord>, chunk_size: usize) -> Vec<Vec<PackedWord>> {
     words.sort_by(|a, b| a.word.cmp(&b.word));
 
     let mut index_chunks = Vec::new();
@@ -233,13 +281,24 @@ fn chunk_index(mut words: Vec<PackedWord>, chunk_size: usize) -> Vec<Vec<PackedW
 /// Upstream's `chunk_meta`: each chunk's first and last word, then every
 /// neighbouring pair of boundaries shortened with [`get_prefixes`].
 fn chunk_meta(indexes: &[Vec<PackedWord>]) -> Vec<MetaChunk> {
-    let mut named: Vec<MetaChunk> = indexes
-        .iter()
-        .map(|chunk| MetaChunk {
-            from: chunk.first().map_or(String::new(), |w| w.word.clone()),
-            to: chunk.last().map_or(String::new(), |w| w.word.clone()),
-            hash: String::new(),
-        })
+    bounds_meta(indexes.iter().map(|chunk| {
+        (
+            chunk.first().map_or(String::new(), |w| w.word.clone()),
+            chunk.last().map_or(String::new(), |w| w.word.clone()),
+            String::new(),
+        )
+    }))
+}
+
+/// [`chunk_meta`] from each chunk's real first and last word and its file
+/// stem, `(first, last, hash)`: every neighbouring pair of boundaries
+/// shortened with [`get_prefixes`], exactly as a full build shortens the same
+/// chunks.
+pub(crate) fn bounds_meta(
+    chunks: impl Iterator<Item = (String, String, String)>,
+) -> Vec<MetaChunk> {
+    let mut named: Vec<MetaChunk> = chunks
+        .map(|(from, to, hash)| MetaChunk { from, to, hash })
         .collect();
     for i in 1..named.len() {
         let (left, right) = named.split_at_mut(i);

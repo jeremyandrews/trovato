@@ -67,6 +67,10 @@ members = [
     # U40 background item-api fixture: save-item and delete-item from tap_cron
     # and tap_queue_worker under item_background; built with --target wasm32-wasip1.
     "plugins/test_item_background",
+    # B218 search index fixture: a raw item write from tap_cron, then the
+    # search-index-enqueue host call plugins use to say so; built with
+    # --target wasm32-wasip1.
+    "plugins/test_search_enqueue",
     # B80 site fixture: a site plugin's listings, sitemap, docs and translation
     # sync through `query` and item-api, with no raw_sql; built with
     # --target wasm32-wasip1.
@@ -230,6 +234,15 @@ semicolon_if_nothing_returned = "warn"
 # runs 45406677098 and 45412845837), and a cold cache is common enough there
 # to matter. The kernel and the plugins build, and step in a debugger, exactly
 # as before.
+#
+# Tera and pest, its parser, belong on the list too: every `TestApp` and every
+# CLI command parses all the templates at start, and since the admin passes
+# its words through `t()` that parse is most of a debug start (ThemeEngine::new
+# 1.29 s unoptimized, 0.29 s with these, measured locally 2026-11-25).
+[profile.dev.package.tera]
+opt-level = 3
+[profile.dev.package.pest]
+opt-level = 3
 [profile.dev.package.cranelift-codegen]
 opt-level = 3
 [profile.dev.package.cranelift-frontend]
@@ -269,4 +282,20 @@ opt-level = 3
 [profile.dev.package.password-hash]
 opt-level = 3
 [profile.dev.package.base64ct]
+opt-level = 3
+# The search index (B218): tokenizing (the vendored fossick over lol_html), CBOR,
+# gzip and SHA-1 run for every page the index and gate tests build. Unoptimized
+# they took the crate's random update proof to 72 s on CI; optimized, 11 s
+# locally with every batch compared to a full build.
+[profile.dev.package.trovato-search-index]
+opt-level = 3
+[profile.dev.package.lol_html]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.sha1]
+opt-level = 3
+[profile.dev.package.minicbor]
+opt-level = 3
+[profile.dev.package.pagefind_stem]
 opt-level = 3

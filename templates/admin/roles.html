@@ -1,75 +1,56 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/list.html" as list %}
 
+{% block page_title %}{{ t(s="Roles") }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="A role is a named set of permissions. Assigning a role to a person is done on that person's account.") }}</p>{% endblock page_intro %}
+{% block page_actions %}{{ list::add_link(url="/admin/people/roles/add", label=t(s="Add role")) }}{% endblock page_actions %}
+
 {% block content %}
-{{ list::header(title="Roles", add_url="/admin/people/roles/add", add_label="Add role") }}
+<p>{{ t(s="Assign the permissions themselves on the permissions screen, which is a grid of every role against every permission.") }} <a href="/admin/people/permissions">{{ t(s="Go to the permissions") }}</a></p>
 
-<div class="admin-card">
-    <p>A role is a named set of permissions. Assign the permissions themselves on
-    the <a href="/admin/people/permissions">permissions</a> screen, which is a grid
-    of every role against every permission. Assigning a role to a person is done on
-    that person's account.</p>
-
-    {% if roles %}
+{% if roles %}
+<div class="table-scroll" role="region" aria-labelledby="roles-caption" tabindex="0">
     <table class="table">
+        <caption id="roles-caption">{{ t(s="Roles and their members") }}</caption>
         <thead>
             <tr>
-                <th>Role name</th>
-                <th>Permissions</th>
-                <th>Members</th>
-                <th>Operations</th>
+                <th scope="col">{{ t(s="Role name") }}</th>
+                <th scope="col">{{ t(s="Permissions") }}</th>
+                <th scope="col">{{ t(s="Members") }}</th>
+                <th scope="col">{{ t(s="Operations") }}</th>
             </tr>
         </thead>
         <tbody>
             {% for role in roles %}
             <tr>
-                <td>
+                <th scope="row">
                     <a href="/admin/people/roles/{{ role.id }}/edit">{{ role.name }}</a>
                     {% if role.built_in %}
-                    <span class="badge badge--system">Built-in</span>
+                    <span class="badge">{{ t(s="Built-in") }}</span>
                     {% endif %}
-                </td>
+                </th>
                 <td><a href="/admin/people/permissions">{{ role.permissions }}</a></td>
                 <td>{{ role.members }}</td>
-                <td>
-                    <a href="/admin/people/roles/{{ role.id }}/edit">Edit</a>
+                <td class="operations">
+                    <a href="/admin/people/roles/{{ role.id }}/edit">{{ t(s="Edit {name}", name=role.name) }}</a>
                     {% if not role.built_in %}
-                    &middot;
                     {% if role.members > 0 %}
-                    {{ list::delete_button(action="/admin/people/roles/" ~ role.id ~ "/delete", confirm_text="Delete the " ~ role.name ~ " role? " ~ role.members ~ " user(s) hold it and will lose it. Their accounts are not deleted, and no other role is affected.", csrf_token=csrf_token) }}
+                    {{ list::delete_button(action="/admin/people/roles/" ~ role.id ~ "/delete", label=t(s="Delete {name}", name=role.name), confirm_text=t(s="Delete the {name} role? {count} user(s) hold it and will lose it. Their accounts are not deleted, and no other role is affected.", name=role.name, count=role.members), csrf_token=csrf_token) }}
                     {% else %}
-                    {{ list::delete_button(action="/admin/people/roles/" ~ role.id ~ "/delete", confirm_text="Delete the " ~ role.name ~ " role? Nobody holds it.", csrf_token=csrf_token) }}
+                    {{ list::delete_button(action="/admin/people/roles/" ~ role.id ~ "/delete", label=t(s="Delete {name}", name=role.name), confirm_text=t(s="Delete the {name} role? Nobody holds it.", name=role.name), csrf_token=csrf_token) }}
                     {% endif %}
                     {% else %}
-                    &middot;
-                    <span title="The anonymous and authenticated roles are referenced by the kernel by id.">Not deletable</span>
+                    <span>{{ t(s="Not deletable: the kernel refers to the anonymous and authenticated roles by id.") }}</span>
                     {% endif %}
                 </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
-
-    <p><strong>Deleting a role removes it from everyone who holds it.</strong> The
-    accounts are untouched and no other role changes; only that role's assignments
-    and its permission grants go.</p>
-
-    {% else %}
-    {{ list::empty(message="No roles found.", add_url="/admin/people/roles/add") }}
-    {% endif %}
 </div>
 
-<style>
-    .badge {
-        display: inline-block;
-        padding: 0.125rem 0.375rem;
-        border-radius: 0.25rem;
-        font-size: 0.75rem;
-        margin-left: 0.5rem;
-    }
-    .badge--system {
-        background: #e2e3e5;
-        color: #383d41;
-    }
-</style>
-{% endblock %}
+<p>{{ t(s="Deleting a role removes it from everyone who holds it. The accounts are untouched and no other role changes; only that role's assignments and its permission grants go.") }}</p>
+{% else %}
+{{ list::empty(message=t(s="No roles found."), add_url="/admin/people/roles/add", add_label=t(s="Add role")) }}
+{% endif %}
+{% endblock content %}

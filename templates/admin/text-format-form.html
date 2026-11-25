@@ -1,11 +1,11 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/list.html" as list %}
+
+{% block page_title %}{% if editing_name %}{{ t(s="Edit text format {name}", name=editing_name) }}{% else %}{{ t(s="Add text format") }}{% endif %}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="A text format decides how text an editor writes is cleaned before it is shown, and which roles may use it.") }}</p>{% endblock page_intro %}
 
 {% block content %}
-{{ list::header(title=title) }}
-
 <div class="admin-card">
     {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
-    <p><a href="/admin/config/formats">Back to text formats</a></p>
+    <p><a href="/admin/config/formats">{{ t(s="Back to text formats") }}</a></p>
 </div>
-{% endblock %}
+{% endblock content %}
