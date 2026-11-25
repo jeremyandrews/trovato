@@ -6,6 +6,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 
+use crate::metrics::AiBreakerLabels;
 use crate::state::AppState;
 
 /// Create the metrics router.
@@ -43,10 +44,20 @@ async fn metrics(State(state): State<AppState>, request: Request) -> Response {
     m.db_pool_max
         .set(i64::from(state.db_pool_max_connections()));
 
-    // Update circuit breaker state gauges (0=closed, 1=open, 2=half_open)
-    m.ai_circuit_breaker_state.set(breaker_state_value(
-        state.ai_providers().circuit_breaker().state_name(),
-    ));
+    // Update circuit breaker state gauges (0=closed, 1=open, 2=half_open):
+    // every per-operation AI breaker the send path uses, and the connection
+    // test's own.
+    let ai = state.ai_providers();
+    for (operation, breaker) in ai.operation_breaker_states() {
+        m.ai_circuit_breaker_state
+            .get_or_create(&AiBreakerLabels { operation })
+            .set(breaker_state_value(breaker));
+    }
+    m.ai_circuit_breaker_state
+        .get_or_create(&AiBreakerLabels {
+            operation: "connection_test",
+        })
+        .set(breaker_state_value(ai.circuit_breaker().state_name()));
     if let Some(breaker) = state.email().and_then(|e| e.transport().breaker_state()) {
         m.email_circuit_breaker_state
             .set(breaker_state_value(breaker));

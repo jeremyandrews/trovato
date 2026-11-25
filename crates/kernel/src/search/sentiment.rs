@@ -4,7 +4,7 @@
 //! hands the visitor's message and the answer before it to [`SentimentQueue`]
 //! and returns. One background worker drains the queue, asks the configured
 //! Chat provider for one word through the kernel's one send path
-//! (`AiProviderService::chat_once`, by way of `routes::api_search::complete`),
+//! (`AiProviderService::chat_once`, by way of `routes::api_search::send_prompt`),
 //! and adds
 //! the label to the day's analytics counters. Nothing else is kept: the text
 //! goes to the provider and is dropped.
@@ -122,7 +122,9 @@ async fn classify(job: Job, search: &SearchService, ai: &AiProviderService, pool
         job.previous_answer, job.question
     );
 
-    let Some(reply) = crate::routes::api_search::complete(
+    // Through the send path, so the classification is held to the anonymous
+    // cap and recorded in `ai_usage_log` like any other call.
+    let Ok(reply) = crate::routes::api_search::send_prompt(
         ai,
         &resolved,
         &classifier_caller(),
