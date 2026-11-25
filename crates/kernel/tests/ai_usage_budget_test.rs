@@ -299,8 +299,27 @@ fn plugins_dir() -> PathBuf {
         .join("plugins")
 }
 
-fn now() -> i64 {
-    chrono::Utc::now().timestamp()
+/// The first whole second, on the database clock that stamps `ai_usage_log.created`,
+/// that no earlier row can carry. `created` is whole seconds, and the test that
+/// ran just before this one in the `ai-send-path` group may have written rows to
+/// the same provider in the second this one starts in (the site cap test seeds
+/// a 60 token anonymous search row); waiting for the next second keeps them out
+/// of `rows_since`.
+async fn a_fresh_second(app: &TestApp) -> i64 {
+    let db_now = || async {
+        sqlx::query_scalar::<_, i64>("SELECT EXTRACT(EPOCH FROM clock_timestamp())::bigint")
+            .fetch_one(&app.db)
+            .await
+            .unwrap()
+    };
+    let started = db_now().await;
+    loop {
+        let now = db_now().await;
+        if now > started {
+            return now;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// One call on each AI path writes one usage row, with the tokens the provider
@@ -312,7 +331,7 @@ fn one_call_on_each_path_records_its_real_usage() {
         let app = shared_app().await;
         let _serial = SERIAL.lock().await;
         let (base_url, _hits) = stub().await;
-        let since = now();
+        let since = a_fresh_second(app).await;
         let restore = configure(
             app,
             &base_url,
