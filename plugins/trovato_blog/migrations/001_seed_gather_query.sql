@@ -55,13 +55,14 @@ ON CONFLICT (query_id) DO UPDATE SET
 -- URL alias: /blog → /gather/blog_listing
 -- Note: gen_random_uuid() is evaluated on each run but the id column is NOT in
 -- the ON CONFLICT UPDATE SET, so the original UUID is preserved on re-runs.
-INSERT INTO url_alias (id, source, alias, language, stage_id, created)
+INSERT INTO url_alias (id, source, alias, language, stage_id, created, changed)
 VALUES (
     gen_random_uuid(),
     '/gather/blog_listing',
     '/blog',
     'en',
     '0193a5a0-0000-7000-8000-000000000001',
+    EXTRACT(EPOCH FROM NOW())::bigint,
     EXTRACT(EPOCH FROM NOW())::bigint
 )
 ON CONFLICT (alias, language, stage_id) DO UPDATE SET

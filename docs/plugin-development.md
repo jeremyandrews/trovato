@@ -375,15 +375,21 @@ same as its page: an anonymous aggregator gets what an anonymous visitor would
 see, and a gather that requires a permission answers 403 (see the table above).
 Nothing is cached on the server between viewers.
 
-**Polling.** Each response carries an `ETag` and a `Last-Modified`, computed
-from the entries' ids, `changed` timestamps and links plus the feed's config. A
-request whose `If-None-Match` (or, without one, `If-Modified-Since`) still
-matches gets `304 Not Modified` before anything is rendered. The query itself
-still runs, as the viewer, because that is what decides what the viewer may
-see. An anonymous response is `Cache-Control: public, max-age=300`; a response
-to a signed-in session is `private, no-cache`, since it ran with that viewer's
-access. An author's renamed account or a relabelled term reaches readers with
-the entry's next edit, not before, since neither changes the validators.
+**Polling.** Each response carries an `ETag` and a `Last-Modified`. The `ETag`
+hashes the entries' ids, `changed` timestamps and links, the resolved channel
+link, and the feed's config, so it moves on any of those. `Last-Modified` is
+the latest of: the newest entry's `changed` (or `created`); the gather's own
+`changed`, so editing the feed's title, description or other config moves it
+too, not only the `ETag`; and, when the channel link resolves through a
+`url_alias` row rather than a fixed path (tier 3 above), that row's own
+`changed`, so repointing the link moves it as well. A request whose
+`If-None-Match` (or, without one, `If-Modified-Since`) still matches gets
+`304 Not Modified` before anything is rendered. The query itself still runs, as
+the viewer, because that is what decides what the viewer may see. An anonymous
+response is `Cache-Control: public, max-age=300`; a response to a signed-in
+session is `private, no-cache`, since it ran with that viewer's access. An
+author's renamed account or a relabelled term reaches readers with the entry's
+next edit, not before, since neither changes the validators.
 
 #### A feed per author, per tag, per anything the gather takes
 

@@ -66,11 +66,16 @@
 //!
 //! # Polling
 //!
-//! Every response carries an `ETag` and, when it has entries, a
-//! `Last-Modified`. Both come from the entries' ids, their `changed` timestamps
-//! and links, and the feed's config. A request whose `If-None-Match` (or, with
-//! none, `If-Modified-Since`) still matches is answered `304` before terms are
-//! loaded or anything is rendered.
+//! Every response carries an `ETag` and a `Last-Modified`. The `ETag` hashes
+//! the entries' ids, their `changed` timestamps and links, the resolved
+//! channel link, and the feed's config. `Last-Modified` is the latest of the
+//! newest entry's `changed` (or `created`), the gather's own `changed` (so a
+//! title, description or other config edit moves it, not only the `ETag`),
+//! and, when the channel link resolves through a `url_alias` row rather than
+//! a fixed path, that row's own `changed` (so repointing the link moves it
+//! too). A request whose `If-None-Match` (or, with none, `If-Modified-Since`)
+//! still matches is answered `304` before terms are loaded or anything is
+//! rendered.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -662,10 +667,18 @@ async fn serve_feed(
 
     let rss_path = filled(&config.path);
     // Resolved before the validators, not after: the channel link is part of
-    // the document, so an alias write that changes it must change the ETag.
-    let home_path = resolve_home_path(&state, config, &filled).await;
+    // the document, so an alias write that changes it must change the ETag
+    // and, through `home_path_changed`, `Last-Modified`.
+    let (home_path, home_path_changed) = resolve_home_path(&state, config, &filled).await;
     let validators = Validators::compute(
-        config, format, &site_url, &rss_path, &home_path, &rows, &meta,
+        config,
+        format,
+        &site_url,
+        &rss_path,
+        &home_path,
+        home_path_changed,
+        &rows,
+        &meta,
     );
     let cache_headers = validators.headers(&cache_control);
     if validators.matches(&headers) {
@@ -717,18 +730,26 @@ async fn serve_feed(
 /// `/gather/{query_id}` (cached — see
 /// [`crate::gather::GatherService::outbound_alias_for_gather`]), else that
 /// path itself.
+///
+/// Also the alias row's own `changed`, when the link came from one: a
+/// `Fixed` link is part of the gather's own config (an argument route or
+/// `canonical_url`), so editing it already moves `config.query_changed`, and
+/// no separate time is needed.
 async fn resolve_home_path(
     state: &AppState,
     config: &FeedConfig,
     filled: &impl Fn(&str) -> String,
-) -> String {
+) -> (String, Option<i64>) {
     match &config.home_path {
-        HomePath::Fixed(pattern) => filled(pattern),
-        HomePath::GatherDefault => state
+        HomePath::Fixed(pattern) => (filled(pattern), None),
+        HomePath::GatherDefault => match state
             .gather()
             .outbound_alias_for_gather(&config.query_id)
             .await
-            .unwrap_or_else(|| format!("/gather/{}", config.query_id)),
+        {
+            Some((alias, changed)) => (alias, Some(changed)),
+            None => (format!("/gather/{}", config.query_id), None),
+        },
     }
 }
 
@@ -996,7 +1017,13 @@ fn row_body(row: &serde_json::Value) -> Option<(String, Option<String>)> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Validators {
     etag: String,
-    /// Newest `changed` among the entries.
+    /// The latest of: the newest entry's `changed` (or `created`), the
+    /// feed's own `config.query_changed` (so a title, description or other
+    /// config edit moves it, not only the `ETag`), and `home_path_changed`
+    /// (so does an edit to the `url_alias` row the channel link resolves
+    /// through, when it resolves through one). Always `Some`:
+    /// `config.query_changed` is always a real timestamp, so a feed with no
+    /// entries still has a `Last-Modified`.
     last_modified: Option<i64>,
 }
 
@@ -1008,12 +1035,18 @@ impl Validators {
     /// about, so it must be hashed as given, already resolved, rather than
     /// recomputed from `config`. The feed's config is in too, with its query's
     /// `changed`, so editing the feed declaration invalidates old copies.
+    ///
+    /// `home_path_changed` is `home_path`'s own change time when it came from
+    /// a `url_alias` row (`None` for a `Fixed` link, whose edits already move
+    /// `config.query_changed`); it folds into `last_modified` only, since the
+    /// resolved `home_path` string is already in the `ETag` hash.
     fn compute(
         config: &FeedConfig,
         format: FeedFormat,
         site_url: &str,
         request_path: &str,
         home_path: &str,
+        home_path_changed: Option<i64>,
         rows: &[&serde_json::Value],
         meta: &HashMap<Uuid, EntryMeta>,
     ) -> Self {
@@ -1035,7 +1068,12 @@ impl Validators {
         line(&config.full_content.to_string());
         line(&config.query_changed.to_string());
 
-        let mut newest: Option<i64> = None;
+        // The channel's own floor: always a real timestamp, so a feed with no
+        // entries still gets a `Last-Modified`.
+        let mut newest = config.query_changed;
+        if let Some(home_path_changed) = home_path_changed {
+            newest = newest.max(home_path_changed);
+        }
         for row in rows {
             let uuid = row_uuid(row);
             let changed = uuid
@@ -1044,7 +1082,7 @@ impl Validators {
                 .or_else(|| row.get("changed").and_then(|v| v.as_i64()))
                 .or_else(|| row.get("created").and_then(|v| v.as_i64()));
             if let Some(changed) = changed {
-                newest = Some(newest.map_or(changed, |n| n.max(changed)));
+                newest = newest.max(changed);
             }
             line(&row_id(row).unwrap_or_default());
             line(&changed.unwrap_or_default().to_string());
@@ -1055,7 +1093,7 @@ impl Validators {
 
         Validators {
             etag: format!("\"{hex}\""),
-            last_modified: newest,
+            last_modified: Some(newest),
         }
     }
 
@@ -1696,6 +1734,7 @@ mod tests {
             "https://e",
             "/rss/q.xml",
             "/blog",
+            None,
             &rows,
             &meta(None, 10),
         );
@@ -1708,6 +1747,7 @@ mod tests {
                 "https://e",
                 "/rss/q.xml",
                 "/blog",
+                None,
                 &rows,
                 &meta(None, 10)
             ),
@@ -1722,6 +1762,7 @@ mod tests {
                 "https://e",
                 "/rss/q.xml",
                 "/blog",
+                None,
                 &rows,
                 &meta(None, 11)
             )
@@ -1736,6 +1777,7 @@ mod tests {
                 "https://e",
                 "/rss/q.xml",
                 "/blog",
+                None,
                 &rows,
                 &meta(None, 10)
             )
@@ -1752,6 +1794,7 @@ mod tests {
                 "https://e",
                 "/rss/q.xml",
                 "/blog",
+                None,
                 &rows,
                 &meta(None, 10)
             )
@@ -1768,11 +1811,48 @@ mod tests {
                 "https://e",
                 "/rss/q.xml",
                 "/gather/q",
+                None,
                 &rows,
                 &meta(None, 10)
             )
             .etag,
             "a changed channel link changes the etag"
+        );
+        // The defect this change fixes: a title/description edit (`query.changed`)
+        // or an alias edit (`home_path_changed`) left `Last-Modified` where it
+        // was, so a reader polling with only `If-Modified-Since` kept the old
+        // channel values.
+        let mut config_edited = config();
+        config_edited.query_changed = 20;
+        assert_eq!(
+            Validators::compute(
+                &config_edited,
+                FeedFormat::Rss,
+                "https://e",
+                "/rss/q.xml",
+                "/blog",
+                None,
+                &rows,
+                &meta(None, 10),
+            )
+            .last_modified,
+            Some(20),
+            "a config edit newer than the entries moves Last-Modified"
+        );
+        assert_eq!(
+            Validators::compute(
+                &config(),
+                FeedFormat::Rss,
+                "https://e",
+                "/rss/q.xml",
+                "/blog",
+                Some(30),
+                &rows,
+                &meta(None, 10),
+            )
+            .last_modified,
+            Some(30),
+            "an alias edit newer than the entries moves Last-Modified"
         );
     }
 

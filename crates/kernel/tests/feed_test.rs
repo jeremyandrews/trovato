@@ -24,7 +24,7 @@ use trovato_kernel::gather::types::{
     GatherQuery, QueryDefinition, QueryDisplay, QuerySort, SortDirection,
 };
 use trovato_kernel::models::stage::LIVE_STAGE_ID;
-use trovato_kernel::models::{CreateItem, CreateUrlAlias, UrlAlias};
+use trovato_kernel::models::{CreateItem, CreateUrlAlias, UpdateUrlAlias, UrlAlias};
 use trovato_kernel::routes::feed::{build_feed_router, feed_links};
 use trovato_kernel::tap::UserContext;
 use uuid::Uuid;
@@ -924,6 +924,209 @@ fn a_repeat_request_with_the_etag_is_not_modified() {
         assert_ne!(headers.get("etag").unwrap().to_str().unwrap(), etag);
 
         delete_items(app, &[id]).await;
+        unregister(app, &query).await;
+    });
+}
+
+/// The defect: `Last-Modified` followed only the entries, so a reader polling
+/// with `If-Modified-Since` alone (no `If-None-Match`, which a real aggregator
+/// may not send) kept the feed's old title and description after an edit to
+/// either, even though the `ETag` had already moved.
+#[test]
+fn a_title_or_description_edit_moves_last_modified_too() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_item_type(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let path = format!("/rss/feed-channel-{stamp}.xml");
+        let mut query = feed_query(&format!("feed_channel_{stamp}"), &path);
+        isolate(&mut query, &stamp);
+        let id = create_item(
+            app,
+            &format!("Channel Post {stamp}"),
+            1,
+            chrono::Utc::now().timestamp(),
+        )
+        .await;
+        register(app, &query).await;
+
+        let (status, headers, _) = send(
+            app,
+            &query,
+            Request::get(&path).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let last_modified = headers
+            .get("last-modified")
+            .expect("a Last-Modified")
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        // Nothing changed yet: the conditional GET is still 304.
+        let (status, _, _) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-modified-since", &last_modified)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED, "nothing changed yet");
+
+        // `Last-Modified` is second-precision, so a bump before the next edit
+        // must land in a later second to be visible.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+        // A title edit is a config edit: `query.changed` moves with it, the
+        // way an admin save always sets it to the time of the save.
+        query.display.feed.as_mut().unwrap().title = Some(format!("New Title {stamp}"));
+        query.changed = chrono::Utc::now().timestamp();
+
+        let (status, headers, body) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-modified-since", &last_modified)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "a title edit must not be 304");
+        assert!(body.contains(&format!("New Title {stamp}")), "{body}");
+        let last_modified = headers
+            .get("last-modified")
+            .expect("a Last-Modified")
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+        query.display.feed.as_mut().unwrap().description = Some(format!("New Description {stamp}"));
+        query.changed = chrono::Utc::now().timestamp();
+
+        let (status, _, body) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-modified-since", &last_modified)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "a description edit must not be 304");
+        assert!(body.contains(&format!("New Description {stamp}")), "{body}");
+
+        delete_items(app, &[id]).await;
+        unregister(app, &query).await;
+    });
+}
+
+/// The defect: the channel link's alias has no reliable change time, so an
+/// alias edit also left `Last-Modified` where it was, even though the `ETag`
+/// (which hashes the resolved link) had already moved.
+#[test]
+fn an_alias_edit_on_the_channel_link_moves_last_modified_too() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_item_type(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let path = format!("/rss/feed-alias-{stamp}.xml");
+        let query_id = format!("feed_alias_{stamp}");
+        // No `canonical_url` and no argument: the channel link resolves
+        // through the outbound alias of `/gather/{query_id}`.
+        let mut query = feed_query(&query_id, &path);
+        isolate(&mut query, &stamp);
+        let id = create_item(
+            app,
+            &format!("Alias Post {stamp}"),
+            1,
+            chrono::Utc::now().timestamp(),
+        )
+        .await;
+        register(app, &query).await;
+
+        let alias = UrlAlias::create(
+            &app.db,
+            CreateUrlAlias {
+                source: format!("/gather/{query_id}"),
+                alias: format!("/original-{stamp}"),
+                language: None,
+                stage_id: None,
+            },
+        )
+        .await
+        .expect("create outbound alias");
+
+        let (status, headers, body) = send(
+            app,
+            &query,
+            Request::get(&path).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains(&format!("/original-{stamp}")), "{body}");
+        let last_modified = headers
+            .get("last-modified")
+            .expect("a Last-Modified")
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let (status, _, _) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-modified-since", &last_modified)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED, "nothing changed yet");
+
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+        UrlAlias::update(
+            &app.db,
+            alias.id,
+            UpdateUrlAlias {
+                source: None,
+                alias: Some(format!("/renewed-{stamp}")),
+                language: None,
+                stage_id: None,
+            },
+        )
+        .await
+        .expect("update outbound alias")
+        .expect("the alias existed");
+        // The real invalidation path is a Redis bump this server would also
+        // receive, asynchronously; called directly here so the next request
+        // is deterministically warm with the new alias.
+        app.state.gather().clear_outbound_alias_cache();
+
+        let (status, headers, body) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-modified-since", &last_modified)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "an alias edit must not be 304");
+        assert!(body.contains(&format!("/renewed-{stamp}")), "{body}");
+        assert_ne!(
+            headers.get("last-modified").unwrap().to_str().unwrap(),
+            last_modified
+        );
+
+        delete_items(app, &[id]).await;
+        UrlAlias::delete(&app.db, alias.id).await.ok();
         unregister(app, &query).await;
     });
 }
