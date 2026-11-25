@@ -904,6 +904,16 @@ impl ThemeEngine {
             "t_message",
             crate::i18n::TranslateMessageFunction::new(locale.clone()),
         );
+        // `admin_render()`: whether this render is an admin page's (inside the
+        // admin shell's translation scope). For a template the front end
+        // shares, to fix something on admin pages while leaving front end
+        // output exactly as it was.
+        tera.register_function(
+            "admin_render",
+            |_: &std::collections::HashMap<String, tera::Value>| {
+                Ok(tera::Value::Bool(crate::i18n::current_language().is_some()))
+            },
+        );
         // Marker mode (tests only): every printed value is wrapped so a test
         // can tell interface text that skipped `t` from data.
         if crate::i18n::markers_enabled() {

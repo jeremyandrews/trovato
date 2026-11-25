@@ -1023,6 +1023,102 @@ jobs:
           node-version: 22
       - run: node --test static/js/test/*.test.js
 
+  # The administration in a real browser: axe (WCAG 2.0, 2.1 and 2.2, A and
+  # AA) on every GET page in docs/admin/inventory.md, in four modes (light,
+  # dark, 320 px wide, and the right-to-left pseudo locale), plus keyboard
+  # checks and accessibility-tree snapshots. A fresh site is generated for it
+  # (tests/admin-a11y/scripts/seed-site.sh) and served by the kernel built
+  # here; docs/admin/accessibility.md says how to run the same locally.
+  admin-a11y:
+    name: Admin accessibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: trovato
+          POSTGRES_PASSWORD: trovato
+          POSTGRES_DB: trovato_a11y
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+      redis:
+        image: redis:7
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 6379:6379
+    env:
+      DATABASE_URL: postgres://trovato:trovato@localhost:5432/trovato_a11y
+      REDIS_URL: redis://127.0.0.1:6379
+      RUST_LOG: warn
+      PORT: 3000
+      SITE_URL: http://localhost:3000
+      COOKIE_SECURE: never
+      TROVATO_PSEUDO_LOCALES: 1
+      ADMIN_A11Y_BASE: http://localhost:3000
+      ADMIN_A11Y_USER: gen_admin
+      # A throwaway site on the runner; not a secret.
+      ADMIN_A11Y_PASSWORD: a11y-check-only
+      CARGO_PROFILE_DEV_DEBUG: line-tables-only
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+          targets: wasm32-wasip1
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the kernel
+        run: cargo build -p trovato-kernel --bin trovato
+      - name: Build the plugins whose admin pages are checked
+        run: |
+          PLUGINS="trovato_blog trovato_categories trovato_comments trovato_audit_log trovato_media trovato_locale trovato_content_translation trovato_search trovato_redirects"
+          cargo build $(printf -- '-p %s ' $PLUGINS) --target wasm32-wasip1 --release
+          for p in $PLUGINS; do
+            cp "target/wasm32-wasip1/release/$p.wasm" "plugins/$p/"
+          done
+      - name: Generate the site
+        run: TROVATO=target/debug/trovato tests/admin-a11y/scripts/seed-site.sh
+      - name: Start the site
+        run: |
+          nohup target/debug/trovato serve > "$RUNNER_TEMP/trovato.log" 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf http://localhost:3000/health > /dev/null && exit 0
+            sleep 2
+          done
+          cat "$RUNNER_TEMP/trovato.log"
+          exit 1
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tests/admin-a11y/package-lock.json
+      - name: Install the browser checks
+        working-directory: tests/admin-a11y
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Run the browser checks
+        working-directory: tests/admin-a11y
+        run: npm test
+      - name: Keep the failures
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: admin-a11y-results
+          path: |
+            tests/admin-a11y/test-results/
+            ${{ runner.temp }}/trovato.log
+          retention-days: 7
+
   terminology:
     name: Terminology Check
     runs-on: ubuntu-latest

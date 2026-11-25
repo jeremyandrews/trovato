@@ -1,6 +1,9 @@
+{#- On an admin page the label names the file chooser itself; the front end
+    keeps its markup exactly as it was (admin_render, theme/engine.rs). -#}
+{%- set in_admin = admin_render() -%}
 <div class="form-item form-item--file">
     {% if element.title %}
-    <label for="{{ name }}" class="form-item__label{% if element.required %} form-item__label--required{% endif %}">{{ element.title }}</label>
+    <label for="{{ name }}{% if in_admin %}-file{% endif %}" class="form-item__label{% if element.required %} form-item__label--required{% endif %}">{{ element.title }}</label>
     {% endif %}
     {% set file_val = element.default_value | default(value='') %}
     <div class="file-upload-widget" data-field="{{ name }}">
@@ -10,7 +13,7 @@
             <button type="button" class="button button--small file-upload-widget__remove">{{ t(s="Remove") }}</button>
         </div>
         <div class="file-upload-widget__input"{% if file_val %} style="display:none"{% endif %}>
-            <input type="file" class="file-upload-widget__file" accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.zip,.gz">
+            <input type="file" {% if in_admin %}id="{{ name }}-file" {% if not element.title %}aria-label="{{ t(s='Choose a file') }}" {% endif %}{% endif %}class="file-upload-widget__file" accept="image/*,application/pdf,.doc,.docx,.xls,.xlsx,.txt,.csv,.zip,.gz">
             <button type="button" class="button button--small media-picker-browse" data-target="{{ name }}">{{ t(s="Browse media") }}</button>
             <span class="file-upload-widget__status"></span>
         </div>

@@ -4,7 +4,7 @@
   "description": "Browser accessibility checks of the Trovato administration: axe (WCAG 2.2 A and AA), keyboard, and accessibility tree snapshots. See docs/admin/accessibility.md.",
   "type": "module",
   "scripts": {
-    "test": "playwright test",
+    "test": "playwright test --project=light --project=dark --project=narrow --project=rtl",
     "screenshots": "playwright test --project=screenshots"
   },
   "devDependencies": {

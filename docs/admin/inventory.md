@@ -12,7 +12,7 @@ Columns: the path as registered; its methods; its group; the handler and where i
 - Appearance: 3 routes
 - People: 17 routes
 - Extend: 13 routes
-- Configuration: 18 routes
+- Configuration: 22 routes
 - Reports: 5 routes
 
 <!-- kernel routes -->
@@ -128,13 +128,17 @@ Columns: the path as registered; its methods; its group; the handler and where i
 | `/admin/config/formats/{format}/edit` | GET,POST | Configuration | `GET: edit_form \| POST: edit_submit` (GET: crates/kernel/src/routes/admin_text_format.rs:511 \| POST: crates/kernel/src/routes/admin_text_format.rs:543) | admin/text-format-form.html | GET: require_permission("administer text formats") \| POST: require_permission("administer text formats") via save() |
 | `/admin/config/formats/add` | GET,POST | Configuration | `GET: add_form \| POST: add_submit` (GET: crates/kernel/src/routes/admin_text_format.rs:482 \| POST: crates/kernel/src/routes/admin_text_format.rs:502) | admin/text-format-form.html | GET: require_permission("administer text formats") \| POST: require_permission("administer text formats") via save() |
 | `/admin/config/overview` | GET | Configuration | `landing` (crates/kernel/src/routes/admin_shell.rs) | admin/landing.html | require_permission("access administration pages"); lists only pages whose own gate admits the viewer; 404 when none |
+| `/admin/config/redirects` | GET | Configuration | `list_redirects` (crates/kernel/src/routes/admin_redirect.rs:63) | admin/redirects.html | require_permission("view redirects"); plugin trovato_redirects enabled |
+| `/admin/config/redirects/{id}/delete` | POST | Configuration | `delete_redirect` (crates/kernel/src/routes/admin_redirect.rs:291) | redirect | require_permission("administer redirects"); CSRF; plugin trovato_redirects enabled |
+| `/admin/config/redirects/{id}/edit` | GET,POST | Configuration | `GET: edit_redirect_form \| POST: edit_redirect_submit` (crates/kernel/src/routes/admin_redirect.rs:194, crates/kernel/src/routes/admin_redirect.rs:247) | GET: admin/redirect-form.html \| POST: redirect (re-renders admin/redirect-form.html on error) | require_permission("administer redirects"); CSRF on POST; plugin trovato_redirects enabled |
+| `/admin/config/redirects/add` | GET,POST | Configuration | `GET: add_redirect_form \| POST: add_redirect_submit` (crates/kernel/src/routes/admin_redirect.rs:127, crates/kernel/src/routes/admin_redirect.rs:153) | GET: admin/redirect-form.html \| POST: redirect (re-renders admin/redirect-form.html on error) | require_permission("administer redirects"); CSRF on POST; plugin trovato_redirects enabled |
 | `/admin/config/search` | GET,POST | Configuration | `GET: show_form \| POST: save_form` (GET: crates/kernel/src/routes/admin_search.rs:309 \| POST: crates/kernel/src/routes/admin_search.rs:318) | GET: admin/config/search.html \| POST: redirect (re-renders admin/config/search.html on error) | require_permission("administer site") |
 | `/admin/config/site` | GET,POST | Configuration | `GET: site_config_form \| POST: site_config_submit` (GET: crates/kernel/src/routes/admin_config.rs:81 \| POST: crates/kernel/src/routes/admin_config.rs:168) | GET: admin/config/site.html \| POST: redirect (re-renders admin/config/site.html on error) | require_permission("administer site") |
 | `/admin/config/site/maintenance` | POST | Configuration | `maintenance_submit` (crates/kernel/src/routes/admin_config.rs:523) | redirect | require_permission("administer site") |
 | `/admin/config/site/test-email` | POST | Configuration | `test_email` (crates/kernel/src/routes/admin_config.rs:374) | redirect | require_permission("administer site") |
 | `/admin/embed/backfill` | POST | Configuration | `backfill` (crates/kernel/src/routes/admin_embed.rs:66) | JSON | require_admin_json (is_admin only); CSRF header |
 | `/admin/embed/status` | GET | Configuration | `embed_status` (crates/kernel/src/routes/admin_embed.rs:40) | JSON | require_admin_json (is_admin only) |
-| `/admin/recovery` | GET,POST | Configuration | `GET: admin_recovery_page \| POST: admin_recovery_save` (GET: crates/kernel/src/routes/recovery.rs:847 \| POST: crates/kernel/src/routes/recovery.rs:894) | GET: admin/recovery.html \| POST: JSON | GET: require_permission("administer users") \| POST: require_permission_json("administer users") |
+| `/admin/recovery` | GET,POST | Configuration | `GET: admin_recovery_page \| POST: admin_recovery_save` (GET: crates/kernel/src/routes/recovery.rs:847 \| POST: crates/kernel/src/routes/recovery.rs:894) | GET: admin/recovery.html \| POST: a form post redirects back (B199), JSON answers JSON | GET: require_permission("administer users") \| POST: require_permission_json("administer users") |
 | `/admin/stage/current` | GET | Configuration | `get_current_stage` (crates/kernel/src/routes/admin.rs:113) | JSON | require_use_stages: authenticated + can("use stages") |
 | `/admin/stage/switch` | POST | Configuration | `switch_stage` (crates/kernel/src/routes/admin.rs:66) | JSON | require_use_stages: authenticated + can("use stages") (403 AppError); CSRF header |
 | `/admin/structure/stages` | GET | Configuration | `list_stages` (crates/kernel/src/routes/admin_stage.rs:107) | admin/stages.html | require_permission("administer site") |
@@ -175,7 +179,7 @@ Plugins name admin pages two ways. A `tap_api` route (the plugin serves the page
 | `/admin/config/locale/import` | nav only | Configuration | - (plugins/trovato_locale/src/lib.rs:21) | NOT ROUTED (404) | translate interface | trovato_locale |
 | `/admin/media` | nav only | Content | - (plugins/trovato_media/src/lib.rs:48) | served by kernel admin::media_library (kernel gate is "access files", not plugin-gated) | view media content | trovato_media |
 | `/admin/config/oauth` | nav only | Configuration | - (plugins/trovato_oauth2/src/lib.rs:19) | NOT ROUTED (404) | administer oauth clients | trovato_oauth2 |
-| `/admin/config/redirects` | nav only | Configuration | - (plugins/trovato_redirects/src/lib.rs:18) | NOT ROUTED (404) | administer redirects | trovato_redirects |
+| `/admin/config/redirects` | nav only | Configuration | - (plugins/trovato_redirects/src/lib.rs:18) | served by kernel admin_redirect::list_redirects (since B164-2) | administer redirects | trovato_redirects |
 | `/admin/content/scheduled` | nav only | Content | - (plugins/trovato_scheduled_publishing/src/lib.rs:23) | NOT ROUTED (404) | schedule publishing | trovato_scheduled_publishing |
 | `/admin/config/seo` | nav only | Configuration | - (plugins/trovato_seo/src/lib.rs:27) | NOT ROUTED (404) | administer seo | trovato_seo |
 | `/admin/config/webhooks` | nav only | Configuration | - (plugins/trovato_webhooks/src/lib.rs:19) | NOT ROUTED (404) | administer webhooks | trovato_webhooks |

@@ -15,6 +15,8 @@ for (const route of routes) {
     const address = await addressFor(page, route);
     test.skip(!address, `no seeded instance of ${route.path} to open`);
     const response = await page.goto(address);
+    // A plugin's pages do not exist while it is off; every other page must open.
+    test.skip(route.plugin && response.status() === 404, `${route.plugin} is not enabled on this site`);
     expect(response.status(), `${address} opens`).toBe(200);
 
     const results = await new AxeBuilder({ page }).withTags(TAGS).analyze();

@@ -622,13 +622,15 @@
     }
 
     .breadcrumb__item + .breadcrumb__item::before {
+        /* Decoration: the empty alternative text keeps a screen reader from
+           announcing it (the line before is for a browser without it). */
         content: "›";
+        content: "›" / "";
         color: var(--text-muted);
     }
 
-    [dir="rtl"] .breadcrumb__item + .breadcrumb__item::before {
-        content: "‹";
-    }
+    /* No right-to-left override: "›" is a mirrored character, so the
+       browser already draws it pointing the other way in right-to-left text. */
 
     .breadcrumb__item[aria-current="page"] {
         color: var(--text-muted);
@@ -1480,7 +1482,12 @@
         color: var(--text-muted);
     }
 
-    /* File upload. */
+    /* File upload. A file chooser's intrinsic width (about 330px in
+       Chromium) would otherwise push a 320px page sideways. */
+    input[type="file"] {
+        max-inline-size: 100%;
+    }
+
     .file-upload__dropzone {
         padding: var(--space-5);
         border: 2px dashed var(--border-strong);

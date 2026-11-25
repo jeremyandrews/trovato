@@ -108,7 +108,10 @@ Every admin page has the same skeleton, drawn by `templates/page--admin.html`:
 1. A skip link, the first focusable element, to `<main id="main">`.
 2. A `header` (banner) with the Trovato mark linking to the Dashboard, the
    search form in a `search` landmark (`<form role="search">`), and the
-   viewer's links: View site, Your preferences, Log out.
+   viewer's links: View site, Your preferences. Log out is a POST with a
+   CSRF token, which the shell cannot mint on every page without expiring the
+   tokens of forms open in other tabs (tokens are kept in a short list), so it
+   sits on the Dashboard's "You" card and on Your preferences.
 3. A `nav` labelled "Administration": the sidebar.
 4. `main`, containing in order:
    - a breadcrumb `nav` labelled "Breadcrumb": Administration › Group ›
@@ -135,7 +138,17 @@ puts the rest in `{% block content %}`.
 
 `page--admin.html` is a complete document and no longer extends `base.html`,
 so a site theme's `base.html`, `base.css` and `theme.css` never reach the
-admin, and nothing the admin does changes front end output.
+admin, and nothing the admin does changes front end output. One exception is
+deliberate: a theme chosen as the *admin* theme on the Themes page (B108) has
+the stylesheets in its `static/css/` linked after `admin.css`, so that setting
+still restyles the admin (before, it did so through `base.html`). A theme can
+also override `page--admin.html` itself.
+
+Forms the front end shares with the admin (`templates/form/*.html`) pass their
+words through `t`; outside an admin page `t` returns the English source, and
+`admin_render()` is false, so front end output is byte for byte what it was
+(`front_end_forms_unchanged_test` compares it with output recorded from
+`main`).
 
 ## 4. Sidebar
 

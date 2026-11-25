@@ -17,8 +17,12 @@ export const routes = kernel
   .split('\n')
   .filter((l) => l.startsWith('| `/admin'))
   .map((l) => {
-    const cells = l.split(' | ').map((c) => c.replace(/^\| /, '').trim());
-    return { path: cells[0].replaceAll('`', ''), methods: cells[1], group: cells[2] };
+    // The table's own pipes, not the escaped ones inside a cell.
+    const cells = l.split(/(?<!\\)\|/).slice(1, -1).map((c) => c.trim());
+    // A route the kernel serves only while a plugin is enabled says so in
+    // its gate column.
+    const plugin = (cells[5] || '').match(/plugin (\w+) enabled/);
+    return { path: cells[0].replaceAll('`', ''), methods: cells[1], group: cells[2], plugin: plugin ? plugin[1] : null };
   })
   .filter((r) => /GET/.test(r.methods) && !NOT_PAGES.has(r.path));
 

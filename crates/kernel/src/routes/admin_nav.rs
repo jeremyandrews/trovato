@@ -223,6 +223,8 @@ use Group::{Appearance, Configuration, Content, Extend, People, Reports, Structu
 const COMMENTS: &str = "trovato_comments";
 /// The categories plugin, as [`COMMENTS`].
 const CATEGORIES: &str = "trovato_categories";
+/// The redirects plugin, as [`COMMENTS`].
+const REDIRECTS: &str = "trovato_redirects";
 /// The audit log plugin, as [`COMMENTS`].
 const AUDIT_LOG: &str = "trovato_audit_log";
 
@@ -592,6 +594,17 @@ pub const LINKS: &[Link] = &[
             "/admin/structure/stages",
             Permission("administer site"),
             "The editorial stages content moves through before it is live.",
+        )
+    },
+    Link {
+        plugin: Some(REDIRECTS),
+        synonyms: &["moved", "old urls", "legacy paths", "301", "forwarding"],
+        ..page(
+            Configuration,
+            "Redirects",
+            "/admin/config/redirects",
+            Permission("view redirects"),
+            "Old addresses that send visitors on to where the page lives now.",
         )
     },
     Link {

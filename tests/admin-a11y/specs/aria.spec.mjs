@@ -1,6 +1,7 @@
 // What a screen reader is given on each page type: landmarks, the heading,
 // the breadcrumb, the sidebar. The full tree of each page type is written
-// to test-results/aria/ for review (docs/admin/accessibility.md quotes them).
+// to test-results/aria/, or with ADMIN_A11Y_RECORD_ARIA=1 to
+// docs/admin/screen-reader/, which docs/admin/accessibility.md reads.
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs';
 import { useProjectLanguage } from './helpers.mjs';
@@ -36,7 +37,10 @@ for (const [type, path] of Object.entries(PAGE_TYPES)) {
       await expect(crumbs.locator('[aria-current="page"]')).toHaveText(await page.locator('h1').innerText());
     }
     const tree = await body.ariaSnapshot();
-    fs.mkdirSync('test-results/aria', { recursive: true });
-    fs.writeFileSync(`test-results/aria/${type}.yml`, tree + '\n');
+    // ADMIN_A11Y_RECORD_ARIA=1 writes them where docs/admin/accessibility.md
+    // reads them.
+    const dir = process.env.ADMIN_A11Y_RECORD_ARIA ? '../../docs/admin/screen-reader' : 'test-results/aria';
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(`${dir}/${type}.yml`, tree + '\n');
   });
 }
