@@ -105,19 +105,23 @@ impl TileService {
         Ok(deleted)
     }
 
-    /// Get visible tiles for a region, filtered by path and role visibility rules.
+    /// Get visible tiles for a region, filtered by path, role and audience
+    /// visibility rules. `authenticated` decides an `audience` rule; it is the
+    /// viewer's actual signed-in state, not derived from `user_roles` (every
+    /// viewer, signed in or not, can carry `anonymous user` there).
     pub async fn get_visible_tiles(
         &self,
         region: &str,
         stage_id: uuid::Uuid,
         path: &str,
         user_roles: &[String],
+        authenticated: bool,
     ) -> Result<Vec<Tile>> {
         let tiles = Tile::list_by_region(&self.db, region, stage_id).await?;
 
         Ok(tiles
             .into_iter()
-            .filter(|t| t.is_visible(path, user_roles))
+            .filter(|t| t.is_visible(path, user_roles, authenticated))
             .collect())
     }
 
@@ -130,7 +134,13 @@ impl TileService {
         render: &TileRenderContext<'_>,
     ) -> Result<String> {
         let tiles = self
-            .get_visible_tiles(region, stage_id, path, render.roles)
+            .get_visible_tiles(
+                region,
+                stage_id,
+                path,
+                render.roles,
+                render.viewer.authenticated,
+            )
             .await?;
         let mut html = String::new();
         for tile in &tiles {

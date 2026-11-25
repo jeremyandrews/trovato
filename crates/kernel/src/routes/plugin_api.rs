@@ -62,8 +62,13 @@
 //!   response body — a plugin that emits HTML is responsible for escaping it,
 //!   the same contract view taps have — and `content_type` defaults to
 //!   `application/json` for that reason.
-//! - **Body size.** Capped at [`MAX_REQUEST_BODY`], because the body crosses the
-//!   WASM boundary through the tap I/O buffer.
+//! - **Body size.** Capped at [`MAX_REQUEST_BODY`] — [`trovato_sdk::abi::
+//!   PLUGIN_IO_MAX_BYTES`], the one ceiling the whole tap/route memory
+//!   protocol shares (B181) — because the body crosses the WASM boundary
+//!   through that same channel. Axum refuses a [`Bytes`] body over 2 MB by
+//!   default, below this cap, so the router raises its limit explicitly
+//!   ([`build_plugin_api_router`]) rather than silently capping every plugin
+//!   route at the framework default.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -71,7 +76,7 @@ use std::sync::Arc;
 use axum::{
     Extension, Router,
     body::Bytes,
-    extract::{OriginalUri, Path, Query, State},
+    extract::{DefaultBodyLimit, OriginalUri, Path, Query, State},
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{delete, get, post, put},
@@ -88,9 +93,12 @@ use trovato_sdk::types::{ApiRequest, ApiResponse};
 /// Largest request body handed to a plugin, in bytes.
 ///
 /// The body crosses the WASM boundary through the tap I/O buffer, so an
-/// unbounded body is a self-inflicted truncation bug. Sized well under the
-/// 1 MiB payload cap the freeze records as TUNABLE.
-pub const MAX_REQUEST_BODY: usize = 256 * 1024;
+/// unbounded body is a self-inflicted truncation bug. Equal to
+/// [`trovato_sdk::abi::PLUGIN_IO_MAX_BYTES`] (B181) rather than an
+/// independent number: it is the same channel `tap_api`'s request and
+/// response travel over, and a plugin author should not have to remember a
+/// different ceiling for each end of one call.
+pub const MAX_REQUEST_BODY: usize = trovato_sdk::abi::PLUGIN_IO_MAX_BYTES;
 
 /// The `handler_type` value that marks a menu entry as plugin-served.
 const API_HANDLER_TYPE: &str = "api";
@@ -198,7 +206,11 @@ pub fn build_plugin_api_router(menus: &[MenuDefinition]) -> Router<AppState> {
         router = router.route(&entry.path, route);
     }
 
-    router
+    // Axum's `Bytes` extractor refuses a body over its 2 MB framework default
+    // regardless of this module's own `MAX_REQUEST_BODY` check below it, so
+    // the ceiling has to be raised here too or a body between 2 MB and
+    // `MAX_REQUEST_BODY` would 413 before `serve` ever ran.
+    router.layer(DefaultBodyLimit::max(MAX_REQUEST_BODY))
 }
 
 /// A plugin `api` menu entry the kernel serves, with its method upper-cased

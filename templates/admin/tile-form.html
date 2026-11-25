@@ -99,6 +99,16 @@
         </div>
 
         <div class="form-item">
+            <label for="audience" class="form-item__label">{{ t(s="Show to") }}</label>
+            <p class="form-item__description" id="audience-hint">{{ t(s="Who may see this tile, regardless of its other visibility rules.") }}</p>
+            <select id="audience" name="audience" class="form-select" aria-describedby="audience-hint">
+                <option value="" {% if values.audience is not defined or values.audience == "" %}selected{% endif %}>{{ t(s="Everyone") }}</option>
+                <option value="anonymous" {% if values.audience is defined and values.audience == "anonymous" %}selected{% endif %}>{{ t(s="Anonymous visitors only") }}</option>
+                <option value="authenticated" {% if values.audience is defined and values.audience == "authenticated" %}selected{% endif %}>{{ t(s="Signed-in users only") }}</option>
+            </select>
+        </div>
+
+        <div class="form-item">
             <label for="weight" class="form-item__label">{{ t(s="Weight") }}</label>
             <input type="number" id="weight" name="weight"
                    value="{{ values.weight | default(value=0) }}"

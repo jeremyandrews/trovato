@@ -1487,6 +1487,31 @@ mod tests {
         assert!(!html.contains("checked"), "{html}");
     }
 
+    /// The tile admin form's "Show to" select must not error when `values` has
+    /// no `audience` key — the add-tile form's case, where `values` carries
+    /// only the gather default item count (B174; same class of bug as
+    /// [`a_choice_element_without_a_default_renders`]: a template comparing a
+    /// value that may not be in the context has to check `is defined` first).
+    #[test]
+    fn the_tile_forms_audience_select_renders_without_a_stored_value() {
+        let templates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
+        let engine = ThemeEngine::new(&[templates], None, Default::default()).unwrap();
+        let mut context = tera::Context::new();
+        context.insert("action", "/admin/structure/tiles/add");
+        context.insert("csrf_token", "token");
+        context.insert("editing", &false);
+        context.insert("values", &serde_json::json!({ "items": 5 }));
+        context.insert("path", "/admin/structure/tiles/add");
+        let html = engine
+            .tera()
+            .render("admin/tile-form.html", &context)
+            .expect("the form must render with no audience in `values`");
+        assert!(
+            html.contains(r#"<option value="" selected>Everyone</option>"#),
+            "{html}"
+        );
+    }
+
     #[test]
     fn test_is_admin_path() {
         assert!(ThemeEngine::is_admin_path("/admin"));

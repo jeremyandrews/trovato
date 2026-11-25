@@ -469,6 +469,28 @@ fn tap_cron(_input: serde_json::Value) -> Result<(), String> {
 }
 ```
 
+### Tap and route size limit
+
+A tap or a plugin-served route (`tap_api`) may send and receive up to
+**8 MiB** each way — the input the kernel hands it and the JSON (or, for
+`tap_api`, the body) it returns. Both directions share one ceiling,
+`trovato_sdk::abi::PLUGIN_IO_MAX_BYTES`. Send or return more than that and the
+kernel refuses the call with a documented error rather than truncating it
+silently.
+
+8 MiB is comfortably above any real page — the motivating case was a 54 KB
+field the kernel's old 64 KB cap already refused to render — and well inside
+the 64 MiB a plugin may use in total for its own code, data and working set in
+one call, so a call that uses the whole ceiling still leaves room to run.
+There is nothing to opt into: every tap and `tap_api` route gets the same
+limit, and a plugin built against the current SDK gets it automatically (see
+`crates/plugin-sdk/src/abi.rs` for plugins built before this limit existed,
+which keep working at the old 64 KB ceiling until rebuilt).
+
+If a tap legitimately needs to send more than 8 MiB — a large export, for
+instance — paginate it across multiple calls rather than asking for a larger
+limit; nothing in the protocol changes to accommodate one call that large.
+
 ### Available Taps
 
 #### Content Type Definition
