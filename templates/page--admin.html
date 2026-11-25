@@ -53,6 +53,9 @@
         {% endblock %}
 
         {% block content %}
+        {# Only a plugin's themed admin page sets `page_heading`: every kernel
+           admin template overrides this block and draws its own header. #}
+        {% if page_heading is defined and page_heading %}<div class="admin-header"><h2>{{ page_heading }}</h2></div>{% endif %}
         {{ content | safe }} {# SAFE: kernel render pipeline output — admin page content already rendered and sanitized #}
         {% endblock %}
     </main>

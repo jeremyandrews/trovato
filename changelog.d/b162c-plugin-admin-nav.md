@@ -10,7 +10,8 @@ list into its own template, shown to anyone admitted to `/admin` whatever
 permissions they actually held. All three paths now build the sidebar through
 one shared helper (`routes::admin_nav::insert_context`), so a plugin's admin
 page and a kernel one cannot drift apart, and the workaround is no longer
-needed.
+needed. The page also gets the same header a kernel admin page draws, from the
+title the plugin returns with `ApiResponse::themed`.
 
 The sidebar and dashboard were also fixed Rust arrays a plugin could not add
 to. A plugin now declares its own links and cards from a new tap,

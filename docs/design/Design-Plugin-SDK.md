@@ -611,6 +611,7 @@ world plugin {
     // Routing & permissions
     export tap-menu: func() -> string;
     export tap-perm: func() -> string;
+    export tap-admin-nav: func() -> string;
 
     // Theme
     export tap-theme: func() -> string;

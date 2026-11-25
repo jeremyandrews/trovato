@@ -555,6 +555,7 @@ use `tap_form_validate` for that.
 |-----|-------|--------|-------------|
 | `tap_menu` | None | `Vec<MenuDefinition>` | Register routes |
 | `tap_perm` | None | `Vec<PermissionDefinition>` | Define permissions |
+| `tap_admin_nav` | None | `Vec<AdminNavDefinition>` | Admin sidebar links and dashboard cards ([below](#admin-sidebar-links-and-dashboard-cards)) |
 | `tap_cron` | None | `Result<(), String>` | Background tasks |
 | `tap_queue_info` | None | `[{name, concurrency}]` | Declare owned queues + worker concurrency ([queue docs](plugin-queue.md)) |
 | `tap_queue_worker` | Job payload | Any (return) / trap (fail) | Process one queued job — **must be idempotent** ([queue docs](plugin-queue.md)) |
@@ -1208,25 +1209,42 @@ kernel link and every other plugin's declared href — a colliding declaration
 is dropped (logged, not fatal) rather than silently shadowing an existing
 screen.
 
-For the admin page itself to pick up the kernel's chrome, ask for theming the
-same way any plugin page does — `ApiResponse::themed(title, body)` — on a
-route under `/admin`:
+For the admin page itself to pick up the kernel's chrome, serve it from a
+`tap_api` route under `/admin` and answer with `ApiResponse::themed(title,
+body)`, the same way any themed plugin page does. Gate the route on the same
+permission the link declares:
 
 ```rust
 #[plugin_tap]
-fn tap_menu() -> Vec<MenuDefinition> {
+fn tap_menu() -> Vec<MenuRoute> {
     vec![
-        MenuDefinition::new("/admin/groups", "Groups")
-            .callback("groups_admin")
-            .permission("administer groups")
-            .parent("/admin"),
+        MenuRoute::api("GET", "/admin/groups", "groups_admin")
+            .title("Groups")
+            .permission("administer groups"),
     ]
 }
 
-fn groups_admin() -> ApiResponse {
-    ApiResponse::themed("Groups", "<p>…manage groups here…</p>")
+#[plugin_tap]
+fn tap_api(request: ApiRequest) -> ApiResponse {
+    match request.callback.as_str() {
+        "groups_admin" => ApiResponse::themed("Groups", "<p>…manage groups here…</p>"),
+        other => ApiResponse::error(404, &format!("no such callback: {other}")),
+    }
 }
 ```
+
+List the tap in the plugin's info file next to the others, or the kernel never
+calls it:
+
+```toml
+[taps]
+implements = ["tap_perm", "tap_menu", "tap_api", "tap_admin_nav"]
+```
+
+A page is an admin page when its path starts with `/admin`
+(`ThemeEngine::is_admin_path`, the rule the kernel already uses to pick
+`page--admin.html` and to theme an admin error page). Any such page, kernel or
+plugin, gets the sidebar; a plugin page elsewhere does not.
 
 ---
 

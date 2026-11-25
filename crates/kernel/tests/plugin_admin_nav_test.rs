@@ -123,8 +123,22 @@ fn a_plugin_admin_page_renders_the_kernel_sidebar_with_the_plugins_own_link() {
         );
         let links = sidebar_links(&html);
         assert!(
+            links.iter().any(|l| l == "/admin/content"),
+            "the plugin's admin page must carry the kernel's own sidebar links: {links:?}"
+        );
+        assert!(
             links.iter().any(|l| l == DASHBOARD_PATH),
             "the plugin's own link must be in its own sidebar: {links:?}"
+        );
+        assert!(
+            html.contains(&format!(
+                r#"<a href="{DASHBOARD_PATH}" class="active" aria-current="page">"#
+            )),
+            "the plugin's link must be the highlighted one on its own page"
+        );
+        assert!(
+            html.contains(r#"<div class="admin-header"><h2>TPA Dashboard</h2></div>"#),
+            "the plugin's admin page must carry the same header a kernel admin page does"
         );
         assert!(
             html.contains("tpa-admin-content"),
