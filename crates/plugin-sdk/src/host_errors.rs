@@ -89,14 +89,16 @@
 //!     the site does not have, `-60`: refused (no `edit` access, no
 //!     `create {type} content`, a field the user may not edit, a publish change
 //!     without `publish content`, or called inside an access decision),
-//!     `-61`: background call without `item_background`, `-63`: nested too deep
+//!     `-61`: background call without `item_background`, `-63`: nested too
+//!     deep, `-64`: no item service on this dispatch path
 //!   - `≥ 0`: bytes written: the saved item's JSON, or `null` for an update of
 //!     an id that names no item
 //!
 //! - **`delete-item(id_ptr, id_len) → i32`**
 //!   - `-1`: memory missing, `-2`: ID read failed or not a UUID, `-10`: no
 //!     services, `-12`: database error, `-60`: refused, `-61`: background call
-//!     without `item_background`, `-62`: no such item, `-63`: nested too deep
+//!     without `item_background`, `-62`: no such item, `-63`: nested too deep,
+//!     `-64`: no item service on this dispatch path
 //!   - `0`: deleted
 //!
 //! - **`query-items(query_ptr, query_len, out_ptr, out_max_len) → i32`**
@@ -416,6 +418,16 @@ pub const ERR_ITEM_NOT_FOUND: i32 = -62;
 ///
 /// Added by B68, after 0.104.0.
 pub const ERR_ITEM_WRITE_DEPTH: i32 = -63;
+
+/// An `item-api` call was made on a dispatch path that carries no item service,
+/// so nothing could be decided or written. The kernel logs which plugin and
+/// call. Every server dispatch path carries one; this is a kernel wiring fault
+/// or a test harness that never bound it, not something the plugin did.
+///
+/// Before U40 the same state answered [`ERR_NO_SERVICES`], which `tap_cron`
+/// and `tap_queue_worker` returned for every write because their services
+/// never had the item service bound.
+pub const ERR_ITEM_SERVICE_UNAVAILABLE: i32 = -64;
 
 // =============================================================================
 // Text format errors (`trovato:kernel/text-format`)

@@ -111,14 +111,26 @@ fn acting_for(state: &PluginState) -> Acting {
     }
 }
 
-/// The item service this module decides with, or `None` when there is none.
+/// The item service this module decides with, or the code refusing the call.
 ///
 /// `RequestServices` holds it weakly (`ItemService` owns a `RequestServices`
 /// of its own, so a strong handle there would be a cycle that never frees), so
-/// this can fail in a serviceless or test context that never wired one. The
-/// callers then report `ERR_NO_SERVICES` rather than deciding without it.
-fn decide_with(services: &crate::tap::RequestServices) -> Option<Arc<ItemService>> {
-    services.item_service()
+/// this can fail on a dispatch path that never bound one, or after the app is
+/// dropped. The call is then refused with `ERR_ITEM_SERVICE_UNAVAILABLE`, not
+/// decided without it, and the log says which plugin and call.
+fn decide_with(
+    plugin: &str,
+    call: &str,
+    services: &crate::tap::RequestServices,
+) -> std::result::Result<Arc<ItemService>, i32> {
+    services.item_service().ok_or_else(|| {
+        warn!(
+            plugin = %plugin,
+            call = %call,
+            "item-api call refused: this dispatch path carries no item service"
+        );
+        host_errors::ERR_ITEM_SERVICE_UNAVAILABLE
+    })
 }
 
 /// Decide a single item for `view` and drop the fields the user may not see.
@@ -213,8 +225,13 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                         Acting::As(user) => match loaded {
                             None => None,
                             Some(item) => {
-                                let Some(items) = decide_with(&services) else {
-                                    return host_errors::ERR_NO_SERVICES;
+                                let items = match decide_with(
+                                    &caller.data().plugin_name,
+                                    "get-item",
+                                    &services,
+                                ) {
+                                    Ok(items) => items,
+                                    Err(code) => return code,
                                 };
                                 visible_to(&items, item, user).await
                             }
@@ -282,9 +299,11 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                     let Some(writer) = acting.writer() else {
                         return host_errors::ERR_ITEM_BACKGROUND_DENIED;
                     };
-                    let Some(items) = decide_with(&services) else {
-                        return host_errors::ERR_NO_SERVICES;
-                    };
+                    let items =
+                        match decide_with(&caller.data().plugin_name, "save-item", &services) {
+                            Ok(items) => items,
+                            Err(code) => return code,
+                        };
 
                     let parsed: serde_json::Value = match serde_json::from_str(&item_json) {
                         Ok(v) => v,
@@ -434,9 +453,11 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                     let Some(writer) = acting_for(caller.data()).writer() else {
                         return host_errors::ERR_ITEM_BACKGROUND_DENIED;
                     };
-                    let Some(items) = decide_with(&services) else {
-                        return host_errors::ERR_NO_SERVICES;
-                    };
+                    let items =
+                        match decide_with(&caller.data().plugin_name, "delete-item", &services) {
+                            Ok(items) => items,
+                            Err(code) => return code,
+                        };
 
                     match items.delete(id, &writer).await {
                         Ok(true) => 0,
@@ -524,8 +545,13 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                         Acting::BackgroundDenied => return host_errors::ERR_ITEM_BACKGROUND_DENIED,
                         Acting::Kernel => fetched,
                         Acting::As(user) => {
-                            let Some(items) = decide_with(&services) else {
-                                return host_errors::ERR_NO_SERVICES;
+                            let items = match decide_with(
+                                &caller.data().plugin_name,
+                                "query-items",
+                                &services,
+                            ) {
+                                Ok(items) => items,
+                                Err(code) => return code,
                             };
                             let page = usize::try_from(limit).unwrap_or(usize::MAX);
                             items
@@ -595,13 +621,14 @@ fn translator(state: &PluginState) -> std::result::Result<UserContext, i32> {
         .ok_or(host_errors::ERR_ITEM_BACKGROUND_DENIED)
 }
 
-/// The item service, or `ERR_NO_SERVICES`.
-fn service_of(state: &PluginState) -> std::result::Result<Arc<ItemService>, i32> {
-    state
+/// The item service, or the code refusing the call: `ERR_NO_SERVICES` without
+/// services at all, `ERR_ITEM_SERVICE_UNAVAILABLE` without an item service.
+fn service_of(state: &PluginState, call: &str) -> std::result::Result<Arc<ItemService>, i32> {
+    let services = state
         .request
         .services()
-        .and_then(decide_with)
-        .ok_or(host_errors::ERR_NO_SERVICES)
+        .ok_or(host_errors::ERR_NO_SERVICES)?;
+    decide_with(&state.plugin_name, call, services)
 }
 
 /// `list-translations`, `save-translation` and `delete-translation` (B80):
@@ -633,7 +660,7 @@ fn register_translation_functions(linker: &mut Linker<PluginState>) -> Result<()
                         Ok(user) => user,
                         Err(code) => return code,
                     };
-                    let items = match service_of(caller.data()) {
+                    let items = match service_of(caller.data(), "list-translations") {
                         Ok(items) => items,
                         Err(code) => return code,
                     };
@@ -686,7 +713,7 @@ fn register_translation_functions(linker: &mut Linker<PluginState>) -> Result<()
                         Ok(user) => user,
                         Err(code) => return code,
                     };
-                    let items = match service_of(caller.data()) {
+                    let items = match service_of(caller.data(), "save-translation") {
                         Ok(items) => items,
                         Err(code) => return code,
                     };
@@ -738,7 +765,7 @@ fn register_translation_functions(linker: &mut Linker<PluginState>) -> Result<()
                         Ok(user) => user,
                         Err(code) => return code,
                     };
-                    let items = match service_of(caller.data()) {
+                    let items = match service_of(caller.data(), "delete-translation") {
                         Ok(items) => items,
                         Err(code) => return code,
                     };

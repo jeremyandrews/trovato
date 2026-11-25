@@ -615,13 +615,21 @@ impl AppState {
         let pending = plugin_status::get_pending_tap_install(&db)
             .await
             .context("failed to query pending tap_install")?;
+        // The item service is built further down. The install task waits for
+        // it, so `item-api` calls from `tap_install` are decided rather than
+        // refused for want of one.
+        let mut tap_install_items: Option<tokio::sync::oneshot::Sender<Arc<ItemService>>> = None;
         if !pending.is_empty() {
+            let (items_tx, items_rx) = tokio::sync::oneshot::channel();
+            tap_install_items = Some(items_tx);
             let tap_install_db = db.clone();
             let tap_install_dispatcher = tap_dispatcher.clone();
             let tap_install_limiter = rate_limiter.clone();
             let tap_install_email = email.clone();
             tokio::spawn(async move {
                 let http = crate::host::http::build_outbound_client();
+                // `None` only when `AppState::new` failed before building it.
+                let items = items_rx.await.ok();
                 for plugin_name in &pending {
                     // Claim before dispatching: with several servers starting
                     // together, only the one whose claim lands runs it.
@@ -650,6 +658,9 @@ impl AppState {
                     .with_rate_limiter(tap_install_limiter.clone());
                     if let Some(ref email) = tap_install_email {
                         install_services = install_services.with_email(email.clone());
+                    }
+                    if let Some(items) = &items {
+                        install_services.set_item_service(items);
                     }
                     let install_state =
                         RequestState::new(UserContext::anonymous(), install_services);
@@ -1041,6 +1052,9 @@ impl AppState {
         // lines above sees this binding, and neither side keeps the other
         // alive.
         tap_services.set_item_service(&items);
+        if let Some(tx) = tap_install_items.take() {
+            let _ = tx.send(items.clone());
+        }
         // And the gather service, for the `query` host interface, by the same
         // shared, weak cell.
         tap_services.set_gather_service(&gather);

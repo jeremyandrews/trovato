@@ -4987,6 +4987,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "test_item_background"
+version = "0.107.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "test_item_deny"
 version = "0.107.0"
 dependencies = [

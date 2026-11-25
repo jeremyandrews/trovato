@@ -87,6 +87,7 @@ returns `-14` for a language the site does not have, or the item's own, and
 | -61 | `ERR_ITEM_BACKGROUND_DENIED` | Called from cron or a queue worker without the `item_background` capability | Declare `item_background = true` in `[capabilities]` if the plugin needs kernel authority there |
 | -62 | `ERR_ITEM_NOT_FOUND` | `delete-item` was given an id that names no item | Treat as already deleted if that is what you meant |
 | -63 | `ERR_ITEM_WRITE_DEPTH` | A write made from inside item write taps nested 4 deep | A tap that writes items should not depend on a chain of other plugins' taps writing in turn |
+| -64 | `ERR_ITEM_SERVICE_UNAVAILABLE` | The dispatch path carries no item service, so nothing was decided or written; the server log names the plugin and the call | A kernel wiring fault or a test harness that never bound one, not a plugin error: report it |
 
 ## Text Format Errors
 
