@@ -526,6 +526,7 @@ mod tests {
     fn state_with_runtime(runtime: Arc<PluginRuntime>) -> RequestState {
         let db = sqlx::postgres::PgPool::connect_lazy("postgres://localhost/trovato")
             .expect("lazy pool");
+        // No item service: these fixtures call `invoke` only, never `item-api`.
         let services = RequestServices::for_background(db, None, None, reqwest::Client::new())
             .with_plugin_runtime(runtime);
         RequestState::new(UserContext::anonymous(), services)

@@ -708,6 +708,39 @@ async fn the_app_binds_an_item_service_into_its_tap_services() {
     );
 }
 
+/// Services with no item service bound refuse with their own code, not with
+/// `ERR_NO_SERVICES`, which is what `tap_cron` and `tap_queue_worker` answered
+/// for every write while their services lacked the binding (U40).
+#[tokio::test]
+async fn an_unbound_item_service_is_its_own_refusal() {
+    let pool = probe_pool().await;
+    let engine = Engine::new(&wasmtime::Config::new()).unwrap();
+    let mut linker: Linker<PluginState> = Linker::new(&engine);
+    host::register_all(&mut linker).expect("register host functions");
+    let payload = json!({ "type": "page", "title": "unbound" }).to_string();
+    let module = Module::new(&engine, item_probe("save-item", &payload, true))
+        .expect("compile item-api probe WAT");
+    let services =
+        RequestServices::for_background(pool.clone(), None, None, reqwest::Client::new());
+    let state = PluginState::with_db_policy(
+        RequestState::new(UserContext::background(), services),
+        "item_probe".to_string(),
+        Arc::new(DbPolicy::default()),
+        ResourceLimits::default(),
+    )
+    .with_item_background(true);
+    let mut store = Store::new(&engine, state);
+    let instance = linker
+        .instantiate_async(&mut store, &module)
+        .await
+        .expect("module instantiates against the kernel linker");
+    let run = instance
+        .get_typed_func::<(), i32>(&mut store, "run")
+        .expect("module exports run");
+    let code = run.call_async(&mut store, ()).await.expect("run completes");
+    assert_eq!(code, host_errors::ERR_ITEM_SERVICE_UNAVAILABLE);
+}
+
 // =============================================================================
 // Writes go through `ItemService` (B68 Part 2)
 //

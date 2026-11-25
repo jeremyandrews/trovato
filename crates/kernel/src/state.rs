@@ -615,13 +615,31 @@ impl AppState {
         let pending = plugin_status::get_pending_tap_install(&db)
             .await
             .context("failed to query pending tap_install")?;
+        // The item service is built further down. The install task waits for
+        // it, so `item-api` calls from `tap_install` are decided rather than
+        // refused for want of one.
+        let mut tap_install_items: Option<tokio::sync::oneshot::Sender<Arc<ItemService>>> = None;
         if !pending.is_empty() {
+            let (items_tx, items_rx) = tokio::sync::oneshot::channel();
+            tap_install_items = Some(items_tx);
             let tap_install_db = db.clone();
             let tap_install_dispatcher = tap_dispatcher.clone();
             let tap_install_limiter = rate_limiter.clone();
             let tap_install_email = email.clone();
             tokio::spawn(async move {
                 let http = crate::host::http::build_outbound_client();
+                // The sender drops only when `AppState::new` failed before
+                // building the item service. Claim nothing then: a claim
+                // stands even when its dispatch fails, so dispatching from a
+                // server that is not starting would spend each hook the next
+                // healthy start should run.
+                let Ok(items) = items_rx.await else {
+                    warn!(
+                        pending = pending.len(),
+                        "startup failed; tap_install left pending for the next start"
+                    );
+                    return;
+                };
                 for plugin_name in &pending {
                     // Claim before dispatching: with several servers starting
                     // together, only the one whose claim lands runs it.
@@ -651,6 +669,7 @@ impl AppState {
                     if let Some(ref email) = tap_install_email {
                         install_services = install_services.with_email(email.clone());
                     }
+                    install_services.set_item_service(&items);
                     let install_state =
                         RequestState::new(UserContext::anonymous(), install_services);
                     // dispatch_to_plugin returns None when the plugin does not
@@ -1041,6 +1060,9 @@ impl AppState {
         // lines above sees this binding, and neither side keeps the other
         // alive.
         tap_services.set_item_service(&items);
+        if let Some(tx) = tap_install_items.take() {
+            let _ = tx.send(items.clone());
+        }
         // And the gather service, for the `query` host interface, by the same
         // shared, weak cell.
         tap_services.set_gather_service(&gather);

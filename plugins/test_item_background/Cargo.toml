@@ -1,0 +1,17 @@
+[package]
+name = "test_item_background"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "U40 test fixture: item-api writes from tap_cron and tap_queue_worker under item_background"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }

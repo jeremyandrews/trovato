@@ -753,10 +753,12 @@ pub struct CronService {
     vector_store: Option<Arc<PgVectorStore>>,
     http: reqwest::Client,
     pagefind_enabled: bool,
-    /// The item-access seam the Pagefind export is filtered through. `None` in a
-    /// harness that builds a `CronService` on its own, where the export is
-    /// skipped rather than written unfiltered — the index is a world-readable
-    /// file, so "no access model available" has to mean "publish nothing".
+    /// The item-access seam the Pagefind export is filtered through, and the
+    /// item service the background dispatch services carry for `item-api`.
+    /// `None` in a harness that builds a `CronService` on its own, where the
+    /// export is skipped rather than written unfiltered — the index is a
+    /// world-readable file, so "no access model available" has to mean "publish
+    /// nothing".
     items: Option<Arc<ItemService>>,
     /// The directory the generated Pagefind index is written to.
     ///
@@ -914,7 +916,8 @@ impl CronService {
         self.vector_store = Some(vector_store);
     }
 
-    /// Set the item-access seam the Pagefind export is filtered through.
+    /// Set the item-access seam the Pagefind export is filtered through, and
+    /// the item service `tap_cron` and `tap_queue_worker` reach `item-api` with.
     ///
     /// Wired from `AppState`, which already owns the one `ItemService` the rest
     /// of the site uses: a second one built here would carry its own
@@ -1895,7 +1898,7 @@ impl CronService {
     ///
     /// One builder for `tap_cron` and `tap_queue_worker` both, so the per-plugin
     /// `mail` bucket and the email service cannot be attached on one background
-    /// path and missing from the other.
+    /// path and missing from the other; the item service likewise.
     fn background_services(&self, dispatcher: &Arc<TapDispatcher>) -> crate::tap::RequestServices {
         let mut services = crate::tap::RequestServices::for_background(
             self.pool.clone(),
@@ -1909,6 +1912,14 @@ impl CronService {
         }
         if let Some(email) = self.email.clone() {
             services = services.with_email(email);
+        }
+        // The `item-api` host functions decide with this. Unbound, every
+        // `save-item` and `delete-item` from `tap_cron` and `tap_queue_worker`
+        // was refused before the plugin's `item_background` mattered. `None`
+        // only in a narrow harness that never wired one; a call then gets
+        // `ERR_ITEM_SERVICE_UNAVAILABLE`.
+        if let Some(items) = &self.items {
+            services.set_item_service(items);
         }
         services
     }

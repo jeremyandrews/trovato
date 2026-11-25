@@ -258,7 +258,7 @@ jobs:
             -p test_ai_background \
             -p trovato_field_access_ref \
             -p trovato_recovery_ref -p test_recovery_bystander \
-            -p test_queue_worker -p test_item_writer -p test_site_queries -p test_item_deny -p test_members -p test_menu_entries -p test_page_builder_components \
+            -p test_queue_worker -p test_item_writer -p test_site_queries -p test_item_deny -p test_item_background -p test_members -p test_menu_entries -p test_page_builder_components \
             -p trovato_record_ref \
             -p trovato_spam \
             -p trovato_series -p test_plugin_api \
@@ -272,7 +272,7 @@ jobs:
             plugins/test_ai_background \
             plugins/trovato_field_access_ref \
             plugins/trovato_recovery_ref plugins/test_recovery_bystander \
-            plugins/test_queue_worker plugins/test_item_writer plugins/test_site_queries plugins/test_item_deny plugins/test_members plugins/test_menu_entries plugins/test_page_builder_components plugins/trovato_record_ref plugins/trovato_spam plugins/trovato_series plugins/test_plugin_api plugins/trovato_book plugins/trovato_contact plugins/test_assistant_scope \
+            plugins/test_queue_worker plugins/test_item_writer plugins/test_site_queries plugins/test_item_deny plugins/test_item_background plugins/test_members plugins/test_menu_entries plugins/test_page_builder_components plugins/trovato_record_ref plugins/trovato_spam plugins/trovato_series plugins/test_plugin_api plugins/trovato_book plugins/trovato_contact plugins/test_assistant_scope \
             plugins/trovato_ai plugins/test_form_taps plugins/test_form_taps_b plugins/test_owned_vocabulary
           cp target/wasm32-wasip1/release/trovato_blog.wasm plugins/trovato_blog/
           cp target/wasm32-wasip1/release/trovato_search.wasm plugins/trovato_search/
@@ -288,6 +288,7 @@ jobs:
           cp target/wasm32-wasip1/release/test_item_writer.wasm plugins/test_item_writer/
           cp target/wasm32-wasip1/release/test_site_queries.wasm plugins/test_site_queries/
           cp target/wasm32-wasip1/release/test_item_deny.wasm plugins/test_item_deny/
+          cp target/wasm32-wasip1/release/test_item_background.wasm plugins/test_item_background/
           cp target/wasm32-wasip1/release/test_members.wasm plugins/test_members/
           cp target/wasm32-wasip1/release/test_menu_entries.wasm plugins/test_menu_entries/
           cp target/wasm32-wasip1/release/test_page_builder_components.wasm plugins/test_page_builder_components/
@@ -654,7 +655,7 @@ jobs:
             -p test_ai_background \
             -p trovato_field_access_ref \
             -p trovato_recovery_ref -p test_recovery_bystander \
-            -p test_queue_worker -p test_item_writer -p test_site_queries -p test_item_deny -p test_members -p test_menu_entries -p test_page_builder_components \
+            -p test_queue_worker -p test_item_writer -p test_site_queries -p test_item_deny -p test_item_background -p test_members -p test_menu_entries -p test_page_builder_components \
             -p trovato_record_ref \
             -p trovato_spam \
             -p trovato_series -p test_plugin_api \
@@ -668,7 +669,7 @@ jobs:
             plugins/test_ai_background \
             plugins/trovato_field_access_ref \
             plugins/trovato_recovery_ref plugins/test_recovery_bystander \
-            plugins/test_queue_worker plugins/test_item_writer plugins/test_site_queries plugins/test_item_deny plugins/test_members plugins/test_menu_entries plugins/test_page_builder_components plugins/trovato_record_ref plugins/trovato_spam plugins/trovato_series plugins/test_plugin_api plugins/trovato_book plugins/trovato_contact plugins/test_assistant_scope \
+            plugins/test_queue_worker plugins/test_item_writer plugins/test_site_queries plugins/test_item_deny plugins/test_item_background plugins/test_members plugins/test_menu_entries plugins/test_page_builder_components plugins/trovato_record_ref plugins/trovato_spam plugins/trovato_series plugins/test_plugin_api plugins/trovato_book plugins/trovato_contact plugins/test_assistant_scope \
             plugins/trovato_ai plugins/test_form_taps plugins/test_form_taps_b plugins/test_owned_vocabulary
           cp target/wasm32-wasip1/release/trovato_blog.wasm plugins/trovato_blog/
           cp target/wasm32-wasip1/release/trovato_search.wasm plugins/trovato_search/
@@ -684,6 +685,7 @@ jobs:
           cp target/wasm32-wasip1/release/test_item_writer.wasm plugins/test_item_writer/
           cp target/wasm32-wasip1/release/test_site_queries.wasm plugins/test_site_queries/
           cp target/wasm32-wasip1/release/test_item_deny.wasm plugins/test_item_deny/
+          cp target/wasm32-wasip1/release/test_item_background.wasm plugins/test_item_background/
           cp target/wasm32-wasip1/release/test_members.wasm plugins/test_members/
           cp target/wasm32-wasip1/release/test_menu_entries.wasm plugins/test_menu_entries/
           cp target/wasm32-wasip1/release/test_page_builder_components.wasm plugins/test_page_builder_components/
@@ -1227,6 +1229,12 @@ jobs:
           (cd "$RUNNER_TEMP/previous" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" \
             cargo build -p trovato-kernel --bin trovato)
           cp target/debug/trovato "$RUNNER_TEMP/trovato-previous"
+          # Cargo hashes a path crate without its path, so the previous
+          # tree's trovato-sdk and the branch's share one artifact, and the
+          # previous build's newer mtime made the branch's look fresh: a
+          # branch adding an SDK constant failed to compile here. Drop the
+          # workspace crates' fingerprints; dependencies stay cached.
+          rm -rf target/debug/.fingerprint/trovato-*
       - name: Previous binary on this branch's schema
         env:
           TROVATO_PREVIOUS_BIN: ${{ runner.temp }}/trovato-previous
