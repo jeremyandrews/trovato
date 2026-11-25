@@ -917,6 +917,16 @@
         margin-inline-start: var(--space-3);
     }
 
+    /* A link that is not part of a sentence (a row's operations, a "Back to"
+       or "Cancel" link alone in its paragraph) is a target, and gets the
+       24px a target needs (WCAG 2.5.8) whatever the font's line height. */
+    .operations a,
+    main p > a:only-child {
+        display: inline-flex;
+        align-items: center;
+        min-block-size: var(--target);
+    }
+
     .inline-form {
         display: inline;
     }
