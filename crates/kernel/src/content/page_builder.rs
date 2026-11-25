@@ -810,7 +810,8 @@ mod tests {
 
     fn test_tera() -> tera::Tera {
         let mut tera = tera::Tera::default();
-        // Register the markdown filter with min_heading support (matches engine.rs)
+        // The markdown filter with min_heading support, rendering through the
+        // kernel's one Markdown renderer as the real filter in engine.rs does.
         tera.register_filter(
             "markdown",
             |value: &tera::Value, args: &std::collections::HashMap<String, tera::Value>| {
@@ -821,15 +822,10 @@ mod tests {
                     .get("min_heading")
                     .and_then(|v| v.as_u64())
                     .unwrap_or(1) as usize;
-                let processed = if min_heading > 1 {
-                    rewrite_markdown_headings(text, min_heading)
-                } else {
-                    text.to_string()
-                };
-                let parser = pulldown_cmark::Parser::new(&processed);
-                let mut html_output = String::new();
-                pulldown_cmark::html::push_html(&mut html_output, parser);
-                Ok(tera::Value::String(ammonia::clean(&html_output)))
+                Ok(tera::Value::String(crate::theme::render_markdown(
+                    text,
+                    min_heading,
+                )))
             },
         );
 
