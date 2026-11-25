@@ -1,7 +1,8 @@
 //! B218 test fixture: the plugin rule for the static search index.
 //!
-//! A plugin that writes an item's searchable content behind the item API, with
-//! raw SQL, must queue the item with `host::search_index_enqueue`. `tap_cron`
+//! A raw write to an item is queued by the database; a plugin that changes
+//! anything else a search page depends on queues the item with
+//! `host::search_index_enqueue`, and the queue row then names it. `tap_cron`
 //! takes a step from the `step` variable, `{ "nonce", "id", "title",
 //! "enqueue" }`, clears it, retitles the item with a raw `UPDATE item`, and
 //! queues it when `enqueue` is true. It reports `{ "nonce", "updated",

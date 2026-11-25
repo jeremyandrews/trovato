@@ -19,7 +19,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use sqlx::PgPool;
-use tracing::warn;
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::content::ItemService;
@@ -211,6 +211,23 @@ pub async fn maybe_rebuild_index(
     items: &ItemService,
     compaction_percent: f64,
 ) -> Result<bool> {
+    let source = ItemDocuments { pool, items };
+    maybe_rebuild_index_with(pool, output_dir, &source, compaction_percent).await
+}
+
+/// [`maybe_rebuild_index`] over any document source.
+///
+/// A full rebuild request is cleared before the run, so a request made during
+/// it is kept, and set again when the run did not do the build it asked for:
+/// the run failed, or another publisher got in first. A request is then never
+/// lost to an error; the next cron run tries again.
+#[doc(hidden)]
+pub async fn maybe_rebuild_index_with<S: super::search_update::DocumentSource>(
+    pool: &PgPool,
+    output_dir: &Path,
+    source: &S,
+    compaction_percent: f64,
+) -> Result<bool> {
     // The plugin's table says whether the index is wanted at all, and carries
     // an operator's full rebuild request.
     let requested: Option<bool> =
@@ -222,7 +239,6 @@ pub async fn maybe_rebuild_index(
         return Ok(false);
     };
     if requested {
-        // Cleared before the build, so a request made during it is kept.
         sqlx::query("UPDATE pagefind_index_status SET rebuild_requested = false WHERE id = 1")
             .execute(pool)
             .await
@@ -234,8 +250,20 @@ pub async fn maybe_rebuild_index(
         compaction_percent,
         ..super::search_update::RunOptions::default()
     };
-    let source = ItemDocuments { pool, items };
-    match super::search_update::run_index(pool, output_dir, &source, &options).await {
+    let result = super::search_update::run_index(pool, output_dir, source, &options).await;
+    // A requested build is the run's first full build; without one, the
+    // request stands for the next run.
+    let built = result
+        .as_ref()
+        .is_ok_and(|report| !report.full_builds.is_empty());
+    if requested && !built {
+        sqlx::query("UPDATE pagefind_index_status SET rebuild_requested = true WHERE id = 1")
+            .execute(pool)
+            .await
+            .context("failed to keep the pagefind rebuild request")?;
+        info!("the requested search index rebuild did not run; it is requested again");
+    }
+    match result {
         Ok(report) => {
             if report.did_work() {
                 sqlx::query(

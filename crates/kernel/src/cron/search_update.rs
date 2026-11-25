@@ -59,8 +59,8 @@ use trovato_search_index::{ChunkPlan, PAGEFIND_VERSION, PageTerms};
 use super::pagefind::{IndexDocument, render_fragment};
 use super::search_index::{
     FullBuildOptions, FullBuildReport, LOCK_KEY, LedgerRow, RebuildAgain, StagingGuard, TermRow,
-    apply_ledger_plan, delete_drained, full_build_with, generation, page_url, plan_ledger,
-    store_chunk_plans, sweep,
+    apply_ledger_plan, cached_words, delete_drained, full_build_with, generation, page_url,
+    plan_ledger, store_chunk_plans, sweep,
 };
 
 /// Queue rows applied per incremental update.
@@ -223,10 +223,13 @@ pub async fn incremental_update(
         }
         let html = render_fragment(document);
         let hash = Sha256::digest(html.as_bytes()).to_vec();
-        match cache.get(&document.id) {
-            Some(row) if row.content_hash == hash => {
-                let words = PageTerms::words_from_cbor(&row.words)
-                    .with_context(|| format!("decode the cached terms of {}", document.id))?;
+        // A cache entry that does not decode is a miss, as in a full build.
+        let cached = cache
+            .get(&document.id)
+            .filter(|row| row.content_hash == hash)
+            .and_then(|row| cached_words(document.id, &row.words).map(|words| (row, words)));
+        match cached {
+            Some((row, words)) => {
                 terms.insert(
                     document.id,
                     PageTerms {
@@ -238,7 +241,7 @@ pub async fn incremental_update(
                 );
                 same.insert(document.id);
             }
-            _ => to_tokenize.push((document.id, html, hash)),
+            None => to_tokenize.push((document.id, html, hash)),
         }
     }
     report.tokenized = to_tokenize.len();
@@ -426,10 +429,17 @@ pub async fn incremental_update(
             let old = match was {
                 None => None,
                 Some(id) => match cache.remove(id) {
-                    Some(row) if row.language == *language => Some(
-                        PageTerms::words_from_cbor(&row.words)
-                            .with_context(|| format!("decode the cached terms of {id}"))?,
-                    ),
+                    Some(row) if row.language == *language => {
+                        // Without them its old postings cannot be found. A full
+                        // build does not need them, and rewrites the entry.
+                        let Some(words) = cached_words(*id, &row.words) else {
+                            return Ok(UpdateOutcome::FullBuildNeeded(format!(
+                                "the cached terms of item {id}, which holds page {page} of \
+                                 {language}, do not decode"
+                            )));
+                        };
+                        Some(words)
+                    }
                     _ => {
                         return Ok(UpdateOutcome::FullBuildNeeded(format!(
                             "item {id} holds page {page} of {language} but has no cached terms \
@@ -724,8 +734,9 @@ async fn full<S: DocumentSource>(
     source: &S,
     compact: bool,
 ) -> Result<Option<FullBuildReport>> {
-    let drained = read_queue(pool, None).await?;
+    // The generation before the queue, as in an update.
     let snapshot = generation(pool).await?;
+    let drained = read_queue(pool, None).await?;
     let documents = source.documents(None).await?;
     match full_build_with(
         pool,
@@ -795,6 +806,10 @@ pub async fn run_index<S: DocumentSource>(
         }
     } else {
         for _ in 0..options.max_batches {
+            // The generation before the queue: a run that publishes in between
+            // (and may drain this batch) then supersedes this one, rather than
+            // this one applying, and reporting, a batch already applied.
+            let snapshot = generation(pool).await?;
             let batch = read_queue(pool, Some(options.batch_size)).await?;
             if batch.is_empty() {
                 break;
@@ -818,7 +833,6 @@ pub async fn run_index<S: DocumentSource>(
                 break;
             }
             let ids: Vec<Uuid> = batch.iter().map(|(id, _)| *id).collect();
-            let snapshot = generation(pool).await?;
             let documents = source.documents(Some(&ids)).await?;
             let outcome = match incremental_update(pool, output_dir, &batch, &documents, snapshot)
                 .await

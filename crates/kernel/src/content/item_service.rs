@@ -956,8 +956,6 @@ impl ItemService {
         // new item is searchable via the SemanticSimilarity gather operator.
         self.index_item(&item, user).await;
 
-        self.queue_for_search(None, Some(&item)).await;
-
         info!(item_id = %item.id, item_type = %item.item_type, "item created");
         self.audit("create", item.id, Some(user), Self::audit_details(&item))
             .await;
@@ -1076,32 +1074,6 @@ impl ItemService {
             )
         };
         (flag("promote_default"), flag("sticky_default"))
-    }
-
-    /// Queue the item for the public search index when a write changed what
-    /// it may hold: the item was in it before (published on the live stage),
-    /// or is now. That covers a publish, an edit to a public item, an
-    /// unpublish, a move off the live stage and a delete; cron then rewrites
-    /// only this item's part of the index. A write to an item that was never
-    /// public queues nothing.
-    async fn queue_for_search(&self, before: Option<&Item>, after: Option<&Item>) {
-        let public = |item: &Item| item.is_published() && item.stage_id == LIVE_STAGE_ID;
-        if !(before.is_some_and(public) || after.is_some_and(public)) {
-            return;
-        }
-        let Some(item) = after.or(before) else {
-            return;
-        };
-        let queued = crate::search::index_queue::Queued {
-            item_id: item.id,
-            language: Some(item.language.clone()),
-            op: if after.is_some() {
-                crate::search::index_queue::IndexOp::Upsert
-            } else {
-                crate::search::index_queue::IndexOp::Delete
-            },
-        };
-        crate::search::index_queue::enqueue_after_write(&self.inner.pool, &[queued], "item").await;
     }
 
     /// Give `item` the alias its type's pathauto pattern asks for, on its
@@ -1778,8 +1750,6 @@ impl ItemService {
             // the updated item's searchable vector reflects the new content.
             self.index_item(i, user).await;
 
-            self.queue_for_search(Some(&existing), Some(i)).await;
-
             // Invalidate cache
             self.invalidate(id);
 
@@ -1958,7 +1928,6 @@ impl ItemService {
         if deleted {
             // Invalidate cache
             self.invalidate(id);
-            self.queue_for_search(Some(&item), None).await;
             info!(item_id = %id, "item deleted");
             self.audit("delete", id, Some(user), Self::audit_details(&item))
                 .await;

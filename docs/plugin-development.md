@@ -1459,29 +1459,35 @@ let affected = host::execute_raw(
 ### The static search index: queue what you change
 
 The site's static search index (Pagefind, under `/pagefind/`) is updated item by
-item. Each write that changes what an item's search page is built from queues
-that item, and the next cron run rewrites only the queued items' part of the
-index. Nothing polls for changes, so a write that queues nothing is never seen.
+item. Each change to what an item's search page is built from queues that item,
+and the next cron run rewrites only the queued items' part of the index.
+Nothing polls for changes, so a change that queues nothing is never seen.
 
-**The rule:** a plugin that writes any of the following without going through
-the kernel's services must call `host::search_index_enqueue` after the write,
-with the ids of the items it changed:
-
-* the `item` row: its title, fields, status, stage or language;
-* a comment on the item;
-* the item's URL alias.
+**Writes to items, comments and URL aliases are queued by the database.**
+Triggers on the `item`, `comment` and `url_alias` tables queue the item a write
+changes, in the write's own transaction. That holds for `host::save_item`, the
+kernel's services and a plugin's raw SQL alike. A write that commits is
+queued, and one that rolls back is not.
 
 ```rust
 host::execute_raw(
     "UPDATE item SET fields = jsonb_set(fields, '{field_rating}', $1) WHERE id = $2::uuid",
     &[json!(rating), json!(id)],
 )?;
+// Queued already: nothing more to do.
+```
+
+**The rule:** when your plugin changes something else that decides what an
+item's search page holds, call `host::search_index_enqueue` afterwards with the
+ids of the items it affects. The usual case is data of your own that your
+`tap_field_access` reads: the index is built as the anonymous visitor, so a
+change to which fields that visitor may see changes the page.
+
+```rust
+host::execute_raw("UPDATE my_plugin_field_embargo SET lifted = true WHERE item_id = $1::uuid", &[json!(id)])?;
 host::search_index_enqueue(&[id.as_str()])?;   // Ok(rows queued)
 ```
 
-* `host::save_item`, `host::delete_item` and `host::save_translation` queue the
-  item already, and so do the kernel's comment and alias services. You do not
-  need the call after them.
 * Queuing twice is harmless. Queuing an item that is not searchable (a draft, a
   workspace item, one anonymous visitors cannot see) is also harmless: the
   updater takes it out of the index or leaves it out.
@@ -1491,9 +1497,9 @@ host::search_index_enqueue(&[id.as_str()])?;   // Ok(rows queued)
 * The queue row records the reason as `plugin:<your plugin name>`, so an
   operator can see who queued what.
 
-Without the call, the change reaches search only at the next full rebuild. That
-happens after compaction or when an operator runs `trovato search rebuild`,
-which may be days away.
+Without the call, such a change reaches search only at the next full rebuild.
+That happens after compaction or when an operator runs `trovato search
+rebuild`, which may be days away.
 
 ---
 

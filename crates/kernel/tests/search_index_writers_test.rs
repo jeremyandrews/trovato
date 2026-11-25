@@ -6,19 +6,21 @@
 //! Before this, every change asked for a full rebuild of the index (a flag
 //! set by the item and comment services, the type screen, and a cron poll of
 //! `MAX(changed)`), and scheduled publishing changed `item.status` with raw
-//! SQL that no writer saw. Now each writer queues its items in
-//! `search_index_queue` with a reason, and the cron updater rewrites only
-//! those pages.
+//! SQL that no writer saw. Now each write queues its items in
+//! `search_index_queue` with a reason (the database itself, in the write's
+//! own transaction, for items, comments and URL aliases), and the cron updater
+//! rewrites only those pages.
 //!
 //! One test per writer: the item service (create, edit, unpublish, delete),
 //! the comment service (create, edit, delete), the content type search
 //! switches and the search field config, URL aliases, workspace publishing,
 //! scheduled publishing and unpublishing (through the real cron and the
-//! plugin, whose writes now go through the item API), and a plugin writing
-//! with raw SQL and calling `search_index_enqueue`. Each asserts the queue row
-//! the write left, then moves it into a private index
+//! plugin, whose status changes go through the item API), and a plugin writing
+//! with raw SQL, with and without `search_index_enqueue`. Each asserts the
+//! queue row the write left, then moves it into a private index
 //! (`common::search_index`), runs one update, and asserts what the index
-//! finds.
+//! finds. Two more test the queue's triggers inside a transaction, and that a
+//! scheduled date is applied once.
 //!
 //! Requires Postgres, Redis and, for the two plugin paths, the fixture
 //! `.wasm` files (built by CI before the test job).
@@ -32,7 +34,10 @@ use common::search_index::{Index, by_item, unique_word, urls};
 use common::{TestApp, run_test, shared_app};
 use serde_json::{Value, json};
 use sqlx::PgPool;
-use trovato_kernel::cron::CronResult;
+use trovato_kernel::cron::{
+    CronResult, DocumentSource, IndexDocument, RunOptions, maybe_rebuild_index_with,
+    search_index_run,
+};
 use trovato_kernel::models::comment::CommentStatus;
 use trovato_kernel::models::stage::LIVE_STAGE_ID;
 use trovato_kernel::models::url_alias::{CreateUrlAlias, UpdateUrlAlias};
@@ -450,6 +455,19 @@ fn publishing_a_workspace_queues_its_items_with_the_move() {
         index.update().await;
         assert!(index.search("en", &word).is_empty(), "not live yet");
 
+        // An alias whose source looks like an item path but is no UUID: the
+        // publish must not try to read it as one.
+        let junk = format!("/b218-junk-{}", Uuid::now_v7().simple());
+        sqlx::query(
+            "INSERT INTO url_alias (source, alias, language, stage_id, created) \
+             VALUES ('/item/' || repeat('-', 36), $1, 'en', $2, 0)",
+        )
+        .bind(&junk)
+        .bind(stage)
+        .execute(&app.db)
+        .await
+        .expect("an alias with a malformed item source");
+
         let result = app.stage().publish(stage).await.expect("publish");
         assert!(result.success, "{result:?}");
         assert_queued(&index.take(&[id]).await, id, 1, "stage_publish");
@@ -459,6 +477,99 @@ fn publishing_a_workspace_queues_its_items_with_the_move() {
             urls([&item_url(id)]),
             "found once published"
         );
+        sqlx::query("DELETE FROM url_alias WHERE alias = $1")
+            .bind(&junk)
+            .execute(&app.db)
+            .await
+            .unwrap();
+    });
+}
+
+/// The queue row for `id` in the shared queue, as `(op, reason)`.
+async fn queued_row<'e, E: sqlx::PgExecutor<'e>>(db: E, id: Uuid) -> Option<(i16, String)> {
+    sqlx::query_as("SELECT op, reason FROM search_index_queue WHERE item_id = $1")
+        .bind(id)
+        .fetch_optional(db)
+        .await
+        .expect("read the queue")
+}
+
+#[test]
+fn the_database_queues_a_write_in_the_write_s_own_transaction() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_plugin_enabled("trovato_comments").await;
+        let id = create_page(app, "Trigger probe", "Body", 1, LIVE_STAGE_ID).await;
+        let clear = || async {
+            sqlx::query("DELETE FROM search_index_queue WHERE item_id = $1")
+                .bind(id)
+                .execute(&app.db)
+                .await
+                .unwrap();
+        };
+        clear().await;
+
+        // A write that rolls back queues nothing; inside it, the row is there.
+        let mut tx = app.db.begin().await.unwrap();
+        sqlx::query("UPDATE item SET title = 'Rolled back' WHERE id = $1")
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .unwrap();
+        assert_eq!(
+            queued_row(&mut *tx, id).await,
+            Some((1, "item".to_string())),
+            "queued by the write itself"
+        );
+        tx.rollback().await.unwrap();
+        assert_eq!(queued_row(&app.db, id).await, None, "rolled back with it");
+
+        // A write that commits is queued, whatever runs after the commit.
+        sqlx::query("UPDATE item SET title = 'Committed' WHERE id = $1")
+            .bind(id)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(queued_row(&app.db, id).await, Some((1, "item".to_string())));
+        clear().await;
+
+        // A comment awaiting moderation is not on the page: its insert, and
+        // the comment count it moves on the item, queue nothing.
+        app.state
+            .comments()
+            .create(
+                CreateComment {
+                    item_id: id,
+                    parent_id: None,
+                    author_id: Uuid::nil(),
+                    subject: None,
+                    body: "Pending".to_string(),
+                    body_format: None,
+                    status: Some(CommentStatus::Pending.as_i16()),
+                },
+                &admin(),
+            )
+            .await
+            .expect("a pending comment");
+        assert_eq!(queued_row(&app.db, id).await, None, "a pending comment");
+
+        // An unpublished item is not in the index's reach.
+        let draft = create_page(app, "Trigger draft", "Body", 0, LIVE_STAGE_ID).await;
+        sqlx::query("UPDATE item SET title = 'Still a draft' WHERE id = $1")
+            .bind(draft)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(queued_row(&app.db, draft).await, None, "a draft");
+
+        // Its delete is queued as a delete.
+        sqlx::query("DELETE FROM item WHERE id = $1")
+            .bind(id)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(queued_row(&app.db, id).await, Some((2, "item".to_string())));
+        clear().await;
     });
 }
 
@@ -623,6 +734,26 @@ async fn schedule(pool: &PgPool, id: Uuid, field: &str, at: i64) {
     .expect("schedule");
 }
 
+/// The scheduling dates an item still carries.
+async fn dates(pool: &PgPool, id: Uuid) -> (Option<String>, Option<String>) {
+    sqlx::query_as(
+        "SELECT fields->>'field_publish_on', fields->>'field_unpublish_on' FROM item WHERE id = $1",
+    )
+    .bind(id)
+    .fetch_one(pool)
+    .await
+    .expect("the item's dates")
+}
+
+/// How many revisions `id` has.
+async fn revisions(pool: &PgPool, id: Uuid) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM item_revision WHERE item_id = $1")
+        .bind(id)
+        .fetch_one(pool)
+        .await
+        .expect("count revisions")
+}
+
 #[test]
 fn scheduled_publishing_goes_through_the_item_api_and_reaches_the_index() {
     run_test(async {
@@ -643,7 +774,7 @@ fn scheduled_publishing_goes_through_the_item_api_and_reaches_the_index() {
         })
         .await;
         // An item service update, so queued as any editor's save is, with a
-        // revision recorded.
+        // revision recorded; and the date it applied is gone.
         assert_queued(&index.take(&[id]).await, id, 1, "item");
         let log: Option<String> = sqlx::query_scalar(
             "SELECT log FROM item_revision WHERE item_id = $1 ORDER BY created DESC, id DESC LIMIT 1",
@@ -653,26 +784,81 @@ fn scheduled_publishing_goes_through_the_item_api_and_reaches_the_index() {
         .await
         .unwrap();
         assert_eq!(log.as_deref(), Some("Scheduled publish"));
+        assert_eq!(
+            dates(&app.db, id).await,
+            (None, None),
+            "the date is applied once"
+        );
         index.update().await;
         assert_eq!(index.search("en", &word), urls([&item_url(id)]));
 
         // Scheduled unpublish: the item leaves the results.
         schedule(&app.db, id, "field_unpublish_on", past).await;
-        sqlx::query("UPDATE item SET fields = fields - 'field_publish_on' WHERE id = $1")
-            .bind(id)
-            .execute(&app.db)
-            .await
-            .unwrap();
         cron_until(app, "unpublished the item", || async {
             status(&app.db, id).await == 0
         })
         .await;
         assert_queued(&index.take(&[id]).await, id, 1, "item");
+        assert_eq!(
+            dates(&app.db, id).await,
+            (None, None),
+            "the date is applied once"
+        );
         index.update().await;
         assert!(
             index.search("en", &word).is_empty(),
             "a scheduled unpublish removes the item from the results"
         );
+    });
+}
+
+#[test]
+fn a_scheduled_date_is_applied_once_so_past_dates_do_not_repeat() {
+    run_test(async {
+        let app = plugin_app().await;
+        // Both dates past: published, then unpublished, then left alone. Were
+        // a date kept, every run would publish and unpublish the item again,
+        // and items like it would fill every batch ahead of the rest.
+        let id = create_page(app, "Both dates past", "Body", 0, LIVE_STAGE_ID).await;
+        let past = chrono::Utc::now().timestamp() - 60;
+        schedule(&app.db, id, "field_publish_on", past).await;
+        schedule(&app.db, id, "field_unpublish_on", past).await;
+        cron_until(app, "applied both dates", || async {
+            dates(&app.db, id).await == (None, None)
+        })
+        .await;
+        assert_eq!(status(&app.db, id).await, 0, "published, then unpublished");
+        let settled = revisions(&app.db, id).await;
+        let mut ran = 0;
+        for _ in 0..240 {
+            if matches!(app.state.cron().run().await, CronResult::Skipped) {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            } else {
+                ran += 1;
+                if ran == 2 {
+                    break;
+                }
+            }
+        }
+        assert_eq!(ran, 2, "two more cron runs");
+        assert_eq!(status(&app.db, id).await, 0);
+        assert_eq!(
+            revisions(&app.db, id).await,
+            settled,
+            "later runs change nothing"
+        );
+
+        // A date not yet due is kept, and its item left alone.
+        let later = create_page(app, "Not yet due", "Body", 0, LIVE_STAGE_ID).await;
+        schedule(&app.db, later, "field_publish_on", past + 3_600).await;
+        let other = create_page(app, "Due", "Body", 0, LIVE_STAGE_ID).await;
+        schedule(&app.db, other, "field_publish_on", past).await;
+        cron_until(app, "published the due item", || async {
+            status(&app.db, other).await == 1
+        })
+        .await;
+        assert_eq!(status(&app.db, later).await, 0, "not yet due");
+        assert!(dates(&app.db, later).await.0.is_some(), "its date is kept");
     });
 }
 
@@ -708,12 +894,12 @@ async fn plugin_retitle(app: &TestApp, id: Uuid, title: &str, enqueue: bool) -> 
 }
 
 #[test]
-fn a_plugin_raw_write_reaches_the_index_through_search_index_enqueue() {
+fn a_plugin_raw_write_is_queued_by_the_database_and_search_index_enqueue_names_it() {
     run_test(async {
         let app = plugin_app().await;
         let index = anchored(app).await;
         let before = unique_word("before");
-        let unqueued = unique_word("unqueued");
+        let raw = unique_word("raw");
         let queued = unique_word("queued");
         let id = create_page(app, &format!("Plugin {before}"), "Body", 1, LIVE_STAGE_ID).await;
         index.track(id);
@@ -721,17 +907,19 @@ fn a_plugin_raw_write_reaches_the_index_through_search_index_enqueue() {
         index.update().await;
         assert_eq!(index.search("en", &before), urls([&item_url(id)]));
 
-        // A raw write without the call: nothing is queued, and the index keeps
-        // the old title. This is what the rule is for.
-        let answer = plugin_retitle(app, id, &format!("Plugin {unqueued}"), false).await;
+        // A raw write without the call: the database queued it with the write.
+        let answer = plugin_retitle(app, id, &format!("Plugin {raw}"), false).await;
         assert_eq!(answer["updated"], 1, "{answer}");
+        assert_queued(&index.take(&[id]).await, id, 1, "item");
+        index.update().await;
+        assert_eq!(index.search("en", &raw), urls([&item_url(id)]));
         assert!(
-            index.take(&[id]).await.is_empty(),
-            "a raw write queues nothing"
+            index.search("en", &before).is_empty(),
+            "the old title is gone"
         );
-        assert_eq!(index.search("en", &before), urls([&item_url(id)]), "stale");
 
-        // With `search_index_enqueue`: queued under the plugin's name.
+        // With `search_index_enqueue`, as for data of the plugin's own that
+        // the page shows: queued again, under the plugin's name.
         let answer = plugin_retitle(app, id, &format!("Plugin {queued}"), true).await;
         assert_eq!(answer["updated"], 1, "{answer}");
         assert_eq!(answer["queued"], 1, "{answer}");
@@ -743,9 +931,148 @@ fn a_plugin_raw_write_reaches_the_index_through_search_index_enqueue() {
         );
         index.update().await;
         assert_eq!(index.search("en", &queued), urls([&item_url(id)]));
+        assert!(index.search("en", &raw).is_empty(), "the old title is gone");
+    });
+}
+
+// -----------------------------------------------------------------------------
+// Recovery: what a cron run does when its inputs are not what it expects.
+// -----------------------------------------------------------------------------
+
+/// Overwrite `id`'s cached terms in `index` with bytes that do not decode.
+async fn spoil_cached_terms(index: &Index, id: Uuid) {
+    let spoiled =
+        sqlx::query("UPDATE search_page_terms SET words = '\\xff'::bytea WHERE item_id = $1")
+            .bind(id)
+            .execute(&index.pool)
+            .await
+            .expect("spoil the cached terms")
+            .rows_affected();
+    assert_eq!(spoiled, 1, "the item has cached terms");
+}
+
+/// Retitle `id` through the item service.
+async fn retitle(app: &TestApp, id: Uuid, title: &str) {
+    app.state
+        .items()
+        .update(id, update(json!({ "title": title })), &admin())
+        .await
+        .expect("edit the title")
+        .expect("the item");
+}
+
+#[test]
+fn a_cached_term_set_that_does_not_decode_is_rebuilt_not_fatal() {
+    run_test(async {
+        let app = shared_app().await;
+        let index = anchored(app).await;
+        let first = unique_word("cachedfirst");
+        let second = unique_word("cachedsecond");
+        let third = unique_word("cachedthird");
+        let id = create_page(app, &format!("Cached {first}"), "Body", 1, LIVE_STAGE_ID).await;
+        index.track(id);
+        index.take(&[id]).await;
+        index.update().await;
+
+        // An edit whose old postings are in the spoiled entry: the update
+        // cannot remove them, so the run takes a full build, which drains the
+        // queue rather than failing on it at every run.
+        spoil_cached_terms(&index, id).await;
+        retitle(app, id, &format!("Cached {second}")).await;
+        index.take(&[id]).await;
+        let report = index.run().await;
+        assert_eq!(report.full_builds.len(), 1, "{report:?}");
         assert!(
-            index.search("en", &before).is_empty(),
+            report.full_builds[0].0.contains("do not decode"),
+            "{report:?}"
+        );
+        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM search_index_queue")
+            .fetch_one(&index.pool)
+            .await
+            .unwrap();
+        assert_eq!(left, 0, "the queue is drained");
+        assert_eq!(index.search("en", &second), urls([&item_url(id)]));
+        assert!(
+            index.search("en", &first).is_empty(),
             "the old title is gone"
         );
+
+        // A full build over a spoiled entry whose page has not changed reads
+        // it as a miss and tokenizes the page again.
+        spoil_cached_terms(&index, id).await;
+        let report = search_index_run(
+            &index.pool,
+            &index.out,
+            &index,
+            &RunOptions {
+                full_build: Some("a test".to_string()),
+                compaction_percent: 100.0,
+                ..RunOptions::default()
+            },
+        )
+        .await
+        .expect("a full build over a spoiled entry");
+        assert_eq!(report.full_builds.len(), 1, "{report:?}");
+        assert!(report.full_builds[0].1.tokenized >= 1, "{report:?}");
+        assert_eq!(index.search("en", &second), urls([&item_url(id)]));
+
+        // The entry it rewrote serves the next update.
+        retitle(app, id, &format!("Cached {third}")).await;
+        index.take(&[id]).await;
+        index.update().await;
+        assert_eq!(index.search("en", &third), urls([&item_url(id)]));
+    });
+}
+
+/// A document source whose export fails.
+struct FailingSource;
+
+#[async_trait::async_trait]
+impl DocumentSource for FailingSource {
+    async fn documents(&self, _ids: Option<&[Uuid]>) -> anyhow::Result<Vec<IndexDocument>> {
+        anyhow::bail!("the export failed")
+    }
+}
+
+#[test]
+fn a_requested_rebuild_that_fails_stays_requested() {
+    run_test(async {
+        let app = shared_app().await;
+        let index = anchored(app).await;
+        // The plugin's status row, in the index's own schema.
+        sqlx::query(
+            "CREATE TABLE pagefind_index_status (id INTEGER PRIMARY KEY DEFAULT 1, \
+             last_indexed_at BIGINT NOT NULL DEFAULT 0, \
+             rebuild_requested BOOLEAN NOT NULL DEFAULT false, last_error TEXT)",
+        )
+        .execute(&index.pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO pagefind_index_status (id, rebuild_requested) VALUES (1, true)")
+            .execute(&index.pool)
+            .await
+            .unwrap();
+        let state = || async {
+            sqlx::query_as::<_, (bool, Option<String>)>(
+                "SELECT rebuild_requested, last_error FROM pagefind_index_status",
+            )
+            .fetch_one(&index.pool)
+            .await
+            .unwrap()
+        };
+
+        // The build fails: the error is recorded, and the request kept.
+        let failed = maybe_rebuild_index_with(&index.pool, &index.out, &FailingSource, 100.0).await;
+        assert!(failed.is_err(), "the export failed");
+        let (requested, error) = state().await;
+        assert!(requested, "the request stands for the next run");
+        assert!(error.unwrap_or_default().contains("the export failed"));
+
+        // The next run builds, and the request is done.
+        let built = maybe_rebuild_index_with(&index.pool, &index.out, &index, 100.0)
+            .await
+            .expect("the requested build");
+        assert!(built);
+        assert_eq!(state().await, (false, None));
     });
 }

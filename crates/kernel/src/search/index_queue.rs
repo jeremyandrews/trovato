@@ -6,14 +6,20 @@
 //! `docs/design/incremental-search-index.md`). Before this, every such write
 //! set one "rebuild everything" flag.
 //!
-//! The rule, for kernel code and plugins alike: **after a write to anything an
-//! item's search page is built from — the item row, its comments, its URL
-//! alias, its type's search settings or field weights — queue the item**. The
-//! kernel's item and comment services, the content type and search field
-//! admin, workspace publishing and URL alias writes do it themselves. A plugin
-//! that writes those tables with raw SQL calls the `db.search-index-enqueue`
-//! host function (`trovato_sdk::host::search_index_enqueue`); one that writes
-//! through the item API needs to do nothing.
+//! Writes to the rows an item's page is built from are queued by the database
+//! itself. Triggers on `item`, `comment` and `url_alias` (migration
+//! `20261204000001_search_index_queue_triggers.sql`) queue the item in the
+//! same transaction as the write, whoever made it: a kernel service, a bulk
+//! statement or a plugin's raw SQL. A write that commits therefore cannot lose
+//! its queue row to a crash or an error after the commit, and one that rolls
+//! back queues nothing.
+//!
+//! What no trigger sees is queued here by the code that changes it: a type's
+//! search settings or field weights ([`enqueue_type`]), workspace publishing
+//! ([`enqueue_stage_publish`], which also names the reason its moves are
+//! queued under), and a plugin's own data shown in an item's page, through the
+//! `db.search-index-enqueue` host function
+//! (`trovato_sdk::host::search_index_enqueue`).
 //!
 //! Queuing is cheap and idempotent: one row per item, replaced by the next
 //! change, so a burst of writes to one item costs one update. An item queued
@@ -25,7 +31,7 @@ use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
 use sqlx::PgExecutor;
-use tracing::warn;
+
 use uuid::Uuid;
 
 use crate::models::stage::LIVE_STAGE_ID;
@@ -117,17 +123,6 @@ pub async fn enqueue<'e, E: PgExecutor<'e>>(
     }
 }
 
-/// [`enqueue`] after a write that has already committed: a failure is logged,
-/// and the write stands. The item is then picked up by the next full build.
-pub async fn enqueue_after_write(pool: &sqlx::PgPool, items: &[Queued], reason: &str) {
-    if items.is_empty() {
-        return;
-    }
-    if let Err(e) = enqueue(pool, items, reason).await {
-        warn!(error = %e, reason, items = items.len(), "failed to queue items for the search index");
-    }
-}
-
 /// Queue every item of `item_type` that the index holds or may hold: those
 /// published on the live stage, and those with a page in the ledger. For a
 /// change to the type's search switches or field weights, which can change
@@ -156,17 +151,6 @@ pub async fn enqueue_type<'e, E: PgExecutor<'e>>(
     Ok(result.rows_affected())
 }
 
-/// Queue the item a URL alias source names, if it names one (`/item/<id>`):
-/// the alias is the result card's link, so it is in the item's page.
-pub async fn enqueue_alias_source(pool: &sqlx::PgPool, source: &str) {
-    if let Some(id) = source
-        .strip_prefix("/item/")
-        .and_then(|rest| Uuid::parse_str(rest).ok())
-    {
-        enqueue_after_write(pool, &[Queued::upsert(id)], "url_alias").await;
-    }
-}
-
 /// How many items are queued.
 pub async fn pending<'e, E: PgExecutor<'e>>(executor: E) -> Result<i64> {
     sqlx::query_scalar("SELECT count(*) FROM search_index_queue")
@@ -180,7 +164,15 @@ pub async fn pending<'e, E: PgExecutor<'e>>(executor: E) -> Result<i64> {
 /// commit with the move): every item on the stage, every item the publish
 /// deletes, and every item whose URL alias moves or is deleted with it.
 /// Call before the items and aliases leave the stage.
+///
+/// It also sets the transaction's `trovato.search_index_reason` to
+/// `stage_publish`, so the rows the item, comment and alias triggers queue as
+/// the publish moves them carry that reason too.
 pub async fn enqueue_stage_publish(conn: &mut sqlx::PgConnection, stage_id: Uuid) -> Result<u64> {
+    sqlx::query("SELECT set_config('trovato.search_index_reason', 'stage_publish', true)")
+        .execute(&mut *conn)
+        .await
+        .context("name the workspace publish's search index reason")?;
     let result = sqlx::query(
         r#"
         WITH deleted AS (
@@ -189,7 +181,9 @@ pub async fn enqueue_stage_publish(conn: &mut sqlx::PgConnection, stage_id: Uuid
         ),
         aliased AS (
             SELECT substring(a.source FROM 7)::uuid AS id FROM url_alias a
-            WHERE a.source ~ '^/item/[0-9a-fA-F-]{36}$'
+            -- A whole UUID: a looser pattern would let a malformed source
+            -- reach the cast, and its error would abort the publish.
+            WHERE a.source ~ '^/item/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
               AND (a.stage_id = $1 OR a.id IN (
                   SELECT entity_id::uuid FROM stage_deletion
                   WHERE stage_id = $1 AND entity_type = 'url_alias'))

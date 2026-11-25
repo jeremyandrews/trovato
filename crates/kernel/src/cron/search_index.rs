@@ -149,6 +149,18 @@ pub(super) fn page_url(id: Uuid) -> String {
     format!("/{id}.html")
 }
 
+/// The words a term cache entry holds, or `None`, logged, when its bytes do
+/// not decode. A caller treats that as a cache miss.
+pub(super) fn cached_words(id: Uuid, bytes: &[u8]) -> Option<BTreeMap<String, Vec<i32>>> {
+    match PageTerms::words_from_cbor(bytes) {
+        Ok(words) => Some(words),
+        Err(e) => {
+            warn!(item_id = %id, error = %e, "the cached search terms do not decode");
+            None
+        }
+    }
+}
+
 /// The changes a full build makes to the ledger, and the slots it publishes.
 #[derive(Debug, Default, PartialEq)]
 pub(super) struct LedgerPlan {
@@ -362,10 +374,14 @@ pub async fn full_build_with(
     let mut changed: Vec<(Uuid, Vec<u8>)> = Vec::new();
     let mut to_tokenize: Vec<(Uuid, String, Vec<u8>)> = Vec::new();
     for (id, html, hash) in rendered {
-        match cache.remove(&id) {
-            Some(row) if row.content_hash == hash => {
-                let words = PageTerms::words_from_cbor(&row.words)
-                    .with_context(|| format!("decode the cached terms of {id}"))?;
+        // A cache entry that does not decode is a miss: the page is tokenized
+        // again and its entry rewritten, so one bad row cannot fail every build.
+        let cached = cache
+            .remove(&id)
+            .filter(|row| row.content_hash == hash)
+            .and_then(|row| cached_words(id, &row.words).map(|words| (row, words)));
+        match cached {
+            Some((row, words)) => {
                 terms.insert(
                     id,
                     PageTerms {
@@ -377,7 +393,7 @@ pub async fn full_build_with(
                 );
                 report.cached += 1;
             }
-            _ => to_tokenize.push((id, html, hash)),
+            None => to_tokenize.push((id, html, hash)),
         }
     }
     report.tokenized = to_tokenize.len();

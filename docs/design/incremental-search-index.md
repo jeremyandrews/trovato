@@ -797,33 +797,58 @@ How to read the table:
   * Enqueuing is `crate::search::index_queue`: `enqueue`, `enqueue_type` (one
     `INSERT … SELECT` for a whole type) and `enqueue_stage_publish`.
 * **The writers.** Each queues the items it changed, with a reason:
-  * **The item service** (`item`), on create, edit, publish, unpublish, a move
-    off Live, and delete (op 2).
-  * **The comment service** (`comment`), queuing the comment's item.
+  * **Writes to `item`, `comment` and `url_alias` rows** are queued by
+    triggers on those tables (migration
+    `20261204000001_search_index_queue_triggers.sql`), in the write's own
+    transaction. A write that commits is therefore queued even if the process
+    dies right after the commit, and one that rolls back queues nothing. That
+    covers the item service, the comment service, the alias service and
+    pathauto, and a plugin's raw SQL alike.
+    * An item write (`item`) queues the item when it was or is published on
+      Live: a create, an edit, a publish, an unpublish, a move off Live, and a
+      delete (op 2). An update that changes only `comment_count` or
+      `search_vector`, which the comment table's own triggers rewrite for
+      every comment, queues nothing.
+    * A comment write (`comment`) queues the comment's item when the comment
+      was or is published.
+    * An alias write (`url_alias`) queues the item its source names
+      (`/item/<uuid>`), before and after, because the alias is the result's
+      link.
+    * The reason is the transaction's `trovato.search_index_reason` setting
+      when one is set, else the table's.
+    * The services used to queue after their own commit, and a crash or a
+      failed insert between the two lost the change until the next full
+      build. The triggers replace those calls.
   * **The content type search switches** (`type_settings`), **the search field
     weights** (`field_config`) and **the reindex button** (`reindex`). Each
     queues every item of the type that is published on Live or holds a page.
   * **Workspace publishing** (`stage_publish`), inside the publish's own
     transaction and before anything leaves the stage. It queues every item on
     the stage, every item the publish deletes, and every item whose alias
-    moves.
-  * **URL alias writes** (`url_alias`), because the alias is the result's link.
-    They queue the item the alias names (`/item/<id>`), the old and the new
-    one on an update.
+    moves, and sets `trovato.search_index_reason` so the triggers' rows for
+    its moves carry the same reason. An alias source is read as an item id
+    only when it is a whole UUID, so a malformed one cannot fail the publish.
   * **Plugins** (`plugin:<name>`), through the new `db` host function
-    `search-index-enqueue` (`host::search_index_enqueue` in the SDK). The rule
-    for plugin authors is in
+    `search-index-enqueue` (`host::search_index_enqueue` in the SDK), for a
+    change no trigger sees, such as data a plugin's `tap_field_access` reads.
+    The rule for plugin authors is in
     [plugin-development.md](../plugin-development.md#the-static-search-index-queue-what-you-change).
-  * **Scheduled publishing** now finds what is due with a raw read and writes
-    each change through `host::save_item`. It is therefore an item service
-    write: it is queued, a revision is recorded, the write taps fire and the
-    item cache drops the item. It used to write `item.status` with raw SQL,
-    which nothing saw.
+  * **Scheduled publishing** finds what is due with a raw read. It claims each
+    item with one conditional statement that removes the date it applies only
+    if the item is still due, then changes the status through
+    `host::save_item`. The status change is therefore an item service write:
+    it is queued, a revision is recorded, the write taps fire and the item
+    cache drops the item. It used to write `item.status` with raw SQL, which
+    nothing saw, and kept the dates, so an item with both dates past was
+    published and unpublished again at every run.
   * **`trovato_search`'s `tap_cron` no longer polls `MAX(changed)`.** With
     every writer queuing, that poll would have turned each edit back into a
     full rebuild. It now reports the queue length.
 * **Full rebuild requests** are kept for what really is site wide:
   `trovato search rebuild` (new), `trovato generate`, and config import.
+  Cron clears the request before the build, so a request made during it is
+  kept, and sets it again when the run did not do the build: the run failed,
+  or another publisher got in first.
 * **The updater** is `trovato_search_index::update::update_language`, which
   works on one language's meta, chunk plan and changed slots.
   * It reads the live meta and only the chunks a change touches.
@@ -838,6 +863,9 @@ How to read the table:
     same update already produced, by Pagefind's extension rule.
 * **The drain** is `cron/search_update.rs`.
   * Each cron run drains up to 50 batches of 200 queued items, oldest first.
+  * Each batch reads the generation before the queue. A run that publishes
+    in between, and may drain the same rows, then supersedes this one rather
+    than letting it apply and report the batch a second time.
   * Each batch exports just its items through the same seam as a full build
     (`indexable_documents_for`, the access decision included), renders and
     hashes them, and tokenizes only the fragments whose hash the term cache
@@ -859,7 +887,9 @@ How to read the table:
   * the recorded Pagefind version differs from the pinned one;
   * a meta or chunk the update needs does not read, or a meta's slot count
     differs from the ledger's;
-  * a cached term set is missing;
+  * a cached term set the update needs is missing, or does not decode. A
+    full build reads an entry that does not decode as a miss and tokenizes
+    the page again, so one bad row cannot fail every run;
   * a batch puts a page in a language with no index yet, or leaves a language
     with no page;
   * more than 1,000 items are queued and that is more than a quarter of the
@@ -947,9 +977,20 @@ How to read the table:
   * URL alias create, update and delete;
   * workspace publishing;
   * scheduled publish and unpublish through the real cron and plugin. A
-    scheduled unpublish takes the item out of the results;
-  * a plugin's raw write, which is stale without `search_index_enqueue` and
-    found with it.
+    scheduled unpublish takes the item out of the results, each date is
+    removed when applied, and an item with both dates past settles
+    unpublished instead of flipping at every run;
+  * a plugin's raw write, queued by the database as `item`, and the same
+    write followed by `search_index_enqueue`, queued as
+    `plugin:test_search_enqueue`;
+  * the triggers inside a transaction: the row is there before the commit,
+    gone after a rollback, and a pending comment or a draft queues nothing;
+  * a workspace publish with an alias whose source is `/item/` and 36
+    hyphens;
+  * a cached term set that does not decode, under an update (a full build,
+    and the queue drained) and under a full build (tokenized again);
+  * a requested full rebuild whose export fails: the error is recorded and
+    the request kept for the next run.
 
   The type search switches screen is covered by `search_switches_test.rs`.
 
@@ -968,10 +1009,16 @@ How to read the table:
   or under which language, without writing any item. They never triggered a
   rebuild before either, since the `MAX(changed)` poll did not see them. After
   one, run `trovato search rebuild`.
-* **A plugin that writes with raw SQL and does not call
-  `search_index_enqueue` is stale until the next full build.** The rule is
-  documented, and the SDK and WIT carry it, but nothing detects a write that
-  breaks it.
+* **A plugin that changes what `tap_field_access` lets an anonymous visitor
+  see and does not call `search_index_enqueue` is stale until the next full
+  build.** The rule is documented, and the SDK and WIT carry it, but nothing
+  detects a change that breaks it. Raw writes to items, comments and aliases
+  are queued by the database and are not affected.
+* **Scheduled publishing claims a date, then saves the status, in two
+  calls.** An editor's save that lands between the two, from a form loaded
+  before the date passed, can put the date back after the status change. The
+  window is one host call. Closing it needs a conditional `save_item`, which
+  the item API does not have.
 * **Time to searchable includes the wait for the next cron run,** which is
   triggered from outside the server. The update itself is about 20 ms on the
   measured corpus.

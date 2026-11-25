@@ -15,7 +15,7 @@ mod tasks;
 #[doc(hidden)]
 pub use pagefind::{
     IndexDocument, IndexedField, ItemDocuments, indexable_documents, indexable_documents_for,
-    render_fragment, request_rebuild as request_search_index_rebuild,
+    maybe_rebuild_index_with, render_fragment, request_rebuild as request_search_index_rebuild,
 };
 /// The native search index build, for the gate tests: build an index from a
 /// given set of documents through the ledger and publish it.

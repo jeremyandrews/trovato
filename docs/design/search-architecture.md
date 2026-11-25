@@ -46,7 +46,7 @@ User types query
 
 **How it works in Trovato:**
 
-- **Change detection (kernel):** Every write that changes what an item's search page holds queues that item in `search_index_queue`, with a reason. The writers are the item service (create, edit, publish, unpublish, delete), the comment service, the content type search switches and field weights (every item of the type), workspace publishing, URL alias writes, and plugins writing behind the item API, which call `host::search_index_enqueue` ([the rule](../plugin-development.md#the-static-search-index-queue-what-you-change)). Scheduled publishing writes through the item API. Nothing polls. The `pagefind_index_status` table remains the switch that says the site wants the index, and carries an operator's full rebuild request (`trovato search rebuild`).
+- **Change detection (kernel):** Every write that changes what an item's search page holds queues that item in `search_index_queue`, with a reason. Writes to `item`, `comment` and `url_alias` rows are queued by triggers on those tables, in the write's own transaction, whoever makes them (the services, pathauto, a plugin's raw SQL). The other writers are the content type search switches and field weights (every item of the type), workspace publishing, and plugins changing something no trigger sees, such as data their `tap_field_access` reads, which call `host::search_index_enqueue` ([the rule](../plugin-development.md#the-static-search-index-queue-what-you-change)). Scheduled publishing writes through the item API. Nothing polls. The `pagefind_index_status` table remains the switch that says the site wants the index, and carries an operator's full rebuild request (`trovato search rebuild`).
 - **Index generation (kernel):** Each cron run drains the queue in batches of 200, rewriting only the queued items' fragments, the word chunks their words are in, the meta file and `pagefind-entry.json` (`cron/search_update.rs`; see [incremental-search-index.md](incremental-search-index.md#part-3-as-built)). A full build, which exports live-stage published items as HTML fragments (title, every text field, published comments, metadata; see [What Goes in the Index](#what-goes-in-the-index)), builds the Pagefind 1.3.0 index natively (crate `trovato-search-index`; no `pagefind` binary), and publishes it into `PAGEFIND_OUTPUT_DIR`, entry file last (`./static/pagefind/` by default, served at `/static/pagefind/`), runs only when there is no index yet, when an operator asks, when tombstones pass the compaction threshold, or when a precondition of the update fails (logged at `warn` with the reason).
 - **Why the kernel:** WASM plugins run in sandboxed instances with no access to the filesystem. The kernel writes the index files; the `trovato_search` plugin switches the index on and reports the queue length from `tap_cron`.
 - **Client-side search:** The Pagefind JS library loads in the browser. When the user types, Pagefind searches its local index and returns results. No HTTP request, no database query, no server involvement.
@@ -335,7 +335,7 @@ The architecture splits responsibility between the `trovato_search` WASM plugin 
 
 | Component | Implementation | Notes |
 |---|---|---|
-| Change detection | Kernel writers | Each writer queues the items it changed in `search_index_queue`; plugins call `host::search_index_enqueue` after a raw write |
+| Change detection | Table triggers and kernel writers | Item, comment and alias writes are queued by triggers in their own transaction; the type screens and workspace publishing queue their items; plugins call `host::search_index_enqueue` for changes no trigger sees |
 | Index generation | Kernel `cron/pagefind.rs` | Drains the queue through `cron/search_update.rs` (only the queued items' files), or a full build in `cron/search_index.rs`; publishes entry file last |
 | Index serving | Static files in `./static/pagefind/` | Served by web server/CDN, not Trovato app code |
 | Pagefind client JS | Frontend asset bundled with plugin | Loaded on search pages, optional preload on all pages |
@@ -415,8 +415,9 @@ Token budgets from Story 31.3 apply to all search-related AI operations.
 ### Index Build Pipeline
 
 ```
-A write (item, comment, type switches or weights, alias, workspace publish,
-scheduled publish through the item API, a plugin's search_index_enqueue)
+A write (item, comment or alias row, by any writer: a trigger, in the same
+transaction; type switches or weights; workspace publish; a plugin's
+search_index_enqueue)
     |
     +-> INSERT INTO search_index_queue (item_id, op, reason)
           one row per item, the last write wins
@@ -498,12 +499,12 @@ Pagefind index, which the next cron run updates.
 
 #### When the index is updated
 
-Every writer queues the items it changed (B218): the item service on any write,
-the comment service on any comment write, the type search switches and the
-field weights for every item of the type, workspace publishing for every item
-the publish moves or deletes, URL alias writes for the item the alias names,
-and plugins after a raw write through `host::search_index_enqueue`. Scheduled
-publishing writes through the item API, so it is an item service write. The
+Every writer queues the items it changed (B218). Triggers on `item`, `comment`
+and `url_alias` queue the item a write changes, in the write's own
+transaction, whoever makes it. The type search switches and the field weights
+queue every item of the type, workspace publishing every item the publish
+moves or deletes, and plugins call `host::search_index_enqueue` for a change no
+trigger sees. Scheduled publishing changes the status through the item API. The
 next cron run applies the queue, so a new comment is findable one cron interval
 after it is posted. A queued item that is not searchable (a draft, an item
 anonymous may not see) is taken out of the index or left out.

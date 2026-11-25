@@ -58,7 +58,6 @@ impl UrlAliasService {
         input.alias = normalize_path(&input.alias);
         let alias = UrlAlias::create(&self.pool, input).await?;
         self.audit("create", &alias).await;
-        crate::search::index_queue::enqueue_alias_source(&self.pool, &alias.source).await;
         Ok(alias)
     }
 
@@ -66,27 +65,17 @@ impl UrlAliasService {
     pub async fn update(&self, id: Uuid, mut input: UpdateUrlAlias) -> Result<Option<UrlAlias>> {
         input.source = input.source.as_deref().map(normalize_path);
         input.alias = input.alias.as_deref().map(normalize_path);
-        // The source it pointed at before, which may stop being aliased.
-        let before = UrlAlias::find_by_id(&self.pool, id).await.ok().flatten();
         let alias = UrlAlias::update(&self.pool, id, input).await?;
         if let Some(alias) = &alias {
             self.audit("update", alias).await;
-            crate::search::index_queue::enqueue_alias_source(&self.pool, &alias.source).await;
-            if let Some(before) = before.filter(|b| b.source != alias.source) {
-                crate::search::index_queue::enqueue_alias_source(&self.pool, &before.source).await;
-            }
         }
         Ok(alias)
     }
 
     /// Delete an alias. `false` when there is no such alias.
     pub async fn delete(&self, id: Uuid) -> Result<bool> {
-        let before = UrlAlias::find_by_id(&self.pool, id).await.ok().flatten();
         let deleted = UrlAlias::delete(&self.pool, id).await?;
         if deleted {
-            if let Some(before) = &before {
-                crate::search::index_queue::enqueue_alias_source(&self.pool, &before.source).await;
-            }
             self.audit
                 .record("delete", "url_alias", id, None, serde_json::json!({}))
                 .await;
@@ -107,7 +96,6 @@ impl UrlAliasService {
         .await
         .context("failed to set the item's alias")?;
         self.audit("update", &alias).await;
-        crate::search::index_queue::enqueue_alias_source(&self.pool, &alias.source).await;
         Ok(alias)
     }
 
@@ -116,7 +104,6 @@ impl UrlAliasService {
         let source = format!("/item/{}", item.id);
         let removed = UrlAlias::delete_by_source(&self.pool, &source).await?;
         if removed > 0 {
-            crate::search::index_queue::enqueue_alias_source(&self.pool, &source).await;
             self.audit
                 .record(
                     "delete",

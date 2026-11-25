@@ -5,9 +5,9 @@
 //! the index, and carries an operator's request for a full rebuild.
 //!
 //! The index itself is kept up to date by the kernel. Every write that changes
-//! what it holds queues the items it touched (the item and comment services,
-//! the content type and search field admin, workspace publishing, URL alias
-//! writes, and plugins through `host::search_index_enqueue`), and the kernel's
+//! what it holds queues the items it touched (the database, for writes to
+//! items, comments and URL aliases; the content type and search field admin;
+//! workspace publishing; and plugins through `host::search_index_enqueue`), and the kernel's
 //! cron rewrites only those items' part of the index.
 //!
 //! This plugin used to poll `MAX(changed)` over published items each cron run

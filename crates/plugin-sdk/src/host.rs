@@ -452,17 +452,17 @@ pub fn execute_raw(sql: &str, params: &[serde_json::Value]) -> Result<u64, i32> 
 
 /// Queue items for the static search index.
 ///
-/// **The rule for plugins:** a plugin that writes, behind the item API,
-/// anything an item's search page is built from — the `item` row (title,
-/// fields, status, stage, language), the item's comments, or its URL alias —
-/// calls this with the ids of the items it changed, after the write. Cron then
-/// rewrites only those items' part of the index, within one cron pass. A write
-/// through [`save_item`] or [`delete_item`] queues its item already, and so do
-/// the kernel's comment and alias services; queuing twice is harmless, and so
-/// is queuing an id that is not, or is no longer, searchable (it is simply
-/// taken out of the index).
+/// A write to the `item`, `comment` or `url_alias` tables, raw SQL included,
+/// is queued by the database in the write's own transaction, and needs no
+/// call. **The rule for plugins:** call this, after the change, when your
+/// plugin changes something else that decides what an item's search page
+/// holds, typically data of its own that its `tap_field_access` reads (the
+/// index is built as the anonymous visitor). Cron then rewrites only those
+/// items' part of the index, within one cron pass. Queuing twice is harmless,
+/// and so is queuing an id that is not, or is no longer, searchable (it is
+/// simply taken out of the index).
 ///
-/// Without this call a raw write is invisible to search until the next full
+/// Without this call such a change is invisible to search until the next full
 /// rebuild.
 ///
 /// Needs the `db` host interface. At most 10,000 ids per call. Returns how
