@@ -8,7 +8,7 @@ Pagefind 1.3.0's own tokenizer, the `fossick` module, vendored under its MIT
 licence, together with the 1.3.0 browser bundle. It does not depend on the
 `pagefind` crate, so neither `pagefind` nor `actix-web` enters the root
 lockfile. On the largest local content set (1,237 items) a rebuild takes
-0.31 to 0.36 seconds with every page tokenized and 0.21 to 0.23 seconds when
+0.32 to 0.34 seconds with every page tokenized and 0.26 to 0.27 seconds when
 nothing changed, where the CLI took 1.6 to 2.5 seconds.
 
 Every searchable item now has a page number for life in a new ledger table,
