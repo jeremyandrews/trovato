@@ -80,7 +80,9 @@
 
 {#- A select. `options` is a list of [value, label] pairs or of objects with
     `value` and `label`; labels are printed as given unless
-    translate_options (fixed English words from Rust). `empty` adds a first,
+    translate_options (fixed English words from Rust). An option object with
+    `native` set is a language named in itself: never translated, and marked
+    with its own `lang` (its value). `empty` adds a first,
     empty option with that text. -#}
 {% macro select(name, label, options, value="", id="", hint="", required=false, optional=false, errors=false, empty="", translate_options=false, multiple=false, values=false, attrs="", disabled=false, wrapper="") %}
 {% set fid = id | default(value=name) %}{% if not fid %}{% set fid = name %}{% endif %}
@@ -92,7 +94,8 @@
     <select id="{{ fid }}" name="{{ name }}" class="form-select"{% if hint or error %} aria-describedby="{% if hint %}{{ fid }}-hint{% endif %}{% if hint and error %} {% endif %}{% if error %}{{ fid }}-error{% endif %}"{% endif %}{% if error %} aria-invalid="true"{% endif %}{% if required %} required{% endif %}{% if multiple %} multiple{% endif %}{% if disabled %} disabled{% endif %}{% if attrs %} {{ attrs | safe }}{% endif %}> {# SAFE: attrs is written in the calling template #}
         {% if empty %}<option value="">{{ empty }}</option>{% endif %}
         {% for o in options %}{% if o is object %}{% set v = o.value %}{% set l = o.label %}{% else %}{% set v = o.0 %}{% set l = o.1 %}{% endif %}
-        <option value="{{ v }}"{% if multiple %}{% if values and v in values %} selected{% endif %}{% elif v ~ "" == value ~ "" %} selected{% endif %}>{% if translate_options %}{{ t(s=l) }}{% else %}{{ l }}{% endif %}</option>
+        {% if o is object and o.native is defined and o.native %}{% set native = true %}{% else %}{% set native = false %}{% endif %}
+        <option value="{{ v }}"{% if multiple %}{% if values and v in values %} selected{% endif %}{% elif v ~ "" == value ~ "" %} selected{% endif %}{% if native %} lang="{{ v }}"{% endif %}>{% if translate_options and not native %}{{ t(s=l) }}{% else %}{{ l }}{% endif %}</option>
         {% endfor %}
     </select>
 </div>

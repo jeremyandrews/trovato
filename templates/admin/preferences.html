@@ -14,15 +14,7 @@
     {% set theme_options = [theme_system, theme_light, theme_dark] %}
     {{ form::choices(name="theme", legend=t(s="Colour theme"), options=theme_options, value=theme, hint=t(s="System follows your device's light or dark setting.")) }}
 
-    <div class="field">
-        <label class="field__label" for="admin-language">{{ t(s="Administration language") }}</label>
-        <p class="field__hint" id="admin-language-hint">{{ t(s="The language these pages are shown in. It does not change the language of your content.") }}</p>
-        <select class="field__select" id="admin-language" name="language" aria-describedby="admin-language-hint">
-            {% for l in languages %}
-            <option value="{{ l.value }}"{% if l.value == language %} selected{% endif %}{% if l.native %} lang="{{ l.value }}"{% endif %}>{% if l.native %}{{ l.label }}{% else %}{{ t(s=l.label) }}{% endif %}</option>
-            {% endfor %}
-        </select>
-    </div>
+    {{ form::select(name="language", id="admin-language", label=t(s="Administration language"), options=languages, value=language, translate_options=true, hint=t(s="The language these pages are shown in. It does not change the language of your content.")) }}
 
     {{ form::effect(text=t(s="only how this administration looks and reads for you. Nobody else is affected.")) }}
     {{ form::actions(submit_label=t(s="Save preferences")) }}

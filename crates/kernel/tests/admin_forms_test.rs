@@ -477,7 +477,7 @@ fn settings_forms_say_what_they_change() {
         let cookies = admin(app, "b199formseffect").await;
         for path in [
             "/admin/config/site",
-            "/admin/config/recovery",
+            "/admin/recovery",
             "/admin/preferences",
         ] {
             let (status, page) = get(app, &cookies, path).await;

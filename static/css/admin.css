@@ -2007,12 +2007,16 @@
         margin-block-end: var(--space-2);
     }
 
-    .form-item--inline > select {
+    .form-item--inline > select,
+    .form-item--inline > .form-item--select {
         flex: 1 1 12rem;
+        margin-block-end: 0;
     }
 
-    .form-item--inline > input[type="text"] {
+    .form-item--inline > input[type="text"],
+    .form-item--inline > .form-item--text {
         flex: 2 1 14rem;
+        margin-block-end: 0;
     }
 
     .ai-budget-limit {
