@@ -9,11 +9,11 @@ use tower_sessions::Session;
 
 use crate::form::csrf::generate_csrf_token;
 use crate::i18n::UiMessage;
-use crate::routes::admin_form::FieldError;
 use crate::models::role::KERNEL_PERMISSIONS;
 use crate::models::role::well_known::{ANONYMOUS_ROLE_ID, AUTHENTICATED_ROLE_ID};
 use crate::models::user::ANONYMOUS_USER_ID;
 use crate::models::{CreateUser, UpdateUser, User};
+use crate::routes::admin_form::FieldError;
 use crate::state::AppState;
 
 use super::helpers::{
@@ -309,8 +309,7 @@ pub(crate) async fn new_account_problems(
     {
         errors.push(FieldError::on(
             "mail",
-            UiMessage::new("Email '{mail}' is already in use.")
-                .arg("mail", mail),
+            UiMessage::new("Email '{mail}' is already in use.").arg("mail", mail),
         ));
     }
 
@@ -587,8 +586,7 @@ async fn edit_user_submit(
     {
         errors.push(FieldError::on(
             "name",
-            UiMessage::new("Username '{name}' is already taken.")
-                .arg("name", &form.name),
+            UiMessage::new("Username '{name}' is already taken.").arg("name", &form.name),
         ));
     }
 
@@ -598,8 +596,7 @@ async fn edit_user_submit(
     {
         errors.push(FieldError::on(
             "mail",
-            UiMessage::new("Email '{mail}' is already in use.")
-                .arg("mail", &form.mail),
+            UiMessage::new("Email '{mail}' is already in use.").arg("mail", &form.mail),
         ));
     }
 
@@ -954,8 +951,7 @@ async fn add_role_submit(
     if let Ok(Some(_)) = state.roles().find_by_name(&form.name).await {
         errors.push(FieldError::on(
             "name",
-            UiMessage::new("A role named '{name}' already exists.")
-                .arg("name", &form.name),
+            UiMessage::new("A role named '{name}' already exists.").arg("name", &form.name),
         ));
     }
 
@@ -1082,8 +1078,7 @@ async fn edit_role_submit(
     {
         errors.push(FieldError::on(
             "name",
-            UiMessage::new("A role named '{name}' already exists.")
-                .arg("name", &form.name),
+            UiMessage::new("A role named '{name}' already exists.").arg("name", &form.name),
         ));
     }
 

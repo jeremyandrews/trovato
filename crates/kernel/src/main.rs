@@ -1469,7 +1469,10 @@ async fn create_user_from_cli(
         }
     }
     if !problems.is_empty() {
-        let lines: Vec<String> = problems.iter().map(|p| p.message.text(None, "en")).collect();
+        let lines: Vec<String> = problems
+            .iter()
+            .map(|p| p.message.text(None, "en"))
+            .collect();
         anyhow::bail!("{}", lines.join("\n"));
     }
 

@@ -838,7 +838,8 @@ mod tests {
 
         let mut tera = tera::Tera::default();
         tera.register_function("t", TranslateFunction::new(None));
-        tera.add_raw_template("x.html", r#"{{ t(s=label) }}"#).unwrap();
+        tera.add_raw_template("x.html", r#"{{ t(s=label) }}"#)
+            .unwrap();
         let mut ctx = tera::Context::new();
         ctx.insert("label", &mark_built("Save"));
         let out = scope("en", || tera.render("x.html", &ctx)).unwrap();
@@ -1008,9 +1009,11 @@ impl tera::Function for TranslateMessageFunction {
             Some(tera::Value::Null) | None => return Ok(tera::Value::String(String::new())),
             // A form builder error (`form::ValidationError`): its message is
             // the source.
-            Some(tera::Value::Object(o)) if !o.contains_key("s") => {
-                UiMessage::new(o.get("message").and_then(|m| m.as_str()).unwrap_or_default())
-            }
+            Some(tera::Value::Object(o)) if !o.contains_key("s") => UiMessage::new(
+                o.get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or_default(),
+            ),
             Some(other) => serde_json::from_value::<UiMessage>(other.clone())
                 .map_err(|e| tera::Error::msg(format!("t_message: not a message: {e}")))?,
         };

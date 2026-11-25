@@ -118,19 +118,32 @@ fn an_admin_builder_form_follows_the_field_pattern() {
         .render_form_with_errors(&sample_form("/admin/b199/sample"), &errors)
         .unwrap();
 
-    assert!(html.contains(" novalidate"), "validated on the server: {html}");
+    assert!(
+        html.contains(" novalidate"),
+        "validated on the server: {html}"
+    );
     assert!(
         !html.contains("form-item__label--required"),
         "required is not a CSS asterisk"
     );
-    let label = squash(&html[html.find(r#"<label class="form-item__label" for="name""#).unwrap()..]);
+    let label = squash(
+        &html[html
+            .find(r#"<label class="form-item__label" for="name""#)
+            .unwrap()..],
+    );
     assert!(
         label.starts_with(r#"<label class="form-item__label" for="name">Name <span class="form-item__need">(required)</span></label>"#),
         "required in the label's words: {label}"
     );
-    assert!(html.contains(r#"<p class="form-item__description" id="name-hint">What people call it.</p>"#));
+    assert!(
+        html.contains(
+            r#"<p class="form-item__description" id="name-hint">What people call it.</p>"#
+        )
+    );
 
-    let summary = html.find(r#"class="error-summary""#).expect("an error summary");
+    let summary = html
+        .find(r#"class="error-summary""#)
+        .expect("an error summary");
     assert!(
         summary < html.find(r#"for="name""#).unwrap(),
         "the summary comes before the fields"
@@ -147,7 +160,9 @@ fn an_admin_builder_form_follows_the_field_pattern() {
     assert!(html.contains(r#"id="name-error""#), "the message has an id");
 
     // Radios in a fieldset with a legend; the first carries the field's id.
-    let size = &html[html.find(r#"<fieldset class="fieldset fieldset--choices""#).unwrap()..];
+    let size = &html[html
+        .find(r#"<fieldset class="fieldset fieldset--choices""#)
+        .unwrap()..];
     assert!(size.contains(r#"<legend class="fieldset__legend">Size</legend>"#));
     assert!(size.contains(r#"<input type="radio" id="size" name="size" value="s""#));
 
@@ -213,7 +228,10 @@ fn the_shared_collapsible_fieldset_opens_from_the_keyboard() {
         "element",
         &serde_json::json!({"type": "fieldset", "title": "Advanced", "collapsible": true, "collapsed": true}),
     );
-    let html = engine.tera().render("form/fieldset.html", &context).unwrap();
+    let html = engine
+        .tera()
+        .render("form/fieldset.html", &context)
+        .unwrap();
     assert!(!html.contains("onclick"), "{html}");
     assert!(html.contains("<details"), "{html}");
     assert!(!html.contains(" open"), "collapsed starts closed: {html}");
@@ -257,7 +275,8 @@ fn no_admin_form_is_left_outside_the_pattern() {
         }
         let source = std::fs::read_to_string(&path).unwrap();
         for needle in [
-            r#"class="form-item"#,
+            r#"class="form-item""#,
+            r#"class="form-item "#,
             "<select",
             "<textarea",
             "<legend",
@@ -354,7 +373,9 @@ fn hidden(html: &str, name: &str) -> String {
 
 fn title(html: &str) -> String {
     let at = html.find("<title>").unwrap() + 7;
-    html[at..at + html[at..].find("</title>").unwrap()].trim().to_string()
+    html[at..at + html[at..].find("</title>").unwrap()]
+        .trim()
+        .to_string()
 }
 
 async fn admin(app: &TestApp, prefix: &str) -> String {
@@ -404,7 +425,9 @@ fn a_failed_hand_written_form_leads_with_a_linked_error_summary() {
             "the title says it failed: {}",
             title(&page)
         );
-        let summary = page.find(r#"class="error-summary""#).expect("an error summary");
+        let summary = page
+            .find(r#"class="error-summary""#)
+            .expect("an error summary");
         assert!(summary < page.find(r#"for="name""#).unwrap());
         for field in ["name", "mail", "password"] {
             assert!(
@@ -462,9 +485,7 @@ fn settings_forms_say_what_they_change() {
             let effect = page
                 .find(r#"class="form__effect""#)
                 .unwrap_or_else(|| panic!("{path}: no line saying what this changes"));
-            let save = page[effect..]
-                .find(r#"type="submit""#)
-                .map(|p| p + effect);
+            let save = page[effect..].find(r#"type="submit""#).map(|p| p + effect);
             assert!(save.is_some(), "{path}: the line is above Save");
         }
     });
@@ -483,7 +504,13 @@ fn the_permission_grid_names_each_box_by_role_and_permission() {
         assert!(page.contains(r#"<th scope="row""#));
         let at = page.find(r#"type="checkbox""#).unwrap();
         let cell = &page[at..at + page[at..].find("</td>").unwrap()];
-        let id = cell.split(r#"id=""#).nth(1).unwrap().split('"').next().unwrap();
+        let id = cell
+            .split(r#"id=""#)
+            .nth(1)
+            .unwrap()
+            .split('"')
+            .next()
+            .unwrap();
         let label_at = page.find(&format!(r#"for="{id}""#)).expect("a label");
         let label = &page[label_at..label_at + page[label_at..].find("</label>").unwrap()];
         assert!(label.contains(": "), "role: permission, {label}");
@@ -504,8 +531,30 @@ fn a_failed_field_renders_after_another_macro_import() {
         )
         .unwrap();
     let mut context = tera::Context::new();
-    context.insert("errs", &serde_json::json!([{"field": "x", "s": "Enter X."}]));
+    context.insert(
+        "errs",
+        &serde_json::json!([{"field": "x", "s": "Enter X."}]),
+    );
     let html = engine.tera().render("b199-order.html", &context).unwrap();
     assert!(html.contains(r#"id="x-error""#), "{html}");
     assert!(html.contains("Enter X."), "{html}");
+}
+
+/// A number given as a field's value is shown: Tera compares a number with
+/// a string as unequal, and the macro used to drop weights and counts.
+#[test]
+fn a_numeric_value_is_shown_in_its_field() {
+    let mut engine = engine();
+    engine
+        .tera_mut()
+        .add_raw_template(
+            "b199-number.html",
+            r#"{% import "admin/macros/form.html" as f %}{{ f::field(name="weight", type="number", label="Weight", value=w) }}|{{ f::field(name="zero", type="number", label="Zero", value=0) }}"#,
+        )
+        .unwrap();
+    let mut context = tera::Context::new();
+    context.insert("w", &5);
+    let html = engine.tera().render("b199-number.html", &context).unwrap();
+    assert!(html.contains(r#"value="5""#), "{html}");
+    assert!(html.contains(r#"value="0""#), "{html}");
 }

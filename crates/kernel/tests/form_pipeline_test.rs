@@ -394,11 +394,20 @@ fn a_plugin_validation_error_refuses_the_save() {
             // form, as for any other form error there), not a redirect.
             assert!(!status.is_redirection(), "{path}: saved ({status})");
             assert!(text.contains(REFUSED), "{path}: the editor sees no error");
-            // The error is shown on the field, not only at the top.
-            assert!(
-                text.contains(&format!(
+            // The error is shown on the field, not only at the top: on the
+            // front end in the shared form templates' markup, on the admin
+            // form in the admin pattern's (docs/admin/design.md section 8).
+            let on_field = if path.starts_with("/admin") {
+                format!(
+                    r#"<p class="form-item__error" id="field_note-error"><span class="visually-hidden">Error:</span> {REFUSED}</p>"#
+                )
+            } else {
+                format!(
                     r#"<div id="error-field_note" class="form-item__error" role="alert">{REFUSED}</div>"#
-                )),
+                )
+            };
+            assert!(
+                text.contains(&on_field),
                 "{path}: the error is not attached to field_note"
             );
             assert_eq!(

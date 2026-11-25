@@ -1286,7 +1286,11 @@ impl ThemeEngine {
         element: &crate::form::FormElement,
     ) -> std::borrow::Cow<'_, crate::form::FormElement> {
         use crate::form::ElementType;
-        if !crate::i18n::markers_enabled() {
+        // A scripted widget is drawn by the front end's template, which
+        // prints its title (a content type's field label: data) as it is.
+        if !crate::i18n::markers_enabled()
+            || matches!(element.element_type, ElementType::Widget { .. })
+        {
             return std::borrow::Cow::Borrowed(element);
         }
         let mark = crate::i18n::mark_built;
@@ -1386,8 +1390,7 @@ impl ThemeEngine {
         for (name, child) in children {
             // A field wrapped for `visible_when` is a child, and its error is
             // still its own.
-            let child_html =
-                self.render_form_element(name, child, field_errors, admin, context)?;
+            let child_html = self.render_form_element(name, child, field_errors, admin, context)?;
             // Infallible: write!() to String is infallible
             #[allow(clippy::unwrap_used)]
             write!(html, "{child_html}").unwrap();
