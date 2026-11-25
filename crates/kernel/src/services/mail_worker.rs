@@ -674,12 +674,8 @@ impl MailWorker {
             html = html.map(|h| h.replace(SECRET_MARKER, &minted));
         }
         let attachments = decode_attachments(row.attachments.as_ref())?;
-        let domain = self
-            .from_email
-            .rsplit_once('@')
-            .map_or("localhost", |(_, d)| d);
         Ok(OutgoingMail {
-            message_id: format!("outbox-{}@{domain}", row.id),
+            message_id: crate::services::email::message_id(&self.from_email, row.id),
             from_name: sender.from_name,
             from_address: self.from_email.clone(),
             reply_to: sender
@@ -875,7 +871,11 @@ pub async fn purge(pool: &PgPool, config: &MailConfig, batch: i64) -> Result<(u6
              SELECT id FROM mail_outbox
              WHERE finished_at < now() - make_interval(days => $1::int)
                AND body_purged_at IS NULL
-             LIMIT $2)",
+             LIMIT $2)
+           -- Again on the row itself: under READ COMMITTED a row a Retry
+           -- requeued while this waited is rechecked here, not in the subquery.
+           AND finished_at < now() - make_interval(days => $1::int)
+           AND body_purged_at IS NULL",
     )
     .bind(config.body_retention_days as i32)
     .bind(batch)
@@ -888,7 +888,8 @@ pub async fn purge(pool: &PgPool, config: &MailConfig, batch: i64) -> Result<(u6
          WHERE id IN (
              SELECT id FROM mail_outbox
              WHERE finished_at < now() - make_interval(days => $1::int)
-             LIMIT $2)",
+             LIMIT $2)
+           AND finished_at < now() - make_interval(days => $1::int)",
     )
     .bind(config.log_retention_days as i32)
     .bind(batch)

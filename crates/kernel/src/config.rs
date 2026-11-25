@@ -608,6 +608,19 @@ pub struct MailConfig {
     /// Bulk messages for the whole network per hour
     /// (`MAIL_NETWORK_HOURLY_LIMIT`, 20000).
     pub network_hourly_limit: i64,
+    /// The mail provider's webhook signing key (`MAIL_WEBHOOK_SIGNING_KEY`).
+    /// Unset, the bounce webhook answers 404.
+    pub webhook_signing_key: Option<WebhookKey>,
+}
+
+/// A webhook signing key: a secret, so its `Debug` never prints it.
+#[derive(Clone, PartialEq, Eq)]
+pub struct WebhookKey(pub String);
+
+impl std::fmt::Debug for WebhookKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("WebhookKey(..)")
+    }
 }
 
 impl Default for MailConfig {
@@ -634,6 +647,10 @@ impl MailConfig {
             blog_daily_limit: count("MAIL_BLOG_DAILY_LIMIT", 5000),
             blog_transactional_hourly_limit: count("MAIL_BLOG_TRANSACTIONAL_HOURLY_LIMIT", 500),
             network_hourly_limit: count("MAIL_NETWORK_HOURLY_LIMIT", 20000),
+            webhook_signing_key: lookup("MAIL_WEBHOOK_SIGNING_KEY")
+                .map(|k| k.trim().to_string())
+                .filter(|k| !k.is_empty())
+                .map(WebhookKey),
         }
     }
 }
@@ -1081,6 +1098,34 @@ mod config_tests {
         let mut pairs = vec![("DATABASE_URL", "postgres://localhost/x")];
         pairs.extend_from_slice(extra);
         config_from(&pairs).expect("config resolves")
+    }
+
+    /// A blank signing key is no key: the webhook stays off (404) rather than
+    /// accepting HMACs under "", which anyone can compute. The key is trimmed,
+    /// and `Debug` never prints it.
+    #[test]
+    fn the_webhook_signing_key_is_trimmed_and_a_blank_one_is_unset() {
+        assert_eq!(with_db(&[]).mail.webhook_signing_key, None);
+        for blank in ["", "   ", "\t\n"] {
+            assert_eq!(
+                with_db(&[("MAIL_WEBHOOK_SIGNING_KEY", blank)])
+                    .mail
+                    .webhook_signing_key,
+                None,
+                "a blank key {blank:?} must leave the webhook off"
+            );
+        }
+        let config = with_db(&[("MAIL_WEBHOOK_SIGNING_KEY", "  key-abc-123 \n")]);
+        assert_eq!(
+            config.mail.webhook_signing_key,
+            Some(WebhookKey("key-abc-123".to_string()))
+        );
+        let debug = format!("{:?}", config.mail);
+        assert!(
+            !debug.contains("key-abc-123"),
+            "Debug printed the key: {debug}"
+        );
+        assert!(debug.contains("WebhookKey(..)"), "{debug}");
     }
 
     /// The drain defaults to a Kubernetes endpoint update only under Kubernetes;

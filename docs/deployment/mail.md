@@ -100,13 +100,92 @@ mailed by any. A hard bounce stops all mail to the address; a spam complaint
 stops bulk mail only, so the member can still reset their password. The
 suppression list is in `mail_suppression`.
 
-The bounce webhook that fills it from the provider arrives in the second part
-of BG18; until then, suppress an address by hand:
+The provider reports bounces and complaints to Trovato through a signed
+webhook. Mailgun is the one supported today (`docs/design/mail-queue.md` §3
+says why).
 
-```sql
-INSERT INTO mail_suppression (address, reason, detail)
-VALUES (lower('someone@example.com'), 'manual', 'asked by support ticket 123');
-```
+### Mailgun webhook setup
+
+1. In the Mailgun dashboard, open **Settings → Webhooks** (on older dashboards
+   **Sending → Webhooks**), choose the sending domain, and copy the **HTTP
+   webhook signing key**. Set it on every web server and restart them:
+
+   ```sh
+   MAIL_WEBHOOK_SIGNING_KEY=<the HTTP webhook signing key>
+   ```
+
+   Without it, `POST /mail/webhook/mailgun` answers 404, as it does on a site
+   with no mail configured.
+2. On the same page, add `https://<your site>/mail/webhook/mailgun` to the
+   **Permanent Failure** and **Spam Complaints** events. Other events are
+   acknowledged and ignored, so adding them does no harm.
+3. Press **Test webhook** on the Permanent Failure event. Mailgun shows the
+   answer: 200 means the signature checked. A test event names a message
+   Trovato never sent, so it changes no message but does suppress the test
+   address; remove it afterwards on the suppression page (below).
+
+Every request must carry Mailgun's signature: the hex HMAC-SHA256 of its
+`timestamp` and `token` under the signing key, compared in constant time. A
+timestamp more than five minutes from the server's clock is refused, so keep
+the servers on NTP. A token is remembered in Redis for fifteen minutes, and a
+second request with it changes nothing.
+
+| Answer | Meaning | Mailgun |
+|---|---|---|
+| 200 | recorded, ignored (another event type), or already seen | done |
+| 401 | bad signature, or a timestamp outside five minutes | retries; check the key and the clock |
+| 404 | no `MAIL_WEBHOOK_SIGNING_KEY`, or no mail configured | retries |
+| 406 | not a Mailgun event, or no usable recipient | does not retry |
+| 503 | Redis or the database failed | retries |
+
+The webhook has its own rate limit bucket, `mail_webhook`, 600 requests a
+minute per client IP (`TROVATO_RATE_LIMIT_MAIL_WEBHOOK` changes it), so a
+burst of bounces after a large send is not refused as form spam.
+
+A permanent failure (except Mailgun's reasons `suppress-unsubscribe`, `old`
+and `espblock`, which are ignored, and `suppress-complaint`, which counts as a
+complaint) fails the message it names, by its `Message-ID`
+(`outbox-<id>@<sending domain>`) and only when it was sent to the reported
+address, with "hard bounce: <code> <reason>". A complaint stamps the message
+and leaves it sent. Both put the address on the suppression list; a hard
+bounce replaces an earlier complaint, and nothing replaces a hard bounce or an
+address added by hand.
+
+## The mail log pages
+
+Under **System** in the admin menu:
+
+- **Mail log**, `/admin/reports/mail` (`administer site`): every message on
+  the network, newest first, filtered by status, kind, blog, category and
+  recipient address, with a count per status. A message's page shows its
+  headers, its body (the place of a reset link or code marked, never the
+  secret), its attempts and its last error. **Retry** puts a failed or
+  cancelled message back in the queue with its attempts reset; **Cancel**
+  takes a queued message out. A message whose body retention cleared cannot
+  be retried.
+- **Suppressed addresses**, `/admin/reports/mail/suppressions`
+  (`administer site`, linked from the mail log): the network list, with
+  **Remove** on each address and a form to suppress one by hand.
+- **Blog mail**, `/admin/mail`: a blog owner's view of their own blog's log,
+  without message bodies and without the suppression list. It takes the
+  `view own blog mail` permission and an active membership of the blog.
+  Until blog resolution lands (BG4) every request is for the default blog,
+  and membership is a `user_tenant` row:
+
+  ```sql
+  INSERT INTO user_tenant (user_id, tenant_id, is_active)
+  SELECT id, '0193a5a0-0001-7000-8000-000000000001', TRUE FROM users WHERE name = 'someone'
+  ON CONFLICT (user_id, tenant_id) DO UPDATE SET is_active = TRUE;
+  ```
+
+  An administrator passes both checks. Until BG4 tags mail with its blog,
+  every message is the default blog's, so an owner of the default blog sees
+  the whole network's account mail (recipients, subjects, errors), and every
+  account that existed when the `user_tenant` table was created is already
+  an active member of the default blog. Grant `view own blog mail` to network
+  staff only.
+
+Screenshots: `docs/images/bg18/`.
 
 ## Retention and personal data
 

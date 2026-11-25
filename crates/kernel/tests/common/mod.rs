@@ -427,6 +427,7 @@ impl TestApp {
             .merge(trovato_kernel::routes::user_delete::router())
             .merge(trovato_kernel::routes::admin::router())
             .merge(trovato_kernel::routes::password_reset::router())
+            .merge(trovato_kernel::routes::mail_webhook::router())
             .merge(trovato_kernel::routes::webauthn::router())
             .merge(trovato_kernel::routes::sessions::router())
             .merge(trovato_kernel::routes::recovery::router())

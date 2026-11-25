@@ -1122,11 +1122,112 @@ fn a_blog_over_its_limit_is_held_not_dropped() {
 // Retention
 // ---------------------------------------------------------------------------
 
+/// The purge is network wide, so the two retention tests take turns: one's
+/// purge would otherwise act on the other's rows mid-test.
+static PURGE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// A row requeued (an administrator's Retry) while the purge waits on its
+/// lock is rechecked on the row itself: its body is not cleared and the row
+/// is not deleted.
+#[test]
+fn retention_skips_a_row_requeued_while_it_waited() {
+    run_test(async {
+        let _turn = PURGE_LOCK.lock().await;
+        let app = shared_app().await;
+        let mail = outbox(&app.db, SmtpSink::free_port().await, MailConfig::default());
+        let tenant = blog(&app.db, None).await;
+        // 8 days, body held: a body to clear. 91 days, body cleared: a row to delete.
+        for (days, purged) in [(8_i32, false), (91, true)] {
+            let id = mail
+                .queue_now(
+                    NewMail::notification("test", &address("requeued"), "Kept", "Body")
+                        .tenant(tenant),
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            sqlx::query(
+                "UPDATE mail_outbox SET status = 'failed',
+                        finished_at = now() - make_interval(days => $2),
+                        body_purged_at = CASE WHEN $3 THEN now() END,
+                        next_attempt_at = now() + interval '1 day'
+                 WHERE id = $1",
+            )
+            .bind(id)
+            .bind(days)
+            .bind(purged)
+            .execute(&app.db)
+            .await
+            .unwrap();
+
+            // A Retry holding the row, not yet committed.
+            let mut retry = app.db.begin().await.unwrap();
+            let pid: i32 = sqlx::query_scalar("SELECT pg_backend_pid()")
+                .fetch_one(&mut *retry)
+                .await
+                .unwrap();
+            sqlx::query(
+                "UPDATE mail_outbox SET status = 'queued', finished_at = NULL WHERE id = $1",
+            )
+            .bind(id)
+            .execute(&mut *retry)
+            .await
+            .unwrap();
+
+            let pool = app.db.clone();
+            let purge = tokio::spawn(async move {
+                trovato_kernel::services::mail_worker::purge(
+                    &pool,
+                    &MailConfig::default(),
+                    1_000_000,
+                )
+                .await
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                let blocked: bool = sqlx::query_scalar(
+                    "SELECT EXISTS (SELECT 1 FROM pg_stat_activity \
+                     WHERE $1 = ANY(pg_blocking_pids(pid)))",
+                )
+                .bind(pid)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+                if blocked {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "the purge never waited on the row"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            retry.commit().await.unwrap();
+            purge.await.unwrap().unwrap();
+
+            let kept: Option<(String, bool, bool)> = sqlx::query_as(
+                "SELECT status, text_body IS NOT NULL, body_purged_at IS NOT NULL
+                 FROM mail_outbox WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_optional(&app.db)
+            .await
+            .unwrap();
+            assert_eq!(
+                kept,
+                Some(("queued".to_string(), true, purged)),
+                "the purge cleared or deleted a row requeued while it waited ({days} days)"
+            );
+        }
+    });
+}
+
 /// Retention clears the bodies of finished mail after a week and deletes
 /// finished rows after 90 days; unfinished mail is never touched.
 #[test]
 fn retention_clears_old_bodies_and_deletes_old_rows() {
     run_test(async {
+        let _turn = PURGE_LOCK.lock().await;
         let app = shared_app().await;
         let mail = outbox(&app.db, SmtpSink::free_port().await, MailConfig::default());
         let tenant = blog(&app.db, None).await;

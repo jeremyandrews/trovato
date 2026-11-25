@@ -235,6 +235,9 @@ neither.
 | `/admin/config/site/maintenance`, the maintenance mode toggle | POST | `administer site` |
 | `/admin/reports/cron`, the cron report and its Run now button | GET, POST | `administer site` |
 | `/admin/reports/log`, the site log | GET | `administer site` |
+| `/admin/reports/mail`, the network mail log, a message, its Retry and Cancel | GET, POST | `administer site` |
+| `/admin/reports/mail/suppressions`, the suppressed addresses, Remove and add | GET, POST | `administer site` |
+| `/admin/mail`, a blog's own mail log | GET | `view own blog mail` and an active `user_tenant` membership of the blog |
 
 While maintenance mode is on, a signed-in user without `bypass maintenance mode`
 gets the maintenance page like an anonymous visitor. Administrators hold it

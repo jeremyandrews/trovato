@@ -366,3 +366,88 @@ SMTP conversation.
   and one worker sends about 550 messages a second with pooled connections
   (490 without). Against a real provider the network and TLS dominate;
   `MAIL_WORKERS` and the process count scale it.
+
+## Part 2 as built
+
+**Webhook.** `routes/mail_webhook.rs`. The body is read as bytes and parsed
+with serde, so a malformed request is a 406 (Mailgun does not retry it) rather
+than an extractor's 415 or 422. The order of checks is: key configured (else
+404), payload readable (else 406), token length and signature (`Mac::verify_slice`,
+constant time; else 401), timestamp within 300 s (else 401), then the replay
+check (`SET mail_webhook:token:<token> 1 NX EX 900`). A token seen before
+answers 200 and does nothing, so Mailgun stops retrying an event whose first
+answer was lost. If recording fails the token is deleted again and the answer
+is 503, so the retry is taken. Not confirmed: whether Mailgun signs a retry afresh. If a retry carries
+the first attempt's timestamp, a retry after a 503 (the first comes about ten
+minutes later) is refused as stale and that one bounce is not recorded. Nothing
+is lost: the address is still mailed, bounces again and is recorded then. The key lives on `MailConfig` as a
+`WebhookKey`, whose `Debug` prints no secret, and is read through the email
+service: no mail configured means no webhook.
+
+**Recording** (`services/mail_log.rs::record_feedback`, one transaction). A permanent failure is a hard
+bounce unless Mailgun's reason says otherwise: `suppress-complaint` is
+recorded as a complaint, and `suppress-unsubscribe`, `old` (Mailgun gave up
+retrying) and `espblock` (the receiving provider blocked the sender) are
+ignored, since none says the address does not exist. Retry is the one
+transition from finished back to queued, so the retention purge now repeats
+its age condition on the row it locks, not only in its id subquery: a row
+requeued while the purge waited is no longer cleared or deleted. (`mail_queue_test::retention_skips_a_row_requeued_while_it_waited`
+holds the row lock to make the race deterministic.) The
+outbox row is matched by the id in `outbox-<id>@domain` *and* the reported
+recipient, so a Message-ID from another install on the same sending domain
+cannot fail someone else's message. A hard bounce moves a `sent` or `failed`
+row to `failed`, sets `bounced_at` and `finished_at` once, and records "hard
+bounce: <code> <reason>" (control characters made spaces, 500 characters at
+most). A complaint only stamps `complained_at` on a `sent` row. The
+suppression upsert replaces an existing row only to upgrade a complaint to a
+hard bounce; a manual entry or a hard bounce is never weakened. Later mail is
+stopped by the worker's existing suppression check at send.
+
+**Pages** (`routes/admin_mail.rs`, `templates/admin/reports/mail*.html`). The
+list builds one filtered `SELECT ... ORDER BY id DESC LIMIT 50 OFFSET n`
+(`mail_outbox_tenant_newest` serves one blog and the primary key the network)
+and one `count(*) ... GROUP BY status` with the same filters except status;
+the total for the pager is read from those counts, so there is no third
+query. Three later migrations build indexes concurrently: `(status, id DESC)`
+serves the network status filter and counts, `(tenant_id, status, id DESC)`
+one blog's, and `(lower(recipient), id DESC)` the recipient filter. The
+counts are index only scans, but still read every matching index entry. Status and kind are accepted only from their fixed lists. Retry and
+Cancel are single guarded `UPDATE`s (`status IN ('failed','cancelled') AND
+text_body IS NOT NULL`, and `status = 'queued'`), so neither can touch a row a
+worker holds as `sending`; Retry wakes the local workers. Every action is a
+form POST that checks `administer site` before the single use CSRF token, and
+answers with a 303 back to the page and a flash message.
+
+The blog owner page reads the blog from the request's `TenantContext`
+(default blog while `resolve_tenant` is unmounted, BG4), never from the query
+string, and takes `view own blog mail` plus an active `user_tenant` row for
+that blog; an administrator passes both. It shows no message page, so no
+owner sees a body; the suppression list stays network only, as §4 says.
+
+**Accessibility.** Server rendered, no JavaScript: filters are a GET form,
+status counts are links in a `nav`, actions are POST forms with buttons, every
+control has a label, tables have a caption and `scope` on headers, the long
+body is a focusable `pre`. axe-core 4 through Playwright (tags `wcag2a`,
+`wcag2aa`, `wcag21a`, `wcag21aa`, `wcag22aa`) reports no violation on the five
+pages. Getting there needed three fixes to the shared admin chrome, which
+every admin page benefits from: section headings in the sidebar were a `div`
+inside the `ul` (now an `li`) at 3.75:1 contrast (now `#94a3b8`, 6.9:1); the
+theme's indigo `--primary`, used for links and the active sidebar item, is
+4.46:1 on white, so the admin layout uses the next darker step (`#4f46e5`,
+6.3:1); and a link inside a paragraph is underlined.
+
+**Tests.** `tests/mail_admin_test.rs` (12): a hard bounce fails the message and
+suppresses later mail, including account mail, whatever the case of the reported address; a complaint stops bulk mail
+only and a later hard bounce upgrades it; forged, tampered, stale and
+replayed requests change nothing; a recording that fails answers 503 and the
+retry of the same request is then recorded; temporary failures and other events are
+ignored and a bounce naming another recipient's message leaves it alone; no
+key means 404; every network page and action refuses the anonymous, a member
+and a blog owner; list filters, status counts, the detail page and the
+redacted secret; Retry and Cancel with and without the token and in each
+state, including a cleared body; suppressions added and removed only with the
+token; the owner page shows its own blog only, whatever `blog=` says, and
+refuses a non member, an inactive member and a member without the
+permission. Unit tests cover the signature, the time window, the event
+mapping, the bounce detail, Message-ID parsing, the redaction, the filter
+query string and the owner filter.

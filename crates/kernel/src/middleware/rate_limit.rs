@@ -169,6 +169,11 @@ pub struct RateLimitConfig {
     /// person's inbox while staying inside its total.
     pub mail_recipient: (u32, Duration),
 
+    /// Bounce and complaint reports from the mail provider, per client IP
+    /// (`POST /mail/webhook/...`). A provider posts one request per event, so a
+    /// burst of bounces would pass the `forms` bucket in seconds.
+    pub mail_webhook: (u32, Duration),
+
     /// Per-role counts: bucket name, then [`role_key`], then the count.
     ///
     /// A bucket's count above is its default; an entry here replaces it for the
@@ -228,7 +233,7 @@ pub fn role_config_key(bucket: &str, role: &str) -> String {
 /// The one list: [`RateLimitConfig::bucket`] and its private `bucket_mut` twin
 /// resolve each of these to a field, and `every_bucket_resolves_to_a_field` fails
 /// if a name here has no field behind it.
-pub const BUCKETS: [&str; 21] = [
+pub const BUCKETS: [&str; 22] = [
     "login",
     "forms",
     "api",
@@ -250,6 +255,7 @@ pub const BUCKETS: [&str; 21] = [
     "reset_mail",
     "mail_users",
     "mail_recipient",
+    "mail_webhook",
 ];
 
 /// Path prefixes served as static assets.
@@ -295,6 +301,7 @@ impl Default for RateLimitConfig {
             reset_mail: (3, Duration::from_secs(3600)),   // 3 per hour, per address
             mail_users: (1000, Duration::from_secs(3600)), // 1000 per hour, per plugin
             mail_recipient: (10, Duration::from_secs(3600)), // 10 per hour, per plugin and member
+            mail_webhook: (600, Duration::from_secs(60)), // 600 per minute
             by_role: BTreeMap::new(),
         }
     }
@@ -325,6 +332,7 @@ impl RateLimitConfig {
             "reset_mail" => self.reset_mail,
             "mail_users" => self.mail_users,
             "mail_recipient" => self.mail_recipient,
+            "mail_webhook" => self.mail_webhook,
             _ => return None,
         })
     }
@@ -353,6 +361,7 @@ impl RateLimitConfig {
             "reset_mail" => &mut self.reset_mail,
             "mail_users" => &mut self.mail_users,
             "mail_recipient" => &mut self.mail_recipient,
+            "mail_webhook" => &mut self.mail_webhook,
             _ => return None,
         })
     }
@@ -764,6 +773,10 @@ pub fn categorize_path_with<S: AsRef<str>>(
         // The one kernel route that sends mail on demand. The mail goes to the
         // site's own address, the mailbox the `mail` bucket protects.
         "mail"
+    } else if method == "POST" && path.starts_with(MAIL_WEBHOOK_PREFIX) {
+        // The provider's bounce and complaint reports: unauthenticated by
+        // session, signed instead, and bursty.
+        "mail_webhook"
     } else if let Some(category) = ai_search_category(path) {
         // Each of the three spends provider tokens, at three different costs.
         category
@@ -787,6 +800,9 @@ pub fn categorize_path_with<S: AsRef<str>>(
         "api"
     }
 }
+
+/// Where mail providers post bounce and complaint reports.
+pub const MAIL_WEBHOOK_PREFIX: &str = "/mail/webhook/";
 
 /// The admin page's "send a test email" action.
 const TEST_EMAIL_PATH: &str = "/admin/config/site/test-email";
@@ -1407,6 +1423,18 @@ mod tests {
     fn categorize_form_submission() {
         assert_eq!(categorize_path("/item/123", "POST"), "forms");
         assert_eq!(categorize_path("/admin/content/add/blog", "POST"), "forms");
+    }
+
+    /// A provider's bounce reports have their own bucket, so a burst of them
+    /// is not refused as if one visitor were posting forms.
+    #[test]
+    fn categorize_mail_webhook() {
+        assert_eq!(
+            categorize_path("/mail/webhook/mailgun", "POST"),
+            "mail_webhook"
+        );
+        assert_eq!(categorize_path("/mail/webhook/mailgun", "GET"), "page");
+        assert_eq!(categorize_path("/mail/webhooks", "POST"), "forms");
     }
 
     #[test]

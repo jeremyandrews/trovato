@@ -231,6 +231,18 @@ pub const LINKS: &[Link] = &[
     },
     link(
         "System",
+        "Mail log",
+        "/admin/reports/mail",
+        Permission("administer site"),
+    ),
+    link(
+        "System",
+        "Blog mail",
+        "/admin/mail",
+        Permission("view own blog mail"),
+    ),
+    link(
+        "System",
         "Cron",
         "/admin/reports/cron",
         Permission("administer site"),
@@ -365,6 +377,8 @@ pub const CARDS: &[Card] = &[
         description: "What the site has been doing.",
         links: &[
             ("Site log", "/admin/reports/log"),
+            ("Mail log", "/admin/reports/mail"),
+            ("Blog mail", "/admin/mail"),
             ("Audit log", "/admin/reports/audit"),
             ("Cron", "/admin/reports/cron"),
             ("Search report", "/admin/reports/search"),

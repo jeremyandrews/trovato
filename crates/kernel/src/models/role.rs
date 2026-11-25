@@ -84,6 +84,11 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     // (B160, `content::view_counter`). Drupal's statistics permission of the
     // same name. Granted by no migration.
     "view post access counter",
+    // A blog's own mail log, `/admin/mail` (BG18): what the outbox sent for
+    // the blog the request is for, to a member of that blog (`user_tenant`).
+    // The network's log and suppression list stay `administer site`. Granted
+    // by no migration.
+    "view own blog mail",
     // Content moderation (B158, `content::moderation`): one permission per
     // transition of the Editorial workflow, named as Drupal names them, and
     // the latest (draft) revision of an item ahead of its published one, with
