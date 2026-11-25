@@ -203,14 +203,30 @@ impl Tile {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Check if this tile is visible for a given request path and user roles.
+    /// Check if this tile is visible for a given request path, user roles and
+    /// signed-in state.
     ///
     /// Visibility rules in JSON:
     /// - `{ "paths": ["/admin/*", "/user/*"] }` — show only on matching paths
     /// - `{ "paths_exclude": ["/admin/*"] }` — hide on matching paths
     /// - `{ "roles": ["authenticated user", "administrator"] }` — show only to users with one of these roles
+    /// - `{ "audience": "anonymous" }` — show only to signed-out visitors (the
+    ///   login tile's case); `{ "audience": "authenticated" }` — show only to
+    ///   signed-in users. Decided from the viewer's actual signed-in state,
+    ///   not from `user_roles` — every viewer, signed in or not, carries the
+    ///   `anonymous user` role there, so a role rule alone cannot mean
+    ///   "anonymous only".
     /// - `{}` — always visible
-    pub fn is_visible(&self, path: &str, user_roles: &[String]) -> bool {
+    pub fn is_visible(&self, path: &str, user_roles: &[String], authenticated: bool) -> bool {
+        // Audience check
+        if let Some(audience) = self.visibility.get("audience").and_then(|v| v.as_str()) {
+            match audience {
+                "anonymous" if authenticated => return false,
+                "authenticated" if !authenticated => return false,
+                _ => {}
+            }
+        }
+
         // Role check
         if let Some(roles) = self.visibility.get("roles").and_then(|v| v.as_array()) {
             let role_match = roles.iter().any(|r| {
@@ -325,29 +341,35 @@ mod tests {
     #[test]
     fn empty_visibility_always_visible() {
         let tile = make_tile(serde_json::json!({}));
-        assert!(tile.is_visible("/", &[]));
-        assert!(tile.is_visible("/admin", &[]));
+        assert!(tile.is_visible("/", &[], false));
+        assert!(tile.is_visible("/admin", &[], false));
+        assert!(tile.is_visible("/", &[], true));
+        assert!(tile.is_visible("/admin", &[], true));
     }
 
     #[test]
     fn paths_include_filter() {
         let tile = make_tile(serde_json::json!({ "paths": ["/admin/*"] }));
-        assert!(tile.is_visible("/admin/people", &[]));
-        assert!(!tile.is_visible("/user/login", &[]));
+        assert!(tile.is_visible("/admin/people", &[], false));
+        assert!(!tile.is_visible("/user/login", &[], false));
+        assert!(tile.is_visible("/admin/people", &[], true));
+        assert!(!tile.is_visible("/user/login", &[], true));
     }
 
     #[test]
     fn paths_exclude_filter() {
         let tile = make_tile(serde_json::json!({ "paths_exclude": ["/admin/*"] }));
-        assert!(!tile.is_visible("/admin/people", &[]));
-        assert!(tile.is_visible("/user/login", &[]));
+        assert!(!tile.is_visible("/admin/people", &[], false));
+        assert!(tile.is_visible("/user/login", &[], false));
+        assert!(!tile.is_visible("/admin/people", &[], true));
+        assert!(tile.is_visible("/user/login", &[], true));
     }
 
     #[test]
     fn exact_path_match() {
         let tile = make_tile(serde_json::json!({ "paths": ["/about"] }));
-        assert!(tile.is_visible("/about", &[]));
-        assert!(!tile.is_visible("/about/team", &[]));
+        assert!(tile.is_visible("/about", &[], false));
+        assert!(!tile.is_visible("/about/team", &[], false));
     }
 
     #[test]
@@ -358,9 +380,9 @@ mod tests {
             "administrator".to_string(),
         ];
         let user_roles = vec!["authenticated user".to_string()];
-        assert!(tile.is_visible("/", &admin_roles));
-        assert!(!tile.is_visible("/", &user_roles));
-        assert!(!tile.is_visible("/", &[]));
+        assert!(tile.is_visible("/", &admin_roles, true));
+        assert!(!tile.is_visible("/", &user_roles, true));
+        assert!(!tile.is_visible("/", &[], false));
     }
 
     #[test]
@@ -370,9 +392,51 @@ mod tests {
             "paths": ["/dashboard*"]
         }));
         let roles = vec!["authenticated user".to_string()];
-        assert!(tile.is_visible("/dashboard", &roles));
-        assert!(!tile.is_visible("/about", &roles));
-        assert!(!tile.is_visible("/dashboard", &[]));
+        assert!(tile.is_visible("/dashboard", &roles, true));
+        assert!(!tile.is_visible("/about", &roles, true));
+        assert!(!tile.is_visible("/dashboard", &[], false));
+    }
+
+    #[test]
+    fn audience_anonymous_shows_only_to_signed_out_visitors() {
+        let tile = make_tile(serde_json::json!({ "audience": "anonymous" }));
+        assert!(tile.is_visible("/", &[], false));
+        assert!(!tile.is_visible("/", &["anonymous user".to_string()], true));
+    }
+
+    #[test]
+    fn audience_authenticated_shows_only_to_signed_in_users() {
+        let tile = make_tile(serde_json::json!({ "audience": "authenticated" }));
+        assert!(!tile.is_visible("/", &[], false));
+        assert!(tile.is_visible("/", &["authenticated user".to_string()], true));
+    }
+
+    #[test]
+    fn audience_ignores_the_anonymous_user_role_every_viewer_carries() {
+        // Every viewer, signed in or not, can carry "anonymous user" in
+        // `user_roles` (see routes::helpers::inject_site_context). `audience`
+        // is decided from the `authenticated` flag, not that list, so a
+        // signed-in viewer who still carries the role is still excluded.
+        let tile = make_tile(serde_json::json!({ "audience": "anonymous" }));
+        assert!(!tile.is_visible("/", &["anonymous user".to_string()], true));
+    }
+
+    #[test]
+    fn audience_combines_with_paths_and_roles() {
+        let tile = make_tile(serde_json::json!({
+            "audience": "anonymous",
+            "paths": ["/dashboard*"]
+        }));
+        assert!(tile.is_visible("/dashboard", &[], false));
+        assert!(!tile.is_visible("/dashboard", &[], true));
+        assert!(!tile.is_visible("/about", &[], false));
+    }
+
+    #[test]
+    fn unknown_audience_value_is_ignored() {
+        let tile = make_tile(serde_json::json!({ "audience": "everyone" }));
+        assert!(tile.is_visible("/", &[], false));
+        assert!(tile.is_visible("/", &[], true));
     }
 
     #[test]

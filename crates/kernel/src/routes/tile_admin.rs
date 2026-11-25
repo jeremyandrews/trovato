@@ -41,7 +41,17 @@ pub struct TileFormData {
     #[serde(default)]
     pub weight: i32,
     pub status: Option<String>,
+    /// "Show to" from the form: "" (everyone), "anonymous" or "authenticated".
+    pub audience: Option<String>,
 }
+
+/// The `audience` values the tile form's select may post, besides "" for
+/// "Everyone".
+const AUDIENCE_VALUES: [&str; 2] = ["anonymous", "authenticated"];
+
+/// Why an `audience` value was refused, worded for whoever set it.
+const AUDIENCE_ERROR: &str =
+    "Show to must be Everyone, Anonymous visitors only, or Signed-in users only.";
 
 impl TileFormData {
     /// Build the type-specific config JSON from form data.
@@ -64,6 +74,32 @@ impl TileFormData {
             "language_switcher" => serde_json::json!({}),
             _ => serde_json::json!({}),
         })
+    }
+
+    /// `existing` (a tile's current `visibility`, `{}` for a new tile) with
+    /// `audience` set from the form, or removed when "Everyone" was chosen.
+    ///
+    /// Any other keys (`paths`, `paths_exclude`, `roles`) a config import may
+    /// have set are left alone, so saving this form can never silently drop a
+    /// visibility rule the form has no control for.
+    fn merge_visibility(
+        &self,
+        existing: &serde_json::Value,
+    ) -> Result<serde_json::Value, &'static str> {
+        let audience = self.audience.as_deref().unwrap_or("").trim();
+        if !audience.is_empty() && !AUDIENCE_VALUES.contains(&audience) {
+            return Err(AUDIENCE_ERROR);
+        }
+        let mut value = existing.as_object().cloned().unwrap_or_default();
+        if audience.is_empty() {
+            value.remove("audience");
+        } else {
+            value.insert(
+                "audience".to_string(),
+                serde_json::Value::String(audience.to_string()),
+            );
+        }
+        Ok(serde_json::Value::Object(value))
     }
 }
 
@@ -120,7 +156,7 @@ async fn add_tile_form(State(state): State<AppState>, session: Session) -> Respo
     context.insert("editing", &false);
     context.insert(
         "values",
-        &serde_json::json!({ "items": GATHER_TILE_DEFAULT_ITEMS }),
+        &serde_json::json!({ "items": GATHER_TILE_DEFAULT_ITEMS, "audience": "" }),
     );
     context.insert("path", "/admin/structure/tiles/add");
 
@@ -159,13 +195,17 @@ async fn add_tile_submit(
         Ok(config) => config,
         Err(message) => return render_error(message),
     };
+    let visibility = match form.merge_visibility(&serde_json::json!({})) {
+        Ok(visibility) => visibility,
+        Err(message) => return render_error(message),
+    };
     let input = CreateTile {
         machine_name: form.machine_name.clone(),
         label: form.label.clone(),
         region: Some(form.region.clone()),
         tile_type: Some(form.tile_type.clone()),
         config: Some(config),
-        visibility: None,
+        visibility: Some(visibility),
         weight: Some(form.weight),
         status: Some(if form.status.is_some() { 1 } else { 0 }),
         plugin: None,
@@ -218,6 +258,7 @@ async fn edit_tile_form(
             "items": gather_tile_items(&tile.config).unwrap_or(GATHER_TILE_DEFAULT_ITEMS),
             "weight": tile.weight,
             "status": tile.status == 1,
+            "audience": tile.visibility.get("audience").and_then(|v| v.as_str()).unwrap_or(""),
         }),
     );
     context.insert("path", &format!("/admin/structure/tiles/{tile_id}/edit"));
@@ -248,8 +289,16 @@ async fn edit_tile_submit(
         return resp;
     }
 
+    let Some(tile) = Tile::find_by_id(state.db(), tile_id).await.ok().flatten() else {
+        return render_not_found();
+    };
+
     let config = match form.build_config() {
         Ok(config) => config,
+        Err(message) => return render_error(message),
+    };
+    let visibility = match form.merge_visibility(&tile.visibility) {
+        Ok(visibility) => visibility,
         Err(message) => return render_error(message),
     };
     let input = UpdateTile {
@@ -257,7 +306,7 @@ async fn edit_tile_submit(
         region: Some(form.region.clone()),
         tile_type: Some(form.tile_type.clone()),
         config: Some(config),
-        visibility: None,
+        visibility: Some(visibility),
         weight: Some(form.weight),
         status: Some(if form.status.is_some() { 1 } else { 0 }),
         plugin: None,
