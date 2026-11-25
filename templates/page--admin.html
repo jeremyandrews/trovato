@@ -155,9 +155,15 @@
 
 <div class="visually-hidden" id="trovato-announcements" aria-live="polite"></div>
 
+{#- The words the admin's scripts show, translated: admin-shell.js reads
+    them (window.trovatoText). A script finds its English source here, or
+    shows the source itself where the table is absent (the front end). -#}
+<template id="admin-text"><span data-s="Close">{{ t(s="Close") }}</span><span data-s="Choose media">{{ t(s="Choose media") }}</span><span data-s="Browse existing">{{ t(s="Browse existing") }}</span><span data-s="Upload new">{{ t(s="Upload new") }}</span><span data-s="Type">{{ t(s="Type") }}</span><span data-s="All types">{{ t(s="All types") }}</span><span data-s="Images">{{ t(s="Images") }}</span><span data-s="Documents">{{ t(s="Documents") }}</span><span data-s="Search files">{{ t(s="Search files") }}</span><span data-s="Load more">{{ t(s="Load more") }}</span><span data-s="Insert">{{ t(s="Insert") }}</span><span data-s="Loading…">{{ t(s="Loading…") }}</span><span data-s="No media found.">{{ t(s="No media found.") }}</span><span data-s="The media could not be loaded.">{{ t(s="The media could not be loaded.") }}</span><span data-s="Choose files to upload">{{ t(s="Choose files to upload") }}</span><span data-s="Upload failed. Please try again.">{{ t(s="Upload failed. Please try again.") }}</span><span data-s="Uploaded. Choose it from the list.">{{ t(s="Uploaded. Choose it from the list.") }}</span><span data-s="{count} files shown.">{{ t(s="{count} files shown.") }}</span><span data-s="Selected: {name}">{{ t(s="Selected: {name}") }}</span><span data-s="Drag to reorder">{{ t(s="Drag to reorder") }}</span><span data-s="Move section up">{{ t(s="Move section up") }}</span><span data-s="Move section down">{{ t(s="Move section down") }}</span><span data-s="Remove section">{{ t(s="Remove section") }}</span><span data-s="Maximum of {count} section(s) reached">{{ t(s="Maximum of {count} section(s) reached") }}</span><span data-s="Move up">{{ t(s="Move up") }}</span><span data-s="Move down">{{ t(s="Move down") }}</span></template>
+
 {% block scripts %}{% endblock scripts %}
 <script src="/static/js/trovato.js"></script>
 <script src="/static/js/admin-helpers.js?v={{ asset_version() }}"></script>
 <script src="/static/js/admin-forms.js?v={{ asset_version() }}"></script>
+<script src="/static/js/admin-media-picker.js?v={{ asset_version() }}"></script>
 </body>
 </html>

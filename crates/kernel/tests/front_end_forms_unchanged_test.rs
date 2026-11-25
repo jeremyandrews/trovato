@@ -61,6 +61,18 @@ fn cases() -> Vec<(&'static str, &'static str, serde_json::Value)> {
             }),
         ),
         (
+            // A plain fieldset: B199 Part 2 made the collapsible one native
+            // details, and this one must not change.
+            "fieldset",
+            "form/fieldset.html",
+            json!({
+                "name": "contact",
+                "children": "<p>child</p>",
+                "element": {"type": "fieldset", "title": "Contact", "collapsible": false, "collapsed": false,
+                    "attributes": {"data-x": "1"}, "description": "How to reach you."}
+            }),
+        ),
+        (
             "file-upload",
             "form/file-upload.html",
             json!({
