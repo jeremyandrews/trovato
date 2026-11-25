@@ -5,6 +5,7 @@
 
 mod pagefind;
 mod queue;
+mod search_index;
 mod tasks;
 
 /// The Pagefind export seam, for tests that assert which items and which text
@@ -14,6 +15,13 @@ mod tasks;
 pub use pagefind::{
     IndexDocument, IndexedField, indexable_documents, render_fragment,
     request_rebuild as request_search_index_rebuild,
+};
+/// The native search index build, for the gate tests: build an index from a
+/// given set of documents through the ledger and publish it.
+#[doc(hidden)]
+pub use search_index::{
+    FullBuildReport, RETENTION_HOURS, RebuildAgain, full_build as search_index_full_build,
+    generation as search_index_generation,
 };
 
 pub use tasks::UpdateCheckConfig;

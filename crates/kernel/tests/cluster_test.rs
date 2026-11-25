@@ -1121,7 +1121,10 @@ async fn s06_upload_on_a_is_served_from_b() {
     );
 }
 
-async fn page_count(c: &Cluster, on: On) -> Option<u64> {
+/// The meta file each language's entry names. A publish that adds a page
+/// always names a new one; `page_count` would not do, since a new item may
+/// take a deleted item's slot and leave the count as it was.
+async fn published_metas(c: &Cluster, on: On) -> Option<Vec<String>> {
     let entry = c
         .admin
         .get(on, "/static/pagefind/pagefind-entry.json")
@@ -1130,13 +1133,13 @@ async fn page_count(c: &Cluster, on: On) -> Option<u64> {
         return None;
     }
     let value: Value = serde_json::from_str(&entry.body).ok()?;
-    Some(
-        value["languages"]
-            .as_object()?
-            .values()
-            .filter_map(|l| l["page_count"].as_u64())
-            .sum(),
-    )
+    let mut metas: Vec<String> = value["languages"]
+        .as_object()?
+        .values()
+        .filter_map(|l| l["hash"].as_str().map(str::to_string))
+        .collect();
+    metas.sort();
+    Some(metas)
 }
 
 /// 7. Pagefind rebuild on whichever node wins cron; search on the other node
@@ -1155,8 +1158,8 @@ async fn s07_pagefind_built_by_one_node_is_served_by_the_other() {
             .await;
     }
     tokio::time::sleep(Duration::from_millis(1100)).await;
-    let before_a = page_count(&c, On::A).await.unwrap_or(0);
-    let before_b = page_count(&c, On::B).await.unwrap_or(0);
+    let before_a = published_metas(&c, On::A).await;
+    let before_b = published_metas(&c, On::B).await;
 
     let _ = create_item(&c, On::A, &format!("Searchable {}", unique())).await;
     tokio::time::sleep(Duration::from_millis(1100)).await;
@@ -1183,10 +1186,10 @@ async fn s07_pagefind_built_by_one_node_is_served_by_the_other() {
     } else {
         (On::A, before_a)
     };
-    let after = page_count(&c, other).await;
+    let after = published_metas(&c, other).await;
     assert!(
-        after.is_some_and(|n| n > before),
-        "node {builder} built the index; the other node serves {after:?} pages (was {before})"
+        after.is_some() && after != before,
+        "node {builder} built the index; the other node serves metas {after:?} (was {before:?})"
     );
 }
 

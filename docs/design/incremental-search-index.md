@@ -1,8 +1,8 @@
 # Incremental search index
 
-Status: design (B216, part 1 of 3). Nothing here changes how search runs today.
-Part 2 builds the codec and the full build through the ledger. Part 3 builds
-the updater and the change queue.
+Status: part 2 of 3 built (B217): the codec and the native full build through
+the ledger, with no `pagefind` binary; see "Part 2 as built" for where it
+differs from the design below. Part 3 builds the updater and the change queue.
 
 ## The problem
 
@@ -230,9 +230,15 @@ cargo run --release --manifest-path crates/pagefind-harness/Cargo.toml -- export
 PAGEFIND_BIN=/path/to/pagefind-1.3.0 \
   cargo run --release --manifest-path crates/pagefind-harness/Cargo.toml -- parity --site /tmp/site
 
-# Today's rebuild cost:
+# The CLI rebuild cost part 1 measured:
 PAGEFIND_BIN=... cargo run --release --manifest-path crates/pagefind-harness/Cargo.toml -- \
   measure --runs 3 --output /tmp/pagefind-out
+
+# The native full build, as cron now runs it. It writes the ledger and term
+# cache of the database it is pointed at, so point it at a copy. --cold empties
+# the term cache before every run.
+cargo run --release --manifest-path crates/pagefind-harness/Cargo.toml -- \
+  measure-native --runs 3 --output /tmp/pagefind-native [--cold]
 ```
 
 **CI runs all of these tests, the CLI comparisons included.** The harness is not
@@ -625,9 +631,10 @@ on every Pagefind bump:
 
 ## Version bumps
 
-* Pin exactly, in two places that move together: `pagefind = "=X.Y.Z"` in
-  `crates/pagefind-harness/Cargo.toml`, and in the codec crate in part 2, and
-  the release URL in the `Dockerfile`. The state row records the version; a
+* Pin exactly, in the places that move together: `pagefind = "=X.Y.Z"` in
+  `crates/pagefind-harness/Cargo.toml`, `PAGEFIND_VERSION` and the vendored
+  `fossick` and runtime files in `crates/search-index`, and the CLI release URL
+  the CI jobs download for the comparisons. The state row records the version; a
   mismatch forces a loud full rebuild.
 * Rerun all three gates on the new version before merging the bump. The 1.3.0
   to 1.6.0 changes listed above (delta encoded page numbers, `meta_locs`,
@@ -647,21 +654,103 @@ on every Pagefind bump:
   instead of calling the public API. Vendoring would also remove the repeated
   `pagefind.js` minify that dominates the per page cost.
 
+## Part 2 as built
+
+* **No `pagefind` binary.** The workspace crate `trovato-search-index`
+  (`crates/search-index`) holds the codec (`codec.rs`, minicbor 0.19 with the
+  same derive layout as Pagefind's structs, gzip with the `pagefind_dcd`
+  signature, SHA-1 file names), the assembler (`assemble.rs`, Pagefind's
+  `build_indexes` per language), the browser bundle (`bundle.rs`), the
+  publisher (`publish.rs`) and the decoder the harness used to own
+  (`decode.rs`). It does not depend on the `pagefind` crate: Pagefind 1.3.0's
+  `fossick` module and `fragments` types are vendored in `src/vendor`, under
+  their MIT licence (`LICENSE-PAGEFIND`), made synchronous and cut to what an
+  in-memory page needs; every change is marked `TROVATO:`. The runtime files
+  and the 29 `wasm.*.pagefind` files are copied from the pinned crate into
+  `assets/pagefind-1.3.0/` by `pagefind-harness bundle`, and a harness test
+  holds them equal to the crate's.
+* **Ledger, term cache and state** are the tables above, in migration
+  `20261202000001_search_index_ledger.sql`. `search_index_state` is one row:
+  `generation`, `pagefind_version` and the published `entry_meta`. A fourth
+  table, `search_index_file`, records when each content addressed file stopped
+  being referenced, for the retention window.
+* **The full build** (`crates/kernel/src/cron/search_index.rs`, called by the
+  cron rebuild in place of the CLI): read the published generation, export the
+  indexable items, render every item's fragment, hash it, reuse the cached
+  terms when the hash matches and the state row's version is 1.3.0, and
+  tokenize the rest. Then, in one transaction holding
+  `pg_advisory_xact_lock(hashtext('search_index'))`: check that the generation
+  is still the one read before the export, and if not, change nothing and ask
+  for another rebuild (another build published a newer export, or an older
+  one that the next build replaces). Tombstone the slots of items no longer
+  indexable, give each new item the lowest tombstone in its language (new
+  items taken in id order) or the next slot, store the terms, encode, stage
+  the bundle in a directory beside `PAGEFIND_OUTPUT_DIR`, bump the generation,
+  publish, sweep, commit. A language left with no live page loses its ledger
+  rows and its index. An empty site publishes an empty index in the default
+  language.
+* **File names against the live directory.** Names carry seven hash
+  characters, and a published file stays on disk for 24 hours after it stops
+  being referenced, so a new file can share a name with an older file of
+  different content. Publishing never overwrites a content addressed file, so
+  the build names its files against the live directory: a name the directory
+  holds with different bytes is lengthened, by Pagefind's own extension rule,
+  and `publish` refuses a bundle that would still reuse one. With no such
+  clash, which is almost always, the names are exactly Pagefind's.
+* **Publishing is not transactional with the database.** Once
+  `pagefind-entry.json` is renamed in, a failure to record the publish
+  (sweep, commit, a crash) leaves a complete live index whose ledger,
+  generation and `entry_meta` were rolled back. The build reports that as a
+  rebuild to request, and the next full build re-derives everything and
+  brings the two back into agreement. Part 3's updater must not start from a
+  ledger whose `entry_meta` differs from the live entry; it should run a full
+  build first.
+* **Language** comes from `item.language`, falling back to the default row of
+  `language` (then `en`) when it is empty or `und`, and is written as
+  `<html lang>`. Every page has one, so the "no lang merges into the most
+  common language" fallback is never needed by the kernel; the harness's native
+  build implements it for CLI comparisons of language-less exports.
+* **Publishing** follows the write order above, from the staging directory:
+  data files, then metas, then the fixed-name runtime files that changed, then
+  `pagefind-entry.json` by rename. It refuses before touching the live
+  directory if the staged entry is missing, does not parse, or names a missing
+  meta, so a build that wrote nothing leaves the published index alone. A file
+  that cannot be renamed in (another filesystem) is copied to a temporary name
+  in the live directory and renamed. The fixed-name files are served with
+  `Cache-Control: no-cache`; the content addressed ones keep a day.
+* **Gate 1** is a full build twice (and with the term cache emptied), byte for
+  byte, plus a rebuild after deletes and an insert; the updater half arrives
+  with part 3. **Gate 2** is as written. **Gate 3** compares results tie-aware:
+  `pagefind_web` orders equal scores by page number, and the CLI numbers pages
+  by its file walk while the ledger numbers them by first indexing, so equal
+  scores may come back in a different order with identical scores. Within a
+  run of equal scores the URL sets must match; across runs the order must. At
+  5% tombstones the bound is 10% of result positions moved outside their tie
+  group, and every query's result set must be unchanged. A query may fail only if it is
+  on the gate's list of `pagefind_web` failures (German `zürich`, below) and
+  fails on both indexes, and at least 20 queries must return results.
+* **Gates in CI.** `crates/kernel/tests/search_index_gates_test.rs` runs all
+  three over a 60 item fixture in English and German. Gates 2 and 3 skip
+  without a CLI or Node; the Test job installs the pinned CLI and sets
+  `TROVATO_REQUIRE_PAGEFIND_CLI`, which turns a skip into a failure.
+
 ## Found and not fixed here
 
-* **The rename swap deletes the old index straight away.** A browser tab opened
-  before a rebuild holds the old meta, then asks for chunk and fragment names
-  that no longer exist. It gets 404s, and search in that tab fails until a
-  reload. The write order above, with its grace period, fixes this in part 3.
-* **The fixed-name runtime files are cached for a day** (see Version bumps).
-* **The kernel's warning when the CLI is missing** says
-  "Install with: npm install -g pagefind". That installs the latest release,
-  not the 1.3.0 the Dockerfile pins, so a host that follows the advice builds
-  with a different Pagefind from production.
-* **The rebuild can swap in nothing.** `build_index_inner` moves the old index
-  aside whenever it exists, and then moves the new one in only if
-  `_pagefind` exists, before deleting the backup. A CLI that exits 0 without
-  writing an index therefore leaves the site with no index at all. The
-  harness's `measure` checks for the new `pagefind-entry.json` before touching
-  the old index (`export::swap_into`). The kernel's swap goes away in part 3,
-  so it is left as it is here, with no kernel behaviour change in this part.
+* **`pagefind_web` 1.3.0 panics on some non-ASCII queries.** When no chunk
+  matches a term exactly, `try_request_indexes` (`pagefind_web/src/lib.rs`,
+  lines 232-236) cuts the term and the chunk bounds at a byte length, which
+  panics inside a multi-byte character. The query `zürich` against the German
+  fixture index hits it, with the CLI's index as well as the native one, and
+  the search throws `unreachable` in the browser. Fixing it means a patched
+  `pagefind_web`, which is a different WASM from the pinned release.
+
+Fixed in part 2, from the list part 1 left here:
+
+* The rename swap that deleted the old index at once is gone: files are
+  published into the live directory and kept 24 hours after they stop being
+  referenced.
+* The fixed-name runtime files are served `no-cache`.
+* The "npm install -g pagefind" warning is gone with the CLI.
+* A build that writes nothing can no longer swap in nothing: `publish` checks
+  the staged entry and metas before it touches the live directory, and a test
+  holds that.

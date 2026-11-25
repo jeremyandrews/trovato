@@ -29,7 +29,15 @@ async fn serve_static(State(state): State<AppState>, Path(path): Path<String>) -
     let path = path.trim_start_matches('/');
 
     let runtime = state.runtime();
+    let mut cache_control = "public, max-age=86400"; // 1 day cache
     let found = if let Some(rest) = pagefind_path(path) {
+        // The index's content addressed files never change under their names.
+        // The fixed-name ones (`pagefind.js`, the UI files, the WASM and
+        // `pagefind-entry.json`) are revalidated on every use, so a browser
+        // never pairs a cached runtime with an index from another release.
+        if !trovato_search_index::publish::is_content_addressed(rest) {
+            cache_control = "no-cache";
+        }
         // The Pagefind index is served from wherever it is built, and only
         // from there, so a server never mixes its files with a stale copy.
         resolve_static_file(std::slice::from_ref(&runtime.pagefind_output_dir), rest).await
@@ -61,7 +69,7 @@ async fn serve_static(State(state): State<AppState>, Path(path): Path<String>) -
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, content_type)
-        .header(header::CACHE_CONTROL, "public, max-age=86400") // 1 day cache
+        .header(header::CACHE_CONTROL, cache_control)
         .body(Body::from(content))
         .unwrap()
 }

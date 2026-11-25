@@ -6403,6 +6403,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "trovato-sdk",
+ "trovato-search-index",
  "url",
  "urlencoding",
  "uuid",
@@ -6420,8 +6421,10 @@ dependencies = [
  "minicbor",
  "pagefind",
  "serde_json",
+ "sqlx",
  "tokio",
  "trovato-kernel",
+ "trovato-search-index",
  "uuid",
 ]
 
@@ -6442,6 +6445,27 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "trovato-search-index"
+version = "0.107.0"
+dependencies = [
+ "anyhow",
+ "convert_case 0.6.0",
+ "either",
+ "emojis",
+ "flate2",
+ "html-escape",
+ "lazy_static",
+ "lol_html",
+ "minicbor",
+ "pagefind_stem",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha1",
+ "unicode-segmentation",
 ]
 
 [[package]]

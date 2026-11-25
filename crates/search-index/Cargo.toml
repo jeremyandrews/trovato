@@ -1,0 +1,65 @@
+[package]
+name = "trovato-search-index"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+description = "Trovato's native Pagefind 1.3.0 index codec: the vendored tokenizer, the index files, and the browser bundle they belong to"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+# The index structs, in the same minor as Pagefind 1.3.0's own minicbor, so the
+# derive writes exactly what its derive wrote.
+minicbor = { version = "0.19", features = ["alloc", "derive"] }
+flate2 = "1"
+sha1 = "0.11"
+
+# What Pagefind 1.3.0's `fossick` needs, vendored under src/vendor/ with the
+# versions `pagefind` 1.3.0 asks for. Not the `pagefind` crate itself: that one
+# always pulls in actix-web (see src/vendor/mod.rs).
+lol_html = "0.4"
+pagefind_stem = { version = "0.2.0", features = [
+    "arabic",
+    "armenian",
+    "basque",
+    "catalan",
+    "danish",
+    "dutch",
+    "english",
+    "finnish",
+    "french",
+    "german",
+    "greek",
+    "hindi",
+    "hungarian",
+    "indonesian",
+    "irish",
+    "italian",
+    "lithuanian",
+    "nepali",
+    "norwegian",
+    "portuguese",
+    "romanian",
+    "russian",
+    "serbian",
+    "spanish",
+    "swedish",
+    "tamil",
+    "turkish",
+    "yiddish",
+] }
+convert_case = "0.6.0"
+unicode-segmentation = "1.10.1"
+emojis = "0.6.1"
+either = "1.9.0"
+html-escape = "0.2.11"
+lazy_static = "1.4.0"
+
+[dev-dependencies]
+tempfile = "3"

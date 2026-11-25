@@ -12,7 +12,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use crate::build::{SourcePage, api_build, cli_build, single_page};
+use crate::build::{
+    SourcePage, api_build, cli_build, native_build, native_single_page, single_page,
+};
 use crate::compare::{ByteReport, PageReport, compare_bytes, compare_pages};
 use crate::decode::{Bundle, PageView, decode_bundle, read_bundle};
 
@@ -49,6 +51,25 @@ pub async fn per_page(pages: &[SourcePage]) -> Result<BTreeMap<String, PageView>
     Ok(out)
 }
 
+/// Step (b) through the vendored tokenizer and the native assembler: each page
+/// alone, which must come out as exactly one page.
+pub fn vendored_per_page(pages: &[SourcePage]) -> Result<BTreeMap<String, PageView>> {
+    let mut out = BTreeMap::new();
+    for page in pages {
+        let bundle = native_single_page(page)?;
+        let (_, views) = bundle_pages(&bundle)?;
+        if views.len() != 1 {
+            bail!(
+                "{} indexed alone by the vendored tokenizer gave {} pages, not 1",
+                page.file_name,
+                views.len()
+            );
+        }
+        out.extend(views);
+    }
+    Ok(out)
+}
+
 /// The proof against a CLI build.
 #[derive(Debug)]
 pub struct CliParity {
@@ -65,6 +86,11 @@ pub struct CliParity {
     /// The crate over every page, in the CLI's page order, against the CLI's
     /// bundle, byte for byte.
     pub bytes_in_cli_order: ByteReport,
+    /// Per page tokenizing through the vendored tokenizer against the CLI.
+    pub vendored_pages: PageReport,
+    /// The vendored tokenizer and the native assembler over every page, in the
+    /// CLI's page order, against the CLI's bundle, byte for byte.
+    pub native_bytes_in_cli_order: ByteReport,
 }
 
 /// Run the proof against the CLI at `bin` over the pages in `site`.
@@ -111,6 +137,11 @@ pub async fn against_cli(bin: &Path, site: &Path) -> Result<CliParity> {
         .context("crate build in CLI order")?;
     let bytes_in_cli_order = compare_bytes(&reference, &api);
 
+    let vendored = vendored_per_page(&pages)?;
+    let vendored_pages = compare_pages(&cli_pages, &vendored);
+    let native = native_build(&ordered).context("native build in CLI order")?;
+    let native_bytes_in_cli_order = compare_bytes(&reference, &native);
+
     Ok(CliParity {
         cli_version: crate::build::cli_version(bin).unwrap_or_default(),
         languages,
@@ -118,13 +149,34 @@ pub async fn against_cli(bin: &Path, site: &Path) -> Result<CliParity> {
         cli_time,
         pages: page_report,
         bytes_in_cli_order,
+        vendored_pages,
+        native_bytes_in_cli_order,
     })
 }
 
 /// The proof against the crate's own full build, which needs no CLI.
-pub async fn against_crate(pages: &[SourcePage]) -> Result<PageReport> {
+#[derive(Debug)]
+pub struct CrateParity {
+    /// The crate, one page at a time, against its own full build.
+    pub crate_pages: PageReport,
+    /// The vendored tokenizer, one page at a time, against the crate's full
+    /// build.
+    pub vendored_pages: PageReport,
+    /// The native build over every page in the same order against the crate's
+    /// full build, byte for byte.
+    pub native_bytes: ByteReport,
+}
+
+/// The proof against the crate's own full build, which needs no CLI.
+pub async fn against_crate(pages: &[SourcePage]) -> Result<CrateParity> {
     let reference = api_build(pages).await?;
     let (_, full) = bundle_pages(&reference)?;
     let singles = per_page(pages).await?;
-    Ok(compare_pages(&full, &singles))
+    let vendored = vendored_per_page(pages)?;
+    let native = native_build(pages)?;
+    Ok(CrateParity {
+        crate_pages: compare_pages(&full, &singles),
+        vendored_pages: compare_pages(&full, &vendored),
+        native_bytes: compare_bytes(&reference, &native),
+    })
 }

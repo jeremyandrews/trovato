@@ -377,6 +377,24 @@ jobs:
       # step): this first pass starts from the bare database the Postgres
       # service created, so the harness's own migration is exercised on every
       # run.
+      # The search index gates (crates/kernel/tests/search_index_gates_test.rs)
+      # compare the native index with a build by the pinned Pagefind CLI (gate
+      # 2) and query both through the stock pagefind.js in Node (gate 3). A
+      # contributor without the CLI or Node sees them skip;
+      # TROVATO_REQUIRE_PAGEFIND_CLI makes a skip a failure here. The CLI is a
+      # test tool only: the kernel builds the index itself and the image has
+      # no `pagefind` binary.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Install the pinned Pagefind CLI for the index gates
+        run: |
+          curl -sSfL "https://github.com/CloudCannon/pagefind/releases/download/v1.3.0/pagefind-v1.3.0-x86_64-unknown-linux-musl.tar.gz" \
+            | tar xz -C "$RUNNER_TEMP" pagefind
+          "$RUNNER_TEMP/pagefind" --version
+          echo "PAGEFIND_BIN=$RUNNER_TEMP/pagefind" >> "$GITHUB_ENV"
+          echo "TROVATO_REQUIRE_PAGEFIND_CLI=1" >> "$GITHUB_ENV"
+
       - name: Run integration tests (shard ${{ matrix.shard }}/3)
         env:
           SHARD: ${{ matrix.shard }}
@@ -949,8 +967,9 @@ jobs:
   # crate's actix-web (and its advisories) never reach the shipped lockfile,
   # which also means no other job builds it. This one does, and runs its tests
   # with the pinned Pagefind CLI downloaded, so the CLI comparisons run here
-  # too rather than skipping. The CLI release and the crate pin move together
-  # with the Dockerfile's; see docs/design/incremental-search-index.md.
+  # too rather than skipping. The CLI release, the crate pin and the runtime
+  # files vendored in crates/search-index/assets move together; see
+  # docs/design/incremental-search-index.md.
   pagefind-harness:
     name: Pagefind Harness
     runs-on: ubuntu-latest

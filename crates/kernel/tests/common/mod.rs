@@ -363,6 +363,15 @@ impl TestApp {
         if std::env::var_os("STATIC_DIR").is_none() {
             config.runtime.static_dirs = vec![project_root.join("static")];
         }
+        // Cron builds a real search index now (no `pagefind` binary needed),
+        // so a test that runs cron would otherwise write one into the
+        // repository's `static/pagefind`. One directory per test process, in
+        // the system temporary directory.
+        if std::env::var_os("PAGEFIND_OUTPUT_DIR").is_none() {
+            config.runtime.pagefind_output_dir = std::env::temp_dir()
+                .join(format!("trovato-test-pagefind-{}", std::process::id()))
+                .join("pagefind");
+        }
 
         // Trust the mocked loopback peer (see MockConnectInfo below) so the
         // per-test X-Forwarded-For isolation `login` relies on passes the RATE-1

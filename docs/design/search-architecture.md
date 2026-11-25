@@ -47,7 +47,7 @@ User types query
 **How it works in Trovato:**
 
 - **Change detection (kernel and plugin):** The kernel's item and comment write services set `rebuild_requested = true` in the `pagefind_index_status` signal table after every write that changes what the index may hold, deletes, unpublishes and comments included. The `trovato_search` plugin's `tap_cron` handler also compares `MAX(changed)` of published live-stage items against a stored `last_indexed_at` timestamp, for writes that bypass those services.
-- **Index generation (kernel):** The kernel cron task checks the signal table. When a rebuild is requested, it exports live-stage published items as HTML fragments (title, every text field, published comments, metadata; see [What Goes in the Index](#what-goes-in-the-index)), runs the Pagefind CLI, and atomically deploys the index via rename-swap to `PAGEFIND_OUTPUT_DIR` (`./static/pagefind/` by default), served at `/static/pagefind/`.
+- **Index generation (kernel):** The kernel cron task checks the signal table. When a rebuild is requested, it exports live-stage published items as HTML fragments (title, every text field, published comments, metadata; see [What Goes in the Index](#what-goes-in-the-index)), builds the Pagefind 1.3.0 index natively (crate `trovato-search-index`; no `pagefind` binary), and publishes it into `PAGEFIND_OUTPUT_DIR`, entry file last, (`./static/pagefind/` by default), served at `/static/pagefind/`.
 - **Why the split:** WASM plugins run in sandboxed instances with no access to the filesystem or subprocess spawning. The plugin detects *when* a rebuild is needed; the kernel performs the *how*.
 - **Client-side search:** The Pagefind JS library loads in the browser. When the user types, Pagefind searches its local index and returns results. No HTTP request, no database query, no server involvement.
 - **Fallback:** If JavaScript is disabled or Pagefind fails to load, the search form submits to the server-side tsvector endpoint. Progressive enhancement means the server-side search is always available.
@@ -328,14 +328,14 @@ The standard AI search architecture generates embeddings for all content, stores
 The architecture splits responsibility between the `trovato_search` WASM plugin and the kernel:
 
 - **Plugin (WASM):** Detects content changes via `tap_cron`, signals rebuild needed via the `pagefind_index_status` database table. Cannot access the filesystem or spawn subprocesses due to WASM sandbox constraints.
-- **Kernel (`cron/pagefind.rs`):** Checks the signal table during cron runs. When `rebuild_requested = true`, exports items as HTML, runs the Pagefind CLI, and atomically deploys the index. Only runs when the `trovato_search` plugin is enabled (`pagefind_enabled` flag on `CronService`).
+- **Kernel (`cron/pagefind.rs`):** Checks the signal table during cron runs. When `rebuild_requested = true`, exports items as HTML, builds the index natively through the page ledger (`cron/search_index.rs`), and publishes it entry file last. Only runs when the `trovato_search` plugin is enabled (`pagefind_enabled` flag on `CronService`).
 
 ### `trovato_search` Plugin
 
 | Component | Implementation | Notes |
 |---|---|---|
 | Change detection | `tap_cron` handler | Compares `MAX(changed)` against `last_indexed_at`; sets `rebuild_requested` in signal table |
-| Index generation | Kernel `cron/pagefind.rs` | Exports live-stage items as HTML, runs Pagefind CLI with timeout, atomic rename-swap deploy |
+| Index generation | Kernel `cron/pagefind.rs` | Exports live-stage items as HTML; `cron/search_index.rs` builds the index natively and publishes it entry file last |
 | Index serving | Static files in `./static/pagefind/` | Served by web server/CDN, not Trovato app code |
 | Pagefind client JS | Frontend asset bundled with plugin | Loaded on search pages, optional preload on all pages |
 | Query expansion endpoint | `tap_menu` -> `/api/v1/search/expand` | Calls `ai_request(operation: Chat)`, returns expanded terms as JSON |
@@ -431,11 +431,11 @@ Cron interval fires
               |     Items on stages with non-public visibility excluded --
               |     AI-modified content not indexed until human-promoted
               |
-              +-> Run Pagefind CLI (with 2-minute timeout)
-              |     (Rust binary, ~2s for 10K pages)
+              +-> Build the index natively (cron/search_index.rs)
+              |     (page ledger, term cache, no pagefind binary)
               |
-              +-> Deploy index files via rename-swap
-              |     (old -> pagefind.old, new -> pagefind, remove backup)
+              +-> Publish: new hashed files, then pagefind-entry.json
+              |     (files no longer referenced deleted after 24 hours)
               |
               +-> Update last_indexed_at timestamp
 ```

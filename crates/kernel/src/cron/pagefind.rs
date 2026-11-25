@@ -1,19 +1,20 @@
 //! Pagefind search index builder.
 //!
 //! Checks the `pagefind_index_status` signal table (created by the
-//! `trovato_search` plugin) and rebuilds the client-side search index
-//! when requested. Exports published live-stage items as HTML fragments,
-//! runs the Pagefind CLI, and atomically deploys the index to
-//! `PAGEFIND_OUTPUT_DIR` (`./static/pagefind/` by default), which the kernel
-//! serves at `/static/pagefind/`.
+//! `trovato_search` plugin) and rebuilds the client-side search index when
+//! requested. Decides which items are searchable and renders each as the HTML
+//! fragment Pagefind reads ([`indexable_documents`], [`render_fragment`]); the
+//! index itself is built natively, through the page ledger, by
+//! [`super::search_index`], and published into `PAGEFIND_OUTPUT_DIR`
+//! (`./static/pagefind/` by default), which the kernel serves at
+//! `/static/pagefind/`. No `pagefind` binary is involved.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use sqlx::PgPool;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 use uuid::Uuid;
 
 use crate::content::ItemService;
@@ -25,9 +26,6 @@ use crate::models::stage::LIVE_STAGE_ID;
 use crate::routes::helpers::html_escape;
 use crate::search::SearchSwitches;
 use crate::tap::UserContext;
-
-/// Maximum time allowed for the pagefind CLI to run (2 minutes).
-const PAGEFIND_CLI_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// One item's contribution to the static index: the text and the meta values,
 /// already decided.
@@ -45,6 +43,12 @@ pub struct IndexDocument {
     pub item_type: String,
     /// Its title, which is a column and not a field.
     pub title: String,
+    /// The Pagefind language key its page is indexed under: the item's
+    /// language, lowercased, or the site's default language when the item has
+    /// none (empty or `und`). Pagefind stems by it, and builds one index per
+    /// language. Empty leaves the page with no `lang`, which Pagefind files
+    /// under `unknown`.
+    pub language: String,
     /// The URL the result card links to: the alias when there is one.
     pub url: String,
     /// The indexed fields that survived the seam, as plain text, heaviest
@@ -228,6 +232,22 @@ pub async fn maybe_rebuild_index(
             Ok(true)
         }
         Err(e) => {
+            // A build that lost to another publisher, or published without
+            // recording it, is mended by building again from fresh content.
+            let again = e.downcast_ref::<super::search_index::RebuildAgain>();
+            if again.is_some() {
+                sqlx::query(
+                    "UPDATE pagefind_index_status SET rebuild_requested = true WHERE id = 1",
+                )
+                .execute(pool)
+                .await
+                .context("failed to request another pagefind rebuild")?;
+            }
+            if let Some(super::search_index::RebuildAgain::Superseded { .. }) = again {
+                info!(reason = %e, "pagefind index build superseded; another rebuild requested");
+                return Ok(false);
+            }
+
             let error_msg = format!("{e:#}");
             sqlx::query("UPDATE pagefind_index_status SET last_error = $1 WHERE id = 1")
                 .bind(&error_msg)
@@ -241,62 +261,19 @@ pub async fn maybe_rebuild_index(
     }
 }
 
-/// Build the Pagefind index from published live-stage items.
+/// Build the Pagefind index from published live-stage items, natively, through
+/// the page ledger ([`super::search_index::full_build`]).
 ///
 /// `output_dir` is `PAGEFIND_OUTPUT_DIR`, set by
 /// `CronService::apply_runtime_config`: the index needs exactly one
 /// destination.
 async fn build_index(pool: &PgPool, output_dir: &Path, items: &ItemService) -> Result<usize> {
-    let paths = SwapPaths::for_output(output_dir);
-    tokio::fs::create_dir_all(&paths.temp)
-        .await
-        .context("failed to create pagefind temp directory")?;
-
-    // Ensure cleanup on both success and failure
-    let result = build_index_inner(pool, &paths, items).await;
-
-    // Clean up temp directory
-    if let Err(e) = tokio::fs::remove_dir_all(&paths.temp).await {
-        debug!(error = %e, path = %paths.temp.display(), "failed to remove pagefind temp dir");
-    }
-
-    result
-}
-
-/// Where a build is made, and where the old index goes while the new one is
-/// renamed into place.
-///
-/// Both are siblings of the output directory, in the same parent, so the swap
-/// is a rename within one filesystem (on several servers, the volume they
-/// share). Their names carry a fresh id rather than the process id, which is 1
-/// in every container.
-#[derive(Debug)]
-struct SwapPaths {
-    /// The directory the index is served from.
-    output: PathBuf,
-    /// The directory the build is made in.
-    temp: PathBuf,
-    /// Where the old index goes during the swap.
-    backup: PathBuf,
-}
-
-impl SwapPaths {
-    fn for_output(output: &Path) -> Self {
-        let parent = match output.parent() {
-            Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
-            _ => PathBuf::from("."),
-        };
-        let name = output
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "pagefind".to_string());
-        let id = Uuid::now_v7().simple();
-        Self {
-            output: output.to_path_buf(),
-            temp: parent.join(format!(".{name}_build_{id}")),
-            backup: parent.join(format!(".{name}_old_{id}")),
-        }
-    }
+    // Read before the export: a build that publishes in between makes this
+    // export the older one, and this build is then dropped.
+    let snapshot = super::search_index::generation(pool).await?;
+    let documents = indexable_documents(pool, items).await?;
+    let report = super::search_index::full_build(pool, output_dir, &documents, snapshot).await?;
+    Ok(report.pages)
 }
 
 /// The items this index may carry, and the text each contributes.
@@ -449,6 +426,20 @@ pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<V
         }
     }
 
+    // The site's default language, for an item that has none of its own: the
+    // page then stems as the site's language, and no `unknown` index appears
+    // beside the real ones (Pagefind would merge it into the most common
+    // language anyway). English when no language is marked default, which is
+    // also what `base.html` renders for `<html lang>` then.
+    let default_language: String =
+        sqlx::query_scalar("SELECT id FROM language WHERE is_default = true LIMIT 1")
+            .fetch_optional(pool)
+            .await
+            .context("failed to read the default language for pagefind index")?
+            .map(|id: String| pagefind_language(&id))
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| "en".to_string());
+
     // Batch-load URL aliases for all items so we can use friendly paths.
     let alias_rows = sqlx::query_as::<_, AliasRow>(
         "SELECT source, alias FROM url_alias WHERE source LIKE '/item/%'",
@@ -493,6 +484,9 @@ pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<V
             id: item.id,
             item_type: item.item_type.clone(),
             title: plain_text(&item.title),
+            language: Some(pagefind_language(&item.language))
+                .filter(|lang| !lang.is_empty() && lang != "und")
+                .unwrap_or_else(|| default_language.clone()),
             url,
             fields,
             comments: comments_by_item.remove(&item.id).unwrap_or_default(),
@@ -506,7 +500,13 @@ pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<V
     Ok(documents)
 }
 
-/// One item's HTML fragment, as the Pagefind CLI indexes it.
+/// The Pagefind language key for a language code: trimmed and lowercased, as
+/// Pagefind lowercases `<html lang>`.
+fn pagefind_language(code: &str) -> String {
+    code.trim().to_lowercase()
+}
+
+/// One item's HTML fragment, as the search index tokenizer reads it.
 ///
 /// Pagefind indexes only inside `data-pagefind-body` when a page has one, so
 /// everything searchable goes in there: the title, at weight A and still the
@@ -514,6 +514,10 @@ pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<V
 /// heaviest first, then each visible comment. The result URL stays the item's: a
 /// match in a comment is a result for the item. The meta values sit outside the region; they are shown on
 /// the result card but not searched.
+///
+/// `<html lang>` carries the document's language, so Pagefind stems the page
+/// and files it under that language's index. A document with no language gets
+/// no `lang`, as every page did before the native build.
 ///
 /// Exposed (`#[doc(hidden)]`, re-exported from `cron`) beside
 /// [`indexable_documents`] so a test can read the fragment without the CLI.
@@ -569,91 +573,19 @@ pub fn render_fragment(document: &IndexDocument) -> String {
         body.push_str(&format!("\n<p>{}</p>", html_escape(comment)));
     }
 
+    let lang = if document.language.is_empty() {
+        String::new()
+    } else {
+        format!(" lang=\"{}\"", html_escape(&document.language))
+    };
     format!(
-        "<html><head><title>{title}</title></head>\n\
+        "<html{lang}><head><title>{title}</title></head>\n\
          <body>\n\
          <div data-pagefind-body>\n{body}\n</div>\n\
          {meta_tags}\n\
          </body></html>",
         title = html_escape(&document.title),
     )
-}
-
-/// Inner build logic, separated for cleanup guarantee.
-async fn build_index_inner(pool: &PgPool, paths: &SwapPaths, items: &ItemService) -> Result<usize> {
-    let temp_dir = paths.temp.as_path();
-    let documents = indexable_documents(pool, items).await?;
-
-    let count = documents.len();
-    debug!(count = count, "exporting items for pagefind");
-
-    // Write each item as an HTML fragment with rich metadata
-    for document in &documents {
-        let html = render_fragment(document);
-
-        let file_path = temp_dir.join(format!("{}.html", document.id));
-        tokio::fs::write(&file_path, html)
-            .await
-            .context("failed to write pagefind HTML fragment")?;
-    }
-
-    // Check if pagefind CLI is available
-    let pagefind_path = which_pagefind();
-    let Some(pagefind) = pagefind_path else {
-        warn!(
-            "pagefind CLI not found in PATH; skipping index generation. \
-               Install with: npm install -g pagefind"
-        );
-        return Ok(count);
-    };
-
-    // Run pagefind CLI with a timeout to prevent cron lock expiry
-    let output_path = temp_dir.join("_pagefind");
-    let output = tokio::time::timeout(
-        PAGEFIND_CLI_TIMEOUT,
-        tokio::process::Command::new(&pagefind)
-            .arg("--site")
-            .arg(temp_dir)
-            .arg("--output-path")
-            .arg(&output_path)
-            .output(),
-    )
-    .await
-    .map_err(|_| anyhow::anyhow!("pagefind CLI timed out after {PAGEFIND_CLI_TIMEOUT:?}"))?
-    .context("failed to execute pagefind CLI")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("pagefind CLI failed: {stderr}");
-    }
-
-    // Deploy using rename-swap for crash safety:
-    // 1. Rename old index out of the way (if it exists)
-    // 2. Rename new index into place
-    // 3. Remove old backup
-    // This ensures the index is never fully absent if a crash occurs
-    // between steps.
-    let target = &paths.output;
-    let backup = &paths.backup;
-
-    if target.exists() {
-        tokio::fs::rename(target, backup)
-            .await
-            .context("failed to back up old pagefind index")?;
-    }
-
-    if output_path.exists() {
-        tokio::fs::rename(&output_path, target)
-            .await
-            .context("failed to deploy new pagefind index")?;
-    }
-
-    // Remove backup (best-effort)
-    if backup.exists() {
-        tokio::fs::remove_dir_all(backup).await.ok();
-    }
-
-    Ok(count)
 }
 
 /// Build a location string from city/country fields.
@@ -779,77 +711,4 @@ fn field_plain_text(fields: &serde_json::Value, name: &str) -> Option<String> {
 /// `{field_name: "..."}` (plain string) formats.
 fn extract_field_text(fields: &serde_json::Value, field_name: &str) -> Option<String> {
     crate::content::body_field::field_text(fields, field_name)
-}
-
-/// Find the pagefind binary in PATH.
-///
-/// Only returns candidates that are both regular files and executable
-/// (on Unix).
-fn which_pagefind() -> Option<PathBuf> {
-    std::env::var_os("PATH").and_then(|paths| {
-        std::env::split_paths(&paths).find_map(|dir| {
-            let candidate = dir.join("pagefind");
-            if candidate.is_file() && is_executable(&candidate) {
-                Some(candidate)
-            } else {
-                None
-            }
-        })
-    })
-}
-
-/// Check if a file has executable permission.
-#[cfg(unix)]
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(path)
-        .map(|m| m.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
-}
-
-/// On non-Unix platforms, assume any file is executable.
-#[cfg(not(unix))]
-fn is_executable(_path: &Path) -> bool {
-    true
-}
-
-#[cfg(test)]
-// Tests are allowed to use unwrap/expect freely.
-#[allow(clippy::unwrap_used, clippy::expect_used)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_build_and_the_backup_sit_beside_the_output() {
-        let paths = SwapPaths::for_output(Path::new("/shared/pagefind"));
-        assert_eq!(paths.output, PathBuf::from("/shared/pagefind"));
-        assert_eq!(paths.temp.parent(), Some(Path::new("/shared")));
-        assert_eq!(paths.backup.parent(), Some(Path::new("/shared")));
-        let temp = paths.temp.file_name().unwrap().to_string_lossy();
-        let backup = paths.backup.file_name().unwrap().to_string_lossy();
-        assert!(temp.starts_with(".pagefind_build_"), "{temp}");
-        assert!(backup.starts_with(".pagefind_old_"), "{backup}");
-    }
-
-    #[test]
-    fn each_build_gets_its_own_names() {
-        let a = SwapPaths::for_output(Path::new("./static/pagefind"));
-        let b = SwapPaths::for_output(Path::new("./static/pagefind"));
-        assert_ne!(a.temp, b.temp);
-        assert_ne!(a.backup, b.backup);
-    }
-
-    #[test]
-    fn a_bare_name_uses_the_current_directory() {
-        let paths = SwapPaths::for_output(Path::new("index"));
-        assert_eq!(paths.temp.parent(), Some(Path::new(".")));
-        assert!(
-            paths
-                .temp
-                .file_name()
-                .unwrap()
-                .to_string_lossy()
-                .starts_with(".index_build_")
-        );
-    }
 }
