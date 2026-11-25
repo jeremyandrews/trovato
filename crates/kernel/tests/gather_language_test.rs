@@ -55,7 +55,8 @@ fn an_or_group_is_anded_with_the_rest() {
     assert_eq!(
         sql,
         "SELECT \"item\".* FROM \"item\" WHERE \"item\".\"type\" = 'blog' \
-         AND ((item.fields->>'city') = 'Barga' OR (item.fields->>'city') = 'Lucca') \
+         AND ((COALESCE(item.fields->'city'->>'value', item.fields->>'city')) = 'Barga' \
+         OR (COALESCE(item.fields->'city'->>'value', item.fields->>'city')) = 'Lucca') \
          AND \"item\".\"status\" = 1 \
          AND \"item\".\"stage_id\" = '0193a5a0-0000-7000-8000-000000000001' \
          LIMIT 10 OFFSET 0"
@@ -79,8 +80,10 @@ fn groups_nest() {
     }));
     assert_eq!(
         sql,
-        "SELECT \"item\".* FROM \"item\" WHERE ((item.fields->>'city') = 'Barga' \
-         OR ((item.fields->>'city') = 'Lucca' AND (item.fields->>'lang') = 'it')) \
+        "SELECT \"item\".* FROM \"item\" WHERE \
+         ((COALESCE(item.fields->'city'->>'value', item.fields->>'city')) = 'Barga' \
+         OR ((COALESCE(item.fields->'city'->>'value', item.fields->>'city')) = 'Lucca' \
+         AND (COALESCE(item.fields->'lang'->>'value', item.fields->>'lang')) = 'it')) \
          AND \"item\".\"status\" = 1 \
          AND \"item\".\"stage_id\" = '0193a5a0-0000-7000-8000-000000000001' \
          AND \"item\".\"type\" = 'blog' LIMIT 10 OFFSET 0"
@@ -104,7 +107,10 @@ fn an_unconstrained_member_is_true() {
         "item_type": "blog",
         "filter_groups": [{"conjunction": "and", "filters": [eq("fields.city", "Barga"), empty_in]}]
     }));
-    assert!(and.contains("(item.fields->>'city') = 'Barga'"), "{and}");
+    assert!(
+        and.contains("(COALESCE(item.fields->'city'->>'value', item.fields->>'city')) = 'Barga'"),
+        "{and}"
+    );
 }
 
 /// The count carries the group too, so the pager total matches the rows.
