@@ -806,7 +806,8 @@ fn a_page_saved_before_root_fields_validates_and_renders_the_same_html() {
             .theme()
             .render_page_builder_content(&page, &ResolvedReferences::default())
             .expect("render");
-        let expected = std::fs::read_to_string(fixture_path("standard-page-pre-registry.html")).unwrap();
+        let expected =
+            std::fs::read_to_string(fixture_path("standard-page-pre-registry.html")).unwrap();
         assert_eq!(rendered.html, expected);
         assert_eq!(
             Value::Object(rendered.root),
