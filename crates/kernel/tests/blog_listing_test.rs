@@ -126,7 +126,11 @@ async fn get(app: &TestApp, path: &str) -> (StatusCode, String) {
     let bytes = to_bytes(response.into_body(), 4 * 1024 * 1024)
         .await
         .expect("read body");
-    (status, String::from_utf8_lossy(&bytes).into_owned())
+    // Tera escapes `/` in attribute values; read hrefs as a browser would.
+    (
+        status,
+        String::from_utf8_lossy(&bytes).replace("&#x2F;", "/"),
+    )
 }
 
 #[test]
