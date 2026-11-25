@@ -30,10 +30,11 @@ publishing options and bulk actions all work from the admin screens.
 
 The site around the content filled in: files served to every viewer of the item
 that holds them, mail that survives a down server and reaches a member by id,
-password reset in a browser, search that indexes everything and is built by the
-kernel itself, gather feeds in Atom and RSS per author and per tag, tiles and
-menus that know the viewer and the language, text formats and themes chosen from
-the admin, and cache, request and trace metrics that leave the process.
+password reset in a browser, search that indexes everything and is built and
+updated item by item by the kernel itself, gather feeds in Atom and RSS per
+author and per tag, tiles and menus that know the viewer and the language, an
+administration organised by task, text formats and themes chosen from the admin,
+and cache, request and trace metrics that leave the process.
 
 Plugins get seams in place of shortcuts. A plugin reads content through a
 `query` interface compiled by Gather for its viewer, writes items through the
@@ -4028,6 +4029,152 @@ The pinned advisory database that pull requests audit against moved to the
 2026-10-06 head of `rustsec/advisory-db`. It surfaces nothing beyond the five
 advisories this change fixes, so the floor rises without anything being hidden
 behind it.
+
+The administration is organised by task. Every admin page now belongs to one
+of seven groups (Content, Structure, Appearance, People, Extend, Configuration,
+Reports) or is the Dashboard, and that placement lives in one registry
+(`routes::admin_nav`) that the sidebar, the group landing pages
+(`/admin/content`, `/admin/structure`, …), the breadcrumbs, the Dashboard and
+the new admin search all read. Before, the sidebar, the Dashboard cards and the
+breadcrumbs each kept their own list. They had drifted apart: a page could be
+in the sidebar and missing from the Dashboard, or named differently in each,
+and a plugin's admin page landed wherever its URL put it. A plugin still
+declares its pages as before and may name a group; one that names none goes to
+Extend. No URL changed and no route's permission changed. The sidebar, the
+landing pages and the search are display only: each lists only the pages the
+viewer may open, and every page still checks its own permission.
+`docs/admin/inventory.md` lists every admin route with its handler, template,
+permission and group, and a test fails when a route is added without a row or
+the row's group disagrees with the registry.
+
+Every admin page has the same anatomy: a skip link, a banner holding the admin
+search, a sidebar navigation labelled "Administration" whose groups open and
+close (by keyboard too, remembered between pages), a breadcrumb ending at the
+current page, and one `h1` that also leads the document title. A test checks
+it on every page type. Below 48rem the sidebar sits behind a Menu button, and
+no admin page scrolls sideways at 320 CSS pixels. The admin stylesheet is
+rebuilt on design tokens with a light and a dark theme, uses logical properties
+only, so a right-to-left language mirrors the whole layout, and draws a 3px
+focus ring on everything focusable. Tests compute the contrast of every token
+pair in both themes and refuse a physical property. Each person may choose a
+theme (system, light, dark) and an administration language under the new Your
+preferences page (`/admin/preferences`). The admin no longer loads the site
+theme's `base.css`, whose body colour and link rules leaked into it and failed
+contrast in dark mode. The active admin theme's own stylesheets are still
+linked after the admin's.
+
+Every word the admin shows goes through one translation function, `t`, which
+handles placeholders, plurals by CLDR category and context. It is registered
+whether or not the locale plugin is enabled, and it returns the English source
+when there is no translation. Flash messages are stored as messages, not as
+sentences, so they are translated in the language of the page that shows them,
+and one that reports a failure (a bulk action that changed nothing or only
+part of the selection, a plugin that could not be switched, a test email that
+could not be sent) is shown as an error and announced at once, not labelled
+"Done:".
+A marker-mode test opens every admin page type and fails on any text,
+`aria-label`, `title`, `placeholder` or `alt` that did not go through `t`.
+`TROVATO_PSEUDO_LOCALES=1` adds an accented and a right-to-left pseudo
+language for checking layouts. The form templates the front end shares with
+the admin now use `t` as well; outside an admin page `t` returns its English
+source, and a test proves those templates render byte for byte as before. On an
+admin page the file widget's label now names its file chooser, which it did not
+before.
+
+A new CI job, "Admin accessibility", generates a site and runs axe (WCAG 2.0,
+2.1 and 2.2, A and AA) on every page in the inventory in four modes: light,
+dark, 320px wide and right to left. It also runs keyboard checks and snapshots
+each page type's accessibility tree. `docs/admin/design.md`,
+`docs/admin/accessibility.md` and `docs/admin/translation.md` describe the
+design, the checks and how to translate the admin. An admin page now makes one
+more query, to read the viewer's preferences, plus one site setting.
+
+The Pagefind search index is now updated item by item. An edit or a new comment
+is searchable at the next cron run, after an update that rewrites only that
+item's part of the index. Before this change, the whole index was rebuilt.
+
+The cause was that every change asked for a full rebuild. The item service, the
+comment service and the content type screen each set
+`pagefind_index_status.rebuild_requested`, and `trovato_search`'s `tap_cron`
+set it too whenever `MAX(changed)` over published items moved. One comment
+therefore cost an export, render and encode of every searchable page. This is
+part 3 of `docs/design/incremental-search-index.md`.
+
+On the largest local content set (1,237 searchable pages) the numbers are:
+
+* a title edit is searchable 41 to 54 ms after the write starts, and a comment
+  32 to 42 ms after;
+* the cron update takes 21 to 25 ms of that and writes 5 files (the item's
+  fragment, the two word chunks its words are in, the meta file and
+  `pagefind-entry.json`);
+* the same edit followed by a full build took 272 to 280 ms and re-encoded every
+  page.
+
+Changes are now queued in a new table, `search_index_queue`. It holds one row
+per item, so the last change before cron wins, and records a reason. Writes to
+items, comments and URL aliases are queued by triggers on those tables, in the
+write's own transaction, whoever makes them: the item, comment and alias
+services, pathauto, and a plugin's raw SQL. A write that commits is therefore
+queued even if the server dies right after the commit, and a write that rolls
+back queues nothing. Three other writers queue their items in code:
+
+* the content type search switches, the search field weights and the reindex
+  button, each of which queues every item of the type;
+* workspace publishing, inside its own transaction, for every item it moves or
+  deletes;
+* plugins, for a change no trigger sees.
+
+Plugins have one new host function, `search-index-enqueue` in the `db`
+interface (`host::search_index_enqueue` in the SDK). The rule for plugin
+authors, in `docs/plugin-development.md`, is this: a plugin that changes
+something else that decides what an item's search page holds calls it
+afterwards with the ids it affected. Typically that is data its
+`tap_field_access` reads. Writes to items, comments and aliases need no call.
+
+Scheduled publishing used to change `item.status` with raw SQL, which nothing
+saw, so a scheduled unpublish left the item in search results until something
+else rebuilt the index. It also kept each date after applying it, so an item
+whose publish and unpublish dates had both passed was published and
+unpublished again at every cron run. It now claims each due item with one
+statement that removes the date only if the item is still due, so an editor's
+change to the date before then is respected. It then sets the status through
+the item API, so the item is queued, a revision is recorded and the write taps
+fire. A scheduled unpublish therefore takes the item out of the results at the
+next cron run. `trovato_search` no longer polls `MAX(changed)`. Its `tap_cron`
+reports how many items are queued.
+
+How a cron run applies the queue:
+
+* It drains the queue in batches of 200 items.
+* For each batch it exports only those items, through the same access seam as
+  a full build, and tokenizes only pages whose HTML changed.
+* It rewrites the word chunks their old and new words are in. The chunk ranges
+  are recorded in a new table, `search_chunk`, and stay frozen until the next
+  full build. A chunk past 40,000 locations splits, and one that empties is
+  dropped.
+* It publishes a new meta file and then the entry file. That happens under the
+  same advisory lock and generation check as the full build.
+
+The full build remains, and is taken with a `warn` log line naming the reason
+when an update's preconditions fail. Examples are a live entry the database
+did not record, a missing or unreadable cached term set, a new or emptied
+language, or a backlog of more than 1,000 items that is more than a quarter of
+the index. A full build reads a cached term set that does not decode as a miss
+and tokenizes the page again, so one bad row cannot fail every run. An
+operator can ask for one with the new `trovato search rebuild` command. If
+that build fails, or another publisher gets in first, the request stays set
+for the next cron run.
+
+Deleted and unpublished items leave tombstones in their language's page slots,
+and new items reuse them. When tombstones pass a share of a language's slots,
+cron compacts the index with one full build that renumbers densely. The result
+is byte for byte the index a first build of the same content writes. The share
+is a new search setting, "Compact the search index above this percentage of
+freed slots", at `/admin/config/search`. It defaults to 5% and takes 0.5 to 50.
+
+A browser tab that loaded the index more than 24 hours before a search can ask
+for a chunk or fragment that has since been deleted. `scolta.js` now reloads
+the index once when a search fails that way, and runs the search again.
 
 ## v0.104.0 — 2026-09-24
 

@@ -5433,7 +5433,7 @@ dependencies = [
 
 [[package]]
 name = "test_search_enqueue"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
