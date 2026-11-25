@@ -1347,15 +1347,9 @@ fn relabelling_a_tag_invalidates_a_cached_etag() {
             .execute(&app.db)
             .await
             .expect("relabel tag");
-        // The admin path bumps this through `CategoryService::update_tag`
-        // (fire-and-forget); awaited directly here so the next request cannot
-        // race the write reaching Redis.
-        trovato_kernel::cache::generation::bump_now(
-            app.state.redis(),
-            &[trovato_kernel::cache::generation::CacheKind::Categories],
-        )
-        .await
-        .expect("bump categories generation");
+        // No cache bump and no change to the item: the label on
+        // `category_tag` is the only thing that moved, and it alone has to
+        // move the `ETag`.
 
         let (status, headers, body) = send(
             app,

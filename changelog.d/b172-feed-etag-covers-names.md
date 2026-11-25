@@ -11,15 +11,13 @@ conditional poll kept getting `304` for a document that now read differently,
 and readers carried the stale name until the post's next unrelated edit.
 
 The author's name is now hashed too — it was already fetched on the `304`
-path for `dc:creator` itself, so this costs nothing new. Terms are covered
-without bringing back a per-poll query against `category_tag`: each entry's
-term ids are hashed (free, already parsed off the row) together with the
-`Categories` cache generation counter the kernel already bumps on every tag or
-category write (`crate::cache::generation`). That counter is one cheap Redis
-read, shared by the whole response rather than queried per entry, so the only
-added cost on the `304` path is that one read — exact in that a relabel is
-never missed, at the price of invalidating every feed's `ETag` on any tag or
-category write, not only ones naming a term the response actually carries.
+path for `dc:creator` itself, so this costs nothing new. Each term the entry
+prints is hashed by id and label, and the labels are read in one batched query
+for the whole response before the `304` check (never one per entry): that one
+indexed lookup is the added cost of a poll that matches. The `Categories`
+cache generation counter would have saved it, but it moves on any tag write
+anywhere on the install, so while anyone edited tags no feed would ever answer
+`304`; the labels move only the feeds that print them.
 
 Also fixed: the `lakeside` fixture theme's `base.html` carried only the RSS
 `<link rel="alternate">` for feed autodiscovery, missing the Atom sibling the

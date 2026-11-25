@@ -394,14 +394,11 @@ An item's title, summary and body are not hashed directly — they can only
 change through an edit to the item, the same write that bumps `changed` — but
 an author's account name and a term's label are edited on a different row, so
 they are hashed explicitly: the account name actually fetched for the entry
-(already loaded for `dc:creator` / `<author><name>`), and, for terms, each
-entry's term ids (free — already read off the row) plus the `Categories` cache
-generation counter the kernel already bumps on every tag or category write.
-That counter is one cheap read, shared by the whole response rather than
-queried per entry or per term, so a renamed account or a relabelled term
-invalidates the `ETag` immediately rather than waiting for the entry's next
-edit — at the cost of also invalidating every feed's `ETag` on any tag or
-category write, not only ones naming a term the response actually carries.
+(already loaded for `dc:creator` / `<author><name>`), and each term the entry
+prints, by id and label. The labels are read in one query for the whole
+response, before the `304` check, never one per entry or per term. So a
+renamed account or a relabelled term invalidates the `ETag` of exactly the
+feeds that print it, at once, rather than waiting for the entry's next edit.
 
 #### A feed per author, per tag, per anything the gather takes
 
