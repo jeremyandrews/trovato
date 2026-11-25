@@ -670,7 +670,7 @@ on every Pagefind bump:
   `assets/pagefind-1.3.0/` by `pagefind-harness bundle`, and a harness test
   holds them equal to the crate's.
 * **Ledger, term cache and state** are the tables above, in migration
-  `20261201000001_search_index_ledger.sql`. `search_index_state` is one row:
+  `20261202000001_search_index_ledger.sql`. `search_index_state` is one row:
   `generation`, `pagefind_version` and the published `entry_meta`. A fourth
   table, `search_index_file`, records when each content addressed file stopped
   being referenced, for the retention window.
