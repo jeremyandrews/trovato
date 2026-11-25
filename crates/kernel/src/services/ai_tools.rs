@@ -103,6 +103,9 @@ pub struct ChatCompletion {
     pub model: String,
     /// Round-trip latency in milliseconds.
     pub latency_ms: u64,
+    /// The estimated cost the send path recorded for the call (P11c / D-44);
+    /// `None` for an unpriced model.
+    pub cost_estimate: Option<f64>,
 }
 
 // =============================================================================
@@ -314,6 +317,7 @@ pub(crate) fn parse_openai_response(value: &Value) -> Option<ChatCompletion> {
             .unwrap_or_default()
             .to_string(),
         latency_ms: 0,
+        cost_estimate: None,
     })
 }
 
@@ -542,6 +546,7 @@ pub(crate) fn parse_anthropic_response(value: &Value) -> Option<ChatCompletion> 
             .unwrap_or_default()
             .to_string(),
         latency_ms: 0,
+        cost_estimate: None,
     })
 }
 

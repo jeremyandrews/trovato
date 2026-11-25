@@ -20,7 +20,16 @@ path = "junit.xml"
 # a static is per process, so the serialization has to live here.
 [test-groups]
 cluster = { max-threads = 1 }
+ai-send-path = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = "binary(cluster_test)"
 test-group = "cluster"
+
+# The B89 AI send path tests point the site's one AI provider at their own
+# stub and read back the usage rows that provider collected, so two of them
+# running at once see each other's provider and rows. Their static SERIAL
+# mutex serializes them under libtest only; under nextest it has to be here.
+[[profile.default.overrides]]
+filter = "binary(ai_usage_budget_test) | binary(ai_send_path_test)"
+test-group = "ai-send-path"

@@ -28,6 +28,8 @@ use tokio::sync::Mutex;
 use crate::circuit_breaker::{BreakerConfig, CircuitBreaker};
 use crate::models::SiteConfig;
 use crate::net_policy::is_disallowed_ip;
+use crate::services::ai_chat::ChatStreamEvent;
+use crate::services::ai_token_budget::{AiTokenBudgetService, BudgetAction, UsageLogEntry};
 use crate::services::ai_tools::{self, ChatCompletion, ChatMessage, ToolSpec};
 
 // =============================================================================
@@ -186,6 +188,9 @@ pub struct EmbeddingResult {
     pub total_tokens: u32,
     /// Round-trip latency in milliseconds.
     pub latency_ms: u64,
+    /// The estimated cost the send path recorded for the call; `None` for an
+    /// unpriced model.
+    pub cost_estimate: Option<f64>,
 }
 
 /// Who an AI call is made for.
@@ -265,11 +270,14 @@ impl AiCaller {
         self
     }
 
-    /// The user id the usage log records, if the call was a person's.
+    /// The user id the usage log records: the person's, the nil id for an
+    /// anonymous visitor (so the site-level anonymous cap can meter it), and
+    /// none for a plugin's background call or the kernel's own work.
     pub fn user_id(&self) -> Option<uuid::Uuid> {
         match self.principal {
             AiPrincipal::User(id) => Some(id),
-            _ => None,
+            AiPrincipal::Anonymous => Some(uuid::Uuid::nil()),
+            AiPrincipal::Plugin | AiPrincipal::Kernel => None,
         }
     }
 }
@@ -312,9 +320,8 @@ impl ChatRequest {
 }
 
 /// A started chat stream.
-pub type ChatEventStream = std::pin::Pin<
-    Box<dyn futures_core::Stream<Item = crate::services::ai_chat::ChatStreamEvent> + Send>,
->;
+pub type ChatEventStream =
+    std::pin::Pin<Box<dyn futures_core::Stream<Item = ChatStreamEvent> + Send>>;
 
 /// Why an AI call failed, at the granularity a caller needs to say something
 /// useful. The `Display` text never carries the provider's response body:
@@ -353,6 +360,9 @@ pub enum AiCallError {
     /// The provider cannot serve this operation.
     #[error("{0}")]
     Unsupported(String),
+    /// The caller's token or currency budget for this period is spent.
+    #[error("the AI budget for this period is spent")]
+    BudgetExceeded,
 }
 
 impl AiCallError {
@@ -369,6 +379,7 @@ impl AiCallError {
             Self::Provider { .. } | Self::Transport(_) | Self::Malformed(_) => {
                 "Something went wrong talking to the model provider."
             }
+            Self::BudgetExceeded => "The AI usage limit for this period has been reached.",
         }
     }
 }
@@ -435,6 +446,56 @@ fn usage_u32(json: &serde_json::Value, key: &str) -> u32 {
         .unwrap_or(0)
         .min(u64::from(u32::MAX)) as u32
 }
+
+/// Write one `ai_usage_log` row for a completed call and return its cost
+/// estimate. A failed write is logged, never silently dropped, and never fails
+/// the call: the answer has already been paid for.
+#[allow(clippy::too_many_arguments)]
+async fn record_call(
+    budgets: &AiTokenBudgetService,
+    db: &PgPool,
+    caller: &AiCaller,
+    provider_id: &str,
+    requested_model: &str,
+    op: AiOperationType,
+    served_model: &str,
+    (prompt_tokens, completion_tokens, total_tokens): (u32, u32, u32),
+    latency_ms: u64,
+) -> Option<f64> {
+    let clamp = |n: u32| n.min(i32::MAX as u32) as i32;
+    let cost_estimate = budgets
+        .estimate_call_cost(
+            requested_model,
+            served_model,
+            i64::from(prompt_tokens),
+            i64::from(completion_tokens),
+        )
+        .await;
+    let entry = UsageLogEntry {
+        user_id: caller.user_id(),
+        plugin_name: caller.source.clone(),
+        provider_id: provider_id.to_string(),
+        operation: op.to_string(),
+        model: served_model.to_string(),
+        prompt_tokens: clamp(prompt_tokens),
+        completion_tokens: clamp(completion_tokens),
+        total_tokens: clamp(total_tokens),
+        latency_ms: latency_ms.min(i64::MAX as u64) as i64,
+        cost_estimate,
+    };
+    if let Err(e) = budgets.record_usage(db, entry).await {
+        tracing::warn!(
+            error = %e,
+            source = %caller.source,
+            provider = %provider_id,
+            "failed to record AI usage"
+        );
+    }
+    cost_estimate
+}
+
+/// One budget check's answer: `(allowed, action on limit, used, limit)`.
+type BudgetVerdict = (bool, BudgetAction, f64, f64);
 
 /// Exact loopback base URLs a test has allowed past the send-time check.
 static TEST_LOOPBACK_PROVIDERS: std::sync::LazyLock<
@@ -764,6 +825,8 @@ pub struct AiProviderService {
     /// that operation's configured failure window, so a legitimately slow
     /// analyze-class call does not trip a breaker sized for fast decide calls.
     generate_breakers: std::sync::Mutex<HashMap<String, Arc<CircuitBreaker>>>,
+    /// Budget checks and usage recording for every send.
+    budgets: AiTokenBudgetService,
 }
 
 impl AiProviderService {
@@ -793,7 +856,6 @@ impl AiProviderService {
             .build()
             .expect("SSRF-hardened AI provider HTTP client must build");
         Self {
-            db,
             http,
             write_lock: Mutex::new(()),
             circuit_breaker: CircuitBreaker::new(
@@ -805,6 +867,8 @@ impl AiProviderService {
                 },
             ),
             generate_breakers: std::sync::Mutex::new(HashMap::new()),
+            budgets: AiTokenBudgetService::new(db.clone()),
+            db,
         }
     }
 
@@ -837,6 +901,24 @@ impl AiProviderService {
                 },
             ))
         }))
+    }
+
+    /// The state of every per-operation breaker, by operation key, for the
+    /// metrics gauge. An operation whose breaker has not been created yet has
+    /// made no call on this server, so it reads `closed`.
+    pub fn operation_breaker_states(&self) -> Vec<(&'static str, &'static str)> {
+        let map = self
+            .generate_breakers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        AiOperationType::ALL
+            .iter()
+            .map(|op| {
+                let key = op.config_key();
+                let state = map.get(key).map_or("closed", |b| b.state_name());
+                (key, state)
+            })
+            .collect()
     }
 
     /// Read the AI timeout configuration (P11c / D-43) from `site_config`,
@@ -1132,6 +1214,116 @@ impl AiProviderService {
         (timeout, breaker)
     }
 
+    /// Hold a call to its caller's budget before it is sent.
+    ///
+    /// A person is held to their per-user or per-role token budget; an
+    /// anonymous visitor to the site-level anonymous cap (the `anonymous user`
+    /// role's limit, metered over every anonymous call); a plugin's background
+    /// call to the plugin's token and currency budgets. The kernel's own work
+    /// (indexing embeddings) has no budget. A budget that cannot be read allows
+    /// the call, with a warning, as it always has.
+    async fn check_budget(
+        &self,
+        caller: &AiCaller,
+        resolved: &ResolvedProvider,
+    ) -> Result<(), AiCallError> {
+        let provider = resolved.config.id.as_str();
+        let checks: Vec<(&str, Result<BudgetVerdict>)> = match caller.principal {
+            AiPrincipal::Kernel => return Ok(()),
+            AiPrincipal::User(_) | AiPrincipal::Anonymous => {
+                let user = caller.user_id().unwrap_or_else(uuid::Uuid::nil);
+                vec![(
+                    "token",
+                    self.budgets
+                        .check_budget(&self.db, user, provider)
+                        .await
+                        .map(|r| (r.allowed, r.action, r.used as f64, r.limit as f64)),
+                )]
+            }
+            AiPrincipal::Plugin => vec![
+                (
+                    "token",
+                    self.budgets
+                        .check_plugin_budget(&self.db, &caller.source, provider)
+                        .await
+                        .map(|r| (r.allowed, r.action, r.used as f64, r.limit as f64)),
+                ),
+                (
+                    "currency",
+                    self.budgets
+                        .check_plugin_cost_budget(&self.db, &caller.source, provider)
+                        .await
+                        .map(|r| (r.allowed, r.action, r.used, r.limit)),
+                ),
+            ],
+        };
+        for (kind, check) in checks {
+            match check {
+                Ok((false, BudgetAction::Deny | BudgetAction::Queue, used, limit)) => {
+                    tracing::warn!(
+                        source = %caller.source,
+                        principal = ?caller.principal,
+                        provider = %provider,
+                        budget = kind,
+                        used,
+                        limit,
+                        "AI budget exceeded"
+                    );
+                    return Err(AiCallError::BudgetExceeded);
+                }
+                Ok((false, BudgetAction::Warn, used, limit)) => tracing::warn!(
+                    source = %caller.source,
+                    principal = ?caller.principal,
+                    provider = %provider,
+                    budget = kind,
+                    used,
+                    limit,
+                    "AI budget exceeded (warn mode, allowing)"
+                ),
+                Ok(_) => {}
+                Err(e) => tracing::warn!(
+                    error = %e,
+                    source = %caller.source,
+                    budget = kind,
+                    "failed to check AI budget, allowing request"
+                ),
+            }
+        }
+        Ok(())
+    }
+
+    /// Record one completed call in `ai_usage_log` with the tokens the
+    /// provider reported and a cost estimate, and return the estimate.
+    ///
+    /// Priced on `resolved.model`, the model the call ASKED for, not on
+    /// `served_model`, the string the provider reports having served:
+    /// Anthropic resolves an alias server side, so a request for
+    /// `claude-haiku-4-5` answers as `claude-haiku-4-5-20251001`, which matches
+    /// no row in a pricing table keyed by the name the operator configured.
+    #[allow(clippy::too_many_arguments)]
+    async fn record_usage(
+        &self,
+        caller: &AiCaller,
+        resolved: &ResolvedProvider,
+        op: AiOperationType,
+        served_model: &str,
+        (prompt_tokens, completion_tokens, total_tokens): (u32, u32, u32),
+        latency_ms: u64,
+    ) -> Option<f64> {
+        record_call(
+            &self.budgets,
+            &self.db,
+            caller,
+            &resolved.config.id,
+            &resolved.model,
+            op,
+            served_model,
+            (prompt_tokens, completion_tokens, total_tokens),
+            latency_ms,
+        )
+        .await
+    }
+
     /// Run one chat completion, with or without tools.
     ///
     /// The one non-streaming chat send for the kernel: search expansion,
@@ -1145,6 +1337,7 @@ impl AiProviderService {
         request: &ChatRequest,
     ) -> Result<ChatCompletion, AiCallError> {
         Self::check_send_url(&resolved.config.base_url)?;
+        self.check_budget(caller, resolved).await?;
         let (timeout, breaker) = self
             .send_guard(AiOperationType::Chat, resolved, caller, request.timeout)
             .await;
@@ -1176,11 +1369,24 @@ impl AiProviderService {
             })
             .await;
 
-        match result {
-            Ok(completion) => Ok(completion),
-            Err(crate::circuit_breaker::CircuitBreakerError::Open) => Err(AiCallError::BreakerOpen),
-            Err(crate::circuit_breaker::CircuitBreakerError::ServiceError(e)) => Err(e),
-        }
+        let mut completion = match result {
+            Ok(completion) => completion,
+            Err(crate::circuit_breaker::CircuitBreakerError::Open) => {
+                return Err(AiCallError::BreakerOpen);
+            }
+            Err(crate::circuit_breaker::CircuitBreakerError::ServiceError(e)) => return Err(e),
+        };
+        completion.cost_estimate = self
+            .record_usage(
+                caller,
+                resolved,
+                AiOperationType::Chat,
+                &completion.model,
+                completion.usage,
+                completion.latency_ms,
+            )
+            .await;
+        Ok(completion)
     }
 
     /// Start one streaming chat completion.
@@ -1197,9 +1403,11 @@ impl AiProviderService {
         request: &ChatRequest,
     ) -> Result<ChatEventStream, AiCallError> {
         Self::check_send_url(&resolved.config.base_url)?;
+        self.check_budget(caller, resolved).await?;
         let (timeout, breaker) = self
             .send_guard(AiOperationType::Chat, resolved, caller, request.timeout)
             .await;
+        let started = Instant::now();
 
         let result = breaker
             .call(|| async {
@@ -1229,14 +1437,43 @@ impl AiProviderService {
             Err(crate::circuit_breaker::CircuitBreakerError::ServiceError(e)) => return Err(e),
         };
 
-        Ok(match resolved.config.protocol {
+        let events: ChatEventStream = match resolved.config.protocol {
             ProviderProtocol::OpenAiCompatible => {
                 Box::pin(crate::services::ai_chat::parse_openai_stream(response))
             }
             ProviderProtocol::Anthropic => {
                 Box::pin(crate::services::ai_chat::parse_anthropic_stream(response))
             }
-        })
+        };
+
+        // Record the call when the stream reports its usage, which it does in
+        // its last event: the token counts do not exist before then.
+        let budgets = self.budgets.clone();
+        let db = self.db.clone();
+        let caller = caller.clone();
+        let provider_id = resolved.config.id.clone();
+        let model = resolved.model.clone();
+        Ok(Box::pin(async_stream::stream! {
+            use tokio_stream::StreamExt;
+            let mut events = events;
+            while let Some(event) = events.next().await {
+                if let ChatStreamEvent::Done { prompt_tokens, completion_tokens, total_tokens } = &event {
+                    record_call(
+                        &budgets,
+                        &db,
+                        &caller,
+                        &provider_id,
+                        &model,
+                        AiOperationType::Chat,
+                        &model,
+                        (*prompt_tokens, *completion_tokens, *total_tokens),
+                        started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                    )
+                    .await;
+                }
+                yield event;
+            }
+        }))
     }
 
     /// Generate an embedding vector for `text` using the configured
@@ -1294,6 +1531,7 @@ impl AiProviderService {
             )));
         }
         Self::check_send_url(&resolved.config.base_url)?;
+        self.check_budget(caller, resolved).await?;
         let (timeout, breaker) = self
             .send_guard(AiOperationType::Embedding, resolved, caller, None)
             .await;
@@ -1351,15 +1589,30 @@ impl AiProviderService {
                     prompt_tokens,
                     total_tokens,
                     latency_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                    cost_estimate: None,
                 })
             })
             .await;
 
-        match result {
-            Ok(result) => Ok(result),
-            Err(crate::circuit_breaker::CircuitBreakerError::Open) => Err(AiCallError::BreakerOpen),
-            Err(crate::circuit_breaker::CircuitBreakerError::ServiceError(e)) => Err(e),
-        }
+        let mut result = match result {
+            Ok(result) => result,
+            Err(crate::circuit_breaker::CircuitBreakerError::Open) => {
+                return Err(AiCallError::BreakerOpen);
+            }
+            Err(crate::circuit_breaker::CircuitBreakerError::ServiceError(e)) => return Err(e),
+        };
+        // An embedding reports input tokens only; there is no completion.
+        result.cost_estimate = self
+            .record_usage(
+                caller,
+                resolved,
+                AiOperationType::Embedding,
+                &result.served_model,
+                (result.prompt_tokens, 0, result.total_tokens),
+                result.latency_ms,
+            )
+            .await;
+        Ok(result)
     }
 
     /// POST a JSON body to a provider with a per-request timeout.

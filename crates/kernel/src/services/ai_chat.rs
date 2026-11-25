@@ -438,7 +438,8 @@ impl ChatService {
     /// request execution.
     ///
     /// Sent through [`AiProviderService::chat_stream`], the one streaming send:
-    /// base URL check, configured timeout, chat breaker. Returns a pinned stream
+    /// base URL check, the person's budget, configured timeout, chat breaker,
+    /// and the usage row when the stream reports its tokens. Returns a pinned stream
     /// of `ChatStreamEvent`s, which the caller wraps in an SSE response.
     pub async fn execute_streaming(
         &self,
@@ -446,18 +447,12 @@ impl ChatService {
         config: &ChatConfig,
         resolved: &ResolvedProvider,
         caller: &AiCaller,
-    ) -> Result<(ChatEventStream, StreamMeta), AiCallError> {
+    ) -> Result<ChatEventStream, AiCallError> {
         let request = chat_request(&messages, config);
         debug!(protocol = ?resolved.config.protocol, "sending streaming chat request");
-        let stream = self
-            .ai_providers
+        self.ai_providers
             .chat_stream(resolved, caller, &request)
-            .await?;
-        let meta = StreamMeta {
-            provider_id: resolved.config.id.clone(),
-            model: resolved.model.clone(),
-        };
-        Ok((stream, meta))
+            .await
     }
 }
 
@@ -479,14 +474,6 @@ fn chat_request(messages: &[AiMessage], config: &ChatConfig) -> ChatRequest {
         temperature: config.temperature,
         ..ChatRequest::default()
     }
-}
-
-/// Metadata about the streaming request (for usage logging after completion).
-pub struct StreamMeta {
-    /// Provider configuration ID.
-    pub provider_id: String,
-    /// Model identifier.
-    pub model: String,
 }
 
 // =============================================================================
