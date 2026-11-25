@@ -628,8 +628,18 @@ impl AppState {
             let tap_install_email = email.clone();
             tokio::spawn(async move {
                 let http = crate::host::http::build_outbound_client();
-                // `None` only when `AppState::new` failed before building it.
-                let items = items_rx.await.ok();
+                // The sender drops only when `AppState::new` failed before
+                // building the item service. Claim nothing then: a claim
+                // stands even when its dispatch fails, so dispatching from a
+                // server that is not starting would spend each hook the next
+                // healthy start should run.
+                let Ok(items) = items_rx.await else {
+                    warn!(
+                        pending = pending.len(),
+                        "startup failed; tap_install left pending for the next start"
+                    );
+                    return;
+                };
                 for plugin_name in &pending {
                     // Claim before dispatching: with several servers starting
                     // together, only the one whose claim lands runs it.
@@ -659,9 +669,7 @@ impl AppState {
                     if let Some(ref email) = tap_install_email {
                         install_services = install_services.with_email(email.clone());
                     }
-                    if let Some(items) = &items {
-                        install_services.set_item_service(items);
-                    }
+                    install_services.set_item_service(&items);
                     let install_state =
                         RequestState::new(UserContext::anonymous(), install_services);
                     // dispatch_to_plugin returns None when the plugin does not

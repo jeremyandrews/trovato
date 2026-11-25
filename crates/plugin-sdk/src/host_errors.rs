@@ -78,7 +78,8 @@
 //!   - `-1`: memory missing, `-2`: ID read failed or not a UUID,
 //!     `-3`: output write failed, `-10`: no services, `-12`: database error,
 //!     `-13`: serialization failed, `-60`: called inside an access decision,
-//!     `-61`: background call without `item_background`
+//!     `-61`: background call without `item_background`, `-64`: no item
+//!     service on this dispatch path
 //!   - `≥ 0`: bytes written: the item's JSON, or `null` when it is missing **or**
 //!     the user may not view it (the two are indistinguishable on purpose)
 //!
@@ -105,7 +106,8 @@
 //!   - `-1`: memory missing, `-2`: query JSON read failed, `-3`: output write
 //!     failed, `-10`: no services, `-12`: database error, `-13`: serialization
 //!     failed, `-14`: not JSON, `-60`: called inside an access decision,
-//!     `-61`: background call without `item_background`
+//!     `-61`: background call without `item_background`, `-64`: no item
+//!     service on this dispatch path
 //!   - `≥ 0`: bytes written (JSON array of the items the user may view)
 //!
 //! ## Request Context (`trovato:request-context/*`)

@@ -6,7 +6,8 @@
 //! real cron cycle and the real queue drain and then look at the `item` table.
 //!
 //! A step is a JSON object: `{ "nonce", "op", "type", "title", "id" }`, where
-//! `op` is `create`, `update` or `delete`. `tap_cron` takes its step from the
+//! `op` is `create`, `update`, `get` or `delete` (a
+//! `get` of no item answers an empty title). `tap_cron` takes its step from the
 //! `step` variable and clears it, so a later cycle does nothing; the queue
 //! worker takes its step as the job payload. Each reports what the host said to
 //! the `cron_result` or `queue_result` variable, tagged with the step's nonce:
@@ -34,6 +35,11 @@ fn perform(step: &Value) -> Value {
         "update" => match host::save_item(&json!({ "id": text("id"), "title": text("title") })) {
             Ok(Some(item)) => answer(0, &item.id.to_string(), &item.title),
             Ok(None) => answer(0, "", ""),
+            Err(code) => answer(code, text("id"), ""),
+        },
+        "get" => match host::get_item(text("id")) {
+            Ok(Some(item)) => answer(0, &item.id.to_string(), &item.title),
+            Ok(None) => answer(0, text("id"), ""),
             Err(code) => answer(code, text("id"), ""),
         },
         "delete" => match host::delete_item(text("id")) {
