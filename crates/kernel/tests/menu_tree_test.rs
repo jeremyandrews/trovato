@@ -589,3 +589,32 @@ fn a_warm_page_with_four_menus_runs_no_menu_or_alias_query() {
         );
     });
 }
+
+/// A plugin's account entry is a local route like any other, so on a page in
+/// a non-default language its address carries that language, and in the
+/// default language it is as registered.
+#[test]
+fn a_plugin_entry_keeps_the_language_of_the_page() {
+    run_test(async {
+        let app = app();
+        common::hold_until_cleanup(MENU_CACHE.lock().await);
+        let s = stamp();
+        let gather = empty_gather(app, &s).await;
+
+        let (uid, cookies) = member(app, &[]).await;
+        let entry = format!("/user/{uid}/test-menu-entries");
+
+        let html = get(app, &format!("/it/gather/{gather}"), &cookies).await;
+        assert!(
+            anchor(&html, &format!("/it{entry}")).is_some(),
+            "the entry stays in Italian:\n{html}"
+        );
+        assert!(anchor(&html, &entry).is_none(), "{html}");
+
+        let html = get(app, &format!("/gather/{gather}"), &cookies).await;
+        assert!(
+            anchor(&html, &entry).is_some(),
+            "the default language is as registered:\n{html}"
+        );
+    });
+}

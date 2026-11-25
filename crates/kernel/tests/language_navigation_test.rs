@@ -740,3 +740,80 @@ fn default_language_menu_links_are_unchanged() {
         );
     });
 }
+
+/// A link to an untranslated item with a fragment is still a link to that
+/// item: it keeps today's unprefixed address, fragment and all, rather than
+/// being taken for a page that exists in every language.
+#[test]
+fn an_untranslated_item_link_with_a_fragment_keeps_its_address() {
+    run_test(async {
+        let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
+        ensure_item_type(app).await;
+
+        let marker = Uuid::now_v7().simple().to_string();
+        let page = create_page(app, &format!("frag-{marker}"), &format!("Frag {marker}")).await;
+        let (id, alias) = (page.id, page.alias.clone());
+        common::defer_cleanup(move || async move {
+            cleanup(
+                shared_app().await,
+                &[Page {
+                    id,
+                    alias,
+                    link: None,
+                }],
+            )
+            .await;
+        });
+        let href = format!("{}#details", page.alias);
+        add_raw_menu_link(app, &href, &format!("Frag link {marker}")).await;
+
+        let (status, html) = get(app, &format!("/it{}", page.alias)).await;
+        assert_eq!(status, StatusCode::OK, "body:\n{html}");
+        let tag = anchor_with_href(&html, &href);
+        assert!(
+            tag.contains("aria-current=\"page\""),
+            "the link is still the page being read, tag was:\n{tag}"
+        );
+        assert!(
+            !html.contains(&format!("href=\"/it{href}\"")),
+            "an untranslated item must not be offered under the prefix:\n{html}"
+        );
+    });
+}
+
+/// A link that names another language is a different page. On English
+/// `/recipes`, a menu link to `/it/recipes` is not the current one; only the
+/// link to `/recipes` is.
+#[test]
+fn a_link_into_another_language_is_not_active() {
+    run_test(async {
+        let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
+        ensure_item_type(app).await;
+
+        let marker = Uuid::now_v7().simple().to_string();
+        let gather_alias = owned_gather(
+            app,
+            &format!("lang_nav_other_{marker}"),
+            &format!("other-{marker}"),
+        )
+        .await;
+        let italian = format!("/it{gather_alias}");
+        add_raw_menu_link(app, &gather_alias, &format!("Here {marker}")).await;
+        add_raw_menu_link(app, &italian, &format!("In Italian {marker}")).await;
+
+        let (status, html) = get(app, &gather_alias).await;
+        assert_eq!(status, StatusCode::OK, "body:\n{html}");
+        let here = anchor_with_href(&html, &gather_alias);
+        assert!(
+            here.contains("aria-current=\"page\""),
+            "the page's own link is active, tag was:\n{here}"
+        );
+        let other = anchor_with_href(&html, &italian);
+        assert!(
+            !other.contains("aria-current"),
+            "a link into Italian is not the English page, tag was:\n{other}"
+        );
+    });
+}

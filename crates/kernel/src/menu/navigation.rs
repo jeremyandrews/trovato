@@ -230,12 +230,19 @@ async fn localize_menu_links(
 
     // What each link points at. A path is either an item source path already or
     // an alias standing in for one; anything else is not content and cannot be
-    // translated.
+    // translated. The query and fragment are not part of the page: `/why#faq`
+    // is the item at `/why`, and must be judged by that item's translations, not
+    // taken for a page that exists in every language.
     let targets: Vec<Option<Uuid>> = links
         .iter()
         .map(|link| {
-            item_id_from_source(&link.path)
-                .or_else(|| sources.get(&link.path).and_then(|s| item_id_from_source(s)))
+            let page = strip_query(&link.path);
+            item_id_from_source(page).or_else(|| {
+                sources
+                    .get(&link.path)
+                    .or_else(|| sources.get(page))
+                    .and_then(|s| item_id_from_source(s))
+            })
         })
         .collect();
 
@@ -390,23 +397,33 @@ impl Requested for str {
     }
 }
 
-/// The page being rendered, with the languages its address may carry.
+/// The page being rendered, in the language it is rendered in.
 ///
 /// A link and the address asked for are compared without their language
 /// prefix, the form the router serves both in. Otherwise a link either side of
 /// the prefix never matches: `/plain` (an untranslated item, left unprefixed)
 /// on `/it/plain`, or `/it/recipes` on `/recipes` read in Italian by session.
+/// A link that names another language explicitly is a different page, and is
+/// never active: `/it/recipes` is not the current page on English `/recipes`.
 struct RequestedPage<'a> {
     /// The address asked for, without its language prefix.
     path: String,
+    /// The language the page is rendered in.
+    language: &'a str,
     known_languages: &'a [String],
     default_language: &'a str,
 }
 
 impl<'a> RequestedPage<'a> {
-    fn new(requested: &str, known_languages: &'a [String], default_language: &'a str) -> Self {
+    fn new(
+        requested: &str,
+        language: &'a str,
+        known_languages: &'a [String],
+        default_language: &'a str,
+    ) -> Self {
         Self {
             path: without_language(requested, known_languages, default_language),
+            language,
             known_languages,
             default_language,
         }
@@ -415,12 +432,12 @@ impl<'a> RequestedPage<'a> {
 
 impl Requested for RequestedPage<'_> {
     fn is_active(&self, link_path: &str) -> bool {
-        let link_path = without_language(
+        let (link_path, link_language) = crate::middleware::path_alias::strip_language_prefix(
             strip_query(link_path),
             self.known_languages,
             self.default_language,
         );
-        is_active(&link_path, &self.path)
+        link_language.is_none_or(|l| l == self.language) && is_active(&link_path, &self.path)
     }
 }
 
@@ -513,6 +530,11 @@ fn config_trees(
 ///
 /// An entry's own children hang under it, so `/user`'s list carries the
 /// entries under each of its entries too.
+///
+/// A plugin route is served under every language's prefix like any other local
+/// path, so on a page in a non-default language each entry's address carries
+/// that language ([`path_in_language`]). The registered path stays the key, so
+/// `menus_by_parent` is looked up the same way in every language.
 fn plugin_trees(
     state: &AppState,
     viewer: &UserContext,
@@ -520,11 +542,23 @@ fn plugin_trees(
 ) -> (Vec<MenuTreeLink>, BTreeMap<String, Vec<MenuTreeLink>>) {
     let registry = state.menu_registry();
     let parents: Vec<String> = registry.parent_paths().map(str::to_string).collect();
+    let in_language = |path: String| -> String {
+        if requested.language == requested.default_language {
+            return path;
+        }
+        path_in_language(
+            &path,
+            requested.language,
+            requested.known_languages,
+            requested.default_language,
+        )
+        .unwrap_or(path)
+    };
     let node = |parent: Option<&str>, (registered, entry): (String, MenuDefinition)| TreeNode {
         key: registered,
         parent: parent.map(str::to_string),
         title: entry.title,
-        path: entry.path,
+        path: in_language(entry.path),
     };
     let mut nodes: Vec<TreeNode> = registry
         .root_entries_for(viewer)
@@ -593,8 +627,12 @@ pub async fn site_menus(
             .cloned()
             .collect()
     };
-    let requested =
-        RequestedPage::new(requested, state.known_languages(), state.default_language());
+    let requested = RequestedPage::new(
+        requested,
+        language,
+        state.known_languages(),
+        state.default_language(),
+    );
     let (menus_tree, menus_by_parent) = plugin_trees(state, viewer, &requested);
     SiteMenus {
         main_menu: menu("main"),
@@ -700,22 +738,38 @@ mod tests {
     #[test]
     fn active_compares_link_and_page_without_their_language() {
         let languages = languages();
-        let here = RequestedPage::new("/es/recipes", &languages, "en");
+        let here = RequestedPage::new("/es/recipes", "es", &languages, "en");
         assert!(here.is_active("/es/recipes"));
         assert!(here.is_active("/recipes"));
         assert!(!here.is_active("/es/about"));
 
-        let under = RequestedPage::new("/es/recipes/paella", &languages, "en");
+        let under = RequestedPage::new("/es/recipes/paella", "es", &languages, "en");
         assert!(under.is_active("/es/recipes"));
 
-        let home = RequestedPage::new("/es", &languages, "en");
+        let home = RequestedPage::new("/es", "es", &languages, "en");
         assert!(home.is_active("/es"));
         assert!(!home.is_active("/es/recipes"));
-        assert!(RequestedPage::new("/es/", &languages, "en").is_active("/es"));
+        assert!(RequestedPage::new("/es/", "es", &languages, "en").is_active("/es"));
 
-        let english = RequestedPage::new("/recipes", &languages, "en");
+        let english = RequestedPage::new("/recipes", "en", &languages, "en");
         assert!(english.is_active("/recipes"));
         assert!(!english.is_active("/about"));
-        assert!(!RequestedPage::new("/", &languages, "en").is_active("/recipes"));
+        assert!(!RequestedPage::new("/", "en", &languages, "en").is_active("/recipes"));
+    }
+
+    #[test]
+    fn a_link_into_another_language_is_never_the_current_page() {
+        let languages = vec!["en".to_string(), "es".to_string(), "fr".to_string()];
+        let english = RequestedPage::new("/recipes", "en", &languages, "en");
+        assert!(english.is_active("/recipes"));
+        assert!(!english.is_active("/es/recipes"));
+
+        let spanish = RequestedPage::new("/es/recipes", "es", &languages, "en");
+        assert!(spanish.is_active("/es/recipes"));
+        assert!(!spanish.is_active("/fr/recipes"));
+
+        // Read in Spanish by session, without a prefix in the address.
+        let by_session = RequestedPage::new("/recipes", "es", &languages, "en");
+        assert!(by_session.is_active("/es/recipes"));
     }
 }
