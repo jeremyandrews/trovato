@@ -610,6 +610,39 @@ pub async fn require_csrf_header_or_field(
     )))
 }
 
+/// Verify a CSRF token from the `X-CSRF-Token` header, or from a `_token`
+/// value already pulled out of a multipart field.
+///
+/// A multipart body cannot be re-scanned the way [`require_csrf_header_or_field`]
+/// scans a url-encoded one: by the time a caller knows whether there is a
+/// `_token` field, the part carrying it has already been read off the stream.
+/// So this takes the resolved value rather than the body. `None` covers both
+/// "no such field" and "the field appeared more than once" — a repeated
+/// `_token` is refused rather than resolved, the same ambiguity
+/// `single_form_field` refuses for the url-encoded body.
+pub async fn require_csrf_header_or_resolved_field(
+    session: &Session,
+    headers: &axum::http::HeaderMap,
+    token: Option<&str>,
+) -> Result<(), crate::error::AppError> {
+    if require_csrf_header(session, headers).await.is_ok() {
+        return Ok(());
+    }
+
+    if let Some(token) = token
+        && crate::form::csrf::verify_csrf_token(session, token)
+            .await
+            .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    Err(crate::error::AppError::forbidden(format!(
+        "Invalid or missing CSRF token. Include an X-CSRF-Token header, \
+         or a {CSRF_FORM_FIELD} field in the multipart body."
+    )))
+}
+
 /// Whether the request body is a URL-encoded form.
 ///
 /// Matches on the media type alone, so a `charset` parameter does not change the
