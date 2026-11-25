@@ -240,13 +240,19 @@ async fn first_sight(state: &AppState, token: &str) -> anyhow::Result<bool> {
 
 /// Forget `token`, so the provider's retry of an event that failed is taken.
 async fn forget(state: &AppState, token: &str) {
-    let Ok(mut conn) = state.redis().get_multiplexed_async_connection().await else {
-        return;
-    };
-    let _: Result<(), _> = redis::cmd("DEL")
-        .arg(replay_key(token))
-        .query_async(&mut conn)
-        .await;
+    let forgotten: anyhow::Result<()> = async {
+        let mut conn = state.redis().get_multiplexed_async_connection().await?;
+        redis::cmd("DEL")
+            .arg(replay_key(token))
+            .query_async::<()>(&mut conn)
+            .await?;
+        Ok(())
+    }
+    .await;
+    if let Err(e) = forgotten {
+        // The retry will be taken for a replay and acknowledged unrecorded.
+        tracing::error!(error = %e, "mail webhook: could not release a token after a failure; the retry of this event will be ignored");
+    }
 }
 
 #[cfg(test)]

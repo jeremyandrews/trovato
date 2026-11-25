@@ -4,10 +4,10 @@
 {% block content %}
 {% if owner %}
 {{ list::header(title="Blog mail") }}
-<p>The mail this blog sent and is sending, kept for 90 days.</p>
+<p>The mail this blog sent and is sending, kept for {{ retention_days }} days.</p>
 {% else %}
 {{ list::header(title="Mail log") }}
-<p>Every message the network sent and is sending, kept for 90 days. <a href="/admin/reports/mail/suppressions">Suppressed addresses</a></p>
+<p>Every message the network sent and is sending, kept for {{ retention_days }} days. <a href="/admin/reports/mail/suppressions">Suppressed addresses</a></p>
 {% endif %}
 
 {% if flash %}

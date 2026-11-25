@@ -184,6 +184,12 @@ async fn render_list(
 
     let mut context = tera::Context::new();
     context.insert("owner", &owner);
+    context.insert(
+        "retention_days",
+        &state
+            .email()
+            .map_or(90, |email| email.config().log_retention_days),
+    );
     context.insert("rows", &rows);
     context.insert(
         "counts",

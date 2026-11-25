@@ -435,10 +435,11 @@ theme's indigo `--primary`, used for links and the active sidebar item, is
 4.46:1 on white, so the admin layout uses the next darker step (`#4f46e5`,
 6.3:1); and a link inside a paragraph is underlined.
 
-**Tests.** `tests/mail_admin_test.rs` (11): a hard bounce fails the message and
+**Tests.** `tests/mail_admin_test.rs` (12): a hard bounce fails the message and
 suppresses later mail, including account mail, whatever the case of the reported address; a complaint stops bulk mail
 only and a later hard bounce upgrades it; forged, tampered, stale and
-replayed requests change nothing; temporary failures and other events are
+replayed requests change nothing; a recording that fails answers 503 and the
+retry of the same request is then recorded; temporary failures and other events are
 ignored and a bounce naming another recipient's message leaves it alone; no
 key means 404; every network page and action refuses the anonymous, a member
 and a blog owner; list filters, status counts, the detail page and the

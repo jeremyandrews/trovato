@@ -769,13 +769,16 @@ fn retry_and_cancel_need_a_token_and_the_right_state() {
         .execute(&app.db)
         .await
         .unwrap();
-        post_form(
-            app,
-            &retry,
-            &cookies,
-            &format!("_token={}", token(app, tokens, &cookies).await),
-        )
-        .await;
+        assert_eq!(
+            post_form(
+                app,
+                &retry,
+                &cookies,
+                &format!("_token={}", token(app, tokens, &cookies).await),
+            )
+            .await,
+            StatusCode::SEE_OTHER
+        );
         assert_eq!(row(&app.db, id).await.0, "failed");
         let (_, html) = get(app, &format!("/admin/reports/mail/{id}"), &cookies).await;
         assert!(html.contains("Cleared by retention"));
@@ -1021,5 +1024,51 @@ fn a_blog_owner_sees_their_own_blog_only() {
         )
         .await;
         assert!(html.contains("Theirs") && !html.contains("Ours"));
+    });
+}
+
+/// A recording that fails answers 503 and forgets the token, so the
+/// provider's retry of the same signed request is recorded, not acknowledged
+/// as a replay and dropped.
+#[test]
+fn a_failed_recording_lets_the_retry_through() {
+    run_test(async {
+        let app = app();
+        let to = address("retried");
+        clean_up(&app.db, &to);
+        let id = sent_to(app, &to).await;
+
+        // Same key, same Redis, its own pool: closed, so recording fails.
+        let broken = TestApp::with_config(|config| {
+            config.smtp_host = Some("127.0.0.1".to_string());
+            config.smtp_port = 2525;
+            config.smtp_encryption = "none".to_string();
+            config.smtp_from_email = FROM.to_string();
+            config.mail.webhook_signing_key = Some(WebhookKey(KEY.to_string()));
+        })
+        .await;
+        broken.db.close().await;
+
+        let event = complaint(&to, id);
+        assert_eq!(
+            post_webhook(&broken, &event).await,
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(suppression(&app.db, &to).await, None);
+
+        // Mailgun's retry: the same body and token, to a healthy server.
+        assert_eq!(post_webhook(app, &event).await, StatusCode::OK);
+        assert_eq!(
+            suppression(&app.db, &to).await.as_deref(),
+            Some("complaint"),
+            "the retry after a 503 was swallowed as a replay"
+        );
+        let complained: bool =
+            sqlx::query_scalar("SELECT complained_at IS NOT NULL FROM mail_outbox WHERE id = $1")
+                .bind(id)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        assert!(complained);
     });
 }
