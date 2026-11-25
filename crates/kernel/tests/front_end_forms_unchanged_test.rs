@@ -158,5 +158,8 @@ fn on_an_admin_page_the_file_widget_label_names_the_file_chooser() {
         .unwrap();
     let html = trovato_kernel::i18n::scope("en", || render(&templates, template, &context));
     assert!(html.contains(r#"<label for="document-file""#), "{html}");
-    assert!(html.contains(r#"<input type="file" id="document-file""#), "{html}");
+    assert!(
+        html.contains(r#"<input type="file" id="document-file""#),
+        "{html}"
+    );
 }

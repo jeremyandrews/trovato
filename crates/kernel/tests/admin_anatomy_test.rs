@@ -65,6 +65,17 @@ async fn admin(app: &TestApp, prefix: &str) -> String {
     .await
 }
 
+/// Delete the users this test made (every name starting `{prefix}-`): a test
+/// run leaves nothing behind. Their roles go with the role tracker, their
+/// preferences and role assignments with the account.
+async fn forget(app: &TestApp, prefix: &str) {
+    sqlx::query("DELETE FROM users WHERE name LIKE $1")
+        .bind(format!("{prefix}-%"))
+        .execute(&app.db)
+        .await
+        .expect("delete this test's users");
+}
+
 /// The CSRF token a page's form carries.
 fn form_token(html: &str) -> String {
     let at = html.find("name=\"_token\" value=\"").expect("a form token") + 21;
@@ -170,6 +181,7 @@ fn assert_anatomy(path: &str, html: &str) {
 fn every_kind_of_admin_page_has_the_shell_anatomy() {
     run_test(async {
         let app = shared_app().await;
+        common::ensure_plugin_tables(app, "trovato_comments");
         app.ensure_plugin_enabled("trovato_comments").await;
         let cookies = admin(app, "b199anat").await;
         for path in [
@@ -195,6 +207,7 @@ fn every_kind_of_admin_page_has_the_shell_anatomy() {
             assert_eq!(status, StatusCode::OK, "{path}");
             assert_anatomy(path, &html);
         }
+        forget(app, "b199anat").await;
     });
 }
 
@@ -217,6 +230,7 @@ fn the_title_and_breadcrumb_name_the_page_then_its_group() {
         let title = between(&html, "<title>", "</title>");
         assert!(title.starts_with("People, "), "{title}");
         assert!(!title.starts_with("People, People"), "{title}");
+        forget(app, "b199title").await;
     });
 }
 
@@ -249,6 +263,7 @@ fn a_landing_page_lists_only_pages_the_viewer_may_open() {
         );
         let (status, _) = get(app, &editor, "/admin/plugins").await;
         assert_ne!(status, StatusCode::OK, "the page keeps its own gate");
+        forget(app, "b199land").await;
     });
 }
 
@@ -281,6 +296,7 @@ fn admin_search_finds_pages_and_never_shows_one_the_viewer_may_not_open() {
         // The query is printed escaped.
         let (_, html) = get(app, &cookies, "/admin/search?q=%3Cscript%3Ex").await;
         assert!(!html.contains("<script>x"));
+        forget(app, "b199srch").await;
     });
 }
 
@@ -339,6 +355,7 @@ fn preferences_set_the_theme_and_the_admin_language_and_direction() {
         assert_ne!(status, StatusCode::SEE_OTHER);
         let (_, html) = get(app, &cookies, "/admin").await;
         assert!(html.contains("data-theme=\"dark\""));
+        forget(app, "b199pref").await;
     });
 }
 
@@ -388,6 +405,7 @@ fn the_sidebar_remembers_which_groups_are_collapsed() {
         )
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
+        forget(app, "b199nav").await;
     });
 }
 
@@ -403,5 +421,6 @@ fn the_sidebar_marks_the_current_page() {
         assert!(nav.contains("href=\"/admin/people/roles\" aria-current=\"page\""));
         assert_eq!(nav.matches("aria-current=\"page\"").count(), 1);
         assert!(nav.contains("aria-expanded=\"true\" aria-controls=\"admin-nav-people\""));
+        forget(app, "b199cur").await;
     });
 }

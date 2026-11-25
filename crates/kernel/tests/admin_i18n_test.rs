@@ -251,6 +251,17 @@ fn title_of(html: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Delete the users this test made (every name starting `{prefix}-`): a test
+/// run leaves nothing behind. Their roles go with the role tracker, their
+/// preferences and role assignments with the account.
+async fn forget(app: &TestApp, prefix: &str) {
+    sqlx::query("DELETE FROM users WHERE name LIKE $1")
+        .bind(format!("{prefix}-%"))
+        .execute(&app.db)
+        .await
+        .expect("delete this test's users");
+}
+
 #[test]
 fn every_admin_page_passes_all_its_interface_text_through_the_translation_function() {
     markers_on();
@@ -263,6 +274,9 @@ fn every_admin_page_passes_all_its_interface_text_through_the_translation_functi
             "trovato_media",
             "trovato_audit_log",
         ] {
+            // The plugin's own tables first: on a fresh database nothing has
+            // created them, and the audit log page reads `audit_log`.
+            common::ensure_plugin_tables(app, plugin);
             app.ensure_plugin_enabled(plugin).await;
         }
         app.ensure_conference_items().await;
@@ -340,5 +354,6 @@ fn every_admin_page_passes_all_its_interface_text_through_the_translation_functi
             failures.len(),
             report.join("\n")
         );
+        forget(app, "b199i18n").await;
     });
 }
