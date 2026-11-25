@@ -9,8 +9,8 @@ use tower_sessions::Session;
 
 use crate::form::csrf::generate_csrf_token;
 use crate::i18n::UiMessage;
-use crate::routes::admin_form::FieldError;
 use crate::models::{CreateCategory, CreateTag, UpdateCategory, UpdateTag};
+use crate::routes::admin_form::FieldError;
 use crate::state::AppState;
 
 use super::helpers::{
@@ -882,7 +882,10 @@ pub(crate) async fn term_edit_submit(
         Vec::new()
     };
     if parent_ids.contains(&tag_id) {
-        errors.push(FieldError::on("parent_id", "A tag cannot be its own parent."));
+        errors.push(FieldError::on(
+            "parent_id",
+            "A tag cannot be its own parent.",
+        ));
     }
     if !errors.is_empty() {
         return render_term_form(

@@ -547,7 +547,10 @@ async fn add_field(
     }
 
     if form.name.trim().is_empty() {
-        errors.push(FieldError::on("new_field_name", "Machine name is required."));
+        errors.push(FieldError::on(
+            "new_field_name",
+            "Machine name is required.",
+        ));
     } else if !is_valid_machine_name(&form.name) {
         errors.push(FieldError::on("new_field_name", MACHINE_NAME_ERROR));
     }

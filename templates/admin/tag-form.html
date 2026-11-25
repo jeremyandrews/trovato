@@ -24,7 +24,7 @@
         {{ form::select(name="parent_id", label=t(s="Parent tag"), options=parent_options, value=parent, empty=t(s="- None (root) -"), hint=t(s="Select a parent tag to create a hierarchy."), errors=errs) }}
         {% endif %}
 
-        {% if values.weight is defined and values.weight %}{% set weight = values.weight %}{% else %}{% set weight = "0" %}{% endif %}
+        {% if values.weight is defined and values.weight %}{% set weight = values.weight ~ "" %}{% else %}{% set weight = "0" %}{% endif %}
         {{ form::field(name="weight", type="number", label=t(s="Weight"), value=weight, hint=t(s="Lower weights appear first in listings."), errors=errs, width="10") }}
 
         {% if editing %}

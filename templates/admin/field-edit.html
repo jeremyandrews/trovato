@@ -32,7 +32,7 @@
 
         {{ form::checkbox(name="required", id="edit_field_required", label=t(s="Required"), checked=field.required, hint=t(s="If checked, this field must be filled in when creating or editing content."), errors=errs) }}
 
-        {{ form::field(name="cardinality", id="edit_field_cardinality", type="number", label=t(s="Number of values"), value=field.cardinality, hint=t(s="Maximum number of values. Use 1 for a single value, -1 for unlimited."), errors=errs, width="10", attrs='min="-1"') }}
+        {{ form::field(name="cardinality", id="edit_field_cardinality", type="number", label=t(s="Number of values"), value=field.cardinality ~ "", hint=t(s="Maximum number of values. Use 1 for a single value, -1 for unlimited."), errors=errs, width="10", attrs='min="-1"') }}
 
         {{ form::actions(submit_label=t(s="Save"), cancel_url="/admin/structure/types/" ~ type_name ~ "/fields") }}
     </form>

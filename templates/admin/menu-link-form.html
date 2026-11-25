@@ -19,7 +19,7 @@
         {% if values.parent_id is defined and values.parent_id %}{% set parent = values.parent_id %}{% else %}{% set parent = "" %}{% endif %}
         {{ form::select(name="parent_id", label=t(s="Parent link"), options=parents, value=parent, empty=t(s="<Top level>"), hint=t(s="The link this one nests under. A link cannot be placed below itself, so its own descendants are not offered."), errors=errs) }}
 
-        {% if values.weight is defined and values.weight %}{% set weight = values.weight %}{% else %}{% set weight = "0" %}{% endif %}
+        {% if values.weight is defined and values.weight %}{% set weight = values.weight ~ "" %}{% else %}{% set weight = "0" %}{% endif %}
         {{ form::field(name="weight", type="number", label=t(s="Weight"), value=weight, hint=t(s="Lower sorts first among siblings. Ties break on title."), errors=errs, width="10", attrs='step="1"') }}
 
         {{ form::checkbox(name="hidden", label=t(s="Hidden"), checked=values.hidden | default(value=false), hint=t(s="A hidden link stays in the menu and is not rendered. Its children are still rendered."), errors=errs) }}

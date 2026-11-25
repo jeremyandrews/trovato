@@ -39,7 +39,7 @@
         <div id="fields-gather_query" class="tile-type-fields">
             {{ form::field(name="query_id", label=t(s="Query ID"), value=values.query_id | default(value=""), hint=t(s="The ID of the gather query to list, such as {example}.", example="blog_listing"), errors=errs, width="30", attrs='spellcheck="false" autocapitalize="none"') }}
 
-            {% if values.items is defined and values.items %}{% set items = values.items %}{% else %}{% set items = "5" %}{% endif %}
+            {% if values.items is defined and values.items %}{% set items = values.items ~ "" %}{% else %}{% set items = "5" %}{% endif %}
             {{ form::field(name="items", type="number", label=t(s="Items"), value=items, hint=t(s="How many of the gather's rows the tile lists, from 1 to 50."), errors=errs, width="4", attrs='min="1" max="50" step="1"') }}
         </div>
 
@@ -54,7 +54,7 @@
         {% if values.audience is defined and values.audience %}{% set audience = values.audience %}{% else %}{% set audience = "" %}{% endif %}
         {{ form::select(name="audience", label=t(s="Show to"), options=audience_options, value=audience, translate_options=true, hint=t(s="Who may see this tile, regardless of its other visibility rules."), errors=errs) }}
 
-        {% if values.weight is defined and values.weight %}{% set weight = values.weight %}{% else %}{% set weight = "0" %}{% endif %}
+        {% if values.weight is defined and values.weight %}{% set weight = values.weight ~ "" %}{% else %}{% set weight = "0" %}{% endif %}
         {{ form::field(name="weight", type="number", label=t(s="Weight"), value=weight, errors=errs, width="10") }}
 
         {% set active = not editing or (values.status is defined and values.status) %}
