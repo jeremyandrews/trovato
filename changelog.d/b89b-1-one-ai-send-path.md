@@ -29,7 +29,9 @@ call.
 
 There was a request builder and response parser for each path, five pairs in
 all, and they had drifted: the search and assist parsers read only the first
-Anthropic text block and threw the token counts away. One builder and one parser
+Anthropic text block and threw the token counts away, so the writing assistant
+recorded every call with no prompt tokens and its whole total as completion
+tokens. It now records what the provider reported. One builder and one parser
 remain, in `services/ai_tools.rs`, along with the stream parsers in
 `services/ai_chat.rs`; the unused `stream_ai_response` in the search routes is
 deleted. A plugin's request and response shapes are unchanged. A plugin that
