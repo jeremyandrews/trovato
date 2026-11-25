@@ -1,66 +1,66 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/list.html" as list %}
 
+{% block page_title %}{{ t(s="Menu: {name}", name=menu_name) }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="The links in this menu, in the order they render: depth first, by weight then title.") }}</p>{% endblock page_intro %}
+{% block page_actions %}
+{{ list::add_link(url="/admin/structure/menus/" ~ menu_name ~ "/add", label=t(s="Add link")) }}
+<a href="/admin/structure/menus" class="button button--secondary">{{ t(s="All menus") }}</a>
+{% endblock page_actions %}
+
 {% block content %}
-{{ list::header(title="Menu: " ~ menu_name, add_url="/admin/structure/menus/" ~ menu_name ~ "/add", add_label="Add link") }}
+{% if rows %}
+<p>{{ t(s="Change a link's weight to reorder it among its siblings. Deleting a link with children promotes those children to its own parent; it does not delete them.") }}</p>
 
-<div class="admin-card">
-    <p><a href="/admin/structure/menus">All menus</a></p>
-
-    {% if rows %}
-    <p>Links are shown in the order they render: depth first, by weight then title.
-    Change a link's weight to reorder it among its siblings. Deleting a link with
-    children <strong>promotes those children to its own parent</strong>; it does not
-    delete them.</p>
-
+<div class="table-scroll" role="region" aria-labelledby="menu-links-caption" tabindex="0">
     <table class="table">
+        <caption id="menu-links-caption">{{ t(s="Links in the {name} menu", name=menu_name) }}</caption>
         <thead>
             <tr>
-                <th>Title</th>
-                <th>Path</th>
-                <th>Weight</th>
-                <th>Visibility</th>
-                <th>Owner</th>
-                <th>Operations</th>
+                <th scope="col">{{ t(s="Title") }}</th>
+                <th scope="col">{{ t(s="Path") }}</th>
+                <th scope="col">{{ t(s="Weight") }}</th>
+                <th scope="col">{{ t(s="Visibility") }}</th>
+                <th scope="col">{{ t(s="Owner") }}</th>
+                <th scope="col">{{ t(s="Operations") }}</th>
             </tr>
         </thead>
         <tbody>
             {% for row in rows %}
             <tr>
-                <td>
+                <th scope="row">
                     {%- for i in range(end=row.depth) %}<span class="menu-tree__indent" aria-hidden="true">&nbsp;&nbsp;&nbsp;&nbsp;</span>{% endfor -%}
                     {%- if row.depth > 0 %}<span aria-hidden="true">&#8735;</span> {% endif -%}
                     {{ row.title }}
-                </td>
+                </th>
                 <td><code>{{ row.path }}</code></td>
                 <td>{{ row.weight }}</td>
-                <td>{% if row.hidden %}Hidden{% else %}Shown{% endif %}</td>
+                <td>{% if row.hidden %}{{ t(s="Hidden") }}{% else %}{{ t(s="Shown") }}{% endif %}</td>
                 <td>
                     {%- if row.editable -%}
-                    core
+                    {{ t(s="core") }}
                     {%- else -%}
-                    <code>{{ row.plugin }}</code> (read-only)
+                    {{ t(s="{plugin} (read-only)", plugin=row.plugin) }}
                     {%- endif -%}
                 </td>
-                <td>
+                <td class="operations">
                     {% if row.editable %}
-                    <a href="/admin/structure/menus/{{ menu_name }}/{{ row.id }}/edit">Edit</a>
-                    &middot;
+                    <a href="/admin/structure/menus/{{ menu_name }}/{{ row.id }}/edit">{{ t(s="Edit {name}", name=row.title) }}</a>
                     {% if row.children > 0 %}
-                    {{ list::delete_button(action="/admin/structure/menus/" ~ menu_name ~ "/" ~ row.id ~ "/delete", confirm_text="Delete this link? Its " ~ row.children ~ " child link(s) will be promoted to its parent.", csrf_token=csrf_token) }}
+                    {{ list::delete_button(action="/admin/structure/menus/" ~ menu_name ~ "/" ~ row.id ~ "/delete", label=t(s="Delete {name}", name=row.title), confirm_text=t(s="Delete this link? Its {count} child link will be promoted to its parent.", plural="Delete this link? Its {count} child links will be promoted to its parent.", count=row.children), csrf_token=csrf_token) }}
                     {% else %}
-                    {{ list::delete_button(action="/admin/structure/menus/" ~ menu_name ~ "/" ~ row.id ~ "/delete", confirm_text="Delete this link?", csrf_token=csrf_token) }}
+                    {{ list::delete_button(action="/admin/structure/menus/" ~ menu_name ~ "/" ~ row.id ~ "/delete", label=t(s="Delete {name}", name=row.title), confirm_text=t(s="Delete this link?"), csrf_token=csrf_token) }}
                     {% endif %}
                     {% else %}
-                    Not editable here
+                    <span>{{ t(s="Not editable here") }}</span>
                     {% endif %}
                 </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
-    {% else %}
-    {{ list::empty(message="This menu has no links.", add_url="/admin/structure/menus/" ~ menu_name ~ "/add", add_label="Add the first one") }}
-    {% endif %}
 </div>
-{% endblock %}
+{% else %}
+{{ list::empty(message=t(s="This menu has no links."), add_url="/admin/structure/menus/" ~ menu_name ~ "/add", add_label=t(s="Add the first one")) }}
+{% endif %}
+{% endblock content %}

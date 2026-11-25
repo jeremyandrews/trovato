@@ -1,58 +1,58 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/list.html" as list %}
+{% import "admin/macros/tabs.html" as tabs %}
 
 {#- The translations an item has, one row per site language, each linking to
     the screen that writes it. Context: item, languages, default_language,
-    translations (pairs of language and translated title), item_id, flash. -#}
+    translations (pairs of language and translated title), item_id, flash
+    (rendered by the shell). -#}
 
-{% block title %}Translations: {{ item.title }}{% endblock %}
+{% block page_title %}{{ t(s="Translations: {title}", title=item.title) }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="Each site language can carry its own copy of this item's title and text fields. Choose a language to write or change its translation.") }}</p>{% endblock page_intro %}
+{% block local_tasks %}{% if local_tasks is defined %}{{ tabs::tab_bar(local_tasks=local_tasks) }}{% endif %}{% endblock local_tasks %}
 
 {% block content %}
-{{ list::header(title="Translations: " ~ item.title) }}
-
-{% if flash %}
-<div class="admin-card messages messages--status">{{ flash }}</div>
-{% endif %}
-
 <div class="admin-card">
     <p>
-        Source language: <strong>{{ item.language }}</strong>.
-        <a href="/admin/content/{{ item_id }}/edit">Edit the original</a>
+        {{ t(s="Source language: {language}.", language=item.language) }}
+        <a href="/admin/content/{{ item_id }}/edit">{{ t(s="Edit the original") }}</a>
     </p>
 
-    <table class="table">
-        <thead>
-            <tr>
-                <th>Language</th>
-                <th>Title</th>
-                <th>Status</th>
-                <th>Operations</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for language in languages %}
-            {% set_global translated_title = "" %}
-            {% for translation in translations %}
-                {% if translation.0 == language %}{% set_global translated_title = translation.1 %}{% endif %}
-            {% endfor %}
-            <tr>
-                <td><code>{{ language }}</code></td>
-                {% if language == item.language %}
-                <td>{{ item.title }}</td>
-                <td>Original</td>
-                <td><a href="/admin/content/{{ item_id }}/edit">Edit the original</a></td>
-                {% elif translated_title %}
-                <td>{{ translated_title }}</td>
-                <td>Translated</td>
-                <td><a href="/admin/content/{{ item_id }}/translate/{{ language }}">Edit</a></td>
-                {% else %}
-                <td></td>
-                <td>Not translated</td>
-                <td><a href="/admin/content/{{ item_id }}/translate/{{ language }}">Add</a></td>
-                {% endif %}
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+    <div class="table-scroll" role="region" aria-labelledby="translations-caption" tabindex="0">
+        <table class="table">
+            <caption id="translations-caption">{{ t(s="Translations by language") }}</caption>
+            <thead>
+                <tr>
+                    <th scope="col">{{ t(s="Language") }}</th>
+                    <th scope="col">{{ t(s="Title") }}</th>
+                    <th scope="col">{{ t(s="Status") }}</th>
+                    <th scope="col">{{ t(s="Operations") }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for language in languages %}
+                {% set_global translated_title = "" %}
+                {% for translation in translations %}
+                    {% if translation.0 == language %}{% set_global translated_title = translation.1 %}{% endif %}
+                {% endfor %}
+                <tr>
+                    <th scope="row"><code>{{ language }}</code></th>
+                    {% if language == item.language %}
+                    <td>{{ item.title }}</td>
+                    <td>{{ t(s="Original") }}</td>
+                    <td class="operations"><a href="/admin/content/{{ item_id }}/edit">{{ t(s="Edit the original") }}</a></td>
+                    {% elif translated_title %}
+                    <td>{{ translated_title }}</td>
+                    <td>{{ t(s="Translated") }}</td>
+                    <td class="operations"><a href="/admin/content/{{ item_id }}/translate/{{ language }}">{{ t(s="Edit the {language} translation", language=language) }}</a></td>
+                    {% else %}
+                    <td></td>
+                    <td>{{ t(s="Not translated") }}</td>
+                    <td class="operations"><a href="/admin/content/{{ item_id }}/translate/{{ language }}">{{ t(s="Add the {language} translation", language=language) }}</a></td>
+                    {% endif %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
 </div>
-{% endblock %}
+{% endblock content %}

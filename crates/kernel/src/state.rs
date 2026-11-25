@@ -1640,13 +1640,13 @@ impl AppState {
         &self.inner.plugin_permissions
     }
 
-    /// The admin sidebar links and dashboard cards plugins declared through
-    /// `tap_admin_nav`.
+    /// The admin pages plugins declared through `tap_admin_nav`.
     ///
-    /// Read by [`crate::routes::admin_nav::sidebar`] and
-    /// [`crate::routes::admin_nav::dashboard`], merged with the kernel's own
-    /// [`crate::routes::admin_nav::LINKS`] and [`crate::routes::admin_nav::CARDS`]
-    /// under the same permission and plugin-enablement filter.
+    /// Read by [`crate::routes::admin_nav::sidebar`],
+    /// [`crate::routes::admin_nav::dashboard`] and the other readers of the
+    /// admin registry, merged with the kernel's own
+    /// [`crate::routes::admin_nav::LINKS`] under the same permission and
+    /// plugin-enablement filter.
     pub fn plugin_admin_nav(&self) -> &Arc<crate::plugin::admin_nav_registry::AdminNavRegistry> {
         &self.inner.plugin_admin_nav
     }

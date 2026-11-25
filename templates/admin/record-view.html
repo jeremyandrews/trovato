@@ -1,26 +1,27 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/list.html" as list %}
+
+{% block page_title %}{% if title %}{{ title }}{% else %}{{ t(s="Record") }}{% endif %}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="Every column of this {type} record, declared by the {plugin} plugin. It is read-only here.", type=record_type, plugin=plugin) }}</p>{% endblock page_intro %}
+{% block page_actions %}<a href="/admin/structure/records/{{ record_type }}" class="button button--secondary">{{ t(s="All {type} records", type=record_type) }}</a>{% endblock page_actions %}
 
 {% block content %}
-{{ list::header(title=title | default(value="Record")) }}
-
-<div class="admin-card">
-    <p><a href="/admin/structure/records/{{ record_type }}">&larr; All {{ record_type }} records</a> &middot; plugin <code>{{ plugin }}</code></p>
+<div class="table-scroll" role="region" aria-labelledby="record-caption" tabindex="0">
     <table class="table">
+        <caption id="record-caption">{{ t(s="Columns and values") }}</caption>
         <thead>
             <tr>
-                <th>Column</th>
-                <th>Value</th>
+                <th scope="col">{{ t(s="Column") }}</th>
+                <th scope="col">{{ t(s="Value") }}</th>
             </tr>
         </thead>
         <tbody>
             {% for pair in fields %}
             <tr>
-                <td><code>{{ pair.column }}</code></td>
+                <th scope="row"><code>{{ pair.column }}</code></th>
                 <td>{{ pair.value }}</td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
 </div>
-{% endblock %}
+{% endblock content %}

@@ -1,49 +1,40 @@
 {% extends "page--admin.html" %}
-
 {% import "admin/macros/diff.html" as diff %}
 
-{% block content %}
-<div class="admin-header">
-    <h2>Compare revisions: {{ item_title }}</h2>
-    <a href="/item/{{ item_id }}/revisions" class="button">Back to history</a>
-</div>
+{% block page_title %}{{ t(s="Compare revisions: {title}", title=item_title) }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="What changed between two saved versions of this item, field by field.") }}</p>{% endblock page_intro %}
+{% block page_actions %}<a href="/item/{{ item_id }}/revisions" class="button">{{ t(s="Back to history") }}</a>{% endblock page_actions %}
 
+{% block content %}
 <div class="admin-card">
     <p>
-        From <a href="/item/{{ item_id }}/revisions/{{ from.id }}">{{ from.date }}</a> by {{ from.author }}
-        {% if from.is_current %}<span class="badge badge--success">current</span>{% endif %}
-        to <a href="/item/{{ item_id }}/revisions/{{ to.id }}">{{ to.date }}</a> by {{ to.author }}
-        {% if to.is_current %}<span class="badge badge--success">current</span>{% endif %}
+        {{ t(s="From the revision of {date} by {author}.", date=from.date, author=from.author) }}
+        {% if from.is_current %}<span class="badge badge--success">{{ t(s="current") }}</span>{% endif %}
+        <a href="/item/{{ item_id }}/revisions/{{ from.id }}">{{ t(s="View the revision of {date}", date=from.date) }}</a>
     </p>
-    <p class="diff-legend"><del class="diff-removed">removed</del> <ins class="diff-added">added</ins></p>
+    <p>
+        {{ t(s="To the revision of {date} by {author}.", date=to.date, author=to.author) }}
+        {% if to.is_current %}<span class="badge badge--success">{{ t(s="current") }}</span>{% endif %}
+        <a href="/item/{{ item_id }}/revisions/{{ to.id }}">{{ t(s="View the revision of {date}", date=to.date) }}</a>
+    </p>
+    <p class="diff-legend"><del class="diff-removed">{{ t(s="removed") }}</del> <ins class="diff-added">{{ t(s="added") }}</ins></p>
 </div>
 
 <div class="admin-card">
     <dl class="diff">
-        <dt>Title {% if not comparison.title %}<span class="diff-kind">unchanged</span>{% endif %}</dt>
+        <dt>{{ t(s="Title") }} {% if not comparison.title %}<span class="diff-kind">{{ t(s="unchanged") }}</span>{% endif %}</dt>
         <dd class="diff-text">{% if comparison.title %}{{ diff::segments(list=comparison.title) }}{% else %}{{ to.title }}{% endif %}</dd>
 
         {% for field in comparison.fields %}
-        <dt>{{ field.label }} <span class="diff-kind diff-kind--{{ field.kind }}">{{ field.kind }}</span></dt>
+        <dt>{{ field.label }} <span class="diff-kind diff-kind--{{ field.kind }}">{{ t(s=field.kind) }}</span></dt>
         <dd class="diff-text">{{ diff::segments(list=field.segments) }}</dd>
         {% endfor %}
     </dl>
     {% if comparison.unchanged > 0 %}
-    <p class="diff-unchanged">{{ comparison.unchanged }} unchanged field{{ comparison.unchanged | pluralize }} not shown.</p>
+    <p class="diff-unchanged">{{ t(s="{count} unchanged field not shown.", plural="{count} unchanged fields not shown.", count=comparison.unchanged) }}</p>
     {% endif %}
     {% if not comparison.fields %}
-    <p>No field differs between these revisions.</p>
+    <p>{{ t(s="No field differs between these revisions.") }}</p>
     {% endif %}
 </div>
-<style>
-    .diff dt { font-weight: 600; margin-top: 1rem; }
-    .diff dd { margin: 0.25rem 0 0 0; }
-    .diff-text { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono, monospace); font-size: 0.875rem; background: var(--gray-50, #f9fafb); padding: 0.5rem; border-radius: 4px; }
-    .diff-added { background: #d1fae5; color: #065f46; text-decoration: none; }
-    .diff-removed { background: #fee2e2; color: #991b1b; }
-    .diff-kind { font-weight: 400; font-size: 0.75rem; text-transform: uppercase; margin-left: 0.5rem; color: var(--gray-600, #4b5563); }
-    .diff-kind--added { color: #065f46; }
-    .diff-kind--removed { color: #991b1b; }
-    .diff-unchanged { color: var(--gray-600, #4b5563); }
-</style>
-{% endblock %}
+{% endblock content %}

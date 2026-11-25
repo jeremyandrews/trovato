@@ -125,9 +125,10 @@ async fn site_config_form(State(state): State<AppState>, session: Session) -> Re
     let csrf_token = generate_csrf_token(&session).await;
 
     // Read and clear flash message
-    let flash: Option<String> = session.get(FLASH_KEY).await.ok().flatten();
+    // A plain sentence, or an i18n::UiMessage for a failure.
+    let flash: Option<serde_json::Value> = session.get(FLASH_KEY).await.ok().flatten();
     if flash.is_some()
-        && let Err(e) = session.remove::<String>(FLASH_KEY).await
+        && let Err(e) = session.remove::<serde_json::Value>(FLASH_KEY).await
     {
         tracing::warn!(error = %e, "failed to clear site config flash message");
     }
@@ -388,7 +389,10 @@ async fn test_email(
         let _ = session
             .insert(
                 FLASH_KEY,
-                "Cannot send test email: site email is not configured.",
+                crate::i18n::UiMessage::new(
+                    "Cannot send test email: site email is not configured.",
+                )
+                .error(),
             )
             .await;
         return Redirect::to("/admin/config/site").into_response();
@@ -417,7 +421,12 @@ async fn test_email(
             Err(e) => {
                 tracing::error!(error = %e, "test email could not be queued");
                 let _ = session
-                    .insert(FLASH_KEY, &format!("Failed to queue the test email: {e}"))
+                    .insert(
+                        FLASH_KEY,
+                        crate::i18n::UiMessage::new("Failed to queue the test email: {error}")
+                            .arg("error", e.to_string())
+                            .error(),
+                    )
                     .await;
             }
         }
@@ -425,8 +434,11 @@ async fn test_email(
         let _ = session
             .insert(
                 FLASH_KEY,
-                "Email service is not configured. Set the SMTP_HOST environment \
-                 variable and restart the server.",
+                crate::i18n::UiMessage::new(
+                    "Email service is not configured. Set the SMTP_HOST environment \
+                     variable and restart the server.",
+                )
+                .error(),
             )
             .await;
     }

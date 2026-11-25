@@ -8,7 +8,7 @@
         <div class="compound-field__sections"></div>
         <input type="hidden" name="{{ name }}" class="compound-field__value" value="{{ element.default_value | default(value='') }}"{% if element.disabled %} disabled{% endif %}>
         <div class="compound-field__actions">
-            <button type="button" class="button compound-field__add">Add section</button>
+            <button type="button" class="button compound-field__add">{{ t(s="Add section") }}</button>
         </div>
     </div>
     {% if field_error %}<div id="error-{{ name }}" class="form-item__error" role="alert">{{ field_error }}</div>{% endif %}

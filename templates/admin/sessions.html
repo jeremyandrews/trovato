@@ -1,0 +1,50 @@
+{% extends "page--admin.html" %}
+{#- One account's active sessions, for an administrator. Each Sign out is an
+    ordinary form, so it works with JavaScript off (routes::sessions accepts
+    the form beside the JSON a script sends). Context: user, sessions,
+    csrf_token, flash. -#}
+
+{% block page_title %}{{ t(s="Active sessions for {name}", name=user.name) }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="Every device currently signed in to this account. Signing one out ends its session on its next request.") }}</p>{% endblock page_intro %}
+
+{% block content %}
+{% if sessions %}
+<div class="table-scroll" role="region" aria-labelledby="sessions-caption" tabindex="0">
+    <table class="table">
+        <caption id="sessions-caption">{{ t(s="Signed-in devices") }}</caption>
+        <thead>
+            <tr>
+                <th scope="col">{{ t(s="Device") }}</th>
+                <th scope="col">{{ t(s="IP address") }}</th>
+                <th scope="col">{{ t(s="Signed in") }}</th>
+                <th scope="col">{{ t(s="Last active") }}</th>
+                <th scope="col">{{ t(s="Actions") }}</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for s in sessions %}
+            <tr>
+                <th scope="row">
+                    <span class="session-name">{{ s.device_name }}</span>
+                    <br><small class="text-muted">{{ s.user_agent | truncate(length=90) }}</small>
+                </th>
+                <td>{{ s.ip }}</td>
+                <td>{{ s.created_at }}</td>
+                <td>{{ s.last_seen }}</td>
+                <td class="operations">
+                    <form method="post" action="/admin/users/{{ user.id }}/sessions/{{ s.device_id }}/revoke" class="inline-form">
+                        <input type="hidden" name="_token" value="{{ csrf_token }}">
+                        <button type="submit" class="link-button link-button--danger">{{ t(s="Sign out {device}", device=s.device_name) }}</button>
+                    </form>
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% else %}
+<div class="empty-state"><p>{{ t(s="No active sessions are recorded for this account.") }}</p></div>
+{% endif %}
+
+<p><a href="/admin/people">{{ t(s="Back to users") }}</a></p>
+{% endblock content %}

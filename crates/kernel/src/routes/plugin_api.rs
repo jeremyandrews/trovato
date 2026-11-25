@@ -753,9 +753,11 @@ async fn themed_response(
     // `ThemeEngine::is_admin_path`, the same one `render_page` below uses to
     // pick `page--admin.html` as a suggestion and the themed error page uses
     // to decide the same thing.
-    if crate::theme::ThemeEngine::is_admin_path(path) {
-        crate::routes::admin_nav::insert_context(state, &viewer, path, &mut context);
-    }
+    let shell = if crate::theme::ThemeEngine::is_admin_path(path) {
+        Some(crate::routes::admin_nav::insert_context(state, &viewer, path, &mut context).await)
+    } else {
+        None
+    };
     // The title is the page's heading as well as its `<title>`: a plugin page
     // arrived with no `<h1>` at all, because `render_page` puts the title in the
     // context and the theme's page template only used it in the document title.
@@ -766,10 +768,19 @@ async fn themed_response(
         context.insert("page_heading", &parsed.title);
     }
 
-    let html = match state
-        .theme()
-        .render_page(path, &parsed.title, &parsed.body, &mut context)
-    {
+    let mut render = || {
+        state
+            .theme()
+            .render_page(path, &parsed.title, &parsed.body, &mut context)
+    };
+    let rendered = match &shell {
+        // In the viewer's admin language, with the heading copied into the
+        // title, as every kernel admin page is (`AdminShell::render`).
+        Some(shell) => crate::i18n::scope(&shell.lang, render)
+            .map(|html| crate::routes::admin_nav::finish_page(&html)),
+        None => render(),
+    };
+    let html = match rendered {
         Ok(html) => html,
         Err(e) => {
             tracing::error!(

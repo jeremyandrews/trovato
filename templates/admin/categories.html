@@ -1,49 +1,48 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/list.html" as list %}
 
-{% block content %}
-{{ list::header(title="Categories", add_url="/admin/structure/categories/add", add_label="Add category") }}
+{% block page_title %}{{ t(s="Categories") }}{% endblock page_title %}
+{% block page_actions %}{{ list::add_link(url="/admin/structure/categories/add", label=t(s="Add category")) }}{% endblock page_actions %}
 
-<div class="admin-card">
-    {% if categories %}
+{% block content %}
+{% if categories %}
+<div class="table-scroll" role="region" aria-labelledby="categories-caption" tabindex="0">
     <table class="table">
+        <caption id="categories-caption">{{ t(s="Categories") }}</caption>
         <thead>
             <tr>
-                <th>Name</th>
-                <th>Machine name</th>
-                <th>Hierarchy</th>
-                <th>Tags</th>
-                <th>Operations</th>
+                <th scope="col">{{ t(s="Name") }}</th>
+                <th scope="col">{{ t(s="Machine name") }}</th>
+                <th scope="col">{{ t(s="Hierarchy") }}</th>
+                <th scope="col">{{ t(s="Tags") }}</th>
+                <th scope="col">{{ t(s="Operations") }}</th>
             </tr>
         </thead>
         <tbody>
             {% for cat in categories %}
             <tr>
-                <td>
+                <th scope="row">
                     <a href="/admin/structure/categories/{{ cat.id }}/tags">{{ cat.label }}</a>
-                </td>
-                <td><code>{{ cat.id }}</code>{% if cat.owner_type %}<br><small>Owned by {{ cat.owner_type }} {{ cat.owner_id }}</small>{% endif %}</td>
+                </th>
+                <td><code>{{ cat.id }}</code>{% if cat.owner_type %}<br><small>{{ t(s="Owned by {type} {id}", type=cat.owner_type, id=cat.owner_id) }}</small>{% endif %}</td>
                 <td>
-                    {% if cat.hierarchy == 0 %}Flat
-                    {% elif cat.hierarchy == 1 %}Single parent
-                    {% else %}Multiple parents
+                    {% if cat.hierarchy == 0 %}{{ t(s="Flat") }}
+                    {% elif cat.hierarchy == 1 %}{{ t(s="Single parent") }}
+                    {% else %}{{ t(s="Multiple parents") }}
                     {% endif %}
                 </td>
                 <td>{{ tag_counts[cat.id] | default(value=0) }}</td>
-                <td>
-                    <a href="/admin/structure/categories/{{ cat.id }}/tags">List tags</a>
-                    &middot;
-                    <a href="/admin/structure/categories/{{ cat.id }}/edit">Edit</a>
-                    &middot;
-                    {{ list::delete_button(action="/admin/structure/categories/" ~ cat.id ~ "/delete", confirm_text="Are you sure you want to delete this category and all its tags?", csrf_token=csrf_token) }}
+                <td class="operations">
+                    <a href="/admin/structure/categories/{{ cat.id }}/tags">{{ t(s="List tags in {name}", name=cat.label) }}</a>
+                    <a href="/admin/structure/categories/{{ cat.id }}/edit">{{ t(s="Edit {name}", name=cat.label) }}</a>
+                    {{ list::delete_button(action="/admin/structure/categories/" ~ cat.id ~ "/delete", label=t(s="Delete {name}", name=cat.label), confirm_text=t(s="Are you sure you want to delete this category and all its tags?"), csrf_token=csrf_token) }}
                 </td>
             </tr>
             {% endfor %}
         </tbody>
     </table>
-    {% else %}
-    {{ list::empty(message="No categories found.", add_url="/admin/structure/categories/add") }}
-    {% endif %}
 </div>
-
-{% endblock %}
+{% else %}
+{{ list::empty(message=t(s="No categories found."), add_url="/admin/structure/categories/add", add_label=t(s="Add category")) }}
+{% endif %}
+{% endblock content %}
