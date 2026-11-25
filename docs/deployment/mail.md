@@ -127,7 +127,7 @@ says why).
 Every request must carry Mailgun's signature: the hex HMAC-SHA256 of its
 `timestamp` and `token` under the signing key, compared in constant time. A
 timestamp more than five minutes from the server's clock is refused, so keep
-the servers on NTP. A token is remembered in Redis for ten minutes, and a
+the servers on NTP. A token is remembered in Redis for fifteen minutes, and a
 second request with it changes nothing.
 
 | Answer | Meaning | Mailgun |

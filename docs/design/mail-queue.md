@@ -374,7 +374,7 @@ with serde, so a malformed request is a 406 (Mailgun does not retry it) rather
 than an extractor's 415 or 422. The order of checks is: key configured (else
 404), payload readable (else 406), token length and signature (`Mac::verify_slice`,
 constant time; else 401), timestamp within 300 s (else 401), then the replay
-check (`SET mail_webhook:token:<token> 1 NX EX 600`). A token seen before
+check (`SET mail_webhook:token:<token> 1 NX EX 900`). A token seen before
 answers 200 and does nothing, so Mailgun stops retrying an event whose first
 answer was lost. If recording fails the token is deleted again and the answer
 is 503, so the retry is taken. Not confirmed: whether Mailgun signs a retry afresh. If a retry carries
@@ -391,7 +391,8 @@ retrying) and `espblock` (the receiving provider blocked the sender) are
 ignored, since none says the address does not exist. Retry is the one
 transition from finished back to queued, so the retention purge now repeats
 its age condition on the row it locks, not only in its id subquery: a row
-requeued while the purge waited is no longer cleared or deleted. The
+requeued while the purge waited is no longer cleared or deleted. (`mail_queue_test::retention_skips_a_row_requeued_while_it_waited`
+holds the row lock to make the race deterministic.) The
 outbox row is matched by the id in `outbox-<id>@domain` *and* the reported
 recipient, so a Message-ID from another install on the same sending domain
 cannot fail someone else's message. A hard bounce moves a `sent` or `failed`

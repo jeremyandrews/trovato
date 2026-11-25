@@ -7,7 +7,7 @@
 //! `signature.signature` must be the hex `HMAC-SHA256` of
 //! `signature.timestamp` followed by `signature.token`, keyed with
 //! `MAIL_WEBHOOK_SIGNING_KEY`, compared in constant time. The timestamp must
-//! be within five minutes of now and the token unseen for ten (Redis
+//! be within five minutes of now and the token unseen for fifteen (Redis
 //! `SET NX EX`), so a captured request cannot be replayed. With no key
 //! configured, or no mail configured at all, the route answers 404. Rate
 //! limited per client IP in the `mail_webhook` bucket.
@@ -39,7 +39,7 @@ const MAX_SKEW_SECS: i64 = 300;
 
 /// How long a token is remembered against replay, in seconds: longer than the
 /// window above, so a token cannot outlive its record.
-const REPLAY_TTL_SECS: u64 = 600;
+const REPLAY_TTL_SECS: u64 = 900;
 
 /// Longest token accepted. Mailgun's are 50 characters.
 const MAX_TOKEN_LEN: usize = 256;

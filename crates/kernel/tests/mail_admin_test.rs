@@ -361,6 +361,20 @@ fn unsigned_stale_and_replayed_events_are_refused() {
         assert_eq!(post_webhook(app, &genuine).await, StatusCode::OK);
         assert_eq!(suppression(&app.db, &to).await, None, "a replay was taken");
 
+        // The signature covers timestamp and token only, not the event: a
+        // captured signature sent again with another event is still a replay.
+        let victim = address("victim");
+        clean_up(&app.db, &victim);
+        let mut swapped = genuine.clone();
+        swapped["event-data"]["id"] = serde_json::json!(Uuid::now_v7().to_string());
+        swapped["event-data"]["recipient"] = serde_json::json!(victim);
+        assert_eq!(post_webhook(app, &swapped).await, StatusCode::OK);
+        assert_eq!(
+            suppression(&app.db, &victim).await,
+            None,
+            "a replayed signature carrying a new event was recorded"
+        );
+
         assert_eq!(
             post_webhook(app, &serde_json::json!({"not": "mailgun"})).await,
             StatusCode::NOT_ACCEPTABLE
