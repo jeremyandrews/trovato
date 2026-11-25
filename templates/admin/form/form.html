@@ -1,0 +1,23 @@
+{%- import "admin/macros/form.html" as f -%}
+{#- The form builder's admin form: validated on the server (novalidate), the
+    error summary first, then the fields drawn by admin/macros/form.html. -#}
+<form id="{{ form.form_id }}" action="{{ form.action }}" method="{{ form.method }}" class="form" novalidate{% if form.attributes %}{% for key, value in form.attributes %}{% if key != "class" and key != "novalidate" %} {{ key }}="{{ value }}"{% endif %}{% endfor %}{% endif %}>
+    <input type="hidden" name="_token" value="{{ form.token }}">
+    <input type="hidden" name="_form_build_id" value="{{ form.form_build_id }}">
+    {% if form.ajax_token %}<input type="hidden" name="_ajax_token" value="{{ form.ajax_token }}">{% endif %}
+
+    {{ f::error_summary(errors=errors) }}
+
+    {% if form.title %}
+    <h2 class="form__title">{{ t(s=form.title) }}</h2>
+    {% endif %}
+
+    {% if form.description %}
+    <p class="form__description">{{ t(s=form.description) }}</p>
+    {% endif %}
+
+    {{ elements | safe }} {# SAFE: kernel FormBuilder-generated HTML — form elements already rendered by the kernel #}
+</form>
+{% for library in libraries %}{% for href in library.css %}
+<link rel="stylesheet" href="{{ href }}">{% endfor %}{% for script in library.js %}
+<script src="{{ script.src }}"{% if script.integrity %} integrity="{{ script.integrity }}" crossorigin="anonymous"{% endif %}></script>{% endfor %}{% endfor %}

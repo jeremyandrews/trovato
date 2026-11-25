@@ -1,10 +1,27 @@
-<fieldset
-    class="fieldset{% if element.collapsible %} fieldset--collapsible{% endif %}{% if element.collapsed %} fieldset--collapsed{% endif %}"
+{% if element.collapsible %}{#- Collapsible: native details, which the keyboard and every screen reader
+    can open with no script (an onclick on the legend could not be reached
+    from the keyboard). -#}
+<details
+    class="fieldset fieldset--collapsible"{% if not element.collapsed %} open{% endif %}
+    {% if element.attributes %}{% for key, value in element.attributes %} {{ key }}="{{ value }}"{% endfor %}{% endif %}
+>
+    <summary class="fieldset__summary">{{ element.title | default(value="") }}</summary>
+
+    <div class="fieldset__content">
+        {% if element.description %}
+        <p class="form-item__description">{{ element.description }}</p>
+        {% endif %}
+
+        {{ children | safe }} {# SAFE: kernel FormBuilder-generated HTML — child elements already rendered by the kernel #}
+    </div>
+</details>
+{% else %}<fieldset
+    class="fieldset"
     {% if element.attributes %}{% for key, value in element.attributes %} {{ key }}="{{ value }}"{% endfor %}{% endif %}
 >
     {% if element.title %}
-    <legend{% if element.collapsible %} onclick="this.parentElement.classList.toggle('fieldset--collapsed')"{% endif %}>
-        {% if element.collapsible %}<span class="fieldset__toggle">&#9662;</span> {% endif %}{{ element.title }}
+    <legend>
+        {{ element.title }}
     </legend>
     {% endif %}
 
@@ -16,3 +33,4 @@
         {{ children | safe }} {# SAFE: kernel FormBuilder-generated HTML — child elements already rendered by the kernel #}
     </div>
 </fieldset>
+{% endif -%}

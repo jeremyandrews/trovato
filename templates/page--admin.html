@@ -21,7 +21,7 @@
     {% if csrf_token is defined %}<meta name="csrf-token" content="{{ csrf_token }}">{% endif %}
     {#- The heading's text replaces the marker after rendering, so the title
         always leads with what the h1 says (routes::admin_nav::finish_page). -#}
-    <title><!--trovato:admin-title-->{% if admin_place.group and admin_place.group != admin_place.title %}, {{ t(s=admin_place.group) }}{% endif %}, {{ site_name | default(value="Trovato") }}</title>
+    <title><!--trovato:admin-error--><!--trovato:admin-title-->{% if admin_place.group and admin_place.group != admin_place.title %}, {{ t(s=admin_place.group) }}{% endif %}, {{ site_name | default(value="Trovato") }}</title>
     <link rel="icon" type="image/svg+xml" href="/static/brand/trovato-favicon.svg">
     <link rel="icon" type="image/png" sizes="32x32" href="/static/brand/favicon-32.png">
     <link rel="stylesheet" href="/static/css/admin.css?v={{ asset_version() }}">
@@ -158,5 +158,6 @@
 {% block scripts %}{% endblock scripts %}
 <script src="/static/js/trovato.js"></script>
 <script src="/static/js/admin-helpers.js?v={{ asset_version() }}"></script>
+<script src="/static/js/admin-forms.js?v={{ asset_version() }}"></script>
 </body>
 </html>

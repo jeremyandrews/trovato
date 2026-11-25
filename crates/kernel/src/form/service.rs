@@ -100,6 +100,13 @@ impl FormService {
             }
         }
 
+        // An admin form renders through the admin templates, and so must the
+        // values an AJAX call adds to it later.
+        if form.action.starts_with("/admin") {
+            form_state
+                .extra
+                .insert(ADMIN_FORM.to_string(), Value::Bool(true));
+        }
         form_state.form_id = form_id;
         form_state.form_build_id = build_id.clone();
         form_state.rendered_fields = form.rendered_inputs();
@@ -327,6 +334,9 @@ impl std::fmt::Debug for FormService {
         f.debug_struct("FormService").finish()
     }
 }
+
+/// The [`FormState::extra`] key set on a form built for an `/admin` action.
+pub const ADMIN_FORM: &str = "admin_form";
 
 /// Form state stored for AJAX/multi-step forms.
 #[derive(Debug, Clone, Serialize, Deserialize)]

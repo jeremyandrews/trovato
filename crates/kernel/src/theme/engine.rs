@@ -1176,6 +1176,12 @@ impl ThemeEngine {
     /// Field-level errors (those with `field: Some(name)`) are passed to
     /// individual element templates as `field_error`, enabling `aria-describedby`
     /// and `aria-invalid` attributes for accessibility.
+    ///
+    /// A form whose action is an `/admin` address is an admin form: it renders
+    /// through `admin/form/*.html` where one exists, the templates that draw
+    /// every admin field with the same macros the hand written admin forms use
+    /// (`admin/macros/form.html`), so the two cannot differ. Any other form
+    /// renders through `form/*.html`, unchanged.
     pub fn render_form_with_errors(
         &self,
         form: &Form,
@@ -1183,8 +1189,9 @@ impl ThemeEngine {
     ) -> Result<String> {
         use std::collections::HashMap;
 
+        let admin = Self::is_admin_path(&form.action);
         let mut context = tera::Context::new();
-        context.insert("form", form);
+        context.insert("form", &Self::marked_form(form));
         context.insert("errors", errors);
         context.insert("libraries", &crate::form::assets::libraries_for(form));
 
@@ -1196,12 +1203,15 @@ impl ThemeEngine {
 
         // Render form elements with field errors
         let elements_html =
-            self.render_form_elements_with_errors(form, &field_errors, &mut context)?;
+            self.render_form_elements_with_errors(form, &field_errors, admin, &mut context)?;
         context.insert("elements", &elements_html);
 
-        let template = self
-            .resolve_template(&["form/form"])
-            .unwrap_or_else(|| "form/form.html".to_string());
+        let template = if admin {
+            self.resolve_template(&["admin/form/form", "form/form"])
+        } else {
+            self.resolve_template(&["form/form"])
+        }
+        .unwrap_or_else(|| "form/form.html".to_string());
 
         self.tera()
             .render(&template, &context)
@@ -1209,20 +1219,23 @@ impl ThemeEngine {
     }
 
     /// Render one form element outside its form, as an AJAX response
-    /// inserts it (the next value of a multi value field).
+    /// inserts it (the next value of a multi value field). `admin` is whether
+    /// the form it joins is an admin form.
     pub fn render_form_element_html(
         &self,
         name: &str,
         element: &crate::form::FormElement,
+        admin: bool,
     ) -> Result<String> {
         let empty = std::collections::HashMap::new();
-        self.render_form_element(name, element, &empty, &mut tera::Context::new())
+        self.render_form_element(name, element, &empty, admin, &mut tera::Context::new())
     }
 
     /// Render form elements to HTML.
     fn render_form_elements(&self, form: &Form, context: &mut tera::Context) -> Result<String> {
         let empty = std::collections::HashMap::new();
-        self.render_form_elements_with_errors(form, &empty, context)
+        let admin = Self::is_admin_path(&form.action);
+        self.render_form_elements_with_errors(form, &empty, admin, context)
     }
 
     /// Render form elements to HTML, passing per-field errors to each element template.
@@ -1230,6 +1243,7 @@ impl ThemeEngine {
         &self,
         form: &Form,
         field_errors: &std::collections::HashMap<&str, &str>,
+        admin: bool,
         context: &mut tera::Context,
     ) -> Result<String> {
         use std::fmt::Write;
@@ -1240,7 +1254,8 @@ impl ThemeEngine {
         elements.sort_by_key(|(_, el)| el.weight);
 
         for (name, element) in elements {
-            let element_html = self.render_form_element(name, element, field_errors, context)?;
+            let element_html =
+                self.render_form_element(name, element, field_errors, admin, context)?;
             // Infallible: write!() to String is infallible
             #[allow(clippy::unwrap_used)]
             write!(html, "{element_html}").unwrap();
@@ -1249,12 +1264,57 @@ impl ThemeEngine {
         Ok(html)
     }
 
+    /// The form as its templates see it. In marker mode (tests only) the
+    /// interface words a form's builder wrote in Rust (title, description)
+    /// carry [`crate::i18n::MARK_BUILT`], which `t` drops: one printed
+    /// without `t` keeps it, and the untranslated-string test finds it.
+    fn marked_form(form: &Form) -> std::borrow::Cow<'_, Form> {
+        if !crate::i18n::markers_enabled() {
+            return std::borrow::Cow::Borrowed(form);
+        }
+        let mut form = form.clone();
+        let mark = crate::i18n::mark_built;
+        form.title = form.title.as_deref().map(mark);
+        form.description = form.description.as_deref().map(mark);
+        std::borrow::Cow::Owned(form)
+    }
+
+    /// The element as its template sees it: in marker mode, its title,
+    /// description, placeholder, button text and option labels carry
+    /// [`crate::i18n::MARK_BUILT`] (see [`Self::marked_form`]).
+    fn marked_element(
+        element: &crate::form::FormElement,
+    ) -> std::borrow::Cow<'_, crate::form::FormElement> {
+        use crate::form::ElementType;
+        if !crate::i18n::markers_enabled() {
+            return std::borrow::Cow::Borrowed(element);
+        }
+        let mark = crate::i18n::mark_built;
+        let mut element = element.clone();
+        element.title = element.title.as_deref().map(mark);
+        element.description = element.description.as_deref().map(mark);
+        element.placeholder = element.placeholder.as_deref().map(mark);
+        match &mut element.element_type {
+            ElementType::Submit { value } => *value = mark(value),
+            ElementType::Select { options, .. }
+            | ElementType::Checkboxes { options }
+            | ElementType::Radio { options } => {
+                for (_, label) in options.iter_mut() {
+                    *label = mark(label);
+                }
+            }
+            _ => {}
+        }
+        std::borrow::Cow::Owned(element)
+    }
+
     /// Render a single form element to HTML.
     fn render_form_element(
         &self,
         name: &str,
         element: &crate::form::FormElement,
         field_errors: &std::collections::HashMap<&str, &str>,
+        admin: bool,
         context: &mut tera::Context,
     ) -> Result<String> {
         use crate::form::ElementType;
@@ -1282,11 +1342,16 @@ impl ThemeEngine {
             ElementType::Markup { .. } => "form/markup.html",
             ElementType::Container => "form/container.html",
         };
+        // An admin form's element: its admin template when there is one.
+        let admin_template = admin
+            .then(|| format!("admin/{template_name}"))
+            .filter(|t| self.tera().get_template(t).is_ok());
+        let template_name = admin_template.as_deref().unwrap_or(template_name);
 
         // Build element context
         let mut el_context = context.clone();
         el_context.insert("name", name);
-        el_context.insert("element", element);
+        el_context.insert("element", &Self::marked_element(element));
 
         // Pass per-field error for aria-describedby and aria-invalid
         if let Some(error_msg) = field_error {
@@ -1295,7 +1360,7 @@ impl ThemeEngine {
 
         // Render children for container types
         if !element.children.is_empty() {
-            let children_html = self.render_form_children(element, field_errors, context)?;
+            let children_html = self.render_form_children(element, field_errors, admin, context)?;
             el_context.insert("children", &children_html);
         }
 
@@ -1309,6 +1374,7 @@ impl ThemeEngine {
         &self,
         element: &crate::form::FormElement,
         field_errors: &std::collections::HashMap<&str, &str>,
+        admin: bool,
         context: &mut tera::Context,
     ) -> Result<String> {
         use std::fmt::Write;
@@ -1320,7 +1386,8 @@ impl ThemeEngine {
         for (name, child) in children {
             // A field wrapped for `visible_when` is a child, and its error is
             // still its own.
-            let child_html = self.render_form_element(name, child, field_errors, context)?;
+            let child_html =
+                self.render_form_element(name, child, field_errors, admin, context)?;
             // Infallible: write!() to String is infallible
             #[allow(clippy::unwrap_used)]
             write!(html, "{child_html}").unwrap();

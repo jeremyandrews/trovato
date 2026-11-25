@@ -8,81 +8,36 @@
 
 {% block content %}
 <div class="admin-card">
-    <form id="user-form" method="post" action="{{ action }}">
+    <form id="user-form" method="post" action="{{ action }}" novalidate>
         {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
 
-        {{ form::errors(errors=errors) }}
+        {{ form::error_summary(errors=errors | default(value=[])) }}
+        {% set errs = errors | default(value=[]) %}
 
-        <div class="form-item">
-            <label for="name" class="form-item__label">{{ t(s="Username") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
-            <p class="form-item__description" id="name-hint">{{ t(s="The unique username for this account.") }}</p>
-            <input type="text" id="name" name="name" class="form-text"
-                   value="{{ values.name | default(value='') }}"
-                   aria-describedby="name-hint" required>
-        </div>
+        {{ form::field(name="name", label=t(s="Username"), value=values.name | default(value=""), hint=t(s="The unique username for this account."), required=true, errors=errs, width="20", autocomplete="username", attrs='spellcheck="false" autocapitalize="none"') }}
 
-        <div class="form-item">
-            <label for="mail" class="form-item__label">{{ t(s="Email") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
-            <p class="form-item__description" id="mail-hint">{{ t(s="A valid email address for this user.") }}</p>
-            <input type="email" id="mail" name="mail" class="form-text"
-                   value="{{ values.mail | default(value='') }}"
-                   aria-describedby="mail-hint" required>
-        </div>
+        {{ form::field(name="mail", type="email", label=t(s="Email"), value=values.mail | default(value=""), hint=t(s="A valid email address for this user."), required=true, errors=errs, width="30", autocomplete="email", attrs='spellcheck="false"') }}
 
-        <div class="form-item">
-            <label for="password" class="form-item__label">{{ t(s="Password") }}{% if not editing %} <span class="form-item__required">{{ t(s="(required)") }}</span>{% endif %}</label>
-            <p class="form-item__description" id="password-hint">{% if editing %}{{ t(s="Leave blank to keep the current password. Minimum 12 characters.") }}{% else %}{{ t(s="Minimum 12 characters.") }}{% endif %}</p>
-            <input type="password" id="password" name="password" class="form-text"
-                   aria-describedby="password-hint"
-                   {% if not editing %}required{% endif %}
-                   minlength="12">
-        </div>
+        {% if editing %}{% set password_hint = t(s="Leave blank to keep the current password. Minimum 12 characters.") %}{% else %}{% set password_hint = t(s="Minimum 12 characters.") %}{% endif %}
+        {{ form::field(name="password", type="password", label=t(s="Password"), hint=password_hint, required=not editing, errors=errs, width="20", autocomplete="new-password", attrs='minlength="12"') }}
 
-        <fieldset class="fieldset">
-            <legend>{{ t(s="Status and permissions") }}</legend>
-            <div class="fieldset__content">
-                <div class="form-item">
-                    <div class="form-checkbox-wrapper">
-                        <input type="checkbox" id="status" name="status" value="1" aria-describedby="status-hint"
-                               {% if values.status %}checked{% endif %}>
-                        <label for="status">{{ t(s="Active") }}</label>
-                    </div>
-                    <p class="form-item__description" id="status-hint">{{ t(s="Blocked users cannot log in.") }}</p>
-                </div>
-
-                <div class="form-item">
-                    <div class="form-checkbox-wrapper">
-                        <input type="checkbox" id="is_admin" name="is_admin" value="1" aria-describedby="is_admin-hint"
-                               {% if values.is_admin %}checked{% endif %}>
-                        <label for="is_admin">{{ t(s="Administrator") }}</label>
-                    </div>
-                    <p class="form-item__description" id="is_admin-hint">{{ t(s="Administrators have full access to the site. Only an administrator can grant or remove this.") }}</p>
-                </div>
-            </div>
-        </fieldset>
+        {{ form::fieldset_start(legend=t(s="Status and permissions")) }}
+            {{ form::checkbox(name="status", label=t(s="Active"), checked=values.status | default(value=false), hint=t(s="Blocked users cannot log in."), errors=errs) }}
+            {{ form::checkbox(name="is_admin", label=t(s="Administrator"), checked=values.is_admin | default(value=false), hint=t(s="Administrators have full access to the site. Only an administrator can grant or remove this."), errors=errs) }}
+        {{ form::fieldset_end() }}
 
         {#- Role membership. The checkbox key carries the role id, because
             `serde_urlencoded` cannot collect repeated same-name fields into a
             list; the server iterates its own role list and reads each key back,
             so an unknown key names nothing. -#}
         {% if roles %}
-        <fieldset class="fieldset" aria-describedby="roles-hint">
-            <legend>{{ t(s="Roles") }}</legend>
-            <div class="fieldset__content">
-                <p class="form-item__description" id="roles-hint">{{ t(s="A role grants its permissions to every user who holds it.") }} <a href="/admin/people/permissions">{{ t(s="See the permissions") }}</a></p>
-                {% set held = values.roles | default(value=[]) %}
-                {% for role in roles %}
-                <div class="form-item">
-                    <div class="form-checkbox-wrapper">
-                        <input type="checkbox" id="role_{{ role.id }}"
-                               name="role_{{ role.id }}" value="1"
-                               {% if role.id in held %}checked{% endif %}>
-                        <label for="role_{{ role.id }}">{{ role.name }}</label>
-                    </div>
-                </div>
-                {% endfor %}
-            </div>
-        </fieldset>
+        {% set held = values.roles | default(value=[]) %}
+        {{ form::fieldset_start(legend=t(s="Roles"), id="roles", hint=t(s="A role grants its permissions to every user who holds it.")) }}
+            <p><a href="/admin/people/permissions">{{ t(s="See the permissions") }}</a></p>
+            {% for role in roles %}
+            {{ form::checkbox(name="role_" ~ role.id, label=role.name, checked=role.id in held, errors=errs) }}
+            {% endfor %}
+        {{ form::fieldset_end() }}
         {% endif %}
 
         {% if editing %}
