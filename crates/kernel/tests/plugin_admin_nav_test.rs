@@ -158,9 +158,35 @@ fn a_viewer_without_the_permission_does_not_see_the_plugin_link() {
         let (_id, cookies) =
             common::user_holding(app, "b162nolink", &["access administration pages"]).await;
 
-        // The route's own check refuses the page itself.
-        let (status, _) = get(app, &cookies, DASHBOARD_PATH).await;
+        // The route's own check refuses the page itself, and the themed 403
+        // a browser gets back draws the admin sidebar for this viewer, without
+        // the link to the page it just refused.
+        let response = app
+            .request_with_cookies(
+                Request::get(DASHBOARD_PATH)
+                    .header("accept", "text/html")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        let status = response.status();
+        let refused = String::from_utf8_lossy(
+            &axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+                .await
+                .unwrap(),
+        )
+        .replace("&#x2F;", "/");
         assert_eq!(status, StatusCode::FORBIDDEN);
+        let links = sidebar_links(&refused);
+        assert!(
+            links.iter().any(|l| l == "/admin"),
+            "the 403 page carries the admin sidebar: {links:?}"
+        );
+        assert!(
+            !links.iter().any(|l| l == DASHBOARD_PATH),
+            "the 403 page's sidebar must not offer the refused link: {links:?}"
+        );
 
         // And the link is absent from a kernel admin page's sidebar too — the
         // sidebar is filtered the same way everywhere, not only on the
@@ -220,11 +246,29 @@ fn the_dashboard_card_is_gated_on_the_plugins_permission_and_kernel_cards_are_un
                 "a kernel link must still be offered: {html}"
             );
             assert!(
-                html.contains("/admin/content\""),
-                "the kernel's Content card must still be offered"
+                dashboard_card_titles(html).iter().any(|t| t == "Content"),
+                "the kernel's Content card must still be offered: {:?}",
+                dashboard_card_titles(html)
             );
         }
 
         disable_plugin(app).await;
     });
+}
+
+/// The titles of the dashboard's cards, read from the dashboard grid alone so
+/// a sidebar link with the same address cannot stand in for a missing card.
+fn dashboard_card_titles(html: &str) -> Vec<String> {
+    let start = html
+        .find(r#"<div class="dashboard-grid">"#)
+        .expect("the dashboard has its card grid");
+    html[start..]
+        .split(r#"<section class="admin-card dashboard-card">"#)
+        .skip(1)
+        .filter_map(|card| {
+            let from = card.find("<h3>")? + 4;
+            let to = card[from..].find("</h3>")? + from;
+            Some(card[from..to].trim().to_string())
+        })
+        .collect()
 }

@@ -9,16 +9,12 @@
 //!
 //! # A disabled plugin contributes nothing
 //!
-//! Only enabled plugins are loaded, so only they are dispatched here — a
-//! plugin disabled at boot never enters this registry. A plugin disabled
-//! later keeps its declaration in this registry (it costs nothing to keep,
-//! same as [`PluginPermissionRegistry`](crate::plugin::permission_registry::PluginPermissionRegistry)'s
-//! rows), but [`routes::admin_nav::sidebar`](crate::routes::admin_nav::sidebar)
-//! and [`dashboard`](crate::routes::admin_nav::dashboard) re-check
-//! `enabled_plugins` on every request, the same gate the kernel's own
-//! plugin-backed links use, so a disabled plugin's link and card stop
-//! appearing immediately — no restart needed, and none is needed to make
-//! them reappear either.
+//! Only plugins enabled when the server starts are loaded, so only they are
+//! dispatched here: a plugin disabled at boot never enters this registry,
+//! and enabling it takes effect at the next start, as its routes do. The
+//! sidebar and dashboard still check `enabled_plugins` on every request, the
+//! same gate the kernel's own plugin-backed links use, so a plugin the server
+//! itself stops running drops out with it.
 
 use std::collections::HashSet;
 
@@ -192,9 +188,7 @@ fn validate(def: &AdminNavDefinition, seen_hrefs: &HashSet<String>) -> Result<()
     if def.permission.trim().is_empty() {
         return Err("permission is empty".to_string());
     }
-    if !def.href.starts_with("/admin") {
-        return Err("href does not start with /admin".to_string());
-    }
+    href_stays_under_admin(&def.href)?;
     if def.href.contains(|c| UNSAFE_HREF_CHARS.contains(&c)) {
         return Err("href contains a character unsafe for an unescaped attribute".to_string());
     }
@@ -215,12 +209,41 @@ fn validate(def: &AdminNavDefinition, seen_hrefs: &HashSet<String>) -> Result<()
             "card_description is longer than {MAX_TEXT_LEN} bytes"
         ));
     }
+    // A kernel link owns its href and every prefix in its `also` list: a
+    // plugin link at one of those would tie with the kernel link for the
+    // active highlight on every page beneath it.
     if seen_hrefs.contains(&def.href)
         || crate::routes::admin_nav::LINKS
             .iter()
-            .any(|l| l.href == def.href)
+            .any(|l| l.href == def.href || l.also.contains(&def.href.as_str()))
     {
         return Err("another admin nav link already uses this href".to_string());
+    }
+    Ok(())
+}
+
+/// The href is `/admin/...` and a browser following it stays there: the
+/// first segment is exactly `admin` (so not `/administrator`), and no segment
+/// is a dot segment, plain or percent-encoded, nor separated by a backslash or
+/// an empty segment, any of which a browser would resolve to somewhere else
+/// (`/admin/../public` is `/public`).
+fn href_stays_under_admin(href: &str) -> Result<(), String> {
+    let Some(rest) = href.strip_prefix("/admin/") else {
+        return Err("href is not a path under /admin/".to_string());
+    };
+    if href.contains('\\') {
+        return Err("href contains a backslash".to_string());
+    }
+    // Only the path decides where the link lands; a query or fragment does not.
+    let path = rest.split(['?', '#']).next().unwrap_or_default();
+    for segment in path.split('/') {
+        if segment.is_empty() {
+            return Err("href has an empty path segment".to_string());
+        }
+        let decoded = segment.to_ascii_lowercase().replace("%2e", ".");
+        if decoded == "." || decoded == ".." {
+            return Err("href contains a dot segment".to_string());
+        }
     }
     Ok(())
 }
@@ -268,6 +291,60 @@ mod tests {
         )]);
         assert!(registry.links().is_empty());
         assert_eq!(registry.rejections().len(), 1);
+    }
+
+    /// Every href that starts with the characters `/admin` but lands
+    /// somewhere else once a browser resolves it.
+    #[test]
+    fn an_href_that_leaves_admin_once_resolved_is_rejected() {
+        for href in [
+            "/admin",
+            "/admin/",
+            "/administrator",
+            "/admin-tools/x",
+            "/admin/../public",
+            "/admin/groups/../../public",
+            "/admin/%2e%2e/public",
+            "/admin/%2E./public",
+            "/admin/./groups",
+            "/admin/groups\\..\\..\\public",
+            "/admin//evil.example/x",
+            "/admin/groups/",
+        ] {
+            let registry = AdminNavRegistry::from_tap_results(vec![(
+                "groups".to_string(),
+                serde_json::to_string(&vec![def(href)]).unwrap(),
+            )]);
+            assert!(registry.links().is_empty(), "{href} must be rejected");
+        }
+    }
+
+    #[test]
+    fn an_href_under_admin_with_a_query_is_kept() {
+        let registry = AdminNavRegistry::from_tap_results(vec![(
+            "groups".to_string(),
+            serde_json::to_string(&vec![def("/admin/groups/list?sort=name")]).unwrap(),
+        )]);
+        assert_eq!(registry.links().len(), 1, "{:?}", registry.rejections());
+    }
+
+    /// `/admin/structure/tags` is no kernel link's own href, but Categories
+    /// lists it in `also`: a plugin link there would tie with Categories for
+    /// the highlight on every tag page.
+    #[test]
+    fn an_href_a_kernel_link_claims_through_also_is_rejected() {
+        let claimed = crate::routes::admin_nav::LINKS
+            .iter()
+            .flat_map(|l| l.also.iter().copied())
+            .collect::<Vec<_>>();
+        assert!(claimed.contains(&"/admin/structure/tags"));
+        for href in claimed {
+            let registry = AdminNavRegistry::from_tap_results(vec![(
+                "groups".to_string(),
+                serde_json::to_string(&vec![def(href)]).unwrap(),
+            )]);
+            assert!(registry.links().is_empty(), "{href} must be rejected");
+        }
     }
 
     #[test]

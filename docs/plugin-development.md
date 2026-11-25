@@ -1199,15 +1199,20 @@ the route itself still has to check the permission on every request — the
 sidebar never substitutes for that check. Gate the two on the same
 permission, as above, so they cannot disagree about who may reach the screen.
 
-A disabled plugin contributes no link and no card. Enabling or disabling the
-plugin takes effect immediately, with no restart: the kernel re-filters the
-sidebar and dashboard on every request from the plugin set and the viewer's
-permissions at that moment.
+A disabled plugin contributes no link and no card. The declaration is read
+when the server starts, from the plugins enabled then, so enabling or
+disabling a plugin (from `/admin/plugins` or `trovato plugin enable|disable`)
+changes its link and card at the next restart, the same moment its routes
+appear or go. The permission, by contrast, is checked against the viewer on
+every request, exactly as for the kernel's own links.
 
-`href` must be the plugin's own path, under `/admin`, and distinct from every
-kernel link and every other plugin's declared href — a colliding declaration
-is dropped (logged, not fatal) rather than silently shadowing an existing
-screen.
+`href` must be the plugin's own path below `/admin/` (`/admin/groups`, not
+`/administrator` or `/admin/../groups`: no empty, `.` or `..` segments, encoded or
+not, and no backslash), and distinct from every kernel link, every prefix a
+kernel link already highlights for (Categories owns `/admin/structure/tags`),
+and every other plugin's declared href. A declaration that breaks any of these
+is dropped (logged, not fatal) rather than sending the viewer somewhere else or
+shadowing an existing screen.
 
 For the admin page itself to pick up the kernel's chrome, serve it from a
 `tap_api` route under `/admin` and answer with `ApiResponse::themed(title,

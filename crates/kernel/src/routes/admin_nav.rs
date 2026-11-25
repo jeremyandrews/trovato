@@ -555,7 +555,13 @@ pub fn sidebar(
                 .max()
                 .map(|len| (len, e.href))
         })
-        .max_by_key(|(len, _)| *len)
+        // On a tie the earlier entry keeps it: kernel links come first, so a
+        // plugin link can never take the highlight from one (`max_by_key`
+        // would return the last of equals).
+        .fold(None, |best: Option<(usize, &str)>, candidate| match best {
+            Some(b) if b.0 >= candidate.0 => Some(b),
+            _ => Some(candidate),
+        })
         .map(|(_, href)| href);
 
     // Grouped by section title, in the order each title first appears, so a
@@ -858,6 +864,34 @@ mod tests {
             .flat_map(|s| s.links.iter().filter(|l| l.active).map(|l| l.href.as_str()))
             .collect();
         assert_eq!(active, vec!["/admin/groups"]);
+    }
+
+    /// A plugin link whose href equals a prefix a kernel link claims (here
+    /// Categories' `also`) ties with it on every page beneath; the kernel
+    /// link keeps the highlight. The registry refuses such a declaration, so
+    /// this is the second line.
+    #[test]
+    fn a_kernel_link_keeps_the_highlight_on_a_tie_with_a_plugin_link() {
+        let holder = viewer(&[
+            "access administration pages",
+            "administer categories",
+            "administer groups",
+        ]);
+        let tags = PluginNavLink {
+            href: "/admin/structure/tags".to_string(),
+            ..groups_link()
+        };
+        let nav = sidebar(
+            &holder,
+            &[CATEGORIES.to_string(), "groups".to_string()],
+            "/admin/structure/tags/9/edit",
+            &[tags],
+        );
+        let active: Vec<&str> = nav
+            .iter()
+            .flat_map(|s| s.links.iter().filter(|l| l.active).map(|l| l.href.as_str()))
+            .collect();
+        assert_eq!(active, vec!["/admin/structure/categories"]);
     }
 
     #[test]

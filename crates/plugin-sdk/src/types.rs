@@ -728,7 +728,8 @@ impl MenuDefinition {
 /// this permission (or something else entirely) is still safe: the viewer who
 /// sees the link because they hold it can still be refused by the route.
 ///
-/// `href` must be the plugin's own path, under `/admin`. A disabled plugin's
+/// `href` must be the plugin's own path below `/admin/`, with no empty, `.` or
+/// `..` segment. A disabled plugin's
 /// declaration is dropped entirely — it contributes no link and no card,
 /// exactly as its routes stop being reachable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -740,7 +741,7 @@ pub struct AdminNavDefinition {
     /// The link text, and the dashboard card's title when `card_description`
     /// is set.
     pub label: String,
-    /// Where it goes. Must start with `/admin`.
+    /// Where it goes: a path below `/admin/`.
     pub href: String,
     /// What the viewer must hold to see this link and card.
     pub permission: String,
