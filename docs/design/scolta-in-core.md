@@ -61,11 +61,11 @@ Trovato has two search backends and one AI layer.
 
 | Piece | Where |
 |---|---|
-| Endpoints | `crates/kernel/src/routes/api_search.rs`: `POST /api/v1/search/expand`, `/summarize` and `/followup`. All three return plain JSON. `stream_ai_response` (`:435`) is dead code. |
-| Send path | The file's own `complete` / `build_chat_request` / `parse_*_response` (`:489-605`), with hard-coded 15 s and 30 s timeouts |
+| Endpoints | `crates/kernel/src/routes/api_search.rs`: `POST /api/v1/search/expand`, `/summarize` and `/followup`. All three return plain JSON. |
+| Send path | `AiProviderService::chat_once` (B89), by way of the file's thin `complete`: the base URL check, the configured timeout and the chat circuit breaker, with the one request builder and parser in `services/ai_tools.rs` |
 | Prompts | `search/prompts.rs`: `EXPAND_QUERY`, `SUMMARIZE`, `FOLLOW_UP` ported from scolta-core, plus Trovato's own `CLASSIFY_SENTIMENT` |
 | Guards that exist | A stage switch on each endpoint (404 when the stage is off); the follow-up turn cap (`max_followups`); an expansion cache (`CACHE_TTL_SEARCH_EXPAND`, keyed on the normalized query plus site name and slogan); per-IP rate buckets of 30, 10 and 5 per minute (`middleware/rate_limit.rs:286-288`); the CSP already allows `'self'` and `'wasm-unsafe-eval'` (`middleware/security_headers.rs:43`) |
-| Guards that are missing | No `use ai` permission check, no budget, no usage recorded, no circuit breaker. B89 and B116 cover these and are not yet merged. |
+| Guards that are missing | No `use ai` permission check, no budget, no usage recorded. B89 (its second part) and B116 cover these. The circuit breaker, the base URL check and the configured timeout come with the send path. |
 
 `trovato_scolta`, an earlier plugin attempt, was deleted (see `CHANGELOG.md`,
 "`trovato_scolta` is removed"). A WASM plugin cannot write files, run a

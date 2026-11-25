@@ -191,20 +191,30 @@ async fn load_config_menus(
     })
 }
 
-/// Point a menu at the translated pages it has, and leave the rest alone.
+/// Point a menu at the pages it has in `language`, and leave the rest alone.
 ///
 /// A site serving `/it/why` rendered its navigation with default-language
 /// addresses, so every click out of the menu left the translation. This rewrites
-/// a link when, and only when, the page behind it exists in `language`:
+/// a link when, and only when, the page behind it exists in `language`. The one
+/// rule for that:
 ///
-/// - the path gains a `/{language}` prefix, so the click stays in the language;
-/// - the title is replaced by the translated item's title **when the link's own
-///   title is the target's default-language title**, which is the common case of
-///   a menu label mirroring a page title. A label somebody wrote by hand is
-///   theirs, and is left as they wrote it.
+/// - a link to an item (its source path, or an alias of one) exists in
+///   `language` when the item has a translation into it;
+/// - any other link exists in every language when it is a local path served
+///   under a language prefix ([`path_in_language`]): a gather page, a term, the
+///   front page, a plugin route. An external URL, or a system path language
+///   negotiation passes through (`/static`, `/api`), does not.
 ///
-/// A link whose target has no translation is untouched, address and label both. A
-/// translated label on an untranslated page is a promise the click breaks.
+/// A link that exists in `language` gains the `/{language}` prefix, so the click
+/// stays in the language. An item link's title is also replaced by the
+/// translated item's title **when the link's own title is the target's
+/// default-language title**, which is the common case of a menu label mirroring a
+/// page title. A label somebody wrote by hand is theirs, and is left as they
+/// wrote it.
+///
+/// An item link whose target has no translation is untouched, address and label
+/// both. A translated label on an untranslated page is a promise the click
+/// breaks.
 ///
 /// One query for every menu of the stage, made when the cache is filled: `sources`
 /// is the alias resolution the loader already holds.
@@ -220,12 +230,19 @@ async fn localize_menu_links(
 
     // What each link points at. A path is either an item source path already or
     // an alias standing in for one; anything else is not content and cannot be
-    // translated.
+    // translated. The query and fragment are not part of the page: `/why#faq`
+    // is the item at `/why`, and must be judged by that item's translations, not
+    // taken for a page that exists in every language.
     let targets: Vec<Option<Uuid>> = links
         .iter()
         .map(|link| {
-            item_id_from_source(&link.path)
-                .or_else(|| sources.get(&link.path).and_then(|s| item_id_from_source(s)))
+            let page = strip_query(&link.path);
+            item_id_from_source(page).or_else(|| {
+                sources
+                    .get(&link.path)
+                    .or_else(|| sources.get(page))
+                    .and_then(|s| item_id_from_source(s))
+            })
         })
         .collect();
 
@@ -236,9 +253,20 @@ async fn localize_menu_links(
         .into_iter()
         .zip(targets)
         .map(|(mut link, target)| {
-            let Some((translated_title, default_title)) =
-                target.and_then(|id| translations.get(&id))
-            else {
+            let Some(id) = target else {
+                // Not an item: a gather page, a term, the front page, a plugin
+                // route. Those are served under every language's prefix.
+                if let Some(path) = path_in_language(
+                    &link.path,
+                    language,
+                    state.known_languages(),
+                    state.default_language(),
+                ) {
+                    link.path = path;
+                }
+                return link;
+            };
+            let Some((translated_title, default_title)) = translations.get(&id) else {
                 return link;
             };
 
@@ -297,6 +325,40 @@ fn strip_query(path: &str) -> &str {
     path.split(['?', '#']).next().unwrap_or(path)
 }
 
+/// `path` in `language`: the same address behind `/{language}`, or `None` when
+/// that would not be an address the site serves.
+///
+/// `None` for anything that is not a local path (an external URL, a
+/// protocol-relative one, a bare fragment), for a path language negotiation
+/// does not serve per language
+/// ([`is_served_per_language`](crate::middleware::language::is_served_per_language)),
+/// and for a path already in a language. `/` becomes `/{language}`, the address
+/// the front page route reads a language back from.
+fn path_in_language(
+    path: &str,
+    language: &str,
+    known_languages: &[String],
+    default_language: &str,
+) -> Option<String> {
+    if !path.starts_with('/') || path.starts_with("//") {
+        return None;
+    }
+    let bare = strip_query(path);
+    if !crate::middleware::language::is_served_per_language(bare)
+        || without_language(bare, known_languages, default_language) != bare
+    {
+        return None;
+    }
+    let rest = if bare == "/" { &path[1..] } else { path };
+    Some(format!("/{language}{rest}"))
+}
+
+/// `path` without a leading `/{language}` for a known non-default language: the
+/// form the router serves it in, and the form active links are compared in.
+fn without_language(path: &str, known_languages: &[String], default_language: &str) -> String {
+    crate::middleware::path_alias::strip_language_prefix(path, known_languages, default_language).0
+}
+
 /// The item a source path names, or `None` if it names something else.
 fn item_id_from_source(path: &str) -> Option<Uuid> {
     path.strip_prefix("/item/")
@@ -322,6 +384,63 @@ pub fn is_active(link_path: &str, requested: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
+/// The page a tree is built for, as its links are matched against it.
+trait Requested {
+    /// Whether a link to `link_path` is active on this page.
+    fn is_active(&self, link_path: &str) -> bool;
+}
+
+/// A path as given, compared as it stands.
+impl Requested for str {
+    fn is_active(&self, link_path: &str) -> bool {
+        is_active(link_path, self)
+    }
+}
+
+/// The page being rendered, in the language it is rendered in.
+///
+/// A link and the address asked for are compared without their language
+/// prefix, the form the router serves both in. Otherwise a link either side of
+/// the prefix never matches: `/plain` (an untranslated item, left unprefixed)
+/// on `/it/plain`, or `/it/recipes` on `/recipes` read in Italian by session.
+/// A link that names another language explicitly is a different page, and is
+/// never active: `/it/recipes` is not the current page on English `/recipes`.
+struct RequestedPage<'a> {
+    /// The address asked for, without its language prefix.
+    path: String,
+    /// The language the page is rendered in.
+    language: &'a str,
+    known_languages: &'a [String],
+    default_language: &'a str,
+}
+
+impl<'a> RequestedPage<'a> {
+    fn new(
+        requested: &str,
+        language: &'a str,
+        known_languages: &'a [String],
+        default_language: &'a str,
+    ) -> Self {
+        Self {
+            path: without_language(requested, known_languages, default_language),
+            language,
+            known_languages,
+            default_language,
+        }
+    }
+}
+
+impl Requested for RequestedPage<'_> {
+    fn is_active(&self, link_path: &str) -> bool {
+        let (link_path, link_language) = crate::middleware::path_alias::strip_language_prefix(
+            strip_query(link_path),
+            self.known_languages,
+            self.default_language,
+        );
+        link_language.is_none_or(|l| l == self.language) && is_active(&link_path, &self.path)
+    }
+}
+
 /// One node handed to [`build_tree`]: a key, the key of its parent, and what
 /// the template draws.
 struct TreeNode {
@@ -336,11 +455,15 @@ struct TreeNode {
 ///
 /// Depth is bounded, which keeps a parent cycle written straight into the
 /// table from recursing forever.
-fn build_tree(nodes: &[TreeNode], root: Option<&str>, requested: &str) -> Vec<MenuTreeLink> {
-    fn level(
+fn build_tree<R: Requested + ?Sized>(
+    nodes: &[TreeNode],
+    root: Option<&str>,
+    requested: &R,
+) -> Vec<MenuTreeLink> {
+    fn level<R: Requested + ?Sized>(
         nodes: &[TreeNode],
         parent: Option<&str>,
-        requested: &str,
+        requested: &R,
         depth: usize,
     ) -> Vec<MenuTreeLink> {
         const MAX_DEPTH: usize = 16;
@@ -353,7 +476,7 @@ fn build_tree(nodes: &[TreeNode], root: Option<&str>, requested: &str) -> Vec<Me
             .map(|node| MenuTreeLink {
                 title: node.title.clone(),
                 path: node.path.clone(),
-                active: is_active(&node.path, requested),
+                active: requested.is_active(&node.path),
                 children: level(nodes, Some(&node.key), requested, depth + 1),
             })
             .collect()
@@ -367,7 +490,10 @@ fn build_tree(nodes: &[TreeNode], root: Option<&str>, requested: &str) -> Vec<Me
 /// A link whose parent is not in the same menu is drawn at the top level, so
 /// no link is lost to a parent it cannot be placed under. Every menu the stage
 /// has is present, empty when the viewer may follow none of its links.
-fn config_trees(links: &[MenuLink], requested: &str) -> BTreeMap<String, Vec<MenuTreeLink>> {
+fn config_trees(
+    links: &[MenuLink],
+    requested: &RequestedPage<'_>,
+) -> BTreeMap<String, Vec<MenuTreeLink>> {
     let hidden: HashSet<Uuid> = links.iter().filter(|l| l.hidden).map(|l| l.id).collect();
     let shown = without_descendants_of(links.to_vec(), hidden);
     let mut by_menu: BTreeMap<String, Vec<TreeNode>> = BTreeMap::new();
@@ -404,18 +530,35 @@ fn config_trees(links: &[MenuLink], requested: &str) -> BTreeMap<String, Vec<Men
 ///
 /// An entry's own children hang under it, so `/user`'s list carries the
 /// entries under each of its entries too.
+///
+/// A plugin route is served under every language's prefix like any other local
+/// path, so on a page in a non-default language each entry's address carries
+/// that language ([`path_in_language`]). The registered path stays the key, so
+/// `menus_by_parent` is looked up the same way in every language.
 fn plugin_trees(
     state: &AppState,
     viewer: &UserContext,
-    requested: &str,
+    requested: &RequestedPage<'_>,
 ) -> (Vec<MenuTreeLink>, BTreeMap<String, Vec<MenuTreeLink>>) {
     let registry = state.menu_registry();
     let parents: Vec<String> = registry.parent_paths().map(str::to_string).collect();
+    let in_language = |path: String| -> String {
+        if requested.language == requested.default_language {
+            return path;
+        }
+        path_in_language(
+            &path,
+            requested.language,
+            requested.known_languages,
+            requested.default_language,
+        )
+        .unwrap_or(path)
+    };
     let node = |parent: Option<&str>, (registered, entry): (String, MenuDefinition)| TreeNode {
         key: registered,
         parent: parent.map(str::to_string),
         title: entry.title,
-        path: entry.path,
+        path: in_language(entry.path),
     };
     let mut nodes: Vec<TreeNode> = registry
         .root_entries_for(viewer)
@@ -465,7 +608,7 @@ pub struct SiteMenus {
 
 /// The navigation for one render: `viewer` reading the Live stage in
 /// `language`, at `requested` (the address as asked for, which is what a link
-/// is matched against).
+/// is matched against, without its language prefix).
 ///
 /// No query on a warm cache: the config menus come from [`config_menus`], and
 /// everything per viewer is decided in memory.
@@ -484,14 +627,20 @@ pub async fn site_menus(
             .cloned()
             .collect()
     };
-    let (menus_tree, menus_by_parent) = plugin_trees(state, viewer, requested);
+    let requested = RequestedPage::new(
+        requested,
+        language,
+        state.known_languages(),
+        state.default_language(),
+    );
+    let (menus_tree, menus_by_parent) = plugin_trees(state, viewer, &requested);
     SiteMenus {
         main_menu: menu("main"),
         footer_menu: menu("footer"),
         main_menu_owned: config.has_menu("main"),
         menus: state.menu_registry().root_menus_for(viewer),
         menus_tree,
-        menus_by_name: config_trees(&followable, requested),
+        menus_by_name: config_trees(&followable, &requested),
         menus_by_parent,
     }
 }
@@ -546,5 +695,81 @@ mod tests {
     fn a_parent_cycle_does_not_recurse_forever() {
         let nodes = [node("a", Some("b")), node("b", Some("a"))];
         assert!(build_tree(&nodes, Some("a"), "/").len() == 1);
+    }
+
+    fn languages() -> Vec<String> {
+        vec!["en".to_string(), "es".to_string()]
+    }
+
+    fn in_spanish(path: &str) -> Option<String> {
+        path_in_language(path, "es", &languages(), "en")
+    }
+
+    #[test]
+    fn a_local_page_gains_the_language_prefix() {
+        assert_eq!(in_spanish("/recipes").as_deref(), Some("/es/recipes"));
+        assert_eq!(
+            in_spanish("/recipes?sort=new#top").as_deref(),
+            Some("/es/recipes?sort=new#top")
+        );
+        assert_eq!(in_spanish("/term/x").as_deref(), Some("/es/term/x"));
+        assert_eq!(in_spanish("/").as_deref(), Some("/es"));
+        assert_eq!(in_spanish("/?a=b").as_deref(), Some("/es?a=b"));
+    }
+
+    #[test]
+    fn what_is_not_served_per_language_keeps_its_address() {
+        for path in [
+            "https://example.com/recipes",
+            "//cdn.example.com/x",
+            "mailto:a@example.com",
+            "#top",
+            "/static/brochure.pdf",
+            "/api/v1/items",
+            "/health",
+            "/install",
+            "/es/recipes",
+            "/es",
+        ] {
+            assert_eq!(in_spanish(path), None, "{path}");
+        }
+    }
+
+    #[test]
+    fn active_compares_link_and_page_without_their_language() {
+        let languages = languages();
+        let here = RequestedPage::new("/es/recipes", "es", &languages, "en");
+        assert!(here.is_active("/es/recipes"));
+        assert!(here.is_active("/recipes"));
+        assert!(!here.is_active("/es/about"));
+
+        let under = RequestedPage::new("/es/recipes/paella", "es", &languages, "en");
+        assert!(under.is_active("/es/recipes"));
+
+        let home = RequestedPage::new("/es", "es", &languages, "en");
+        assert!(home.is_active("/es"));
+        assert!(!home.is_active("/es/recipes"));
+        assert!(RequestedPage::new("/es/", "es", &languages, "en").is_active("/es"));
+
+        let english = RequestedPage::new("/recipes", "en", &languages, "en");
+        assert!(english.is_active("/recipes"));
+        assert!(!english.is_active("/about"));
+        assert!(!RequestedPage::new("/", "en", &languages, "en").is_active("/recipes"));
+    }
+
+    #[test]
+    fn a_link_into_another_language_is_never_the_current_page() {
+        let languages = vec!["en".to_string(), "es".to_string(), "fr".to_string()];
+        let english = RequestedPage::new("/recipes", "en", &languages, "en");
+        assert!(english.is_active("/recipes"));
+        assert!(!english.is_active("/es/recipes"));
+
+        let spanish = RequestedPage::new("/es/recipes", "es", &languages, "en");
+        assert!(spanish.is_active("/es/recipes"));
+        assert!(!spanish.is_active("/fr/recipes"));
+
+        // Read in Spanish by session, without a prefix in the address.
+        let by_session = RequestedPage::new("/recipes", "es", &languages, "en");
+        assert!(by_session.is_active("/es/recipes"));
     }
 }

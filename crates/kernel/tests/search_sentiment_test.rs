@@ -79,7 +79,11 @@ async fn serve_stub(stub: Arc<Stub>) -> String {
     tokio::spawn(async move {
         let _ = axum::serve(listener, app).await;
     });
-    format!("http://{addr}")
+    let base_url = format!("http://{addr}");
+    // A loopback stand-in: the send path refuses loopback, so this one exact
+    // URL is allowed through for the test.
+    trovato_kernel::services::ai_provider::allow_loopback_provider_for_tests(&base_url);
+    base_url
 }
 
 /// Point Chat at the stub, switch sentiment as asked, and put every site wide

@@ -1883,7 +1883,16 @@ impl ItemService {
             );
         }
 
-        match ai.embed(text).await {
+        match ai
+            .embed(
+                text,
+                &crate::services::ai_provider::AiCaller::kernel(
+                    crate::services::embed_index::KERNEL_EMBED_PLUGIN,
+                    false,
+                ),
+            )
+            .await
+        {
             Ok(Some(result)) => {
                 if let Err(e) = store
                     .store_embedding(item.id, KERNEL_INDEX_FIELD, &result.model, &result.vector)

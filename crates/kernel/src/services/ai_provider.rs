@@ -28,6 +28,7 @@ use tokio::sync::Mutex;
 use crate::circuit_breaker::{BreakerConfig, CircuitBreaker};
 use crate::models::SiteConfig;
 use crate::net_policy::is_disallowed_ip;
+use crate::services::ai_tools::{self, ChatCompletion, ChatMessage, ToolSpec};
 
 // =============================================================================
 // Data types
@@ -172,8 +173,309 @@ pub struct ResolvedProvider {
 pub struct EmbeddingResult {
     /// The embedding vector.
     pub vector: Vec<f32>,
-    /// The model identifier that produced the vector.
+    /// The model identifier that was requested and that keys the stored
+    /// vector.
     pub model: String,
+    /// The model the provider reports having served (an alias may resolve to
+    /// a dated name); the requested model when the response names none.
+    pub served_model: String,
+    /// Input tokens the provider reported.
+    pub prompt_tokens: u32,
+    /// Total tokens the provider reported (the input tokens when it reported
+    /// no total).
+    pub total_tokens: u32,
+    /// Round-trip latency in milliseconds.
+    pub latency_ms: u64,
+}
+
+/// Who an AI call is made for.
+///
+/// Selects the timeout plane (request or background) and, from the principal,
+/// the budget the call is held to and the `ai_usage_log` row it writes.
+#[derive(Debug, Clone)]
+pub struct AiCaller {
+    /// What the usage log records as the caller (`ai_usage_log.plugin_name`):
+    /// a plugin's name, or a `kernel_*` name for the kernel's own features.
+    pub source: String,
+    /// Whose call it is.
+    pub principal: AiPrincipal,
+    /// Whether the call runs off the request path, which selects the
+    /// background timeout.
+    pub background: bool,
+}
+
+/// Whose call an AI call is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiPrincipal {
+    /// A signed-in person: held to their per-user or per-role budget.
+    User(uuid::Uuid),
+    /// An anonymous visitor, or work done on one's behalf.
+    Anonymous,
+    /// A plugin's background call (cron, queue worker): held to the plugin's
+    /// background token and currency budgets.
+    Plugin,
+    /// The kernel's own housekeeping, such as indexing an item's embedding.
+    Kernel,
+}
+
+impl AiCaller {
+    /// A call made for a person; the nil id (the anonymous user) is anonymous.
+    pub fn user(user_id: uuid::Uuid, source: impl Into<String>) -> Self {
+        Self {
+            source: source.into(),
+            principal: if user_id.is_nil() {
+                AiPrincipal::Anonymous
+            } else {
+                AiPrincipal::User(user_id)
+            },
+            background: false,
+        }
+    }
+
+    /// A call made for an anonymous visitor.
+    pub fn anonymous(source: impl Into<String>) -> Self {
+        Self {
+            source: source.into(),
+            principal: AiPrincipal::Anonymous,
+            background: false,
+        }
+    }
+
+    /// A plugin's background call.
+    pub fn plugin_background(plugin: impl Into<String>) -> Self {
+        Self {
+            source: plugin.into(),
+            principal: AiPrincipal::Plugin,
+            background: true,
+        }
+    }
+
+    /// The kernel's own work, on or off the request path.
+    pub fn kernel(source: impl Into<String>, background: bool) -> Self {
+        Self {
+            source: source.into(),
+            principal: AiPrincipal::Kernel,
+            background,
+        }
+    }
+
+    /// The same caller, off the request path.
+    pub fn in_background(mut self) -> Self {
+        self.background = true;
+        self
+    }
+
+    /// The user id the usage log records, if the call was a person's.
+    pub fn user_id(&self) -> Option<uuid::Uuid> {
+        match self.principal {
+            AiPrincipal::User(id) => Some(id),
+            _ => None,
+        }
+    }
+}
+
+/// One chat completion request, in the protocol-neutral shape the send path
+/// turns into either provider's wire format.
+#[derive(Debug, Clone, Default)]
+pub struct ChatRequest {
+    /// The conversation.
+    pub messages: Vec<ChatMessage>,
+    /// Tools offered to the model; empty sends no tools at all.
+    pub tools: Vec<ToolSpec>,
+    /// Most tokens to generate. `None` omits it for an OpenAI-compatible
+    /// provider; Anthropic requires one and gets 1024.
+    pub max_tokens: Option<u32>,
+    /// Sent only when set: Anthropic models newer than `claude-sonnet-4-6`
+    /// answer 400 to a request that carries `temperature` at all.
+    pub temperature: Option<f32>,
+    /// Nucleus sampling, sent only when set.
+    pub top_p: Option<f32>,
+    /// Stop sequences, sent only when there are any.
+    pub stop: Vec<String>,
+    /// A timeout the calling feature configures for itself (the AI
+    /// Assistant's per-call timeout). `None` takes the `ai_timeouts` value.
+    pub timeout: Option<Duration>,
+}
+
+impl ChatRequest {
+    /// A system prompt and one user message.
+    pub fn system_and_user(system: &str, user: &str, max_tokens: u32) -> Self {
+        Self {
+            messages: vec![
+                ChatMessage::System(system.to_string()),
+                ChatMessage::User(user.to_string()),
+            ],
+            max_tokens: Some(max_tokens),
+            ..Self::default()
+        }
+    }
+}
+
+/// A started chat stream.
+pub type ChatEventStream = std::pin::Pin<
+    Box<dyn futures_core::Stream<Item = crate::services::ai_chat::ChatStreamEvent> + Send>,
+>;
+
+/// Why an AI call failed, at the granularity a caller needs to say something
+/// useful. The `Display` text never carries the provider's response body:
+/// that goes to the log, and [`Self::user_message`] is what a person sees.
+#[derive(Debug, thiserror::Error)]
+pub enum AiCallError {
+    /// The provider's base URL targets an address the kernel refuses.
+    #[error("the AI provider's base URL is refused")]
+    BaseUrlRefused,
+    /// The provider rejected our credentials (401/403).
+    #[error("the AI provider rejected the site's credentials")]
+    Unauthorized,
+    /// The provider rate-limited us (429).
+    #[error("the AI provider is rate limiting this site")]
+    RateLimited,
+    /// Any other non-2xx status.
+    #[error("the AI provider returned HTTP {status}")]
+    Provider {
+        /// The HTTP status the provider returned.
+        status: u16,
+        /// A truncated copy of the body, for the log only.
+        detail: String,
+    },
+    /// The call did not complete within the timeout.
+    #[error("the AI provider did not answer within the timeout")]
+    Timeout,
+    /// The circuit breaker for this operation is open.
+    #[error("the AI provider circuit breaker is open")]
+    BreakerOpen,
+    /// The transport failed.
+    #[error("the request to the AI provider failed: {0}")]
+    Transport(String),
+    /// The response was not the shape we parse.
+    #[error("the AI provider's response could not be read: {0}")]
+    Malformed(String),
+    /// The provider cannot serve this operation.
+    #[error("{0}")]
+    Unsupported(String),
+}
+
+impl AiCallError {
+    /// A short, provider-agnostic sentence for the person. The detail belongs
+    /// in the log, never here.
+    pub fn user_message(&self) -> &'static str {
+        match self {
+            Self::Unauthorized => "The model provider refused the request.",
+            Self::RateLimited => "The model provider is busy. Try again shortly.",
+            Self::Timeout => "The model took too long to answer.",
+            Self::BreakerOpen | Self::BaseUrlRefused | Self::Unsupported(_) => {
+                "The model provider is unavailable right now."
+            }
+            Self::Provider { .. } | Self::Transport(_) | Self::Malformed(_) => {
+                "Something went wrong talking to the model provider."
+            }
+        }
+    }
+}
+
+/// Longest slice of a provider's error body kept in an [`AiCallError`].
+const ERROR_DETAIL_MAX: usize = 500;
+
+/// Send a provider request inside the telemetry span, naming the provider and
+/// model on it.
+async fn send_traced(
+    builder: reqwest::RequestBuilder,
+    resolved: &ResolvedProvider,
+) -> reqwest::Result<reqwest::Response> {
+    let provider = match resolved.config.protocol {
+        ProviderProtocol::OpenAiCompatible => "openai_compatible",
+        ProviderProtocol::Anthropic => "anthropic",
+    };
+    crate::telemetry::send_with(builder, |span| {
+        span.record("gen_ai.provider.name", provider);
+        span.record("gen_ai.request.model", resolved.model.as_str());
+    })
+    .await
+}
+
+/// A transport error, with a timeout told apart.
+fn transport_error(e: reqwest::Error) -> AiCallError {
+    if e.is_timeout() {
+        AiCallError::Timeout
+    } else {
+        AiCallError::Transport(e.to_string())
+    }
+}
+
+/// Pass a 2xx response through; log anything else with the provider's own
+/// explanation and turn it into an [`AiCallError`].
+async fn check_status(
+    response: reqwest::Response,
+    operation: &str,
+    resolved: &ResolvedProvider,
+) -> Result<reqwest::Response, AiCallError> {
+    let status = response.status();
+    if status.is_success() {
+        return Ok(response);
+    }
+    let body = response.text().await.unwrap_or_default();
+    log_provider_failure(operation, resolved, status.as_u16(), &body);
+    Err(match status.as_u16() {
+        401 | 403 => AiCallError::Unauthorized,
+        429 => AiCallError::RateLimited,
+        other => AiCallError::Provider {
+            status: other,
+            detail: provider_error_excerpt(&body, resolved.api_key.as_deref())
+                .chars()
+                .take(ERROR_DETAIL_MAX)
+                .collect(),
+        },
+    })
+}
+
+/// A `usage` count from an OpenAI-compatible response, zero when absent.
+fn usage_u32(json: &serde_json::Value, key: &str) -> u32 {
+    json["usage"][key]
+        .as_u64()
+        .unwrap_or(0)
+        .min(u64::from(u32::MAX)) as u32
+}
+
+/// Exact loopback base URLs a test has allowed past the send-time check.
+static TEST_LOOPBACK_PROVIDERS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+/// Allow one loopback provider URL past the send-time base URL check.
+///
+/// `pub` but `#[doc(hidden)]` solely for tests, in this crate and in
+/// `tests/`, that drive the real send path against a local stand-in provider
+/// (the scripted provider calls it for every server it starts). Nothing in
+/// production calls it, no configuration reaches it, and it accepts only an
+/// `http://127.0.0.1:<port>` URL, exactly: every other private address, and
+/// every other loopback URL, is still refused.
+///
+/// # Panics
+///
+/// Panics if `base_url` is not `http://127.0.0.1:<port>`.
+#[doc(hidden)]
+pub fn allow_loopback_provider_for_tests(base_url: &str) {
+    let parsed = url::Url::parse(base_url).ok();
+    let is_loopback_literal = parsed.as_ref().is_some_and(|u| {
+        u.scheme() == "http"
+            && u.host() == Some(url::Host::Ipv4(std::net::Ipv4Addr::LOCALHOST))
+            && u.port().is_some()
+    });
+    assert!(
+        is_loopback_literal,
+        "only an http://127.0.0.1:<port> URL may be allowed, got {base_url}"
+    );
+    TEST_LOOPBACK_PROVIDERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(base_url.trim_end_matches('/').to_string());
+}
+
+fn loopback_allowed_for_tests(base_url: &str) -> bool {
+    TEST_LOOPBACK_PROVIDERS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(base_url.trim_end_matches('/'))
 }
 
 /// Result of a connection test against a provider endpoint.
@@ -774,26 +1076,184 @@ impl AiProviderService {
     }
 
     // -------------------------------------------------------------------------
-    // Embeddings
+    // The send path (B89)
     // -------------------------------------------------------------------------
+    //
+    // Every AI call the kernel makes, from a route, a job or a plugin, goes out
+    // through one of the three methods below. Each one, before anything leaves
+    // the process:
+    //
+    // - checks the provider's base URL with `validate_base_url`, at send time,
+    //   because a provider row can reach `site_config` without passing the admin
+    //   form and an IP literal never passes through the hardened resolver;
+    // - resolves the outbound timeout from `ai_timeouts` for the caller's plane
+    //   (request or background), unless the caller's own feature configures one;
+    // - goes through the per-operation circuit breaker;
+    //
+    // and on failure returns an `AiCallError` whose text is safe to show: the
+    // provider's own words go to the log through `log_provider_failure`.
+
+    /// The base URL check every send makes.
+    fn check_send_url(base_url: &str) -> Result<(), AiCallError> {
+        if loopback_allowed_for_tests(base_url) {
+            return Ok(());
+        }
+        validate_base_url(base_url).map_err(|reason| {
+            tracing::warn!(
+                base_url = %base_url,
+                reason = %reason,
+                "AI provider base URL refused at send time"
+            );
+            AiCallError::BaseUrlRefused
+        })
+    }
+
+    /// The outbound timeout and the circuit breaker for one call.
+    async fn send_guard(
+        &self,
+        op: AiOperationType,
+        resolved: &ResolvedProvider,
+        caller: &AiCaller,
+        configured: Option<Duration>,
+    ) -> (Duration, Arc<CircuitBreaker>) {
+        let config = self.get_timeout_config().await.unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to read AI timeout config, using defaults");
+            AiTimeoutConfig::default()
+        });
+        let op_key = op.config_key();
+        let timeout = configured.unwrap_or_else(|| {
+            config.resolve_timeout(op_key, &resolved.config.id, caller.background)
+        });
+        // The circuit breakers stay per server on purpose: each one reacts to
+        // the failures this server sees, opens and probes on its own, and
+        // sharing them would add a Redis round trip to every AI call to save a
+        // few failed requests per server.
+        let breaker = self.breaker_for_operation(op_key, config.resolve_breaker_window(op_key));
+        (timeout, breaker)
+    }
+
+    /// Run one chat completion, with or without tools.
+    ///
+    /// The one non-streaming chat send for the kernel: search expansion,
+    /// summaries and follow-ups, the sentiment classifier, the writing
+    /// assistant, the AI Assistant's tool-calling turns and a plugin's
+    /// `ai-request` all come through here.
+    pub async fn chat_once(
+        &self,
+        resolved: &ResolvedProvider,
+        caller: &AiCaller,
+        request: &ChatRequest,
+    ) -> Result<ChatCompletion, AiCallError> {
+        Self::check_send_url(&resolved.config.base_url)?;
+        let (timeout, breaker) = self
+            .send_guard(AiOperationType::Chat, resolved, caller, request.timeout)
+            .await;
+
+        let result = breaker
+            .call(|| async {
+                let (url, body, headers) = ai_tools::build_chat_request(resolved, request, false);
+                let started = Instant::now();
+                let response = self
+                    .post_json(&url, &body, &headers, timeout, resolved)
+                    .await?;
+                let response = check_status(response, "chat", resolved).await?;
+                let value: serde_json::Value = response.json().await.map_err(|e| {
+                    AiCallError::Malformed(format!("unreadable provider response: {e}"))
+                })?;
+                let mut completion = ai_tools::parse_chat_response(
+                    resolved.config.protocol,
+                    &value,
+                )
+                .ok_or_else(|| {
+                    AiCallError::Malformed("provider response had no completion in it".into())
+                })?;
+                completion.latency_ms =
+                    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+                if completion.model.is_empty() {
+                    completion.model = resolved.model.clone();
+                }
+                Ok(completion)
+            })
+            .await;
+
+        match result {
+            Ok(completion) => Ok(completion),
+            Err(crate::circuit_breaker::CircuitBreakerError::Open) => Err(AiCallError::BreakerOpen),
+            Err(crate::circuit_breaker::CircuitBreakerError::ServiceError(e)) => Err(e),
+        }
+    }
+
+    /// Start one streaming chat completion.
+    ///
+    /// The configured timeout bounds the start: connecting and the provider's
+    /// response headers. Once the stream is flowing, each chunk has its own idle
+    /// timeout in the stream parser, so a long answer is not cut off at a
+    /// timeout sized for a one-shot call. A start that fails counts against the
+    /// chat breaker, like any other chat call.
+    pub async fn chat_stream(
+        &self,
+        resolved: &ResolvedProvider,
+        caller: &AiCaller,
+        request: &ChatRequest,
+    ) -> Result<ChatEventStream, AiCallError> {
+        Self::check_send_url(&resolved.config.base_url)?;
+        let (timeout, breaker) = self
+            .send_guard(AiOperationType::Chat, resolved, caller, request.timeout)
+            .await;
+
+        let result = breaker
+            .call(|| async {
+                let (url, body, headers) = ai_tools::build_chat_request(resolved, request, true);
+                let mut builder = self
+                    .http
+                    .post(&url)
+                    .header("content-type", "application/json")
+                    .body(serde_json::to_string(&body).unwrap_or_default());
+                for (name, value) in &headers {
+                    builder = builder.header(name.as_str(), value.as_str());
+                }
+                let response =
+                    match tokio::time::timeout(timeout, send_traced(builder, resolved)).await {
+                        Ok(sent) => sent.map_err(transport_error)?,
+                        Err(_) => return Err(AiCallError::Timeout),
+                    };
+                check_status(response, "chat_stream", resolved).await
+            })
+            .await;
+
+        let response = match result {
+            Ok(response) => response,
+            Err(crate::circuit_breaker::CircuitBreakerError::Open) => {
+                return Err(AiCallError::BreakerOpen);
+            }
+            Err(crate::circuit_breaker::CircuitBreakerError::ServiceError(e)) => return Err(e),
+        };
+
+        Ok(match resolved.config.protocol {
+            ProviderProtocol::OpenAiCompatible => {
+                Box::pin(crate::services::ai_chat::parse_openai_stream(response))
+            }
+            ProviderProtocol::Anthropic => {
+                Box::pin(crate::services::ai_chat::parse_anthropic_stream(response))
+            }
+        })
+    }
 
     /// Generate an embedding vector for `text` using the configured
     /// `Embedding` provider.
     ///
     /// Returns `Ok(None)` when no embedding provider is configured, the
     /// provider is disabled, or the provider's protocol exposes no embeddings
-    /// API (Anthropic has none). Returns `Err` only on a transport, HTTP-status,
-    /// or response-parse failure once a provider *is* resolved — callers treat
-    /// both `None` and `Err` as "no embedding available" and degrade
-    /// gracefully (no-match on read, skipped index on write).
+    /// API (Anthropic has none). Returns `Err` only on a refused base URL, a
+    /// transport, HTTP-status, or response-parse failure once a provider *is*
+    /// resolved — callers treat both `None` and `Err` as "no embedding
+    /// available" and degrade gracefully (no-match on read, skipped index on
+    /// write).
     ///
     /// The resolved model is returned in [`EmbeddingResult`] so that write-time
     /// (index) and read-time (gather `SemanticSimilarity`) callers use the same
     /// model — `item_embeddings` similarity search filters by model.
-    ///
-    /// # Panics
-    /// Does not panic.
-    pub async fn embed(&self, text: &str) -> Result<Option<EmbeddingResult>> {
+    pub async fn embed(&self, text: &str, caller: &AiCaller) -> Result<Option<EmbeddingResult>> {
         let Some(resolved) = self
             .resolve_provider(AiOperationType::Embedding, None)
             .await
@@ -812,22 +1272,37 @@ impl AiProviderService {
             return Ok(None);
         }
 
-        // SSRF defense-in-depth: re-validate the base URL before the outbound
-        // request (mirrors `test_connection`).
-        if let Err(msg) = validate_base_url(&resolved.config.base_url) {
-            anyhow::bail!("invalid embedding provider base_url: {msg}");
-        }
+        let result = self
+            .embed_with(&resolved, text, caller)
+            .await
+            .map_err(|e| anyhow::anyhow!("embedding request failed: {e}"))?;
+        Ok(Some(result))
+    }
 
-        let url = format!(
-            "{}/embeddings",
-            resolved.config.base_url.trim_end_matches('/')
-        );
+    /// Embed `text` with an already resolved provider: the one embedding send,
+    /// for the kernel's own indexing and search and a plugin's `ai-request`.
+    pub async fn embed_with(
+        &self,
+        resolved: &ResolvedProvider,
+        text: &str,
+        caller: &AiCaller,
+    ) -> Result<EmbeddingResult, AiCallError> {
+        if resolved.config.protocol != ProviderProtocol::OpenAiCompatible {
+            return Err(AiCallError::Unsupported(format!(
+                "provider protocol {} exposes no embeddings API",
+                resolved.config.protocol
+            )));
+        }
+        Self::check_send_url(&resolved.config.base_url)?;
+        let (timeout, breaker) = self
+            .send_guard(AiOperationType::Embedding, resolved, caller, None)
+            .await;
 
         // Cap outbound embedding input. This is the universal choke point —
-        // both the index path (whole-item text) and the read path (query text)
-        // flow through here. Over-budget input would otherwise be rejected by
-        // the provider (silently leaving an item unsearchable) and unbounded
-        // payloads are a cost/DoS surface.
+        // the index path (whole-item text), the read path (query text) and a
+        // plugin's input all flow through here. Over-budget input would
+        // otherwise be rejected by the provider (silently leaving an item
+        // unsearchable) and unbounded payloads are a cost/DoS surface.
         let (input, truncated_from) = cap_embedding_input(text);
         if let Some(original) = truncated_from {
             tracing::warn!(
@@ -836,46 +1311,78 @@ impl AiProviderService {
                 "embedding input exceeds budget; truncating before request"
             );
         }
-
-        let request_body = serde_json::json!({
+        let url = format!(
+            "{}/embeddings",
+            resolved.config.base_url.trim_end_matches('/')
+        );
+        let body = serde_json::json!({
             "model": resolved.model,
             "input": input.as_ref(),
         });
-
-        let mut req = self
-            .http
-            .post(&url)
-            .header("content-type", "application/json")
-            .json(&request_body);
+        let mut headers = Vec::new();
         if let Some(ref key) = resolved.api_key {
-            req = req.bearer_auth(key);
+            headers.push(("authorization".to_string(), format!("Bearer {key}")));
         }
 
-        let resp = crate::telemetry::send(req)
-            .await
-            .context("embedding request failed")?;
-        let status = resp.status();
-        if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
-            log_provider_failure("embedding", &resolved, status.as_u16(), &body);
-            anyhow::bail!(
-                "embedding provider returned HTTP {status}: {}",
-                truncate(&body, 200)
-            );
+        let result = breaker
+            .call(|| async {
+                let started = Instant::now();
+                let response = self
+                    .post_json(&url, &body, &headers, timeout, resolved)
+                    .await?;
+                let response = check_status(response, "embedding", resolved).await?;
+                let json: serde_json::Value = response.json().await.map_err(|e| {
+                    AiCallError::Malformed(format!("unreadable embedding response: {e}"))
+                })?;
+                let vector = parse_embedding_vector(&json)
+                    .map_err(|e| AiCallError::Malformed(format!("{e:#}")))?;
+                let prompt_tokens = usage_u32(&json, "prompt_tokens");
+                let total_tokens = json["usage"]["total_tokens"]
+                    .as_u64()
+                    .map_or(prompt_tokens, |t| t.min(u64::from(u32::MAX)) as u32);
+                Ok(EmbeddingResult {
+                    vector,
+                    model: resolved.model.clone(),
+                    served_model: json["model"]
+                        .as_str()
+                        .filter(|m| !m.is_empty())
+                        .unwrap_or(&resolved.model)
+                        .to_string(),
+                    prompt_tokens,
+                    total_tokens,
+                    latency_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
+                })
+            })
+            .await;
+
+        match result {
+            Ok(result) => Ok(result),
+            Err(crate::circuit_breaker::CircuitBreakerError::Open) => Err(AiCallError::BreakerOpen),
+            Err(crate::circuit_breaker::CircuitBreakerError::ServiceError(e)) => Err(e),
         }
+    }
 
-        let json: serde_json::Value = resp
-            .json()
+    /// POST a JSON body to a provider with a per-request timeout.
+    async fn post_json(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+        headers: &[(String, String)],
+        timeout: Duration,
+        resolved: &ResolvedProvider,
+    ) -> Result<reqwest::Response, AiCallError> {
+        let mut builder = self
+            .http
+            .post(url)
+            .timeout(timeout)
+            .header("content-type", "application/json")
+            .body(serde_json::to_string(body).unwrap_or_default());
+        for (name, value) in headers {
+            builder = builder.header(name.as_str(), value.as_str());
+        }
+        send_traced(builder, resolved)
             .await
-            .context("failed to parse embedding response")?;
-
-        let vector =
-            parse_embedding_vector(&json).context("embedding response had no usable vector")?;
-
-        Ok(Some(EmbeddingResult {
-            vector,
-            model: resolved.model,
-        }))
+            .map_err(transport_error)
     }
 
     // -------------------------------------------------------------------------
@@ -1284,6 +1791,116 @@ mod tests {
             let serde_name = serde_json::to_value(op).unwrap();
             assert_eq!(serde_name, serde_json::json!(op.config_key()));
         }
+    }
+
+    /// A provider service whose database is unreachable: the `ai_timeouts`
+    /// read falls back to defaults at once.
+    fn offline_service() -> AiProviderService {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_millis(50))
+            .connect_lazy("postgres://trovato:unused@127.0.0.1:1/unused")
+            .expect("a lazy pool never connects here");
+        AiProviderService::new(pool)
+    }
+
+    fn provider_at(base_url: &str, protocol: ProviderProtocol) -> ResolvedProvider {
+        ResolvedProvider {
+            config: AiProviderConfig {
+                id: "send-path".to_string(),
+                label: "Send path".to_string(),
+                protocol,
+                base_url: base_url.to_string(),
+                api_key_env: String::new(),
+                models: Vec::new(),
+                rate_limit_rpm: 0,
+                enabled: true,
+            },
+            api_key: None,
+            model: "m".to_string(),
+        }
+    }
+
+    /// **B50.** All three sends check the base URL themselves, so a provider
+    /// row that reached `site_config` without the admin form cannot send to a
+    /// private address: an IP literal never passes through the hardened
+    /// resolver, so this check is the only thing that stops it.
+    #[tokio::test]
+    async fn every_send_refuses_a_private_ip_literal() {
+        let service = offline_service();
+        let caller = AiCaller::anonymous("test");
+        let request = ChatRequest::system_and_user("s", "u", 16);
+        for base in [
+            "http://10.0.0.1/v1",
+            "http://169.254.169.254",
+            "http://[::1]:8080",
+            "http://127.0.0.1:9",
+            "http://localhost:11434/v1",
+        ] {
+            let provider = provider_at(base, ProviderProtocol::OpenAiCompatible);
+            assert!(
+                matches!(
+                    service.chat_once(&provider, &caller, &request).await,
+                    Err(AiCallError::BaseUrlRefused)
+                ),
+                "chat_once: {base}"
+            );
+            assert!(
+                matches!(
+                    service.chat_stream(&provider, &caller, &request).await,
+                    Err(AiCallError::BaseUrlRefused)
+                ),
+                "chat_stream: {base}"
+            );
+            assert!(
+                matches!(
+                    service.embed_with(&provider, "text", &caller).await,
+                    Err(AiCallError::BaseUrlRefused)
+                ),
+                "embed_with: {base}"
+            );
+        }
+    }
+
+    /// The test seam lets one exact loopback URL through and nothing else.
+    #[test]
+    fn the_loopback_test_seam_is_exact() {
+        allow_loopback_provider_for_tests("http://127.0.0.1:61234");
+        assert!(loopback_allowed_for_tests("http://127.0.0.1:61234/"));
+        assert!(!loopback_allowed_for_tests("http://127.0.0.1:61235"));
+        assert!(!loopback_allowed_for_tests("http://localhost:61234"));
+        assert!(
+            std::panic::catch_unwind(|| allow_loopback_provider_for_tests("http://10.0.0.1:80"))
+                .is_err(),
+            "a non-loopback address is never allowed"
+        );
+    }
+
+    /// A refused send and an unreachable provider say nothing a person should
+    /// not see: no URL, no provider text.
+    #[test]
+    fn user_messages_carry_no_detail() {
+        let errors = [
+            AiCallError::BaseUrlRefused,
+            AiCallError::Provider {
+                status: 500,
+                detail: "secret provider text".into(),
+            },
+            AiCallError::Transport("error sending request for url (http://10.0.0.1/)".into()),
+            AiCallError::Malformed("secret".into()),
+        ];
+        for error in errors {
+            let shown = error.user_message();
+            assert!(
+                !shown.contains("secret") && !shown.contains("10.0.0.1"),
+                "{shown}"
+            );
+        }
+        let provider = AiCallError::Provider {
+            status: 500,
+            detail: "secret provider text".into(),
+        };
+        assert!(!provider.to_string().contains("secret"), "{provider}");
     }
 
     #[tokio::test]
