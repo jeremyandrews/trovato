@@ -144,8 +144,8 @@ async fn seed_tutorial_data(app: &'static common::TestApp) {
 
             if !alias_exists {
                 sqlx::query(
-                    r#"INSERT INTO url_alias (id, source, alias, language, stage_id, created)
-                       VALUES (gen_random_uuid(), '/gather/upcoming_conferences', '/conferences', 'en', $1, $2)"#,
+                    r#"INSERT INTO url_alias (id, source, alias, language, stage_id, created, changed)
+                       VALUES (gen_random_uuid(), '/gather/upcoming_conferences', '/conferences', 'en', $1, $2, $2)"#,
                 )
                 .bind(LIVE_STAGE_ID)
                 .bind(now)

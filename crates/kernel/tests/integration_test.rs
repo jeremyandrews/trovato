@@ -5719,13 +5719,15 @@ fn pathauto_skips_when_alias_exists() {
     .unwrap();
 
         // Manually set an alias first
-        sqlx::query("INSERT INTO url_alias (source, alias, created) VALUES ($1, $2, $3)")
-            .bind(format!("/item/{item_id}"))
-            .bind("my-custom-alias")
-            .bind(now)
-            .execute(&app.db)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO url_alias (source, alias, created, changed) VALUES ($1, $2, $3, $3)",
+        )
+        .bind(format!("/item/{item_id}"))
+        .bind("my-custom-alias")
+        .bind(now)
+        .execute(&app.db)
+        .await
+        .unwrap();
 
         // Pathauto should skip because alias already exists
         let result = trovato_kernel::services::pathauto::auto_alias_item(
