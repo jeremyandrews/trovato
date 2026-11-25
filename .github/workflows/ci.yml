@@ -1229,6 +1229,12 @@ jobs:
           (cd "$RUNNER_TEMP/previous" && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target" \
             cargo build -p trovato-kernel --bin trovato)
           cp target/debug/trovato "$RUNNER_TEMP/trovato-previous"
+          # Cargo hashes a path crate without its path, so the previous
+          # tree's trovato-sdk and the branch's share one artifact, and the
+          # previous build's newer mtime made the branch's look fresh: a
+          # branch adding an SDK constant failed to compile here. Drop the
+          # workspace crates' fingerprints; dependencies stay cached.
+          rm -rf target/debug/.fingerprint/trovato-*
       - name: Previous binary on this branch's schema
         env:
           TROVATO_PREVIOUS_BIN: ${{ runner.temp }}/trovato-previous
