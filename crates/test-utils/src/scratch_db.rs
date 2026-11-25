@@ -24,6 +24,36 @@ pub struct ScratchDb {
     pool: Option<PgPool>,
 }
 
+/// Postgres truncates an identifier over this many bytes rather than refusing
+/// it (`NAMEDATALEN` - 1, true of every build), so a name built from a label
+/// long enough to cross it is silently split from what `CREATE DATABASE` ran:
+/// the admin connection creates the truncated name, and the very next
+/// connect, which asks for the name this module still holds in full, is
+/// refused with "database ... does not exist" — the create appeared to
+/// succeed and the failure lands one line later, on an unrelated-looking
+/// assertion.
+const POSTGRES_MAX_IDENTIFIER_BYTES: usize = 63;
+
+/// `label`, cut down so `trovato_<label>_<32 hex chars>` fits in
+/// [`POSTGRES_MAX_IDENTIFIER_BYTES`]. The UUID suffix is never shortened:
+/// [`ScratchDb::drop_stale`] parses it back out to read the database's age.
+///
+/// Every label in the tree is plain ASCII, so byte and character boundaries
+/// are the same thing; this still only ever cuts at a char boundary, so a
+/// label that were not ASCII could not come back out an invalid `&str`.
+fn fitting_label(label: &str) -> &str {
+    const FIXED: usize = "trovato_".len() + "_".len() + 32; // the non-label parts
+    let max_label_bytes = POSTGRES_MAX_IDENTIFIER_BYTES.saturating_sub(FIXED);
+    if label.len() <= max_label_bytes {
+        return label;
+    }
+    let cut = (0..=max_label_bytes)
+        .rev()
+        .find(|&i| label.is_char_boundary(i))
+        .unwrap_or(0);
+    &label[..cut]
+}
+
 impl ScratchDb {
     /// Create a database named for `label`, and connect to it.
     ///
@@ -46,7 +76,11 @@ impl ScratchDb {
             .expect("DATABASE_URL must include a database name");
         let server_url = without_query[..cut].to_string();
 
-        let name = format!("trovato_{label}_{}", Uuid::now_v7().simple());
+        let name = format!(
+            "trovato_{}_{}",
+            fitting_label(label),
+            Uuid::now_v7().simple()
+        );
 
         let mut admin = PgConnection::connect(&format!("{server_url}/postgres"))
             .await
@@ -90,7 +124,7 @@ impl ScratchDb {
         let mut admin = PgConnection::connect(&format!("{server_url}/postgres"))
             .await
             .expect("failed to connect to the postgres maintenance database");
-        let prefix = format!("trovato_{label}_");
+        let prefix = format!("trovato_{}_", fitting_label(label));
         let pattern = format!("{}%", prefix.replace('_', "\\_"));
         let listed: Vec<String> = sqlx::query_scalar(
             "SELECT datname FROM pg_database d WHERE datname LIKE $1 \
@@ -176,5 +210,37 @@ impl Drop for ScratchDb {
             });
         })
         .join();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fitting_label;
+
+    #[test]
+    fn a_label_within_the_limit_is_unchanged() {
+        assert_eq!(fitting_label("roleperms"), "roleperms");
+        assert_eq!(fitting_label(""), "");
+        // Exactly the longest label `trovato_<label>_<32 hex>` fits whole:
+        // 63 - len("trovato_") - len("_") - 32 == 22.
+        let exactly_fits = "a".repeat(22);
+        assert_eq!(fitting_label(&exactly_fits), exactly_fits);
+    }
+
+    #[test]
+    fn a_label_over_the_limit_is_cut_to_it() {
+        // One byte over: cut by exactly one.
+        let one_over = "a".repeat(23);
+        assert_eq!(fitting_label(&one_over), "a".repeat(22));
+        // The two labels that first exposed this: each produced a
+        // "database ... does not exist" on the very next connect, because
+        // CREATE DATABASE truncated the name but the client kept asking for
+        // it in full.
+        assert_eq!(
+            fitting_label("cfgimport_rolepluginperm").len(),
+            22,
+            "trovato_<this>_<32 hex> must be at most 63 bytes"
+        );
+        assert_eq!(fitting_label("bg10_plugin_incompat_cli").len(), 22);
     }
 }
