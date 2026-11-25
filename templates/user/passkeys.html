@@ -12,6 +12,13 @@
 
     <div id="passkey-message" role="status" style="display: none; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;"></div>
 
+    {% if not webauthn_available %}
+    <div style="background: #ffd; border: 1px solid #cc0; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
+        Passkeys aren't available on this site. It's reached by IP address, and
+        browsers only allow passkeys on a secure address (HTTPS or a hostname).
+        Sign in with your password instead.
+    </div>
+    {% else %}
     <noscript>
         <div style="background: #fee; border: 1px solid #c00; padding: 1rem; border-radius: 4px;">
             Registering a passkey needs JavaScript, because the browser performs the
@@ -22,6 +29,7 @@
     <div id="passkey-unsupported" style="display: none; background: #ffd; border: 1px solid #cc0; padding: 1rem; border-radius: 4px;">
         This browser does not support passkeys.
     </div>
+    {% endif %}
 
     {# ── Registered passkeys ─────────────────────────────────────────────── #}
     <h2 style="margin-top: 2rem;">Your passkeys</h2>
@@ -68,6 +76,7 @@
     <p style="color: #777;">No passkeys registered yet.</p>
     {% endif %}
 
+    {% if webauthn_available %}
     {# ── Register a new one ──────────────────────────────────────────────── #}
     <div style="margin: 1.5rem 0;">
         <label for="new-passkey-name" class="form-item__label">Name this device (optional)</label>
@@ -79,6 +88,7 @@
             Register a passkey
         </button>
     </div>
+    {% endif %}
 
     {# ── Passwordless ────────────────────────────────────────────────────── #}
     <h2 style="margin-top: 2.5rem;">Password</h2>
@@ -175,6 +185,9 @@
   }
 
   // ── Registration ceremony ────────────────────────────────────────────────
+  // No registration button when the site has no WebAuthn relying party
+  // (webauthn_available is false): nothing below applies.
+  if (!button) { return; }
   if (!window.PublicKeyCredential) {
     document.getElementById("passkey-unsupported").style.display = "block";
     button.disabled = true;
