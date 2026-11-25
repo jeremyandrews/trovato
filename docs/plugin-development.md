@@ -152,8 +152,8 @@ weight = 0  # Lower weight = earlier execution
 | `[migrations].files` | No | Array of SQL migration file paths |
 | `[migrations].depends_on` | No | Plugin names whose migrations run first |
 | `[capabilities]` | No | What the plugin may reach: host interfaces, tables, `raw_sql` and the background grants. Absent means nothing. See [plugin-capabilities.md](plugin-capabilities.md) |
-| `[config].tables` | No | The plugin's own tables that hold site configuration, carried by `config export` and `config import` (API 0.106). See [Configuration Tables](#configuration-tables) |
-| `[config].secret_columns` | No | Per config table, the columns that hold a secret, a password, a token, a key or a hash of one; never exported (API 0.107). See [Secret Columns](#secret-columns) |
+| `[config].tables` | No | The plugin's own tables that hold site configuration, carried by `config export` and `config import` (API 0.105). See [Configuration Tables](#configuration-tables) |
+| `[config].secret_columns` | No | Per config table, the columns that hold a secret, a password, a token, a key or a hash of one; never exported (API 0.105). See [Secret Columns](#secret-columns) |
 
 ### Configuration Tables
 
@@ -914,7 +914,7 @@ the same way the `load_users` example above does.
 ABI: `load-users` is in the existing `user-api` interface, with a new
 manifest capability, `user_directory` (B73, after 0.104.0). `find-user-by-name`
 and `find-users-by-name-prefix` are two more functions in the same interface,
-sharing that capability (B179, after 0.107.0). No existing signature changed.
+sharing that capability (B179, after 0.104.0). No existing signature changed.
 
 ### Mailing a Member
 

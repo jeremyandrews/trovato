@@ -1328,3 +1328,22 @@ jobs:
           fetch-depth: 0
       - name: Require a changelog fragment for code changes
         run: ./scripts/changelog-check.sh "${{ github.event.pull_request.base.sha }}"
+
+  version:
+    name: Version Step
+    runs-on: ubuntu-latest
+    # The version in Cargo.toml is the next release and is raised once per
+    # release. Two unreleased pull requests each raised the minor because each
+    # added to the plugin API, so main declared a version two minors past the
+    # release it was heading for. This fails a pull request whose version is
+    # neither the newest release tag nor one release step above it. See
+    # docs/design/Versioning.md.
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # `git describe` needs the tags and the history that reaches them.
+          fetch-depth: 0
+          fetch-tags: true
+      - name: Require the version to be at most one release step past the newest tag
+        run: ./scripts/version-check.sh

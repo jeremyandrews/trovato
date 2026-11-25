@@ -1,7 +1,7 @@
 name = "test_item_background"
 description = "U40 fixture: item-api writes from tap_cron and tap_queue_worker"
-version = "0.107.0"
-api_version = "0.107"
+version = "0.105.0"
+api_version = "0.105"
 default_enabled = false
 dependencies = []
 

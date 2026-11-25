@@ -46,6 +46,52 @@ merge_base="$(git merge-base "$base" HEAD)" ||
 
 changed="$(git diff --name-only "$merge_base" HEAD)"
 
+# A RELEASE FOLD ADDS NO FRAGMENT, BY CONSTRUCTION. The release branch runs
+# scripts/changelog-fold.sh, which deletes every fragment, and it touches the
+# watched paths (the version sweep rewrites every plugin manifest), so without
+# this rule the one branch that ships the entries is the one the gate fails. It
+# is recognised by what the fold leaves behind, all read from commits rather than
+# the working tree: at least one fragment deleted against the merge base,
+# changelog.d/ at HEAD holding nothing but README.md, and CHANGELOG.md at HEAD
+# carrying a `## v<version>` heading, for the version Cargo.toml declares at
+# HEAD, that the merge base does not have. A branch that merely forgot its entry
+# deletes no fragment and opens no section, so it still fails below.
+release_version=""
+deleted_count=0
+is_release_fold() {
+    local deleted remaining heading_re
+    deleted="$(git diff --name-only --diff-filter=D "$merge_base" HEAD |
+        grep '^changelog\.d/.*\.md$' |
+        grep -v '^changelog\.d/README\.md$' || true)"
+    [ -n "$deleted" ] || return 1
+    deleted_count="$(printf '%s\n' "$deleted" | wc -l | tr -d ' ')"
+
+    remaining="$(git ls-tree --name-only HEAD changelog.d/ |
+        grep -v '^changelog\.d/README\.md$' || true)"
+    [ -z "$remaining" ] || return 1
+
+    release_version="$(git show HEAD:Cargo.toml | awk '
+        /^\[/ { in_pkg = ($0 == "[workspace.package]"); next }
+        in_pkg && /^version[[:space:]]*=/ {
+            sub(/^version[[:space:]]*=[[:space:]]*"/, ""); sub(/".*$/, ""); print
+            in_pkg = 0
+        }')"
+    [ -n "$release_version" ] || return 1
+
+    # Read into variables rather than piped into `grep -q`: under pipefail a
+    # grep that stops at its first match kills `git show` with SIGPIPE, and the
+    # pipeline then reports failure for a heading that is there.
+    local head_log base_log
+    heading_re="^## v$(printf '%s' "$release_version" | sed 's/\./\\./g')([[:space:]]|\$)"
+    head_log="$(git show HEAD:CHANGELOG.md)" || return 1
+    base_log="$(git show "$merge_base:CHANGELOG.md" 2> /dev/null || true)"
+    printf '%s\n' "$head_log" | grep -E "$heading_re" > /dev/null || return 1
+    if printf '%s\n' "$base_log" | grep -E "$heading_re" > /dev/null; then
+        return 1
+    fi
+    return 0
+}
+
 needs_entry=0
 for prefix in $watched_paths; do
     if printf '%s\n' "$changed" | grep -q "^$prefix"; then
@@ -64,6 +110,11 @@ fi
 fragments="$(git diff --name-only --diff-filter=AM "$merge_base" HEAD |
     grep '^changelog\.d/.*\.md$' |
     grep -v '^changelog\.d/README\.md$' || true)"
+
+if [ -z "$fragments" ] && is_release_fold; then
+    echo "changelog-check: release fold for v$release_version: $deleted_count fragment(s) folded into CHANGELOG.md, changelog.d/ emptied; no fragment of its own required."
+    exit 0
+fi
 
 if [ -z "$fragments" ]; then
     branch="$(git rev-parse --abbrev-ref HEAD)"

@@ -1153,12 +1153,12 @@ mod tests {
 
     /// A page using every standard component, saved before components were
     /// declared in files, still validates and renders byte for byte the HTML
-    /// it rendered then (`standard-page-v0.106.html` was written by the
+    /// it rendered then (`standard-page-pre-registry.html` was written by the
     /// renderer as it was before this change).
     #[test]
-    fn a_page_saved_by_0_106_validates_and_renders_the_same_html() {
+    fn a_page_saved_before_the_registry_validates_and_renders_the_same_html() {
         let json: serde_json::Value =
-            serde_json::from_str(&fixture("standard-page-v0.106.json")).unwrap();
+            serde_json::from_str(&fixture("standard-page-pre-registry.json")).unwrap();
         let registry = ComponentRegistry::new();
         let errors = registry.validate_page(&json);
         assert!(errors.is_empty(), "{errors:?}");
@@ -1171,12 +1171,12 @@ mod tests {
             &ResolvedReferences::default(),
         )
         .unwrap();
-        assert_eq!(rendered.html, fixture("standard-page-v0.106.html"));
+        assert_eq!(rendered.html, fixture("standard-page-pre-registry.html"));
         assert_eq!(rendered.stylesheets, vec![STANDARD_STYLESHEET]);
         // Its root is the title alone, and templates receive just that.
         assert_eq!(
             serde_json::Value::Object(rendered.root),
-            json!({ "title": "A page saved by v0.106.0", "variant_classes": "" })
+            json!({ "title": "A page saved before the component registry", "variant_classes": "" })
         );
 
         // With a plugin declaring page root fields enabled, the same page
@@ -1191,12 +1191,12 @@ mod tests {
             &ResolvedReferences::default(),
         )
         .unwrap();
-        assert_eq!(rendered.html, fixture("standard-page-v0.106.html"));
+        assert_eq!(rendered.html, fixture("standard-page-pre-registry.html"));
         assert_eq!(rendered.root["footer_mode"], "default");
     }
 
     fn json_fixture() -> serde_json::Value {
-        serde_json::from_str(&fixture("standard-page-v0.106.json")).unwrap()
+        serde_json::from_str(&fixture("standard-page-pre-registry.json")).unwrap()
     }
 
     const ROOT: &str = r#"
