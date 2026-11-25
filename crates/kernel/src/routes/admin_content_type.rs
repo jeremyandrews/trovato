@@ -9,6 +9,7 @@ use tower_sessions::Session;
 
 use crate::content::{AddFieldError, CreateContentTypeError};
 use crate::form::csrf::generate_csrf_token;
+use crate::routes::admin_form::FieldError;
 use crate::search::SearchSwitches;
 use crate::state::AppState;
 
@@ -20,6 +21,28 @@ use super::helpers::{
 // =============================================================================
 // Form data
 // =============================================================================
+
+/// The field types the add-field form offers: value and English label,
+/// translated by the select macro.
+const FIELD_TYPE_OPTIONS: &[(&str, &str)] = &[
+    ("text", "Text (plain)"),
+    ("text_long", "Text (long)"),
+    ("integer", "Integer"),
+    ("float", "Float"),
+    ("boolean", "Boolean"),
+    ("date", "Date"),
+    ("email", "Email"),
+    ("record_reference", "Reference"),
+];
+
+/// The preview choices of a content type: value and English label,
+/// translated by the select macro. Each label says what it means on its own,
+/// so none needs a translation context.
+const PREVIEW_OPTIONS: &[(&str, &str)] = &[
+    ("disabled", "No preview"),
+    ("optional", "Preview offered"),
+    ("required", "Preview required before saving"),
+];
 
 /// Content type form data.
 #[derive(Debug, Deserialize)]
@@ -178,6 +201,7 @@ async fn add_content_type_form(State(state): State<AppState>, session: Session) 
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &false);
+    context.insert("preview_options", PREVIEW_OPTIONS);
     context.insert("values", &serde_json::json!({}));
     context.insert("path", "/admin/structure/types/add");
 
@@ -211,24 +235,25 @@ async fn add_content_type_submit(
     let mut errors = Vec::new();
 
     if form.label.trim().is_empty() {
-        errors.push("Name is required.".to_string());
+        errors.push(FieldError::on("label", "Name is required."));
     }
 
     if form.machine_name.trim().is_empty() {
-        errors.push("Machine name is required.".to_string());
+        errors.push(FieldError::on("machine_name", "Machine name is required."));
     } else if !is_valid_machine_name(&form.machine_name) {
-        errors.push(MACHINE_NAME_ERROR.to_string());
+        errors.push(FieldError::on("machine_name", MACHINE_NAME_ERROR));
     }
 
     // Check if machine name already exists. The cache answers the common
     // case; `create` refuses a name only the database knows.
     if state.content_types().get(&form.machine_name).is_some() {
-        errors.push(
+        errors.push(FieldError::on(
+            "machine_name",
             CreateContentTypeError::AlreadyExists {
                 machine_name: form.machine_name.clone(),
             }
             .to_string(),
-        );
+        ));
     }
 
     if !errors.is_empty() {
@@ -253,7 +278,13 @@ async fn add_content_type_submit(
             Redirect::to("/admin/structure/types").into_response()
         }
         Err(e @ CreateContentTypeError::AlreadyExists { .. }) => {
-            render_add_form_with_errors(&state, &session, &form, &[e.to_string()]).await
+            render_add_form_with_errors(
+                &state,
+                &session,
+                &form,
+                &[FieldError::on("machine_name", e.to_string())],
+            )
+            .await
         }
         Err(CreateContentTypeError::Other(e)) => {
             tracing::error!(error = %e, "failed to create content type");
@@ -268,7 +299,7 @@ async fn render_add_form_with_errors(
     state: &AppState,
     session: &Session,
     form: &ContentTypeFormData,
-    errors: &[String],
+    errors: &[FieldError],
 ) -> Response {
     let csrf_token = generate_csrf_token(session).await;
     let form_build_id = uuid::Uuid::new_v4().to_string();
@@ -278,6 +309,7 @@ async fn render_add_form_with_errors(
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &false);
+    context.insert("preview_options", PREVIEW_OPTIONS);
     context.insert("errors", &errors);
     context.insert("values", &form.values());
     context.insert("path", "/admin/structure/types/add");
@@ -318,6 +350,7 @@ async fn edit_content_type_form(
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &true);
+    context.insert("preview_options", PREVIEW_OPTIONS);
     // Load the database model to access settings (not available on ContentTypeDefinition)
     let db_type = crate::models::ItemType::find_by_type(state.db(), &type_name)
         .await
@@ -383,7 +416,7 @@ async fn edit_content_type_submit(
     let mut errors = Vec::new();
 
     if form.label.trim().is_empty() {
-        errors.push("Name is required.".to_string());
+        errors.push(FieldError::on("label", "Name is required."));
     }
 
     if !errors.is_empty() {
@@ -398,6 +431,7 @@ async fn edit_content_type_submit(
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &true);
+        context.insert("preview_options", PREVIEW_OPTIONS);
         context.insert("errors", &errors);
         context.insert("values", &form.values());
         context.insert("path", &format!("/admin/structure/types/{type_name}/edit"));
@@ -466,6 +500,7 @@ async fn manage_fields(
     let mut context = tera::Context::new();
     context.insert("content_type", &content_type);
     context.insert("fields", &content_type.fields);
+    context.insert("field_type_options", FIELD_TYPE_OPTIONS);
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert(
@@ -508,17 +543,17 @@ async fn add_field(
     let mut errors = Vec::new();
 
     if form.label.trim().is_empty() {
-        errors.push("Label is required.".to_string());
+        errors.push(FieldError::on("new_field_label", "Label is required."));
     }
 
     if form.name.trim().is_empty() {
-        errors.push("Machine name is required.".to_string());
+        errors.push(FieldError::on("new_field_name", "Machine name is required."));
     } else if !is_valid_machine_name(&form.name) {
-        errors.push(MACHINE_NAME_ERROR.to_string());
+        errors.push(FieldError::on("new_field_name", MACHINE_NAME_ERROR));
     }
 
     if form.field_type.is_empty() {
-        errors.push("Field type is required.".to_string());
+        errors.push(FieldError::on("new_field_type", "Field type is required."));
     }
 
     if !errors.is_empty() {
@@ -543,7 +578,20 @@ async fn add_field(
         // registry owns the wording, so it is not written out again here.
         Err(
             e @ (AddFieldError::DuplicateFieldName { .. } | AddFieldError::UnknownFieldType { .. }),
-        ) => rerender_field_list(&state, &session, &type_name, &form, vec![e.to_string()]).await,
+        ) => {
+            let field = match e {
+                AddFieldError::UnknownFieldType { .. } => "new_field_type",
+                _ => "new_field_name",
+            };
+            rerender_field_list(
+                &state,
+                &session,
+                &type_name,
+                &form,
+                vec![FieldError::on(field, e.to_string())],
+            )
+            .await
+        }
         Err(e) => {
             tracing::error!(error = %e, "failed to add field");
             render_server_error("Failed to add field.")
@@ -558,7 +606,7 @@ async fn rerender_field_list(
     session: &Session,
     type_name: &str,
     form: &FieldFormData,
-    errors: Vec<String>,
+    errors: Vec<FieldError>,
 ) -> Response {
     let Some(content_type) = state.content_types().get(type_name) else {
         return render_not_found();
@@ -576,6 +624,7 @@ async fn rerender_field_list(
     let mut context = tera::Context::new();
     context.insert("content_type", &content_type);
     context.insert("fields", &content_type.fields);
+    context.insert("field_type_options", FIELD_TYPE_OPTIONS);
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("errors", &errors);
@@ -696,12 +745,15 @@ async fn edit_field_submit(
     let mut errors = Vec::new();
 
     if form.label.trim().is_empty() {
-        errors.push("Label is required.".to_string());
+        errors.push(FieldError::on("edit_field_label", "Label is required."));
     }
 
     let cardinality = form.cardinality.unwrap_or(1);
     if cardinality == 0 || cardinality < -1 {
-        errors.push("Number of values must be 1 or more, or -1 for unlimited.".to_string());
+        errors.push(FieldError::on(
+            "edit_field_cardinality",
+            "Number of values must be 1 or more, or -1 for unlimited.",
+        ));
     }
 
     if !errors.is_empty() {

@@ -6,52 +6,26 @@
 {% block page_actions %}<a href="{{ urls.list }}" class="button button--secondary">{{ t(s="Tags in {category}", category=category.label) }}</a>{% endblock page_actions %}
 
 {% block content %}
+{% set errs = errors | default(value=[]) %}
 <div class="admin-card">
-    <form id="tag-form" method="post" action="{{ action }}">
+    <form id="tag-form" method="post" action="{{ action }}" novalidate>
         {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
 
-        {{ form::errors(errors=errors) }}
+        {{ form::error_summary(errors=errs) }}
 
-        <div class="form-item">
-            <label for="label" class="form-item__label">{{ t(s="Name") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
-            <input type="text" id="label" name="label" class="form-text"
-                   value="{{ values.label | default(value='') }}"
-                   required>
-        </div>
+        {{ form::field(name="label", label=t(s="Name"), value=values.label | default(value=""), required=true, errors=errs, width="30") }}
 
-        <div class="form-item">
-            <label for="description" class="form-item__label">{{ t(s="Description") }}</label>
-            <textarea id="description" name="description" class="form-textarea" rows="3">{{ values.description | default(value='') }}</textarea>
-        </div>
+        {{ form::textarea(name="description", label=t(s="Description"), value=values.description | default(value=""), rows=3, errors=errs) }}
 
-        <div class="form-item">
-            <label for="slug" class="form-item__label">{{ t(s="URL slug") }}</label>
-            <p class="form-item__description" id="slug-hint">{{ t(s='Lowercase letters, digits, and hyphens (e.g. "rust", "ai-data"). Used in URL aliases. Leave empty if not needed.') }}</p>
-            <input type="text" id="slug" name="slug" class="form-text form-text--narrow"
-                   value="{{ values.slug | default(value='') }}"
-                   pattern="[a-z0-9][a-z0-9\-]*"
-                   maxlength="128" aria-describedby="slug-hint">
-        </div>
+        {{ form::field(name="slug", label=t(s="URL slug"), value=values.slug | default(value=""), hint=t(s='Lowercase letters, digits, and hyphens (e.g. "rust", "ai-data"). Used in URL aliases. Leave empty if not needed.'), errors=errs, width="20", attrs='pattern="[a-z0-9][a-z0-9\-]*" maxlength="128" spellcheck="false" autocapitalize="none"') }}
 
         {% if category.hierarchy > 0 %}
-        <div class="form-item">
-            <label for="parent_id" class="form-item__label">{{ t(s="Parent tag") }}</label>
-            <p class="form-item__description" id="parent_id-hint">{{ t(s="Select a parent tag to create a hierarchy.") }}</p>
-            <select id="parent_id" name="parent_id" class="form-select" aria-describedby="parent_id-hint">
-                <option value="">{{ t(s="- None (root) -") }}</option>
-                {% for tag in existing_tags %}
-                <option value="{{ tag.id }}" {% if values.parent_id is defined and values.parent_id == tag.id %}selected{% endif %}>{{ tag.label }}</option>
-                {% endfor %}
-            </select>
-        </div>
+        {% if values.parent_id is defined and values.parent_id %}{% set parent = values.parent_id %}{% else %}{% set parent = "" %}{% endif %}
+        {{ form::select(name="parent_id", label=t(s="Parent tag"), options=parent_options, value=parent, empty=t(s="- None (root) -"), hint=t(s="Select a parent tag to create a hierarchy."), errors=errs) }}
         {% endif %}
 
-        <div class="form-item">
-            <label for="weight" class="form-item__label">{{ t(s="Weight") }}</label>
-            <p class="form-item__description" id="weight-hint">{{ t(s="Lower weights appear first in listings.") }}</p>
-            <input type="number" id="weight" name="weight" class="form-text form-text--compact"
-                   value="{{ values.weight | default(value='0') }}" aria-describedby="weight-hint">
-        </div>
+        {% if values.weight is defined and values.weight %}{% set weight = values.weight %}{% else %}{% set weight = "0" %}{% endif %}
+        {{ form::field(name="weight", type="number", label=t(s="Weight"), value=weight, hint=t(s="Lower weights appear first in listings."), errors=errs, width="10") }}
 
         {% if editing %}
         {{ form::actions(submit_label=t(s="Save changes"), cancel_url=urls.list) }}
