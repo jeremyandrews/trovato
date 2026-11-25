@@ -102,6 +102,11 @@ enum Commands {
         #[command(subcommand)]
         action: CacheAction,
     },
+    /// Static search index commands.
+    Search {
+        #[command(subcommand)]
+        action: SearchAction,
+    },
     /// Item and revision management commands.
     Item {
         #[command(subcommand)]
@@ -177,6 +182,13 @@ enum ConfigAction {
         #[arg(long)]
         dry_run: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum SearchAction {
+    /// Ask for a full rebuild of the static search index at the next cron
+    /// run, instead of the incremental updates that follow each change.
+    Rebuild,
 }
 
 #[derive(Subcommand)]
@@ -317,6 +329,7 @@ async fn main() -> Result<()> {
         Some(Commands::Config { action }) => run_config_command(action).await,
         Some(Commands::User { action }) => run_user_command(action).await,
         Some(Commands::Cache { action }) => run_cache_command(action).await,
+        Some(Commands::Search { action }) => run_search_command(action).await,
         Some(Commands::Item { action }) => run_item_command(action).await,
         Some(Commands::Migrate {
             status,
@@ -398,6 +411,9 @@ async fn run_generate_command(
         "",
         report.total_seconds()
     );
+    // Bulk rows written straight to the database: the static search index is
+    // rebuilt in full by the next cron run rather than item by item.
+    crate::cron::request_search_index_rebuild(state.db()).await;
     println!("{}", bump_from_cli(&config, &CacheKind::ALL).await);
     Ok(())
 }
@@ -1202,6 +1218,9 @@ async fn run_config_command(action: ConfigAction) -> Result<()> {
             if !dry_run {
                 // Any cached kind may have changed, so every kind is bumped.
                 println!("{}", bump_from_cli(&config, &CacheKind::ALL).await);
+                // Imported content, aliases and search settings bypass the item
+                // service, so the static search index is rebuilt in full.
+                crate::cron::request_search_index_rebuild(&pool).await;
                 if result.counts.contains_key("plugin_status") {
                     println!("{CLI_PLUGIN_RESTART_NOTE}");
                 }
@@ -1595,6 +1614,23 @@ async fn find_user_and_role(
 const CLI_PLUGIN_RESTART_NOTE: &str = "Plugin enable and disable take effect when the servers restart (all of them, if more than one).";
 
 /// `trovato cache clear`.
+async fn run_search_command(action: SearchAction) -> Result<()> {
+    let config = Config::from_env().context("failed to load configuration")?;
+    let pool = db::create_pool(&config)
+        .await
+        .context("failed to create database pool")?;
+    match action {
+        SearchAction::Rebuild => {
+            crate::cron::request_search_index_rebuild(&pool).await;
+            println!(
+                "A full search index rebuild will run at the next cron run \
+                 (if the trovato_search plugin is installed)."
+            );
+        }
+    }
+    Ok(())
+}
+
 async fn run_cache_command(action: CacheAction) -> Result<()> {
     let config = Config::from_env().context("failed to load configuration")?;
     match action {

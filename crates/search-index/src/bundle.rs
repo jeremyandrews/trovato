@@ -110,18 +110,34 @@ struct EntryLanguage<'a> {
 /// order, which is the same for one language and arbitrary for more; the
 /// browser reads the object by key either way.
 pub fn entry_json(indexes: &[LanguageIndex]) -> Result<String> {
+    let languages: Vec<(&str, &str, usize)> = indexes
+        .iter()
+        .map(|index| {
+            (
+                index.language.as_str(),
+                index.meta_hash.as_str(),
+                index.page_count,
+            )
+        })
+        .collect();
+    entry_json_for(&languages)
+}
+
+/// [`entry_json`] from each language's `(language, meta stem, page slots)`, for
+/// an update that rewrote only some languages.
+pub fn entry_json_for(languages: &[(&str, &str, usize)]) -> Result<String> {
     let entry = Entry {
         version: PAGEFIND_VERSION,
-        languages: indexes
+        languages: languages
             .iter()
-            .map(|index| {
-                let wasm = language_wasm(&index.language).map(|_| index.language.as_str());
+            .map(|(language, hash, page_count)| {
+                let wasm = language_wasm(language).map(|_| *language);
                 (
-                    index.language.as_str(),
+                    *language,
                     EntryLanguage {
-                        hash: &index.meta_hash,
+                        hash,
                         wasm,
-                        page_count: index.page_count,
+                        page_count: *page_count,
                     },
                 )
             })
@@ -171,6 +187,7 @@ mod tests {
             word_count: 0,
             files: BTreeMap::new(),
             chunks: Vec::new(),
+            plan: Vec::new(),
         };
         assert_eq!(
             entry_json(&[index]).ok().as_deref(),

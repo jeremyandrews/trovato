@@ -832,6 +832,10 @@ impl StageService {
 /// stages, all copies are moved independently. Story S2-5 will add
 /// `tap_item_save` with `other_stage_revisions` payload for conflict awareness.
 async fn publish_items_default(tx: &mut Transaction<'_, Postgres>, stage_id: Uuid) -> Result<()> {
+    // The static search index: what this publish changes there, queued in its
+    // own transaction before anything leaves the stage.
+    crate::search::index_queue::enqueue_stage_publish(tx, stage_id).await?;
+
     // Move staged items to live
     let updated = sqlx::query("UPDATE item SET stage_id = $1, changed = $2 WHERE stage_id = $3")
         .bind(LIVE_STAGE_ID)
@@ -971,6 +975,7 @@ async fn publish_items_to_target(
     source: Uuid,
     target: Uuid,
 ) -> Result<()> {
+    crate::search::index_queue::enqueue_stage_publish(tx, source).await?;
     let now = chrono::Utc::now().timestamp();
 
     // Move staged items to target stage

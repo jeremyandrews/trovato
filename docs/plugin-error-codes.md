@@ -23,9 +23,9 @@ The authoritative source is `crates/plugin-sdk/src/host_errors.rs`.
 | -13 | `ERR_SERIALIZE_FAILED` | Result serialization to JSON failed | Kernel bug — file issue |
 | -14 | `ERR_PARAM_DESERIALIZE` | JSON parameter deserialization failed | Check parameter JSON format |
 | -15 | `ERR_INVALID_IDENTIFIER` | Invalid table or column name | Names must match `[a-zA-Z_][a-zA-Z0-9_]*` |
-| -82 | `ERR_DB_BATCH_TOO_LARGE` | `insert-many` was given more than 500 rows; nothing was written (added by B80) | Split the batch |
+| -82 | `ERR_DB_BATCH_TOO_LARGE` | `insert-many` was given more than 500 rows, or `search-index-enqueue` more than 10,000 ids; nothing was written (added by B80; B218) | Split the batch |
 
-An array `where` on `update` or `delete` that is empty, names an unknown op, or has an empty `in` list is `-14`, as are `insert-many` rows that disagree on their columns.
+An array `where` on `update` or `delete` that is empty, names an unknown op, or has an empty `in` list is `-14`, as are `insert-many` rows that disagree on their columns, and a `search-index-enqueue` argument that is not a JSON array of UUIDs.
 
 ## AI API Errors
 

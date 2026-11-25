@@ -1,8 +1,13 @@
-//! Pagefind search index builder.
+//! Pagefind search index: what goes in it, and the cron step that keeps it
+//! current.
 //!
-//! Checks the `pagefind_index_status` signal table (created by the
-//! `trovato_search` plugin) and rebuilds the client-side search index when
-//! requested. Decides which items are searchable and renders each as the HTML
+//! The `pagefind_index_status` table (created by the `trovato_search` plugin)
+//! says the site wants the index, and carries an operator's full rebuild
+//! request ([`request_rebuild`]). Each cron run applies the change queue
+//! (`search_index_queue`, which every writer of searchable content fills)
+//! through the incremental updater in [`super::search_update`], and takes a
+//! full build only when one is requested or an update's preconditions fail.
+//! This module decides which items are searchable and renders each as the HTML
 //! fragment Pagefind reads ([`indexable_documents`], [`render_fragment`]); the
 //! index itself is built natively, through the page ledger, by
 //! [`super::search_index`], and published into `PAGEFIND_OUTPUT_DIR`
@@ -149,20 +154,16 @@ const VISIBLE_COMMENTS_SQL: &str = r#"
     SELECT item_id, subject, body FROM visible ORDER BY item_id, sort_path
 "#;
 
-/// Ask for a Pagefind rebuild at the next cron run.
+/// Ask for a **full** rebuild of the static index at the next cron run.
 ///
-/// The kernel's item and comment write services call this after a write that
-/// changes what the public index holds: an item published, edited, unpublished
-/// or deleted; a visible comment written, edited, published, unpublished or
-/// deleted. Polling `MAX(changed)` over published items, which is all
-/// `trovato_search`'s `tap_cron` does, cannot see a delete, an unpublish or a
-/// comment, so before this a deleted item stayed findable and a new comment
-/// never became findable.
+/// Ordinary writes do not call this: they queue the items they changed
+/// ([`crate::search::index_queue`]) and cron rewrites only those items' part
+/// of the index. This is for an operator, or a bulk change that would queue
+/// most of the site anyway.
 ///
 /// The flag lives in `trovato_search`'s own table, which does not exist on a
 /// site that never installed the plugin, so the statement checks for the table
-/// itself rather than failing: one round trip, and nothing in the server log.
-/// Best effort: a failure is logged and the write it follows stands.
+/// itself rather than failing. Best effort: a failure is logged.
 pub async fn request_rebuild(pool: &PgPool) {
     let result = sqlx::query(
         "DO $$ BEGIN \
@@ -179,101 +180,117 @@ pub async fn request_rebuild(pool: &PgPool) {
     }
 }
 
-/// Check if the `trovato_search` plugin has requested a rebuild and
-/// perform it if so.
+/// The kernel's documents for the search index: [`indexable_documents_for`],
+/// as the anonymous visitor.
+pub struct ItemDocuments<'a> {
+    /// The database.
+    pub pool: &'a PgPool,
+    /// The item service, for the access seam.
+    pub items: &'a ItemService,
+}
+
+#[async_trait::async_trait]
+impl super::search_update::DocumentSource for ItemDocuments<'_> {
+    async fn documents(&self, ids: Option<&[Uuid]>) -> Result<Vec<IndexDocument>> {
+        indexable_documents_for(self.pool, self.items, ids).await
+    }
+}
+
+/// Bring the static search index up to date, if the `trovato_search` plugin
+/// is installed: a full build when one was requested (or nothing is live
+/// yet), otherwise the queued items' updates, then compaction past
+/// `compaction_percent` tombstones ([`super::search_update::run_index`]).
 ///
-/// Returns `Ok(true)` if an index was built, `Ok(false)` if no rebuild
-/// was needed (or the signal table doesn't exist), and `Err` on failure.
-/// `output_dir` is the directory the generated index is written to
-/// (`PAGEFIND_OUTPUT_DIR`), supplied by the caller rather than read back out of
-/// the environment here.
+/// Returns `Ok(true)` if anything was published or drained, `Ok(false)` if
+/// there was nothing to do (or the plugin's table does not exist), and `Err`
+/// on failure, which is also recorded in `pagefind_index_status.last_error`.
+/// `output_dir` is `PAGEFIND_OUTPUT_DIR`.
 pub async fn maybe_rebuild_index(
     pool: &PgPool,
     output_dir: &Path,
     items: &ItemService,
+    compaction_percent: f64,
 ) -> Result<bool> {
-    // Check if the signal table exists and a rebuild is requested.
-    // If the table doesn't exist (plugin not installed), return early.
+    let source = ItemDocuments { pool, items };
+    maybe_rebuild_index_with(pool, output_dir, &source, compaction_percent).await
+}
+
+/// [`maybe_rebuild_index`] over any document source.
+///
+/// A full rebuild request is cleared before the run, so a request made during
+/// it is kept, and set again when the run did not do the build it asked for:
+/// the run failed, or another publisher got in first. A request is then never
+/// lost to an error; the next cron run tries again.
+#[doc(hidden)]
+pub async fn maybe_rebuild_index_with<S: super::search_update::DocumentSource>(
+    pool: &PgPool,
+    output_dir: &Path,
+    source: &S,
+    compaction_percent: f64,
+) -> Result<bool> {
+    // The plugin's table says whether the index is wanted at all, and carries
+    // an operator's full rebuild request.
     let requested: Option<bool> =
         sqlx::query_scalar("SELECT rebuild_requested FROM pagefind_index_status WHERE id = 1")
             .fetch_optional(pool)
             .await
             .unwrap_or(None);
-
-    let Some(true) = requested else {
+    let Some(requested) = requested else {
         return Ok(false);
     };
-
-    info!("pagefind rebuild requested, starting index build");
-
-    // Record the query timestamp BEFORE fetching items. Using this
-    // (rather than "now" at build completion) prevents a race where
-    // content published during the build is silently missed.
-    let query_timestamp = chrono::Utc::now().timestamp();
-
-    // Clear signal immediately to prevent double builds
-    sqlx::query("UPDATE pagefind_index_status SET rebuild_requested = false WHERE id = 1")
-        .execute(pool)
-        .await
-        .context("failed to clear pagefind rebuild signal")?;
-
-    // Run the actual build, recording errors in the status table
-    match build_index(pool, output_dir, items).await {
-        Ok(count) => {
-            sqlx::query(
-                "UPDATE pagefind_index_status SET last_indexed_at = $1, last_error = NULL WHERE id = 1",
-            )
-            .bind(query_timestamp)
+    if requested {
+        sqlx::query("UPDATE pagefind_index_status SET rebuild_requested = false WHERE id = 1")
             .execute(pool)
             .await
-            .context("failed to update pagefind last_indexed_at")?;
-
-            info!(items = count, "pagefind index built successfully");
-            Ok(true)
-        }
-        Err(e) => {
-            // A build that lost to another publisher, or published without
-            // recording it, is mended by building again from fresh content.
-            let again = e.downcast_ref::<super::search_index::RebuildAgain>();
-            if again.is_some() {
+            .context("failed to clear pagefind rebuild signal")?;
+    }
+    let query_timestamp = chrono::Utc::now().timestamp();
+    let options = super::search_update::RunOptions {
+        full_build: requested.then(|| "a full rebuild was requested".to_string()),
+        compaction_percent,
+        ..super::search_update::RunOptions::default()
+    };
+    let result = super::search_update::run_index(pool, output_dir, source, &options).await;
+    // A requested build is the run's first full build; without one, the
+    // request stands for the next run.
+    let built = result
+        .as_ref()
+        .is_ok_and(|report| !report.full_builds.is_empty());
+    if requested && !built {
+        sqlx::query("UPDATE pagefind_index_status SET rebuild_requested = true WHERE id = 1")
+            .execute(pool)
+            .await
+            .context("failed to keep the pagefind rebuild request")?;
+        info!("the requested search index rebuild did not run; it is requested again");
+    }
+    match result {
+        Ok(report) => {
+            if report.did_work() {
                 sqlx::query(
-                    "UPDATE pagefind_index_status SET rebuild_requested = true WHERE id = 1",
+                    "UPDATE pagefind_index_status SET last_indexed_at = $1, last_error = NULL \
+                     WHERE id = 1",
                 )
+                .bind(query_timestamp)
                 .execute(pool)
                 .await
-                .context("failed to request another pagefind rebuild")?;
+                .context("failed to update pagefind last_indexed_at")?;
             }
-            if let Some(super::search_index::RebuildAgain::Superseded { .. }) = again {
-                info!(reason = %e, "pagefind index build superseded; another rebuild requested");
-                return Ok(false);
-            }
-
+            Ok(report.did_work())
+        }
+        Err(e) => {
+            // A publish that was not recorded is mended by the next run's entry
+            // check; anything else is recorded and retried next run, the queue
+            // intact.
             let error_msg = format!("{e:#}");
             sqlx::query("UPDATE pagefind_index_status SET last_error = $1 WHERE id = 1")
                 .bind(&error_msg)
                 .execute(pool)
                 .await
                 .ok();
-
-            warn!(error = %e, "pagefind index build failed");
+            warn!(error = %e, "search index update failed");
             Err(e)
         }
     }
-}
-
-/// Build the Pagefind index from published live-stage items, natively, through
-/// the page ledger ([`super::search_index::full_build`]).
-///
-/// `output_dir` is `PAGEFIND_OUTPUT_DIR`, set by
-/// `CronService::apply_runtime_config`: the index needs exactly one
-/// destination.
-async fn build_index(pool: &PgPool, output_dir: &Path, items: &ItemService) -> Result<usize> {
-    // Read before the export: a build that publishes in between makes this
-    // export the older one, and this build is then dropped.
-    let snapshot = super::search_index::generation(pool).await?;
-    let documents = indexable_documents(pool, items).await?;
-    let report = super::search_index::full_build(pool, output_dir, &documents, snapshot).await?;
-    Ok(report.pages)
 }
 
 /// The items this index may carry, and the text each contributes.
@@ -302,6 +319,18 @@ async fn build_index(pool: &PgPool, output_dir: &Path, items: &ItemService) -> R
 /// nothing.
 #[doc(hidden)]
 pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<Vec<IndexDocument>> {
+    indexable_documents_for(pool, items, None).await
+}
+
+/// [`indexable_documents`] restricted to `ids` (every searchable item for
+/// `None`): the same seam, the same rules, for the items one incremental
+/// update applies. An id that is not searchable is simply absent.
+#[doc(hidden)]
+pub async fn indexable_documents_for(
+    pool: &PgPool,
+    items: &ItemService,
+    ids: Option<&[Uuid]>,
+) -> Result<Vec<IndexDocument>> {
     // Every type's declared fields and search switches, once per build: the
     // fields so every text field is indexed and not only the configured ones,
     // the switches so a type switched out of search, or its comments, is left
@@ -332,10 +361,11 @@ pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<V
         SELECT id, current_revision_id, type, title, author_id, status, created, changed,
                promote, sticky, fields, stage_id, language, item_group_id, retention_days
         FROM item
-        WHERE status = 1 AND stage_id = $1
+        WHERE status = 1 AND stage_id = $1 AND ($2::uuid[] IS NULL OR id = ANY($2))
         "#,
     )
     .bind(LIVE_STAGE_ID)
+    .bind(ids)
     .fetch_all(pool)
     .await
     .context("failed to query items for pagefind index")?;
@@ -440,10 +470,20 @@ pub async fn indexable_documents(pool: &PgPool, items: &ItemService) -> Result<V
             .filter(|id| !id.is_empty())
             .unwrap_or_else(|| "en".to_string());
 
-    // Batch-load URL aliases for all items so we can use friendly paths.
+    // Batch-load URL aliases so result cards link to friendly paths: each
+    // item's canonical Live alias, the most recent, as the item page picks it.
+    // One row per source, so a full build and an update restricted to a few
+    // items always choose the same alias.
+    let sources: Option<Vec<String>> =
+        ids.map(|ids| ids.iter().map(|id| format!("/item/{id}")).collect());
     let alias_rows = sqlx::query_as::<_, AliasRow>(
-        "SELECT source, alias FROM url_alias WHERE source LIKE '/item/%'",
+        "SELECT DISTINCT ON (source) source, alias FROM url_alias \
+         WHERE source LIKE '/item/%' AND stage_id = $1 \
+           AND ($2::text[] IS NULL OR source = ANY($2)) \
+         ORDER BY source, created DESC, id DESC",
     )
+    .bind(LIVE_STAGE_ID)
+    .bind(sources)
     .fetch_all(pool)
     .await
     .unwrap_or_default();

@@ -10,7 +10,7 @@ use sqlx::PgPool;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::models::{Comment, CommentStatus, CreateComment, UpdateComment};
+use crate::models::{Comment, CreateComment, UpdateComment};
 use crate::services::audit::AuditTrail;
 use crate::tap::{RequestServices, RequestState, TapDispatcher, UserContext};
 use trovato_sdk::types::AccessResult;
@@ -68,18 +68,6 @@ impl CommentService {
         RequestState::new(user.clone(), self.inner.tap_services.clone())
     }
 
-    /// Ask for a public search index rebuild when a comment write changed what
-    /// the index may hold: the comment was published before, or is now. A
-    /// comment written straight into the moderation queue changes nothing the
-    /// public sees, so it asks for nothing until a moderator publishes it.
-    async fn request_search_rebuild(&self, before: Option<&Comment>, after: Option<&Comment>) {
-        let published =
-            |c: &Comment| CommentStatus::from_i16(c.status).is_some_and(CommentStatus::is_visible);
-        if before.is_some_and(published) || after.is_some_and(published) {
-            crate::cron::request_search_index_rebuild(&self.inner.pool).await;
-        }
-    }
-
     /// Load a comment by ID.
     pub async fn load(&self, id: Uuid) -> Result<Option<Comment>> {
         Comment::find_by_id(&self.inner.pool, id).await
@@ -127,8 +115,6 @@ impl CommentService {
             .dispatch("tap_comment_insert", &json, state)
             .await;
 
-        self.request_search_rebuild(None, Some(comment)).await;
-
         info!(comment_id = %comment.id, item_id = %comment.item_id, "comment created");
         self.audit("create", comment.id, Some(comment.item_id), user)
             .await;
@@ -142,10 +128,8 @@ impl CommentService {
         input: UpdateComment,
         user: &UserContext,
     ) -> Result<Option<Comment>> {
-        let before = self.load(id).await?;
         let comment = Comment::update(&self.inner.pool, id, input).await?;
-        self.updated(before.as_ref(), comment.as_ref(), user)
-            .await?;
+        self.updated(comment.as_ref(), user).await?;
         Ok(comment)
     }
 
@@ -173,20 +157,14 @@ impl CommentService {
         }
         tx.commit().await?;
         email.wake();
-        self.updated(before.as_ref(), comment.as_ref(), user)
-            .await?;
+        self.updated(comment.as_ref(), user).await?;
         Ok(comment)
     }
 
-    /// What follows a committed update: search, `tap_comment_update`, audit.
-    async fn updated(
-        &self,
-        before: Option<&Comment>,
-        comment: Option<&Comment>,
-        user: &UserContext,
-    ) -> Result<()> {
+    /// What follows a committed update: `tap_comment_update`, audit. The
+    /// search index queue row was written with the update, by the database.
+    async fn updated(&self, comment: Option<&Comment>, user: &UserContext) -> Result<()> {
         if let Some(c) = comment {
-            self.request_search_rebuild(before, Some(c)).await;
             let json = serde_json::to_string(c).context("serialize comment")?;
             let state = self.tap_state(user);
             let _ = self
@@ -217,7 +195,6 @@ impl CommentService {
 
         let deleted = Comment::delete(&self.inner.pool, id).await?;
         if deleted {
-            self.request_search_rebuild(existing.as_ref(), None).await;
             info!(comment_id = %id, "comment deleted");
             self.audit("delete", id, existing.as_ref().map(|c| c.item_id), user)
                 .await;

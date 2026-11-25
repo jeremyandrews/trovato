@@ -1456,6 +1456,51 @@ let affected = host::execute_raw(
 )?;
 ```
 
+### The static search index: queue what you change
+
+The site's static search index (Pagefind, under `/pagefind/`) is updated item by
+item. Each change to what an item's search page is built from queues that item,
+and the next cron run rewrites only the queued items' part of the index.
+Nothing polls for changes, so a change that queues nothing is never seen.
+
+**Writes to items, comments and URL aliases are queued by the database.**
+Triggers on the `item`, `comment` and `url_alias` tables queue the item a write
+changes, in the write's own transaction. That holds for `host::save_item`, the
+kernel's services and a plugin's raw SQL alike. A write that commits is
+queued, and one that rolls back is not.
+
+```rust
+host::execute_raw(
+    "UPDATE item SET fields = jsonb_set(fields, '{field_rating}', $1) WHERE id = $2::uuid",
+    &[json!(rating), json!(id)],
+)?;
+// Queued already: nothing more to do.
+```
+
+**The rule:** when your plugin changes something else that decides what an
+item's search page holds, call `host::search_index_enqueue` afterwards with the
+ids of the items it affects. The usual case is data of your own that your
+`tap_field_access` reads: the index is built as the anonymous visitor, so a
+change to which fields that visitor may see changes the page.
+
+```rust
+host::execute_raw("UPDATE my_plugin_field_embargo SET lifted = true WHERE item_id = $1::uuid", &[json!(id)])?;
+host::search_index_enqueue(&[id.as_str()])?;   // Ok(rows queued)
+```
+
+* Queuing twice is harmless. Queuing an item that is not searchable (a draft, a
+  workspace item, one anonymous visitors cannot see) is also harmless: the
+  updater takes it out of the index or leaves it out.
+* It needs the `db` host interface and takes up to 10,000 ids per call. An id
+  that is not a UUID is `-14` (`ERR_PARAM_DESERIALIZE`), and more than 10,000
+  ids is `-82` (`ERR_DB_BATCH_TOO_LARGE`).
+* The queue row records the reason as `plugin:<your plugin name>`, so an
+  operator can see who queued what.
+
+Without the call, such a change reaches search only at the next full rebuild.
+That happens after compaction or when an operator runs `trovato search
+rebuild`, which may be days away.
+
 ---
 
 ## Caching
