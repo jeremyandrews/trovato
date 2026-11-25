@@ -90,6 +90,7 @@ pub fn kernel_api() -> ApiRoutes {
         .merge(super::category::api())
         .merge(super::comment::api())
         .merge(super::lock::api())
+        .merge(super::admin_redirect::api())
         .merge(super::file::block_editor_api())
 }
 

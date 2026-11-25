@@ -266,6 +266,20 @@ While maintenance mode is on, a signed-in user without `bypass maintenance mode`
 gets the maintenance page like an anonymous visitor. Administrators hold it
 implicitly; grant it to a role whose members must keep working during the window.
 
+## Redirects
+
+| Route | Method | Permission |
+|---|---|---|
+| `/admin/config/redirects` | GET | `view redirects` |
+| `/admin/config/redirects/add`, `/{id}/edit` and `/{id}/delete` | GET, POST | `administer redirects` |
+
+Both are declared by `trovato_redirects`, so neither is grantable on a site
+where that plugin is disabled (the routes themselves 404 there too). The JSON
+API mirrors this: `GET /api/v1/redirects` and `GET /api/v1/redirect/{id}` take
+`view redirects`; `POST /api/v1/redirect`, `PUT /api/v1/redirect/{id}` and
+`DELETE /api/v1/redirect/{id}` take `administer redirects` and the
+`X-CSRF-Token` header.
+
 ## Appearance
 
 | Route | Method | Permission |
