@@ -429,6 +429,15 @@ pub async fn inject_site_context_for(
         .cloned()
         .unwrap_or(serde_json::Value::Null);
 
+    // The translations the route computed for this page, when it knows them
+    // (an item page does, read back out of the context it inserted
+    // `available_translations` into before calling this). `None` for any
+    // route that does not — a language switcher tile falls back to each
+    // language's front page.
+    let translations: Option<Vec<TranslationLink>> = context
+        .get("available_translations")
+        .and_then(|value| serde_json::from_value(value.clone()).ok());
+
     // Load tiles for all regions filtered by request path and user roles, each
     // rendered for this viewer, in this language, from the menus built above,
     // with the page's root values.
@@ -439,6 +448,8 @@ pub async fn inject_site_context_for(
         roles: &user_roles,
         menus_by_name: &site_menus.menus_by_name,
         page_root: &page_root,
+        current_path: &requested_path,
+        translations: translations.as_deref(),
     };
     for region in &["header", "navigation", "sidebar", "footer"] {
         let region_html = state
@@ -1108,7 +1119,7 @@ pub fn xml_escape(input: &str) -> String {
 /// [`build_hreflang_links`]. The two must not disagree: a switcher offering an
 /// address that the `hreflang` tags do not name is a page telling a person and a
 /// crawler different things.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TranslationLink {
     /// The language code.
     pub language: String,

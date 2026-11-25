@@ -61,6 +61,7 @@ impl TileFormData {
                 "items": parse_gather_tile_items(self.items.as_deref().unwrap_or(""))?,
             }),
             "chat" => serde_json::json!({}),
+            "language_switcher" => serde_json::json!({}),
             _ => serde_json::json!({}),
         })
     }
