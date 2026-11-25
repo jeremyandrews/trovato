@@ -54,6 +54,17 @@ if [ "$TOTAL" -eq 0 ]; then
 fi
 echo "Discovered $TOTAL integration test targets across the workspace."
 
+# One cargo invocation runs the shard (below), and `--test <name>` selects that
+# name in every package passed with `-p`. Two packages with a target of the
+# same name would therefore both run on a shard that was assigned only one of
+# them, and the timings could not tell the two apart. Refused, rather than
+# handled, until a second package with a clashing name exists.
+DUPES=$(printf '%s\n' "$ALL" | awk '{print $2}' | sort | uniq -d)
+if [ -n "$DUPES" ]; then
+  echo "::error::integration target names used by more than one package: $(printf '%s ' "$DUPES" | tr '\n' ' ')- rename one; the shard's single cargo invocation cannot select one without the other"
+  exit 1
+fi
+
 # The partition. Longest first onto the least loaded shard, by the measured
 # cost of each target in .config/ci-test-weights.txt, starting from the work
 # each shard already carries outside this script (its `@shard` lines: the unit
@@ -117,9 +128,12 @@ fi
 echo "shard $SHARD runs $COUNT of $TOTAL target(s):"
 printf '%s\n' "$MINE" | sed 's/^/  /'
 
-# Where each target's time goes, one `<package>::<target> <seconds>` line per
-# target, for scripts/ci-slow-tests.sh. Optional: unset, nothing is written.
+# Where the time goes, for scripts/ci-slow-tests.sh and the weights file.
+# Optional: unset, nothing is written.
+#   TIMINGS_FILE       one `<package>::<target> <seconds>` line per target
+#   TEST_TIMINGS_FILE  one `<package>::<target> <test> <seconds>` line per test
 TIMINGS_FILE="${TIMINGS_FILE:-}"
+TEST_TIMINGS_FILE="${TEST_TIMINGS_FILE:-}"
 
 # ONE cargo invocation for the whole shard, every package and every selected
 # target. One per package, which this was, built the kernel a second time for
@@ -144,6 +158,15 @@ TIMINGS_FILE="${TIMINGS_FILE:-}"
 # sees. Pinned, a local run of this script is the run CI does.
 export RUST_TEST_THREADS="${RUST_TEST_THREADS:-4}"
 
+# Each test's own time, so the 30 s budget applies to a test and not to the
+# target it sits in: a target of many quick tests is not over budget for being
+# long, and a slow test is named. libtest prints it with `--report-time`, which
+# a stable toolchain accepts only when the test process sees RUSTC_BOOTSTRAP.
+# It is set through a runner, so the test process gets it and the compiler does
+# not: build scripts read RUSTC_BOOTSTRAP to switch on nightly-only code, and
+# setting it for the build would change what is built and rebuild everything.
+RUNNER="target.'cfg(all())'.runner = ['env', 'RUSTC_BOOTSTRAP=1']"
+
 PKGS=$(printf '%s\n' "$MINE" | awk '{print $1}' | sort -u | awk '{printf " -p %s", $1}')
 FLAGS=$(printf '%s\n' "$MINE" | awk '{printf " --test %s", $2}')
 echo "::group::cargo test$PKGS$FLAGS"
@@ -151,15 +174,8 @@ echo "::group::cargo test$PKGS$FLAGS"
 # shellcheck disable=SC2086
 # MINE goes in through the environment: BSD awk refuses a newline in `-v`.
 # --no-fail-fast: one failing target must not hide the targets after it.
-cargo test --no-fail-fast $PKGS $FLAGS 2>&1 | MINE="$MINE" awk -v out="$TIMINGS_FILE" '
-  BEGIN { n = split(ENVIRON["MINE"], rows, "\n"); for (i = 1; i <= n; i++) { split(rows[i], f, " "); pkg[f[2]] = f[1] } }
-  { print; fflush() }
-  /Running/ && match($0, /tests\/[^ ]+\.rs/) { cur = substr($0, RSTART + 6, RLENGTH - 9) }
-  /^test result:/ && cur != "" {
-    if (out != "" && match($0, /finished in [0-9.]+s/))
-      print pkg[cur] "::" cur " " substr($0, RSTART + 12, RLENGTH - 13) >> out
-    cur = ""
-  }'
+cargo test --no-fail-fast --config "$RUNNER" $PKGS $FLAGS -- -Z unstable-options --report-time 2>&1 \
+  | MINE="$MINE" awk -v targets="$TIMINGS_FILE" -v tests="$TEST_TIMINGS_FILE" -f "$ROOT/scripts/ci-test-timings.awk"
 echo "::endgroup::"
 
 df -h /

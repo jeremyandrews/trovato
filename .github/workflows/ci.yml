@@ -186,6 +186,13 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      # The scripts that time the tests and hold them to the budget, tested
+      # on their own before anything builds: a parser that stopped matching
+      # would otherwise pass every test it no longer saw.
+      - name: Test the timing scripts
+        if: matrix.shard == 1
+        run: ./scripts/ci-scripts-test.sh
+
       # Reclaim the ~25-30 GB of preinstalled toolchains we never use.
       #
       # This step alone used to be the whole fix for the intermittent
@@ -340,10 +347,15 @@ jobs:
       - name: Unit tests (binary targets)
         if: matrix.shard == 2
         run: cargo nextest run --workspace --bins --profile ci
-      # nextest does not run doc tests; cargo does.
+      # nextest does not run doc tests; cargo does. Each crate's doc tests are
+      # timed together, for the budget step (scripts/ci-test-timings.awk).
       - name: Doc tests
         if: matrix.shard == 3
-        run: cargo test --all --doc
+        run: |
+          set -euo pipefail
+          mkdir -p target/ci-timings
+          cargo test --all --doc 2>&1 \
+            | awk -v doc=1 -v targets=target/ci-timings/doc.txt -f scripts/ci-test-timings.awk
 
       # Here, not before the first build: the unit or doc step builds into
       # the ~14 GB the runner starts with while the deletion runs (it took
@@ -369,6 +381,7 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
           TIMINGS_FILE: target/ci-timings/pass-1.txt
+          TEST_TIMINGS_FILE: target/ci-timings/pass-1.tests
         run: mkdir -p target/ci-timings && ./scripts/ci-test-shard.sh
 
       # A snapshot of the rows that a pass must not add to, for the guard after
@@ -434,6 +447,7 @@ jobs:
         env:
           SHARD: ${{ matrix.shard }}
           TIMINGS_FILE: target/ci-timings/pass-2.txt
+          TEST_TIMINGS_FILE: target/ci-timings/pass-2.tests
         run: ./scripts/ci-test-shard.sh
 
       # A pass must not leave state behind.
@@ -537,15 +551,22 @@ jobs:
           echo "shared conference fixture is unique — no contamination from this shard."
 
       # The per-test budget: no test over 30 s unless .config/slow-tests.txt
-      # says why. Unit tests are timed one by one by nextest's JUnit report;
-      # integration targets, which run under libtest, are timed per target (see
-      # the script). Both passes count, so a test that is only slow on a
-      # database that has been used once is caught too.
+      # says why. Unit tests are timed one by one by nextest's JUnit report,
+      # integration tests one by one by libtest (see scripts/ci-test-shard.sh),
+      # doc tests one crate at a time. Both integration passes count, so a test
+      # that is only slow on a database that has been used once is caught too.
+      #
+      # Every report a shard should have is passed whether or not it exists,
+      # and the script fails on a missing or empty one: a report that went
+      # missing would otherwise leave its tests out of the budget, unnoticed.
       - name: Slow test budget
         run: |
           set -euo pipefail
-          reports="target/ci-timings/pass-1.txt target/ci-timings/pass-2.txt"
-          [ -f target/nextest/ci/junit.xml ] && reports="$reports target/nextest/ci/junit.xml"
+          reports="target/ci-timings/pass-1.tests target/ci-timings/pass-2.tests"
+          case "${{ matrix.shard }}" in
+            1|2) reports="$reports target/nextest/ci/junit.xml" ;;
+            3) reports="$reports target/ci-timings/doc.txt" ;;
+          esac
           # shellcheck disable=SC2086
           ./scripts/ci-slow-tests.sh $reports
 

@@ -70,6 +70,9 @@ run_check "Doc tests" cargo test --all --doc
 # The expand-then-contract rule for migrations (docs/design/upgrades-and-probes.md
 # §3), named on its own so a failure says what it is. Mirrors CI.
 run_check "Migration compatibility rule" cargo test --all --lib migration_rule
+# The CI timing scripts and the test budget (mirrors CI: the Test job's
+# "Test the timing scripts" step). No database, no build.
+run_check "CI timing scripts" ./scripts/ci-scripts-test.sh
 
 # SQL custom-expr guard (PF-5 durable convention, mirrors CI: SQL Custom-Expr
 # Guard job). Ratchets bare `Expr::cust(` sites; a new one must be confirmed

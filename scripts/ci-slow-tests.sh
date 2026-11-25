@@ -3,17 +3,25 @@
 # The per-test time budget: fail when a test runs longer than LIMIT seconds
 # (30) and is not on the allowlist in .config/slow-tests.txt.
 #
-#   ./scripts/ci-slow-tests.sh target/nextest/ci/junit.xml target/ci-timings/*.txt
+#   ./scripts/ci-slow-tests.sh target/nextest/ci/junit.xml target/ci-timings/*.tests
 #
-# Two kinds of report, told apart by extension:
+# Three kinds of report, told apart by extension:
 #
-#   *.xml  a nextest JUnit report (the `ci` profile in .config/nextest.toml
-#          writes one). One entry per test: `<binary id> <test name>`.
-#   other  a timings file from scripts/ci-test-shard.sh, one
-#          `<package>::<target> <seconds>` line per integration target. Those
-#          targets run under libtest, whose stable output times a whole target
-#          and not its tests, so the budget applies to the target: one test
-#          over 30 s makes its target over 30 s, which is what trips.
+#   *.xml    a nextest JUnit report (the `ci` profile in .config/nextest.toml
+#            writes one): the unit tests. One entry per test:
+#            `<binary id> <test name>`.
+#   *.tests  a per-test file from scripts/ci-test-shard.sh: the integration
+#            tests, `<package>::<target> <test name> <seconds>`, as libtest's
+#            `--report-time` measured them.
+#   other    one `<name> <seconds>` line per entry; the doc tests, one entry
+#            per crate (`doc::<crate>`), since rustdoc cannot time a single
+#            doc test on a stable toolchain.
+#
+# The allowlist names a test, or a whole integration target. A target entry
+# covers each of its tests, and is for one case only: a target whose tests
+# queue on one lock by design. libtest times a test from its start, so a test
+# that waited for the lock is charged the wait, and the last one in the queue
+# carries nearly the whole target's time.
 #
 # An allowlisted entry is not exempt for ever: it fails again at twice the time
 # it was recorded at, so a slow test that gets slower is still caught.
@@ -53,6 +61,9 @@ for case in ET.parse(sys.argv[1]).getroot().iter("testcase"):
     print(f"{case.get('classname')} {case.get('name')}\t{float(case.get('time', 0)):.3f}")
 PY
       ;;
+    *.tests)
+      awk 'NF >= 3 { t = $2; for (i = 3; i < NF; i++) t = t " " $i; print $1 " " t "\t" $NF }' "$report" >> "$ENTRIES"
+      ;;
     *)
       awk 'NF >= 2 { print $1 "\t" $2 }' "$report" >> "$ENTRIES"
       ;;
@@ -76,9 +87,12 @@ FAILED=$(awk -F '\t' -v limit="$LIMIT" -v allow="$ALLOW" '
     }
   }
   {
-    if ($1 in rec) {
-      if ($2 > 2 * rec[$1])
-        printf "%s took %.1f s, over twice the %.1f s it is allowlisted at\n", $1, $2, rec[$1]
+    # A target entry covers the tests of that target: `<target> <test>`.
+    key = $1
+    if (!(key in rec)) { sp = index(key, " "); if (sp > 0 && (substr(key, 1, sp - 1) in rec)) key = substr(key, 1, sp - 1) }
+    if (key in rec) {
+      if ($2 > 2 * rec[key])
+        printf "%s took %.1f s, over twice the %.1f s %s is allowlisted at\n", $1, $2, rec[key], key
     } else if ($2 > limit) {
       printf "%s took %.1f s, over the %d s budget, and is not in .config/slow-tests.txt\n", $1, $2, limit
     }
