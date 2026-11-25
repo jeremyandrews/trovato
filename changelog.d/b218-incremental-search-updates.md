@@ -11,12 +11,12 @@ part 3 of `docs/design/incremental-search-index.md`.
 
 On the largest local content set (1,237 searchable pages) the numbers are:
 
-* a title edit is searchable 40 to 45 ms after the write starts, and a comment
-  34 to 40 ms after;
-* the cron update takes 20 to 22 ms of that and writes 5 files (the item's
+* a title edit is searchable 41 to 54 ms after the write starts, and a comment
+  32 to 42 ms after;
+* the cron update takes 21 to 25 ms of that and writes 5 files (the item's
   fragment, the two word chunks its words are in, the meta file and
   `pagefind-entry.json`);
-* the same edit followed by a full build took 260 to 277 ms and re-encoded every
+* the same edit followed by a full build took 272 to 280 ms and re-encoded every
   page.
 
 Changes are now queued in a new table, `search_index_queue`. It holds one row

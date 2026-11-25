@@ -758,15 +758,18 @@ the item.
 
 | change | write | cron update | time to searchable | pages changed | files written | chunks rewritten |
 |---|---|---|---|---|---|---|
-| title edit | 17 ms | 21 ms | 45 ms | 1 | 5 | 2 |
+| title edit | 22 ms | 25 ms | 54 ms | 1 | 5 | 2 |
+| title edit | 14 ms | 21 ms | 42 ms | 1 | 5 | 2 |
 | title edit | 13 ms | 22 ms | 41 ms | 1 | 5 | 2 |
-| title edit | 13 ms | 20 ms | 40 ms | 1 | 5 | 2 |
-| comment | 13 ms | 21 ms | 40 ms | 1 | 5 | 2 |
-| comment | 6 ms | 21 ms | 34 ms | 1 | 5 | 2 |
-| comment | 7 ms | 20 ms | 34 ms | 1 | 5 | 2 |
-| title edit, then a full build (the old path) | 12 ms | 248 ms | 260 ms | 1,237 | 9 | all |
-| title edit, then a full build (the old path) | 10 ms | 254 ms | 264 ms | 1,237 | 11 | all |
-| title edit, then a full build (the old path) | 12 ms | 266 ms | 277 ms | 1,237 | 12 | all |
+| comment | 8 ms | 23 ms | 42 ms | 1 | 5 | 2 |
+| comment | 5 ms | 21 ms | 32 ms | 1 | 5 | 2 |
+| comment | 10 ms | 24 ms | 41 ms | 1 | 5 | 2 |
+| title edit, then a full build (the old path) | 14 ms | 265 ms | 279 ms | 1,237 | 12 | all |
+| title edit, then a full build (the old path) | 9 ms | 271 ms | 280 ms | 1,237 | 11 | all |
+| title edit, then a full build (the old path) | 11 ms | 261 ms | 272 ms | 1,237 | 10 | all |
+
+Each write is queued by the database triggers, in the write's own
+transaction.
 
 How to read the table:
 
@@ -780,7 +783,7 @@ How to read the table:
   writes only the files whose bytes changed, but it still exports, renders,
   hashes and re-encodes all 1,237 pages and every chunk. Because it re-cuts the
   chunk plan, it also changes more chunk files than the update does.
-* **A full build on its own** (`measure-update`'s first table) took 248 to
+* **A full build on its own** (`measure-update`'s first table) took 255 to
   320 ms. The first one into an empty directory writes 1,241 files.
 
 ### What was built
