@@ -274,3 +274,19 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.base64ct]
 opt-level = 3
+# The search index (B218): tokenizing (the vendored fossick over lol_html), CBOR,
+# gzip and SHA-1 run for every page the index and gate tests build. Unoptimized
+# they took the crate's random update proof to 72 s on CI; optimized, 11 s
+# locally with every batch compared to a full build.
+[profile.dev.package.trovato-search-index]
+opt-level = 3
+[profile.dev.package.lol_html]
+opt-level = 3
+[profile.dev.package.miniz_oxide]
+opt-level = 3
+[profile.dev.package.sha1]
+opt-level = 3
+[profile.dev.package.minicbor]
+opt-level = 3
+[profile.dev.package.pagefind_stem]
+opt-level = 3
