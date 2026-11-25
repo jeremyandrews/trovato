@@ -414,6 +414,14 @@ fn a_theme_that_does_not_parse_cannot_be_activated() {
         restore_stock_on_exit(app);
         let (_, cookies) = user_holding(app, "b138cracked", &["administer themes"]).await;
 
+        // A theme switch made by an earlier test in this binary bumps the
+        // themes generation from a background task, and this server's watcher
+        // answers it by reloading the stored choice, which cleanup has deleted,
+        // so stock. Let that land before setting Lakeside below, or it can
+        // arrive in the middle of this test and replace it (seen in CI: "the
+        // previous theme stays active", left "stock", right "lakeside").
+        common::settle_cache_generations().await;
+
         // Lakeside is the default before the attempt, so "the previous theme
         // stays active" is a real theme and not just the fallback.
         app.state.theme().set_active(ActiveThemes {

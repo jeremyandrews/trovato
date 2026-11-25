@@ -32,3 +32,11 @@ no fix inside pagefind 1.3.0's version ranges: RUSTSEC-2026-0443
 (`actix-files` 0.6) and RUSTSEC-2026-0258 (`h2` 0.3). Kept apart, neither
 reaches the root lockfile the product ships and audits from, and the audit
 ignore list stays empty.
+
+`appearance_test`'s `a_theme_that_does_not_parse_cannot_be_activated` failed
+intermittently in CI, on `main` as well, with the active theme `stock` where it
+expected `lakeside`. An earlier theme test's switch bumps the themes cache
+generation from a background task, and this server's watcher answers the bump
+by reloading the stored choice, which cleanup had already deleted. When the
+reload landed after the test had set Lakeside, it replaced it. The test now
+waits for pending generations to settle before it sets the theme.
