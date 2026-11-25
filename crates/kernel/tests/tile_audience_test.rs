@@ -55,6 +55,42 @@ async fn tile(app: &TestApp, machine_name: &str, visibility: serde_json::Value) 
     id
 }
 
+/// A page that draws the sidebar: an empty gather's own page. The front page
+/// and the account pages replace the content block the sidebar is drawn in,
+/// so a sidebar tile never shows on `/`.
+async fn sidebar_page(app: &TestApp) -> String {
+    let marker = stamp();
+    let query_id = format!("b174_page_{marker}");
+    let query: trovato_kernel::gather::GatherQuery = serde_json::from_value(serde_json::json!({
+        "query_id": query_id,
+        "label": format!("B174 page {marker}"),
+        "definition": {
+            "base_table": "item",
+            "filters": [{
+                "exposed": false,
+                "field": "title",
+                "operator": "contains",
+                "value": format!("nosuchtitle{marker}"),
+            }],
+            "stage_aware": true,
+        },
+        "display": { "format": "table", "items_per_page": 20 },
+        "plugin": "core"
+    }))
+    .expect("gather deserializes");
+    app.state
+        .gather()
+        .register_query(query)
+        .await
+        .expect("register gather");
+    let state = app.state.clone();
+    let cleanup_id = query_id.clone();
+    defer_cleanup(move || async move {
+        let _ = state.gather().delete_query(&cleanup_id).await;
+    });
+    format!("/gather/{query_id}")
+}
+
 async fn get(app: &TestApp, path: &str, cookies: &str) -> String {
     let response = app
         .request_with_cookies(Request::get(path).body(Body::empty()).unwrap(), cookies)
@@ -70,6 +106,7 @@ async fn get(app: &TestApp, path: &str, cookies: &str) -> String {
 fn an_anonymous_only_tile_shows_for_an_anonymous_request_and_not_for_a_signed_in_one() {
     run_test(async {
         let app = shared_app().await;
+        let page = sidebar_page(app).await;
         let marker = stamp();
         let machine = format!("b174_anon_{marker}");
         tile(
@@ -79,14 +116,14 @@ fn an_anonymous_only_tile_shows_for_an_anonymous_request_and_not_for_a_signed_in
         )
         .await;
 
-        let anon_html = get(app, "/", "").await;
+        let anon_html = get(app, &page, "").await;
         assert!(
             anon_html.contains(&format!("marker {machine}")),
             "an anonymous-only tile must render for an anonymous visitor:\n{anon_html}"
         );
 
         let (_, cookies) = user_holding(app, "b174anon", &[]).await;
-        let signed_in_html = get(app, "/", &cookies).await;
+        let signed_in_html = get(app, &page, &cookies).await;
         assert!(
             !signed_in_html.contains(&format!("marker {machine}")),
             "an anonymous-only tile must not render for a signed-in viewer:\n{signed_in_html}"
@@ -98,6 +135,7 @@ fn an_anonymous_only_tile_shows_for_an_anonymous_request_and_not_for_a_signed_in
 fn a_signed_in_only_tile_shows_for_a_signed_in_request_and_not_for_an_anonymous_one() {
     run_test(async {
         let app = shared_app().await;
+        let page = sidebar_page(app).await;
         let marker = stamp();
         let machine = format!("b174_auth_{marker}");
         tile(
@@ -107,14 +145,14 @@ fn a_signed_in_only_tile_shows_for_a_signed_in_request_and_not_for_an_anonymous_
         )
         .await;
 
-        let anon_html = get(app, "/", "").await;
+        let anon_html = get(app, &page, "").await;
         assert!(
             !anon_html.contains(&format!("marker {machine}")),
             "a signed-in-only tile must not render for an anonymous visitor:\n{anon_html}"
         );
 
         let (_, cookies) = user_holding(app, "b174auth", &[]).await;
-        let signed_in_html = get(app, "/", &cookies).await;
+        let signed_in_html = get(app, &page, &cookies).await;
         assert!(
             signed_in_html.contains(&format!("marker {machine}")),
             "a signed-in-only tile must render for a signed-in viewer:\n{signed_in_html}"
@@ -126,18 +164,19 @@ fn a_signed_in_only_tile_shows_for_a_signed_in_request_and_not_for_an_anonymous_
 fn a_tile_with_no_audience_rule_shows_to_everyone() {
     run_test(async {
         let app = shared_app().await;
+        let page = sidebar_page(app).await;
         let marker = stamp();
         let machine = format!("b174_everyone_{marker}");
         tile(app, &machine, serde_json::json!({})).await;
 
-        let anon_html = get(app, "/", "").await;
+        let anon_html = get(app, &page, "").await;
         assert!(
             anon_html.contains(&format!("marker {machine}")),
             "{anon_html}"
         );
 
         let (_, cookies) = user_holding(app, "b174every", &[]).await;
-        let signed_in_html = get(app, "/", &cookies).await;
+        let signed_in_html = get(app, &page, &cookies).await;
         assert!(
             signed_in_html.contains(&format!("marker {machine}")),
             "{signed_in_html}"
@@ -149,6 +188,7 @@ fn a_tile_with_no_audience_rule_shows_to_everyone() {
 fn an_audience_rule_combines_with_an_existing_roles_rule() {
     run_test(async {
         let app = shared_app().await;
+        let page = sidebar_page(app).await;
         let marker = stamp();
         let machine = format!("b174_combo_{marker}");
         // Administrator-only *and* anonymous-only: nobody should ever see it,
@@ -160,7 +200,7 @@ fn an_audience_rule_combines_with_an_existing_roles_rule() {
         )
         .await;
 
-        let anon_html = get(app, "/", "").await;
+        let anon_html = get(app, &page, "").await;
         assert!(
             !anon_html.contains(&format!("marker {machine}")),
             "{anon_html}"
@@ -172,7 +212,7 @@ fn an_audience_rule_combines_with_an_existing_roles_rule() {
                 .await;
             app.login(&name, "test-password-123").await
         };
-        let admin_html = get(app, "/", &admin_cookies).await;
+        let admin_html = get(app, &page, &admin_cookies).await;
         assert!(
             !admin_html.contains(&format!("marker {machine}")),
             "an administrator is signed in, so the anonymous-only rule still excludes them:\n{admin_html}"
