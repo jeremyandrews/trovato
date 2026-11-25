@@ -280,7 +280,7 @@ pub async fn path_alias_fallback(
 ///
 /// Returns `(stripped_path, Some(language_code))` if a prefix was found,
 /// or `(original_path, None)` if no prefix matches.
-fn strip_language_prefix(
+pub(crate) fn strip_language_prefix(
     path: &str,
     known_languages: &[String],
     default_language: &str,
