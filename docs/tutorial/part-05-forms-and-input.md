@@ -460,7 +460,7 @@ Trovato supports three text formats for traditional text fields (TextValue, Text
 |---|---|---|
 | `plain_text` | HTML-escaped (no formatting) | Everyone |
 | `filtered_html` | Ammonia-sanitized (safe subset of HTML) | Users with `use filtered_html` permission |
-| `full_html` | No sanitization (trusted HTML) | Users with `use full_html` permission |
+| `full_html` | Ammonia-sanitized (rich, permissive subset: `div`, `span`, `figure`, tables, headings, lists, images, `class`/`id` on every tag, with `script`, `style` and event handlers always removed) | Users with `use full_html` permission |
 
 Within Blocks fields, text sanitization is handled at the block level by ammonia -- each block type's text fields are sanitized individually during `process_blocks_fields()`. The block editor does not use text format selectors. Instead, all block text content is treated as `filtered_html` equivalent: ammonia strips dangerous tags while preserving safe formatting.
 
@@ -480,13 +480,13 @@ When the content edit form renders a traditional text field, the `FormBuilder` c
 
 ### 4.3: FilterPipeline Safety
 
-The kernel provides two filter pipeline constructors:
+The kernel provides one general-purpose filter pipeline constructor:
 
-- **`FilterPipeline::for_format_safe()`** -- Used for user and plugin content. Validates the format string against a known allowlist (`plain_text`, `filtered_html`, `full_html`) and applies the appropriate sanitization. If the format is unrecognized, it falls back to `plain_text` (maximum escaping).
+- **`FilterPipeline::for_format()`** -- Safe to call with any format string, including one a user, a plugin, or stored data supplies. It looks up the named format (falling back to `plain_text`, maximum escaping, for an unrecognized one) and always returns a pipeline that sanitizes its input: `plain_text` escapes, `filtered_html` keeps a configured tag/attribute allowlist, and `full_html` (or any other format with no filter configured) is cleaned by a fixed, permissive ammonia allowlist (`TrustedHtmlFilter`). No format a pipeline built this way renders ever returns a `<script>`, an event handler or a `javascript:`/`data:` URL -- a format name can never be used to bypass sanitization, only to choose how permissive it is.
 
-- **`FilterPipeline::for_format()`** -- Used internally by the kernel for trusted content. Accepts any format string. **Never use this with user-supplied or plugin-supplied format strings** -- it would allow a plugin to bypass sanitization by claiming a made-up format name.
+Because every pipeline is sanitized by construction, the `text_format` Tera filter (`{{ value | text_format(format=fmt) }}`) is itself marked safe and needs no `| safe` in a template.
 
-This is a critical security boundary. The coding standards explicitly prohibit using `for_format()` with untrusted format strings.
+`FilterPipeline::for_format_checked(format, has_full_html)` remains for a write path that already knows whether the writer holds `use full_html`: it downgrades `full_html` to `filtered_html` for a writer without the permission, same as before. It is a permission gate, not a sanitization boundary -- the sanitization happens either way.
 
 ### Verify
 
@@ -839,7 +839,7 @@ By the end of Part 5, you have:
 - **Form API pipeline** -- Build > Validate > Submit with plugin extension points (`tap_form_alter`, `tap_form_validate`, `tap_form_submit`).
 - **Block-based content editing** with eight standard block types, Editor.js integration, and a hidden-input serialization pattern.
 - **Block rendering pipeline** -- Server-side rendering with ammonia sanitization, syntect syntax highlighting, and embed URL whitelisting.
-- **Text format permissions** -- `plain_text`, `filtered_html`, `full_html` for traditional text fields, with `FilterPipeline::for_format_safe()` as the security boundary.
+- **Text format permissions** -- `plain_text`, `filtered_html`, `full_html` for traditional text fields, each sanitized at render time by `FilterPipeline::for_format()` regardless of who wrote the field.
 - **Block validation** via `BlockTypeRegistry` with JSON Schema definitions and extensibility for custom block types.
 - **Secure file uploads** with magic byte validation, filename sanitization, MIME type checking, and size limits.
 - **`trovato_block_editor` plugin** -- Activates the Editor.js widget and gates the upload/preview API routes.

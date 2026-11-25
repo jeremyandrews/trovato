@@ -61,7 +61,7 @@
 //! stored markup with `content::page_meta::plain_text` and escaped
 //! exactly once ([`xml_escape`]). The only HTML a feed carries is the
 //! `full_content` body, rendered through its text format
-//! ([`FilterPipeline::for_format_safe`]) and then either wrapped in CDATA (RSS)
+//! ([`FilterPipeline::for_format`]) and then either wrapped in CDATA (RSS)
 //! or escaped once as the text of a `type="html"` element (Atom).
 //!
 //! # Polling
@@ -964,8 +964,7 @@ impl Entry {
             .then(|| row_body(row))
             .flatten()
             .map(|(text, format)| {
-                FilterPipeline::for_format_safe(format.as_deref().unwrap_or("plain_text"))
-                    .process(&text)
+                FilterPipeline::for_format(format.as_deref().unwrap_or("plain_text")).process(&text)
             });
 
         Entry {

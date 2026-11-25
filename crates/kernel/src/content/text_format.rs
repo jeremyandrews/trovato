@@ -25,7 +25,7 @@ use sqlx::PgPool;
 
 use super::filter::{
     ConfiguredHtmlFilter, FilterPipeline, FilteredHtmlFilter, HtmlEscapeFilter, NewlineFilter,
-    UrlFilter,
+    TrustedHtmlFilter, UrlFilter,
 };
 
 /// The format every user may use, and the fallback for an unknown one.
@@ -46,8 +46,8 @@ pub enum FilterKind {
     Escape,
     /// Keep only the allowed tags and attributes.
     Html,
-    /// Keep the text as written. Never rendered from stored data: see
-    /// [`FilterPipeline::for_format_safe`].
+    /// Trusted rich HTML, cleaned by a fixed, permissive ammonia allowlist
+    /// ([`super::TrustedHtmlFilter`]): never rendered raw, whatever wrote it.
     None,
 }
 
@@ -76,7 +76,7 @@ impl FilterKind {
         match self {
             FilterKind::Escape => "Escape all HTML",
             FilterKind::Html => "Limit to allowed tags",
-            FilterKind::None => "No filtering",
+            FilterKind::None => "Trusted HTML (scripts and event handlers removed)",
         }
     }
 }
@@ -127,7 +127,7 @@ impl TextFormat {
                 &self.allowed_tags,
                 &self.allowed_attributes,
             )),
-            FilterKind::None => pipeline,
+            FilterKind::None => pipeline.add(TrustedHtmlFilter),
         };
         if self.convert_newlines {
             pipeline = pipeline.add(NewlineFilter);

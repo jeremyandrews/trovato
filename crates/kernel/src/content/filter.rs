@@ -5,7 +5,8 @@
 //! seeded with the definitions here:
 //! - plain_text: HTML-escapes all content
 //! - filtered_html: Allows safe tags, strips dangerous ones
-//! - full_html: No filtering (admin only)
+//! - full_html: Trusted rich HTML, cleaned by [`TrustedHtmlFilter`] (a fixed,
+//!   permissive ammonia allowlist). Never raw: see [`TrustedHtmlFilter`].
 
 /// Trait for text filters in the pipeline.
 pub trait TextFilter: Send + Sync {
@@ -38,7 +39,10 @@ impl FilterPipeline {
 
     /// Create pipeline for a specific format, as stored
     /// (`content::text_format`). An unknown format gets `plain_text`, the
-    /// safest.
+    /// safest. Safe to use anywhere, including on a format string that
+    /// originates from stored data or plugin input: every pipeline this
+    /// builds, including a `none`-filter (`full_html`) format's, is cleaned by
+    /// [`TrustedHtmlFilter`] before it is returned.
     pub fn for_format(format: &str) -> Self {
         match super::text_format::get(format) {
             Some(stored) => stored.pipeline(),
@@ -46,27 +50,12 @@ impl FilterPipeline {
         }
     }
 
-    /// Create pipeline for a format, rejecting unsafe formats.
-    ///
-    /// Only a format that filters is permitted: one that escapes or limits
-    /// HTML, as `plain_text` and `filtered_html` do. A format that keeps text
-    /// as written (`full_html`, or any stored format with no filtering) and an
-    /// unknown format are downgraded to `plain_text`. Use this at every
-    /// view-time rendering site where the format string originates from
-    /// stored data or plugin input.
-    pub fn for_format_safe(format: &str) -> Self {
-        match super::text_format::get(format) {
-            Some(stored) if stored.filter != super::text_format::FilterKind::None => {
-                stored.pipeline()
-            }
-            _ => Self::plain_text(),
-        }
-    }
-
     /// Create pipeline with permission check.
     ///
-    /// If `has_full_html` is false and the format keeps text as written
-    /// (`full_html`), downgrades to filtered_html for safety.
+    /// If `has_full_html` is false and the format is the more permissive,
+    /// unconfigured one (`full_html`), downgrades to `filtered_html`'s
+    /// configured allowlist instead. Both are sanitized either way: this
+    /// gates which allowlist applies, not whether one does.
     pub fn for_format_checked(format: &str, has_full_html: bool) -> Self {
         match super::text_format::get(format) {
             Some(stored)
@@ -88,9 +77,10 @@ impl FilterPipeline {
         Self::new().add(FilteredHtmlFilter).add(UrlFilter)
     }
 
-    /// Create a full HTML pipeline (no filtering - admin only).
+    /// Create a full HTML pipeline: rich HTML, cleaned by
+    /// [`TrustedHtmlFilter`]'s fixed, permissive allowlist. Never unfiltered.
     pub fn full_html() -> Self {
-        Self::new()
+        Self::new().add(TrustedHtmlFilter)
     }
 
     /// Process text through all filters in the pipeline.
@@ -287,6 +277,41 @@ impl TextFilter for ConfiguredHtmlFilter {
     }
 }
 
+/// The ammonia builder [`TrustedHtmlFilter`] cleans with: built once, not per
+/// call. Ammonia's default tag and attribute allowlist (ordinary article
+/// markup: `div`, `span`, `figure`, `table`, headings, lists, images and the
+/// rest), plus `class` and `id` on every tag and `target` on `a`, with
+/// `rel="noopener noreferrer"` set on every link and ammonia's default URL
+/// schemes. `script` and `style` content is always removed by ammonia's
+/// defaults, as is every `on*` attribute, a `style` attribute (never added
+/// here) and a `javascript:` or `data:` URL.
+static TRUSTED_HTML_BUILDER: std::sync::LazyLock<ammonia::Builder<'static>> =
+    std::sync::LazyLock::new(|| {
+        let mut builder = ammonia::Builder::default();
+        builder
+            .add_generic_attributes(["class", "id"])
+            .add_tag_attributes("a", ["target"])
+            .link_rel(Some("noopener noreferrer"));
+        builder
+    });
+
+/// Filter for `full_html`: rich, trusted HTML cleaned by a fixed, permissive
+/// ammonia allowlist. "Trusted" means *rich*, never *raw*: whatever the
+/// `use full_html` permission let an author write, this still strips a
+/// `<script>`, an event handler and a `javascript:`/`data:` URL, so no stored
+/// value — however it reached storage — can ever put one on a page.
+pub struct TrustedHtmlFilter;
+
+impl TextFilter for TrustedHtmlFilter {
+    fn name(&self) -> &str {
+        "trusted_html"
+    }
+
+    fn process(&self, input: &str) -> String {
+        TRUSTED_HTML_BUILDER.clean(input).to_string()
+    }
+}
+
 /// Filter that converts URLs to clickable links.
 pub struct UrlFilter;
 
@@ -419,12 +444,15 @@ mod tests {
         assert!(!output.contains("script"));
     }
 
+    // SECURITY REGRESSION TEST — B151: full_html is cleaned, never raw
     #[test]
-    fn full_html_pipeline_no_filtering() {
+    fn full_html_pipeline_strips_script_and_style() {
         let pipeline = FilterPipeline::full_html();
-        let input = "<script>alert('test')</script><style>body{}</style>";
+        let input = "<script>alert('test')</script><style>body{}</style><p>Safe</p>";
         let output = pipeline.process(input);
-        assert_eq!(input, output);
+        assert!(!output.contains("script"));
+        assert!(!output.contains("style"));
+        assert!(output.contains("<p>Safe</p>"));
     }
 
     #[test]
@@ -608,12 +636,14 @@ mod tests {
         assert!(output.contains("<p>Safe</p>"));
     }
 
+    // SECURITY REGRESSION TEST — B151: permitted full_html is still cleaned
     #[test]
     fn for_format_checked_allows_full_html_when_permitted() {
         let pipeline = FilterPipeline::for_format_checked("full_html", true);
-        let input = "<script>alert('test')</script>";
+        let input = r#"<p class="lead">Hi</p><script>alert('test')</script>"#;
         let output = pipeline.process(input);
-        assert_eq!(input, output);
+        assert!(!output.contains("script"));
+        assert!(output.contains(r#"<p class="lead">Hi</p>"#));
     }
 
     #[test]
@@ -624,20 +654,22 @@ mod tests {
         assert!(output.contains("&lt;b&gt;"));
     }
 
-    // SECURITY REGRESSION TEST — Story 27.1 Finding R2-1: full_html downgraded to plain_text
+    // SECURITY REGRESSION TEST — Story 27.1 Finding R2-1, updated for B151:
+    // full_html is never raw — it is cleaned by TrustedHtmlFilter, not
+    // downgraded to plain_text, but a script still never survives.
     #[test]
-    fn for_format_safe_rejects_full_html() {
-        let pipeline = FilterPipeline::for_format_safe("full_html");
-        let input = "<script>alert('xss')</script>";
+    fn for_format_rejects_script_in_full_html() {
+        let pipeline = FilterPipeline::for_format("full_html");
+        let input = r#"<p class="lead">Hi</p><script>alert('xss')</script>"#;
         let output = pipeline.process(input);
-        assert!(!output.contains("<script>"));
-        assert!(output.contains("&lt;script&gt;"));
+        assert!(!output.contains("<script"));
+        assert!(output.contains(r#"<p class="lead">Hi</p>"#));
     }
 
     // SECURITY REGRESSION TEST — Story 27.1 Finding R2-1: plain_text allowed
     #[test]
-    fn for_format_safe_allows_plain_text() {
-        let pipeline = FilterPipeline::for_format_safe("plain_text");
+    fn for_format_allows_plain_text() {
+        let pipeline = FilterPipeline::for_format("plain_text");
         let input = "<b>bold</b>";
         let output = pipeline.process(input);
         assert!(output.contains("&lt;b&gt;"));
@@ -645,8 +677,8 @@ mod tests {
 
     // SECURITY REGRESSION TEST — Story 27.1 Finding R2-1: filtered_html allowed
     #[test]
-    fn for_format_safe_allows_filtered_html() {
-        let pipeline = FilterPipeline::for_format_safe("filtered_html");
+    fn for_format_allows_filtered_html() {
+        let pipeline = FilterPipeline::for_format("filtered_html");
         let input = "<p>Hello</p><script>bad</script>";
         let output = pipeline.process(input);
         assert!(output.contains("<p>Hello</p>"));
@@ -655,8 +687,8 @@ mod tests {
 
     // SECURITY REGRESSION TEST — Story 27.1 Finding R2-1: unknown formats downgraded
     #[test]
-    fn for_format_safe_rejects_unknown() {
-        let pipeline = FilterPipeline::for_format_safe("evil_format");
+    fn for_format_rejects_unknown() {
+        let pipeline = FilterPipeline::for_format("evil_format");
         let input = "<b>bold</b>";
         let output = pipeline.process(input);
         assert!(output.contains("&lt;b&gt;"));
@@ -752,6 +784,124 @@ mod tests {
         );
 
         let full = FilterPipeline::for_format("full_html");
-        assert_eq!(full.process("<script>ok</script>"), "<script>ok</script>");
+        let full_output = full.process(r#"<p class="lead">ok</p><script>bad</script>"#);
+        assert!(full_output.contains(r#"<p class="lead">ok</p>"#));
+        assert!(!full_output.contains("script"));
+    }
+
+    // -----------------------------------------------------------------------
+    // TrustedHtmlFilter (B151): full_html is rich, never raw.
+    // -----------------------------------------------------------------------
+
+    // SECURITY REGRESSION TEST — B151: script element and its content removed
+    #[test]
+    fn trusted_html_removes_script() {
+        let filter = TrustedHtmlFilter;
+        let output = filter.process("<p>Safe</p><script>alert('xss')</script>");
+        assert!(!output.contains("script"));
+        assert!(!output.contains("alert"));
+        assert!(output.contains("<p>Safe</p>"));
+    }
+
+    // SECURITY REGRESSION TEST — B151: style element and its content removed
+    #[test]
+    fn trusted_html_removes_style_element() {
+        let filter = TrustedHtmlFilter;
+        let output = filter.process("<style>body{display:none}</style><p>Visible</p>");
+        assert!(!output.contains("style"));
+        assert!(!output.contains("display"));
+        assert!(output.contains("<p>Visible</p>"));
+    }
+
+    // SECURITY REGRESSION TEST — B151: a style attribute is always stripped
+    #[test]
+    fn trusted_html_removes_style_attribute() {
+        let filter = TrustedHtmlFilter;
+        let output = filter.process(r#"<p style="color:red">Text</p>"#);
+        assert!(!output.contains("style"));
+        assert!(output.contains("Text"));
+    }
+
+    // SECURITY REGRESSION TEST — B151: every on* handler is stripped
+    #[test]
+    fn trusted_html_removes_event_handlers() {
+        let filter = TrustedHtmlFilter;
+        for (tag_html, handler) in [
+            (r#"<div onclick="x()">click</div>"#, "onclick"),
+            (r#"<img src="/a.png" onerror="x()">"#, "onerror"),
+            (r#"<body onload="x()">hi</body>"#, "onload"),
+            (r#"<input onfocus="x()">"#, "onfocus"),
+            (r#"<a href="/" onmouseover="x()">link</a>"#, "onmouseover"),
+        ] {
+            let output = filter.process(tag_html);
+            assert!(!output.contains(handler), "{handler} survived: {output}");
+        }
+    }
+
+    // SECURITY REGRESSION TEST — B151: javascript: and data: URLs are blocked
+    #[test]
+    fn trusted_html_removes_javascript_and_data_urls() {
+        let filter = TrustedHtmlFilter;
+        let js = filter.process(r#"<a href="javascript:alert(1)">click</a>"#);
+        assert!(!js.contains("javascript:"));
+
+        let data =
+            filter.process(r#"<a href="data:text/html,<script>alert(1)</script>">click</a>"#);
+        assert!(!data.contains("data:"));
+    }
+
+    // SECURITY REGRESSION TEST — B151: SVG with onload is neutralised
+    #[test]
+    fn trusted_html_removes_svg_onload() {
+        let filter = TrustedHtmlFilter;
+        let output = filter.process(r#"<svg onload="alert(1)"><circle r="50"/></svg>"#);
+        assert!(!output.contains("onload"));
+        assert!(!output.contains("alert"));
+    }
+
+    // SECURITY REGRESSION TEST — B151: iframe is not in the trusted allowlist
+    #[test]
+    fn trusted_html_removes_iframe() {
+        let filter = TrustedHtmlFilter;
+        let output = filter.process("<p>Keep</p><iframe src=\"https://evil.example\"></iframe>");
+        assert!(output.contains("<p>Keep</p>"));
+        assert!(!output.contains("iframe"));
+    }
+
+    // An unclosed tag does not panic and does not leak the rest of the
+    // document as unescaped text.
+    #[test]
+    fn trusted_html_handles_unclosed_tag() {
+        let filter = TrustedHtmlFilter;
+        let output = filter.process("<p>Unclosed<script>alert(1)");
+        assert!(!output.contains("script"));
+        assert!(!output.contains("alert"));
+    }
+
+    #[test]
+    fn trusted_html_preserves_rich_markup() {
+        let filter = TrustedHtmlFilter;
+        let input = r#"<div class="article" id="main"><h2>Title</h2><figure><img src="/a.png" alt="A"></figure><table><tr><td>Cell</td></tr></table><span class="tag">x</span></div>"#;
+        let output = filter.process(input);
+        assert!(output.contains(r#"<div class="article" id="main">"#));
+        assert!(output.contains("<h2>Title</h2>"));
+        assert!(output.contains("<figure>"));
+        assert!(output.contains(r#"<img src="/a.png" alt="A">"#) || output.contains("<img"));
+        assert!(output.contains("<table>"));
+        assert!(output.contains(r#"<span class="tag">x</span>"#));
+    }
+
+    #[test]
+    fn trusted_html_adds_link_rel_and_keeps_target() {
+        let filter = TrustedHtmlFilter;
+        let output = filter.process(r#"<a href="https://example.com" target="_blank">Link</a>"#);
+        assert!(output.contains("noopener"));
+        assert!(output.contains("noreferrer"));
+        assert!(output.contains(r#"target="_blank""#));
+    }
+
+    #[test]
+    fn trusted_html_name() {
+        assert_eq!(TrustedHtmlFilter.name(), "trusted_html");
     }
 }

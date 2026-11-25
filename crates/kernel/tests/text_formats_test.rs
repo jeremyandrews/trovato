@@ -120,7 +120,8 @@ fn machine(prefix: &str) -> String {
 
 /// **The migration changes nothing.** The three seeded rows, loaded from the
 /// database, render every input exactly as the code-defined pipelines did,
-/// both as stored and through the view-time `for_format_safe` path.
+/// both as stored and through the view-time `for_format` path. `full_html` is
+/// sanitized (B151), not passed through raw or downgraded to `plain_text`.
 #[test]
 fn the_seeded_formats_render_exactly_as_the_code_defined_ones() {
     run_test(async {
@@ -167,23 +168,25 @@ fn the_seeded_formats_render_exactly_as_the_code_defined_ones() {
                 before_full,
                 "{input}"
             );
-            // And the view path: full_html still renders as plain text.
+            // And the view path: full_html is sanitized, not downgraded.
             assert_eq!(
-                FilterPipeline::for_format_safe("plain_text").process(input),
+                FilterPipeline::for_format("plain_text").process(input),
                 before_plain
             );
             assert_eq!(
-                FilterPipeline::for_format_safe("filtered_html").process(input),
+                FilterPipeline::for_format("filtered_html").process(input),
                 before_filtered
             );
             assert_eq!(
-                FilterPipeline::for_format_safe("full_html").process(input),
-                before_plain
+                FilterPipeline::for_format("full_html").process(input),
+                before_full
             );
             assert_eq!(
-                FilterPipeline::for_format_safe("no_such_format").process(input),
+                FilterPipeline::for_format("no_such_format").process(input),
                 before_plain
             );
+            // A script never survives full_html, whatever the corpus input.
+            assert!(!before_full.contains("<script"), "{input}");
         }
     });
 }

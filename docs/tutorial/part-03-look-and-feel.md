@@ -32,11 +32,11 @@ Every piece of content in Trovato passes through the **Render Tree** before it r
 
 When a visitor requests `/item/{id}`, the kernel:
 
-1. **Build** -- Loads the item from the database and constructs a structured data tree. Fields are processed through format-specific filter pipelines (`FilterPipeline::for_format_safe()`). Compound fields are sorted by weight. All user-supplied content is HTML-escaped via `html_escape()`.
+1. **Build** -- Loads the item from the database and constructs a structured data tree. Fields are processed through format-specific filter pipelines (`FilterPipeline::for_format()`). Compound fields are sorted by weight. All user-supplied content is HTML-escaped via `html_escape()`.
 
 2. **Alter** -- Plugins can mutate the tree through the `tap_item_view_alter` tap. A plugin might add a badge, reorder fields, or strip fields based on permissions (you will see this in Part 4's access control plugin).
 
-3. **Sanitize** -- Text format filters run on rich text fields. `filtered_html` strips dangerous tags; `full_html` is available to trusted editors. All HTML output is safe by construction.
+3. **Sanitize** -- Text format filters run on rich text fields. `filtered_html` keeps a configured tag/attribute allowlist; `full_html` (available to trusted editors) keeps a fixed, more permissive allowlist. Both always strip `<script>`, event handlers and `javascript:`/`data:` URLs -- all HTML output is safe by construction.
 
 4. **Render** -- The Tera template engine converts the data tree into HTML. Template resolution follows a specificity chain, and the result is wrapped in the base page layout.
 
@@ -660,7 +660,7 @@ The auth handlers (`login_form`, `render_login_error`, `render_register_form`, `
 
 ### About and Contact Pages
 
-The About and Contact pages need rich layout HTML (grids with icons, multi-column cards). But the render pipeline's `FilterPipeline::for_format_safe()` only allows `plain_text` and `filtered_html` formats. The `filtered_html` format uses ammonia sanitization which strips `<div>`, `<svg>`, `class` attributes, and `style` attributes -- exactly the elements needed for a rich layout.
+The About and Contact pages need rich layout HTML (grids with icons, multi-column cards). The `filtered_html` format's ammonia sanitization strips `class` and `style` attributes along with tags like `<svg>` -- so it cannot carry a rich layout. `full_html` (for an author with the `use full_html` permission) now keeps `div`, `span`, `figure`, tables, headings, lists, images and `class`/`id` on every tag, which covers a card grid, but it still has no `<svg>` or `style` attribute, so a layout that needs inline icons or CSS beyond what classes provide still needs a template.
 
 The solution uses the template resolution chain. Instead of storing layout HTML in the database body field, create UUID-specific templates:
 
@@ -671,7 +671,7 @@ templates/elements/item--page--{uuid-of-contact}.html
 
 These templates contain the rich layout HTML directly, bypassing the filter pipeline. The database items exist as `page` type content (so they have URL aliases and appear in admin), but the template handles all rendering. This approach:
 
-- Respects the security model -- no weakening of `for_format_safe()`
+- Respects the security model -- no weakening of the text format sanitizers
 - Keeps rich layouts in version-controlled template files
 - Uses Trovato's existing template specificity chain
 

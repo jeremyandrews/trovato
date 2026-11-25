@@ -37,7 +37,7 @@ pub mod view_counter;
 
 pub use block_render::render_blocks;
 pub use block_types::{BlockTypeDefinition, BlockTypeRegistry};
-pub use filter::{FilterPipeline, TextFilter};
+pub use filter::{FilterPipeline, TextFilter, TrustedHtmlFilter};
 pub use form::{
     FieldMode, FormBuilder, LOG_WEIGHT, STATUS_WEIGHT, SUBMIT_WEIGHT, extract_reference_id,
 };

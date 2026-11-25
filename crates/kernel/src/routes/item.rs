@@ -890,7 +890,7 @@ pub(crate) async fn render_item_fields(
                                 val.get("value").and_then(|v| v.as_str()),
                                 val.get("format").and_then(|v| v.as_str()),
                             ) {
-                                let filtered = FilterPipeline::for_format_safe(fmt).process(text);
+                                let filtered = FilterPipeline::for_format(fmt).process(text);
                                 section_fields_html.push_str(&filtered);
                             } else if let Some(text) = val.as_str() {
                                 let filtered =
@@ -973,7 +973,7 @@ pub(crate) async fn render_item_fields(
                     .get("format")
                     .and_then(|v| v.as_str())
                     .unwrap_or("plain_text");
-                let filtered = FilterPipeline::for_format_safe(raw_fmt).process(text_val);
+                let filtered = FilterPipeline::for_format(raw_fmt).process(text_val);
                 children_html.push_str(&format!(
                     "<div class=\"field field-{}\">{}</div>",
                     html_escape(name),

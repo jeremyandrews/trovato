@@ -115,10 +115,11 @@ impl RenderTreeConsumer {
 
     /// Process a value through the appropriate filter pipeline.
     ///
-    /// Uses `for_format_safe()` to reject unsafe formats like `full_html`
-    /// that plugins might request.
+    /// Safe to call with a format string a plugin requests: `full_html` is
+    /// cleaned by [`crate::content::TrustedHtmlFilter`], not passed through
+    /// raw.
     fn process_value(&self, value: &str, format: Option<&str>) -> String {
-        FilterPipeline::for_format_safe(format.unwrap_or("plain_text")).process(value)
+        FilterPipeline::for_format(format.unwrap_or("plain_text")).process(value)
     }
 
     /// Convert a classes value (array or string) to a safe, space-separated string.
@@ -715,9 +716,14 @@ mod tests {
     #[test]
     fn test_process_value_rejects_full_html() {
         let consumer = RenderTreeConsumer::new();
-        let result = consumer.process_value("<script>alert('xss')</script>", Some("full_html"));
-        assert!(!result.contains("<script>"));
-        assert!(result.contains("&lt;script&gt;"));
+        let result = consumer.process_value(
+            r#"<p class="lead">Hi</p><script>alert('xss')</script><img src=x onerror="alert(1)"><a href="javascript:alert(1)">x</a>"#,
+            Some("full_html"),
+        );
+        assert!(!result.contains("<script"));
+        assert!(!result.contains("onerror"));
+        assert!(!result.contains("javascript:"));
+        assert!(result.contains(r#"<p class="lead">Hi</p>"#));
     }
 
     // ---------------------------------------------------------------------
