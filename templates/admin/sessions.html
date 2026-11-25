@@ -32,7 +32,7 @@
                 <td>{{ s.created_at }}</td>
                 <td>{{ s.last_seen }}</td>
                 <td class="operations">
-                    <form method="post" action="/admin/users/{{ user.id }}/sessions/{{ s.device_id }}/revoke" class="inline-form">
+                    <form method="post" action="/admin/users/{{ user.id }}/sessions/{{ s.device_id }}/revoke" class="inline-form" novalidate>
                         <input type="hidden" name="_token" value="{{ csrf_token }}">
                         <button type="submit" class="link-button link-button--danger">{{ t(s="Sign out {device}", device=s.device_name) }}</button>
                     </form>

@@ -1,4 +1,5 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {% block page_title %}{{ t(s="Files") }}{% endblock page_title %}
@@ -7,14 +8,8 @@
 <div class="admin-card">
     <form class="filter-form" method="get" action="/admin/content/files">
         <div class="filter-row">
-            <div class="filter-item">
-                <label for="status">{{ t(s="Status") }}</label>
-                <select id="status" name="status">
-                    <option value="">{{ t(s="- Any -") }}</option>
-                    <option value="0" {% if status_filter == 0 %}selected{% endif %}>{{ t(s="Temporary") }}</option>
-                    <option value="1" {% if status_filter == 1 %}selected{% endif %}>{{ t(s="Permanent") }}</option>
-                </select>
-            </div>
+            {% if status_filter is defined and status_filter is number %}{% set status_value = status_filter %}{% else %}{% set status_value = "" %}{% endif %}
+            {{ form::select(name="status", label=t(s="Status"), options=status_options, value=status_value, empty=t(s="- Any -"), translate_options=true, wrapper="filter-item") }}
             <div class="filter-item">
                 <button type="submit" class="button button--secondary">{{ t(s="Filter") }}</button>
             </div>

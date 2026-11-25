@@ -1,4 +1,5 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 {#- Admin search results. Context: q, hits (label, description, href,
     group), from routes::admin_shell::search. Results are grouped by kind
     under headings; Part 4 of the redesign adds settings, content, people and
@@ -9,13 +10,8 @@
 
 {% block content %}
 <form class="search-page-form" role="search" action="/admin/search" method="get" aria-label="{{ t(s='Search again') }}">
-    <div class="field">
-        <label class="field__label" for="admin-search-page-q">{{ t(s="Search for") }}</label>
-        <div class="field__row">
-            <input class="field__input field__input--wide" id="admin-search-page-q" type="search" name="q" value="{{ q }}" autocomplete="off">
-            <button class="button button--primary" type="submit">{{ t(s="Search") }}</button>
-        </div>
-    </div>
+    {{ form::field(name="q", id="admin-search-page-q", type="search", label=t(s="Search for"), value=q, width="30", autocomplete="off") }}
+    <button class="button button--primary" type="submit">{{ t(s="Search") }}</button>
 </form>
 
 {% if q %}

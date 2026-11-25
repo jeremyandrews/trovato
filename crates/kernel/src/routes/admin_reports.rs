@@ -248,6 +248,12 @@ async fn log_report(
     context.insert("types", &types);
     context.insert("level_filter", &level.unwrap_or_default());
     context.insert("type_filter", &log_type.unwrap_or_default());
+    // [value, label] pairs for the form macros: a level is a fixed word the
+    // template translates, a type is data.
+    let level_options: Vec<(&str, &str)> = LEVELS.iter().map(|l| (*l, *l)).collect();
+    context.insert("level_options", &level_options);
+    let type_options: Vec<(&str, &str)> = types.iter().map(|t| (t.as_str(), t.as_str())).collect();
+    context.insert("type_options", &type_options);
     context.insert("filter_qs", &filter_qs);
     context.insert("path", "/admin/reports/log");
     render_admin_template(&state, &viewer, "admin/reports/log.html", context).await

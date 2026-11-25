@@ -4,7 +4,7 @@
 
 {% block content %}
 <div class="admin-card">
-    <p class="form-item__description">
+    <p class="description">
         {{ t(s="Counts per day only: the query text with email addresses and long numbers removed, never who searched, from where or when within the day.") }}
         {{ t(s="Kept for {count} day.", plural="Kept for {count} days.", count=retention_days) }}
         {{ t(s="Switch analytics off, or change how long it is kept, on the search settings screen.") }}
@@ -57,7 +57,7 @@
 
 <section class="admin-card" id="search-zero-queries" aria-labelledby="search-zero-heading">
     <h2 id="search-zero-heading">{{ t(s="Queries that found nothing") }}</h2>
-    <p class="form-item__description">{{ t(s="What visitors looked for and the site does not have, or does not call by that name.") }}</p>
+    <p class="description">{{ t(s="What visitors looked for and the site does not have, or does not call by that name.") }}</p>
     {% if zero %}
     <div class="table-scroll" role="region" aria-labelledby="search-zero-caption" tabindex="0">
         <table class="table">

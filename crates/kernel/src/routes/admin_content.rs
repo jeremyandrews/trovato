@@ -85,6 +85,36 @@ async fn list_content(
     context.insert("content_types", &content_types);
     context.insert("stages", &stages);
     context.insert("type_filter", &type_filter.unwrap_or(""));
+    // The filter and bulk selects' options, as [value, label] pairs for the
+    // form macros. Type and stage labels are data; the others are English
+    // sources the template translates.
+    let type_options: Vec<(&str, &str)> = content_types
+        .iter()
+        .map(|ct| (ct.machine_name.as_str(), ct.label.as_str()))
+        .collect();
+    context.insert("type_options", &type_options);
+    context.insert(
+        "status_options",
+        &[("1", "Published"), ("0", "Unpublished")],
+    );
+    let mut bulk_options = vec![
+        ("publish", "Publish selected"),
+        ("unpublish", "Unpublish selected"),
+        ("promote", "Promote selected to front page"),
+        ("demote", "Remove selected from front page"),
+        ("sticky", "Make selected sticky"),
+        ("unsticky", "Make selected not sticky"),
+        ("delete", "Delete selected"),
+    ];
+    if !stages.is_empty() {
+        bulk_options.push(("move_to_stage", "Move selected to stage"));
+    }
+    context.insert("bulk_options", &bulk_options);
+    let stage_options: Vec<(String, &str)> = stages
+        .iter()
+        .map(|s| (s.id.to_string(), s.label.as_str()))
+        .collect();
+    context.insert("stage_options", &stage_options);
     context.insert(
         "status_filter",
         &status_filter.map(|s| s.to_string()).unwrap_or_default(),
@@ -189,6 +219,10 @@ async fn list_moderated(
     let mut context = tera::Context::new();
     context.insert("items", &listed);
     context.insert("state_filter", &state_filter.unwrap_or(""));
+    context.insert(
+        "state_options",
+        &[("draft", "Draft"), ("archived", "Archived")],
+    );
     context.insert("path", "/admin/content/moderated");
     render_admin_template(&state, &viewer, "admin/content-moderated.html", context).await
 }

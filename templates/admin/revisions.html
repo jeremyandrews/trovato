@@ -51,7 +51,7 @@
                     <em class="revision-current">{{ t(s="Current revision") }}</em>
                     {% else %}
                     {% if may_revert %}
-                    <form method="post" action="/item/{{ item_id }}/revert/{{ rev.id }}" class="inline-form">
+                    <form method="post" action="/item/{{ item_id }}/revert/{{ rev.id }}" class="inline-form" novalidate>
                         <input type="hidden" name="_token" value="{{ csrf_token }}">
                         <button type="submit" class="button button--small">{{ t(s="Revert to the revision of {date}", date=rev.date) }}</button>
                     </form>

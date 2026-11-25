@@ -254,6 +254,7 @@ async fn list_files(
     context.insert("files", &files);
     context.insert("owners", &owners);
     context.insert("status_filter", &status_filter.map(|s| s as i16));
+    context.insert("status_options", &[("0", "Temporary"), ("1", "Permanent")]);
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/content/files");
 
@@ -469,6 +470,14 @@ async fn media_library(
     context.insert("total_pages", &total_pages);
     context.insert("type_filter", &type_filter.unwrap_or("all"));
     context.insert("search", &search.unwrap_or(""));
+    context.insert(
+        "type_options",
+        &[
+            ("all", "All files"),
+            ("image", "Images"),
+            ("document", "Documents"),
+        ],
+    );
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/media");
 
@@ -687,6 +696,13 @@ async fn list_comments(
     context.insert("comments", &rows);
     context.insert("status_options", &filters);
     context.insert("default_status_pending", &default_status.awaits_review());
+    context.insert(
+        "default_status_options",
+        &[
+            ("published", "Publish immediately"),
+            ("pending", "Hold for review"),
+        ],
+    );
     context.insert("authors", &authors);
     context.insert("items", &items);
     context.insert("total", &total);

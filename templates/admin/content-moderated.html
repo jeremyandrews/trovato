@@ -1,4 +1,5 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {% block page_title %}{{ t(s="Moderated content") }}{% endblock page_title %}
@@ -8,14 +9,7 @@
 <div class="admin-card">
     <form class="filter-form" method="get" action="/admin/content/moderated">
         <div class="filter-row">
-            <div class="filter-item">
-                <label for="state">{{ t(s="Moderation state") }}</label>
-                <select id="state" name="state">
-                    <option value="">{{ t(s="- Any not published -") }}</option>
-                    <option value="draft" {% if state_filter == "draft" %}selected{% endif %}>{{ t(s="Draft") }}</option>
-                    <option value="archived" {% if state_filter == "archived" %}selected{% endif %}>{{ t(s="Archived") }}</option>
-                </select>
-            </div>
+            {{ form::select(name="state", label=t(s="Moderation state"), options=state_options, value=state_filter, empty=t(s="- Any not published -"), translate_options=true, wrapper="filter-item") }}
             <div class="filter-item">
                 <button type="submit" class="button button--secondary">{{ t(s="Filter") }}</button>
             </div>
