@@ -163,6 +163,17 @@ unsafe extern "C" {
 
     #[link_name = "load-users"]
     fn __load_users(ids_ptr: i32, ids_len: i32, out_ptr: i32, out_max_len: i32) -> i32;
+
+    #[link_name = "find-user-by-name"]
+    fn __find_user_by_name(name_ptr: i32, name_len: i32, out_ptr: i32, out_max_len: i32) -> i32;
+
+    #[link_name = "find-users-by-name-prefix"]
+    fn __find_users_by_name_prefix(
+        prefix_ptr: i32,
+        prefix_len: i32,
+        out_ptr: i32,
+        out_max_len: i32,
+    ) -> i32;
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1027,6 +1038,85 @@ pub fn load_users(user_ids: &[&str]) -> Result<Vec<crate::types::UserSummary>, i
 /// ask, so no user is found).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_users(_user_ids: &[&str]) -> Result<Vec<crate::types::UserSummary>, i32> {
+    Ok(Vec::new())
+}
+
+/// The one account named `name`: the same public facts [`load_users`]
+/// answers, or `None` when no account has that name.
+///
+/// Matches case-insensitively, the same way the kernel's own login matches a
+/// name. Requires `user_directory = true` under `[capabilities]`, the same
+/// grant `load_users` needs. No status or identity filter beyond that grant:
+/// a blocked account or the anonymous account answers like any other.
+///
+/// # Errors
+///
+/// [`ERR_USER_DIRECTORY_DENIED`](crate::host_errors::ERR_USER_DIRECTORY_DENIED)
+/// without the capability,
+/// [`ERR_USER_NAME_INVALID`](crate::host_errors::ERR_USER_NAME_INVALID) when
+/// `name` is empty or longer than 255 characters, and the standard negative
+/// codes for a failed read.
+#[cfg(target_arch = "wasm32")]
+pub fn find_user_by_name(name: &str) -> Result<Option<crate::types::UserSummary>, i32> {
+    let mut buf = vec![0u8; MAX_OUTPUT_BUFFER];
+    let result = unsafe {
+        __find_user_by_name(
+            name.as_ptr() as i32,
+            name.len() as i32,
+            buf.as_mut_ptr() as i32,
+            buf.len() as i32,
+        )
+    };
+    if result < 0 {
+        return Err(result);
+    }
+    buf.truncate(result as usize);
+    serde_json::from_slice(&buf).map_err(|_| crate::host_errors::ERR_SDK_DESERIALIZE)
+}
+
+/// Look a user up by name (stub for native testing; there is no directory to
+/// ask, so no user is found).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn find_user_by_name(_name: &str) -> Result<Option<crate::types::UserSummary>, i32> {
+    Ok(None)
+}
+
+/// Up to 10 accounts whose name starts with `prefix`, sorted by name: a short
+/// list an autocomplete widget can offer as a person types.
+///
+/// Matches case-insensitively. Requires `user_directory = true` under
+/// `[capabilities]`, the same grant [`load_users`] needs, and the same
+/// visibility rule as [`find_user_by_name`] applies.
+///
+/// # Errors
+///
+/// [`ERR_USER_DIRECTORY_DENIED`](crate::host_errors::ERR_USER_DIRECTORY_DENIED)
+/// without the capability,
+/// [`ERR_USER_NAME_PREFIX_INVALID`](crate::host_errors::ERR_USER_NAME_PREFIX_INVALID)
+/// when `prefix` is empty or longer than 255 characters, and the standard
+/// negative codes for a failed read.
+#[cfg(target_arch = "wasm32")]
+pub fn find_users_by_name_prefix(prefix: &str) -> Result<Vec<crate::types::UserSummary>, i32> {
+    let mut buf = vec![0u8; MAX_OUTPUT_BUFFER];
+    let result = unsafe {
+        __find_users_by_name_prefix(
+            prefix.as_ptr() as i32,
+            prefix.len() as i32,
+            buf.as_mut_ptr() as i32,
+            buf.len() as i32,
+        )
+    };
+    if result < 0 {
+        return Err(result);
+    }
+    buf.truncate(result as usize);
+    serde_json::from_slice(&buf).map_err(|_| crate::host_errors::ERR_SDK_DESERIALIZE)
+}
+
+/// Look users up by name prefix (stub for native testing; there is no
+/// directory to ask, so no user is found).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn find_users_by_name_prefix(_prefix: &str) -> Result<Vec<crate::types::UserSummary>, i32> {
     Ok(Vec::new())
 }
 
