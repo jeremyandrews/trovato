@@ -48,5 +48,8 @@ pub use item_service::{
     decode_view_output,
 };
 pub use page_meta::PageMeta;
-pub use record_type::{RecordTypeDef, RecordTypeLoadError, RecordTypeRegistry};
+pub use record_type::{
+    CATEGORY_TERM_RECORD_TYPE, RecordTypeDef, RecordTypeLoadError, RecordTypeRegistry,
+    category_term_record_type,
+};
 pub use type_registry::{AddFieldError, ContentTypeRegistry, CreateContentTypeError};

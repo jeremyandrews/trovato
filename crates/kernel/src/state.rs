@@ -804,6 +804,14 @@ impl AppState {
             for err in &errors {
                 warn!(error = %err, "skipping invalid lightweight-record declaration");
             }
+            // The kernel's own built-in record type (B185): terms of one
+            // category, listed through the same lightweight-record gather path
+            // a plugin's record type uses. Not plugin-declared, so it is added
+            // directly rather than through `build`'s allowlist check.
+            let registry = registry.with_builtin(
+                crate::content::category_term_record_type(),
+                &content_type_names,
+            );
             if !registry.is_empty() {
                 info!(
                     count = registry.len(),

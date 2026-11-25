@@ -16,7 +16,7 @@ use super::types::{
     MAX_GROUP_DEPTH, QueryContext, QueryDefinition, QueryDisplay, QueryFilter,
 };
 use crate::cache::generation::{CacheKind, bump};
-use crate::content::{ItemService, RecordTypeRegistry};
+use crate::content::{CATEGORY_TERM_RECORD_TYPE, ItemService, RecordTypeRegistry};
 use crate::metrics::{CacheName, Metrics};
 use crate::models::UrlAlias;
 use crate::services::ai_provider::AiProviderService;
@@ -144,6 +144,14 @@ struct RecordContext {
     name: String,
     published_column: Option<String>,
     field_targets: HashMap<String, String>,
+    /// The record's structural columns, carried so a star-selected row's
+    /// output keys can be renamed to their logical names (see
+    /// [`GatherService::rename_record_structural_keys`]) without a second
+    /// registry lookup.
+    id_column: String,
+    title_column: String,
+    created_column: String,
+    changed_column: String,
 }
 
 /// The statement timeout a plugin's definition runs under: the raw path's
@@ -1096,6 +1104,9 @@ impl GatherService {
         // field targets) the builder and field-access pass need. `None` for every
         // Item gather, leaving its definition — and emitted SQL — untouched.
         let record_ctx = self.resolve_record_context(&mut resolved_definition)?;
+        if let Some(rc) = &record_ctx {
+            Self::check_term_category_filter(&resolved_definition, rc)?;
+        }
 
         // Resolve category hierarchy for HasTagOrDescendants filters
         let resolved_definition = self
@@ -1199,7 +1210,7 @@ impl GatherService {
             // per-item over-fetch loop — fetch the page and refine fields through
             // the same FR-8 seam Items use.
             let (rows, capped) = self
-                .fetch_record_page(&builder, &viewer, page, per_page, &mut tx, rc)
+                .fetch_record_page(&builder, &viewer, page, per_page, &mut tx, rc, is_star)
                 .await?;
             (rows, capped, None)
         } else {
@@ -1229,11 +1240,19 @@ impl GatherService {
                 .await?;
         }
 
-        // Give every row the address it is actually read at. Records have no
-        // `/item/` address, and neither does a plugin's own table, so this is for
-        // Item gathers only.
-        if record_ctx.is_none() && !scope.own_base {
-            self.resolve_row_urls(&mut rows, stage_ids, context).await;
+        // Give every row the address it is actually read at. A plugin's own
+        // table has no address at all. Items get `/item/{id}`; a `category_term`
+        // gather (B185) gets the term analog, `/term/{id}`; any other record
+        // type has no address convention of its own yet.
+        if !scope.own_base {
+            match &record_ctx {
+                None => self.resolve_row_urls(&mut rows, stage_ids, context).await,
+                Some(rc) if rc.name == CATEGORY_TERM_RECORD_TYPE => {
+                    self.resolve_term_row_urls(&mut rows, stage_ids, context)
+                        .await;
+                }
+                Some(_) => {}
+            }
         }
 
         let total = visible_total.or(sql_total).unwrap_or(0);
@@ -1292,6 +1311,50 @@ impl GatherService {
         for row in rows.iter_mut() {
             let Some(id) = row_id(row) else { continue };
             let source = format!("/item/{id}");
+            let url = aliases.get(&source).cloned().unwrap_or(source);
+            if let Some(object) = row.as_object_mut() {
+                object.insert("url".to_string(), serde_json::Value::String(url));
+            }
+        }
+    }
+
+    /// [`Self::resolve_row_urls`]'s analog for a `category_term` gather (B185):
+    /// give each term row a `url`, its alias when one exists and `/term/{id}`
+    /// otherwise. A term has no stage of its own (`stage_aware` is cleared for
+    /// every record gather), but a `url_alias` row is still looked up for the
+    /// read's stages, the same way an Item's is — a site may publish a term's
+    /// alias only in some stages.
+    async fn resolve_term_row_urls(
+        &self,
+        rows: &mut [serde_json::Value],
+        stage_ids: &[Uuid],
+        context: &QueryContext,
+    ) {
+        if rows.is_empty() {
+            return;
+        }
+
+        let sources: Vec<String> = rows
+            .iter()
+            .filter_map(row_id)
+            .map(|id| format!("/term/{id}"))
+            .collect();
+        if sources.is_empty() {
+            return;
+        }
+
+        let language = context.language.as_deref().unwrap_or("en");
+        let aliases =
+            UrlAlias::canonical_aliases_for_stages(&self.pool, &sources, stage_ids, language)
+                .await
+                .unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "failed to resolve term gather row URLs, falling back to /term/{{id}}");
+                    HashMap::new()
+                });
+
+        for row in rows.iter_mut() {
+            let Some(id) = row_id(row) else { continue };
+            let source = format!("/term/{id}");
             let url = aliases.get(&source).cloned().unwrap_or(source);
             if let Some(object) = row.as_object_mut() {
                 object.insert("url".to_string(), serde_json::Value::String(url));
@@ -1646,7 +1709,74 @@ impl GatherService {
             name: record_name,
             published_column: def.published_column.clone(),
             field_targets: def.field_map.clone(),
+            id_column: def.id_column.clone(),
+            title_column: def.title_column.clone(),
+            created_column: def.created_column.clone(),
+            changed_column: def.changed_column.clone(),
         }))
+    }
+
+    /// Refuse a `category_term` gather (B185) with no bound filter on its
+    /// category.
+    ///
+    /// `category_tag` holds every vocabulary's terms in one shared table, so a
+    /// gather with no `category` constraint would list them all together
+    /// rather than one vocabulary. Checked here — after
+    /// [`Self::resolve_record_context`] has rewritten the logical `category`
+    /// filter field to its physical `category_id` column, and after exposed
+    /// filters are already resolved (an exposed-but-unanswered `category`
+    /// filter has by now been dropped, see
+    /// [`Self::resolve_exposed_filters`]) — so a gather that only *looks*
+    /// filtered at save time but leaves the choice to an unanswered exposed
+    /// filter is refused too, not just one that never declared a filter at
+    /// all. A no-op for every other gather (Item or another record type).
+    fn check_term_category_filter(
+        definition: &QueryDefinition,
+        record_ctx: &RecordContext,
+    ) -> Result<()> {
+        if record_ctx.name != CATEGORY_TERM_RECORD_TYPE {
+            return Ok(());
+        }
+        let bound = definition.all_filters().iter().any(|f| {
+            f.field == "category_id"
+                && f.operator == FilterOperator::Equals
+                && f.value.as_string().is_some_and(|s| !s.trim().is_empty())
+        });
+        if !bound {
+            anyhow::bail!(
+                "a category-term gather must filter on 'category' with a bound value, \
+                 or it would list every vocabulary's terms together"
+            );
+        }
+        Ok(())
+    }
+
+    /// Rename a record gather's structural output keys to their logical names
+    /// (`id`, `title`, `created`, `changed`) when the record type's physical
+    /// column differs, so a row from `SELECT <table>.*` carries the same keys
+    /// an Item row does — what the stock gather templates (`row.title`,
+    /// `row.id`) read. A no-op for a record type whose physical names already
+    /// match (every record type before B185, including the `event_record`
+    /// fixture). Only applied to the whole-row (`is_star`) case: an explicit
+    /// field list already controls its own output keys.
+    fn rename_record_structural_keys(rows: &mut [serde_json::Value], record_ctx: &RecordContext) {
+        for row in rows.iter_mut() {
+            let Some(obj) = row.as_object_mut() else {
+                continue;
+            };
+            for (physical, logical) in [
+                (record_ctx.id_column.as_str(), "id"),
+                (record_ctx.title_column.as_str(), "title"),
+                (record_ctx.created_column.as_str(), "created"),
+                (record_ctx.changed_column.as_str(), "changed"),
+            ] {
+                if physical != logical
+                    && let Some(value) = obj.remove(physical)
+                {
+                    obj.insert(logical.to_string(), value);
+                }
+            }
+        }
     }
 
     /// Fetch one page of a lightweight-record gather (P11g / D-54, D-55).
@@ -1664,6 +1794,7 @@ impl GatherService {
         per_page: u32,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         record_ctx: &RecordContext,
+        is_star: bool,
     ) -> Result<(Vec<serde_json::Value>, bool)> {
         let offset = (page.saturating_sub(1) as u64) * u64::from(per_page);
         let main_sql = builder.build_window(offset, u64::from(per_page.max(1)));
@@ -1676,6 +1807,9 @@ impl GatherService {
 
         if let Some(items) = self.item_access.get() {
             Self::apply_record_field_filtering(items, viewer, &mut rows, record_ctx).await;
+        }
+        if is_star {
+            Self::rename_record_structural_keys(&mut rows, record_ctx);
         }
 
         // Record-level visibility is the exact SQL predicate, so a short page
@@ -2646,6 +2780,25 @@ impl GatherService {
                     filter.field
                 ));
             }
+        }
+
+        // A category-term gather (B185) reads `category_tag`, which holds
+        // every vocabulary's terms in one shared table. Refuse to save one with
+        // no bound `category` filter at all; `check_term_category_filter`
+        // enforces the full rule (including an exposed filter left
+        // unanswered) on every execution, since save-time validation alone
+        // cannot see that a reader left a form field blank.
+        if definition.record_type.as_deref() == Some(CATEGORY_TERM_RECORD_TYPE)
+            && !definition.filters.iter().any(|f| {
+                f.field == "category" && f.operator == FilterOperator::Equals && !f.value.is_unset()
+            })
+        {
+            errors.push(
+                "a category-term gather ('record_type': \"category_term\") must declare a \
+                 bound 'category' filter (operator equals), or it would list every \
+                 vocabulary's terms together"
+                    .to_string(),
+            );
         }
 
         errors.extend(Self::validate_aggregation(definition));

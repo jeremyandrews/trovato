@@ -96,6 +96,52 @@ impl RecordTypeDef {
     }
 }
 
+/// Name of the kernel's built-in lightweight-record type (B185) over
+/// `category_tag`, letting a gather list the terms of one vocabulary (filtered,
+/// sorted, paged) the same way it lists `item` rows or a plugin's record type.
+///
+/// Registered directly by [`RecordTypeRegistry::with_builtin`] rather than
+/// through a plugin manifest — `category_tag` is a kernel-owned table, not any
+/// plugin's migration-owned table or declared `db_tables` allowlist entry — so
+/// the usual `RecordTypeRegistry::admit` allowlist check does not apply to it.
+pub const CATEGORY_TERM_RECORD_TYPE: &str = "category_term";
+
+/// The kernel's built-in `category_term` record type (B185): one row per term
+/// (`category_tag`), with `category` (the vocabulary machine name),
+/// `description`, `weight` and `slug` as logical fields alongside the
+/// structural `id`/`title`(`label`)/`created`/`changed` columns every record
+/// type carries. `title` maps to `label` — the term's name — since
+/// `category_tag` has no column literally named `title`.
+///
+/// No `published_column`: a term carries no draft/publish state of its own, so
+/// every term in its vocabulary is visible to every viewer (admin and non-admin
+/// alike) once a gather's `category` filter selects that vocabulary.
+///
+/// `GatherService::check_term_category_filter` refuses to run a
+/// `category_term` gather that carries no bound filter on `category`: without
+/// one, `category_tag` holds every vocabulary's terms in one shared table, so
+/// an unfiltered listing would mix them all together.
+pub fn category_term_record_type() -> RecordTypeDef {
+    let mut field_map = HashMap::new();
+    field_map.insert("category".to_string(), "category_id".to_string());
+    field_map.insert("weight".to_string(), "weight".to_string());
+    field_map.insert("description".to_string(), "description".to_string());
+    field_map.insert("slug".to_string(), "slug".to_string());
+
+    RecordTypeDef {
+        name: CATEGORY_TERM_RECORD_TYPE.to_string(),
+        plugin: "core".to_string(),
+        table: "category_tag".to_string(),
+        id_column: "id".to_string(),
+        title_column: "label".to_string(),
+        created_column: "created".to_string(),
+        changed_column: "changed".to_string(),
+        author_column: None,
+        published_column: None,
+        field_map,
+    }
+}
+
 /// A record-type declaration rejected at registry build, retained for startup
 /// logging (mirrors `PluginLoadError`).
 #[derive(Debug, Clone)]
@@ -225,6 +271,37 @@ impl RecordTypeRegistry {
     /// Whether no record types are registered (the common case).
     pub fn is_empty(&self) -> bool {
         self.types.is_empty()
+    }
+
+    /// Register a kernel-owned built-in record type (B185) — one not declared
+    /// by any plugin manifest, and so not subject to `Self::admit`'s
+    /// effective-DB-allowlist check (there is no owning plugin to check it
+    /// against). Still refuses a name collision with a plugin-declared record
+    /// type or a content type, logged rather than fatal, the same
+    /// fail-closed-but-non-aborting rule [`Self::build`] uses.
+    #[must_use]
+    pub fn with_builtin(
+        mut self,
+        def: RecordTypeDef,
+        content_type_names: &HashSet<String>,
+    ) -> Self {
+        if content_type_names.contains(&def.name) {
+            tracing::warn!(
+                name = %def.name,
+                "skipping built-in record type: name collides with a content type"
+            );
+            return self;
+        }
+        if let Some(existing) = self.types.get(&def.name) {
+            tracing::warn!(
+                name = %def.name,
+                plugin = %existing.plugin,
+                "skipping built-in record type: name already declared by a plugin"
+            );
+            return self;
+        }
+        self.types.insert(def.name.clone(), def);
+        self
     }
 }
 
