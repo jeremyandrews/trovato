@@ -14,7 +14,7 @@ use tower_sessions::Session;
 
 use crate::error::AppError;
 use crate::routes::helpers::require_csrf_header;
-use crate::services::ai_provider::{AiCaller, AiOperationType, ChatRequest};
+use crate::services::ai_provider::{AiCallError, AiCaller, AiOperationType, ChatRequest};
 use crate::state::AppState;
 
 /// Supported AI assist operations.
@@ -147,12 +147,20 @@ async fn ai_assist_handler(
     let caller = AiCaller::user(uid, ASSIST_USAGE_SOURCE);
     let completion = match ai_providers.chat_once(&resolved, &caller, &request).await {
         Ok(completion) => completion,
+        // The send path holds the call to the person's token budget.
+        Err(AiCallError::BudgetExceeded) => {
+            return (AppError::RateLimited {
+                retry_after_secs: 3600,
+                category: "token_budget".to_string(),
+            })
+            .into_response();
+        }
         Err(e) => {
             tracing::warn!(error = %e, operation = %body.operation, "AI assist failed");
             return AppError::service_unavailable("AI", e.user_message()).into_response();
         }
     };
-    let (prompt_tokens, completion_tokens, total_tokens) = completion.usage;
+    let (_, _, total_tokens) = completion.usage;
 
     tracing::info!(
         operation = %body.operation,
@@ -161,33 +169,6 @@ async fn ai_assist_handler(
         tokens = total_tokens,
         "AI assist completed"
     );
-
-    // Record usage (best-effort), with a cost estimate when the model is priced
-    // (P11c / D-44).
-    let cost_estimate = state
-        .ai_budgets()
-        .estimate_call_cost(
-            &resolved.model,
-            &completion.model,
-            i64::from(prompt_tokens),
-            i64::from(completion_tokens),
-        )
-        .await;
-    let entry = crate::services::ai_token_budget::UsageLogEntry {
-        user_id: Some(uid),
-        plugin_name: ASSIST_USAGE_SOURCE.to_string(),
-        provider_id: resolved.config.id.clone(),
-        operation: "Chat".to_string(),
-        model: completion.model.clone(),
-        prompt_tokens: prompt_tokens.min(i32::MAX as u32) as i32,
-        completion_tokens: completion_tokens.min(i32::MAX as u32) as i32,
-        total_tokens: total_tokens.min(i32::MAX as u32) as i32,
-        latency_ms: completion.latency_ms.min(i64::MAX as u64) as i64,
-        cost_estimate,
-    };
-    if let Err(e) = state.ai_budgets().record_usage(state.db(), entry).await {
-        tracing::warn!(error = %e, "failed to record AI assist usage");
-    }
 
     Json(AiAssistResponse {
         result: completion.text.unwrap_or_default().trim().to_string(),

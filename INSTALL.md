@@ -242,6 +242,7 @@ compiled default stands.
 | `search_expand` | 30 / minute | `POST /api/v1/search/expand` |
 | `search_summarize` | 10 / minute | `POST /api/v1/search/summarize` |
 | `search_followup` | 5 / minute | `POST /api/v1/search/followup` |
+| `ai_assist` | 10 / minute | `POST /api/v1/ai/assist`, the writing assistant |
 | `login` | 5 / minute | `POST /user/login` |
 | `register` | 3 / hour | `POST /user/register` |
 | `uploads` | 10 / minute | `/file/upload` and `POST /api/v1/block-editor/upload` |
@@ -259,8 +260,9 @@ a named bucket, listed with it in the `SENSITIVE_ROUTES` test in
 itself rather than by path: password reset (`recovery` per client and
 `reset_mail` per address), account recovery, profile updates, the data export,
 and the AI chat and assistant, whose hourly limits are set on their admin
-pages. `POST /api/v1/ai/assist` is still counted in `api` and bounded by the AI
-token budget.
+pages. Every AI call is also held to the AI token budget (`/admin/system/ai-budgets`),
+where the `anonymous user` role's limit is one site-level cap shared by every
+anonymous visitor.
 
 For example, to serve a site whose pages carry an unusual number of assets:
 

@@ -17,6 +17,14 @@ pub struct HttpLabels {
     pub status: u16,
 }
 
+/// AI circuit breaker labels: which breaker a state belongs to.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct AiBreakerLabels {
+    /// An AI operation's key (`chat`, `embedding`, ...), or `connection_test`
+    /// for the breaker the admin connection test uses.
+    pub operation: &'static str,
+}
+
 /// Cache labels: which kernel cache a hit or miss belongs to.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct CacheLabels {
@@ -186,8 +194,9 @@ pub struct Metrics {
     /// did not actually have (none), so it should alert.
     pub permission_load_failures: Counter,
 
-    /// AI provider circuit breaker state (0=closed, 1=open, 2=half_open).
-    pub ai_circuit_breaker_state: Gauge,
+    /// AI provider circuit breaker state (0=closed, 1=open, 2=half_open), one
+    /// series per breaker: every operation's, and the connection test's.
+    pub ai_circuit_breaker_state: Family<AiBreakerLabels, Gauge>,
 
     /// Email SMTP circuit breaker state (0=closed, 1=open, 2=half_open).
     pub email_circuit_breaker_state: Gauge,
@@ -338,10 +347,10 @@ impl Metrics {
             permission_load_failures.clone(),
         );
 
-        let ai_circuit_breaker_state = Gauge::default();
+        let ai_circuit_breaker_state = Family::<AiBreakerLabels, Gauge>::default();
         registry.register(
             "trovato_circuit_breaker_ai",
-            "AI provider circuit breaker state (0=closed, 1=open, 2=half_open)",
+            "AI provider circuit breaker state by operation (0=closed, 1=open, 2=half_open)",
             ai_circuit_breaker_state.clone(),
         );
 

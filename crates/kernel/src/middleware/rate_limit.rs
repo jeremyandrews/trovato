@@ -104,6 +104,14 @@ pub struct RateLimitConfig {
     /// AI search result summarization. More expensive than expansion.
     pub search_summarize: (u32, Duration),
 
+    /// The writing assistant, `POST /api/v1/ai/assist`.
+    ///
+    /// Every call sends up to 10,000 characters to the AI provider and spends
+    /// provider money, so it is bounded on its own rather than in the generic
+    /// `api` bucket at 100 a minute. Nobody rewrites ten paragraphs a minute by
+    /// hand.
+    pub ai_assist: (u32, Duration),
+
     /// AI search follow-up questions. The most expensive of the three: every call
     /// carries the conversation context.
     pub search_followup: (u32, Duration),
@@ -228,7 +236,7 @@ pub fn role_config_key(bucket: &str, role: &str) -> String {
 /// The one list: [`RateLimitConfig::bucket`] and its private `bucket_mut` twin
 /// resolve each of these to a field, and `every_bucket_resolves_to_a_field` fails
 /// if a name here has no field behind it.
-pub const BUCKETS: [&str; 21] = [
+pub const BUCKETS: [&str; 22] = [
     "login",
     "forms",
     "api",
@@ -245,6 +253,7 @@ pub const BUCKETS: [&str; 21] = [
     "search_expand",
     "search_summarize",
     "search_followup",
+    "ai_assist",
     "static",
     "mail",
     "reset_mail",
@@ -290,6 +299,7 @@ impl Default for RateLimitConfig {
             search_expand: (30, Duration::from_secs(60)), // 30 per minute
             search_summarize: (10, Duration::from_secs(60)), // 10 per minute
             search_followup: (5, Duration::from_secs(60)), // 5 per minute
+            ai_assist: (10, Duration::from_secs(60)),     // 10 per minute
             static_assets: (2000, Duration::from_secs(60)), // 2000 per minute
             mail: (100, Duration::from_secs(3600)),       // 100 per hour, per plugin
             reset_mail: (3, Duration::from_secs(3600)),   // 3 per hour, per address
@@ -320,6 +330,7 @@ impl RateLimitConfig {
             "search_expand" => self.search_expand,
             "search_summarize" => self.search_summarize,
             "search_followup" => self.search_followup,
+            "ai_assist" => self.ai_assist,
             "static" => self.static_assets,
             "mail" => self.mail,
             "reset_mail" => self.reset_mail,
@@ -348,6 +359,7 @@ impl RateLimitConfig {
             "search_expand" => &mut self.search_expand,
             "search_summarize" => &mut self.search_summarize,
             "search_followup" => &mut self.search_followup,
+            "ai_assist" => &mut self.ai_assist,
             "static" => &mut self.static_assets,
             "mail" => &mut self.mail,
             "reset_mail" => &mut self.reset_mail,
@@ -767,6 +779,9 @@ pub fn categorize_path_with<S: AsRef<str>>(
     } else if let Some(category) = ai_search_category(path) {
         // Each of the three spends provider tokens, at three different costs.
         category
+    } else if method == "POST" && path.trim_end_matches('/') == AI_ASSIST_PATH {
+        // The writing assistant spends provider tokens on every call.
+        "ai_assist"
     } else if is_comment_write(path, method) {
         "comment"
     } else if path.starts_with("/search")
@@ -787,6 +802,9 @@ pub fn categorize_path_with<S: AsRef<str>>(
         "api"
     }
 }
+
+/// The writing assistant's endpoint.
+const AI_ASSIST_PATH: &str = "/api/v1/ai/assist";
 
 /// The admin page's "send a test email" action.
 const TEST_EMAIL_PATH: &str = "/admin/config/site/test-email";
@@ -1033,6 +1051,20 @@ mod tests {
         assert_eq!(categorize_path("/user/register/json", "POST"), "register");
     }
 
+    /// The writing assistant spends provider money on every call, so it has a
+    /// bucket of its own rather than the generic `api` one; its deprecated
+    /// alias is counted in the same bucket, and a read of the path is not.
+    #[test]
+    fn categorize_ai_assist() {
+        assert_eq!(categorize_path("/api/v1/ai/assist", "POST"), "ai_assist");
+        assert_eq!(categorize_path("/api/ai/assist", "POST"), "ai_assist");
+        assert_eq!(categorize_path("/api/v1/ai/assist", "GET"), "api");
+        assert_eq!(
+            RateLimitConfig::default().bucket("ai_assist"),
+            Some((10, Duration::from_secs(60)))
+        );
+    }
+
     #[test]
     fn categorize_upload_paths() {
         assert_eq!(categorize_path("/file/upload", "POST"), "uploads");
@@ -1059,8 +1091,6 @@ mod tests {
         /// address asked about, or emits a security event on refusal. The
         /// middleware must not count the same request in that bucket too.
         InHandler(&'static str),
-        /// Not yet in a bucket of its own: deferred to the named work item.
-        Deferred(&'static str),
     }
 
     /// Every kernel route that writes files, sends mail or spends money on
@@ -1184,8 +1214,8 @@ mod tests {
                 "POST",
                 "/ai/assist",
                 "/api/v1/ai/assist",
-                "api",
-                Deferred("B89"),
+                "ai_assist",
+                ByPath,
             ),
             // Builds a document of everything the account wrote.
             (
@@ -1239,7 +1269,6 @@ mod tests {
                         "{file} does not check the `{bucket}` bucket"
                     );
                 }
-                Checked::Deferred(_) => assert_eq!(category, *bucket),
             }
             if !matches!(checked, Checked::InHandler(_)) {
                 assert!(

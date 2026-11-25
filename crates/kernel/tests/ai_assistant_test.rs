@@ -852,6 +852,27 @@ fn a_text_only_turn_lands_in_the_transcript_and_the_usage_log() {
         .unwrap();
         assert_eq!(after, before + 1, "one model call, one usage row");
 
+        // The row carries the tokens the provider reported (B89): the send
+        // path records them, not the assistant.
+        let (operation, prompt, completion, total, model): (String, i32, i32, i32, String) =
+            sqlx::query_as(
+                "SELECT operation, prompt_tokens, completion_tokens, total_tokens, model \
+                 FROM ai_usage_log WHERE user_id = $1 AND plugin_name = 'kernel_assistant' \
+                 ORDER BY created DESC LIMIT 1",
+            )
+            .bind(user)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        println!(
+            "\nai_usage_log, AI Assistant turn:\nkernel_assistant  {operation}  {user}  \
+             prompt {prompt}  completion {completion}  total {total}  {model}"
+        );
+        assert_eq!(
+            (operation.as_str(), prompt, completion, total),
+            ("Chat", 10, 4, 14)
+        );
+
         // The system message carried the plugin's snapshot, which is the whole
         // reason tap_assistant_context exists.
         let sent = &recorder.requests()[0];

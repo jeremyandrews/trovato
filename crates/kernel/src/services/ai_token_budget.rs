@@ -21,6 +21,7 @@ use tracing::warn;
 use uuid::Uuid;
 
 use crate::models::SiteConfig;
+use crate::models::role::well_known::ANONYMOUS_ROLE_NAME;
 
 /// Site config key for budget configuration.
 const CONFIG_KEY: &str = "ai_token_budgets";
@@ -263,7 +264,8 @@ pub struct BudgetCheckResult {
 
 /// A single usage log entry to persist.
 pub struct UsageLogEntry {
-    /// User who triggered the request (None for anonymous).
+    /// The person the call was made for: the nil id for an anonymous visitor,
+    /// `None` for a background or kernel call.
     pub user_id: Option<Uuid>,
     /// Plugin that made the `ai_request()` call.
     pub plugin_name: String,
@@ -318,6 +320,7 @@ pub struct UserUsageSummary {
 // =============================================================================
 
 /// Token budget tracking and enforcement service.
+#[derive(Clone)]
 pub struct AiTokenBudgetService {
     db: PgPool,
 }
@@ -673,6 +676,9 @@ impl AiTokenBudgetService {
     /// 1. Per-user override
     /// 2. Per-role default (highest among user's roles)
     /// 3. No config → unlimited
+    ///
+    /// The nil user id is every anonymous visitor at once: its limit is the
+    /// `anonymous user` role's, a site-level cap on anonymous spend.
     pub async fn check_budget(
         &self,
         pool: &PgPool,
@@ -689,21 +695,21 @@ impl AiTokenBudgetService {
             });
         };
 
-        // Anonymous users get no budget (unlimited — budget applies to authenticated)
-        if user_id.is_nil() {
-            return Ok(BudgetCheckResult {
-                allowed: true,
-                remaining: None,
-                limit: 0,
-                used: 0,
-                action: config.action_on_limit,
-            });
-        }
-
-        // 1. Check per-user override
-        let user_override = self.get_user_override(pool, user_id, provider_id).await?;
-
-        let limit = if let Some(ovr) = user_override {
+        let limit = if user_id.is_nil() {
+            // Anonymous visitors share one site-level cap: the `anonymous user`
+            // role's limit for this provider, metered against every call made
+            // for an anonymous visitor (all recorded under the nil user id).
+            // No entry, or 0, is unlimited. One visitor cannot be told from
+            // another, so a per-visitor budget would be a per-IP budget, which
+            // is what the rate limiter is for; this cap bounds the site's spend.
+            config
+                .defaults
+                .get(provider_id)
+                .and_then(|roles| roles.get(ANONYMOUS_ROLE_NAME))
+                .copied()
+                .unwrap_or(0)
+        } else if let Some(ovr) = self.get_user_override(pool, user_id, provider_id).await? {
+            // 1. Per-user override
             ovr
         } else {
             // 2. Resolve per-role default — highest limit wins

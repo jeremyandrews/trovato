@@ -15,7 +15,6 @@ use crate::plugin::{PluginState, WasmtimeExt};
 use crate::services::ai_provider::{
     AiCallError, AiCaller, AiProviderService, ChatRequest, EmbeddingResult, ResolvedProvider,
 };
-use crate::services::ai_token_budget::{BudgetAction, UsageLogEntry};
 use crate::services::ai_tools::{ChatCompletion, ChatMessage};
 use crate::tap::UserContext;
 use trovato_sdk::host_errors;
@@ -166,6 +165,7 @@ fn host_error_code(error: &AiCallError) -> i32 {
             host_errors::ERR_AI_PROVIDER_ERROR
         }
         AiCallError::Unsupported(_) => host_errors::ERR_AI_OPERATION_UNSUPPORTED,
+        AiCallError::BudgetExceeded => host_errors::ERR_AI_BUDGET_EXCEEDED,
         AiCallError::BaseUrlRefused
         | AiCallError::Timeout
         | AiCallError::BreakerOpen
@@ -176,7 +176,8 @@ fn host_error_code(error: &AiCallError) -> i32 {
 /// A chat completion in the shape a plugin reads.
 fn chat_response(completion: ChatCompletion) -> AiResponse {
     let (prompt_tokens, completion_tokens, total_tokens) = completion.usage;
-    AiResponse::new(
+    let cost_estimate = completion.cost_estimate;
+    let mut response = AiResponse::new(
         completion.text.unwrap_or_default(),
         completion.model,
         AiUsage {
@@ -186,7 +187,12 @@ fn chat_response(completion: ChatCompletion) -> AiResponse {
         },
         completion.latency_ms,
         completion.finish_reason,
-    )
+    );
+    // The figure the send path recorded, surfaced to the plugin (G-COST-OPAQUE,
+    // p11j), so a plugin reads its cost here rather than from the kernel-owned
+    // `ai_usage_log`.
+    response.cost_estimate = cost_estimate;
+    response
 }
 
 /// An embedding in the shape a plugin reads (K1 fix 2, G-AI-EMBED-UNROUTED).
@@ -200,7 +206,8 @@ fn chat_response(completion: ChatCompletion) -> AiResponse {
 fn embedding_response(result: EmbeddingResult) -> AiResponse {
     // Infallible: a Vec<f32> of finite floats always serializes.
     let content = serde_json::to_string(&result.vector).unwrap_or_default();
-    AiResponse::new(
+    let cost_estimate = result.cost_estimate;
+    let mut response = AiResponse::new(
         content,
         result.served_model,
         AiUsage {
@@ -210,7 +217,9 @@ fn embedding_response(result: EmbeddingResult) -> AiResponse {
         },
         result.latency_ms,
         None,
-    )
+    );
+    response.cost_estimate = cost_estimate;
+    response
 }
 
 /// Send a plugin's request through the kernel's one send path
@@ -405,111 +414,23 @@ pub fn register_ai_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                         return host_errors::ERR_AI_RATE_LIMITED;
                     }
 
-                    // Check token budget. A background principal (P11c / D-42) is
-                    // metered against its per-plugin background cap; a web/user
-                    // call keeps the per-user/role budget path unchanged.
                     let user_id = caller.data().request.user.id;
                     let is_background = caller.data().request.user.is_background();
-                    if let Some(ref budget_svc) = services.ai_budgets {
-                        let budget_result = if is_background {
-                            budget_svc
-                                .check_plugin_budget(&services.db, &plugin_name, &resolved.config.id)
-                                .await
-                        } else {
-                            budget_svc
-                                .check_budget(&services.db, user_id, &resolved.config.id)
-                                .await
-                        };
-                        match budget_result {
-                            Ok(result) if !result.allowed => match result.action {
-                                BudgetAction::Deny | BudgetAction::Queue => {
-                                    warn!(
-                                        plugin = %plugin_name,
-                                        provider = %resolved.config.label,
-                                        user = %user_id,
-                                        used = result.used,
-                                        limit = result.limit,
-                                        "AI token budget exceeded"
-                                    );
-                                    return host_errors::ERR_AI_BUDGET_EXCEEDED;
-                                }
-                                BudgetAction::Warn => {
-                                    warn!(
-                                        plugin = %plugin_name,
-                                        provider = %resolved.config.label,
-                                        user = %user_id,
-                                        used = result.used,
-                                        limit = result.limit,
-                                        "AI token budget exceeded (warn mode, allowing)"
-                                    );
-                                }
-                            },
-                            Err(e) => {
-                                warn!(
-                                    error = %e,
-                                    plugin = %plugin_name,
-                                    "failed to check AI budget, allowing request"
-                                );
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    // Additionally enforce a per-plugin currency budget for
-                    // background calls (P11c / D-44), if one is configured.
-                    if is_background
-                        && let Some(ref budget_svc) = services.ai_budgets
-                    {
-                        match budget_svc
-                            .check_plugin_cost_budget(
-                                &services.db,
-                                &plugin_name,
-                                &resolved.config.id,
-                            )
-                            .await
-                        {
-                            Ok(result) if !result.allowed => match result.action {
-                                BudgetAction::Deny | BudgetAction::Queue => {
-                                    warn!(
-                                        plugin = %plugin_name,
-                                        provider = %resolved.config.label,
-                                        used = result.used,
-                                        limit = result.limit,
-                                        "AI currency budget exceeded"
-                                    );
-                                    return host_errors::ERR_AI_BUDGET_EXCEEDED;
-                                }
-                                BudgetAction::Warn => {
-                                    warn!(
-                                        plugin = %plugin_name,
-                                        provider = %resolved.config.label,
-                                        used = result.used,
-                                        limit = result.limit,
-                                        "AI currency budget exceeded (warn mode, allowing)"
-                                    );
-                                }
-                            },
-                            Err(e) => {
-                                warn!(
-                                    error = %e,
-                                    plugin = %plugin_name,
-                                    "failed to check AI currency budget, allowing request"
-                                );
-                            }
-                            _ => {}
-                        }
-                    }
 
                     // Send through the kernel's one send path: base URL
-                    // check, configured timeout, per-operation breaker. The
-                    // epoch deadline cuts plugin CPU; the provider timeout cuts
-                    // the HTTP call — both apply, the tighter wins.
+                    // check, the caller's budget (a background principal's
+                    // per-plugin token and currency caps, P11c / D-42, D-44; a
+                    // web call's per-user or anonymous cap), configured
+                    // timeout, per-operation breaker, and the usage row with
+                    // its cost. The epoch deadline cuts plugin CPU; the
+                    // provider timeout cuts the HTTP call — both apply, the
+                    // tighter wins.
                     let ai_caller = if is_background {
                         AiCaller::plugin_background(plugin_name.clone())
                     } else {
                         AiCaller::user(user_id, plugin_name.clone())
                     };
-                    let mut ai_response =
+                    let ai_response =
                         match send_plugin_request(&ai_svc, &resolved, &request, &ai_caller).await {
                             Ok(response) => response,
                             Err(code) => return code,
@@ -526,64 +447,6 @@ pub fn register_ai_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                         latency_ms = latency_ms,
                         "ai_request completed"
                     );
-
-                    // Record usage in ai_usage_log + surface cost to the plugin.
-                    if let Some(ref budget_svc) = services.ai_budgets {
-                        // Estimate cost (P11c / D-44) from the model + token
-                        // counts; None for an unpriced model (tokens-only).
-                        //
-                        // Priced on `resolved.model`, the model this request
-                        // ASKED for, not on `ai_response.model`, the string the
-                        // provider reports having served. Anthropic resolves an
-                        // alias server side, so a request for `claude-haiku-4-5`
-                        // answers as `claude-haiku-4-5-20251001` and matched no
-                        // row in a pricing table keyed by the name the operator
-                        // configured. Every call then logged unpriced, the
-                        // currency cap enforced nothing, and the spend read
-                        // zero while real money was being spent.
-                        let cost_estimate = budget_svc
-                            .estimate_call_cost(
-                                &resolved.model,
-                                &ai_response.model,
-                                i64::from(ai_response.usage.prompt_tokens.min(i32::MAX as u32)),
-                                i64::from(ai_response.usage.completion_tokens.min(i32::MAX as u32)),
-                            )
-                            .await;
-                        // Surface the same figure to the plugin (G-COST-OPAQUE,
-                        // p11j): the plugin now reads cost from the response rather
-                        // than the kernel-owned ai_usage_log. `Option<f64>` is
-                        // Copy, so it also feeds the log entry below.
-                        ai_response.cost_estimate = cost_estimate;
-                        let entry = UsageLogEntry {
-                            user_id: if user_id.is_nil() {
-                                None
-                            } else {
-                                Some(user_id)
-                            },
-                            plugin_name: plugin_name.clone(),
-                            provider_id: resolved.config.id.clone(),
-                            operation: kernel_op.to_string(),
-                            model: ai_response.model.clone(),
-                            prompt_tokens: ai_response.usage.prompt_tokens.min(i32::MAX as u32)
-                                as i32,
-                            completion_tokens: ai_response
-                                .usage
-                                .completion_tokens
-                                .min(i32::MAX as u32)
-                                as i32,
-                            total_tokens: ai_response.usage.total_tokens.min(i32::MAX as u32)
-                                as i32,
-                            latency_ms: latency_ms as i64,
-                            cost_estimate,
-                        };
-                        if let Err(e) = budget_svc.record_usage(&services.db, entry).await {
-                            warn!(
-                                error = %e,
-                                plugin = %plugin_name,
-                                "failed to record AI usage"
-                            );
-                        }
-                    }
 
                     // Serialize response and write to WASM memory
                     let Ok(response_json) = serde_json::to_string(&ai_response) else {
