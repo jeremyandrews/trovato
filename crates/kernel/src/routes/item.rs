@@ -337,7 +337,7 @@ pub fn router() -> Router<AppState> {
         .route("/item/{id}/revert/{rev_id}", post(revert_revision))
         .route(
             "/item/{id}/revisions/{rev_id}/delete",
-            post(delete_revision),
+            get(confirm_delete_revision).post(delete_revision),
         )
 }
 
@@ -2132,6 +2132,65 @@ async fn revert_revision(
         Ok(_) => Ok(Redirect::to(&format!("/item/{id}/revisions"))),
         Err(e) => Err(write_error(e, "revert revision")),
     }
+}
+
+/// Confirm deleting one past revision of an item.
+///
+/// `GET /item/{id}/revisions/{rev_id}/delete`: what the revision list's
+/// Delete link opens, so the destructive POST is never one click away. The
+/// same gates the POST checks are checked here too, and answer the same way,
+/// so a user who cannot do it never sees a form offering to.
+async fn confirm_delete_revision(
+    State(state): State<AppState>,
+    session: Session,
+    Path((id, rev_id)): Path<(Uuid, Uuid)>,
+) -> Response {
+    let ItemRevisions { item, revisions } = match revisions_for_session(
+        &state,
+        &session,
+        id,
+        RevisionSelection::Ids(&[rev_id]),
+    )
+    .await
+    {
+        Ok(loaded) => loaded,
+        Err(refusal) => return refusal,
+    };
+    let Some(revision) = revisions.first() else {
+        return super::helpers::render_not_found();
+    };
+    let user = get_user_context(&session, &state).await;
+    if !state
+        .items()
+        .may_delete_revisions(&item, &user)
+        .await
+        .unwrap_or(false)
+    {
+        return super::helpers::render_forbidden("You may not delete this item's revisions.");
+    }
+    if item.current_revision_id == Some(rev_id) {
+        return AppError::conflict("The current revision cannot be deleted.").into_response();
+    }
+
+    let authors = revision_authors(&state, &revisions).await;
+    let csrf_token = generate_csrf_token(&session).await;
+    let mut context = tera::Context::new();
+    context.insert("path", &format!("/item/{id}/revisions/{rev_id}/delete"));
+    context.insert("item_id", &id);
+    context.insert("item_title", &item.title);
+    context.insert(
+        "revision",
+        &revision_summary(revision, &authors, item.current_revision_id),
+    );
+    context.insert("csrf_token", &csrf_token);
+
+    super::helpers::render_admin_template(
+        &state,
+        &user,
+        "admin/revision-delete-confirm.html",
+        context,
+    )
+    .await
 }
 
 /// Delete one past revision of an item.

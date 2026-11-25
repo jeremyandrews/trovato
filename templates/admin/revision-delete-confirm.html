@@ -1,0 +1,22 @@
+{% extends "page--admin.html" %}
+
+{% block content %}
+<div class="admin-header">
+    <h2>Delete revision: {{ item_title }}</h2>
+    <a href="/item/{{ item_id }}/revisions" class="button">Back to history</a>
+</div>
+
+<div class="admin-card">
+    <p>
+        Delete the revision of {{ revision.date }} by {{ revision.author }}
+        ({{ revision.title }})?
+        {% if revision.log %}Log message: {{ revision.log }}.{% endif %}
+        This cannot be undone.
+    </p>
+    <form method="post" action="/item/{{ item_id }}/revisions/{{ revision.id }}/delete">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <button type="submit" class="button button--danger">Delete</button>
+        <a href="/item/{{ item_id }}/revisions" class="button">Cancel</a>
+    </form>
+</div>
+{% endblock %}

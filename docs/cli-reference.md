@@ -19,6 +19,7 @@ and `trovato <command> --help` print the same, from the binary.
 | `trovato user reset-password <user> [<password>]` | Set a password (read from stdin if omitted) and end the user's sessions. |
 | `trovato user role-add <user> <role>` / `role-remove <user> <role>` / `roles <user>` | Manage a user's roles. |
 | `trovato cache clear [--kind <kind>]...` | Tell every running server to drop its in-memory caches (all kinds, or the ones named). |
+| `trovato item revision-delete <item> <revision>` | Delete a past revision of an item. |
 | `trovato generate --items <N> --admin-password <PASSWORD>` | Write a deterministic test site of a given size (for performance tests and benchmarks). |
 
 ## `trovato migrate`
@@ -185,3 +186,24 @@ Comment text is not added to search. `--items 20000000`, with the default
 20,000,000 comments, takes about half an hour on a Mac Studio.
 
 The blog plugin must be on the plugin path: the posts are its `blog` type.
+
+## `trovato item revision-delete`
+
+```
+trovato item revision-delete <item> <revision>
+```
+
+Deletes one past revision of an item — the same operation the revision
+history page's Delete link reaches, through the same `ItemService::delete_revision`
+(`docs/admin-permissions.md`, "Revisions"). Runs as an administrator, like
+every other command on this page: whoever can run it already has the
+database, so it needs no `delete revisions` permission and no confirmation.
+
+The item's current revision is never deleted, here or anywhere else: it is
+what the item row points at, and the foreign key from `item.current_revision_id`
+to `item_revision.id` refuses the delete even if this check did not. Exits
+nonzero, with no row removed, for the current revision, a revision id that is
+not this item's, or one that does not exist.
+
+Bumps the `Items` cache generation, the same as any other write to an item or
+its revisions, so a running server's cached copy of the item drops.

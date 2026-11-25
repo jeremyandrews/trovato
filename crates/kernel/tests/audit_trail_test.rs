@@ -143,12 +143,30 @@ fn item_writes_are_audited() {
             .update(item.id, update, &user)
             .await
             .expect("update item");
+
+        let first_revision: Uuid = sqlx::query_scalar(
+            "SELECT id FROM item_revision WHERE item_id = $1 ORDER BY created, id LIMIT 1",
+        )
+        .bind(item.id)
+        .fetch_one(&app.db)
+        .await
+        .expect("the item's first revision");
+        items
+            .delete_revision(item.id, first_revision, &user)
+            .await
+            .expect("delete revision");
+
         items.delete(item.id, &user).await.expect("delete item");
 
         let rows = audit_rows(app, "item", &item.id.to_string()).await;
-        assert_eq!(actions(&rows), ["create", "update", "delete"], "{rows:?}");
+        assert_eq!(
+            actions(&rows),
+            ["create", "update", "delete_revision", "delete"],
+            "{rows:?}"
+        );
         assert!(rows.iter().all(|r| r.1 == Some(author)), "{rows:?}");
         assert_eq!(rows[1].3["title"], "Audited item, edited");
+        assert_eq!(rows[2].3["revision_id"], first_revision.to_string());
     });
 }
 
