@@ -257,36 +257,14 @@ async fn post_json(
 /// `(source, operation, user_id, prompt, completion, total, model)`.
 type Row = (String, String, Option<Uuid>, i32, i32, i32, String);
 
-/// A point to count usage rows from. `created` is whole seconds, so a row an
-/// earlier test wrote in the same second would pass `created >= second`; the
-/// rows already there at the mark are left out by id.
-struct Since {
-    second: i64,
-    earlier: Vec<Uuid>,
-}
-
-async fn mark(app: &TestApp) -> Since {
-    let second = now();
-    let earlier =
-        sqlx::query_scalar("SELECT id FROM ai_usage_log WHERE provider_id = $1 AND created >= $2")
-            .bind(PROVIDER)
-            .bind(second)
-            .fetch_all(&app.db)
-            .await
-            .unwrap();
-    Since { second, earlier }
-}
-
-async fn rows_since(app: &TestApp, since: &Since) -> Vec<Row> {
+async fn rows_since(app: &TestApp, since: i64) -> Vec<Row> {
     sqlx::query_as(
         "SELECT plugin_name, operation, user_id, prompt_tokens, completion_tokens, total_tokens, \
                 model \
-         FROM ai_usage_log WHERE provider_id = $1 AND created >= $2 AND id <> ALL($3) \
-         ORDER BY created, id",
+         FROM ai_usage_log WHERE provider_id = $1 AND created >= $2 ORDER BY created, id",
     )
     .bind(PROVIDER)
-    .bind(since.second)
-    .bind(&since.earlier)
+    .bind(since)
     .fetch_all(&app.db)
     .await
     .unwrap()
@@ -294,7 +272,7 @@ async fn rows_since(app: &TestApp, since: &Since) -> Vec<Row> {
 
 /// The rows from `source`, waiting up to five seconds for `count` of them
 /// (the sentiment worker writes off the request path).
-async fn rows_from(app: &TestApp, since: &Since, source: &str, count: usize) -> Vec<Row> {
+async fn rows_from(app: &TestApp, since: i64, source: &str, count: usize) -> Vec<Row> {
     for _ in 0..50 {
         let rows: Vec<Row> = rows_since(app, since)
             .await
@@ -321,8 +299,27 @@ fn plugins_dir() -> PathBuf {
         .join("plugins")
 }
 
-fn now() -> i64 {
-    chrono::Utc::now().timestamp()
+/// The first whole second, on the database clock that stamps `ai_usage_log.created`,
+/// that no earlier row can carry. `created` is whole seconds, and the test that
+/// ran just before this one in the `ai-send-path` group may have written rows to
+/// the same provider in the second this one starts in (the site cap test seeds
+/// a 60 token anonymous search row); waiting for the next second keeps them out
+/// of `rows_since`.
+async fn a_fresh_second(app: &TestApp) -> i64 {
+    let db_now = || async {
+        sqlx::query_scalar::<_, i64>("SELECT EXTRACT(EPOCH FROM clock_timestamp())::bigint")
+            .fetch_one(&app.db)
+            .await
+            .unwrap()
+    };
+    let started = db_now().await;
+    loop {
+        let now = db_now().await;
+        if now > started {
+            return now;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
 }
 
 /// One call on each AI path writes one usage row, with the tokens the provider
@@ -334,7 +331,7 @@ fn one_call_on_each_path_records_its_real_usage() {
         let app = shared_app().await;
         let _serial = SERIAL.lock().await;
         let (base_url, _hits) = stub().await;
-        let since = mark(app).await;
+        let since = a_fresh_second(app).await;
         let restore = configure(
             app,
             &base_url,
@@ -451,8 +448,8 @@ fn one_call_on_each_path_records_its_real_usage() {
             .expect("an embedding provider is configured");
         assert_eq!(embedded.vector.len(), 3);
 
-        let sentiment = rows_from(app, &since, "kernel_search_sentiment", 1).await;
-        let rows = rows_since(app, &since).await;
+        let sentiment = rows_from(app, since, "kernel_search_sentiment", 1).await;
+        let rows = rows_since(app, since).await;
         restore.restore().await;
 
         println!("\nai_usage_log, provider {PROVIDER}, one call on each path:");
