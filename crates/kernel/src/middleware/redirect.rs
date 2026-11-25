@@ -3,15 +3,22 @@
 //! Checks the redirect table before alias resolution.
 //! If a redirect is found, returns an HTTP redirect response.
 //!
-//! Two things an old link needs (B160):
+//! Three things an old link needs:
 //!
-//! - **A redirect keeps the query string.** `/old?page=2` redirected to `/new`
-//!   lost its `?page=2`; it now lands on `/new?page=2`.
-//! - **Drupal's non-clean URLs work.** A Drupal site without clean URLs
+//! - **A redirect keeps the query string** (B160). `/old?page=2` redirected to
+//!   `/new` lost its `?page=2`; it now lands on `/new?page=2`.
+//! - **Drupal's non-clean URLs work** (B160). A Drupal site without clean URLs
 //!   published every link as `/?q=node/96`, which reached Trovato's front page.
 //!   A request for the site root with a `q` that names a path is that path:
 //!   it follows that path's redirect when there is one, and otherwise is sent
 //!   to the path itself, with any other query parameters kept.
+//! - **A redirect can match a source's query string** (B164). A legacy
+//!   `/article.php?sid=123` and `/article.php?sid=456` are different pages
+//!   on the old site, so each can redirect to its own destination: the
+//!   request's path plus its normalized query is matched first, falling
+//!   back to the path alone, which is byte-for-byte how a path-only
+//!   redirect matched before this (every existing redirect has no query, so
+//!   this fallback is all they ever used).
 
 use axum::{
     body::Body,
@@ -160,8 +167,12 @@ pub async fn check_redirect(
         return next.run(request).await;
     };
 
-    // Look up redirect via cache (avoids DB hit on every request)
-    let redirect = match cache.find(state.db(), path, language).await {
+    // Look up redirect via cache (avoids DB hit on every request): the exact
+    // path plus its normalized query first, then the path alone (B164).
+    let redirect = match cache
+        .find_for_request(state.db(), path, query, language)
+        .await
+    {
         Ok(Some(r)) => r,
         Ok(None) => return next.run(request).await,
         Err(e) => {
@@ -188,10 +199,18 @@ pub async fn check_redirect(
         return next.run(request).await;
     }
 
-    // The request's query string goes with it (B160).
+    // A path-only redirect's destination gets the request's query appended,
+    // unchanged (B160). A redirect whose own source named a query already
+    // encodes the exact destination that query meant; appending it again
+    // would double it up, so it is not forwarded a second time (B164).
+    let forwarded_query = if redirect.source.contains('?') {
+        None
+    } else {
+        query
+    };
     redirect_to(
         status_of(redirect.status_code),
-        &with_query(&redirect.destination, query),
+        &with_query(&redirect.destination, forwarded_query),
     )
 }
 

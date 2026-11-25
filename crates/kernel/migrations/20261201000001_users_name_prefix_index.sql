@@ -1,0 +1,15 @@
+-- no-transaction
+-- A prefix lookup on users.name (B179, user-api find-users-by-name-prefix)
+-- cannot use idx_users_name_unique: that index orders by the database's
+-- default collation, and under anything but a C locale Postgres cannot turn
+-- `LOWER(name) LIKE 'prefix%'` into a range scan against it, so it falls back
+-- to a sequential scan of the whole table. text_pattern_ops stores the raw
+-- byte ordering instead of the collated one, which is exactly what a LIKE
+-- prefix bound needs regardless of what locale the database was created
+-- with. Measured against 200k seeded rows under en_US.utf8 (the official
+-- postgres image's default locale): a sequential scan filtered 180ms, this
+-- index answers the same query in under 1ms.
+--
+-- CONCURRENTLY, alone in this no-transaction file, so building it does not
+-- block writes to `users` for the build's duration.
+CREATE INDEX CONCURRENTLY idx_users_name_prefix ON users (LOWER(name) text_pattern_ops);

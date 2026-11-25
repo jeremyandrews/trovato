@@ -1,0 +1,67 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{% block content %}
+{{ list::header(title="Redirects", add_url="/admin/config/redirects/add", add_label="Add redirect") }}
+
+<div class="admin-card">
+    <p>Total redirects: {{ total }}</p>
+
+    {% if redirects %}
+    <table class="table">
+        <thead>
+            <tr>
+                <th>Source</th>
+                <th>Destination</th>
+                <th>Status</th>
+                <th>Language</th>
+                <th>Created</th>
+                <th>Operations</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for redirect in redirects %}
+            <tr>
+                <td><code>{{ redirect.source }}</code></td>
+                <td><code>{{ redirect.destination }}</code></td>
+                <td>{{ redirect.status_code }}</td>
+                <td>{{ redirect.language }}</td>
+                <td>{{ redirect.created_display }}</td>
+                <td>
+                    <a href="/admin/config/redirects/{{ redirect.id }}/edit">Edit</a>
+                    &middot;
+                    {{ list::delete_button(action="/admin/config/redirects/" ~ redirect.id ~ "/delete", confirm_text="Are you sure you want to delete this redirect?", csrf_token=csrf_token) }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    {% if total_pages > 1 %}
+    <nav class="pagination" aria-label="Pagination">
+        {% for p in range(start=1, end=total_pages + 1) %}
+            {% if p == page %}
+            <span class="pagination__current" aria-current="page">{{ p }}</span>
+            {% else %}
+            <a href="/admin/config/redirects?page={{ p }}" class="pagination__link">{{ p }}</a>
+            {% endif %}
+        {% endfor %}
+    </nav>
+    {% endif %}
+
+    {% else %}
+    {{ list::empty(message="No redirects configured.", add_url="/admin/config/redirects/add") }}
+    {% endif %}
+</div>
+
+<style>
+    .pagination {
+        margin-top: 1rem;
+        display: flex;
+        gap: 0.5rem;
+    }
+    .pagination__current {
+        font-weight: bold;
+    }
+</style>
+{% endblock %}

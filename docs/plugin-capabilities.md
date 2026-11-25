@@ -26,7 +26,7 @@ item_background = false
 | `raw_sql` | `false` | `db.query-raw` and `db.execute-raw`. See [`raw_sql`](#raw_sql). |
 | `item_background` | `false` | `item-api` and content reads through `query` from cron and the queue worker, where there is no user, with kernel authority. Without it those calls are refused (-61). |
 | `ai_background` | `false` | `ai-request` from cron and the queue worker, charged to the plugin's own budget. |
-| `user_directory` | `false` | `user-api.load-users`: public facts about other members, by id. Never an address. |
+| `user_directory` | `false` | `user-api.load-users`, `find-user-by-name` and `find-users-by-name-prefix`: public facts about other members, by id, exact name or name prefix. Never an address. |
 | `mail_users` | `false` | `mail.send-to-user`: mail a member by id, the kernel resolving the address. |
 | `http_max_transfer` | 1 MB | The byte ceiling of one streaming HTTP fetch, clamped to 16 MB. |
 | `public_functions` | `[]` | Functions other plugins may call through `plugin-api.invoke`. |
