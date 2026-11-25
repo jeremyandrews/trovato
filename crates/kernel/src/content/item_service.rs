@@ -956,8 +956,6 @@ impl ItemService {
         // new item is searchable via the SemanticSimilarity gather operator.
         self.index_item(&item, user).await;
 
-        self.request_search_rebuild(None, Some(&item)).await;
-
         info!(item_id = %item.id, item_type = %item.item_type, "item created");
         self.audit("create", item.id, Some(user), Self::audit_details(&item))
             .await;
@@ -1076,19 +1074,6 @@ impl ItemService {
             )
         };
         (flag("promote_default"), flag("sticky_default"))
-    }
-
-    /// Ask for a public search index rebuild when a write changed what it may
-    /// hold: the item was in it before (published on the live stage), or is
-    /// now. That covers a publish, an edit to a public item, an unpublish, a
-    /// move off the live stage and a delete, the last three of which no
-    /// `MAX(changed)` poll over published items can see. A write to an item
-    /// that was never public asks for nothing.
-    async fn request_search_rebuild(&self, before: Option<&Item>, after: Option<&Item>) {
-        let public = |item: &Item| item.is_published() && item.stage_id == LIVE_STAGE_ID;
-        if before.is_some_and(public) || after.is_some_and(public) {
-            crate::cron::request_search_index_rebuild(&self.inner.pool).await;
-        }
     }
 
     /// Give `item` the alias its type's pathauto pattern asks for, on its
@@ -1765,8 +1750,6 @@ impl ItemService {
             // the updated item's searchable vector reflects the new content.
             self.index_item(i, user).await;
 
-            self.request_search_rebuild(Some(&existing), Some(i)).await;
-
             // Invalidate cache
             self.invalidate(id);
 
@@ -1945,7 +1928,6 @@ impl ItemService {
         if deleted {
             // Invalidate cache
             self.invalidate(id);
-            self.request_search_rebuild(Some(&item), None).await;
             info!(item_id = %id, "item deleted");
             self.audit("delete", id, Some(user), Self::audit_details(&item))
                 .await;

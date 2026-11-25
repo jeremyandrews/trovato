@@ -19,6 +19,7 @@
 
 pub mod perf;
 pub mod plugin_copy;
+pub mod search_index;
 pub mod smtp_sink;
 
 use axum::Router;

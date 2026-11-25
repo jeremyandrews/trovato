@@ -501,12 +501,15 @@
     const terms = extractSearchTerms(question);
     const searchQuery = terms.length > 0 ? terms.join(' ') : question;
     try {
-      const search = await pagefindSearch(searchQuery, new Set());
-      const toLoad = Math.min(search.results.length, 20);
+      const { toLoad, loaded } = await withIndexReload(async () => {
+        const search = await pagefindSearch(searchQuery, new Set());
+        const toLoad = Math.min(search.results.length, 20);
+        const loaded = await Promise.all(
+          search.results.slice(0, toLoad).map(r => r.data())
+        );
+        return { toLoad, loaded };
+      });
       if (toLoad === 0) return '';
-      const loaded = await Promise.all(
-        search.results.slice(0, toLoad).map(r => r.data())
-      );
       const scored = scoreResults(loaded, searchQuery, 1.0);
       scored.sort((a, b) => b.score - a.score);
       const best = scored.slice(0, 5);
@@ -648,6 +651,42 @@
   }
 
   // --- Pagefind search helper ---
+
+  // The index is updated in place (B218): each update publishes new content
+  // addressed files and a new `pagefind-entry.json`, and keeps the files it
+  // replaced for 24 hours. A tab that loaded the index longer ago than that
+  // can ask for a chunk or fragment that is gone, and Pagefind throws (the
+  // 404 body does not decompress). Reload the index once, which fetches the
+  // current entry and meta, and run the search again. Concurrent failures
+  // share one reload.
+  let reloading = null;
+
+  function reloadIndex() {
+    if (!reloading) {
+      reloading = (async () => {
+        try {
+          await pagefind.destroy();
+        } catch (e) {
+          // Nothing loaded to destroy.
+        }
+        await pagefind.init();
+      })().finally(() => {
+        reloading = null;
+      });
+    }
+    return reloading;
+  }
+
+  async function withIndexReload(run) {
+    try {
+      return await run();
+    } catch (err) {
+      if (!pagefind) throw err;
+      console.warn("[scolta] search failed; reloading the index once", err);
+      await reloadIndex();
+      return run();
+    }
+  }
 
   async function pagefindSearch(query, filters) {
     const searchOpts = {};
@@ -959,8 +998,11 @@
       ? Promise.resolve(lastExpandedTerms)
       : expandQuery(query);
 
-    const primarySearch = await pagefindSearch(searchQuery, activeFilters);
-    allScoredResults = await loadAndScoreSearch(primarySearch, searchQuery, 1.0);
+    const primarySearch = await withIndexReload(async () => {
+      const search = await pagefindSearch(searchQuery, activeFilters);
+      allScoredResults = await loadAndScoreSearch(search, searchQuery, 1.0);
+      return search;
+    });
 
     // OR fallback: only activate when AND search returns ZERO results.
     // This prevents diluting precision when the user provides many terms
@@ -1400,6 +1442,11 @@
     showMore,
     // The text and HTML rules, exposed for static/js/test/scolta.test.js.
     _text: { escapeHtml, htmlToText, highlightText, truncateExcerpt, bestExcerpt },
+    // The index reload, exposed for static/js/test/scolta.test.js.
+    _index: {
+      withIndexReload,
+      setPagefind(p) { pagefind = p; },
+    },
   };
 
 })(typeof window !== 'undefined' ? window : this);

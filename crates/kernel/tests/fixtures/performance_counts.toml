@@ -324,7 +324,7 @@ count = 1
 sql = "set local statement_timeout = ?"
 
 ["comment.admin.post"]
-queries = 9
+queries = 8
 cache_gets = 6
 cache_misses = 1
 cache_sets = 0
@@ -336,10 +336,6 @@ renders = 0
 ["comment.admin.post".statements."commit:-:9505cacb"]
 count = 1
 sql = "commit"
-
-["comment.admin.post".statements."do:-:7807b114"]
-count = 1
-sql = "do ?"
 
 ["comment.admin.post".statements."insert:comment:f18687e9"]
 count = 1

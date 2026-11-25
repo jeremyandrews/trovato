@@ -944,7 +944,8 @@ const SEARCH_SWITCHES_FLASH: &str = "search_switches_flash";
 ///
 /// Stores them in the type's `settings` (merged, so nothing else there
 /// changes), recomputes the type's full text vectors so `/search` follows at
-/// once, and asks for a Pagefind rebuild at the next cron run.
+/// once, and queues every item of the type for the Pagefind index, which the
+/// next cron run updates.
 async fn save_search_switches(
     State(state): State<AppState>,
     session: Session,
@@ -998,7 +999,12 @@ async fn save_search_switches(
     if let Err(e) = state.search().reindex_bundle(&type_name).await {
         tracing::error!(error = %e, content_type = %type_name, "failed to reindex after search switches");
     }
-    crate::cron::request_search_index_rebuild(state.db()).await;
+    // Every page of the type may change, or leave the index: queue them all.
+    if let Err(e) =
+        crate::search::index_queue::enqueue_type(state.db(), &type_name, "type_settings").await
+    {
+        tracing::error!(error = %e, content_type = %type_name, "failed to queue the type for the search index");
+    }
 
     tracing::info!(
         log_type = "config",

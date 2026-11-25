@@ -13,6 +13,8 @@
 //! * [`assemble`] writes one language's index from page slots numbered by the
 //!   caller: the meta file, word chunks and fragments, byte for byte as
 //!   Pagefind 1.3.0 writes them for the same pages in the same order.
+//! * [`update`] changes some pages of a published language index and
+//!   rewrites only the fragments and word chunks they touch, plus the meta.
 //! * [`bundle`] adds the browser bundle from the same release and the entry
 //!   file; [`publish`] puts a bundle live in a safe order; [`decode`] reads
 //!   one back.
@@ -27,6 +29,7 @@ pub mod codec;
 pub mod decode;
 pub mod publish;
 pub mod tokenize;
+pub mod update;
 pub mod vendor;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -34,7 +37,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 
-pub use assemble::{LanguageIndex, Slot, build_language, build_language_avoiding};
+pub use assemble::{ChunkPlan, LanguageIndex, Slot, build_language, build_language_avoiding};
 pub use bundle::{Bundle, assemble_bundle};
 pub use tokenize::{PageTerms, tokenize};
 

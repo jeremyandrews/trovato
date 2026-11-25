@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! The three compatibility gates of `docs/design/incremental-search-index.md`
-//! for the native full build (B217, part 2 of 3).
+//! for the native full build (B217, part 2 of 3) and the incremental updater
+//! (B218, part 3 of 3; see "Part 3" at the end of this file).
 //!
 //! 1. **Building twice gives byte identical output**, through the ledger: a
 //!    fresh build and a cached one, a build with tombstones twice, and the same
@@ -35,10 +36,11 @@ use common::{defer_cleanup, run_test, shared_app};
 use sqlx::PgPool;
 use sqlx::postgres::PgPoolOptions;
 use trovato_kernel::cron::{
-    FullBuildReport, IndexDocument, IndexedField, RebuildAgain, render_fragment,
-    search_index_full_build, search_index_generation,
+    DocumentSource, FullBuildReport, IndexDocument, IndexedField, RebuildAgain, RunOptions,
+    RunReport, render_fragment, search_index_full_build, search_index_generation, search_index_run,
 };
-use trovato_search_index::decode::{Bundle, PageView, decode_bundle, read_bundle};
+use trovato_kernel::search::index_queue::{Queued, enqueue};
+use trovato_search_index::decode::{Bundle, PageView, decode_bundle, read_bundle, read_published};
 use uuid::Uuid;
 
 // =============================================================================
@@ -196,6 +198,8 @@ const LEDGER_TABLES: &[&str] = &[
     "search_page_terms",
     "search_index_state",
     "search_index_file",
+    "search_chunk",
+    "search_index_queue",
 ];
 
 /// A pool whose `search_path` puts a fresh copy of the four search index
@@ -1057,6 +1061,771 @@ fn gate_3_the_stock_pagefind_js_returns_the_same_results() {
         assert!(
             moved * 10 <= positions,
             "{moved} of {positions} positions moved"
+        );
+    });
+}
+
+// =============================================================================
+// Part 3: the incremental updater (B218)
+// =============================================================================
+//
+// * Gate 1, incremental: from a full build, a random sequence of at least 200
+//   upserts, deletes, language moves and comment changes, applied batch by
+//   batch through the change queue and the updater, decodes equal to a full
+//   build of the same state through the same ledger after every few batches
+//   (page numbers, fragments, word counts, every word's postings), with no
+//   fallback taken; long pages split a chunk on the way. Then compaction, and
+//   the index is byte for byte a first build of the final state.
+// * Gate 3, incremental: the stock `pagefind.js` finds each kind of change
+//   right after the update that applied it, and returns the same results as a
+//   full rebuild of the same state.
+// * Two runners at once apply every queued item exactly once.
+// * A live entry the database did not record (a crash between the flip and
+//   the commit) takes a full build, logged with the reason.
+
+/// The site as a fixture holds it: every searchable document, by id.
+struct Site(std::sync::Mutex<BTreeMap<Uuid, IndexDocument>>);
+
+impl Site {
+    fn new(docs: Vec<IndexDocument>) -> Self {
+        Self(std::sync::Mutex::new(
+            docs.into_iter().map(|d| (d.id, d)).collect(),
+        ))
+    }
+    fn docs(&self) -> Vec<IndexDocument> {
+        self.0.lock().unwrap().values().cloned().collect()
+    }
+    fn with<T>(&self, f: impl FnOnce(&mut BTreeMap<Uuid, IndexDocument>) -> T) -> T {
+        f(&mut self.0.lock().unwrap())
+    }
+}
+
+#[async_trait::async_trait]
+impl DocumentSource for Site {
+    async fn documents(&self, ids: Option<&[Uuid]>) -> anyhow::Result<Vec<IndexDocument>> {
+        let docs = self.0.lock().unwrap();
+        Ok(match ids {
+            None => docs.values().cloned().collect(),
+            Some(ids) => ids.iter().filter_map(|id| docs.get(id).cloned()).collect(),
+        })
+    }
+}
+
+/// xorshift64*, so the sequence is the same every run.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 ^= self.0 >> 12;
+        self.0 ^= self.0 << 25;
+        self.0 ^= self.0 >> 27;
+        self.0.wrapping_mul(0x2545_F491_4F6C_DD1D)
+    }
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+/// Queue `ids` as the kernel's writers do.
+async fn queue(pool: &PgPool, ids: &[Uuid]) {
+    let items: Vec<Queued> = ids.iter().copied().map(Queued::upsert).collect();
+    enqueue(pool, &items, "gate").await.expect("queue items");
+}
+
+/// One cron run over the index, compacting past `compaction_percent`.
+async fn cron_run(pool: &PgPool, out: &Path, site: &Site, compaction_percent: f64) -> RunReport {
+    search_index_run(
+        pool,
+        out,
+        site,
+        &RunOptions {
+            compaction_percent,
+            ..RunOptions::default()
+        },
+    )
+    .await
+    .expect("a search index run")
+}
+
+/// A copy of `pool`'s gate schema, rows and all, in a schema of its own: the
+/// same ledger, term cache and state, for a full build of the same state that
+/// leaves the original alone.
+async fn fork_ledger(db: &PgPool, pool: &PgPool) -> PgPool {
+    let from: String = sqlx::query_scalar("SELECT current_schema()")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let fork = isolated_ledger(db).await;
+    let to: String = sqlx::query_scalar("SELECT current_schema()")
+        .fetch_one(&fork)
+        .await
+        .unwrap();
+    for table in LEDGER_TABLES {
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO {to}.{table} SELECT * FROM {from}.{table}"
+        )))
+        .execute(db)
+        .await
+        .expect("copy a ledger table");
+    }
+    fork
+}
+
+/// Every slot's fragment and word count, and every word's postings, per
+/// language: what a reader of the index can tell apart.
+type Decoded = BTreeMap<
+    String,
+    (
+        Vec<(serde_json::Value, u32)>,
+        BTreeMap<String, Vec<(u64, Vec<i32>)>>,
+    ),
+>;
+
+fn decoded(bundle: &Bundle) -> Decoded {
+    let mut out = BTreeMap::new();
+    for index in decode_bundle(bundle).expect("decode") {
+        let pages = index
+            .meta
+            .pages
+            .iter()
+            .map(|p| (index.fragments[&p.hash].clone(), p.word_count))
+            .collect();
+        let mut words = BTreeMap::new();
+        for chunk in index.chunks.values() {
+            for w in &chunk.words {
+                let postings = w
+                    .pages
+                    .iter()
+                    .map(|p| (p.page_number, p.locs.clone()))
+                    .collect();
+                assert!(
+                    words.insert(w.word.clone(), postings).is_none(),
+                    "{} is in two chunks",
+                    w.word
+                );
+            }
+        }
+        out.insert(index.language.clone(), (pages, words));
+    }
+    out
+}
+
+/// Assert the published index in `out` decodes equal to a full build of the
+/// site through a copy of the same ledger.
+async fn assert_equals_full_build(db: &PgPool, pool: &PgPool, out: &Path, site: &Site, when: &str) {
+    let fork = fork_ledger(db, pool).await;
+    let full_out = scratch("full").join("pagefind");
+    build(&fork, &full_out, &site.docs())
+        .await
+        .expect("the full build of the same state");
+    let ours = decoded(&read_published(out).expect("the incremental index reads"));
+    let theirs = decoded(&read_published(&full_out).expect("the full index reads"));
+    assert_eq!(
+        ours.keys().collect::<Vec<_>>(),
+        theirs.keys().collect::<Vec<_>>(),
+        "{when}: languages"
+    );
+    for (language, (pages, words)) in &ours {
+        let (their_pages, their_words) = &theirs[language];
+        assert_eq!(pages.len(), their_pages.len(), "{when}: {language} slots");
+        for (n, (a, b)) in pages.iter().zip(their_pages).enumerate() {
+            assert_eq!(a, b, "{when}: {language} page {n}");
+        }
+        if words != their_words {
+            let differ: Vec<&String> = words
+                .keys()
+                .chain(their_words.keys())
+                .filter(|w| words.get(*w) != their_words.get(*w))
+                .take(5)
+                .collect();
+            panic!("{when}: {language} postings differ from a full build, e.g. {differ:?}");
+        }
+    }
+}
+
+/// Words no fixture bank holds, so a new one lands between chunks.
+fn fresh_word(rng: &mut Rng) -> String {
+    const PARTS: &[&str] = &[
+        "ab", "cor", "dex", "fi", "gul", "hon", "jat", "kel", "mup", "nor", "ost", "pry", "quam",
+        "rix", "sul", "tov", "uvo", "wex", "yal", "zor",
+    ];
+    let mut w = String::new();
+    for _ in 0..3 {
+        w.push_str(PARTS[rng.below(PARTS.len())]);
+    }
+    w
+}
+
+/// A long page of `words` words that all start with `zor`, so its locations
+/// land in one chunk and a few of them push that chunk past the split limit.
+fn dense_text(rng: &mut Rng, words: usize) -> String {
+    (0..words)
+        .map(|_| {
+            let w = fresh_word(rng);
+            format!("zor{}", &w[..w.len().min(6)])
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// A page of `words` words drawn from the banks and fresh words.
+fn some_text(rng: &mut Rng, words: usize, german: bool) -> String {
+    let bank = if german { DE_SENTENCES } else { EN_SENTENCES };
+    let mut text = String::new();
+    while text.split_whitespace().count() < words {
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        if rng.below(4) == 0 {
+            text.push_str(&fresh_word(rng));
+        } else {
+            text.push_str(pick(bank, rng.below(bank.len())));
+        }
+    }
+    text
+}
+
+fn new_doc(rng: &mut Rng, n: usize, words: usize) -> IndexDocument {
+    let german = rng.below(5) == 0;
+    let id = Uuid::from_u128(0x0194_17ad_0000_7000_8000_0001_0000_0000 + n as u128);
+    IndexDocument {
+        id,
+        item_type: "page".into(),
+        title: format!("{} {}", fresh_word(rng), fresh_word(rng)),
+        language: if german { "de" } else { "en" }.into(),
+        url: format!("/item/{id}"),
+        fields: vec![IndexedField {
+            name: "field_body".into(),
+            weight: 1.0,
+            text: some_text(rng, words, german),
+        }],
+        comments: Vec::new(),
+        description: String::new(),
+        location: String::new(),
+        event_dates: String::new(),
+        created_display: "2026-11-25".into(),
+    }
+}
+
+#[test]
+fn gate_1_incremental_updates_equal_a_full_build_of_the_same_state() {
+    run_test(async {
+        let app = shared_app().await;
+        let pool = isolated_ledger(&app.db).await;
+        let out = scratch("incremental").join("pagefind");
+        let site = Site::new(fixture());
+        let first = cron_run(&pool, &out, &site, 100.0).await;
+        assert_eq!(
+            first.full_builds.len(),
+            1,
+            "nothing published yet: a full build"
+        );
+
+        let mut rng = Rng(0x5EED_0000_B218_0001);
+        let mut ops: BTreeMap<&str, usize> = BTreeMap::new();
+        let (mut next, mut long_pages) = (0usize, 0usize);
+        let (mut splits, mut files_written, mut updates) = (0usize, Vec::new(), 0usize);
+        let batches = 60;
+        for batch in 1..=batches {
+            let mut touched = Vec::new();
+            for _ in 0..(1 + rng.below(7)) {
+                let roll = rng.below(100);
+                let ids: Vec<Uuid> = site.with(|d| d.keys().copied().collect());
+                let pick_id = |rng: &mut Rng| ids[rng.below(ids.len())];
+                let language_count =
+                    |lang: &str| site.with(|d| d.values().filter(|x| x.language == lang).count());
+                let kind = match roll {
+                    0..=17 => {
+                        let id = pick_id(&mut rng);
+                        let word = fresh_word(&mut rng);
+                        site.with(|d| d.get_mut(&id).unwrap().title = format!("{word} title"));
+                        touched.push(id);
+                        "edit title"
+                    }
+                    18..=31 => {
+                        let id = pick_id(&mut rng);
+                        let german = site.with(|d| d[&id].language == "de");
+                        let words = 20 + rng.below(60);
+                        let text = some_text(&mut rng, words, german);
+                        site.with(|d| d.get_mut(&id).unwrap().fields[0].text = text);
+                        touched.push(id);
+                        "edit body"
+                    }
+                    32..=46 => {
+                        let id = pick_id(&mut rng);
+                        let text = format!(
+                            "{} {}",
+                            fresh_word(&mut rng),
+                            pick(EN_COMMENTS, rng.below(9))
+                        );
+                        site.with(|d| d.get_mut(&id).unwrap().comments.push(text));
+                        touched.push(id);
+                        "add comment"
+                    }
+                    47..=56 => {
+                        let id = pick_id(&mut rng);
+                        if site.with(|d| d.get_mut(&id).unwrap().comments.pop().is_none()) {
+                            continue;
+                        }
+                        touched.push(id);
+                        "remove comment"
+                    }
+                    57..=70 => {
+                        let id = pick_id(&mut rng);
+                        let lang = site.with(|d| d[&id].language.clone());
+                        if language_count(&lang) <= 6 {
+                            continue;
+                        }
+                        site.with(|d| d.remove(&id));
+                        touched.push(id);
+                        "delete"
+                    }
+                    71..=88 => {
+                        next += 1;
+                        let words = 20 + rng.below(80);
+                        let doc = new_doc(&mut rng, next, words);
+                        touched.push(doc.id);
+                        site.with(|d| d.insert(doc.id, doc));
+                        "insert"
+                    }
+                    89..=94 => {
+                        let id = pick_id(&mut rng);
+                        let lang = site.with(|d| d[&id].language.clone());
+                        if language_count(&lang) <= 6 {
+                            continue;
+                        }
+                        let to = if lang == "en" { "de" } else { "en" };
+                        site.with(|d| d.get_mut(&id).unwrap().language = to.into());
+                        touched.push(id);
+                        "change language"
+                    }
+                    _ => {
+                        if long_pages >= 18 {
+                            continue;
+                        }
+                        long_pages += 1;
+                        next += 1;
+                        let mut doc = new_doc(&mut rng, next, 2_500);
+                        doc.language = "en".into();
+                        doc.fields[0].text = dense_text(&mut rng, 6_000);
+                        touched.push(doc.id);
+                        site.with(|d| d.insert(doc.id, doc));
+                        "insert long page"
+                    }
+                };
+                *ops.entry(kind).or_default() += 1;
+            }
+            queue(&pool, &touched).await;
+            let report = cron_run(&pool, &out, &site, 100.0).await;
+            assert!(
+                report.full_builds.is_empty(),
+                "batch {batch}: the updater fell back: {:?}",
+                report
+                    .full_builds
+                    .iter()
+                    .map(|(r, _)| r)
+                    .collect::<Vec<_>>()
+            );
+            for update in &report.updates {
+                splits += update.chunks_split;
+                if update.pages_changed > 0 {
+                    files_written.push(update.files_written);
+                }
+                updates += 1;
+            }
+            let left: i64 = sqlx::query_scalar("SELECT count(*) FROM search_index_queue")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+            assert_eq!(left, 0, "batch {batch}: the queue is drained");
+            if batch % 6 == 0 || batch == batches {
+                assert_equals_full_build(&app.db, &pool, &out, &site, &format!("batch {batch}"))
+                    .await;
+            }
+        }
+        let total: usize = ops.values().sum();
+        println!("gate 1, incremental: {total} changes in {batches} batches: {ops:?}");
+        println!(
+            "gate 1, incremental: {updates} updates, {splits} chunk splits, files written per \
+             update: max {}, mean {:.1}",
+            files_written.iter().max().unwrap(),
+            files_written.iter().sum::<usize>() as f64 / files_written.len() as f64
+        );
+        assert!(total >= 200, "only {total} changes");
+        assert!(splits > 0, "the long pages must split a chunk");
+        let tombstones: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM search_page WHERE item_id IS NULL")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert!(tombstones > 0, "the sequence leaves tombstones to compact");
+
+        // Compaction: past a 0% threshold any tombstone compacts.
+        let compacted = cron_run(&pool, &out, &site, 0.0).await;
+        assert_eq!(compacted.full_builds.len(), 1, "one compaction");
+        assert!(compacted.full_builds[0].1.compacted);
+        assert_eq!(compacted.full_builds[0].1.tombstones, 0);
+
+        // Byte for byte a first build of the same content, from an empty
+        // ledger and an empty term cache.
+        let fresh = isolated_ledger(&app.db).await;
+        let fresh_out = scratch("fresh").join("pagefind");
+        build(&fresh, &fresh_out, &site.docs())
+            .await
+            .expect("a first build");
+        let ours = read_published(&out).unwrap();
+        let theirs = read_published(&fresh_out).unwrap();
+        let (a, b) = (index_files(&ours), index_files(&theirs));
+        assert_eq!(
+            a.keys().collect::<Vec<_>>(),
+            b.keys().collect::<Vec<_>>(),
+            "after compaction: the same file names"
+        );
+        for (name, bytes) in &a {
+            assert!(*bytes == b[name], "after compaction: {name} differs");
+        }
+        // And the term cache the updater kept is the one a first build makes.
+        let terms = |p: &PgPool| {
+            let p = p.clone();
+            async move {
+                sqlx::query_as::<_, (Uuid, String, Vec<u8>, Vec<u8>)>(
+                    "SELECT item_id, language, content_hash, words FROM search_page_terms \
+                     ORDER BY item_id",
+                )
+                .fetch_all(&p)
+                .await
+                .unwrap()
+            }
+        };
+        assert!(
+            terms(&pool).await == terms(&fresh).await,
+            "the term caches differ"
+        );
+        println!(
+            "gate 1, incremental: PASS: decoded equal to a full build after every 6th batch; \
+             after compaction byte identical to a first build ({} index files)",
+            a.len()
+        );
+    });
+}
+
+/// Run `queries` against the live index in `out` and assert they equal a full
+/// rebuild's of the same state, tie for tie. Returns the live results.
+async fn queries_match_a_full_build(
+    node: &Path,
+    db: &PgPool,
+    pool: &PgPool,
+    out: &Path,
+    site: &Site,
+    language: &str,
+    queries: &[&str],
+    when: &str,
+) -> BTreeMap<String, Vec<(String, f64)>> {
+    let fork = fork_ledger(db, pool).await;
+    let full_out = scratch("full").join("pagefind");
+    build(&fork, &full_out, &site.docs())
+        .await
+        .expect("full build");
+    let ours = run_queries(node, &read_bundle(out).unwrap(), language, queries);
+    let theirs = run_queries(node, &read_bundle(&full_out).unwrap(), language, queries);
+    for query in queries {
+        assert_eq!(
+            tie_groups(&ours[*query]),
+            tie_groups(&theirs[*query]),
+            "{when}: [{language}] {query}: incremental {:?} != full {:?}",
+            ours[*query],
+            theirs[*query]
+        );
+    }
+    ours
+}
+
+fn urls(results: &[(String, f64)]) -> Vec<&str> {
+    results.iter().map(|(u, _)| u.as_str()).collect()
+}
+
+#[test]
+fn gate_3_pagefind_js_finds_each_change_right_after_its_update() {
+    run_test(async {
+        let Some(node) = node() else {
+            assert!(
+                std::env::var_os("TROVATO_REQUIRE_PAGEFIND_CLI").is_none(),
+                "gate 3, incremental: TROVATO_REQUIRE_PAGEFIND_CLI is set but there is no node"
+            );
+            println!("SKIPPED gate 3, incremental: no node (set NODE_BIN or put node on PATH)");
+            return;
+        };
+        let app = shared_app().await;
+        let pool = isolated_ledger(&app.db).await;
+        let out = scratch("gate3-incremental").join("pagefind");
+        let site = Site::new(fixture());
+        cron_run(&pool, &out, &site, 100.0).await;
+        let url = |n: usize| format!("/item/{}", fixture_id(n));
+        let apply = |ids: Vec<Uuid>| {
+            let pool = pool.clone();
+            let out = out.clone();
+            let site = &site;
+            async move {
+                queue(&pool, &ids).await;
+                let report = cron_run(&pool, &out, site, 100.0).await;
+                assert!(report.full_builds.is_empty(), "no fallback: {report:?}");
+                assert_eq!(report.updates.len(), 1);
+            }
+        };
+        let mut queries: Vec<&str> = EN_QUERIES.to_vec();
+        queries.extend(["quokkaplatz", "wombatfest", "numbatgarten", "brokolinth"]);
+
+        // An edited title.
+        site.with(|d| d.get_mut(&fixture_id(2)).unwrap().title = "Quokkaplatz review".into());
+        apply(vec![fixture_id(2)]).await;
+        let r = queries_match_a_full_build(
+            &node,
+            &app.db,
+            &pool,
+            &out,
+            &site,
+            "en",
+            &queries,
+            "title edit",
+        )
+        .await;
+        assert_eq!(
+            urls(&r["quokkaplatz"]),
+            vec![url(2).as_str()],
+            "the new title is found"
+        );
+
+        // A new comment.
+        site.with(|d| {
+            d.get_mut(&fixture_id(3))
+                .unwrap()
+                .comments
+                .push("Wombatfest was great".into());
+        });
+        apply(vec![fixture_id(3)]).await;
+        let r = queries_match_a_full_build(
+            &node, &app.db, &pool, &out, &site, "en", &queries, "comment",
+        )
+        .await;
+        assert_eq!(
+            urls(&r["wombatfest"]),
+            vec![url(3).as_str()],
+            "the comment is found"
+        );
+
+        // A comment removed again.
+        site.with(|d| d.get_mut(&fixture_id(3)).unwrap().comments.pop());
+        apply(vec![fixture_id(3)]).await;
+        let r = queries_match_a_full_build(
+            &node,
+            &app.db,
+            &pool,
+            &out,
+            &site,
+            "en",
+            &queries,
+            "comment removed",
+        )
+        .await;
+        assert!(r["wombatfest"].is_empty(), "the removed comment is gone");
+
+        // A deleted (or unpublished: the seam leaves it out either way) item.
+        site.with(|d| d.remove(&fixture_id(2)));
+        apply(vec![fixture_id(2)]).await;
+        let r = queries_match_a_full_build(
+            &node, &app.db, &pool, &out, &site, "en", &queries, "delete",
+        )
+        .await;
+        assert!(r["quokkaplatz"].is_empty(), "the deleted item is gone");
+        let freed: i32 = sqlx::query_scalar(
+            "SELECT page_number FROM search_page WHERE language = 'en' AND item_id IS NULL",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+        // A new item takes the freed slot.
+        let mut rng = Rng(7);
+        let mut doc = new_doc(&mut rng, 900, 30);
+        doc.language = "en".into();
+        doc.title = "Numbatgarten opening".into();
+        let new_id = doc.id;
+        site.with(|d| d.insert(new_id, doc));
+        apply(vec![new_id]).await;
+        let page: i32 =
+            sqlx::query_scalar("SELECT page_number FROM search_page WHERE item_id = $1")
+                .bind(new_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(page, freed, "the new item reuses the freed page number");
+        let r = queries_match_a_full_build(
+            &node, &app.db, &pool, &out, &site, "en", &queries, "insert",
+        )
+        .await;
+        assert_eq!(
+            urls(&r["numbatgarten"]),
+            vec![format!("/item/{new_id}").as_str()]
+        );
+
+        // An item moved from English to German.
+        site.with(|d| {
+            let doc = d.get_mut(&fixture_id(7)).unwrap();
+            doc.language = "de".into();
+            doc.title = "Brokolinth Ausstellung".into();
+        });
+        apply(vec![fixture_id(7)]).await;
+        let en = queries_match_a_full_build(
+            &node,
+            &app.db,
+            &pool,
+            &out,
+            &site,
+            "en",
+            &queries,
+            "language move",
+        )
+        .await;
+        assert!(
+            en["brokolinth"].is_empty(),
+            "no longer in the English index"
+        );
+        let mut de_queries: Vec<&str> = DE_QUERIES.to_vec();
+        de_queries.retain(|q| !UPSTREAM_FAILURES.iter().any(|(_, f)| f == q));
+        de_queries.push("brokolinth");
+        let de = queries_match_a_full_build(
+            &node,
+            &app.db,
+            &pool,
+            &out,
+            &site,
+            "de",
+            &de_queries,
+            "language move",
+        )
+        .await;
+        assert_eq!(
+            urls(&de["brokolinth"]),
+            vec![url(7).as_str()],
+            "found in German"
+        );
+        println!(
+            "gate 3, incremental: PASS: title edit, comment added and removed, delete, slot reuse, language move"
+        );
+    });
+}
+
+#[test]
+fn two_runners_at_once_apply_every_queued_item_exactly_once() {
+    run_test(async {
+        let app = shared_app().await;
+        let pool = isolated_ledger_with(&app.db, 8).await;
+        let out = scratch("two-runners").join("pagefind");
+        let site = Site::new(fixture());
+        cron_run(&pool, &out, &site, 100.0).await;
+        let before: i64 = sqlx::query_scalar("SELECT generation FROM search_index_state")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+
+        let ids: Vec<Uuid> = (0..40).map(fixture_id).collect();
+        site.with(|d| {
+            for id in &ids {
+                d.get_mut(id)
+                    .unwrap()
+                    .comments
+                    .push(format!("echidnaword {id}"));
+            }
+        });
+        queue(&pool, &ids).await;
+        let options = RunOptions {
+            batch_size: 10,
+            compaction_percent: 100.0,
+            ..RunOptions::default()
+        };
+        let (a, b) = tokio::join!(
+            search_index_run(&pool, &out, &site, &options),
+            search_index_run(&pool, &out, &site, &options)
+        );
+        let (a, b) = (a.expect("runner a"), b.expect("runner b"));
+        let applied: usize = a.updates.iter().chain(&b.updates).map(|u| u.queued).sum();
+        let publishes = (a.updates.len() + b.updates.len()) as i64;
+        let after: i64 = sqlx::query_scalar("SELECT generation FROM search_index_state")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        println!(
+            "two runners: a applied {} batches (superseded: {}), b {} (superseded: {})",
+            a.updates.len(),
+            a.superseded,
+            b.updates.len(),
+            b.superseded
+        );
+        assert!(a.full_builds.is_empty() && b.full_builds.is_empty());
+        // Whatever one runner left (it gave up when superseded), a third run
+        // finishes; nothing is applied twice.
+        let rest = cron_run(&pool, &out, &site, 100.0).await;
+        let applied = applied + rest.updates.iter().map(|u| u.queued).sum::<usize>();
+        let publishes = publishes + rest.updates.len() as i64;
+        let after = after.max(
+            sqlx::query_scalar("SELECT generation FROM search_index_state")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+        );
+        assert_eq!(applied, ids.len(), "every queued item applied exactly once");
+        assert_eq!(after - before, publishes, "one generation per publish");
+        assert_equals_full_build(&app.db, &pool, &out, &site, "two runners").await;
+        // No staging directory left behind.
+        let parent = out.parent().unwrap();
+        let leftovers: Vec<_> = std::fs::read_dir(parent)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().contains("_build_"))
+            .collect();
+        assert!(leftovers.is_empty(), "{leftovers:?}");
+    });
+}
+
+#[test]
+fn a_live_entry_the_database_did_not_record_takes_a_full_build() {
+    run_test(async {
+        let app = shared_app().await;
+        let pool = isolated_ledger(&app.db).await;
+        let out = scratch("unrecorded").join("pagefind");
+        let site = Site::new(fixture());
+        cron_run(&pool, &out, &site, 100.0).await;
+
+        // As if a publish flipped the entry and crashed before its commit: the
+        // database names a meta the live entry does not.
+        sqlx::query(
+            "UPDATE search_index_state SET entry_meta = jsonb_set(entry_meta, '{en}', '\"en_0000000\"')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        site.with(|d| d.get_mut(&fixture_id(1)).unwrap().title = "Platypusweg".into());
+        queue(&pool, &[fixture_id(1)]).await;
+        let report = cron_run(&pool, &out, &site, 100.0).await;
+        assert_eq!(report.full_builds.len(), 1, "{report:?}");
+        assert!(
+            report.full_builds[0].0.contains("the live entry names"),
+            "{}",
+            report.full_builds[0].0
+        );
+        let left: i64 = sqlx::query_scalar("SELECT count(*) FROM search_index_queue")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(left, 0, "the full build covers the queued item");
+        assert_equals_full_build(&app.db, &pool, &out, &site, "after the fallback").await;
+        // And the next change is incremental again.
+        site.with(|d| d.get_mut(&fixture_id(1)).unwrap().title = "Platypusweg two".into());
+        queue(&pool, &[fixture_id(1)]).await;
+        let report = cron_run(&pool, &out, &site, 100.0).await;
+        assert!(
+            report.full_builds.is_empty() && report.updates.len() == 1,
+            "{report:?}"
         );
     });
 }

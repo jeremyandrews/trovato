@@ -7,6 +7,9 @@
 //! pagefind-harness measure --runs 3 --output /tmp/pagefind-out
 //! # The same, through the native build that replaced the CLI (B217).
 //! pagefind-harness measure-native --runs 3 --output /tmp/pagefind-native [--cold]
+//! # Time to searchable after one edit and one comment, through the item and
+//! # comment services and the incremental updater (B218), against a full build.
+//! pagefind-harness measure-update --runs 3 --output /tmp/pagefind-update
 //! # The tokenizer proof over a directory of exported pages.
 //! pagefind-harness parity --site crates/pagefind-harness/corpus
 //! # Regenerate the vendored browser bundle from the pinned crate.
@@ -76,6 +79,18 @@ enum Command {
         #[arg(long)]
         cold: bool,
     },
+    /// Time to searchable after one title edit and after one comment, through
+    /// the item and comment services and the cron updater (B218), against a
+    /// full build of the same site. It writes to the site: run it on a copy.
+    MeasureUpdate {
+        /// How many edits and comments, and how many full builds.
+        #[arg(long, default_value_t = 3)]
+        runs: usize,
+        /// The directory the index is published into (stands in for
+        /// `PAGEFIND_OUTPUT_DIR`).
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Per page tokenizing against a full CLI build (and the crate's own).
     Parity {
         /// A directory of exported `<id>.html` pages.
@@ -110,6 +125,7 @@ fn main() -> Result<()> {
             Command::MeasureNative { runs, output, cold } => {
                 measure_native(runs, &output, cold).await
             }
+            Command::MeasureUpdate { runs, output } => measure_update(runs, &output).await,
             Command::Parity { site } => parity(&site).await,
             Command::Bundle { out } => bundle(&out).await,
             Command::Stress { out } => {
@@ -489,5 +505,245 @@ async fn sqlx_delete_terms(state: &AppState) -> Result<()> {
         .execute(pool)
         .await
         .context("empty the term cache")?;
+    Ok(())
+}
+
+/// One cron run of the index over the site, as `maybe_rebuild_index` runs it.
+async fn index_run(
+    state: &AppState,
+    output: &Path,
+    full_build: Option<&str>,
+) -> Result<trovato_kernel::cron::RunReport> {
+    let source = trovato_kernel::cron::ItemDocuments {
+        pool: state.db(),
+        items: state.items(),
+    };
+    trovato_kernel::cron::search_index_run(
+        state.db(),
+        output,
+        &source,
+        &trovato_kernel::cron::RunOptions {
+            full_build: full_build.map(str::to_string),
+            // Never compact here: the runs measure updates and full builds.
+            compaction_percent: 100.0,
+            ..trovato_kernel::cron::RunOptions::default()
+        },
+    )
+    .await
+}
+
+/// The result URLs the published index in `output` finds for one `word`.
+fn found(output: &Path, language: &str, word: &str) -> Result<Vec<String>> {
+    let html = format!(
+        "<html lang=\"{language}\"><body><main data-pagefind-body><p>{word}</p></main></body></html>"
+    );
+    let terms = trovato_search_index::tokenize("/stem", &html)?
+        .ok_or_else(|| anyhow!("{word} tokenizes to nothing"))?;
+    let stem = terms
+        .words
+        .keys()
+        .next()
+        .ok_or_else(|| anyhow!("{word} has no stem"))?
+        .clone();
+    let bundle = trovato_search_index::decode::read_published(output)?;
+    let mut urls = Vec::new();
+    for index in trovato_search_index::decode::decode_bundle(&bundle)? {
+        if index.language != language {
+            continue;
+        }
+        for chunk in index.chunks.values() {
+            for w in chunk.words.iter().filter(|w| w.word == stem) {
+                for page in &w.pages {
+                    let hash = &index.meta.pages[usize::try_from(page.page_number)?].hash;
+                    let fragment = &index.fragments[hash];
+                    let url = fragment["meta"]["url"]
+                        .as_str()
+                        .or_else(|| fragment["url"].as_str())
+                        .unwrap_or_default();
+                    urls.push(url.to_string());
+                }
+            }
+        }
+    }
+    Ok(urls)
+}
+
+/// A word no page holds: letters only, unique per call.
+fn fresh_word(kind: &str, run: usize) -> String {
+    let tag: String = uuid::Uuid::now_v7()
+        .simple()
+        .to_string()
+        .chars()
+        .rev()
+        .take(10)
+        .map(|c| match c.to_digit(10) {
+            Some(d) => char::from(b'g' + u8::try_from(d).unwrap_or(0)),
+            None => c,
+        })
+        .collect();
+    format!("zq{kind}{run}{tag}x").replace(|c: char| c.is_ascii_digit(), "r")
+}
+
+async fn measure_update(runs: usize, output: &Path) -> Result<()> {
+    use trovato_kernel::models::{CreateComment, UpdateItem};
+    use trovato_kernel::tap::UserContext;
+
+    let init = Instant::now();
+    let state = app_state().await?;
+    println!("AppState init (not part of a run): {:.2?}", init.elapsed());
+    let admin = UserContext::administrator(uuid::Uuid::nil(), vec!["administer site".into()]);
+
+    // Full builds, the first of which is what the updates start from.
+    println!();
+    println!("| full build | pages | export, render, tokenize, encode, publish | files written |");
+    println!("|---|---|---|---|");
+    for run in 1..=runs {
+        let t = Instant::now();
+        let report = index_run(&state, output, Some("measure-update")).await?;
+        let elapsed = t.elapsed();
+        let (_, build) = report
+            .full_builds
+            .first()
+            .ok_or_else(|| anyhow!("no full build ran: {report:?}"))?;
+        println!(
+            "| {run} | {} | {:.0} ms | {} |",
+            build.pages,
+            elapsed.as_secs_f64() * 1000.0,
+            build.written + 1
+        );
+    }
+
+    let documents = indexable_documents(state.db(), state.items()).await?;
+    if documents.len() < 2 * runs + 2 {
+        bail!("the site has {} searchable items", documents.len());
+    }
+    println!();
+    println!(
+        "| change | write | cron update | time to searchable | pages changed | files written | chunks rewritten | found |"
+    );
+    println!("|---|---|---|---|---|---|---|---|");
+    for run in 1..=runs {
+        // A title edit, on an item spread through the id order.
+        let doc = &documents[(run * documents.len()) / (runs + 2)];
+        let word = fresh_word("edit", run);
+        let t = Instant::now();
+        let changes: UpdateItem = serde_json::from_value(
+            serde_json::json!({ "title": format!("{} {word}", doc.title) }),
+        )?;
+        state
+            .items()
+            .update(doc.id, changes, &admin)
+            .await?
+            .ok_or_else(|| anyhow!("item {} is gone", doc.id))?;
+        let write = t.elapsed();
+        let report = index_run(&state, output, None).await?;
+        let searchable = t.elapsed();
+        print_update(
+            "title edit",
+            write,
+            searchable,
+            &report,
+            &found(output, &doc.language, &word)?,
+            &doc.url,
+        )?;
+
+        // A published comment, on another item.
+        let doc = &documents[documents.len() - 1 - (run * documents.len()) / (runs + 2)];
+        let word = fresh_word("comment", run);
+        let t = Instant::now();
+        state
+            .comments()
+            .create(
+                CreateComment {
+                    item_id: doc.id,
+                    parent_id: None,
+                    author_id: uuid::Uuid::nil(),
+                    subject: None,
+                    body: format!("A comment that says {word}."),
+                    body_format: None,
+                    status: Some(1),
+                },
+                &admin,
+            )
+            .await?;
+        let write = t.elapsed();
+        let report = index_run(&state, output, None).await?;
+        let searchable = t.elapsed();
+        print_update(
+            "comment",
+            write,
+            searchable,
+            &report,
+            &found(output, &doc.language, &word)?,
+            &doc.url,
+        )?;
+
+        // The path every change took before: the same kind of edit, then a
+        // full build.
+        let doc = &documents[(run * documents.len()) / (runs + 2) + 1];
+        let word = fresh_word("full", run);
+        let t = Instant::now();
+        let changes: UpdateItem = serde_json::from_value(
+            serde_json::json!({ "title": format!("{} {word}", doc.title) }),
+        )?;
+        state
+            .items()
+            .update(doc.id, changes, &admin)
+            .await?
+            .ok_or_else(|| anyhow!("item {} is gone", doc.id))?;
+        let write = t.elapsed();
+        let report = index_run(&state, output, Some("measure-update: as before B218")).await?;
+        let searchable = t.elapsed();
+        let (_, build) = report
+            .full_builds
+            .first()
+            .ok_or_else(|| anyhow!("no full build ran: {report:?}"))?;
+        let hit = found(output, &doc.language, &word)? == [doc.url.clone()];
+        println!(
+            "| title edit, then a full build (before B218) | {:.0} ms | {:.0} ms | {:.0} ms | {} | {} | all | {} |",
+            write.as_secs_f64() * 1000.0,
+            (searchable - write).as_secs_f64() * 1000.0,
+            searchable.as_secs_f64() * 1000.0,
+            build.pages,
+            build.written + 1,
+            if hit { "yes" } else { "NO" },
+        );
+    }
+    println!();
+    println!("index at {}:", output.display());
+    for (kind, (n, b)) in sizes(output)? {
+        println!("  .{kind}: {n} files, {b} bytes");
+    }
+    Ok(())
+}
+
+/// One row of the update table; fails unless the update was incremental and
+/// the word finds exactly the item.
+fn print_update(
+    kind: &str,
+    write: Duration,
+    searchable: Duration,
+    report: &trovato_kernel::cron::RunReport,
+    found: &[String],
+    url: &str,
+) -> Result<()> {
+    if !report.full_builds.is_empty() || report.updates.len() != 1 {
+        bail!("the {kind} was not one incremental update: {report:?}");
+    }
+    let update = &report.updates[0];
+    let hit = found == [url.to_string()];
+    println!(
+        "| {kind} | {:.0} ms | {} ms | {:.0} ms | {} | {} | {} | {} |",
+        write.as_secs_f64() * 1000.0,
+        update.total_ms,
+        searchable.as_secs_f64() * 1000.0,
+        update.pages_changed,
+        update.files_written,
+        update.chunks_rewritten,
+        if hit { "yes" } else { "NO" },
+    );
+    if !hit {
+        bail!("the {kind}'s word found {found:?}, not {url}");
+    }
     Ok(())
 }

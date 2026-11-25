@@ -5,7 +5,8 @@
 //!
 //! Both default to on, so a site that never opens the screen searches
 //! everything. Saving goes through the form pipeline (CSRF and form build id),
-//! recomputes the type's full text vectors, and asks for a Pagefind rebuild;
+//! recomputes the type's full text vectors, and queues every item of the type
+//! for the Pagefind index;
 //! both backends then leave out what was switched off. The switches live in the
 //! type's `settings`, so config export and import carry them.
 //!
@@ -296,7 +297,8 @@ fn the_switches_take_a_type_or_its_comments_out_of_both_backends() {
         assert_eq!(found(app, &body).await, (vec![id], vec![id]));
 
         // Comments off: the comment only match goes, the item stays.
-        sqlx::query("UPDATE pagefind_index_status SET rebuild_requested = false WHERE id = 1")
+        sqlx::query("DELETE FROM search_index_queue WHERE item_id = $1")
+            .bind(id)
             .execute(&app.db)
             .await
             .unwrap();
@@ -304,12 +306,17 @@ fn the_switches_take_a_type_or_its_comments_out_of_both_backends() {
             save_switches(app, &cookies, &item_type, true, false).await,
             StatusCode::SEE_OTHER
         );
-        let rebuild: bool =
-            sqlx::query_scalar("SELECT rebuild_requested FROM pagefind_index_status WHERE id = 1")
-                .fetch_one(&app.db)
+        let queued: Option<String> =
+            sqlx::query_scalar("SELECT reason FROM search_index_queue WHERE item_id = $1")
+                .bind(id)
+                .fetch_optional(&app.db)
                 .await
                 .unwrap();
-        assert!(rebuild, "saving the switches requests a rebuild");
+        assert_eq!(
+            queued.as_deref(),
+            Some("type_settings"),
+            "saving the switches queues every item of the type for the static index"
+        );
         assert_eq!(
             found(app, &comment).await,
             (vec![], vec![]),
