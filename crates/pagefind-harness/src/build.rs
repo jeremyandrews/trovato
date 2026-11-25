@@ -109,3 +109,57 @@ pub async fn api_build(pages: &[SourcePage]) -> Result<Bundle> {
 pub async fn single_page(page: &SourcePage) -> Result<Bundle> {
     api_build(std::slice::from_ref(page)).await
 }
+
+/// One page through the vendored tokenizer, under the URL the CLI and the
+/// crate give it (`/<file_name>`). `None` for a page with no words, which
+/// Pagefind leaves out.
+pub fn native_terms(
+    page: &SourcePage,
+) -> Result<Option<(String, trovato_search_index::PageTerms)>> {
+    let url = format!("/{}", page.file_name);
+    let terms = trovato_search_index::tokenize(&url, &page.html)?;
+    Ok(terms.map(|t| (url, t)))
+}
+
+/// Pages through the vendored tokenizer and the native assembler, numbered in
+/// the order given, grouped by language as the CLI groups them (pages with no
+/// `lang` merged into the most common language, as `SearchState` does).
+pub fn native_build(pages: &[SourcePage]) -> Result<Bundle> {
+    let mut by_language: std::collections::BTreeMap<String, Vec<trovato_search_index::PageTerms>> =
+        std::collections::BTreeMap::new();
+    for page in pages {
+        if let Some((_, terms)) = native_terms(page)? {
+            by_language
+                .entry(terms.language.clone())
+                .or_default()
+                .push(terms);
+        }
+    }
+    // Pagefind's primary language: the one with the most pages, ties to the
+    // lower key, `unknown` only when there is nothing else.
+    if let Some(unknown) = by_language.remove("unknown") {
+        let primary = by_language
+            .iter()
+            .max_by(|(a_lang, a), (b_lang, b)| a.len().cmp(&b.len()).then(b_lang.cmp(a_lang)))
+            .map(|(lang, _)| lang.clone())
+            .unwrap_or_else(|| "unknown".to_string());
+        by_language.entry(primary).or_default().extend(unknown);
+    }
+    let slots: std::collections::BTreeMap<String, Vec<trovato_search_index::Slot<'_>>> =
+        by_language
+            .iter()
+            .map(|(lang, pages)| {
+                (
+                    lang.clone(),
+                    pages.iter().map(trovato_search_index::Slot::Page).collect(),
+                )
+            })
+            .collect();
+    let (_, bundle) = trovato_search_index::build_bundle(&slots)?;
+    Ok(bundle)
+}
+
+/// One page alone through the vendored tokenizer and the native assembler.
+pub fn native_single_page(page: &SourcePage) -> Result<Bundle> {
+    native_build(std::slice::from_ref(page))
+}

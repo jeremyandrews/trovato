@@ -21,6 +21,7 @@
 //! See `docs/design/incremental-search-index.md`.
 
 pub mod build;
+pub mod bundle;
 pub mod compare;
 pub mod decode;
 pub mod export;
