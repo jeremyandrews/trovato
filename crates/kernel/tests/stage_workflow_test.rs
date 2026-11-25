@@ -781,8 +781,8 @@ fn the_items_alias_and_menu_link_move_with_it() {
 
         let alias_id = Uuid::now_v7();
         sqlx::query(
-            "INSERT INTO url_alias (id, source, alias, language, stage_id, created) \
-             VALUES ($1, $2, $3, 'en', $4, $5)",
+            "INSERT INTO url_alias (id, source, alias, language, stage_id, created, changed) \
+             VALUES ($1, $2, $3, 'en', $4, $5, $5)",
         )
         .bind(alias_id)
         .bind(&source)

@@ -82,13 +82,14 @@ pub struct GatherService {
     queries: Cache<String, GatherQuery>,
     /// Cache of distinct field values per `"item_type::source_field"`.
     distinct_values_cache: Cache<String, Vec<String>>,
-    /// The outbound URL alias of `/gather/{query_id}`, per query id, for a feed
-    /// with no argument home path and no `canonical_url`
-    /// ([`Self::outbound_alias_for_gather`]). `None` is cached too: a query with
-    /// no alias must not cost a lookup on every request to its feed. Cleared
-    /// at once on a `url_alias` write ([`Self::clear_outbound_alias_cache`]),
-    /// same as [`crate::menu::clear_local_config_menus`].
-    outbound_alias_cache: Cache<String, Option<String>>,
+    /// The outbound URL alias of `/gather/{query_id}`, with the alias row's
+    /// own `changed`, per query id, for a feed with no argument home path and
+    /// no `canonical_url` ([`Self::outbound_alias_for_gather`]). `None` is
+    /// cached too: a query with no alias must not cost a lookup on every
+    /// request to its feed. Cleared at once on a `url_alias` write
+    /// ([`Self::clear_outbound_alias_cache`]), same as
+    /// [`crate::menu::clear_local_config_menus`].
+    outbound_alias_cache: Cache<String, Option<(String, i64)>>,
     /// Moves on every clear of `outbound_alias_cache`. A lookup notes it before
     /// reading `url_alias` and drops what it stored if it moved meanwhile, so a
     /// read that started before an alias write cannot put the old answer back
@@ -379,10 +380,12 @@ impl GatherService {
         self.queries.iter().map(|(_k, v)| v).collect()
     }
 
-    /// The outbound URL alias of `/gather/{query_id}`, if one exists: the
-    /// address a visitor to that gather's page actually uses, when it has
-    /// neither an argument home path nor a `canonical_url`
-    /// ([`crate::routes::feed`]'s channel link).
+    /// The outbound URL alias of `/gather/{query_id}`, with its row's
+    /// `changed`, if one exists: the address a visitor to that gather's page
+    /// actually uses, when it has neither an argument home path nor a
+    /// `canonical_url` ([`crate::routes::feed`]'s channel link), and the time
+    /// to fold into that feed's `Last-Modified` so repointing the link moves
+    /// it too.
     ///
     /// Served from the private `outbound_alias_cache` once warm, so a feed request
     /// costs no query beyond the first; a `url_alias` write clears the cache at
@@ -392,13 +395,13 @@ impl GatherService {
     /// A lookup that fails answers `None` for this request only and is not
     /// cached: the next request asks the database again rather than serving
     /// the raw gather path until the TTL runs out.
-    pub async fn outbound_alias_for_gather(&self, query_id: &str) -> Option<String> {
+    pub async fn outbound_alias_for_gather(&self, query_id: &str) -> Option<(String, i64)> {
         if let Some(cached) = self.outbound_alias_cache.get(query_id) {
             return cached;
         }
         let generation = self.outbound_alias_generation();
         let source = format!("/gather/{query_id}");
-        match UrlAlias::get_canonical_alias(&self.pool, &source).await {
+        match UrlAlias::get_canonical_alias_and_changed(&self.pool, &source).await {
             Ok(alias) => {
                 self.remember_outbound_alias(query_id, generation, alias.clone());
                 alias
@@ -424,7 +427,12 @@ impl GatherService {
     /// was cleared since the lookup started, the answer may predate the write
     /// that cleared it, so it is dropped again. A clear that comes after the
     /// check removes it anyway.
-    fn remember_outbound_alias(&self, query_id: &str, generation: u64, alias: Option<String>) {
+    fn remember_outbound_alias(
+        &self,
+        query_id: &str,
+        generation: u64,
+        alias: Option<(String, i64)>,
+    ) {
         self.outbound_alias_cache
             .insert(query_id.to_string(), alias);
         if self.outbound_alias_generation() != generation {
@@ -3972,17 +3980,17 @@ mod tests {
 
         let started = service.outbound_alias_generation();
         service.clear_outbound_alias_cache();
-        service.remember_outbound_alias("blog_listing", started, Some("/old".to_string()));
+        service.remember_outbound_alias("blog_listing", started, Some(("/old".to_string(), 1)));
         assert!(
             service.outbound_alias_cache.get("blog_listing").is_none(),
             "an answer read before the clear must not be cached after it"
         );
 
         let started = service.outbound_alias_generation();
-        service.remember_outbound_alias("blog_listing", started, Some("/blog".to_string()));
+        service.remember_outbound_alias("blog_listing", started, Some(("/blog".to_string(), 2)));
         assert_eq!(
             service.outbound_alias_cache.get("blog_listing"),
-            Some(Some("/blog".to_string()))
+            Some(Some(("/blog".to_string(), 2)))
         );
     }
 }

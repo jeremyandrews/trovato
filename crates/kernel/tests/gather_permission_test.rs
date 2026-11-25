@@ -463,8 +463,8 @@ fn menu_links_to_a_protected_gather_are_drawn_only_for_a_viewer_who_may_follow_t
         // A URL alias standing in for the gather, as Netgrasp's `/devices` does.
         let url_alias = format!("/gperm-alias-{stamp}");
         sqlx::query(
-            "INSERT INTO url_alias (id, source, alias, language, stage_id, created) \
-             VALUES ($1, $2, $3, 'en', $4, 0)",
+            "INSERT INTO url_alias (id, source, alias, language, stage_id, created, changed) \
+             VALUES ($1, $2, $3, 'en', $4, 0, 0)",
         )
         .bind(Uuid::now_v7())
         .bind(format!("/gather/{}", fx.query.query_id))

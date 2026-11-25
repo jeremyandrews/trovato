@@ -30,6 +30,12 @@ pub struct UrlAlias {
     /// Unix timestamp when created.
     #[serde(default = "crate::models::unix_now")]
     pub created: i64,
+
+    /// Unix timestamp when last changed: set on insert, moved on every
+    /// update. Config fixtures predating this column have no key for it and
+    /// fall back to "now", the same way a missing `created` does.
+    #[serde(default = "crate::models::unix_now")]
+    pub changed: i64,
 }
 
 /// Input for creating a URL alias.
@@ -60,9 +66,9 @@ impl UrlAlias {
 
         let alias = sqlx::query_as::<_, UrlAlias>(
             r#"
-            INSERT INTO url_alias (id, source, alias, language, stage_id, created)
-            VALUES ($1, $2, $3, $4, $5, $6)
-            RETURNING id, source, alias, language, stage_id, created
+            INSERT INTO url_alias (id, source, alias, language, stage_id, created, changed)
+            VALUES ($1, $2, $3, $4, $5, $6, $6)
+            RETURNING id, source, alias, language, stage_id, created, changed
             "#,
         )
         .bind(id)
@@ -82,7 +88,8 @@ impl UrlAlias {
     /// Find a URL alias by ID.
     pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Self>> {
         let alias = sqlx::query_as::<_, UrlAlias>(
-            "SELECT id, source, alias, language, stage_id, created FROM url_alias WHERE id = $1",
+            "SELECT id, source, alias, language, stage_id, created, changed \
+             FROM url_alias WHERE id = $1",
         )
         .bind(id)
         .fetch_optional(pool)
@@ -113,7 +120,7 @@ impl UrlAlias {
     ) -> Result<Option<Self>> {
         let alias = sqlx::query_as::<_, UrlAlias>(
             r#"
-            SELECT id, source, alias, language, stage_id, created
+            SELECT id, source, alias, language, stage_id, created, changed
             FROM url_alias
             WHERE alias = $1 AND stage_id = $2
             ORDER BY CASE WHEN language = $3 THEN 0 WHEN language = 'en' THEN 1 ELSE 2 END,
@@ -141,7 +148,7 @@ impl UrlAlias {
     pub async fn find_all_by_source(pool: &PgPool, source: &str) -> Result<Vec<Self>> {
         let aliases = sqlx::query_as::<_, UrlAlias>(
             r#"
-            SELECT id, source, alias, language, stage_id, created
+            SELECT id, source, alias, language, stage_id, created, changed
             FROM url_alias
             WHERE source = $1
             ORDER BY created DESC, id DESC
@@ -164,7 +171,7 @@ impl UrlAlias {
     ) -> Result<Vec<Self>> {
         let aliases = sqlx::query_as::<_, UrlAlias>(
             r#"
-            SELECT id, source, alias, language, stage_id, created
+            SELECT id, source, alias, language, stage_id, created, changed
             FROM url_alias
             WHERE source = $1 AND stage_id = $2 AND language = $3
             ORDER BY created DESC, id DESC
@@ -213,6 +220,37 @@ impl UrlAlias {
         .context("failed to get canonical alias")?;
 
         Ok(alias)
+    }
+
+    /// The canonical alias for a source path, with the row's `changed`.
+    ///
+    /// Only [`crate::gather::GatherService::outbound_alias_for_gather`] calls
+    /// this: a feed's channel link needs the alias's own change time to fold
+    /// into `Last-Modified`, which [`Self::get_canonical_alias`] (used much
+    /// more widely, including on every item page) has no reason to carry.
+    /// Kept as its own query rather than added to that one so that every other
+    /// caller's statement, and its performance-test fingerprint, is untouched.
+    pub async fn get_canonical_alias_and_changed(
+        pool: &PgPool,
+        source: &str,
+    ) -> Result<Option<(String, i64)>> {
+        let row: Option<(String, i64)> = sqlx::query_as(
+            r#"
+            SELECT alias, changed
+            FROM url_alias
+            WHERE source = $1 AND stage_id = $2
+            ORDER BY (language = $3) DESC, created DESC, id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(source)
+        .bind(LIVE_STAGE_ID)
+        .bind("en")
+        .fetch_optional(pool)
+        .await
+        .context("failed to get canonical alias and changed")?;
+
+        Ok(row)
     }
 
     /// Get the canonical alias for many source paths in one query.
@@ -349,19 +387,21 @@ impl UrlAlias {
         let alias = input.alias.unwrap_or(existing.alias);
         let language = input.language.unwrap_or(existing.language);
         let stage_id = input.stage_id.unwrap_or(existing.stage_id);
+        let now = chrono::Utc::now().timestamp();
 
         let updated = sqlx::query_as::<_, UrlAlias>(
             r#"
             UPDATE url_alias
-            SET source = $1, alias = $2, language = $3, stage_id = $4
-            WHERE id = $5
-            RETURNING id, source, alias, language, stage_id, created
+            SET source = $1, alias = $2, language = $3, stage_id = $4, changed = $5
+            WHERE id = $6
+            RETURNING id, source, alias, language, stage_id, created, changed
             "#,
         )
         .bind(&source)
         .bind(&alias)
         .bind(&language)
         .bind(stage_id)
+        .bind(now)
         .bind(id)
         .fetch_optional(pool)
         .await
@@ -415,7 +455,7 @@ impl UrlAlias {
     pub async fn list_all(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<Self>> {
         let aliases = sqlx::query_as::<_, UrlAlias>(
             r#"
-            SELECT id, source, alias, language, stage_id, created
+            SELECT id, source, alias, language, stage_id, created, changed
             FROM url_alias
             ORDER BY created DESC, id DESC
             LIMIT $1 OFFSET $2
@@ -453,7 +493,7 @@ impl UrlAlias {
     ) -> Result<Vec<Self>> {
         let aliases = sqlx::query_as::<_, UrlAlias>(
             r#"
-            SELECT id, source, alias, language, stage_id, created
+            SELECT id, source, alias, language, stage_id, created, changed
             FROM url_alias
             WHERE alias = $1 AND language = $2 AND stage_id != $3 AND stage_id != $4
             ORDER BY created DESC
