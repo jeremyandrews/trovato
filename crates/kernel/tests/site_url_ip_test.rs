@@ -218,6 +218,9 @@ fn a_reset_mail_carries_the_ip_absolute_link() {
 
         let mut found = Vec::new();
         for _ in 0..50 {
+            // Reset mail is queued (BG18); send what is queued for this
+            // address as the mail worker would.
+            app.deliver_mail_to(&[&email]).await;
             found = fixture
                 .sink
                 .messages()
