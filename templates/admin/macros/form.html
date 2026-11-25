@@ -11,6 +11,9 @@
     link per problem), and each failed field has aria-invalid="true" and its
     message, also tied with aria-describedby.
 
+    No macro here calls another (`self::`): under `extends`, Tera does not
+    find one unless this file is the template's first import.
+
     Words arrive translated: a caller passes label=t(s="Username"). `errors`
     is the page's list of problems, each a FieldError (`routes::admin_form`),
     a form builder ValidationError, or a plain source string; a field finds
@@ -18,12 +21,6 @@
 
     widths: "4" (a few characters), "10", "20", "30" (characters), or ""
     for the full measure. -#}
-
-{#- One problem's words, translated. -#}
-{% macro message(e) %}{% if e is string %}{{ t(s=e) }}{% else %}{{ t_message(m=e) }}{% endif %}{% endmacro message %}
-
-{#- The problem with field `id` in `errors`, or "". -#}
-{% macro error_for(id, errors) %}{% if errors %}{% for e in errors %}{% if e is object and e.field is defined and e.field == id %}{{ self::message(e=e) }}{% break %}{% endif %}{% endfor %}{% endif %}{% endmacro error_for %}
 
 {#- The error summary: first in the form, an alert that receives focus
     (admin-forms.js; tabindex makes it focusable), one link per problem that
@@ -34,7 +31,7 @@
     <h2 class="error-summary__title" id="error-summary-title">{{ t(s="There is a problem") }}</h2>
     <ul class="error-summary__list">
         {% for e in errors %}
-        <li>{% if e is object and e.field is defined and e.field %}<a href="#{{ e.field }}">{{ self::message(e=e) }}</a>{% else %}{{ self::message(e=e) }}{% endif %}</li>
+        <li>{% if e is object and e.field is defined and e.field %}<a href="#{{ e.field }}">{{ t_message(m=e) }}</a>{% else %}{{ t_message(m=e) }}{% endif %}</li>
         {% endfor %}
     </ul>
 </div>
@@ -42,38 +39,42 @@
 {% endmacro error_summary %}
 
 {#- The former name of error_summary, kept for plugin templates. -#}
-{% macro errors(errors) %}{{ self::error_summary(errors=errors) }}{% endmacro errors %}
-
-{#- "(required)" or "(optional)" after a label. -#}
-{% macro need(required=false, optional=false) %}{% if required %} <span class="form-item__need">{{ t(s="(required)") }}</span>{% elif optional %} <span class="form-item__need">{{ t(s="(optional)") }}</span>{% endif %}{% endmacro need %}
-
-{#- The hint and error paragraphs under a label, and the ids the field's
-    aria-describedby names. -#}
-{% macro notes(id, hint="", error="") %}{% if hint %}
-    <p class="form-item__description" id="{{ id }}-hint">{{ hint }}</p>{% endif %}{% if error %}
-    <p class="form-item__error" id="{{ id }}-error"><span class="visually-hidden">{{ t(s="Error:") }}</span> {{ error | safe }}</p>{% endif %}{% endmacro notes %} {# SAFE: error is error_for output, already escaped #}
-
-{% macro describedby(id, hint="", error="", invalid=true) %}{% if hint or error %} aria-describedby="{% if hint %}{{ id }}-hint{% endif %}{% if hint and error %} {% endif %}{% if error %}{{ id }}-error{% endif %}"{% endif %}{% if error and invalid %} aria-invalid="true"{% endif %}{% endmacro describedby %}
+{% macro errors(errors) %}
+{% if errors is defined and errors %}
+<div class="error-summary" role="alert" tabindex="-1" aria-labelledby="error-summary-title" data-error-summary="{{ t(s='Error:') }}">
+    <h2 class="error-summary__title" id="error-summary-title">{{ t(s="There is a problem") }}</h2>
+    <ul class="error-summary__list">
+        {% for e in errors %}
+        <li>{% if e is object and e.field is defined and e.field %}<a href="#{{ e.field }}">{{ t_message(m=e) }}</a>{% else %}{{ t_message(m=e) }}{% endif %}</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+{% endmacro errors %}
 
 {#- A one line field: text, email, url, tel, number, date, password, search,
     file. `attrs` is extra attributes written in the calling template
     (min, max, step, data-…), never user input. -#}
 {% macro field(name, label, value="", type="text", id="", hint="", required=false, optional=false, errors=false, width="", autocomplete="", attrs="", disabled=false, readonly=false, wrapper="") %}
 {% set fid = id | default(value=name) %}{% if not fid %}{% set fid = name %}{% endif %}
-{% set error = self::error_for(id=fid, errors=errors) %}
+{% set_global error = "" %}{% if errors %}{% for e in errors %}{% if not error and e is object and e.field is defined and e.field == fid %}{% set_global error = t_message(m=e) %}{% endif %}{% endfor %}{% endif %}
 <div class="form-item form-item--{{ type }}{% if error %} form-item--error{% endif %}{% if wrapper %} {{ wrapper }}{% endif %}">
-    {% if label %}<label class="form-item__label" for="{{ fid }}">{{ label }}{{ self::need(required=required, optional=optional) }}</label>{% endif %}{{ self::notes(id=fid, hint=hint, error=error) }}
-    <input type="{{ type }}" id="{{ fid }}" name="{{ name }}" class="{% if type == 'file' %}form-file{% else %}form-text{% endif %}{% if width %} form-text--w{{ width }}{% endif %}"{% if type != "file" and type != "password" and value != "" %} value="{{ value }}"{% endif %}{{ self::describedby(id=fid, hint=hint, error=error) }}{% if autocomplete %} autocomplete="{{ autocomplete }}"{% endif %}{% if required %} required{% endif %}{% if disabled %} disabled{% endif %}{% if readonly %} readonly{% endif %}{% if attrs %} {{ attrs | safe }}{% endif %}> {# SAFE: attrs is written in the calling template, never user input #}
+    {% if label %}<label class="form-item__label" for="{{ fid }}">{{ label }}{% if required %} <span class="form-item__need">{{ t(s="(required)") }}</span>{% elif optional %} <span class="form-item__need">{{ t(s="(optional)") }}</span>{% endif %}</label>{% endif %}{% if hint %}
+    <p class="form-item__description" id="{{ fid }}-hint">{{ hint }}</p>{% endif %}{% if error %}
+    <p class="form-item__error" id="{{ fid }}-error"><span class="visually-hidden">{{ t(s="Error:") }}</span> {{ error | safe }}</p>{% endif %} {# SAFE: error is t_message output, already escaped #}
+    <input type="{{ type }}" id="{{ fid }}" name="{{ name }}" class="{% if type == 'file' %}form-file{% else %}form-text{% endif %}{% if width %} form-text--w{{ width }}{% endif %}"{% if type != "file" and type != "password" and value != "" %} value="{{ value }}"{% endif %}{% if hint or error %} aria-describedby="{% if hint %}{{ fid }}-hint{% endif %}{% if hint and error %} {% endif %}{% if error %}{{ fid }}-error{% endif %}"{% endif %}{% if error %} aria-invalid="true"{% endif %}{% if autocomplete %} autocomplete="{{ autocomplete }}"{% endif %}{% if required %} required{% endif %}{% if disabled %} disabled{% endif %}{% if readonly %} readonly{% endif %}{% if attrs %} {{ attrs | safe }}{% endif %}> {# SAFE: attrs is written in the calling template, never user input #}
 </div>
 {% endmacro field %}
 
 {#- A multi line field. -#}
 {% macro textarea(name, label, value="", id="", hint="", rows=5, required=false, optional=false, errors=false, attrs="", disabled=false, wrapper="") %}
 {% set fid = id | default(value=name) %}{% if not fid %}{% set fid = name %}{% endif %}
-{% set error = self::error_for(id=fid, errors=errors) %}
+{% set_global error = "" %}{% if errors %}{% for e in errors %}{% if not error and e is object and e.field is defined and e.field == fid %}{% set_global error = t_message(m=e) %}{% endif %}{% endfor %}{% endif %}
 <div class="form-item form-item--textarea{% if error %} form-item--error{% endif %}{% if wrapper %} {{ wrapper }}{% endif %}">
-    {% if label %}<label class="form-item__label" for="{{ fid }}">{{ label }}{{ self::need(required=required, optional=optional) }}</label>{% endif %}{{ self::notes(id=fid, hint=hint, error=error) }}
-    <textarea id="{{ fid }}" name="{{ name }}" class="form-textarea" rows="{{ rows }}"{{ self::describedby(id=fid, hint=hint, error=error) }}{% if required %} required{% endif %}{% if disabled %} disabled{% endif %}{% if attrs %} {{ attrs | safe }}{% endif %}>{{ value }}</textarea> {# SAFE: attrs is written in the calling template #}
+    {% if label %}<label class="form-item__label" for="{{ fid }}">{{ label }}{% if required %} <span class="form-item__need">{{ t(s="(required)") }}</span>{% elif optional %} <span class="form-item__need">{{ t(s="(optional)") }}</span>{% endif %}</label>{% endif %}{% if hint %}
+    <p class="form-item__description" id="{{ fid }}-hint">{{ hint }}</p>{% endif %}{% if error %}
+    <p class="form-item__error" id="{{ fid }}-error"><span class="visually-hidden">{{ t(s="Error:") }}</span> {{ error | safe }}</p>{% endif %} {# SAFE: error is t_message output, already escaped #}
+    <textarea id="{{ fid }}" name="{{ name }}" class="form-textarea" rows="{{ rows }}"{% if hint or error %} aria-describedby="{% if hint %}{{ fid }}-hint{% endif %}{% if hint and error %} {% endif %}{% if error %}{{ fid }}-error{% endif %}"{% endif %}{% if error %} aria-invalid="true"{% endif %}{% if required %} required{% endif %}{% if disabled %} disabled{% endif %}{% if attrs %} {{ attrs | safe }}{% endif %}>{{ value }}</textarea> {# SAFE: attrs is written in the calling template #}
 </div>
 {% endmacro textarea %}
 
@@ -83,10 +84,12 @@
     empty option with that text. -#}
 {% macro select(name, label, options, value="", id="", hint="", required=false, optional=false, errors=false, empty="", translate_options=false, multiple=false, values=false, attrs="", disabled=false, wrapper="") %}
 {% set fid = id | default(value=name) %}{% if not fid %}{% set fid = name %}{% endif %}
-{% set error = self::error_for(id=fid, errors=errors) %}
+{% set_global error = "" %}{% if errors %}{% for e in errors %}{% if not error and e is object and e.field is defined and e.field == fid %}{% set_global error = t_message(m=e) %}{% endif %}{% endfor %}{% endif %}
 <div class="form-item form-item--select{% if error %} form-item--error{% endif %}{% if wrapper %} {{ wrapper }}{% endif %}">
-    {% if label %}<label class="form-item__label" for="{{ fid }}">{{ label }}{{ self::need(required=required, optional=optional) }}</label>{% endif %}{{ self::notes(id=fid, hint=hint, error=error) }}
-    <select id="{{ fid }}" name="{{ name }}" class="form-select"{{ self::describedby(id=fid, hint=hint, error=error) }}{% if required %} required{% endif %}{% if multiple %} multiple{% endif %}{% if disabled %} disabled{% endif %}{% if attrs %} {{ attrs | safe }}{% endif %}> {# SAFE: attrs is written in the calling template #}
+    {% if label %}<label class="form-item__label" for="{{ fid }}">{{ label }}{% if required %} <span class="form-item__need">{{ t(s="(required)") }}</span>{% elif optional %} <span class="form-item__need">{{ t(s="(optional)") }}</span>{% endif %}</label>{% endif %}{% if hint %}
+    <p class="form-item__description" id="{{ fid }}-hint">{{ hint }}</p>{% endif %}{% if error %}
+    <p class="form-item__error" id="{{ fid }}-error"><span class="visually-hidden">{{ t(s="Error:") }}</span> {{ error | safe }}</p>{% endif %} {# SAFE: error is t_message output, already escaped #}
+    <select id="{{ fid }}" name="{{ name }}" class="form-select"{% if hint or error %} aria-describedby="{% if hint %}{{ fid }}-hint{% endif %}{% if hint and error %} {% endif %}{% if error %}{{ fid }}-error{% endif %}"{% endif %}{% if error %} aria-invalid="true"{% endif %}{% if required %} required{% endif %}{% if multiple %} multiple{% endif %}{% if disabled %} disabled{% endif %}{% if attrs %} {{ attrs | safe }}{% endif %}> {# SAFE: attrs is written in the calling template #}
         {% if empty %}<option value="">{{ empty }}</option>{% endif %}
         {% for o in options %}{% if o is object %}{% set v = o.value %}{% set l = o.label %}{% else %}{% set v = o.0 %}{% set l = o.1 %}{% endif %}
         <option value="{{ v }}"{% if multiple %}{% if values and v in values %} selected{% endif %}{% elif v ~ "" == value ~ "" %} selected{% endif %}>{% if translate_options %}{{ t(s=l) }}{% else %}{{ l }}{% endif %}</option>
@@ -98,12 +101,14 @@
 {#- One checkbox, its label beside it. -#}
 {% macro checkbox(name, label, checked=false, id="", value="1", hint="", errors=false, attrs="", disabled=false, wrapper="") %}
 {% set fid = id | default(value=name) %}{% if not fid %}{% set fid = name %}{% endif %}
-{% set error = self::error_for(id=fid, errors=errors) %}
+{% set_global error = "" %}{% if errors %}{% for e in errors %}{% if not error and e is object and e.field is defined and e.field == fid %}{% set_global error = t_message(m=e) %}{% endif %}{% endfor %}{% endif %}
 <div class="form-item form-item--checkbox{% if error %} form-item--error{% endif %}{% if wrapper %} {{ wrapper }}{% endif %}">
     <div class="form-checkbox-wrapper">
-        <input type="checkbox" id="{{ fid }}" name="{{ name }}" value="{{ value }}" class="form-checkbox"{{ self::describedby(id=fid, hint=hint, error=error) }}{% if checked %} checked{% endif %}{% if disabled %} disabled{% endif %}{% if attrs %} {{ attrs | safe }}{% endif %}> {# SAFE: attrs is written in the calling template #}
+        <input type="checkbox" id="{{ fid }}" name="{{ name }}" value="{{ value }}" class="form-checkbox"{% if hint or error %} aria-describedby="{% if hint %}{{ fid }}-hint{% endif %}{% if hint and error %} {% endif %}{% if error %}{{ fid }}-error{% endif %}"{% endif %}{% if error %} aria-invalid="true"{% endif %}{% if checked %} checked{% endif %}{% if disabled %} disabled{% endif %}{% if attrs %} {{ attrs | safe }}{% endif %}> {# SAFE: attrs is written in the calling template #}
         <label for="{{ fid }}">{{ label }}</label>
-    </div>{{ self::notes(id=fid, hint=hint, error=error) }}
+    </div>{% if hint %}
+    <p class="form-item__description" id="{{ fid }}-hint">{{ hint }}</p>{% endif %}{% if error %}
+    <p class="form-item__error" id="{{ fid }}-error"><span class="visually-hidden">{{ t(s="Error:") }}</span> {{ error | safe }}</p>{% endif %} {# SAFE: error is t_message output, already escaped #}
 </div>
 {% endmacro checkbox %}
 
@@ -114,9 +119,11 @@
     option's value is its own field name (posted as 1). -#}
 {% macro choices(name, legend, options, value="", values=false, type="radio", id="", hint="", required=false, optional=false, errors=false, translate_options=false, names="", disabled=false, wrapper="") %}
 {% set fid = id | default(value=name) %}{% if not fid %}{% set fid = name %}{% endif %}
-{% set error = self::error_for(id=fid, errors=errors) %}
-<fieldset class="fieldset fieldset--choices{% if error %} form-item--error{% endif %}{% if wrapper %} {{ wrapper }}{% endif %}"{{ self::describedby(id=fid, hint=hint, error=error, invalid=false) }}>
-    <legend class="fieldset__legend">{{ legend }}{{ self::need(required=required, optional=optional) }}</legend>{{ self::notes(id=fid, hint=hint, error=error) }}
+{% set_global error = "" %}{% if errors %}{% for e in errors %}{% if not error and e is object and e.field is defined and e.field == fid %}{% set_global error = t_message(m=e) %}{% endif %}{% endfor %}{% endif %}
+<fieldset class="fieldset fieldset--choices{% if error %} form-item--error{% endif %}{% if wrapper %} {{ wrapper }}{% endif %}"{% if hint or error %} aria-describedby="{% if hint %}{{ fid }}-hint{% endif %}{% if hint and error %} {% endif %}{% if error %}{{ fid }}-error{% endif %}"{% endif %}>
+    <legend class="fieldset__legend">{{ legend }}{% if required %} <span class="form-item__need">{{ t(s="(required)") }}</span>{% elif optional %} <span class="form-item__need">{{ t(s="(optional)") }}</span>{% endif %}</legend>{% if hint %}
+    <p class="form-item__description" id="{{ fid }}-hint">{{ hint }}</p>{% endif %}{% if error %}
+    <p class="form-item__error" id="{{ fid }}-error"><span class="visually-hidden">{{ t(s="Error:") }}</span> {{ error | safe }}</p>{% endif %} {# SAFE: error is t_message output, already escaped #}
     <div class="choices">
         {% for o in options %}{% if o is object %}{% set v = o.value %}{% set l = o.label %}{% else %}{% set v = o.0 %}{% set l = o.1 %}{% endif %}
         {% if loop.first %}{% set oid = fid %}{% else %}{% set oid = fid ~ "-" ~ loop.index %}{% endif %}

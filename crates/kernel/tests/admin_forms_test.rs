@@ -489,3 +489,23 @@ fn the_permission_grid_names_each_box_by_role_and_permission() {
         assert!(label.contains(": "), "role: permission, {label}");
     });
 }
+
+/// A failed field draws its message whatever the template imports first: a
+/// macro called inside `set` was not found when the form macros were not the
+/// first import, and the page answered 500.
+#[test]
+fn a_failed_field_renders_after_another_macro_import() {
+    let mut engine = engine();
+    engine
+        .tera_mut()
+        .add_raw_template(
+            "b199-order.html",
+            r#"{% extends "page--admin.html" %}{% import "admin/macros/tabs.html" as tabs %}{% import "admin/macros/form.html" as f %}{% block content %}{{ f::field(name="x", label="X", errors=errs) }}{% endblock content %}"#,
+        )
+        .unwrap();
+    let mut context = tera::Context::new();
+    context.insert("errs", &serde_json::json!([{"field": "x", "s": "Enter X."}]));
+    let html = engine.tera().render("b199-order.html", &context).unwrap();
+    assert!(html.contains(r#"id="x-error""#), "{html}");
+    assert!(html.contains("Enter X."), "{html}");
+}
