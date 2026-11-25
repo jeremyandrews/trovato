@@ -3,7 +3,7 @@
 // and the right-to-left pseudo locale.
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { routes, addressFor, EXPECTED_UNSEEDED, SEEDED_PLUGINS } from '../routes.mjs';
+import { routes, addressFor, whyNoAddress, EXPECTED_UNSEEDED, SEEDED_PLUGINS } from '../routes.mjs';
 import { useProjectLanguage, expectNoPageScroll } from './helpers.mjs';
 
 const TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22a', 'wcag22aa'];
@@ -15,7 +15,7 @@ for (const route of routes) {
     const address = await addressFor(page, route);
     const unseeded = EXPECTED_UNSEEDED.get(route.path);
     test.skip(!address && Boolean(unseeded), `${route.path}: ${unseeded}`);
-    expect(address, `an address for ${route.path}: its listing links to none`).toBeTruthy();
+    expect(address, `an address for ${route.path}: ${whyNoAddress(route.path)}`).toBeTruthy();
     const response = await page.goto(address);
     // A plugin's pages do not exist while it is off. Only a plugin the seeded
     // site does not install may be off; every other page must open.

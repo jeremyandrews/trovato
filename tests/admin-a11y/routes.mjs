@@ -73,11 +73,24 @@ const SOURCES = {
 const toRegex = (pattern) => new RegExp('^' + pattern.replace(/\{[^}]+\}/g, '[^/?#]+') + '$');
 const resolved = new Map();
 
+/** Why the last lookup of a pattern found nothing, for the failure message. */
+const misses = new Map();
+
+/** The links on `address`, retried: a listing that answers anything but 200
+ * three times running is reported, not taken as listing nothing. */
 async function linksOn(page, address) {
-  const response = await page.goto(address);
-  if (!response || response.status() !== 200) return [];
-  const hrefs = await page.$$eval('a[href]', (as) => as.map((a) => a.getAttribute('href')));
-  return hrefs.map((h) => h.split(/[?#]/)[0]);
+  let status = 0;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const response = await page.goto(address).catch(() => null);
+    status = response ? response.status() : 0;
+    if (status === 200) {
+      const hrefs = await page.$$eval('a[href]', (as) => as.map((a) => a.getAttribute('href')));
+      return hrefs.map((h) => h.split(/[?#]/)[0]);
+    }
+    await page.waitForTimeout(500);
+  }
+  misses.set(address, `${address} answered ${status || 'nothing'}`);
+  return [];
 }
 
 /** A concrete address for `pattern`, or null. */
@@ -123,8 +136,16 @@ async function concrete(page, pattern) {
       }
     }
   }
-  resolved.set(pattern, found);
+  // Only a found address is remembered; a miss is looked up again next time.
+  if (found) resolved.set(pattern, found);
+  else if (!misses.has(pattern)) misses.set(pattern, 'its listing links to none');
   return found;
+}
+
+/** Why no address was found for `pattern`. */
+export function whyNoAddress(pattern) {
+  const listingProblem = [...misses.entries()].find(([k]) => !k.includes('{') && pattern.startsWith(k));
+  return listingProblem ? listingProblem[1] : misses.get(pattern) || 'its listing links to none';
 }
 
 /** The address to open for `route`, or null when nothing seeded matches. */
