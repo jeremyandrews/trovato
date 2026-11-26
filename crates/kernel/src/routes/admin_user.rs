@@ -36,6 +36,10 @@ struct UserFormData {
     password: Option<String>,
     is_admin: Option<String>,
     status: Option<String>,
+    /// "Notify user of new account" on the add form: mail a welcome with a
+    /// one-time sign in link.
+    #[serde(default)]
+    notify: Option<String>,
     /// Role membership, as `role_{role_id}` keys.
     ///
     /// Flattened into a map rather than collected into a `Vec<Uuid>` because
@@ -411,6 +415,7 @@ async fn add_user_submit(
                 "mail": form.mail,
                 "is_admin": form.is_admin.is_some(),
                 "status": form.status.is_some(),
+                "notify": form.notify.is_some(),
                 "roles": submitted_role_ids(&all_roles, &form.roles),
             }),
         );
@@ -445,6 +450,11 @@ async fn add_user_submit(
         Ok(user) => {
             apply_role_membership(&state, &current_user, user.id, &form.roles).await;
             tracing::info!(name = %form.name, "user created");
+            if form.notify.is_some() {
+                // After the answer, as every kernel mail is: the request does
+                // not wait on the mail server.
+                tokio::spawn(send_welcome_mail(state.clone(), user.clone()));
+            }
             if let Some(message) = access_rule_warning(&state, &form.name, &form.mail).await {
                 let _ = session.insert(ACCESS_RULE_WARNING_KEY, message).await;
             }
@@ -453,6 +463,73 @@ async fn add_user_submit(
         Err(e) => {
             tracing::error!(error = %e, "failed to create user");
             render_server_error("Failed to create user.")
+        }
+    }
+}
+
+/// Mail `user` the welcome an administrator's "Notify user of new account"
+/// asks for: who made the account, and a one-time link to sign in and set a
+/// password (a password reset token, which is what that link is).
+///
+/// Queued, the link made when it is sent. Without a mail transport the link
+/// is only logged at debug level, as the password reset's is.
+async fn send_welcome_mail(state: AppState, user: User) {
+    let Some(email_service) = state.email() else {
+        // No mail transport: make the link and log it, as the password reset
+        // does, so a site without SMTP can still hand it over.
+        match crate::models::PasswordResetToken::create(state.db(), user.id).await {
+            Ok((_, token)) => tracing::debug!(
+                user_id = %user.id,
+                reset_url = format!("/user/password-reset/{token}"),
+                "welcome mail not sent: no mail transport is configured"
+            ),
+            Err(e) => tracing::error!(
+                error = %e,
+                user_id = %user.id,
+                "welcome mail: failed to create the sign in link"
+            ),
+        }
+        return;
+    };
+    let site_name = crate::models::SiteConfig::site_name(state.db())
+        .await
+        .unwrap_or_default();
+    let subject = format!("An administrator created an account for you at {site_name}");
+    let action_url = format!(
+        "{}/user/password-reset/{}",
+        email_service.site_url(),
+        crate::services::email::SECRET_MARKER
+    );
+    let mut context = tera::Context::new();
+    context.insert("site_name", &site_name);
+    context.insert("username", &user.name);
+    context.insert("action_url", &action_url);
+    context.insert("subject", &subject);
+    let (html, text) = match crate::services::email_templates::render(
+        state.theme().tera(),
+        "admin_created_account",
+        &context,
+    ) {
+        Ok(parts) => parts,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to render the welcome email");
+            return;
+        }
+    };
+    // The link is made when the mail is sent, as the password reset's is.
+    let message = crate::services::email::NewMail::account(
+        "admin_created_account",
+        &user.mail,
+        &subject,
+        &text,
+    )
+    .html(html)
+    .secret(crate::services::email::MailSecret::PasswordReset { user_id: user.id })
+    .dedupe(format!("admin-created-account:{}", user.id));
+    match email_service.queue_now(message).await {
+        Ok(_) => tracing::info!(user_id = %user.id, "welcome mail queued"),
+        Err(e) => {
+            tracing::error!(error = %e, user_id = %user.id, "failed to queue the welcome mail");
         }
     }
 }
@@ -854,6 +931,275 @@ async fn delete_user(
             render_server_error("Failed to delete user.")
         }
     }
+}
+
+// =============================================================================
+// Account cancellation
+// =============================================================================
+
+/// How an account is cancelled: Drupal's four cancellation methods, each a
+/// function a site used (B156). Deleting outright was the only one there was.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CancelMethod {
+    /// Block the account and keep its content as it is.
+    Block,
+    /// Block the account and unpublish its items and comments.
+    BlockUnpublish,
+    /// Delete the account and give its content to the anonymous author.
+    Reassign,
+    /// Delete the account and its items and comments.
+    Delete,
+}
+
+impl CancelMethod {
+    /// Every method, in the order the form offers them.
+    pub const ALL: [Self; 4] = [
+        Self::Block,
+        Self::BlockUnpublish,
+        Self::Reassign,
+        Self::Delete,
+    ];
+
+    /// The form value.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Block => "block",
+            Self::BlockUnpublish => "block_unpublish",
+            Self::Reassign => "reassign",
+            Self::Delete => "delete",
+        }
+    }
+
+    /// The method a form value names.
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|m| m.as_str() == value)
+    }
+
+    /// What the form says the method does.
+    fn label(self) -> &'static str {
+        match self {
+            Self::Block => "Disable the account and keep its content.",
+            Self::BlockUnpublish => "Disable the account and unpublish its content.",
+            Self::Reassign => {
+                "Delete the account and make its content belong to the Anonymous user."
+            }
+            Self::Delete => "Delete the account and its content.",
+        }
+    }
+}
+
+/// The posted cancel form.
+#[derive(Debug, Deserialize)]
+struct CancelForm {
+    #[serde(rename = "_token")]
+    token: String,
+    method: String,
+}
+
+/// Who may cancel `target`, answered as the refusal when they may not: the
+/// same rule the edit and delete routes apply.
+async fn cancel_refusal(
+    state: &AppState,
+    session: &Session,
+    target_id: uuid::Uuid,
+) -> Result<(User, User), Response> {
+    let actor = require_permission(state, session, "administer users").await?;
+    if target_id == ANONYMOUS_USER_ID {
+        return Err(render_not_found());
+    }
+    let Some(target) = state.users().find_by_id(target_id).await.ok().flatten() else {
+        return Err(render_not_found());
+    };
+    if !may_act_on(state, &actor, &target).await {
+        return Err(render_forbidden(
+            "You may not cancel an account holding permissions you do not.",
+        ));
+    }
+    Ok((actor, target))
+}
+
+/// GET /user/{id}/cancel: the confirmation, with the cancellation methods.
+///
+/// One's own account is cancelled through `/user/delete`, which asks for the
+/// password again; this page sends its own owner there.
+async fn cancel_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path(user_id): Path<uuid::Uuid>,
+) -> Response {
+    if let Some(me) = super::helpers::session_user(&state, &session).await
+        && me.id == user_id
+    {
+        return Redirect::to("/user/delete").into_response();
+    }
+    let (actor, target) = match cancel_refusal(&state, &session, user_id).await {
+        Ok(pair) => pair,
+        Err(refusal) => return refusal,
+    };
+    render_cancel_form(&state, &session, &actor, &target, None).await
+}
+
+async fn render_cancel_form(
+    state: &AppState,
+    session: &Session,
+    actor: &User,
+    target: &User,
+    error: Option<&str>,
+) -> Response {
+    let methods: Vec<serde_json::Value> = CancelMethod::ALL
+        .iter()
+        .map(|m| serde_json::json!({ "value": m.as_str(), "label": m.label() }))
+        .collect();
+    let mut context = tera::Context::new();
+    context.insert(
+        "account",
+        &serde_json::json!({ "id": target.id, "name": target.name }),
+    );
+    context.insert("methods", &methods);
+    context.insert("csrf_token", &generate_csrf_token(session).await);
+    context.insert("error", &error);
+    // Placed under People, where the user edit form that links here lives.
+    context.insert("path", "/admin/people");
+    render_admin_template(
+        state,
+        &super::helpers::user_context_for(state, actor).await,
+        "admin/user-cancel.html",
+        context,
+    )
+    .await
+}
+
+/// POST /user/{id}/cancel: cancel the account by the chosen method.
+async fn cancel_submit(
+    State(state): State<AppState>,
+    session: Session,
+    Path(user_id): Path<uuid::Uuid>,
+    Form(form): Form<CancelForm>,
+) -> Response {
+    let (actor, target) = match cancel_refusal(&state, &session, user_id).await {
+        Ok(pair) => pair,
+        Err(refusal) => return refusal,
+    };
+    if let Err(resp) = require_csrf(&session, &form.token).await {
+        return resp;
+    }
+    if actor.id == target.id {
+        return render_error("Cancel your own account from your account page.");
+    }
+    let Some(method) = CancelMethod::parse(form.method.trim()) else {
+        return render_cancel_form(
+            &state,
+            &session,
+            &actor,
+            &target,
+            Some("Choose how to cancel the account."),
+        )
+        .await;
+    };
+    if demotes_active_superuser(target.is_admin, target.status, false, 0)
+        && !may_lose_a_superuser(&state).await
+    {
+        return render_forbidden("Cannot cancel the last active superuser.");
+    }
+
+    let acting = admin_user_context(&state, &actor).await;
+    match cancel_account(&state, &target, method, &acting).await {
+        Ok(()) => {
+            let message = match method {
+                CancelMethod::Block | CancelMethod::BlockUnpublish => {
+                    format!("{} has been disabled.", target.name)
+                }
+                CancelMethod::Reassign | CancelMethod::Delete => {
+                    format!("{} has been deleted.", target.name)
+                }
+            };
+            let _ = session.insert(ACCESS_RULE_WARNING_KEY, message).await;
+            Redirect::to("/admin/people").into_response()
+        }
+        Err(e) => {
+            tracing::error!(error = %e, user_id = %target.id, method = method.as_str(), "account cancellation failed");
+            render_server_error("The account could not be cancelled.")
+        }
+    }
+}
+
+/// Cancel `target` by `method`, through the user, item and comment services
+/// so every write keeps its taps, audit rows and side effects. Every session
+/// of the account ends whichever method is used.
+pub async fn cancel_account(
+    state: &AppState,
+    target: &User,
+    method: CancelMethod,
+    acting: &crate::tap::UserContext,
+) -> anyhow::Result<()> {
+    match method {
+        CancelMethod::Block | CancelMethod::BlockUnpublish => {
+            state
+                .users()
+                .update(
+                    target.id,
+                    UpdateUser {
+                        status: Some(0),
+                        ..Default::default()
+                    },
+                    acting,
+                )
+                .await?;
+            if method == CancelMethod::BlockUnpublish {
+                for item in crate::models::Item::list_by_author(state.db(), target.id).await? {
+                    if item.status != 0 {
+                        let unpublish = crate::models::UpdateItem {
+                            author_id: None,
+                            created: None,
+                            stage_id: None,
+                            title: None,
+                            status: Some(0),
+                            fields: None,
+                            promote: None,
+                            sticky: None,
+                            log: Some(format!("Account {} cancelled", target.name)),
+                        };
+                        state.items().update(item.id, unpublish, acting).await?;
+                    }
+                }
+                for comment in crate::models::Comment::list_by_author(state.db(), target.id).await?
+                {
+                    if comment.status != 0 {
+                        let unpublish = crate::models::UpdateComment {
+                            body: None,
+                            body_format: None,
+                            status: Some(0),
+                            subject: None,
+                        };
+                        state
+                            .comments()
+                            .update(comment.id, unpublish, acting)
+                            .await?;
+                    }
+                }
+            }
+        }
+        CancelMethod::Reassign | CancelMethod::Delete => {
+            if method == CancelMethod::Delete {
+                for comment in crate::models::Comment::list_by_author(state.db(), target.id).await?
+                {
+                    state.comments().delete(comment.id, acting).await?;
+                }
+                for item in crate::models::Item::list_by_author(state.db(), target.id).await? {
+                    state.items().delete(item.id, acting).await?;
+                }
+            }
+            state.users().delete(target.id, acting).await?;
+        }
+    }
+    if let Err(e) = state
+        .session_registry()
+        .revoke_all_except(target.id, None)
+        .await
+    {
+        tracing::error!(error = %e, user_id = %target.id, "failed to end a cancelled account's sessions");
+    }
+    Ok(())
 }
 
 // =============================================================================
@@ -1573,6 +1919,7 @@ pub fn router() -> Router<AppState> {
             get(edit_user_form).post(edit_user_submit),
         )
         .route("/admin/people/{id}/delete", post(delete_user))
+        .route("/user/{id}/cancel", get(cancel_form).post(cancel_submit))
         .route("/admin/people/roles", get(list_roles))
         .route(
             "/admin/people/roles/add",

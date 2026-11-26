@@ -22,7 +22,7 @@
     <input type="hidden" name="_token" value="{{ login.csrf_token }}">
     {% if login.destination %}<input type="hidden" name="destination" value="{{ login.destination }}">{% endif %}
     <div class="login-form__field">
-      <label for="error-login-username" class="login-form__label">Username</label>
+      <label for="error-login-username" class="login-form__label">Username or e-mail address</label>
       <input type="text" id="error-login-username" name="username" class="login-form__input" required autocomplete="username">
     </div>
     <div class="login-form__field">

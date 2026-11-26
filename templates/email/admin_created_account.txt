@@ -1,0 +1,10 @@
+{{ username }},
+
+An administrator has created an account for you at {{ site_name }}.
+
+Your username is: {{ username }}
+
+To sign in and choose your password, visit the following link:
+{{ action_url }}
+
+This link can be used once and expires in 1 hour. After that, use "Forgot password?" on the login page.

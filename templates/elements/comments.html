@@ -23,7 +23,7 @@
         {% for comment in comments %}
         <article class="comment comment--depth-{{ comment.depth }}" id="comment-{{ comment.id }}" style="margin-left: {{ comment.depth * 2 }}rem;">
             <header class="comment__header">
-                <span class="comment__author">{{ comment.author_name | default(value="Anonymous") }}</span>
+                <span class="comment__author">{% if comment.author_url %}<a href="{{ comment.author_url }}">{{ comment.author_name }}</a>{% else %}{{ comment.author_name | default(value="Anonymous") }}{% endif %}</span>
                 <time class="comment__date" datetime="{{ comment.created }}">{{ comment.created | date(format="%B %d, %Y at %H:%M") }}</time>
             </header>
             {% if comment.subject %}

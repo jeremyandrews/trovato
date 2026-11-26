@@ -38,14 +38,20 @@ pub const LEGACY_REGISTRATION_KEY: &str = "allow_user_registration";
 /// Two modes rather than three: `admin_only` and `closed` differed in wording
 /// only. Both close the public register route, and neither can stop an
 /// administrator creating an account, which is the one account-creation path that
-/// has to keep working. A stored `closed` still reads as closed to the public. A
-/// genuine third mode would be registration *with approval*, which needs an
-/// approval queue rather than a third label.
+/// has to keep working. A stored `closed` still reads as closed to the public.
+///
+/// The third mode is registration *with approval* (B156, Drupal's "Visitors,
+/// but administrator approval is required"): the public route is open, and an
+/// account it creates stays blocked, even once its address is confirmed, until
+/// an administrator activates it on its edit form. The blocked accounts on
+/// `/admin/people` are the queue.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RegistrationMode {
     /// Anyone may register at `/user/register`.
     Open,
+    /// Anyone may apply at `/user/register`; an administrator activates.
+    Approval,
     /// Only an administrator creates accounts; the public route is closed.
     AdminOnly,
 }
@@ -55,13 +61,30 @@ impl RegistrationMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Open => "open",
+            Self::Approval => "approval",
             Self::AdminOnly => "admin_only",
         }
     }
 
     /// Whether the public registration route is available.
     pub fn is_open(self) -> bool {
-        matches!(self, Self::Open)
+        matches!(self, Self::Open | Self::Approval)
+    }
+
+    /// Whether an account the public route creates waits for an administrator.
+    pub fn needs_approval(self) -> bool {
+        matches!(self, Self::Approval)
+    }
+
+    /// The mode a stored or submitted value names, if it names one.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "open" => Some(Self::Open),
+            "approval" => Some(Self::Approval),
+            // `closed` is accepted and means closed; see the type docs.
+            "admin_only" | "closed" => Some(Self::AdminOnly),
+            _ => None,
+        }
     }
 
     /// Resolve the mode from the two settings' raw values.
@@ -77,13 +100,11 @@ impl RegistrationMode {
         legacy: Option<&serde_json::Value>,
     ) -> Self {
         if let Some(value) = configured.and_then(|v| v.as_str()) {
-            return match value {
-                "open" => Self::Open,
-                // `closed` is accepted and means closed; see the type docs.
-                "admin_only" | "closed" => Self::AdminOnly,
-                other => {
+            return match Self::parse(value) {
+                Some(mode) => mode,
+                None => {
                     tracing::warn!(
-                        value = %other,
+                        %value,
                         "unrecognised {USER_REGISTRATION_KEY}; treating registration as closed"
                     );
                     Self::AdminOnly

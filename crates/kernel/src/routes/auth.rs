@@ -374,9 +374,7 @@ async fn audit_password_login(
             // The account the attempt named, when there is one. The username
             // itself is not recorded: an unknown one is often a password typed
             // into the wrong field.
-            let user_id = state
-                .users()
-                .find_by_name(&request.username)
+            let user_id = find_login_account(state, &request.username)
                 .await
                 .ok()
                 .flatten()
@@ -391,6 +389,27 @@ async fn audit_password_login(
         event = event.user_agent(user_agent);
     }
     state.security_audit().emit(event).await;
+}
+
+/// The account a sign in names: the one with this name, else, when the
+/// identifier looks like an e-mail address, the one with this address. An
+/// account found by address is still held to the username access rules, as
+/// if its name had been typed; one they deny is not found.
+async fn find_login_account(state: &AppState, identifier: &str) -> anyhow::Result<Option<User>> {
+    if let Some(user) = state.users().find_by_name(identifier).await? {
+        return Ok(Some(user));
+    }
+    if !identifier.contains('@') {
+        return Ok(None);
+    }
+    let Some(user) = state.users().find_by_mail(identifier.trim()).await? else {
+        return Ok(None);
+    };
+    use crate::services::access_rule::{self, RuleType};
+    if access_rule::is_blocked(state.db(), RuleType::Username, &user.name).await {
+        return Ok(None);
+    }
+    Ok(Some(user))
 }
 
 /// [`do_login`] without the log entry.
@@ -444,8 +463,11 @@ async fn attempt_login(
         ));
     }
 
-    // Find user by username
-    let user = match state.users().find_by_name(&request.username).await {
+    // Find the account by its name, or by its e-mail address when what was
+    // typed is one (B156: LoginToboggan's "log in with your e-mail address",
+    // a function Drupal sites had). Both lookups fail the same way, through
+    // the branch below, so the answer still never says which part was wrong.
+    let user = match find_login_account(state, &request.username).await {
         Ok(Some(user)) => user,
         Ok(None) => {
             // The same Argon2 work a real verification costs, so an unknown
@@ -648,17 +670,16 @@ struct RegisterJsonRequest {
     confirm_password: Option<String>,
 }
 
-/// Check whether public registration is open.
+/// The public registration mode, read once per request: whether the routes are
+/// open, and whether a new account waits for approval.
 ///
 /// Reads [`RegistrationMode`](crate::models::RegistrationMode), which is the
 /// setting the admin form controls. This
 /// used to read the unrelated boolean `allow_user_registration`, so the form's
 /// three-mode selector changed nothing and config import of the boolean was the
 /// only way to open registration.
-async fn is_registration_enabled(state: &AppState) -> bool {
-    crate::models::RegistrationMode::load(state.db())
-        .await
-        .is_open()
+async fn registration_mode(state: &AppState) -> crate::models::RegistrationMode {
+    crate::models::RegistrationMode::load(state.db()).await
 }
 
 /// The refusal of the public registration routes while only administrators
@@ -684,7 +705,8 @@ async fn register_form(State(state): State<AppState>, session: Session) -> Respo
         return Redirect::to("/").into_response();
     }
 
-    if !is_registration_enabled(&state).await {
+    let mode = registration_mode(&state).await;
+    if !mode.is_open() {
         return registration_closed().into_response();
     }
 
@@ -735,7 +757,8 @@ async fn register_form_submit(
     axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     Form(form): Form<RegisterFormRequest>,
 ) -> Response {
-    if !is_registration_enabled(&state).await {
+    let mode = registration_mode(&state).await;
+    if !mode.is_open() {
         return registration_closed().into_response();
     }
 
@@ -786,18 +809,19 @@ async fn register_form_submit(
     }
 
     // Create inactive user
-    match do_register(&state, &username, &mail, &form.password).await {
+    match do_register(
+        &state,
+        &username,
+        &mail,
+        &form.password,
+        mode.needs_approval(),
+    )
+    .await
+    {
         Ok(result) => {
             let csrf_token = generate_csrf_token(&session).await;
-            let message = if result.email_sent {
-                "Registration successful! Check your email for a verification link \
-                 to activate your account."
-            } else {
-                "Registration successful! However, we were unable to send the \
-                 verification email. Please contact the site administrator to \
-                 activate your account."
-            };
-            render_register_form(&state, &session, &csrf_token, None, Some(message), None).await
+            let message = registration_message(&result);
+            render_register_form(&state, &session, &csrf_token, None, Some(&message), None).await
         }
         Err(e) => {
             tracing::error!(error = %e, "registration failed");
@@ -865,31 +889,66 @@ async fn validate_registration_input(
         errors.push(msg.to_string());
     }
 
-    // Check username and email uniqueness — use generic message to prevent enumeration
-    let mut uniqueness_conflict = false;
-
+    // Uniqueness. A taken name is said to be taken, by name: names are public
+    // (every post shows its author's), so saying so tells nobody anything, and
+    // a visitor who cannot tell which field to change cannot register (B156,
+    // Drupal's "The name … is already taken."). A taken e-mail address is
+    // still told apart from nothing in particular: only when the name is free
+    // does the form say the name or address is in use, exactly as it did, so
+    // no address is confirmed that was not before.
     if !username.is_empty()
         && let Ok(Some(_)) = state.users().find_by_name(username).await
     {
-        uniqueness_conflict = true;
+        errors.push(name_taken_message(username));
+        return;
     }
 
     if !mail.is_empty()
         && is_valid_email(mail)
         && let Ok(Some(_)) = state.users().find_by_mail(mail).await
     {
-        uniqueness_conflict = true;
-    }
-
-    if uniqueness_conflict {
         errors.push("Username or email is already in use.".to_string());
     }
+}
+
+/// What the registration form says when the name asked for belongs to an
+/// account already.
+fn name_taken_message(name: &str) -> String {
+    format!("The name {name} is already taken.")
 }
 
 /// Result of a successful registration.
 struct RegistrationResult {
     /// Whether a verification email was queued (mail is configured).
     email_sent: bool,
+    /// Whether the account waits for an administrator (approval mode).
+    pending_approval: bool,
+}
+
+/// The key in a user's `data` that marks an account registered under
+/// [`RegistrationMode::Approval`](crate::models::RegistrationMode): confirming
+/// its address does not activate it; an administrator does.
+pub const PENDING_APPROVAL_KEY: &str = "pending_approval";
+
+/// What the visitor is told once their registration is saved: what happened,
+/// and what happens next.
+fn registration_message(result: &RegistrationResult) -> String {
+    match (result.pending_approval, result.email_sent) {
+        (true, true) => "Thank you for applying for an account. Your account is currently \
+                         pending approval by the site administrator. In the meantime, check \
+                         your email for a link to confirm your address."
+            .to_string(),
+        (true, false) => "Thank you for applying for an account. Your account is currently \
+                          pending approval by the site administrator."
+            .to_string(),
+        (false, true) => "Registration successful! Check your email for a verification link \
+                          to activate your account."
+            .to_string(),
+        (false, false) => "Registration successful! However, we were unable to send the \
+                           verification email. Please contact the site administrator to \
+                           activate your account."
+            .to_string(),
+    }
 }
 
 /// Core registration logic shared by form and JSON handlers.
@@ -905,6 +964,7 @@ async fn do_register(
     username: &str,
     mail: &str,
     password: &str,
+    needs_approval: bool,
 ) -> anyhow::Result<RegistrationResult> {
     let input = CreateUser {
         name: username.trim().to_string(),
@@ -926,8 +986,13 @@ async fn do_register(
             user_id = %user.id,
             "SMTP not configured; verification email not sent"
         );
+        let pending_approval =
+            mark_if_pending_approval(state, user.id, needs_approval, &user_ctx).await?;
         info!(user_id = %user.id, "user registered (pending verification)");
-        return Ok(RegistrationResult { email_sent: false });
+        return Ok(RegistrationResult {
+            email_sent: false,
+            pending_approval,
+        });
     };
 
     let site_name = SiteConfig::site_name(state.db()).await.unwrap_or_default();
@@ -1008,8 +1073,37 @@ async fn do_register(
         })
         .await?;
 
+    let pending_approval =
+        mark_if_pending_approval(state, user.id, needs_approval, &user_ctx).await?;
     info!(user_id = %user.id, "user registered (pending verification); verification email queued");
-    Ok(RegistrationResult { email_sent: true })
+    Ok(RegistrationResult {
+        email_sent: true,
+        pending_approval,
+    })
+}
+
+/// Under approval, mark a new account so confirming its address leaves it
+/// blocked for an administrator to activate. Returns whether it was marked.
+async fn mark_if_pending_approval(
+    state: &AppState,
+    user_id: uuid::Uuid,
+    pending: bool,
+    user_ctx: &crate::tap::UserContext,
+) -> anyhow::Result<bool> {
+    if pending {
+        state
+            .users()
+            .update(
+                user_id,
+                crate::models::UpdateUser {
+                    data: Some(serde_json::json!({ PENDING_APPROVAL_KEY: true })),
+                    ..Default::default()
+                },
+                user_ctx,
+            )
+            .await?;
+    }
+    Ok(pending)
 }
 
 /// JSON registration handler.
@@ -1034,7 +1128,8 @@ async fn register_json(
     // middleware (`categorize_path` puts this path in it). It used to be counted
     // here as well, which spent each attempt twice.
 
-    if !is_registration_enabled(&state).await {
+    let mode = registration_mode(&state).await;
+    if !mode.is_open() {
         return Err(registration_closed());
     }
 
@@ -1061,17 +1156,28 @@ async fn register_json(
         return Err(AppError::bad_request(errors.join(" ")));
     }
 
-    match do_register(&state, &request.username, &request.mail, &request.password).await {
+    match do_register(
+        &state,
+        &request.username,
+        &request.mail,
+        &request.password,
+        mode.needs_approval(),
+    )
+    .await
+    {
         Ok(result) => {
-            let message = if result.email_sent {
-                "Registration successful. Check your email for a verification link."
+            let message = if result.pending_approval {
+                registration_message(&result)
+            } else if result.email_sent {
+                "Registration successful. Check your email for a verification link.".to_string()
             } else {
                 "Registration successful. However, the verification email could not be sent. \
                  Please contact the site administrator."
+                    .to_string()
             };
             Ok(Json(JsonSuccess {
                 success: true,
-                message: message.to_string(),
+                message,
             }))
         }
         Err(e) => {
@@ -1090,6 +1196,7 @@ async fn register_json(
 /// - Validates the token, activates the user, redirects to login
 async fn verify_email(
     State(state): State<AppState>,
+    session: Session,
     axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     Path(token): Path<String>,
 ) -> Response {
@@ -1131,6 +1238,27 @@ async fn verify_email(
         EmailVerificationToken::invalidate_user_tokens(state.db(), verification.user_id).await
     {
         tracing::warn!(error = %e, "failed to invalidate remaining verification tokens");
+    }
+
+    // An account registered under approval stays blocked: confirming the
+    // address is the visitor's half, activating it is an administrator's.
+    let pending_approval = state
+        .users()
+        .find_by_id(verification.user_id)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|u| u.data.get(PENDING_APPROVAL_KEY) == Some(&serde_json::json!(true)));
+    if pending_approval {
+        info!(user_id = %verification.user_id, "email verified, account awaits approval");
+        let _ = session
+            .insert(
+                SESSION_LOGIN_NOTICE,
+                "Your e-mail address is confirmed. Your account is pending approval by the \
+                 site administrator; you can sign in once it has been activated.",
+            )
+            .await;
+        return Redirect::to("/user/login").into_response();
     }
 
     // Activate the user (status=1)
@@ -1966,6 +2094,7 @@ async fn password_change(
 /// Create the auth router.
 pub fn router() -> Router<AppState> {
     Router::new()
+        .merge(super::user_profile::router())
         .route("/user/login", get(login_form).post(login_form_submit))
         .route("/user/login/json", post(login))
         .route("/user/logout", get(logout_redirect).post(logout))

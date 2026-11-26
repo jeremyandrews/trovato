@@ -22,17 +22,19 @@
             {{ form::field(name="items_per_page", type="number", label=t(s="Items per page"), value=items_per_page, errors=errs, width="4", attrs='min="1" max="100"') }}
         {{ form::fieldset_end() }}
 
-        {# Two modes, not three: "admin only" and "closed" differed in
-           wording only. Both close the public register route, and neither
-           can stop an administrator creating an account. A site that
-           previously stored "closed" shows as admin only, and its register
-           route behaves exactly as before. #}
+        {# Three modes: open, open with administrator approval (Drupal's
+           "Visitors, but administrator approval is required"), and admin only.
+           "Admin only" and the old "closed" differed in wording only; a site
+           that stored "closed" shows as admin only, and its register route
+           behaves exactly as before. #}
         {% set reg_open_label = t(s="Open — anyone can register") %}
+        {% set reg_approval_label = t(s="Visitors, but administrator approval is required — a new account stays blocked until an administrator activates it") %}
         {% set reg_admin_label = t(s="Admin only — administrators create accounts, and {path} is closed", path="/user/register") %}
         {% set reg_open = ["open", reg_open_label] %}
+        {% set reg_approval = ["approval", reg_approval_label] %}
         {% set reg_admin = ["admin_only", reg_admin_label] %}
-        {% set reg_options = [reg_open, reg_admin] %}
-        {% if registration_mode == "open" %}{% set reg_value = "open" %}{% else %}{% set reg_value = "admin_only" %}{% endif %}
+        {% set reg_options = [reg_open, reg_approval, reg_admin] %}
+        {% if registration_mode == "open" or registration_mode == "approval" %}{% set reg_value = registration_mode %}{% else %}{% set reg_value = "admin_only" %}{% endif %}
         {{ form::choices(name="registration_mode", id="reg_open", legend=t(s="User registration"), options=reg_options, value=reg_value, errors=errs) }}
 
         {{ form::fieldset_start(legend=t(s="Email delivery")) }}

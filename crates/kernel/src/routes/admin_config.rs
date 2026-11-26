@@ -251,7 +251,7 @@ async fn site_config_submit(
     }
 
     let registration_mode = form.registration_mode.trim();
-    if !["open", "admin_only", "closed"].contains(&registration_mode) {
+    if crate::models::RegistrationMode::parse(registration_mode).is_none() {
         errors.push(FieldError::on("reg_open", "Invalid registration mode."));
     }
 
@@ -332,13 +332,9 @@ async fn site_config_submit(
 
     // Saving also clears the boolean this setting supersedes, so a site cannot end
     // up with two registration settings that disagree.
-    let mode = match registration_mode {
-        "open" => crate::models::RegistrationMode::Open,
-        "admin_only" | "closed" => crate::models::RegistrationMode::AdminOnly,
-        other => {
-            tracing::warn!(value = %other, "rejected unknown registration mode");
-            return render_server_error("Unknown registration mode.");
-        }
+    let Some(mode) = crate::models::RegistrationMode::parse(registration_mode) else {
+        tracing::warn!(value = %registration_mode, "rejected unknown registration mode");
+        return render_server_error("Unknown registration mode.");
     };
     if let Err(e) = mode.save(pool).await {
         tracing::error!(error = %e, "failed to save user_registration");

@@ -1,0 +1,37 @@
+{% extends "page.html" %}
+
+{#
+  An account page (`routes::user_profile`): `/user`, `/user/{id}` and
+  `/users/{name}`. Context: `account` (`id`, `name`, `member_for`, `created`,
+  `blocked`), `own` (whether the viewer is this account), `edit_url` (the edit
+  form for its owner or a user administrator, else none), `view_url`.
+#}
+
+{% block title %}{{ account.name }}{% endblock %}
+
+{% block content %}
+<article class="user-profile">
+    <h1 class="user-profile__name">{{ account.name }}</h1>
+
+    {% if edit_url %}
+    <nav class="tabs" aria-label="Account">
+        <ul class="tabs__list">
+            <li class="tabs__item tabs__item--active"><a href="{{ view_url }}">View</a></li>
+            <li class="tabs__item"><a href="{{ edit_url }}">Edit</a></li>
+        </ul>
+    </nav>
+    {% endif %}
+
+    {% if account.blocked %}
+    <p class="message message--warning">This account is blocked.</p>
+    {% endif %}
+
+    <section class="user-profile__history">
+        <h2>History</h2>
+        <dl>
+            <dt>Member for</dt>
+            <dd><time datetime="{{ account.created | date(format="%Y-%m-%dT%H:%M:%SZ") }}">{{ account.member_for }}</time></dd>
+        </dl>
+    </section>
+</article>
+{% endblock %}
