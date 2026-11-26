@@ -13,9 +13,11 @@ use uuid::Uuid;
 
 use tower_sessions::Session;
 
+use crate::content::ACCESS_CONTENT;
 use crate::pagination::{Page, PageParams};
 use crate::routes::helpers::{read_stages, session_stage};
 use crate::state::AppState;
+use crate::tap::UserContext;
 
 /// Create the search router.
 pub fn router() -> Router<AppState> {
@@ -37,7 +39,9 @@ pub fn api() -> super::api::ApiRoutes {
                 .paged(SEARCH_PER_PAGE, SEARCH_MAX_PER_PAGE)
                 .describe(
                     "Searches Live, or for a holder of `use stages` the session's stage \
-                     with Live beneath it, and returns only what the caller may view.",
+                     with Live beneath it, and returns only what the caller may view. Asks \
+                     for `search content` and `access content`; refuses the same way either \
+                     is missing.",
                 )
                 .alias(),
         )
@@ -51,6 +55,15 @@ pub fn api() -> super::api::ApiRoutes {
 /// The permission both search routes ask for (B160). Drupal's name for it, so
 /// a migrated role keeps or lacks it as it did.
 pub const SEARCH_PERMISSION: &str = "search content";
+
+/// Whether `viewer` may search at all (B248): both routes ask for
+/// [`SEARCH_PERMISSION`] and [`ACCESS_CONTENT`], and refuse with the same
+/// answer whichever is missing, because a viewer without `access content`
+/// cannot view a result either way. An administrator holds both implicitly
+/// through [`UserContext::can`].
+fn may_search(viewer: &UserContext) -> bool {
+    viewer.can(SEARCH_PERMISSION) && viewer.can(ACCESS_CONTENT)
+}
 
 /// Default page size of the JSON search.
 const SEARCH_PER_PAGE: i64 = 10;
@@ -146,18 +159,19 @@ async fn search_html(
     // Live, or the session's stage with Live beneath it for a holder of
     // `use stages`: the one resolver every read path uses.
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
-    if !viewer.can(SEARCH_PERMISSION) {
+    if !may_search(&viewer) {
         return super::helpers::render_forbidden("You are not allowed to search this site.");
     }
-    // The signed-in user's id, from the viewer the guards loaded: a deleted
-    // or blocked account is nobody here too.
-    let user_id = viewer.authenticated.then_some(viewer.id);
     let stage_ids = read_stages(&state, &viewer, session_stage(&session).await).await;
+    // The one statement of what this viewer may be shown (B248): the count
+    // and the page below are both built from it, so they agree by
+    // construction.
+    let visibility = state.items().search_visibility(&viewer, &stage_ids).await;
 
     // Execute search
     let mut results = match state
         .search()
-        .search(&query, &stage_ids, user_id, limit, offset)
+        .search(&query, &visibility, limit, offset)
         .await
     {
         Ok(r) => r,
@@ -250,22 +264,23 @@ async fn search_json(
     // Live, or the session's stage with Live beneath it for a holder of
     // `use stages`: the one resolver every read path uses.
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
-    if !viewer.can(SEARCH_PERMISSION) {
+    if !may_search(&viewer) {
         return super::helpers::refusal_for(
             &viewer,
             format!("Permission required: {SEARCH_PERMISSION}"),
         )
         .into_response();
     }
-    // The signed-in user's id, from the viewer the guards loaded: a deleted
-    // or blocked account is nobody here too.
-    let user_id = viewer.authenticated.then_some(viewer.id);
     let stage_ids = read_stages(&state, &viewer, session_stage(&session).await).await;
+    // The one statement of what this viewer may be shown (B248): the count
+    // and the page below are both built from it, so they agree by
+    // construction.
+    let visibility = state.items().search_visibility(&viewer, &stage_ids).await;
 
     // Execute search
     let mut results = match state
         .search()
-        .search(&query, &stage_ids, user_id, window.per_page, window.offset)
+        .search(&query, &visibility, window.per_page, window.offset)
         .await
     {
         Ok(r) => r,
@@ -311,4 +326,46 @@ async fn search_json(
 #[derive(Debug, Deserialize)]
 struct SearchJsonQuery {
     q: Option<String>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn holding(perms: &[&str]) -> UserContext {
+        UserContext::authenticated(
+            Uuid::now_v7(),
+            perms.iter().map(|p| (*p).to_string()).collect(),
+        )
+    }
+
+    /// B248 — both permissions are required; either alone is refused the same
+    /// way neither is.
+    #[test]
+    fn may_search_needs_both_permissions() {
+        assert!(!may_search(&holding(&[])));
+        assert!(!may_search(&holding(&[SEARCH_PERMISSION])));
+        assert!(!may_search(&holding(&[ACCESS_CONTENT])));
+        assert!(may_search(&holding(&[SEARCH_PERMISSION, ACCESS_CONTENT])));
+    }
+
+    /// An administrator holds every permission implicitly through
+    /// [`UserContext::can`], neither granted explicitly.
+    #[test]
+    fn may_search_admin_bypasses_both() {
+        let admin = UserContext::administrator(Uuid::now_v7(), vec![]);
+        assert!(may_search(&admin));
+    }
+
+    /// An anonymous visitor is judged the same way: the anonymous role's
+    /// permissions, not an authenticated user's.
+    #[test]
+    fn may_search_anonymous_needs_both_too() {
+        let mut anon = UserContext::anonymous();
+        assert!(!may_search(&anon));
+        anon.permissions = vec![SEARCH_PERMISSION.to_string()];
+        assert!(!may_search(&anon));
+        anon.permissions = vec![SEARCH_PERMISSION.to_string(), ACCESS_CONTENT.to_string()];
+        assert!(may_search(&anon));
+    }
 }

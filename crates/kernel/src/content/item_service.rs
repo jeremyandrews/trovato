@@ -391,6 +391,12 @@ pub const USE_STAGES: &str = "use stages";
 /// site imported from Drupal keeps it on the roles that held it there.
 pub const VIEW_OWN_UNPUBLISHED: &str = "view own unpublished content";
 
+/// The permission [`ItemService::check_access`]'s published fast-path reads:
+/// without it, nothing is shown to a viewer by that path at all. Named here so
+/// [`ItemService::search_visibility`] can ask for it under its own name rather
+/// than a repeated string literal.
+pub const ACCESS_CONTENT: &str = "access content";
+
 /// A write refused by one of the two item write gates.
 ///
 /// Returned inside `anyhow::Error` so every caller finds it the same way —
@@ -2262,18 +2268,34 @@ impl ItemService {
         viewer: &UserContext,
     ) -> Vec<crate::search::SearchResult> {
         // Tier 1 — item-level access over each result (bounded to the page).
+        // Since B248 the SQL predicate (`search_visibility`) is built to agree
+        // with `check_access` by construction, so this loop should never drop
+        // a row in ordinary operation; a drop it logs below, because that
+        // means the two have drifted apart (or the caller handed in a
+        // `SearchVisibility` resolved for a different viewer).
         let mut visible: Vec<crate::search::SearchResult> = Vec::with_capacity(results.len());
         for r in results {
             match self.load(r.id).await {
-                Ok(Some(item))
+                Ok(Some(item)) => {
                     if self
                         .check_access(&item, "view", viewer)
                         .await
-                        .unwrap_or(false) =>
-                {
-                    visible.push(r);
+                        .unwrap_or(false)
+                    {
+                        visible.push(r);
+                    } else {
+                        warn!(
+                            item_id = %r.id,
+                            item_type = %r.item_type,
+                            "search predicate drift: SQL returned a row check_access denies \
+                             this viewer, dropping it from the count"
+                        );
+                    }
                 }
-                _ => {} // missing or denied — absent from results entirely
+                Ok(None) => {} // deleted between the query and this load — not a drift
+                Err(e) => {
+                    warn!(item_id = %r.id, error = %e, "failed to load search result for access check, dropping it");
+                }
             }
         }
 
@@ -2305,6 +2327,74 @@ impl ItemService {
         }
 
         visible
+    }
+
+    /// What `viewer` may be shown by search (B248) — the single statement the
+    /// count query and the page query are both built from, so a total can
+    /// never count a row the page does not show. `requested_stage_ids` is
+    /// [`crate::routes::helpers::read_stages`]'s answer for the request.
+    ///
+    /// Mirrors [`Self::check_access`]'s "view" rule for the rows search's SQL
+    /// can actually produce, with the simplification the docs state: a row
+    /// only a plugin's `tap_item_access` or an internal-visibility stage would
+    /// open is left out for everyone but an administrator (or the background
+    /// principal) — search decides once per request, before the query, and
+    /// never asks a plugin per candidate row.
+    ///
+    /// - An administrator or the background principal bypasses every rule
+    ///   below, as [`Self::check_access`]'s own first step does: every status,
+    ///   on every requested stage.
+    /// - Otherwise, a requested stage of Internal visibility is dropped: only
+    ///   Public and Accessible stages (Live is always Public) reach the query,
+    ///   so an internal-stage item is never a search candidate.
+    /// - The viewer's own unpublished items are included only when they hold
+    ///   [`VIEW_OWN_UNPUBLISHED`] — the one permission `check_access`'s
+    ///   fallback reads for exactly this case.
+    pub async fn search_visibility(
+        &self,
+        viewer: &UserContext,
+        requested_stage_ids: &[Uuid],
+    ) -> crate::search::SearchVisibility {
+        use crate::search::SearchVisibility;
+
+        if viewer.is_admin() || viewer.is_background() {
+            return SearchVisibility {
+                admin_bypass: true,
+                stage_ids: requested_stage_ids.to_vec(),
+                own_unpublished_author: None,
+            };
+        }
+
+        // LIVE_STAGE_ID is always Public (`Stage::update` refuses to change
+        // it), so a request for Live alone never needs the lookup.
+        let stage_ids = if requested_stage_ids.iter().all(|id| *id == LIVE_STAGE_ID) {
+            requested_stage_ids.to_vec()
+        } else {
+            match self.stage_view().await {
+                Ok(view) => requested_stage_ids
+                    .iter()
+                    .copied()
+                    .filter(|id| {
+                        view.stage(*id)
+                            .is_some_and(|s| s.visibility != StageVisibility::Internal)
+                    })
+                    .collect(),
+                Err(e) => {
+                    warn!(error = %e, "stage lookup failed for search, restricting to Live");
+                    vec![LIVE_STAGE_ID]
+                }
+            }
+        };
+
+        let own_unpublished_author = (viewer.authenticated
+            && viewer.has_permission(VIEW_OWN_UNPUBLISHED))
+        .then_some(viewer.id);
+
+        SearchVisibility {
+            admin_bypass: false,
+            stage_ids,
+            own_unpublished_author,
+        }
     }
 
     /// Check if a user has access to perform an operation on an item.

@@ -320,6 +320,20 @@ GET /api/v1/search?q=hello&page=1&per_page=10
 The one JSON search: `/api/search` is its deprecated alias. An empty `q`
 answers an empty page.
 
+Searching needs both `search content` and `access content`, refused the same
+way whichever is missing (the site administrator holds both without a
+grant). The total, the page count and the pager are built from the same
+rule as the page itself, so they no longer drift apart by stage, publish
+status or a missing permission.
+
+An item on an internal-visibility stage (an editorial workflow step, not a
+staging server), published or not, or an item only a plugin's own access
+check would allow, is left out of search for every role but the site
+administrator (a superuser, `users.is_admin`), even where such a role could
+open the item directly otherwise. An author's own unpublished item is
+additionally a candidate only when they hold `view own unpublished content`,
+and even then not if it sits on an internal-visibility stage.
+
 **Response (200):**
 ```json
 {

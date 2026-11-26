@@ -218,3 +218,60 @@ fn search_asks_for_search_content() {
         assert_eq!(again, StatusCode::OK, "with the permission back");
     });
 }
+
+/// B248 — searching also asks for `access content`: a role holding
+/// `search content` alone is refused exactly the way one holding neither is,
+/// because a result it could never view is not a result it should be told
+/// matched.
+#[test]
+fn search_without_access_content_is_refused_the_same_way_as_without_search_content() {
+    run_test(async {
+        common::hold_until_cleanup(SERIAL.lock().await);
+        let app = shared_app().await;
+
+        let granted = trovato_kernel::models::Role::get_permissions(&app.db, ANONYMOUS_ROLE_ID)
+            .await
+            .unwrap()
+            .iter()
+            .any(|p| p == "access content");
+        assert!(
+            granted,
+            "the anonymous role holds `access content` by default in a fresh database"
+        );
+
+        app.state
+            .roles()
+            .remove_permission(ANONYMOUS_ROLE_ID, "access content")
+            .await
+            .unwrap();
+        let roles = std::sync::Arc::clone(app.state.roles());
+        common::defer_cleanup(move || async move {
+            let _ = roles
+                .add_permission(ANONYMOUS_ROLE_ID, "access content")
+                .await;
+        });
+        common::settle_cache_generations().await;
+        // Still holds `search content` throughout — only `access content` is gone.
+        let (page, _) = get("/search?q=anything").await;
+        let (api, _) = get("/api/v1/search?q=anything").await;
+        app.state
+            .roles()
+            .add_permission(ANONYMOUS_ROLE_ID, "access content")
+            .await
+            .unwrap();
+        common::settle_cache_generations().await;
+
+        assert_eq!(
+            page,
+            StatusCode::FORBIDDEN,
+            "the search page without `access content`, same as without `search content`"
+        );
+        assert_eq!(
+            api,
+            StatusCode::UNAUTHORIZED,
+            "the JSON search refuses an anonymous caller without `access content` too"
+        );
+        let (again, _) = get("/search?q=anything").await;
+        assert_eq!(again, StatusCode::OK, "with the permission back");
+    });
+}

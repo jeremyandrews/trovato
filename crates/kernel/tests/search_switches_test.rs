@@ -206,7 +206,12 @@ async fn found(app: &TestApp, word: &str) -> (Vec<Uuid>, Vec<Uuid>) {
     let postgres = app
         .state
         .search()
-        .search_unrecorded(word, &[LIVE_STAGE_ID], None, 50, 0)
+        .search_unrecorded(
+            word,
+            &trovato_kernel::search::SearchVisibility::public([LIVE_STAGE_ID]),
+            50,
+            0,
+        )
         .await
         .expect("search")
         .results

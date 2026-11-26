@@ -254,7 +254,12 @@ fn a_comment_with_a_subject_is_stored_rendered_above_the_body_and_searchable() {
         let hits: Vec<Uuid> = app
             .state
             .search()
-            .search_unrecorded(&subject_word, &[LIVE_STAGE_ID], None, 50, 0)
+            .search_unrecorded(
+                &subject_word,
+                &trovato_kernel::search::SearchVisibility::public([LIVE_STAGE_ID]),
+                50,
+                0,
+            )
             .await
             .expect("search")
             .results
