@@ -80,7 +80,7 @@ count = 3
 sql = "select value from site_config where key = $? and tenant_id = $?"
 
 ["admin_content_landing.admin.cold"]
-queries = 7
+queries = 9
 cache_gets = 2
 cache_misses = 2
 cache_sets = 0
@@ -92,6 +92,14 @@ renders = 1
 ["admin_content_landing.admin.cold".statements."select:admin_preference:f8d9bdb0"]
 count = 1
 sql = "select prefs from admin_preference where user_id = $?"
+
+["admin_content_landing.admin.cold".statements."select:comment:8332c0d6"]
+count = 1
+sql = "select count(*) from comment where status = $?"
+
+["admin_content_landing.admin.cold".statements."select:item:0b891dbc"]
+count = 1
+sql = "select count(*) from item where status = ?"
 
 ["admin_content_landing.admin.cold".statements."select:role_permissions:2e8fbc1c"]
 count = 1
@@ -114,7 +122,7 @@ count = 1
 sql = "select * from users where id = $?"
 
 ["admin_content_landing.admin.warm"]
-queries = 3
+queries = 5
 cache_gets = 2
 cache_misses = 0
 cache_sets = 0
@@ -127,12 +135,20 @@ renders = 1
 count = 1
 sql = "select prefs from admin_preference where user_id = $?"
 
+["admin_content_landing.admin.warm".statements."select:comment:8332c0d6"]
+count = 1
+sql = "select count(*) from comment where status = $?"
+
+["admin_content_landing.admin.warm".statements."select:item:0b891dbc"]
+count = 1
+sql = "select count(*) from item where status = ?"
+
 ["admin_content_landing.admin.warm".statements."select:site_config:897f0424"]
 count = 2
 sql = "select value from site_config where key = $? and tenant_id = $?"
 
 ["admin_dashboard.admin.cold"]
-queries = 16
+queries = 18
 cache_gets = 3
 cache_misses = 2
 cache_sets = 0
@@ -148,6 +164,10 @@ sql = "select prefs from admin_preference where user_id = $?"
 ["admin_dashboard.admin.cold".statements."select:comment:8332c0d6"]
 count = 1
 sql = "select count(*) from comment where status = $?"
+
+["admin_dashboard.admin.cold".statements."select:item:0b891dbc"]
+count = 1
+sql = "select count(*) from item where status = ?"
 
 ["admin_dashboard.admin.cold".statements."select:item:85166919"]
 count = 1
@@ -193,8 +213,12 @@ sql = "select created, log_type, message from system_log where level = ? and cre
 count = 2
 sql = "select * from users where id = $?"
 
+["admin_dashboard.admin.cold".statements."select:users:5a42aa32"]
+count = 1
+sql = "select count(*) from users where status = ?"
+
 ["admin_dashboard.admin.warm"]
-queries = 12
+queries = 14
 cache_gets = 3
 cache_misses = 0
 cache_sets = 0
@@ -210,6 +234,10 @@ sql = "select prefs from admin_preference where user_id = $?"
 ["admin_dashboard.admin.warm".statements."select:comment:8332c0d6"]
 count = 1
 sql = "select count(*) from comment where status = $?"
+
+["admin_dashboard.admin.warm".statements."select:item:0b891dbc"]
+count = 1
+sql = "select count(*) from item where status = ?"
 
 ["admin_dashboard.admin.warm".statements."select:item:85166919"]
 count = 1
@@ -243,8 +271,12 @@ sql = "select created, log_type, message from system_log where level = ? and cre
 count = 1
 sql = "select * from users where id = $?"
 
+["admin_dashboard.admin.warm".statements."select:users:5a42aa32"]
+count = 1
+sql = "select count(*) from users where status = ?"
+
 ["admin_people_landing.admin.cold"]
-queries = 7
+queries = 8
 cache_gets = 2
 cache_misses = 2
 cache_sets = 0
@@ -277,8 +309,12 @@ sql = "select value from site_config where key = $? and tenant_id = $?"
 count = 1
 sql = "select * from users where id = $?"
 
+["admin_people_landing.admin.cold".statements."select:users:5a42aa32"]
+count = 1
+sql = "select count(*) from users where status = ?"
+
 ["admin_people_landing.admin.warm"]
-queries = 3
+queries = 4
 cache_gets = 2
 cache_misses = 0
 cache_sets = 0
@@ -295,8 +331,12 @@ sql = "select prefs from admin_preference where user_id = $?"
 count = 2
 sql = "select value from site_config where key = $? and tenant_id = $?"
 
+["admin_people_landing.admin.warm".statements."select:users:5a42aa32"]
+count = 1
+sql = "select count(*) from users where status = ?"
+
 ["admin_reports_landing.admin.cold"]
-queries = 7
+queries = 8
 cache_gets = 2
 cache_misses = 2
 cache_sets = 0
@@ -325,12 +365,16 @@ sql = "select r.* from roles r join user_roles ur on r.id = ur.role_id where ur.
 count = 2
 sql = "select value from site_config where key = $? and tenant_id = $?"
 
+["admin_reports_landing.admin.cold".statements."select:system_log:809b84cf"]
+count = 1
+sql = "select count(*) from system_log where level = ? and created >= $?"
+
 ["admin_reports_landing.admin.cold".statements."select:users:37216782"]
 count = 1
 sql = "select * from users where id = $?"
 
 ["admin_reports_landing.admin.warm"]
-queries = 3
+queries = 4
 cache_gets = 2
 cache_misses = 0
 cache_sets = 0
@@ -346,6 +390,10 @@ sql = "select prefs from admin_preference where user_id = $?"
 ["admin_reports_landing.admin.warm".statements."select:site_config:897f0424"]
 count = 2
 sql = "select value from site_config where key = $? and tenant_id = $?"
+
+["admin_reports_landing.admin.warm".statements."select:system_log:809b84cf"]
+count = 1
+sql = "select count(*) from system_log where level = ? and created >= $?"
 
 ["category.anonymous.cold"]
 queries = 19
