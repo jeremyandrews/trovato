@@ -675,11 +675,26 @@ pub struct SeedOptions {
     pub parallel: usize,
 }
 
+impl SeedOptions {
+    /// Refuse options the batch loop cannot finish with: a batch of zero or
+    /// fewer rows never advances, and negative item counts mean nothing.
+    pub fn check(&self) -> Result<()> {
+        if self.batch < 1 {
+            anyhow::bail!("batch must be at least 1 row, not {}", self.batch);
+        }
+        if self.main_items < 0 || self.other_items < 0 {
+            anyhow::bail!("item counts cannot be negative");
+        }
+        Ok(())
+    }
+}
+
 /// The `site_config` key recording what was seeded.
 pub const MARKER: &str = "field_bench_fixture";
 
 /// Seed the fixture into `pool`'s (migrated) database.
 pub async fn seed(pool: &PgPool, opts: SeedOptions) -> Result<Vec<(String, f64)>> {
+    opts.check()?;
     let mut phases = Vec::new();
     let seed = opts.seed;
     let started = Instant::now();

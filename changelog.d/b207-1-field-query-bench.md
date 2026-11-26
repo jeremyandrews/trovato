@@ -4,7 +4,11 @@ seeds a dedicated database (never the shared test database) with an item type
 of 200 fields of every kind and a million items of it, plus a million items of
 four other types, with revisions, and runs 24 Gather definitions through the
 real Gather service, cold and warm, recording latency percentiles, statement
-counts, plans and buffers, save latency, sizes and the hot set.
+counts, plans and buffers, save latency, sizes and the hot set. A run that
+times out is counted, not dropped: a percentile that falls on a failed run
+reads "timed out", and a before and after comparison refuses two different
+fixtures. The saves it times are written back afterwards, so one seeded
+database serves any number of runs.
 
 The baseline shows the cost of field conditions written as expressions no
 index covers. Items keep their fields in one JSONB column whose only index is

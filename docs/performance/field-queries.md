@@ -65,7 +65,9 @@ figures are extrapolated from 100k and 1M below.
 `GatherService::execute_definition` as the anonymous visitor a real request
 gets (the anonymous user row with its role's permissions, so the item access
 pass runs), ten items a page, and one facet through
-`GatherService::fetch_faceted_distinct_values`. Each covers one shape the
+`GatherService::fetch_faceted_distinct_values`. A Gather facet is its option
+list, the values still reachable under the other active filters, with no
+count per value: that list is what Q18 times. Each covers one shape the
 brief asks for; the field names say what they hold.
 
 Each query runs 30 times cold and 30 times warm:
@@ -76,7 +78,8 @@ Each query runs 30 times cold and 30 times warm:
   disk image is a file on the Mac, so macOS may still hold some of it in its
   own page cache, which `purge` would need root to drop: cold here is "nothing
   in Postgres or the VM", not "nothing anywhere".
-- **warm**: one untimed run, then 30 timed runs back to back.
+- **warm**: one untimed run, then 30 timed runs back to back. Every timed
+  run is attempted, even when the untimed one failed.
 
 Latency is the wall time of the whole Gather call: every statement it sends,
 the access pass, URL and author resolution. The statement count is every
@@ -86,10 +89,22 @@ the warm runs; the table shows the slowest one's shape and buffers.
 
 A Gather statement runs with `statement_timeout = 10s`
 (`GatherService::run_definition_inner`); a query that hits it fails, and the
-tables say so.
+tables say so. A failed run counts as slower than every run that finished,
+so a percentile whose rank falls on a failure reads "timed out" (or
+"failed"), never the time of the runs that happened to finish, and no
+speedup is computed from it.
+
+The 1M baseline below was recorded before every timed run was attempted
+after a failed untimed one. Its four failing queries say "0 warm" runs
+failed because none was attempted. Q03 and Q17 timed out on the untimed run
+and on all 30 cold runs; Q04 and Q08 fail at once, on every run, with a
+type error.
 
 Item saves are 100 calls of `ItemService::update` on `bench_main` items
-(three fields changed, a new revision each), as an administrator.
+(three fields changed, a new revision each), as an administrator. Once
+timed, each item row is written back exactly as it was and the revisions
+the saves made are deleted, so the next run on the same database queries
+the data the seed wrote.
 
 ## Hardware and settings
 
@@ -123,12 +138,12 @@ warm runs.
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|---|---|
 | Q01 | equality on one text field (200 values, skewed), newest first | 10 | 1000 | 5 | 467 | 500 | 503 | 721 | 956 | 826060 hit / 0 read | `Gather Merge > Index Scan idx_item_created` |
 | Q02 | IN on one text field (12 values), newest first | 10 | 1000 | 5 | 210 | 224 | 226 | 238 | 295 | 124319 hit / 0 read | `Gather Merge > Index Scan idx_item_created` |
-| Q03 | equality on a unique text field (one row) | 0 | - | 0 | 0.00 | 0.00 | 0.00 | - | - | 0 hit / 0 read | ERROR (0 warm, 30 cold runs failed): canceling statement due to statement timeout at line 3406 |
-| Q04 | numeric range on an integer field, newest first | 0 | - | 0 | 0.00 | 0.00 | 0.00 | - | - | 0 hit / 0 read | ERROR (0 warm, 1 cold runs failed): text >= integer at line 635 |
+| Q03 | equality on a unique text field (one row) | 0 | - | 0 | timed out | timed out | timed out | - | - | 0 hit / 0 read | ERROR (0 warm, 30 cold runs failed): canceling statement due to statement timeout at line 3406 |
+| Q04 | numeric range on an integer field, newest first | 0 | - | 0 | failed: `text >= integer` | failed: `text >= integer` | failed: `text >= integer` | - | - | 0 hit / 0 read | ERROR (0 warm, 1 cold runs failed): text >= integer at line 635 |
 | Q05 | date range, sorted by that date descending, page 1 | 10 | 1000 | 6 | 11102 | 11806 | 12500 | 11941 | 13696 | 9600697 hit / 1007260 read | `Gather Merge > Sort > Bitmap Heap Scan on item > Bitmap Index Scan idx_item_type` |
 | Q06 | the same date range and sort, page 500 | 10 | 1000 | 6 | 10963 | 11473 | 12123 | 12097 | 12688 | 9600655 hit / 1007272 read | `Gather Merge > Sort > Bitmap Heap Scan on item > Bitmap Index Scan idx_item_type` |
 | Q07 | every published record sorted by a text field | 10 | 1000 | 5 | 8410 | 8616 | 9270 | 8994 | 9602 | 6307390 hit / 1096755 read | `Gather Merge > Sort > Seq Scan on item` |
-| Q08 | three fields ANDed (text, boolean, integer range), newest first | 0 | - | 0 | 0.00 | 0.00 | 0.00 | - | - | 0 hit / 0 read | ERROR (0 warm, 1 cold runs failed): text >= integer at line 635 |
+| Q08 | three fields ANDed (text, boolean, integer range), newest first | 0 | - | 0 | failed: `text >= integer` | failed: `text >= integer` | failed: `text >= integer` | - | - | 0 hit / 0 read | ERROR (0 warm, 1 cold runs failed): text >= integer at line 635 |
 | Q09 | five fields ANDed, newest first | 10 | 449 | 5 | 11130 | 11511 | 11625 | 11550 | 12290 | 9684759 hit / 1006795 read | `Sort > Gather > Bitmap Heap Scan on item > Bitmap Index Scan idx_item_type` |
 | Q10 | three fields ORed, newest first | 10 | 1000 | 5 | 4537 | 4881 | 4932 | 5271 | 5833 | 9085336 hit / 0 read | `Gather Merge > Index Scan idx_item_created` |
 | Q11 | multi value tag containment (a common tag), newest first | 10 | 1000 | 5 | 231 | 248 | 263 | 279 | 300 | 253643 hit / 0 read | `Gather Merge > Index Scan idx_item_created` |
@@ -137,7 +152,7 @@ warm runs.
 | Q14 | single reference equality (records at one place), newest first | 10 | 314 | 5 | 6601 | 7175 | 7570 | 7156 | 7735 | 7311978 hit / 1053176 read | `Gather Merge > Index Scan idx_item_created` |
 | Q15 | multi value reference containment (records naming one person) | 10 | 1000 | 5 | 4266 | 4614 | 4921 | 4519 | 5200 | 3784097 hit / 1014931 read | `Gather Merge > Index Scan idx_item_created` |
 | Q16 | exposed filter answered by the reader, newest first | 10 | 1000 | 5 | 621 | 642 | 648 | 900 | 989 | 1103761 hit / 0 read | `Gather Merge > Index Scan idx_item_created` |
-| Q17 | contextual filter from a URL argument (records of one owner) | 0 | - | 0 | 0.00 | 0.00 | 0.00 | - | - | 0 hit / 0 read | ERROR (0 warm, 30 cold runs failed): canceling statement due to statement timeout at line 3406 |
+| Q17 | contextual filter from a URL argument (records of one owner) | 0 | - | 0 | timed out | timed out | timed out | - | - | 0 hit / 0 read | ERROR (0 warm, 30 cold runs failed): canceling statement due to statement timeout at line 3406 |
 | Q18 | facet: the colour options with the country filter applied | 12 | - | 1 | 9843 | 10467 | 11093 | 9722 | 10437 | 20108721 hit / 1007060 read | `Gather Merge > Sort > Bitmap Heap Scan on item > Bitmap Index Scan idx_item_type` |
 | Q19 | a field empty on 99.5 percent of records, newest first | 10 | 72 | 5 | 12023 | 15710 | 16818 | 12702 | 16118 | 1949910 hit / 277237 read | `Index Scan idx_item_created` |
 | Q20 | full text search combined with a field filter | 10 | 1000 | 5 | 1313 | 1449 | 1479 | 1829 | 2007 | 1990611 hit / 0 read | `Gather Merge > Sort > Bitmap Heap Scan on item > BitmapAnd > Bitmap Index Scan idx_item_search > Bitmap Index Scan idx_item_type` |
@@ -213,7 +228,11 @@ and serves none of the queries above.
 After one pass of the matrix from cold, Postgres's 4 GB of shared buffers
 held 3,990 MB of `item`'s TOAST table, 103 MB of its TOAST index and 1 MB of
 `item` itself: the field queries fill memory with the pages of compressed field documents
-they read once and throw away.
+they read once and throw away. The buffers were full, so this is a lower
+bound, not the working set: pages read early in the pass were evicted by
+later ones, and a full read of the type touches about 80 GB of buffers (see
+Buffers above). How much memory would keep the matrix resident is not
+measured; what it shows is that 4 GB is far short.
 
 ## Results at 100k, and what 10M would do
 
