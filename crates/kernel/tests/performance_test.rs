@@ -76,6 +76,77 @@ fn front_page() {
     });
 }
 
+/// The Dashboard as the administrator. Its panels count pending comments, so
+/// it holds the comment rows still for the whole measure.
+#[test]
+fn admin_dashboard() {
+    run_test(async {
+        let _rows = COMMENT_ROWS.lock().await;
+        let site = shared_site();
+        measure(
+            site,
+            "admin_dashboard",
+            &[Visitor::Admin],
+            "/admin",
+            &["href=\"/admin/content/overview\""],
+            &[],
+        )
+        .await;
+    });
+}
+
+/// The Content landing page as the administrator; it counts comments too.
+#[test]
+fn admin_content_landing() {
+    run_test(async {
+        let _rows = COMMENT_ROWS.lock().await;
+        let site = shared_site();
+        measure(
+            site,
+            "admin_content_landing",
+            &[Visitor::Admin],
+            "/admin/content/overview",
+            &["href=\"/admin/content/add\""],
+            &[],
+        )
+        .await;
+    });
+}
+
+/// The People landing page as the administrator.
+#[test]
+fn admin_people_landing() {
+    run_test(async {
+        let site = shared_site();
+        measure(
+            site,
+            "admin_people_landing",
+            &[Visitor::Admin],
+            "/admin/people/overview",
+            &["href=\"/admin/people/roles\""],
+            &[],
+        )
+        .await;
+    });
+}
+
+/// The Reports landing page as the administrator.
+#[test]
+fn admin_reports_landing() {
+    run_test(async {
+        let site = shared_site();
+        measure(
+            site,
+            "admin_reports_landing",
+            &[Visitor::Admin],
+            "/admin/reports/overview",
+            &["href=\"/admin/reports/log\""],
+            &[],
+        )
+        .await;
+    });
+}
+
 #[test]
 fn item_page_with_comments() {
     run_test(async {
