@@ -28,10 +28,12 @@
                 <td>{{ t(s=provider.protocol) }}</td>
                 <td><code>{{ provider.base_url }}</code></td>
                 <td>
-                    {% if provider.key_is_set %}
-                    <span class="badge badge--success">{{ provider.api_key_status }}</span>
+                    {% if provider.key_ref_state == "not_configured" %}
+                    <span class="badge badge--warning">{{ t(s="(no env var configured)") }}</span>
+                    {% elif provider.key_ref_state == "set" %}
+                    <span class="badge badge--success">{{ t(s="{env} (set)", env=provider.api_key_env) }}</span>
                     {% else %}
-                    <span class="badge badge--warning">{{ provider.api_key_status }}</span>
+                    <span class="badge badge--warning">{{ t(s="{env} (not set)", env=provider.api_key_env) }}</span>
                     {% endif %}
                 </td>
                 <td>
@@ -73,6 +75,11 @@
     <p id="test-message"></p>
     <p id="test-latency"></p>
 </section>
+
+{# Words static/js/ai-admin.js puts into #test-message and #test-latency (B253). #}
+<script id="ai-i18n" type="application/json">
+{"testing_connection": "{{ t(s='Testing connection...') }}", "latency_template": "{{ t(s='Latency: {ms}ms') }}", "request_failed_template": "{{ t(s='Request failed: {error}') }}"}
+</script>
 
 {% if providers | length > 0 %}
 <section class="admin-card" aria-labelledby="default-providers-heading">
