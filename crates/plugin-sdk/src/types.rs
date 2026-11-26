@@ -224,7 +224,13 @@ pub struct CompoundSection {
 }
 
 /// Field type definitions for content type registration.
+///
+/// `#[non_exhaustive]`: the kernel adds field kinds (`CategoryReference` was
+/// one), and a new kind must be an additive change, not one that breaks every
+/// plugin with an exhaustive `match`. Match it with a `_` arm for the kinds a
+/// plugin does not handle. Construct it as before.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum FieldType {
     Text {
         max_length: Option<usize>,
@@ -252,6 +258,17 @@ pub enum FieldType {
     /// Storage format: `{"root": {...}, "content": [{type, props, zones}, ...]}`.
     /// Supports 12 component types with nested zones for visual page composition.
     PageBuilder,
+    /// Tags of one category, named by the category's machine name.
+    ///
+    /// Storage format: a JSON array of tag uuid strings (`["<uuid>", …]`), the
+    /// shape gather's `has_tag` and `has_tag_or_descendants` filters read. Every
+    /// write is checked: each value must name a tag of this category, and there
+    /// may be no more values than the field's `cardinality` allows. The item
+    /// page resolves the tags into `referenced_tags`.
+    ///
+    /// Added in 0.105 (B72). Additive: a plugin that matches on `FieldType`
+    /// needs a `_` arm or this one.
+    CategoryReference(String),
 }
 
 /// A content type definition returned by `tap_item_info`.
@@ -2288,6 +2305,35 @@ impl VocabularyOwnerAccess {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// Every `FieldType` kind, matched exhaustively. Inside this crate
+    /// `#[non_exhaustive]` does not apply, so adding a variant stops this from
+    /// compiling: the kernel matches `FieldType` with `_` arms (it has to, from
+    /// another crate), and a new kind falls into them silently. Handle it in
+    /// `trovato_kernel::content::field_value` (`form_text`, `parse`,
+    /// `check_json`, `type_name`) and `content::form` (`widget`), then add it
+    /// here.
+    #[test]
+    fn every_field_kind_is_handled_by_the_kernel() {
+        fn handled(kind: &FieldType) {
+            match kind {
+                FieldType::Text { .. }
+                | FieldType::TextLong
+                | FieldType::Integer
+                | FieldType::Float
+                | FieldType::Boolean
+                | FieldType::RecordReference(_)
+                | FieldType::CategoryReference(_)
+                | FieldType::File
+                | FieldType::Date
+                | FieldType::Email
+                | FieldType::Compound { .. }
+                | FieldType::Blocks
+                | FieldType::PageBuilder => {}
+            }
+        }
+        handled(&FieldType::CategoryReference("topics".into()));
+    }
 
     #[test]
     fn cron_input_round_trip() {

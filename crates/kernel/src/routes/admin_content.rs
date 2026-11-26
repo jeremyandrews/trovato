@@ -592,9 +592,10 @@ async fn add_content_submit(
             Redirect::to("/admin/content").into_response()
         }
         Err(e) => {
-            // A write the field or publish gate refused is the user's to fix,
-            // so the form comes back with the reason on it rather than a 500.
-            if let Some(denied) = e.downcast_ref::<crate::content::WriteDenied>() {
+            // A write the field or publish gate or the field value check
+            // refused is the user's to fix, so the form comes back with the
+            // reason on it rather than a 500.
+            if let Some(errors) = write_refusal(&e) {
                 return render_content_form(
                     &state,
                     &session,
@@ -602,7 +603,7 @@ async fn add_content_submit(
                     &content_type,
                     None,
                     Some(&posted),
-                    &[crate::form::ValidationError::form(denied.to_string())],
+                    &errors,
                 )
                 .await;
             }
@@ -647,6 +648,24 @@ async fn add_content_submit(
             render_server_error("Failed to create content.")
         }
     }
+}
+
+/// The form errors for a write the service refused for a reason the person at
+/// the form can fix: a write gate ([`crate::content::WriteDenied`]) or the
+/// field value check ([`crate::content::InvalidFieldValues`]), each value's
+/// error beside its field. `None` for any other failure.
+fn write_refusal(e: &anyhow::Error) -> Option<Vec<crate::form::ValidationError>> {
+    if let Some(denied) = e.downcast_ref::<crate::content::WriteDenied>() {
+        return Some(vec![crate::form::ValidationError::form(denied.to_string())]);
+    }
+    e.downcast_ref::<crate::content::InvalidFieldValues>()
+        .map(|invalid| {
+            invalid
+                .0
+                .iter()
+                .map(|v| crate::form::ValidationError::field(&v.field, v.message.clone()))
+                .collect()
+        })
 }
 
 /// Show edit content form.
@@ -876,9 +895,8 @@ async fn edit_content_submit(
             Redirect::to("/admin/content").into_response()
         }
         Err(e) => {
-            // As on the add path: a gate refusal belongs on the form, not in a
-            // 500.
-            if let Some(denied) = e.downcast_ref::<crate::content::WriteDenied>() {
+            // As on the add path: a refusal belongs on the form, not in a 500.
+            if let Some(errors) = write_refusal(&e) {
                 return render_content_form(
                     &state,
                     &session,
@@ -886,7 +904,7 @@ async fn edit_content_submit(
                     &content_type,
                     Some(&item),
                     Some(&posted),
-                    &[crate::form::ValidationError::form(denied.to_string())],
+                    &errors,
                 )
                 .await;
             }

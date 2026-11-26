@@ -95,7 +95,38 @@ accepts migrations it does not know unless one is marked incompatible.
 When the newer release is fixed, upgrade again. Its migrations are already
 applied, so `trovato migrate` finds nothing to do.
 
-## Unreleased
+## v0.105.0 — 2026-11-25
+
+### A `CategoryReference` field kind; `FieldType` is `#[non_exhaustive]`; cardinality is enforced on every write
+
+**Who is affected:** a plugin that matches on `FieldType`; anyone who writes
+items through the item API, a plugin's `save-item` or `config import`; a site
+whose stored items hold more values than a field's `cardinality` allows.
+
+**What changed.** **API change:** `trovato_sdk::types::FieldType` has a new
+variant, `CategoryReference(String)`, naming a category; its value is a JSON
+array of tag uuid strings, whatever the cardinality. `FieldType` is now
+`#[non_exhaustive]`, so that field kinds added later are additive. A plugin
+with an exhaustive `match` on it stops compiling against this SDK until it adds
+a `_` arm; a plugin that only constructs field types, or already has a `_` arm,
+is unaffected. Both changes ship in 0.105.0, with the rest of plugin API
+`(0, 105)`, and change nothing in a released version, so the plugin API version
+does not move again for them. `save-item` has a new error, `ERR_ITEM_INVALID_FIELDS` (-65).
+
+Behaviour changes that follow: every item write (the item forms, the item API,
+`save-item`, revert and `config import`) refuses more values than a field's
+`cardinality` allows (a JSON array counts its elements; anything else counts as
+one) and, for a `CategoryReference` field, any value that is not a tag of its
+category. The item API answers 422 naming each value, `save-item` returns -65,
+and `config import` fails the set before writing anything. Only written values
+are judged: nothing stored is rewritten, and an update that leaves a field as
+it was does not re-check it.
+
+**How to find out.** Items that hold more values than a field now allows (run
+per type and field, `N` being the field's `cardinality`):
+`SELECT id FROM item WHERE type = '<type>' AND jsonb_typeof(fields -> '<field>') = 'array' AND jsonb_array_length(fields -> '<field>') > N;`.
+They stay as they are until someone edits that field. To find matches that
+need a `_` arm: `grep -rn "match .*field_type" plugins/*/src`.
 
 ### Migrations can run as their own step; `/health` answers anonymous callers with its status only
 
@@ -200,7 +231,7 @@ working, not an old body.
 response. A request to an unversioned path in the server's access log, or a
 `Deprecation` header in the client's, is a call to move.
 
-### A config export never contains a secret; plugin API 0.107
+### A config export never contains a secret; plugin API 0.105
 
 **Who is affected:** anyone who moves a site with `trovato config export` and
 `config import`, and in particular anyone with webhooks, OAuth clients or the
@@ -239,11 +270,12 @@ anyone pinning the plugin API version.
   whatever the target holds. Re-export from the source site, or replace each
   value with the `env:` reference the error names.
 - A plugin names its secret columns beside its config tables (see the plugin
-  development guide). The key is additive; the project version moves to
-  0.107.0, so `KERNEL_API_VERSION` is `(0, 107)` and the bundled manifests
-  declare `api_version = "0.107"`. A config table column whose name says it
-  holds a credential (`secret`, `password`, `api_key`, ...) is treated as a
-  secret even when undeclared, and export warns.
+  development guide). The key is additive and part of plugin API
+  `(0, 105)`: a plugin that declares `secret_columns` should declare
+  `api_version = "0.105"`, which a 0.104 kernel refuses cleanly. A config
+  table column whose name says it holds a credential (`secret`, `password`,
+  `api_key`, ...) is treated as a secret even when undeclared, and export
+  warns.
 
 **How to find out.** `grep -rl 'secret:\|client_secret_hash:' <export dir>`
 on an export made before this release: every file it lists holds a secret in
@@ -376,7 +408,7 @@ to run, more than one server, in the ways
 
 Nothing to configure for a single server.
 
-### Config export carries plugin configuration and leaves runtime state out; plugin API 0.106
+### Config export carries plugin configuration and leaves runtime state out; plugin API 0.105
 
 **Who is affected:** anyone who moves a site with `trovato config export` and
 `config import`; a plugin that stores site configuration in its own tables;
@@ -397,9 +429,9 @@ anyone pinning the plugin API version.
   and `locale_string`. A new `plugin_status.<name>.yml` entity records whether
   each plugin is enabled; import applies it first and runs the enabled
   plugins' migrations before writing their rows. The key is additive: a
-  manifest without it declares nothing. The project version moves to 0.106.0,
-  so `KERNEL_API_VERSION` is `(0, 106)` and the bundled manifests declare
-  `api_version = "0.106"`.
+  manifest without it declares nothing. It is part of plugin API `(0, 105)`:
+  a plugin that declares `[config] tables` should declare
+  `api_version = "0.105"`, which a 0.104 kernel refuses cleanly.
 - `installed`, `update_status`, `update_check` and `queue_runner` are runtime
   state of one deployment. Export no longer writes them, and import ignores
   them with a warning.
@@ -1099,6 +1131,57 @@ plugin directory to `PLUGINS_DIR`, or use that repository's own
 `docker-compose.yml`, which runs this kernel's published image unmodified. It is
 the same plugin with the same migration files, so migrations the site has
 already applied are not run again.
+
+### Search asks for `search content`, AI search for `use ai`; both granted on upgrade
+
+**Who is affected:** a site that wants to withhold search, or AI search, from
+some roles, and anyone who keeps roles in `role.*.yml` config sets.
+
+**What changed.** `/search` and `/api/v1/search` had no permission of their
+own, and the AI search endpoints (`/api/v1/search/expand`, `/summarize` and
+`/followup`) had none either. Search now asks for `search content`, and the AI
+search endpoints for `use ai`. Two migrations grant them once, so no site loses
+either on upgrade: `search content` to every role holding `access content`
+(`20261127160001_grant_search_content.sql`), then `use ai` to every role holding
+`search content` (`20261130000001_grant_use_ai_to_searchers.sql`). In a default
+install that is the anonymous and the authenticated role, so anonymous visitors
+keep spending provider tokens on AI search as they did before. `use ai` alone
+reaches nothing else: the chatbot, the writing assistant and the AI Assistant
+also ask for their own permission. Neither grant is a rule: a role granted
+`access content` from now on gets exactly that.
+
+**How to find out.** After upgrading, `SELECT role_id, permission FROM
+role_permissions WHERE permission IN ('search content', 'use ai')` lists who
+holds them. Revoke `use ai` from the anonymous role on the permission grid if
+anonymous visitors should not reach the AI provider. A `role.*.yml` kept in a
+config set from before the upgrade does not name either permission: add them
+where they belong before importing it.
+
+### Content type field definitions are repaired on upgrade; search vectors are rebuilt
+
+**Who is affected:** a site with plugin-declared content types, or a content
+type that was given the same field more than once; a large site, for the time
+the upgrade's migrations take.
+
+**What changed.**
+
+- `20260925000001_normalize_item_type_settings.sql` rewrites every
+  `item_type.settings` stored as a bare array of field definitions, which
+  plugin registration wrote, into the `{"fields": [...]}` object every reader
+  expects, and resets any value that is not an object to `{}`. Plugin-declared
+  types, which loaded with no fields in the admin forms, get their fields back,
+  including types whose plugin is disabled.
+- `20261006000001_dedupe_item_type_fields.sql` drops repeated definitions of a
+  field name from a type's field list, keeping the first, which is the one the
+  type has been running with. No item data is touched.
+- `20261125000001_search_covers_text_fields_and_comments.sql` recomputes the
+  search vector of every item, now covering every text field and every
+  published comment. It runs inside the migration, so on a site with many items
+  the upgrade's migration step takes correspondingly longer.
+
+**How to find out.** `SELECT type FROM item_type WHERE jsonb_typeof(settings)
+<> 'object'` before upgrading lists the types the first migration rewrites.
+Nothing needs doing afterwards.
 
 ## v0.104.0 — 2026-09-24
 

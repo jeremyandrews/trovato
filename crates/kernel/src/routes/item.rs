@@ -289,6 +289,17 @@ fn write_error(e: anyhow::Error, context: &'static str) -> AppError {
     if let Some(invalid) = e.downcast_ref::<crate::content::PageBuilderInvalid>() {
         return page_builder_invalid(invalid);
     }
+    // A value the field value check refused (cardinality, a tag outside the
+    // field's category) is the client's to fix: 422, naming each one.
+    if let Some(invalid) = e.downcast_ref::<crate::content::InvalidFieldValues>() {
+        return AppError::validation(
+            invalid
+                .0
+                .iter()
+                .map(|v| AppError::field_error(v.field.clone(), "invalid_value", v.message.clone()))
+                .collect(),
+        );
+    }
     if let Some(refused) = e.downcast_ref::<crate::content::owned_vocabulary::TermsNotOwned>() {
         return AppError::validation(
             refused
@@ -580,6 +591,39 @@ async fn view_item(
             std::collections::HashMap::new()
         });
 
+    // Resolve CategoryReference fields to their tags: one query for the tags,
+    // one recursive query for their ancestors, and the URL of the gather route
+    // that lists each tag's category. A tag of a category the viewer may not
+    // read (an owned one, B189) is left out: the rule every category read
+    // applies, decided once per category the fields name.
+    let mut readable_categories = std::collections::HashSet::new();
+    for field in &content_type_fields {
+        if let trovato_sdk::types::FieldType::CategoryReference(category) = &field.field_type
+            && !readable_categories.contains(category)
+            && crate::content::owned_vocabulary::visible_category(&state, &user, category)
+                .await
+                .ok()
+                .flatten()
+                .is_some()
+        {
+            readable_categories.insert(category.clone());
+        }
+    }
+    let gather = state.gather();
+    let referenced_tags = state
+        .items()
+        .referenced_tags(
+            &item,
+            &content_type_fields,
+            |category| readable_categories.contains(category),
+            |category, slug| gather.tag_url(category, slug),
+        )
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, item_id = %item.id, "failed to resolve tag fields");
+            std::collections::HashMap::new()
+        });
+
     // Resolve reverse references: items that reference this item (P11g / D-57).
     //
     // For each content type's RecordReference field, a GIN-indexed JSONB
@@ -682,6 +726,7 @@ async fn view_item(
     }
     context.insert("referenced_items", &referenced_items);
     context.insert("referenced_files", &referenced_files);
+    context.insert("referenced_tags", &referenced_tags);
     context.insert("reverse_references", &reverse_references);
     context.insert("safe_urls", &safe_urls);
     context.insert("active_language", &active_language);

@@ -69,6 +69,9 @@
             {% if values.field_type is defined and values.field_type %}{% set selected_type = values.field_type %}{% else %}{% set selected_type = "" %}{% endif %}
             {{ form::select(name="field_type", id="new_field_type", label=t(s="Type"), options=field_type_options, value=selected_type, empty=t(s="- Select -"), translate_options=true, required=true, errors=errs) }}
 
+            {% if values.category is defined and values.category %}{% set selected_category = values.category %}{% else %}{% set selected_category = "" %}{% endif %}
+            {{ form::select(name="category", id="new_field_category", label=t(s="Category"), options=category_options, value=selected_category, empty=t(s="- None -"), hint=t(s="Required for a category reference: the field holds tags of this category."), errors=errs) }}
+
             <div class="inline-fields__submit">
                 <button type="submit" class="button button--primary"
                         data-ajax-trigger="add_field"

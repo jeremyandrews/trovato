@@ -1286,10 +1286,14 @@ impl ThemeEngine {
         element: &crate::form::FormElement,
     ) -> std::borrow::Cow<'_, crate::form::FormElement> {
         use crate::form::ElementType;
-        // A scripted widget is drawn by the front end's template, which
-        // prints its title (a content type's field label: data) as it is.
+        // A scripted widget, and the container that holds a field's several
+        // values, are titled with a content type's field label: the site's
+        // data, which their templates print as it is.
         if !crate::i18n::markers_enabled()
-            || matches!(element.element_type, ElementType::Widget { .. })
+            || matches!(
+                element.element_type,
+                ElementType::Widget { .. } | ElementType::Container
+            )
         {
             return std::borrow::Cow::Borrowed(element);
         }

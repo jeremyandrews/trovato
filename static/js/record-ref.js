@@ -1,7 +1,14 @@
 /**
- * RecordReference autocomplete — searches items by type and title, or
- * category terms by name for a `category_term` field, and sets the hidden
- * UUID field when a result is selected.
+ * Reference autocomplete — one script for both reference widgets: a
+ * RecordReference field searches items by type and title, or category terms
+ * by name for a `category_term` field; a CategoryReference field (the tag
+ * picker) searches the tags of one category. The input names its endpoint in
+ * `data-autocomplete-url` (the target type or category is appended), shows the
+ * chosen result's label, and writes its uuid into the hidden field the form
+ * posts.
+ *
+ * Listeners are delegated from the document, so a slot added by "Add another"
+ * after the page loaded works the same as the ones it was rendered with.
  */
 (function () {
   'use strict';
@@ -68,9 +75,13 @@
     return !!ownerField && !formValue(input, ownerField);
   }
 
-  /** Fetch autocomplete results from the API. */
+  var DEFAULT_URL = '/api/v1/items/autocomplete?type=';
+  var SELECTOR = '.record-ref-autocomplete';
+
+  /** Fetch autocomplete results from the input's endpoint: the item
+   * endpoint answers a page (`{data: [...]}`), the tag endpoint a list. */
   function fetchResults(targetType, query, input, callback) {
-    var url = '/api/v1/items/autocomplete?type=' +
+    var url = (input.getAttribute('data-autocomplete-url') || DEFAULT_URL) +
       encodeURIComponent(targetType) +
       '&q=' + encodeURIComponent(query) +
       '&limit=10';
@@ -78,7 +89,9 @@
 
     fetch(url, { credentials: 'same-origin' })
       .then(function (r) { return r.json(); })
-      .then(function (page) { callback((page && page.data) || []); })
+      .then(function (page) {
+        callback(Array.isArray(page) ? page : ((page && page.data) || []));
+      })
       .catch(function () { callback([]); });
   }
 
@@ -119,53 +132,68 @@
     resultsEl.style.display = 'block';
   }
 
-  /** Initialize autocomplete on all record reference fields. */
-  function init() {
-    var fields = document.querySelectorAll('.record-ref-autocomplete');
-    fields.forEach(function (input) {
-      var targetType = input.getAttribute('data-target-type');
-      var hiddenFieldId = input.getAttribute('data-hidden-field');
-      var resultsEl = document.getElementById(hiddenFieldId + '_results');
-      if (!targetType || !resultsEl) return;
+  /** The pieces an input works with, or null when it is not complete. */
+  function partsOf(input) {
+    var targetType = input.getAttribute('data-target-type');
+    var hiddenFieldId = input.getAttribute('data-hidden-field');
+    var resultsEl = document.getElementById(hiddenFieldId + '_results');
+    if (!targetType || !resultsEl) return null;
+    return { targetType: targetType, hiddenFieldId: hiddenFieldId, resultsEl: resultsEl };
+  }
 
-      var search = debounce(function () {
-        if (ownerFieldEmpty(input)) {
-          showHint(resultsEl, input.getAttribute('data-owner-hint') || 'Choose the owner first');
-          return;
-        }
-        var q = input.value.trim();
-        if (q.length < MIN_CHARS) {
-          resultsEl.style.display = 'none';
-          return;
-        }
-        fetchResults(targetType, q, input, function (items) {
-          showResults(resultsEl, items, hiddenFieldId, input);
-        });
-      }, DEBOUNCE_MS);
-
-      input.addEventListener('input', function () {
-        // Clear the hidden field when user edits (forces re-selection)
-        var hidden = document.getElementById(hiddenFieldId);
-        if (hidden) hidden.value = '';
-        search();
-      });
-
-      input.addEventListener('blur', function () {
-        // Delay hide to allow mousedown on results
-        setTimeout(function () { resultsEl.style.display = 'none'; }, 200);
-      });
-
-      input.addEventListener('focus', function () {
-        if (ownerFieldEmpty(input) || input.value.trim().length >= MIN_CHARS) {
-          search();
-        }
-      });
+  function search(input) {
+    var parts = partsOf(input);
+    if (!parts) return;
+    if (ownerFieldEmpty(input)) {
+      showHint(parts.resultsEl, input.getAttribute('data-owner-hint') || 'Choose the owner first');
+      return;
+    }
+    var q = input.value.trim();
+    if (q.length < MIN_CHARS) {
+      parts.resultsEl.style.display = 'none';
+      return;
+    }
+    fetchResults(parts.targetType, q, input, function (items) {
+      // A slower answer for an older query must not replace a newer one.
+      if (input.value.trim() === q) {
+        showResults(parts.resultsEl, items, parts.hiddenFieldId, input);
+      }
     });
   }
 
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', init);
-  } else {
-    init();
+  /** `search`, debounced per input. */
+  function debounced(input) {
+    if (!input._recordRefSearch) {
+      input._recordRefSearch = debounce(function () { search(input); }, DEBOUNCE_MS);
+    }
+    input._recordRefSearch();
   }
+
+  function target(e) {
+    return e.target && e.target.closest ? e.target.closest(SELECTOR) : null;
+  }
+
+  document.addEventListener('input', function (e) {
+    var input = target(e);
+    if (!input) return;
+    // Clear the hidden field when user edits (forces re-selection)
+    var hidden = document.getElementById(input.getAttribute('data-hidden-field'));
+    if (hidden) hidden.value = '';
+    debounced(input);
+  });
+
+  document.addEventListener('focusin', function (e) {
+    var input = target(e);
+    if (input && (ownerFieldEmpty(input) || input.value.trim().length >= MIN_CHARS)) {
+      debounced(input);
+    }
+  });
+
+  document.addEventListener('focusout', function (e) {
+    var input = target(e);
+    var parts = input && partsOf(input);
+    if (!parts) return;
+    // Delay hide to allow mousedown on results
+    setTimeout(function () { parts.resultsEl.style.display = 'none'; }, 200);
+  });
 })();
