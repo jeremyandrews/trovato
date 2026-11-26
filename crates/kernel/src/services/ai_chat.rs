@@ -791,7 +791,7 @@ async fn load_items_by_ids(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Item>> {
     }
     let items = sqlx::query_as::<_, Item>(
         "SELECT id, current_revision_id, type, title, author_id, status, created, changed, \
-         promote, sticky, fields, stage_id, language, item_group_id, retention_days \
+         promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode \
          FROM item WHERE id = ANY($1)",
     )
     .bind(ids)

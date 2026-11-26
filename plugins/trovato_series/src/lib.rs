@@ -170,6 +170,7 @@ mod tests {
             created: 0,
             changed: 0,
             language: None,
+            comment_mode: None,
         }
     }
 

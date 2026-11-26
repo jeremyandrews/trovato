@@ -354,6 +354,7 @@ mod tests {
             language: "en".to_string(),
             item_group_id: Uuid::nil(),
             retention_days: None,
+            comment_mode: None,
         }
     }
 

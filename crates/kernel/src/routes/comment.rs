@@ -233,6 +233,15 @@ async fn list_item_comments(
         return Err(not_found());
     }
 
+    // Hidden (the item's own override, or its type's, B239) shows no
+    // comments at all, as the item page's own thread does: an empty page
+    // rather than the full list this route served before this check existed.
+    if settings_for_item(&state, &item).await.mode
+        == crate::content::comment_settings::CommentMode::Hidden
+    {
+        return Ok(Json(Page::slice(Vec::new(), paging.window(50, 100))));
+    }
+
     let include_author = query
         .include
         .as_ref()
@@ -412,10 +421,11 @@ async fn create_comment_inner(
         ));
     }
 
-    // Only an item whose type takes comments. Closed shows the thread and
-    // takes nothing new; hidden shows nothing. The form is not offered on
-    // either, and this is what stops a post that does not come from it.
-    if settings_for_type(state, &item.item_type).await.mode
+    // Only an item effectively open: its own override if it has one
+    // (B239), otherwise its type's. Closed shows the thread and takes
+    // nothing new; hidden shows nothing. The form is not offered on either,
+    // and this is what stops a post that does not come from it.
+    if settings_for_item(state, &item).await.mode
         != crate::content::comment_settings::CommentMode::Open
     {
         return Err(AppError::with_status(
@@ -837,6 +847,29 @@ pub(crate) async fn settings_for_type(
     crate::content::comment_settings::CommentSettings::of(row.as_ref().map(|t| &t.settings))
 }
 
+/// The settings that actually govern `item`: its type's, with `mode`
+/// resolved through [`crate::content::comment_settings::effective_mode`] —
+/// the item's own override when it has one (B239), otherwise the type's.
+/// Threading, order and page size are always the type's; B239 adds no
+/// per-item override for those.
+///
+/// The one place every comment surface reads an item's comment settings
+/// through: the thread, every write route (the form and the JSON API,
+/// replies included), the comment listing API and the search index (the last
+/// through the `item_search_vector` SQL function, which reads the same
+/// column directly).
+pub(crate) async fn settings_for_item(
+    state: &AppState,
+    item: &crate::models::Item,
+) -> crate::content::comment_settings::CommentSettings {
+    let mut settings = settings_for_type(state, &item.item_type).await;
+    settings.mode = crate::content::comment_settings::effective_mode(
+        item.comment_mode.as_deref(),
+        settings.mode,
+    );
+    settings
+}
+
 /// An item's published comments in the order its type shows them: threaded
 /// (each reply under its parent) or flat (by date), oldest or newest first.
 async fn ordered_thread(
@@ -875,7 +908,7 @@ pub(crate) async fn comment_location(state: &AppState, comment: &Comment) -> Str
     ) else {
         return item_path;
     };
-    let settings = settings_for_type(state, &item.item_type).await;
+    let settings = settings_for_item(state, &item).await;
     let page = ordered_thread(comments, item.id, settings)
         .await
         .ok()
@@ -919,7 +952,7 @@ pub(crate) async fn render_thread(
         return String::new();
     };
 
-    let settings = settings_for_type(state, &item.item_type).await;
+    let settings = settings_for_item(state, item).await;
     if settings.mode == CommentMode::Hidden {
         return String::new();
     }
@@ -1186,7 +1219,7 @@ async fn reply_page(
     if !viewer.can("post comments") {
         return comment_page_forbidden("You are not authorized to post comments.");
     }
-    if settings_for_type(state, &target.item.item_type).await.mode
+    if settings_for_item(state, &target.item).await.mode
         != crate::content::comment_settings::CommentMode::Open
     {
         return comment_page_forbidden("Comments are closed for this item.");

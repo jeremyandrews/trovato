@@ -21,9 +21,9 @@ sql = "select prefs from admin_preference where user_id = $?"
 count = 1
 sql = "select ct.id, ct.label, ct.description, ct.weight, ct.created, ct.changed, sc.machine_name, sc.visibility, sc.is_default from category_tag ct join stage_config sc on ct.id = sc.tag_id where ct.category_id = ? order by ct.weight asc, ct.label asc"
 
-["admin_content.admin.cold".statements."select:item:a63ed5e8"]
+["admin_content.admin.cold".statements."select:item:d525e561"]
 count = 1
-sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days from item where ?=? order by changed desc, id desc limit $? offset $?"
+sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode from item where ?=? order by changed desc, id desc limit $? offset $?"
 
 ["admin_content.admin.cold".statements."select:item:e07834b2"]
 count = 1
@@ -67,9 +67,9 @@ sql = "select prefs from admin_preference where user_id = $?"
 count = 1
 sql = "select ct.id, ct.label, ct.description, ct.weight, ct.created, ct.changed, sc.machine_name, sc.visibility, sc.is_default from category_tag ct join stage_config sc on ct.id = sc.tag_id where ct.category_id = ? order by ct.weight asc, ct.label asc"
 
-["admin_content.admin.warm".statements."select:item:a63ed5e8"]
+["admin_content.admin.warm".statements."select:item:d525e561"]
 count = 1
-sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days from item where ?=? order by changed desc, id desc limit $? offset $?"
+sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode from item where ?=? order by changed desc, id desc limit $? offset $?"
 
 ["admin_content.admin.warm".statements."select:item:e07834b2"]
 count = 1
@@ -657,9 +657,9 @@ sql = "insert into comment (id, item_id, parent_id, author_id, subject, body, bo
 count = 1
 sql = "insert into mail_outbox (tenant_id, kind, priority, category, recipient, subject, text_body, html_body, attachments, unsubscribe_url, secret, dedupe_key, max_attempts) values ($?) on conflict (tenant_id, dedupe_key) where dedupe_key is not null do nothing returning id"
 
-["comment.admin.post".statements."select:item:39a39bd6"]
+["comment.admin.post".statements."select:item:3d6a8a90"]
 count = 1
-sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days from item where id = $?"
+sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode from item where id = $?"
 
 ["comment.admin.post".statements."select:item_type:4deef075"]
 count = 1
@@ -1019,13 +1019,13 @@ host_calls = 0
 gathers = 0
 renders = 1
 
-["item.anonymous.cold".statements."select:item:177d33c0"]
-count = 1
-sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days from item where (fields @> $?::jsonb or fields @> $?::jsonb) and type = $? order by changed desc"
-
-["item.anonymous.cold".statements."select:item:39a39bd6"]
+["item.anonymous.cold".statements."select:item:3d6a8a90"]
 count = 3
-sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days from item where id = $?"
+sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode from item where id = $?"
+
+["item.anonymous.cold".statements."select:item:990fbf53"]
+count = 1
+sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode from item where (fields @> $?::jsonb or fields @> $?::jsonb) and type = $? order by changed desc"
 
 ["item.anonymous.cold".statements."select:item_translation:fc36d24f"]
 count = 1
@@ -1077,13 +1077,13 @@ host_calls = 0
 gathers = 0
 renders = 1
 
-["item.anonymous.warm".statements."select:item:177d33c0"]
-count = 1
-sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days from item where (fields @> $?::jsonb or fields @> $?::jsonb) and type = $? order by changed desc"
-
-["item.anonymous.warm".statements."select:item:39a39bd6"]
+["item.anonymous.warm".statements."select:item:3d6a8a90"]
 count = 2
-sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days from item where id = $?"
+sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode from item where id = $?"
+
+["item.anonymous.warm".statements."select:item:990fbf53"]
+count = 1
+sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode from item where (fields @> $?::jsonb or fields @> $?::jsonb) and type = $? order by changed desc"
 
 ["item.anonymous.warm".statements."select:item_translation:fc36d24f"]
 count = 1
@@ -1127,13 +1127,13 @@ host_calls = 0
 gathers = 0
 renders = 1
 
-["item.user.cold".statements."select:item:177d33c0"]
-count = 1
-sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days from item where (fields @> $?::jsonb or fields @> $?::jsonb) and type = $? order by changed desc"
-
-["item.user.cold".statements."select:item:39a39bd6"]
+["item.user.cold".statements."select:item:3d6a8a90"]
 count = 3
-sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days from item where id = $?"
+sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode from item where id = $?"
+
+["item.user.cold".statements."select:item:990fbf53"]
+count = 1
+sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode from item where (fields @> $?::jsonb or fields @> $?::jsonb) and type = $? order by changed desc"
 
 ["item.user.cold".statements."select:item_translation:fc36d24f"]
 count = 1
@@ -1193,13 +1193,13 @@ host_calls = 0
 gathers = 0
 renders = 1
 
-["item.user.warm".statements."select:item:177d33c0"]
-count = 1
-sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days from item where (fields @> $?::jsonb or fields @> $?::jsonb) and type = $? order by changed desc"
-
-["item.user.warm".statements."select:item:39a39bd6"]
+["item.user.warm".statements."select:item:3d6a8a90"]
 count = 2
-sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days from item where id = $?"
+sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode from item where id = $?"
+
+["item.user.warm".statements."select:item:990fbf53"]
+count = 1
+sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode from item where (fields @> $?::jsonb or fields @> $?::jsonb) and type = $? order by changed desc"
 
 ["item.user.warm".statements."select:item_translation:fc36d24f"]
 count = 1
@@ -1299,9 +1299,9 @@ renders = 0
 count = 1
 sql = "select count(*), numnode(websearch_to_tsquery(?)) from item where search_vector @@ websearch_to_tsquery(?) and status = ? and stage_id = any($?)"
 
-["search.anonymous.cold".statements."select:item:39a39bd6"]
+["search.anonymous.cold".statements."select:item:3d6a8a90"]
 count = 1
-sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days from item where id = $?"
+sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode from item where id = $?"
 
 ["search.anonymous.cold".statements."select:item:84ddc49e"]
 count = 1
@@ -1375,9 +1375,9 @@ host_calls = 0
 gathers = 0
 renders = 0
 
-["search.user.cold".statements."select:item:39a39bd6"]
+["search.user.cold".statements."select:item:3d6a8a90"]
 count = 1
-sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days from item where id = $?"
+sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode from item where id = $?"
 
 ["search.user.cold".statements."select:item:7cf4edf9"]
 count = 1

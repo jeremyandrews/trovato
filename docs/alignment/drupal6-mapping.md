@@ -424,13 +424,25 @@ Systematic mapping of Drupal 6 + CCK + Views subsystems to their Trovato equival
 | Comment threading | Threaded display | Aligned |
 | Comment moderation | Admin moderation UI | Aligned |
 | Per-content-type comment settings | Plugin configuration | Aligned |
+| `node.comment` (per node override) | `item.comment_mode` (B239) | Aligned |
 | `hook_comment` | Plugin-handled | Aligned |
 | Comment subscriptions/notifications | Not implemented | Missing |
+
+D6's `node.comment` is per node, 0, 1 or 2; Trovato's `item.comment_mode`
+maps it directly, `NULL` being the row a site that never imported comments
+on a node holds:
+
+| D6 `node.comment` | Trovato `item.comment_mode` |
+|---|---|
+| 0 (disabled) | `hidden` |
+| 1 (read only) | `closed` |
+| 2 (read and write) | `open` |
 
 **Key files:**
 - `plugins/trovato_comments/` -- Comments WASM plugin (permissions, menu)
 - `crates/kernel/src/models/comment.rs` -- Comment model with `parent_id`, `depth`, recursive CTE for threaded listing
 - `crates/kernel/src/routes/comment.rs` -- comment CRUD routes
+- `crates/kernel/src/content/comment_settings.rs` -- the type's four settings and the item's override, resolved by `effective_mode`
 
 ---
 

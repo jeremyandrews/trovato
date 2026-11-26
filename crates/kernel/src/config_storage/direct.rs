@@ -855,7 +855,7 @@ impl DirectConfigStorage {
 
         let row = sqlx::query_as::<_, crate::models::Item>(
             "SELECT id, current_revision_id, type, title, author_id, status, created, changed, \
-             promote, sticky, fields, stage_id, language, item_group_id, retention_days \
+             promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode \
              FROM item WHERE id = $1",
         )
         .bind(uuid)
@@ -1120,7 +1120,7 @@ impl DirectConfigStorage {
         let rows: Vec<crate::models::Item> = if let Some(item_type) = item_type_filter {
             sqlx::query_as(
                 "SELECT id, current_revision_id, type, title, author_id, status, created, changed, \
-                 promote, sticky, fields, stage_id, language, item_group_id, retention_days \
+                 promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode \
                  FROM item WHERE type = $1 ORDER BY created",
             )
             .bind(item_type)
@@ -1130,7 +1130,7 @@ impl DirectConfigStorage {
         } else {
             sqlx::query_as(
                 "SELECT id, current_revision_id, type, title, author_id, status, created, changed, \
-                 promote, sticky, fields, stage_id, language, item_group_id, retention_days \
+                 promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode \
                  FROM item ORDER BY created",
             )
             .fetch_all(&self.pool)
