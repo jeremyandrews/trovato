@@ -76,9 +76,13 @@
                     say('Your comment was submitted and is awaiting review.');
                     return;
                 }
-                // Published: reload so the new comment appears in thread order
-                // rather than being positioned by guesswork here.
-                window.location.reload();
+                // Published: go to the comment, on the page of the thread that
+                // holds it, with the confirmation the page shows for a posted
+                // comment. A bare reload lost both: the message is keyed on
+                // ?comment=posted, and the new comment may be on another page.
+                window.location.assign(
+                    '/comment/' + encodeURIComponent(comment.id) + '?comment=posted'
+                );
             })
             .catch(function () {
                 // Hand the submission back to the browser rather than losing it.
