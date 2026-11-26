@@ -29,6 +29,22 @@ for (const route of routes) {
     );
     expect(summary, `axe violations on ${address}`).toEqual([]);
 
+    // Every admin icon is decorative: hidden from the accessibility tree,
+    // never focusable, and never the only thing in a link or button.
+    const badIcons = await page.locator('svg.admin-icon').evaluateAll((svgs) =>
+      svgs
+        .filter((svg) => {
+          const host = svg.closest('a, button');
+          return (
+            svg.getAttribute('aria-hidden') !== 'true' ||
+            svg.getAttribute('focusable') !== 'false' ||
+            (host !== null && host.textContent.trim() === '')
+          );
+        })
+        .map((svg) => svg.parentElement.outerHTML.slice(0, 160)),
+    );
+    expect(badIcons, `icons on ${address}`).toEqual([]);
+
     if (info.project.name === 'narrow') await expectNoPageScroll(page);
     if (info.project.name === 'rtl') {
       await expect(page.locator('html')).toHaveAttribute('dir', 'rtl');

@@ -1,0 +1,128 @@
+- link "Skip to main content":
+  - /url: "#main"
+- banner:
+  - link "Trovato Administration":
+    - /url: /admin
+    - img "Trovato"
+    - text: Administration
+  - search:
+    - text: Search the administration
+    - searchbox "Search the administration"
+    - button "Search"
+  - button "Quick search"
+  - list:
+    - listitem:
+      - link "View site":
+        - /url: /
+    - listitem:
+      - link "Your preferences":
+        - /url: /admin/preferences
+- navigation "Administration":
+  - list:
+    - listitem:
+      - link "Dashboard":
+        - /url: /admin
+    - listitem:
+      - heading "Content" [level=2]:
+        - button "Content"
+    - listitem:
+      - heading "Structure" [level=2]:
+        - button "Structure" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/structure/overview
+        - listitem:
+          - link "Content types":
+            - /url: /admin/structure/types
+        - listitem:
+          - link "Record types":
+            - /url: /admin/structure/records
+        - listitem:
+          - link "Gathers":
+            - /url: /admin/gather
+        - listitem:
+          - link "Menus":
+            - /url: /admin/structure/menus
+        - listitem:
+          - link "Tiles":
+            - /url: /admin/structure/tiles
+        - listitem:
+          - link "Categories":
+            - /url: /admin/structure/categories
+        - listitem:
+          - link "URL aliases":
+            - /url: /admin/structure/aliases
+        - listitem:
+          - link "URL alias patterns":
+            - /url: /admin/config/pathauto
+    - listitem:
+      - heading "Appearance" [level=2]:
+        - button "Appearance"
+    - listitem:
+      - heading "People" [level=2]:
+        - button "People"
+    - listitem:
+      - heading "Extend" [level=2]:
+        - button "Extend"
+    - listitem:
+      - heading "Configuration" [level=2]:
+        - button "Configuration"
+    - listitem:
+      - heading "Reports" [level=2]:
+        - button "Reports"
+- main:
+  - navigation "Breadcrumb":
+    - list:
+      - listitem:
+        - link "Administration":
+          - /url: /admin
+      - listitem: Structure
+  - heading "Structure" [level=1]
+  - paragraph: "Shape the site: content types and fields, listings, menus, regions, categories and addresses."
+  - link "Add content type":
+    - /url: /admin/structure/types/add
+  - list:
+    - listitem:
+      - heading "Content types" [level=2]:
+        - link "Content types":
+          - /url: /admin/structure/types
+      - paragraph: The kinds of content the site holds, and the fields each one has.
+    - listitem:
+      - heading "Record types" [level=2]:
+        - link "Record types":
+          - /url: /admin/structure/records
+      - paragraph: Structured records plugins keep, and the records of each type.
+    - listitem:
+      - heading "Gathers" [level=2]:
+        - link "Gathers":
+          - /url: /admin/gather
+      - paragraph: Listings and feeds built from content, with their filters and sorts.
+    - listitem:
+      - heading "Menus" [level=2]:
+        - link "Menus":
+          - /url: /admin/structure/menus
+      - paragraph: Navigation menus and the links in them.
+    - listitem:
+      - heading "Tiles" [level=2]:
+        - link "Tiles":
+          - /url: /admin/structure/tiles
+      - paragraph: What appears in each region of the site's pages.
+    - listitem:
+      - heading "Categories" [level=2]:
+        - link "Categories":
+          - /url: /admin/structure/categories
+      - paragraph: Vocabularies and the tags in each, for classifying content.
+    - listitem:
+      - heading "URL aliases" [level=2]:
+        - link "URL aliases":
+          - /url: /admin/structure/aliases
+      - paragraph: Readable addresses for items and pages.
+    - listitem:
+      - heading "URL alias patterns" [level=2]:
+        - link "URL alias patterns":
+          - /url: /admin/config/pathauto
+      - paragraph: Patterns that give new content a readable address automatically.
+  - paragraph:
+    - link "Who can do this?":
+      - /url: /admin/people/who-can?path=/admin/structure/overview

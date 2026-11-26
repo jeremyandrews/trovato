@@ -1,0 +1,112 @@
+- link "Skip to main content":
+  - /url: "#main"
+- banner:
+  - link "Trovato Administration":
+    - /url: /admin
+    - img "Trovato"
+    - text: Administration
+  - search:
+    - text: Search the administration
+    - searchbox "Search the administration"
+    - button "Search"
+  - button "Quick search"
+  - list:
+    - listitem:
+      - link "View site":
+        - /url: /
+    - listitem:
+      - link "Your preferences":
+        - /url: /admin/preferences
+- navigation "Administration":
+  - list:
+    - listitem:
+      - link "Dashboard":
+        - /url: /admin
+    - listitem:
+      - heading "Content" [level=2]:
+        - button "Content"
+    - listitem:
+      - heading "Structure" [level=2]:
+        - button "Structure"
+    - listitem:
+      - heading "Appearance" [level=2]:
+        - button "Appearance"
+    - listitem:
+      - heading "People" [level=2]:
+        - button "People"
+    - listitem:
+      - heading "Extend" [level=2]:
+        - button "Extend"
+    - listitem:
+      - heading "Configuration" [level=2]:
+        - button "Configuration"
+    - listitem:
+      - heading "Reports" [level=2]:
+        - button "Reports" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/reports/overview
+        - listitem:
+          - link "Recent log messages":
+            - /url: /admin/reports/log
+        - listitem:
+          - link "Audit log":
+            - /url: /admin/reports/audit
+        - listitem:
+          - link "Status report":
+            - /url: /admin/reports/status
+        - listitem:
+          - link "Cron":
+            - /url: /admin/reports/cron
+        - listitem:
+          - link "Search report":
+            - /url: /admin/reports/search
+        - listitem:
+          - link "Accessibility":
+            - /url: /admin/reports/accessibility
+- main:
+  - navigation "Breadcrumb":
+    - list:
+      - listitem:
+        - link "Administration":
+          - /url: /admin
+      - listitem: Reports
+  - heading "Reports" [level=1]
+  - paragraph: "What the site has been doing: its log, audit trail, scheduled tasks and searches."
+  - list:
+    - listitem:
+      - heading "Recent log messages" [level=2]:
+        - link "Recent log messages":
+          - /url: /admin/reports/log
+      - paragraph: Errors, warnings and notices the site has recorded, newest first.
+      - paragraph: 4 errors in the last 24 hours
+    - listitem:
+      - heading "Audit log" [level=2]:
+        - link "Audit log":
+          - /url: /admin/reports/audit
+      - paragraph: Who changed what, and when.
+    - listitem:
+      - heading "Status report" [level=2]:
+        - link "Status report":
+          - /url: /admin/reports/status
+      - paragraph: Versions, the database, the cache server, cron, the file system and security settings, checked now.
+    - listitem:
+      - heading "Cron" [level=2]:
+        - link "Cron":
+          - /url: /admin/reports/cron
+      - paragraph: Scheduled background tasks, when each last ran and whether it worked.
+      - paragraph: No run in the last 24 hours
+    - listitem:
+      - heading "Search report" [level=2]:
+        - link "Search report":
+          - /url: /admin/reports/search
+      - paragraph: What visitors search for, and which searches find nothing.
+    - listitem:
+      - heading "Accessibility" [level=2]:
+        - link "Accessibility":
+          - /url: /admin/reports/accessibility
+      - paragraph: Images that lack a text alternative, and how this administration is checked.
+  - paragraph:
+    - link "Who can do this?":
+      - /url: /admin/people/who-can?path=/admin/reports/overview

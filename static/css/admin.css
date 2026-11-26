@@ -33,6 +33,7 @@
         --clay-dark: #8E3A21;
         --clay-light: #E08963;
         --peach: #FFD9A8;
+        --peach-50: #FFEEDD;
         --cream: #FAF5EF;
         --paper: #FFFFFF;
 
@@ -87,6 +88,8 @@
         --success-surface: light-dark(var(--green-50), var(--green-950));
         --warning-surface: light-dark(var(--amber-50), var(--amber-950));
         --focus: light-dark(var(--clay-dark), var(--peach));
+        /* A peach tint behind an icon in clay: the icon chip. */
+        --accent-tint: light-dark(var(--peach-50), var(--night-800));
     }
 
     :root[data-theme="light"] {
@@ -109,6 +112,8 @@
         --primary-surface: var(--accent);
         --primary-text: var(--accent-text);
         --current-marker: var(--accent);
+        --chip-surface: var(--accent-tint);
+        --chip-icon: var(--accent);
 
         /* Type: six steps, body at 1rem. */
         --font-body: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Helvetica Neue", Arial, sans-serif;
@@ -503,7 +508,9 @@
     }
 
     .admin-nav__heading-text {
-        display: block;
+        display: flex;
+        align-items: center;
+        gap: var(--space-2);
         padding: var(--space-2) var(--space-3);
         color: var(--text-muted);
     }
@@ -533,6 +540,17 @@
     .admin-nav__toggle:hover {
         background: var(--surface-hover);
         color: var(--text);
+    }
+
+    /* Focus shows the hover surface as well as the ring, never instead. */
+    .admin-nav__toggle:focus-visible,
+    .admin-nav__link:focus-visible {
+        background: var(--surface-hover);
+    }
+
+    .admin-nav__heading .admin-icon {
+        inline-size: 1.125rem;
+        block-size: 1.125rem;
     }
 
     .admin-nav__chevron {
@@ -580,6 +598,12 @@
         font-weight: 700;
         background: var(--surface-raised);
         box-shadow: inset 0 0 0 1px var(--border);
+    }
+
+    /* The current page keeps its own surface when focused; the ring alone
+       marks its focus. */
+    .admin-nav__link[aria-current="page"]:focus-visible {
+        background: var(--surface-raised);
     }
 
     .admin-nav__link[aria-current="page"]::before {
@@ -1585,6 +1609,90 @@
         background: var(--warning-surface);
     }
 
+    /* Icons (design.md "Icons and status"): decorative, drawn in the
+       current text colour, sized by where they sit. */
+    .admin-icon {
+        flex: none;
+        inline-size: 1.25rem;
+        block-size: 1.25rem;
+    }
+
+    /* The icon chip: a group's or page's icon in clay on a peach tint, on
+       landing tiles and dashboard cards. */
+    .icon-chip {
+        display: inline-flex;
+        flex: none;
+        align-items: center;
+        justify-content: center;
+        inline-size: 40px;
+        block-size: 40px;
+        border: 1px solid transparent;
+        border-radius: var(--radius-large);
+        background: var(--chip-surface);
+        color: var(--chip-icon);
+    }
+
+    .icon-chip .admin-icon {
+        inline-size: 1.5rem;
+        block-size: 1.5rem;
+    }
+
+    .button .admin-icon {
+        inline-size: 1.125rem;
+        block-size: 1.125rem;
+    }
+
+    /* A status line: one sentence of state under a tile or card. Waiting
+       work makes the line itself the badge: the same words, on the warning
+       surface, with a border forced colours draw. */
+    .status-line {
+        margin: var(--space-2) 0 0;
+        color: var(--text-muted);
+        font-size: var(--step--1);
+    }
+
+    a > .status-line {
+        color: inherit;
+        text-decoration: underline;
+    }
+
+    .status-line--waiting,
+    a > .status-line--waiting {
+        display: inline-block;
+        padding: var(--space-1) var(--space-2);
+        border: 1px solid transparent;
+        border-radius: var(--radius);
+        background: var(--warning-surface);
+        color: var(--text);
+        font-weight: 650;
+    }
+
+    /* Landing pages: one tile per page, the heading text the only link. */
+    .landing-tiles {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        max-inline-size: none;
+    }
+
+    .landing-tile h2,
+    .dashboard-card h3 {
+        display: flex;
+        align-items: center;
+        gap: var(--space-3);
+        margin-block: 0 var(--space-2);
+        font-size: var(--step-1);
+    }
+
+    .landing-tile__description {
+        margin: 0;
+        color: var(--text-muted);
+    }
+
+    .dashboard-card__action {
+        margin-block: var(--space-3) 0;
+    }
+
     /* Dashboard and landing pages. */
     .dashboard-grid {
         display: grid;
@@ -1594,11 +1702,6 @@
 
     .dashboard-grid .admin-card {
         margin: 0;
-    }
-
-    .dashboard-card h3 {
-        margin-block: 0 var(--space-2);
-        font-size: var(--step-1);
     }
 
     .dashboard-card__description {
@@ -1919,6 +2022,17 @@
         .admin-nav__link[aria-current="page"]::before {
             background: Highlight;
             forced-color-adjust: none;
+        }
+
+        .admin-nav__link[aria-current="page"]:focus-visible,
+        .admin-tabs__link[aria-current="page"]:focus-visible,
+        .local-tasks__link[aria-current="page"]:focus-visible {
+            outline: 3px solid Highlight;
+            outline-offset: var(--focus-offset);
+        }
+
+        .icon-chip {
+            border-color: CanvasText;
         }
 
         .notice,

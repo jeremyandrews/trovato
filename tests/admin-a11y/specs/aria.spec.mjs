@@ -11,6 +11,15 @@ useProjectLanguage(test);
 const PAGE_TYPES = {
   dashboard: '/admin',
   landing: '/admin/people/overview',
+  // Landing pages with status lines and a main action (B245), and the
+  // sidebar on a page three levels down.
+  'landing-content': '/admin/content/overview',
+  'landing-structure': '/admin/structure/overview',
+  'landing-reports': '/admin/reports/overview',
+  'deep-page': async (page) => {
+    await page.goto('/admin/people/roles');
+    await page.goto(await page.locator('main a[href^="/admin/people/roles/"][href$="/edit"]').first().getAttribute('href'));
+  },
   list: '/admin/content',
   form: '/admin/structure/stages/add',
   preferences: '/admin/preferences',

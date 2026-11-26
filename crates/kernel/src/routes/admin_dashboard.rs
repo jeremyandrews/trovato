@@ -3,10 +3,12 @@
 //!
 //! - **Your recent content**: what the viewer wrote last, and how much of it
 //!   is not published.
-//! - **Waiting for you**: drafts to review and comments to approve.
+//! - **Waiting for you**: drafts to review and comments waiting for
+//!   moderation (the `CommentsWaiting` status line).
 //! - **Scheduled tasks**: whether the last cron run worked, and plugin queue
 //!   jobs that stopped after repeated failures.
-//! - **Recent errors**: errors the site log recorded in the last day.
+//! - **Recent errors**: errors the site log recorded in the last day (the
+//!   `LogErrors` status line).
 //!
 //! A panel is shown only to someone who may open the page it is about, by
 //! the same rule as the sidebar (`admin_nav::offered_pages`), and every row
@@ -34,6 +36,10 @@ pub struct PanelRow {
     pub detail: Option<UiMessage>,
     /// Where it leads, when somewhere.
     pub href: Option<String>,
+    /// The same words as a status line, when the row is one
+    /// ([`admin_nav::status_line`]): drawn by `render_status_line`, as a
+    /// badge when work waits.
+    pub status_line: Option<admin_nav::StatusLine>,
 }
 
 /// One dashboard panel: a section with a heading.
@@ -44,6 +50,8 @@ pub struct Panel {
     pub title: &'static str,
     /// One sentence that says the state in words.
     pub summary: UiMessage,
+    /// The same sentence as a status line, when the summary is one.
+    pub summary_line: Option<admin_nav::StatusLine>,
     pub rows: Vec<PanelRow>,
     /// A link to the whole list, with its words.
     pub more: Option<(UiMessage, String)>,
@@ -54,7 +62,8 @@ fn data(text: impl Into<String>) -> UiMessage {
     UiMessage::new("{text}").arg("text", text)
 }
 
-fn when(timestamp: i64) -> String {
+/// A time as the admin writes it, in UTC: `2026-11-26 14:05`.
+pub(crate) fn when(timestamp: i64) -> String {
     chrono::DateTime::from_timestamp(timestamp, 0)
         .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
         .unwrap_or_default()
@@ -89,8 +98,10 @@ pub async fn panels(state: &AppState, viewer: &UserContext) -> Vec<Panel> {
     if may_open("/admin/reports/cron") {
         panels.push(tasks(state).await);
     }
-    if may_open("/admin/reports/log") {
-        panels.push(errors(state).await);
+    if may_open("/admin/reports/log")
+        && let Some(panel) = errors(state, viewer).await
+    {
+        panels.push(panel);
     }
     panels
 }
@@ -168,6 +179,7 @@ async fn your_content(state: &AppState, viewer: &UserContext) -> Option<Panel> {
                 .arg("time", when(item.changed)),
             ),
             href,
+            status_line: None,
         });
     }
     let summary = if total == 0 {
@@ -184,6 +196,7 @@ async fn your_content(state: &AppState, viewer: &UserContext) -> Option<Panel> {
         key: "content",
         title: "Your recent content",
         summary,
+        summary_line: None,
         rows,
         more: None,
     })
@@ -229,41 +242,64 @@ async fn waiting(
             text: count(n, "{count} draft to review", "{count} drafts to review"),
             detail: None,
             href: Some("/admin/content/moderated?state=draft".to_string()),
+            status_line: None,
         });
     }
+    let mut uncounted = false;
     if may_moderate_comments {
         let pending = crate::models::comment::CommentStatus::Pending.as_i16();
-        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM comment WHERE status = $1")
-            .bind(pending)
-            .fetch_one(state.db())
-            .await
-            .unwrap_or(0);
-        total += n;
-        rows.push(PanelRow {
-            text: count(
-                n,
-                "{count} comment waiting for approval",
-                "{count} comments waiting for approval",
-            ),
-            detail: None,
-            href: Some(format!("/admin/content/comments?status={pending}")),
-        });
+        let href = Some(format!("/admin/content/comments?status={pending}"));
+        match admin_nav::status_line(admin_nav::Status::CommentsWaiting, viewer, state).await {
+            // The sentence and its count are `status_line`'s, so the count is
+            // run and worded once; the total reads the same number.
+            Some(line) => {
+                total += line.message.count.unwrap_or(0);
+                rows.push(PanelRow {
+                    text: line.message.clone(),
+                    detail: None,
+                    href,
+                    status_line: Some(line),
+                });
+            }
+            // The count could not be read: say so, never "nothing waits".
+            None => {
+                uncounted = true;
+                rows.push(PanelRow {
+                    text: UiMessage::new("Comments waiting for moderation could not be counted"),
+                    detail: None,
+                    href,
+                    status_line: None,
+                });
+            }
+        }
     }
     Some(Panel {
         key: "waiting",
         title: "Waiting for you",
-        summary: if total == 0 {
-            UiMessage::new("Nothing is waiting for you.")
-        } else {
-            count(
-                total,
-                "{count} thing waits for you.",
-                "{count} things wait for you.",
-            )
-        },
+        summary: waiting_summary(total, uncounted),
+        summary_line: None,
         rows,
         more: None,
     })
+}
+
+/// The Waiting for you sentence: how much waits, and never an all clear
+/// when part of it could not be counted.
+fn waiting_summary(total: i64, uncounted: bool) -> UiMessage {
+    match (total, uncounted) {
+        (0, false) => UiMessage::new("Nothing is waiting for you."),
+        (0, true) => UiMessage::new("What waits for you could not be counted."),
+        (n, false) => count(
+            n,
+            "{count} thing waits for you.",
+            "{count} things wait for you.",
+        ),
+        (n, true) => count(
+            n,
+            "At least {count} thing waits for you.",
+            "At least {count} things wait for you.",
+        ),
+    }
 }
 
 /// Whether the last cron run worked, and dead plugin queue jobs.
@@ -292,6 +328,7 @@ async fn tasks(state: &AppState) -> Panel {
             text: cron,
             detail: None,
             href: Some("/admin/reports/cron".to_string()),
+            status_line: None,
         },
         PanelRow {
             text: count(
@@ -302,6 +339,7 @@ async fn tasks(state: &AppState) -> Panel {
             detail: (dead > 0)
                 .then(|| UiMessage::new("Listed by the dead-letter API, /api/v1/queue/dlq.")),
             href: None,
+            status_line: None,
         },
     ];
     Panel {
@@ -312,21 +350,25 @@ async fn tasks(state: &AppState) -> Panel {
         } else {
             UiMessage::new("Scheduled tasks are working.")
         },
+        summary_line: None,
         rows,
         more: None,
     }
 }
 
-/// Errors the site log recorded in the last day, newest first.
-async fn errors(state: &AppState) -> Panel {
-    let since = chrono::Utc::now().timestamp() - 24 * 60 * 60;
-    let n: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM system_log WHERE level = 'error' AND created >= $1",
-    )
-    .bind(since)
-    .fetch_one(state.db())
-    .await
-    .unwrap_or(0);
+/// Errors the site log recorded in the last day, newest first. Its summary
+/// is the `LogErrors` status line, so the count is run and worded once;
+/// without it (the count could not be read) there is no panel.
+async fn errors(state: &AppState, viewer: &UserContext) -> Option<Panel> {
+    errors_at(state, viewer, chrono::Utc::now().timestamp()).await
+}
+
+/// The Recent errors panel as at `now` (Unix seconds). The count and the
+/// rows share one cutoff, so an error the summary counts is never missing
+/// from the rows for having crossed the cutoff between two clock reads.
+pub async fn errors_at(state: &AppState, viewer: &UserContext, now: i64) -> Option<Panel> {
+    let line = admin_nav::status_line_at(admin_nav::Status::LogErrors, viewer, state, now).await?;
+    let since = now - 24 * 60 * 60;
     let latest: Vec<(i64, String, String)> = sqlx::query_as(
         "SELECT created, log_type, message FROM system_log \
          WHERE level = 'error' AND created >= $1 ORDER BY id DESC LIMIT $2",
@@ -349,22 +391,20 @@ async fn errors(state: &AppState) -> Panel {
                 "/admin/reports/log?level=error&q={}",
                 urlencoding::encode(&message.chars().take(60).collect::<String>())
             )),
+            status_line: None,
         })
         .collect();
-    Panel {
+    Some(Panel {
         key: "errors",
         title: "Recent errors",
-        summary: count(
-            n,
-            "{count} error in the last 24 hours.",
-            "{count} errors in the last 24 hours.",
-        ),
+        summary: line.message.clone(),
+        summary_line: Some(line),
         rows,
         more: Some((
             UiMessage::new("All errors in the log"),
             "/admin/reports/log?level=error".to_string(),
         )),
-    }
+    })
 }
 
 #[cfg(test)]
@@ -374,6 +414,25 @@ mod tests {
     #[test]
     fn a_long_message_is_shortened_with_an_ellipsis() {
         assert_eq!(shorten("one two three four", 10), "one two t…");
+    }
+
+    #[test]
+    fn the_waiting_summary_never_gives_an_all_clear_it_could_not_count() {
+        assert_eq!(waiting_summary(0, false).s, "Nothing is waiting for you.");
+        assert_eq!(
+            waiting_summary(0, true).s,
+            "What waits for you could not be counted."
+        );
+        let some = waiting_summary(3, false);
+        assert_eq!(
+            (some.plural.as_deref(), some.count),
+            (Some("{count} things wait for you."), Some(3))
+        );
+        let at_least = waiting_summary(3, true);
+        assert_eq!(
+            (at_least.plural.as_deref(), at_least.count),
+            (Some("At least {count} things wait for you."), Some(3))
+        );
     }
 
     #[test]

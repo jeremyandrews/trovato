@@ -1,3 +1,4 @@
+{% import "admin/macros/icons.html" as icons %}
 {#- Admin list macros — shared structure for admin list pages.
 
     Every argument a macro shows is already translated by the caller with
@@ -5,8 +6,8 @@
     data. -#}
 
 {#- The primary action beside a page's heading, for `{% block page_actions %}`. -#}
-{% macro add_link(url, label) %}
-<a href="{{ url }}" class="button button--primary">{{ label }}</a>
+{% macro add_link(url, label, icon="") %}
+<a href="{{ url }}" class="button button--primary">{% if icon %}{{ icons::icon(name=icon) }}{% endif %}{{ label }}</a>
 {% endmacro add_link %}
 
 {#- A helpful empty state: what is missing, and the next thing to do. -#}

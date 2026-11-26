@@ -4,9 +4,11 @@
  * sidebar is simply always open and shown first on a narrow screen.
  *
  * - Marks <html> with `js` at once (this file is loaded in the head, not
- *   deferred), so the sidebar renders in its remembered state with no flash.
+ *   deferred), so the sidebar renders as the server drew it with no flash:
+ *   the current page's group open, and any the viewer opened by hand.
  * - Sidebar groups: each heading's disclosure button (aria-expanded)
- *   shows and hides its list; the collapsed set is saved for the viewer.
+ *   shows and hides its list. Opening or closing a group other than the
+ *   current page's is saved for the viewer, one group per request.
  * - Narrow screens: the Menu button (aria-expanded) shows and hides the
  *   sidebar. Escape closes it and returns focus to the button.
  *
@@ -42,22 +44,26 @@
         });
     };
 
-    function saveCollapsed(nav) {
-        var collapsed = [];
-        nav.querySelectorAll('.admin-nav__group').forEach(function (group) {
-            var button = group.querySelector('.admin-nav__toggle');
-            if (button && button.getAttribute('aria-expanded') === 'false') {
-                collapsed.push(group.getAttribute('data-group'));
-            }
-        });
-        // Cosmetic state only; a failure leaves the page as it is.
+    // Remember one group the viewer opened or closed by hand. The group
+    // holding the current page (data-current) is open on every page, so its
+    // state is never saved. Cosmetic state only; a failure leaves the page
+    // as it is. A group's saves are sent one after another, each once the
+    // last has answered, so quick clicks are stored in the order made and the
+    // last one wins.
+    var saving = {};
+    function saveGroup(group, open) {
+        if (!group || group.hasAttribute('data-current')) return;
+        var slug = group.getAttribute('data-group');
         try {
-            fetch('/admin/preferences/nav', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ collapsed: collapsed })
-            }).catch(function () {});
+            var send = function () {
+                return fetch('/admin/preferences/nav', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ group: slug, open: open })
+                }).catch(function () {});
+            };
+            saving[slug] = (saving[slug] || Promise.resolve()).then(send, send);
         } catch (e) { /* older browser: not remembered */ }
     }
 
@@ -77,7 +83,7 @@
                 } else {
                     list.removeAttribute('data-collapsed');
                 }
-                saveCollapsed(nav);
+                saveGroup(button.closest('.admin-nav__group'), !open);
             });
         });
 
