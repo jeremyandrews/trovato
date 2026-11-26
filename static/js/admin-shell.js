@@ -47,16 +47,23 @@
     // Remember one group the viewer opened or closed by hand. The group
     // holding the current page (data-current) is open on every page, so its
     // state is never saved. Cosmetic state only; a failure leaves the page
-    // as it is.
+    // as it is. A group's saves are sent one after another, each once the
+    // last has answered, so quick clicks are stored in the order made and the
+    // last one wins.
+    var saving = {};
     function saveGroup(group, open) {
         if (!group || group.hasAttribute('data-current')) return;
+        var slug = group.getAttribute('data-group');
         try {
-            fetch('/admin/preferences/nav', {
-                method: 'POST',
-                credentials: 'same-origin',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ group: group.getAttribute('data-group'), open: open })
-            }).catch(function () {});
+            var send = function () {
+                return fetch('/admin/preferences/nav', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ group: slug, open: open })
+                }).catch(function () {});
+            };
+            saving[slug] = (saving[slug] || Promise.resolve()).then(send, send);
         } catch (e) { /* older browser: not remembered */ }
     }
 

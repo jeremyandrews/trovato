@@ -40,6 +40,31 @@ test('a sidebar group opens and closes with Enter and Space, and stays that way 
   await expect(page.locator('button[aria-controls="admin-nav-reports"]')).toHaveAttribute('aria-expanded', before);
 });
 
+test('a group opened and closed quickly is remembered as last left, even when the first save is slow', async ({ page }, info) => {
+  test.skip(info.project.name === 'narrow', 'the sidebar is behind the menu button at this width');
+  await page.goto('/admin/content');
+  const toggle = page.locator('button[aria-controls="admin-nav-appearance"]');
+  const before = await toggle.getAttribute('aria-expanded');
+  // Hold the first save back, so a second save sent at once would be stored first.
+  let held = false;
+  await page.route('**/admin/preferences/nav', async (route) => {
+    if (!held) {
+      held = true;
+      await new Promise((resolve) => setTimeout(resolve, 800));
+    }
+    await route.continue();
+  });
+  let answered = 0;
+  page.on('response', (r) => { if (r.url().endsWith('/admin/preferences/nav')) answered += 1; });
+  await toggle.click();
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-expanded', before);
+  await expect.poll(() => answered, { timeout: 10000 }).toBe(2);
+  await page.unroute('**/admin/preferences/nav');
+  await page.goto('/admin/content');
+  await expect(page.locator('button[aria-controls="admin-nav-appearance"]')).toHaveAttribute('aria-expanded', before);
+});
+
 test('closing the current page\'s group is not saved: it opens again on the next page', async ({ page }, info) => {
   test.skip(info.project.name === 'narrow', 'the sidebar is behind the menu button at this width');
   await page.goto('/admin/people/roles');
