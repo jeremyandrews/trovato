@@ -3,7 +3,7 @@
 use std::collections::HashSet;
 
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Redirect, Response};
+use axum::response::{Html, IntoResponse, Response};
 use tower_sessions::Session;
 use uuid::Uuid;
 
@@ -88,15 +88,18 @@ fn html_forbidden() -> Response {
     render_forbidden("You do not have permission to view this page.")
 }
 
-/// The HTML refusal for nobody signed in: off to the login form.
+/// The HTML refusal for nobody signed in: `401`, which the error-page layer
+/// shows a browser as the `403` "Access denied" page with the login form,
+/// carrying the requested path as the form's destination.
 fn html_login() -> Response {
-    Redirect::to("/user/login").into_response()
+    render_login_required()
 }
 
-/// Require an authenticated, active user, or redirect to login.
+/// Require an authenticated, active user, or refuse with the login form.
 ///
 /// Returns the [`User`] if one is logged in and active (`status=1`).
-/// Destroys the session and redirects to login if the user is blocked.
+/// Ends the session of a blocked user and refuses as for nobody
+/// ([`render_login_required`]).
 ///
 /// This is the HTML half of the one refusal rule; [`require_login_json`] is
 /// the JSON half.
@@ -106,7 +109,7 @@ pub async fn require_login(state: &AppState, session: &Session) -> Result<User, 
 
 /// Require an authenticated, active **admin** user, or redirect/reject.
 ///
-/// Returns the admin [`User`] on success. Redirects to `/user/login` if the
+/// Returns the admin [`User`] on success. Refuses with [`render_login_required`] if the
 /// session has no valid user or the user is blocked. Returns 403 if the user
 /// exists and is active but is not an admin.
 pub async fn require_admin(state: &AppState, session: &Session) -> Result<User, Response> {
@@ -122,7 +125,7 @@ pub async fn require_admin(state: &AppState, session: &Session) -> Result<User, 
 ///
 /// Returns the [`User`] if the session user is active and has the named
 /// permission. Admin users (`is_admin == true`) are implicitly granted all
-/// permissions. Redirects to `/user/login` if unauthenticated or blocked.
+/// permissions. [`render_login_required`] if unauthenticated or blocked.
 /// Returns 403 if the user exists but lacks the permission.
 pub async fn require_permission(
     state: &AppState,
@@ -783,6 +786,20 @@ pub fn render_forbidden(message: &str) -> Response {
 pub fn render_server_error(message: &str) -> Response {
     error_page(StatusCode::INTERNAL_SERVER_ERROR, message)
 }
+
+/// The refusal for nobody signed in on a page that needs a sign in: `401`.
+///
+/// A browser is shown it as the `403` "Access denied" page with the login form
+/// on it, whose destination is the page that was asked for, so signing in
+/// lands the visitor where they were going (`middleware::error_page`). It used
+/// to be a bare redirect to `/user/login`, which lost the requested page and
+/// answered `200` where a crawler or an old link should see a refusal.
+pub fn render_login_required() -> Response {
+    error_page(StatusCode::UNAUTHORIZED, LOGIN_REQUIRED_MESSAGE)
+}
+
+/// What the access-denied page says to nobody signed in.
+pub const LOGIN_REQUIRED_MESSAGE: &str = "You are not authorized to access this page.";
 
 /// A `404 Not Found` page.
 pub fn render_not_found() -> Response {

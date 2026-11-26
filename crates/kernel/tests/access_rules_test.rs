@@ -494,7 +494,7 @@ fn the_rules_screens_refuse_anonymous_and_plain_users() {
                 let (status, _) = get(app, cookies, uri).await;
                 assert_ne!(status, StatusCode::OK, "GET {uri} served {who}");
                 assert!(
-                    status == StatusCode::FORBIDDEN || status.is_redirection(),
+                    status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED,
                     "GET {uri} for {who}: {status}"
                 );
             }
@@ -508,7 +508,7 @@ fn the_rules_screens_refuse_anonymous_and_plain_users() {
                 .await;
                 let status = response.status();
                 assert!(
-                    status == StatusCode::FORBIDDEN || status.is_redirection(),
+                    status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED,
                     "POST {uri} for {who}: {status}"
                 );
             }

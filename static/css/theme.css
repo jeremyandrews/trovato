@@ -1315,6 +1315,14 @@ html {
     padding: 2rem 2.5rem;
 }
 
+/* The login form on the access-denied page a visitor who is not signed in is
+   shown (templates/error.html). */
+.error-page__login {
+    max-width: 24rem;
+    margin: 1.5rem 0;
+    padding: 0;
+}
+
 .login-form__field {
     margin-bottom: 1.25rem;
 }

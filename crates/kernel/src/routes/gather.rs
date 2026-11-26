@@ -16,7 +16,7 @@ use axum::{
     Extension, Router,
     extract::{Path, Query, State},
     http::StatusCode,
-    response::{Html, IntoResponse, Json, Redirect, Response},
+    response::{Html, IntoResponse, Json, Response},
     routing::get,
 };
 use serde::{Deserialize, Serialize};
@@ -291,11 +291,11 @@ struct AdhocQueryRequest {
 // -------------------------------------------------------------------------
 
 /// The refusal an HTML path gives a viewer who may not run a gather: the
-/// login redirect for an anonymous visitor, 403 for a signed-in one, exactly
+/// access-denied page with the login form for an anonymous visitor, 403 for a signed-in one, exactly
 /// as [`require_permission`](super::helpers::require_permission) answers.
 pub fn gather_denied_html(denied: &GatherDenied) -> Response {
     match denied {
-        GatherDenied::Anonymous { .. } => Redirect::to("/user/login").into_response(),
+        GatherDenied::Anonymous { .. } => super::helpers::render_login_required(),
         GatherDenied::Forbidden { .. } => super::helpers::render_forbidden(&denied.to_string()),
     }
 }

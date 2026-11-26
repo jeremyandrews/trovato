@@ -72,6 +72,10 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     "administer content",
     "delete own content",
     "delete any content",
+    // An author reads their own unpublished items (Drupal's permission of
+    // the same name). Granted by no migration; an administrator holds it
+    // implicitly. See `content::item_service::VIEW_OWN_UNPUBLISHED`.
+    "view own unpublished content",
     // An item's revision history, its past revisions and a comparison of two,
     // for a user who may view the item but not edit it (an editor sees the
     // history through their edit access already). Drupal's permission of the

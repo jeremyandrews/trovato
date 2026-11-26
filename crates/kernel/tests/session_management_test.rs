@@ -222,7 +222,7 @@ fn a_revoked_sessions_next_request_fails() {
             .await;
         assert_eq!(
             after.status(),
-            StatusCode::SEE_OTHER,
+            StatusCode::UNAUTHORIZED,
             "a revoked session must not be able to reach a login-gated page"
         );
 
@@ -314,7 +314,7 @@ fn revoke_others_keeps_the_calling_session() {
                 &a,
             )
             .await;
-        assert_eq!(other.status(), StatusCode::SEE_OTHER);
+        assert_eq!(other.status(), StatusCode::UNAUTHORIZED);
     });
 }
 
@@ -486,7 +486,7 @@ fn an_admin_can_view_and_revoke_any_users_session() {
                 &subject_cookies,
             )
             .await;
-        assert_eq!(after.status(), StatusCode::SEE_OTHER);
+        assert_eq!(after.status(), StatusCode::UNAUTHORIZED);
 
         // Audited as an ADMIN revocation, recording both the subject and the actor.
         let row: (Option<uuid::Uuid>, Option<uuid::Uuid>) = sqlx::query_as(
@@ -775,7 +775,7 @@ fn a_password_change_ends_other_sessions_and_keeps_the_callers() {
 
         assert_eq!(
             profile_status(app, &elsewhere, UA_FIREFOX).await,
-            StatusCode::SEE_OTHER,
+            StatusCode::UNAUTHORIZED,
             "a password change must end the account's other sessions"
         );
         assert_eq!(
@@ -817,7 +817,7 @@ fn a_password_reset_by_token_ends_every_session() {
         for (cookies, ua) in [(&one, UA_CHROME), (&two, UA_FIREFOX)] {
             assert_eq!(
                 profile_status(app, cookies, ua).await,
-                StatusCode::SEE_OTHER,
+                StatusCode::UNAUTHORIZED,
                 "a password reset must end every session of the account"
             );
         }
@@ -901,7 +901,7 @@ fn a_recovery_reset_ends_prior_sessions() {
 
         assert_eq!(
             profile_status(app, &prior, UA_CHROME).await,
-            StatusCode::SEE_OTHER,
+            StatusCode::UNAUTHORIZED,
             "a recovery must end the sessions the account had before it"
         );
         assert_eq!(
@@ -988,7 +988,7 @@ fn an_admin_setting_a_users_password_ends_their_sessions() {
 
         assert_eq!(
             profile_status(app, &victim, UA_CHROME).await,
-            StatusCode::SEE_OTHER,
+            StatusCode::UNAUTHORIZED,
             "a password set by an administrator must end the user's sessions"
         );
         assert_eq!(

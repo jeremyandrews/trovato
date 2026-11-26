@@ -188,13 +188,17 @@ fn the_settings_screen_is_for_site_administrators_only() {
         let (_, plain) = common::user_holding(app, "srchusr", &[]).await;
         let status = get(app, &plain, "/admin/config/search").await.status();
         assert!(
-            status == StatusCode::FORBIDDEN || status.is_redirection(),
+            status == StatusCode::FORBIDDEN
+                || status == StatusCode::UNAUTHORIZED
+                || status.is_redirection(),
             "a member without `administer site` must be refused, got {status}"
         );
 
         let status = get(app, "", "/admin/config/search").await.status();
         assert!(
-            status == StatusCode::FORBIDDEN || status.is_redirection(),
+            status == StatusCode::FORBIDDEN
+                || status == StatusCode::UNAUTHORIZED
+                || status.is_redirection(),
             "an anonymous visitor must be refused, got {status}"
         );
     });
@@ -220,7 +224,9 @@ fn saving_requires_the_permission_too() {
             .await;
         let status = response.status();
         assert!(
-            status == StatusCode::FORBIDDEN || status.is_redirection(),
+            status == StatusCode::FORBIDDEN
+                || status == StatusCode::UNAUTHORIZED
+                || status.is_redirection(),
             "got {status}"
         );
         assert_eq!(

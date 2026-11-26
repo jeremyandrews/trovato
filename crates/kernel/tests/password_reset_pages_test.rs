@@ -505,7 +505,7 @@ fn a_valid_post_sets_the_password_and_lands_on_the_login_page() {
             .await;
         assert_eq!(
             profile.status(),
-            StatusCode::SEE_OTHER,
+            StatusCode::UNAUTHORIZED,
             "every session ends"
         );
 

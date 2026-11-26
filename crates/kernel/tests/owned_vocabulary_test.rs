@@ -367,11 +367,12 @@ fn the_owner_route_admits_managers_and_refuses_everyone_else() {
         let list = format!("{base}/{vocabulary}");
         let add = format!("{list}/add");
 
-        // Anonymous: every route sends to the login form, none answers.
+        // Anonymous: every route refuses (401 to a script; a browser is shown
+        // the access-denied page with the login form), none answers.
         for uri in [&base, &list, &add] {
             let (status, _) = get(app, "", uri).await;
             assert!(
-                status.is_redirection(),
+                status == StatusCode::UNAUTHORIZED,
                 "anonymous GET {uri} answered {status}"
             );
         }
