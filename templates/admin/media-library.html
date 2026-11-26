@@ -2,23 +2,21 @@
 {% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
+{#- The media library, a grid. `list` is its filter and page
+    (routes::admin_list); the text filter matches the file name. -#}
+
 {% block page_title %}{{ t(s="Media Library") }}{% endblock page_title %}
 
 {% block content %}
 <div class="admin-card">
-    <form class="filter-form" method="get" action="/admin/media">
-        <div class="filter-row">
-            {{ form::select(name="type", label=t(s="Type"), options=type_options, value=type_filter, translate_options=true, wrapper="filter-item") }}
-            {{ form::field(name="q", type="search", label=t(s="Search"), hint=t(s="Part of a file name."), value=search, width="20", wrapper="filter-item") }}
-            <div class="filter-item">
-                <button type="submit" class="button button--secondary">{{ t(s="Filter") }}</button>
-            </div>
-        </div>
-    </form>
+    {{ list::filter_start(action="/admin/media", label=t(s="Filter media")) }}
+        {{ form::field(name="q", type="search", label=t(s="File name contains"), value=list.q, width="20", wrapper="filter-item") }}
+        {{ form::select(name="type", label=t(s="Type"), options=type_options, value=type_filter, translate_options=true, wrapper="filter-item") }}
+    {{ list::filter_end(list=list, action="/admin/media") }}
 </div>
 
 {% if files | length > 0 %}
-<p class="result-count">{{ t(s="{count} file found", plural="{count} files found", count=total) }}</p>
+{{ list::count(list=list) }}
 <ul class="media-grid">
     {% for file in files %}
     <li class="media-card">
@@ -57,18 +55,9 @@
     {% endfor %}
 </ul>
 
-{% if total_pages > 1 %}
-<nav class="pagination" aria-label="{{ t(s='Pages of media') }}">
-    {% if page > 1 %}
-    <a href="/admin/media?page={{ page - 1 }}&type={{ type_filter }}&q={{ search }}" class="button button--secondary">{{ t(s="Previous page") }}</a>
-    {% endif %}
-    <span class="pagination-info">{{ t(s="Page {page} of {pages}", page=page, pages=total_pages) }}</span>
-    {% if page < total_pages %}
-    <a href="/admin/media?page={{ page + 1 }}&type={{ type_filter }}&q={{ search }}" class="button button--secondary">{{ t(s="Next page") }}</a>
-    {% endif %}
-</nav>
-{% endif %}
-
+{{ list::pager(list=list, action="/admin/media", label=t(s="Pages of media")) }}
+{% elif list.filtered %}
+{{ list::empty(message=t(s="No media matches this filter."), add_url="/admin/media", add_label=t(s="Clear filter")) }}
 {% else %}
 {{ list::empty(message=t(s="No media files found.")) }}
 {% endif %}

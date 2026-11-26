@@ -213,7 +213,16 @@ async fn dashboard(State(state): State<AppState>, session: Session) -> Response 
 // File Management
 // =============================================================================
 
-/// List all files.
+/// The file listing's sortable columns: key and SQL.
+const FILE_SORTS: &[(&str, &str)] = &[
+    ("name", "lower(filename)"),
+    ("type", "filemime"),
+    ("size", "filesize"),
+    ("status", "status"),
+    ("uploaded", "created"),
+];
+
+/// List files, a page at a time, filtered by status and file name.
 ///
 /// GET /admin/content/files
 async fn list_files(
@@ -231,8 +240,22 @@ async fn list_files(
         _ => None,
     });
 
-    let files = match state.files().list_by_status(status_filter, 100, 0).await {
-        Ok(files) => files,
+    let query = ListQuery::from_params(&params);
+    let sort = query.sort(FILE_SORTS, ("uploaded", true));
+    let like = query.like();
+
+    let (files, total) = match state
+        .files()
+        .admin_page(
+            status_filter,
+            like.as_deref(),
+            &sort.order_by(),
+            PER_PAGE,
+            query.offset(),
+        )
+        .await
+    {
+        Ok(page) => page,
         Err(e) => {
             tracing::error!(error = %e, "failed to list files");
             return render_server_error("Failed to load files.");
@@ -253,6 +276,7 @@ async fn list_files(
 
     let mut context = tera::Context::new();
     context.insert("files", &files);
+    context.insert("list", &query.view(total, files.len(), Some(&sort)));
     context.insert("owners", &owners);
     context.insert("status_filter", &status_filter.map(|s| s as i16));
     context.insert("status_options", &[("0", "Temporary"), ("1", "Permanent")]);
@@ -403,16 +427,15 @@ async fn media_library(
         return redirect;
     }
 
-    let page: i64 = params
-        .get("page")
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(1)
-        .max(1);
-    let page_size: i64 = 24;
-    let offset = (page - 1) * page_size;
-
     let type_filter = params.get("type").map(String::as_str);
-    let search = params.get("q").map(String::as_str);
+    // "All files" is the type select's default, not a filter: left in the
+    // query it would make every submitted form count as filtered.
+    let mut list_params = params.clone();
+    if type_filter == Some("all") {
+        list_params.remove("type");
+    }
+    let query = ListQuery::from_params(&list_params);
+    let search = Some(query.q.as_str()).filter(|q| !q.is_empty());
 
     let mime_prefix: Option<&str> = match type_filter {
         Some("image") => Some("image/"),
@@ -428,8 +451,8 @@ async fn media_library(
             search,
             MediaScope::All,
             "newest",
-            page_size,
-            offset,
+            PER_PAGE,
+            query.offset(),
         )
         .await
     {
@@ -458,19 +481,13 @@ async fn media_library(
         .map(|f| (f.id.to_string(), storage.public_url(&f.uri)))
         .collect();
 
-    let total_pages = (total + page_size - 1) / page_size;
-
     let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
     context.insert("files", &files);
     context.insert("file_urls", &file_urls);
-    context.insert("total", &total);
-    context.insert("page", &page);
-    context.insert("page_size", &page_size);
-    context.insert("total_pages", &total_pages);
+    context.insert("list", &query.view(total, files.len(), None));
     context.insert("type_filter", &type_filter.unwrap_or("all"));
-    context.insert("search", &search.unwrap_or(""));
     context.insert(
         "type_options",
         &[
