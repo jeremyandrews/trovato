@@ -54,6 +54,8 @@
         {% if values.audience is defined and values.audience %}{% set audience = values.audience %}{% else %}{% set audience = "" %}{% endif %}
         {{ form::select(name="audience", label=t(s="Show to"), options=audience_options, value=audience, translate_options=true, hint=t(s="Who may see this tile, regardless of its other visibility rules."), errors=errs) }}
 
+        {{ form::field(name="item_types", label=t(s="Content types"), value=values.item_types | default(value=""), hint=t(s="Show only on a page showing an item of one of these types, such as {example}. Blank for every page.", example="article, recipe"), errors=errs, width="30", attrs='spellcheck="false" autocapitalize="none"') }}
+
         {% if values.weight is defined and values.weight %}{% set weight = values.weight ~ "" %}{% else %}{% set weight = "0" %}{% endif %}
         {{ form::field(name="weight", type="number", label=t(s="Weight"), value=weight, errors=errs, width="10") }}
 

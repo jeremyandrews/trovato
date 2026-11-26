@@ -43,6 +43,9 @@ pub struct TileFormData {
     pub status: Option<String>,
     /// "Show to" from the form: "" (everyone), "anonymous" or "authenticated".
     pub audience: Option<String>,
+    /// Comma-separated content-type machine names (B186): blank for "every
+    /// page", else only a page showing an item of one of these types.
+    pub item_types: Option<String>,
 }
 
 /// The choices the tile form offers, by context name: value and English
@@ -101,6 +104,31 @@ const AUDIENCE_VALUES: [&str; 2] = ["anonymous", "authenticated"];
 const AUDIENCE_ERROR: &str =
     "Show to must be Everyone, Anonymous visitors only, or Signed-in users only.";
 
+/// Why an `item_types` value was refused, worded for whoever set it.
+const ITEM_TYPES_ERROR: &str =
+    "Content types must be a comma-separated list of machine names (lowercase letters, numbers, and underscores).";
+
+/// The content-type machine names typed into the form's `item_types` field:
+/// comma-separated, blank entries dropped. Blank input is the empty list —
+/// "every page" (B186, [`crate::models::tile::Tile::is_visible`]'s
+/// `item_types` rule absent).
+///
+/// # Errors
+///
+/// [`ITEM_TYPES_ERROR`] when an entry is not a valid machine name.
+fn parse_item_types(typed: &str) -> Result<Vec<String>, &'static str> {
+    typed
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            is_valid_machine_name(s)
+                .then(|| s.to_string())
+                .ok_or(ITEM_TYPES_ERROR)
+        })
+        .collect()
+}
+
 impl TileFormData {
     /// Build the type-specific config JSON from form data.
     ///
@@ -125,7 +153,8 @@ impl TileFormData {
     }
 
     /// `existing` (a tile's current `visibility`, `{}` for a new tile) with
-    /// `audience` set from the form, or removed when "Everyone" was chosen.
+    /// `audience` and `item_types` set from the form, or removed when left
+    /// blank ("Everyone" / every page).
     ///
     /// Any other keys (`paths`, `paths_exclude`, `roles`) a config import may
     /// have set are left alone, so saving this form can never silently drop a
@@ -138,6 +167,8 @@ impl TileFormData {
         if !audience.is_empty() && !AUDIENCE_VALUES.contains(&audience) {
             return Err(AUDIENCE_ERROR);
         }
+        let item_types = parse_item_types(self.item_types.as_deref().unwrap_or(""))?;
+
         let mut value = existing.as_object().cloned().unwrap_or_default();
         if audience.is_empty() {
             value.remove("audience");
@@ -145,6 +176,16 @@ impl TileFormData {
             value.insert(
                 "audience".to_string(),
                 serde_json::Value::String(audience.to_string()),
+            );
+        }
+        if item_types.is_empty() {
+            value.remove("item_types");
+        } else {
+            value.insert(
+                "item_types".to_string(),
+                serde_json::Value::Array(
+                    item_types.into_iter().map(serde_json::Value::String).collect(),
+                ),
             );
         }
         Ok(serde_json::Value::Object(value))
@@ -220,7 +261,7 @@ async fn add_tile_form(State(state): State<AppState>, session: Session) -> Respo
     insert_choices(&mut context);
     context.insert(
         "values",
-        &serde_json::json!({ "items": GATHER_TILE_DEFAULT_ITEMS, "audience": "" }),
+        &serde_json::json!({ "items": GATHER_TILE_DEFAULT_ITEMS, "audience": "", "item_types": "" }),
     );
     context.insert("path", "/admin/structure/tiles/add");
 
@@ -324,6 +365,18 @@ async fn edit_tile_form(
             "weight": tile.weight,
             "status": tile.status == 1,
             "audience": tile.visibility.get("audience").and_then(|v| v.as_str()).unwrap_or(""),
+            "item_types": tile
+                .visibility
+                .get("item_types")
+                .and_then(|v| v.as_array())
+                .map(|types| {
+                    types
+                        .iter()
+                        .filter_map(|v| v.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default(),
         }),
     );
     context.insert("path", &format!("/admin/structure/tiles/{tile_id}/edit"));

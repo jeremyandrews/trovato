@@ -385,6 +385,7 @@ async fn execute_query(
         viewer: Some(viewer),
         url_args: params.filters.clone(),
         language,
+        ..Default::default()
     };
 
     // Parse exposed filter values
@@ -433,6 +434,7 @@ async fn execute_adhoc_query(
         viewer: Some(viewer),
         url_args: HashMap::new(),
         language,
+        ..Default::default()
     };
 
     // Convert JSON filter values to FilterValue
@@ -546,6 +548,13 @@ pub enum GatherPageError {
 /// A viewer who may not run the gather gets an error that downcasts to
 /// [`GatherDenied`], before the query runs; a caller that does not look for it
 /// still fails closed.
+///
+/// `current_item`, when given (a `gather_query` tile rendered on an item
+/// page — B186), is the item the page shows: its id and fields resolve
+/// `ContextualValue::CurrentItem`/`CurrentItemField`, so the same tile
+/// placed once can filter out, or filter by a field of, the item it is
+/// rendered beside. `None` everywhere else (a feed, a route alias, the
+/// gather's own page), where there is no single item in view.
 pub async fn execute_query_only(
     state: &AppState,
     query_id: &str,
@@ -553,6 +562,7 @@ pub async fn execute_query_only(
     language: Option<String>,
     viewer: UserContext,
     per_page: Option<u32>,
+    current_item: Option<&crate::models::Item>,
 ) -> anyhow::Result<crate::gather::GatherResult> {
     let query = state
         .gather()
@@ -565,6 +575,9 @@ pub async fn execute_query_only(
         viewer: Some(viewer),
         url_args: params.filters.clone(),
         language,
+        current_item_id: current_item.map(|item| item.id),
+        current_item_fields: current_item.map(|item| item.fields.clone()),
+        ..Default::default()
     };
 
     let exposed_filters = parse_filter_params(&params.filters);
@@ -615,6 +628,7 @@ pub async fn execute_and_render(
         viewer: Some(viewer),
         url_args: params.filters.clone(),
         language,
+        ..Default::default()
     };
 
     let exposed_filters = parse_filter_params(&params.filters);
