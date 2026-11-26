@@ -1,0 +1,14 @@
+{#
+  Test fixture for `category_reference_test`. The shipped theme does not render
+  `referenced_tags`; this is the smallest template that puts every resolved tag
+  and its ancestor trail on the page.
+#}
+<article class="tag-probe">
+  <h1>{{ item.title }}</h1>
+  {% for field_name, tags in referenced_tags %}
+    {% for tag in tags %}
+      <a class="referenced-tag" data-field="{{ field_name }}" data-id="{{ tag.id }}" data-slug="{{ tag.slug | default(value='') }}" href="{{ tag.url | default(value='') }}">{{ tag.label }}</a>
+      <span class="trail" data-for="{{ tag.id }}">{% for a in tag.ancestors %}{{ a.label }}[{{ a.url | default(value='') }}] &gt; {% endfor %}{{ tag.label }}</span>
+    {% endfor %}
+  {% endfor %}
+</article>

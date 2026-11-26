@@ -116,7 +116,8 @@ FieldType::Boolean                          // True/false
 FieldType::Date                             // Date
 FieldType::Email                            // Email address
 FieldType::File                             // File upload
-FieldType::RecordReference("category_term".into())  // Reference
+FieldType::RecordReference("speaker".into())       // Reference to an item type
+FieldType::CategoryReference("topics".into())      // Tags of one category
 ```
 
 ---

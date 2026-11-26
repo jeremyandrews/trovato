@@ -91,7 +91,9 @@
 //!     `create {type} content`, a field the user may not edit, a publish change
 //!     without `publish content`, or called inside an access decision),
 //!     `-61`: background call without `item_background`, `-63`: nested too
-//!     deep, `-64`: no item service on this dispatch path
+//!     deep, `-64`: no item service on this dispatch path, `-65`: a field value
+//!     the field value check refused (too many values for the field's
+//!     cardinality, or not a tag of a category reference's category)
 //!   - `≥ 0`: bytes written: the saved item's JSON, or `null` for an update of
 //!     an id that names no item
 //!
@@ -430,6 +432,14 @@ pub const ERR_ITEM_WRITE_DEPTH: i32 = -63;
 /// and `tap_queue_worker` returned for every write because their services
 /// never had the item service bound.
 pub const ERR_ITEM_SERVICE_UNAVAILABLE: i32 = -64;
+
+/// A `save-item` was refused by the field value check every item write runs:
+/// a field holds more values than its `cardinality` allows, or a
+/// `CategoryReference` field holds something that is not a tag of its category
+/// (or is not the list of tag ids that field stores). Nothing was written.
+///
+/// Added by B72, after 0.104.0.
+pub const ERR_ITEM_INVALID_FIELDS: i32 = -65;
 
 // =============================================================================
 // Text format errors (`trovato:kernel/text-format`)

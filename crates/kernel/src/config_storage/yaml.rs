@@ -46,13 +46,14 @@ use uuid::Uuid;
 
 use super::plugin_config::{self, PluginRow};
 use super::{
-    ConfigEntity, ConfigStorage, RUNTIME_STATE_KEYS, SECRET_VARIABLE_COLUMN, SECRET_VARIABLE_KEYS,
-    SearchFieldConfig, entity_types,
+    ConfigEntity, ConfigItem, ConfigStorage, RUNTIME_STATE_KEYS, SECRET_VARIABLE_COLUMN,
+    SECRET_VARIABLE_KEYS, SearchFieldConfig, entity_types,
 };
 use crate::file::{FileService, MAX_FILE_SIZE};
 use crate::gather::types::GatherQuery;
 use crate::models::tile::Tile;
 use crate::models::{Category, ItemType, Language, MenuLink, Role, Stage, Tag, UrlAlias};
+use trovato_sdk::types::FieldDefinition;
 
 /// Entity type ordering used for both validation and dependency-ordered import.
 ///
@@ -1081,6 +1082,129 @@ async fn validate_references(
     validate_menu_link_parents(storage, parsed, failures).await;
     validate_role_permissions(pool, parsed, failures).await;
     validate_workflow(pool, parsed, failures).await;
+    validate_item_field_values(pool, parsed, failures).await;
+}
+
+/// Run every imported item through the field value check the item service
+/// runs on every write ([`crate::content::field_values::check_field_values`]):
+/// cardinality, and that a `CategoryReference` field holds tags of its
+/// category. Before the first write, so a refused value imports nothing.
+///
+/// A type and a tag count when they are in the set or already in the
+/// database; the set wins, as it is what the import is about to write. One
+/// query for the types the set does not carry and one for the tags.
+async fn validate_item_field_values(
+    pool: &PgPool,
+    parsed: &BTreeMap<String, Vec<ParsedEntity>>,
+    failures: &mut Vec<ConfigImportFailure>,
+) {
+    use crate::content::field_values;
+
+    let items: Vec<(&ParsedEntity, &ConfigItem)> = parsed
+        .get(entity_types::ITEM)
+        .into_iter()
+        .flatten()
+        .filter_map(|pe| match &pe.entity {
+            ConfigEntity::Item(item) => Some((pe, item)),
+            _ => None,
+        })
+        .collect();
+    if items.is_empty() {
+        return;
+    }
+
+    let parse_fields = |fields: Option<&serde_json::Value>| -> Vec<FieldDefinition> {
+        fields
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|d| serde_json::from_value(d.clone()).ok())
+            .collect()
+    };
+    let mut definitions: HashMap<String, Vec<FieldDefinition>> = parsed
+        .get(entity_types::ITEM_TYPE)
+        .into_iter()
+        .flatten()
+        .filter_map(|pe| pe.entity.as_item_type())
+        .map(|t| (t.type_name.clone(), parse_fields(t.settings.get("fields"))))
+        .collect();
+    let missing: Vec<String> = items
+        .iter()
+        .map(|(_, item)| item.item_type.clone())
+        .filter(|t| !definitions.contains_key(t))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    if !missing.is_empty() {
+        match sqlx::query_as::<_, (String, Option<serde_json::Value>)>(
+            "SELECT type, settings -> 'fields' FROM item_type WHERE type = ANY($1)",
+        )
+        .bind(&missing)
+        .fetch_all(pool)
+        .await
+        {
+            Ok(rows) => definitions.extend(
+                rows.into_iter()
+                    .map(|(name, fields)| (name, parse_fields(fields.as_ref()))),
+            ),
+            Err(e) => {
+                failures.push(ConfigImportFailure {
+                    filename: items[0].0.filename.clone(),
+                    error: format!("failed to read the item types the items use: {e}"),
+                });
+                return;
+            }
+        }
+    }
+
+    let mut categories: HashMap<Uuid, String> = parsed
+        .get(entity_types::TAG)
+        .into_iter()
+        .flatten()
+        .filter_map(|pe| pe.entity.as_tag())
+        .map(|t| (t.id, t.category_id.clone()))
+        .collect();
+    let unknown: Vec<Uuid> = items
+        .iter()
+        .flat_map(|(_, item)| {
+            definitions
+                .get(&item.item_type)
+                .map(|defs| field_values::category_tag_ids(&item.fields, defs, None))
+                .unwrap_or_default()
+        })
+        .filter(|id| !categories.contains_key(id))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    if !unknown.is_empty() {
+        let found = match pool.acquire().await {
+            Ok(mut conn) => field_values::tag_categories(&mut conn, &unknown).await,
+            Err(e) => Err(e.into()),
+        };
+        match found {
+            Ok(found) => categories.extend(found),
+            Err(e) => {
+                failures.push(ConfigImportFailure {
+                    filename: items[0].0.filename.clone(),
+                    error: format!("failed to read the tags the items name: {e:#}"),
+                });
+                return;
+            }
+        }
+    }
+
+    for (pe, item) in items {
+        let Some(defs) = definitions.get(&item.item_type) else {
+            continue;
+        };
+        let errors = field_values::check_field_values(&item.fields, defs, None, &categories);
+        if !errors.is_empty() {
+            failures.push(ConfigImportFailure {
+                filename: pe.filename.clone(),
+                error: field_values::InvalidFieldValues(errors).to_string(),
+            });
+        }
+    }
 }
 
 /// What import does with one secret.
