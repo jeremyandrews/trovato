@@ -969,6 +969,31 @@ impl ItemService {
         Ok(item)
     }
 
+    /// The checks every create and update above runs on an item's field
+    /// values once its writer has been decided, in the same order: page
+    /// builder pages, owned category references, then field cardinality and
+    /// category references with the file references the fields hold, which
+    /// are returned for the write to record.
+    ///
+    /// For `trovato import` (`crate::import`), which writes an item with the
+    /// id and dates its file gives, inside its own transaction, and so cannot
+    /// go through [`Self::create`]. `previous` is the stored fields on a
+    /// change, as on an update: a value the write leaves as it was is not
+    /// judged again.
+    pub(crate) async fn check_imported_fields(
+        &self,
+        item_type: &str,
+        fields: &serde_json::Value,
+        previous: Option<&serde_json::Value>,
+    ) -> Result<FileReferences> {
+        self.validate_page_builder_fields(item_type, Some(fields), previous)
+            .await?;
+        self.validate_owned_terms(item_type, Some(fields), previous)
+            .await?;
+        self.checked_file_references(item_type, Some(fields), previous)
+            .await
+    }
+
     /// Whether items of `item_type` are moderated: its `moderation` setting
     /// ([`moderation::is_moderated`]). Asked on the write path and by the
     /// forms, never on a read; a type that cannot be read is not moderated.

@@ -1,0 +1,141 @@
+//! The records of an import file, as they are read from it.
+
+use serde::{Deserialize, Deserializer};
+use uuid::Uuid;
+
+/// Every record type, in the order the report lists them.
+pub const RECORD_TYPES: &[&str] = &["item", "revision"];
+
+/// One line of the file, by its `type`.
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "lowercase")]
+pub(crate) enum Record {
+    Item(ItemRecord),
+    Revision(RevisionRecord),
+}
+
+impl Record {
+    /// The `type` the line gave.
+    pub(crate) fn type_name(&self) -> &'static str {
+        match self {
+            Self::Item(_) => "item",
+            Self::Revision(_) => "revision",
+        }
+    }
+}
+
+/// An item as it is now: the item row and its current revision.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ItemRecord {
+    pub id: Uuid,
+    pub item_type: String,
+    pub title: String,
+    pub author_id: Uuid,
+    #[serde(deserialize_with = "timestamp")]
+    pub created: i64,
+    #[serde(deserialize_with = "timestamp")]
+    pub changed: i64,
+    #[serde(default)]
+    pub status: Option<i16>,
+    #[serde(default)]
+    pub promote: Option<i16>,
+    #[serde(default)]
+    pub sticky: Option<i16>,
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(default)]
+    pub fields: Option<serde_json::Value>,
+    /// The id of the revision a create or a change writes.
+    #[serde(default)]
+    pub revision_id: Option<Uuid>,
+    /// Who saved that revision; the item's author when absent.
+    #[serde(default)]
+    pub revision_author_id: Option<Uuid>,
+    /// That revision's log message.
+    #[serde(default)]
+    pub log: Option<String>,
+}
+
+/// A past revision of an item.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RevisionRecord {
+    pub id: Uuid,
+    pub item_id: Uuid,
+    pub author_id: Uuid,
+    pub title: String,
+    #[serde(deserialize_with = "timestamp")]
+    pub created: i64,
+    #[serde(default)]
+    pub status: Option<i16>,
+    #[serde(default)]
+    pub fields: Option<serde_json::Value>,
+    #[serde(default)]
+    pub log: Option<String>,
+}
+
+/// A date as the file may give it: Unix seconds, or an RFC 3339 string.
+fn timestamp<'de, D: Deserializer<'de>>(deserializer: D) -> Result<i64, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Raw {
+        Seconds(i64),
+        Text(String),
+    }
+    match Raw::deserialize(deserializer)? {
+        Raw::Seconds(s) => Ok(s),
+        Raw::Text(t) => chrono::DateTime::parse_from_rfc3339(&t)
+            .map(|d| d.timestamp())
+            .map_err(|e| {
+                serde::de::Error::custom(format!(
+                    "'{t}' is not a date (Unix seconds or RFC 3339): {e}"
+                ))
+            }),
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_date_is_seconds_or_rfc_3339() {
+        let a: Record = serde_json::from_str(
+            r#"{"type":"revision","id":"0193a5a0-0000-7000-8000-000000000001","item_id":"0193a5a0-0000-7000-8000-000000000002","author_id":"0193a5a0-0000-7000-8000-000000000003","title":"t","created":"2019-04-01T10:00:00Z"}"#,
+        )
+        .unwrap();
+        let Record::Revision(r) = a else {
+            panic!("a revision")
+        };
+        assert_eq!(r.created, 1_554_112_800);
+
+        let b: Record = serde_json::from_str(
+            r#"{"type":"revision","id":"0193a5a0-0000-7000-8000-000000000001","item_id":"0193a5a0-0000-7000-8000-000000000002","author_id":"0193a5a0-0000-7000-8000-000000000003","title":"t","created":1554112800}"#,
+        )
+        .unwrap();
+        let Record::Revision(r) = b else {
+            panic!("a revision")
+        };
+        assert_eq!(r.created, 1_554_112_800);
+    }
+
+    #[test]
+    fn an_unknown_key_or_type_is_refused() {
+        let misspelt = serde_json::from_str::<Record>(
+            r#"{"type":"revision","id":"0193a5a0-0000-7000-8000-000000000001","item_id":"0193a5a0-0000-7000-8000-000000000002","author_id":"0193a5a0-0000-7000-8000-000000000003","title":"t","created":1,"chnaged":2}"#,
+        )
+        .unwrap_err();
+        assert!(misspelt.to_string().contains("chnaged"), "{misspelt}");
+
+        let unknown = serde_json::from_str::<Record>(r#"{"type":"page","id":"x"}"#).unwrap_err();
+        assert!(unknown.to_string().contains("page"), "{unknown}");
+
+        let bad_date = serde_json::from_str::<Record>(
+            r#"{"type":"revision","id":"0193a5a0-0000-7000-8000-000000000001","item_id":"0193a5a0-0000-7000-8000-000000000002","author_id":"0193a5a0-0000-7000-8000-000000000003","title":"t","created":"last tuesday"}"#,
+        )
+        .unwrap_err();
+        assert!(bad_date.to_string().contains("last tuesday"), "{bad_date}");
+    }
+}
