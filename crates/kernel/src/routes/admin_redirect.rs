@@ -175,26 +175,15 @@ async fn add_redirect_submit(
     }
 
     let language = form.language.unwrap_or_default();
-    match RedirectModel::create(
-        state.db(),
-        &form.source,
-        &form.destination,
-        form.status_code,
-        &language,
-    )
-    .await
+    match state
+        .redirects()
+        .create(&form.source, &form.destination, form.status_code, &language)
+        .await
     {
-        Ok(_) => {
-            if let Some(cache) = state.redirect_cache() {
-                cache.clear();
-            }
-            Redirect::to("/admin/config/redirects").into_response()
-        }
+        Ok(_) => Redirect::to("/admin/config/redirects").into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to create redirect");
-            render_server_error(
-                "Failed to create redirect. The source may be invalid, or a fragment was given.",
-            )
+            render_server_error(&format!("Failed to create redirect: {e}"))
         }
     }
 }
@@ -271,28 +260,22 @@ async fn edit_redirect_submit(
     }
 
     let language = form.language.unwrap_or_default();
-    match RedirectModel::update(
-        state.db(),
-        redirect_id,
-        &form.source,
-        &form.destination,
-        form.status_code,
-        &language,
-    )
-    .await
+    match state
+        .redirects()
+        .update(
+            redirect_id,
+            &form.source,
+            &form.destination,
+            form.status_code,
+            &language,
+        )
+        .await
     {
-        Ok(Some(_)) => {
-            if let Some(cache) = state.redirect_cache() {
-                cache.clear();
-            }
-            Redirect::to("/admin/config/redirects").into_response()
-        }
+        Ok(Some(_)) => Redirect::to("/admin/config/redirects").into_response(),
         Ok(None) => render_not_found(),
         Err(e) => {
             tracing::error!(error = %e, "failed to update redirect");
-            render_server_error(
-                "Failed to update redirect. The source may be invalid, or a fragment was given.",
-            )
+            render_server_error(&format!("Failed to update redirect: {e}"))
         }
     }
 }
@@ -314,11 +297,8 @@ async fn delete_redirect(
         return resp;
     }
 
-    match RedirectModel::delete(state.db(), redirect_id).await {
+    match state.redirects().delete(redirect_id).await {
         Ok(true) => {
-            if let Some(cache) = state.redirect_cache() {
-                cache.clear();
-            }
             tracing::info!(redirect_id = %redirect_id, "redirect deleted");
             Redirect::to("/admin/config/redirects").into_response()
         }
@@ -431,19 +411,16 @@ async fn api_create_redirect(
     require_permission_json(&state, &session, "administer redirects").await?;
     require_csrf_header(&session, &headers).await?;
 
-    let redirect = RedirectModel::create(
-        state.db(),
-        &input.source,
-        &input.destination,
-        input.status_code,
-        &input.language,
-    )
-    .await
-    .map_err(|e| AppError::with_status(StatusCode::BAD_REQUEST, e.to_string()))?;
-
-    if let Some(cache) = state.redirect_cache() {
-        cache.clear();
-    }
+    let redirect = state
+        .redirects()
+        .create(
+            &input.source,
+            &input.destination,
+            input.status_code,
+            &input.language,
+        )
+        .await
+        .map_err(|e| AppError::with_status(StatusCode::BAD_REQUEST, e.to_string()))?;
 
     Ok((StatusCode::CREATED, Json(redirect.into())))
 }
@@ -458,21 +435,18 @@ async fn api_update_redirect(
     require_permission_json(&state, &session, "administer redirects").await?;
     require_csrf_header(&session, &headers).await?;
 
-    let redirect = RedirectModel::update(
-        state.db(),
-        id,
-        &input.source,
-        &input.destination,
-        input.status_code,
-        &input.language,
-    )
-    .await
-    .map_err(|e| AppError::with_status(StatusCode::BAD_REQUEST, e.to_string()))?
-    .ok_or_else(|| AppError::not_found_id("redirect", id.to_string()))?;
-
-    if let Some(cache) = state.redirect_cache() {
-        cache.clear();
-    }
+    let redirect = state
+        .redirects()
+        .update(
+            id,
+            &input.source,
+            &input.destination,
+            input.status_code,
+            &input.language,
+        )
+        .await
+        .map_err(|e| AppError::with_status(StatusCode::BAD_REQUEST, e.to_string()))?
+        .ok_or_else(|| AppError::not_found_id("redirect", id.to_string()))?;
 
     Ok(Json(redirect.into()))
 }
@@ -486,16 +460,14 @@ async fn api_delete_redirect(
     require_permission_json(&state, &session, "administer redirects").await?;
     require_csrf_header(&session, &headers).await?;
 
-    let deleted = RedirectModel::delete(state.db(), id)
+    let deleted = state
+        .redirects()
+        .delete(id)
         .await
         .map_err(AppError::internal)?;
 
     if !deleted {
         return Err(AppError::not_found_id("redirect", id.to_string()));
-    }
-
-    if let Some(cache) = state.redirect_cache() {
-        cache.clear();
     }
 
     Ok(StatusCode::NO_CONTENT)

@@ -712,6 +712,66 @@ fn an_imported_redirect_redirects_and_reruns_unchanged() {
     });
 }
 
+/// Importing several redirects at once bumps `CacheKind::Redirects` once for
+/// the whole run, the same as any other kind the import touches (B266):
+/// `import_redirect` writes its rows with raw SQL inside the run's own
+/// transaction, not through `RedirectService`, and the run bumps every kind
+/// once at commit (`clear_everywhere`) rather than once per record.
+///
+/// `CacheKind::Redirects` is a counter this whole test binary shares: every
+/// other import test's own `run()` call bumps it too (`clear_everywhere`
+/// bumps every kind, not only the one the test changed), and those run
+/// concurrently with this one. So the count this asserts is not an exact
+/// before-plus-one, which would be flaky under that sharing; it asserts the
+/// one proportion a per-record bump could not produce: the bump from twenty
+/// records lands far below twenty, not anywhere near it.
+#[test]
+fn an_import_of_several_redirects_bumps_the_cache_once() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_plugin_enabled("trovato_redirects").await;
+        common::ensure_plugin_tables(app, "trovato_redirects");
+        const RECORDS: usize = 20;
+        let ids: Vec<Uuid> = (0..RECORDS).map(|_| Uuid::now_v7()).collect();
+        forget_rows(app, "redirect", ids.clone());
+        let lines: Vec<serde_json::Value> = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| {
+                json!({
+                    "type": "redirect", "id": id,
+                    "source": format!("/b266-import-{}/{}", i, id.simple()),
+                    "destination": "/b266-import-dest", "created": Y2015
+                })
+            })
+            .collect();
+
+        let before = trovato_kernel::cache::generation::current(
+            app.state.redis(),
+            trovato_kernel::cache::generation::CacheKind::Redirects,
+        )
+        .await
+        .unwrap_or(0);
+
+        let report = run(app, &lines, false).await.expect("imports");
+        assert_eq!(report.of("redirect").created, RECORDS);
+
+        let after = trovato_kernel::cache::generation::current(
+            app.state.redis(),
+            trovato_kernel::cache::generation::CacheKind::Redirects,
+        )
+        .await
+        .unwrap_or(0);
+        let bumps = after - before;
+        assert!(
+            (1..RECORDS as i64 / 2).contains(&bumps),
+            "{RECORDS} new redirects in one import should bump the generation \
+             a handful of times at most (this run and whatever else shares \
+             the counter), not once per record: before {before}, after {after}"
+        );
+    });
+}
+
 /// `uri` through the redirect middleware alone, as the redirect tests drive
 /// it: the shared app's router is built before this test enables the plugin.
 async fn through_redirects(app: &TestApp, uri: &str) -> axum::response::Response {

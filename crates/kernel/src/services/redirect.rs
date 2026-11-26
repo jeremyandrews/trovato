@@ -5,6 +5,9 @@ use dashmap::DashMap;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+use crate::cache::generation::{CacheKind, bump};
+use crate::services::audit::AuditTrail;
+
 /// Cache TTL in seconds.
 const CACHE_TTL_SECS: i64 = 60;
 
@@ -415,12 +418,21 @@ impl Redirect {
     /// Checks both the specified language and language-agnostic (empty language)
     /// redirects to catch cross-language loops where a language-specific redirect
     /// chains into a language-agnostic one that loops back.
+    ///
+    /// A destination that is its own source is a loop of zero hops, caught
+    /// here before the chain walk: the walk below only ever compares a
+    /// *later* hop's destination against `source`, so a bare self-redirect
+    /// (no other rows involved at all) would otherwise pass.
     pub async fn detect_loop(
         pool: &PgPool,
         source: &str,
         destination: &str,
         language: &str,
     ) -> Result<bool> {
+        if destination == source {
+            return Ok(true);
+        }
+
         // Follow the chain from destination to see if it leads back to source
         let mut current = destination.to_string();
         let mut depth = 0;
@@ -479,6 +491,124 @@ impl Redirect {
             .context("failed to delete redirect")?;
 
         Ok(result.rows_affected() > 0)
+    }
+}
+
+/// The one write path for a redirect: the admin form, the JSON API, and any
+/// other caller all go through here, so none of them can skip the loop
+/// check, the cache bump, or the audit entry. The B167 importer does not:
+/// it keeps the id and `created` a record gives it (this service always
+/// assigns its own) and writes inside its own transaction, bumping once for
+/// the whole run instead of once per record (`import::alias`).
+#[derive(Clone)]
+pub struct RedirectService {
+    pool: PgPool,
+    audit: AuditTrail,
+    cache: Option<std::sync::Arc<RedirectCache>>,
+}
+
+impl RedirectService {
+    /// Create the service. `cache` is this server's own redirect lookup
+    /// cache, cleared at once on a successful write; `None` when the
+    /// `trovato_redirects` plugin was not enabled at startup.
+    pub fn new(
+        pool: PgPool,
+        audit: AuditTrail,
+        cache: Option<std::sync::Arc<RedirectCache>>,
+    ) -> Self {
+        Self { pool, audit, cache }
+    }
+
+    /// Clear this server's cache at once and tell every other server to drop
+    /// theirs too. Call after a write commits.
+    fn invalidate(&self) {
+        if let Some(cache) = &self.cache {
+            cache.clear();
+        }
+        bump(CacheKind::Redirects);
+    }
+
+    /// Record one redirect write in the audit log.
+    async fn audit(&self, action: &str, redirect: &Redirect) {
+        self.audit
+            .record(
+                action,
+                "redirect",
+                redirect.id,
+                None,
+                serde_json::json!({
+                    "source": redirect.source,
+                    "destination": redirect.destination,
+                }),
+            )
+            .await;
+    }
+
+    /// Create a redirect. Refused, with nothing written, when `source`
+    /// (canonicalized the way [`Redirect::create`] stores it) and
+    /// `destination` would form a loop, including a destination that is its
+    /// own source.
+    pub async fn create(
+        &self,
+        source: &str,
+        destination: &str,
+        status_code: i16,
+        language: &str,
+    ) -> Result<Redirect> {
+        let canonical_source = canonicalize_source(source)?;
+        if Redirect::detect_loop(&self.pool, &canonical_source, destination, language).await? {
+            anyhow::bail!(
+                "redirect refused: {canonical_source} -> {destination} would create a redirect loop"
+            );
+        }
+
+        let redirect = Redirect::create(&self.pool, source, destination, status_code, language)
+            .await
+            .context("failed to create redirect")?;
+        self.invalidate();
+        self.audit("create", &redirect).await;
+        Ok(redirect)
+    }
+
+    /// Update a redirect's source, destination, status code and language.
+    /// `Ok(None)` when `id` does not name a redirect. Refused, with nothing
+    /// written, on the same loop check as [`create`](Self::create).
+    pub async fn update(
+        &self,
+        id: Uuid,
+        source: &str,
+        destination: &str,
+        status_code: i16,
+        language: &str,
+    ) -> Result<Option<Redirect>> {
+        let canonical_source = canonicalize_source(source)?;
+        if Redirect::detect_loop(&self.pool, &canonical_source, destination, language).await? {
+            anyhow::bail!(
+                "redirect refused: {canonical_source} -> {destination} would create a redirect loop"
+            );
+        }
+
+        let redirect = Redirect::update(&self.pool, id, source, destination, status_code, language)
+            .await
+            .context("failed to update redirect")?;
+        if let Some(redirect) = &redirect {
+            self.invalidate();
+            self.audit("update", redirect).await;
+        }
+        Ok(redirect)
+    }
+
+    /// Delete a redirect. `false` when there is no such redirect.
+    pub async fn delete(&self, id: Uuid) -> Result<bool> {
+        let redirect = Redirect::find_by_id(&self.pool, id).await?;
+        let deleted = Redirect::delete(&self.pool, id).await?;
+        if deleted {
+            self.invalidate();
+            if let Some(redirect) = redirect {
+                self.audit("delete", &redirect).await;
+            }
+        }
+        Ok(deleted)
     }
 }
 
