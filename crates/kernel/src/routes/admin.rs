@@ -1142,6 +1142,8 @@ pub fn router() -> Router<AppState> {
         .merge(super::admin_ai_assistant::router())
         // Site configuration
         .merge(super::admin_config::router())
+        // Clear all caches (B161)
+        .merge(super::admin_performance::router())
         // Search settings and the search report
         .merge(super::admin_search::router())
         .merge(super::admin_shell::router())

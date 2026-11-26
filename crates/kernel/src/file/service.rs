@@ -257,6 +257,11 @@ impl FileService {
         Self { pool, storage }
     }
 
+    /// The storage's local directory, if it is one ([`FileStorage::local_dir`]).
+    pub fn local_dir(&self) -> Option<&std::path::Path> {
+        self.storage.local_dir()
+    }
+
     /// Upload a file (default tenant — no tenant prefix in URI).
     ///
     /// Validates size and MIME type, stores the file, and creates a database record.

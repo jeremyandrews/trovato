@@ -48,6 +48,10 @@
     {% else %}
     <p>{{ t(s="Off: cron only runs from an external caller to /cron/{key}, or from the button above.") }}</p>
     {% endif %}
+    {% if may_configure_scheduler %}
     {{ scheduler_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+    {% else %}
+    <p>{{ t(s="Changing this needs \"administer site\".") }}</p>
+    {% endif %}
 </section>
 {% endblock content %}
