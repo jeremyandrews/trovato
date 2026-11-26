@@ -118,13 +118,12 @@ struct Resolved {
 
 /// Resolve the caller and the configuration, or say why not.
 ///
-/// An anonymous caller is sent to the login form — the bare one every other
-/// kernel route uses, with no destination parameter, because the login form has
-/// none to read.
+/// An anonymous caller is refused as every other kernel route refuses nobody:
+/// the access-denied page with the login form, back to this page on sign in.
 async fn resolve(state: &AppState, session: &Session) -> Result<Resolved, Response> {
     let user = get_user_context(session, state).await;
     if !user.authenticated {
-        return Err(Redirect::to("/user/login").into_response());
+        return Err(super::helpers::render_login_required());
     }
 
     let config = match state.ai_assistant().load_config().await {

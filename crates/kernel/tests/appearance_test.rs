@@ -294,7 +294,7 @@ fn the_appearance_screen_refuses_anonymous_and_plain_users() {
             for uri in ["/admin/appearance", "/admin/appearance/stock/screenshot"] {
                 let (status, _) = get(app, cookies, uri).await;
                 assert!(
-                    status == StatusCode::FORBIDDEN || status.is_redirection(),
+                    status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED,
                     "GET {uri} for {who}: {status}"
                 );
             }
@@ -307,7 +307,7 @@ fn the_appearance_screen_refuses_anonymous_and_plain_users() {
             .await;
             let status = response.status();
             assert!(
-                status == StatusCode::FORBIDDEN || status.is_redirection(),
+                status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED,
                 "POST for {who}: {status}"
             );
         }

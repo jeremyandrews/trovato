@@ -301,18 +301,11 @@ fn view_route_still_requires_an_admin() {
         seed_legacy(app, 4_294_967_302, "Guarded Legacy Row").await;
 
         let anonymous = view(app, "", BIGINT_TYPE, "4294967302").await;
-        assert!(
-            anonymous.status().is_redirection(),
-            "anonymous request was not redirected: {}",
-            anonymous.status()
+        assert_eq!(
+            anonymous.status(),
+            axum::http::StatusCode::UNAUTHORIZED,
+            "an anonymous request is refused as nobody signed in"
         );
-        let location = anonymous
-            .headers()
-            .get(axum::http::header::LOCATION)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or_default()
-            .to_string();
-        assert_eq!(location, "/user/login");
 
         let cookies = app
             .create_and_login_user(

@@ -75,7 +75,7 @@ fn the_admin_only_mode_closes_the_register_route() {
 
         assert_eq!(
             register_page_status(app).await,
-            StatusCode::NOT_FOUND,
+            StatusCode::FORBIDDEN,
             "the register form must not be served when only admins create accounts"
         );
 
@@ -119,7 +119,7 @@ fn saving_the_mode_removes_the_superseded_boolean() {
         );
         assert_eq!(
             register_page_status(app).await,
-            StatusCode::NOT_FOUND,
+            StatusCode::FORBIDDEN,
             "and the mode now decides"
         );
 
@@ -140,7 +140,7 @@ fn a_stored_closed_mode_still_closes_registration() {
             .await
             .expect("store closed");
 
-        assert_eq!(register_page_status(app).await, StatusCode::NOT_FOUND);
+        assert_eq!(register_page_status(app).await, StatusCode::FORBIDDEN);
 
         clear_settings(app).await;
     });
@@ -154,7 +154,7 @@ fn registration_is_closed_by_default() {
         common::hold_until_cleanup(REGISTRATION.lock().await);
         clear_settings(app).await;
 
-        assert_eq!(register_page_status(app).await, StatusCode::NOT_FOUND);
+        assert_eq!(register_page_status(app).await, StatusCode::FORBIDDEN);
     });
 }
 
@@ -190,7 +190,7 @@ fn the_registration_submission_is_gated_as_well() {
 
         assert_eq!(
             response.status(),
-            StatusCode::NOT_FOUND,
+            StatusCode::FORBIDDEN,
             "a closed route must refuse the submission, not only hide the form"
         );
 

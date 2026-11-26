@@ -216,7 +216,9 @@ fn the_format_screens_refuse_anonymous_and_plain_users() {
             for uri in gets {
                 let (status, _) = get(app, cookies, uri).await;
                 assert!(
-                    status == StatusCode::FORBIDDEN || status.is_redirection(),
+                    status == StatusCode::FORBIDDEN
+                        || status == StatusCode::UNAUTHORIZED
+                        || status.is_redirection(),
                     "GET {uri} for {who}: {status}"
                 );
             }
@@ -230,7 +232,9 @@ fn the_format_screens_refuse_anonymous_and_plain_users() {
                 .await;
                 let status = response.status();
                 assert!(
-                    status == StatusCode::FORBIDDEN || status.is_redirection(),
+                    status == StatusCode::FORBIDDEN
+                        || status == StatusCode::UNAUTHORIZED
+                        || status.is_redirection(),
                     "POST {uri} for {who}: {status}"
                 );
             }

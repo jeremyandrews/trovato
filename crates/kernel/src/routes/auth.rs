@@ -1,6 +1,6 @@
 //! Authentication routes (login, logout, registration, email verification).
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
@@ -98,35 +98,49 @@ impl std::fmt::Display for LoginError {
     }
 }
 
+/// Whether `destination` is a page on this site that a sign in may land on.
+///
+/// A local absolute path (`routes::front::is_local_path`: no scheme, no host,
+/// no `//` or `/\` that a browser reads as another host), and not the login
+/// form itself, which would only show the form again. Anything else is
+/// dropped and the sign in lands on `/`, so the parameter can never be used to
+/// send a freshly signed-in visitor to another site.
+pub fn is_safe_destination(destination: &str) -> bool {
+    let path = destination.split(['?', '#']).next().unwrap_or("");
+    super::front::is_local_path(destination) && path != "/user/login"
+}
+
+/// The `?destination=` a login form was opened with.
+#[derive(Debug, Default, Deserialize)]
+pub struct LoginQuery {
+    #[serde(default)]
+    pub destination: Option<String>,
+}
+
 /// Login form handler.
 ///
 /// GET /user/login
 /// - Renders login form with CSRF token
-async fn login_form(State(state): State<AppState>, session: Session) -> Response {
-    // Generate CSRF token
-    let csrf_token = generate_csrf_token(&session).await;
-
-    // Render login form
-    let mut context = tera::Context::new();
-    context.insert("csrf_token", &csrf_token);
-    context.insert("webauthn_available", &state.webauthn().is_some());
-    if let Some(notice) = session
+/// - `?destination=/some/page` is carried in the form, and a successful sign
+///   in lands there (`comments.html` and the access-denied page link to it so)
+async fn login_form(
+    State(state): State<AppState>,
+    session: Session,
+    Query(query): Query<LoginQuery>,
+) -> Response {
+    let notice = session
         .remove::<String>(SESSION_LOGIN_NOTICE)
         .await
         .ok()
-        .flatten()
-    {
-        context.insert("success", &notice);
-    }
-    super::helpers::inject_site_context(&state, &session, &mut context, "/user/login").await;
-
-    match state.theme().tera().render("user/login.html", &context) {
-        Ok(html) => Html(html).into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "failed to render login form");
-            super::helpers::render_server_error("The login form could not be displayed.")
-        }
-    }
+        .flatten();
+    render_login_page(
+        &state,
+        &session,
+        None,
+        notice.as_deref(),
+        query.destination.as_deref(),
+    )
+    .await
 }
 
 /// Form-based login request.
@@ -138,6 +152,9 @@ pub struct LoginFormRequest {
     pub remember_me: Option<String>,
     #[serde(rename = "_token")]
     pub csrf_token: String,
+    /// The page to land on after signing in; `/` when absent or not local.
+    #[serde(default)]
+    pub destination: Option<String>,
 }
 
 /// Form-based login handler.
@@ -167,21 +184,40 @@ async fn login_form_submit(
         password: form.password,
         remember_me: form.remember_me.is_some(),
     };
+    let destination = form
+        .destination
+        .as_deref()
+        .filter(|d| is_safe_destination(d));
 
     // Perform login
     match do_login(&state, &session, &request, &client_id, user_agent(&headers)).await {
-        Ok(_) => Redirect::to("/").into_response(),
-        Err(e) => render_login_error(&state, &session, e.message()).await,
+        Ok(_) => Redirect::to(destination.unwrap_or("/")).into_response(),
+        Err(e) => render_login_page(&state, &session, Some(e.message()), None, destination).await,
     }
 }
 
-/// Render login form with error message.
-async fn render_login_error(state: &AppState, session: &Session, error: &str) -> Response {
+/// Render the login form, with an error or a notice, keeping `destination`
+/// (when it is a safe one) for the next attempt.
+async fn render_login_page(
+    state: &AppState,
+    session: &Session,
+    error: Option<&str>,
+    notice: Option<&str>,
+    destination: Option<&str>,
+) -> Response {
     let csrf_token = generate_csrf_token(session).await;
 
     let mut context = tera::Context::new();
     context.insert("csrf_token", &csrf_token);
-    context.insert("error", error);
+    if let Some(error) = error {
+        context.insert("error", error);
+    }
+    if let Some(notice) = notice {
+        context.insert("success", notice);
+    }
+    if let Some(destination) = destination.filter(|d| is_safe_destination(d)) {
+        context.insert("destination", destination);
+    }
     context.insert("webauthn_available", &state.webauthn().is_some());
     super::helpers::inject_site_context(state, session, &mut context, "/user/login").await;
 
@@ -625,11 +661,20 @@ async fn is_registration_enabled(state: &AppState) -> bool {
         .is_open()
 }
 
+/// The refusal of the public registration routes while only administrators
+/// create accounts: `403`, as for any page this visitor may not use. It was
+/// `404`, which told an old "Create new account" link or a crawler that the
+/// page had never existed. A browser is shown the access-denied page, with the
+/// login form for a visitor who already has an account.
+fn registration_closed() -> AppError {
+    AppError::forbidden("Only administrators may create new accounts on this site.")
+}
+
 /// Registration form handler.
 ///
 /// GET /user/register
 /// - Renders registration form with CSRF token
-/// - Returns 404 if registration is disabled
+/// - Refuses with [`registration_closed`] while registration is closed
 async fn register_form(State(state): State<AppState>, session: Session) -> Response {
     // Check if already logged in
     if super::helpers::session_user(&state, &session)
@@ -640,11 +685,7 @@ async fn register_form(State(state): State<AppState>, session: Session) -> Respo
     }
 
     if !is_registration_enabled(&state).await {
-        return crate::error::AppError::with_status(
-            StatusCode::NOT_FOUND,
-            "Registration is not enabled.",
-        )
-        .into_response();
+        return registration_closed().into_response();
     }
 
     let csrf_token = generate_csrf_token(&session).await;
@@ -695,11 +736,7 @@ async fn register_form_submit(
     Form(form): Form<RegisterFormRequest>,
 ) -> Response {
     if !is_registration_enabled(&state).await {
-        return crate::error::AppError::with_status(
-            StatusCode::NOT_FOUND,
-            "Registration is not enabled.",
-        )
-        .into_response();
+        return registration_closed().into_response();
     }
 
     // The `register` bucket is counted once, per client IP, by the rate-limit
@@ -998,7 +1035,7 @@ async fn register_json(
     // here as well, which spent each attempt twice.
 
     if !is_registration_enabled(&state).await {
-        return Err(AppError::not_found("registration"));
+        return Err(registration_closed());
     }
 
     // Validate

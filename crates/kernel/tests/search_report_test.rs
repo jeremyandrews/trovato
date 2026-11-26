@@ -60,7 +60,7 @@ fn the_report_is_for_site_administrators_only() {
                 .await
                 .status();
             assert!(
-                status == StatusCode::FORBIDDEN || status.is_redirection(),
+                status == StatusCode::FORBIDDEN || status == StatusCode::UNAUTHORIZED,
                 "the report must be refused without `administer site`, got {status}"
             );
         }

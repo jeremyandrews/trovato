@@ -156,14 +156,15 @@ fn a_browser_gets_one_themed_page_for_every_error() {
 }
 
 #[test]
-fn nobody_signed_in_is_sent_to_the_login_form() {
+fn nobody_signed_in_is_shown_access_denied_with_the_login_form() {
     run_test(async {
         let app = shared_app().await;
         // The item form refuses an anonymous caller with 401, which a browser
-        // is shown as the login form.
+        // is shown as the 403 access-denied page with the login form on it.
         let a = get(app, "/item/add/page", Some(BROWSER), "").await;
-        assert_eq!(a.status, StatusCode::SEE_OTHER, "{}", a.body);
-        assert_eq!(a.location.as_deref(), Some("/user/login"));
+        assert_themed(&a, StatusCode::FORBIDDEN, "/", "add form, nobody");
+        assert!(a.location.is_none(), "{:?}", a.location);
+        assert!(a.body.contains(r#"action="/user/login""#), "{}", a.body);
         // A script is told 401.
         let a = get(app, "/item/add/page", None, "").await;
         assert_app_error(&a, StatusCode::UNAUTHORIZED, "add form, script");

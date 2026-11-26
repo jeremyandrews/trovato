@@ -117,7 +117,7 @@ fn logout_redirects_to_login_and_removes_the_session_from_redis() {
             )
             .await;
         assert!(
-            after.status().is_redirection(),
+            after.status() == StatusCode::UNAUTHORIZED,
             "the old cookie no longer reaches the profile (status {})",
             after.status()
         );

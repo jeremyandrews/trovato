@@ -889,9 +889,9 @@ fn e2e_cron_status_requires_admin() {
             .request(Request::get("/cron/status").body(Body::empty()).unwrap())
             .await;
 
-        // Should redirect to login or return forbidden
+        // Should refuse nobody signed in, or return forbidden
         assert!(
-            response.status() == StatusCode::SEE_OTHER
+            response.status() == StatusCode::UNAUTHORIZED
                 || response.status() == StatusCode::FORBIDDEN,
             "Cron status should require auth, got: {}",
             response.status()
@@ -3045,8 +3045,8 @@ fn e2e_admin_pages_require_login() {
 
             assert_eq!(
                 response.status(),
-                StatusCode::SEE_OTHER,
-                "Route {route} should redirect when not logged in"
+                StatusCode::UNAUTHORIZED,
+                "Route {route} should refuse nobody signed in"
             );
         }
     });
@@ -4882,7 +4882,7 @@ fn e2e_runtime_plugin_gate_returns_404_when_disabled() {
 // =============================================================================
 
 #[test]
-fn registration_form_returns_404_when_disabled() {
+fn registration_form_returns_403_when_disabled() {
     run_test(async {
         common::hold_until_cleanup(REGISTRATION_LOCK.write().await);
         let app = shared_app().await;
@@ -4898,8 +4898,8 @@ fn registration_form_returns_404_when_disabled() {
 
         assert_eq!(
             response.status(),
-            StatusCode::NOT_FOUND,
-            "Registration form should return 404 when disabled"
+            StatusCode::FORBIDDEN,
+            "Registration form should be access denied (403) when disabled"
         );
     });
 }
@@ -5184,8 +5184,8 @@ fn json_registration_returns_404_when_disabled() {
 
         assert_eq!(
             response.status(),
-            StatusCode::NOT_FOUND,
-            "JSON registration should return 404 when disabled"
+            StatusCode::FORBIDDEN,
+            "JSON registration should be refused (403) when disabled"
         );
     });
 }
@@ -5315,13 +5315,12 @@ fn profile_page_requires_authentication() {
             .request(Request::get("/user/profile").body(Body::empty()).unwrap())
             .await;
 
-        // Should redirect to login
+        // Should refuse nobody signed in (a browser is shown the login form)
         let status = response.status();
-        assert!(
-            status == StatusCode::SEE_OTHER
-                || status == StatusCode::FOUND
-                || status == StatusCode::TEMPORARY_REDIRECT,
-            "Profile page should redirect unauthenticated users, got {status}"
+        assert_eq!(
+            status,
+            StatusCode::UNAUTHORIZED,
+            "Profile page should refuse unauthenticated users, got {status}"
         );
     });
 }
@@ -7388,8 +7387,8 @@ fn e2e_admin_ai_budgets_requires_admin() {
 
         assert_eq!(
             response.status(),
-            StatusCode::SEE_OTHER,
-            "Should redirect unauthenticated users"
+            StatusCode::UNAUTHORIZED,
+            "Should refuse unauthenticated users"
         );
     });
 }
@@ -8284,15 +8283,9 @@ fn e2e_ai_permission_unauthenticated_redirects_to_login() {
             .await;
         assert_eq!(
             response.status(),
-            StatusCode::SEE_OTHER,
-            "Unauthenticated user should be redirected"
+            StatusCode::UNAUTHORIZED,
+            "Unauthenticated user should be refused"
         );
-        let location = response
-            .headers()
-            .get("location")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("");
-        assert_eq!(location, "/user/login", "Should redirect to login");
     });
 }
 

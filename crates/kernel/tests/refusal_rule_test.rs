@@ -3,8 +3,8 @@
 //!
 //! A JSON caller who is nobody gets `401`; a signed-in JSON caller who may not
 //! do the thing gets `403`; both bodies are `AppError` (`code`, `message`,
-//! `request_id`). An HTML caller who is nobody is sent to the login form with
-//! a `303`, and a signed-in one who may not gets `403`. Before this, the answer
+//! `request_id`). An HTML caller who is nobody gets `403` "Access denied" with
+//! the login form on it, and a signed-in one who may not gets `403`. Before this, the answer
 //! depended on which handler was asked: the JSON helpers said `403` to the
 //! anonymous, hand-rolled session reads said `401`, the translation screens said
 //! `400`, and the lock routes answered in plain text.
@@ -29,7 +29,7 @@ use uuid::Uuid;
 enum Kind {
     /// A script: `401` for nobody, `403` for the unpermitted, `AppError` body.
     Json,
-    /// A browser: `303` to `/user/login` for nobody, `403` for the unpermitted.
+    /// A browser: `403` with the login form for nobody, `403` for the unpermitted.
     Html,
     /// A JSON route anyone signed in may use: only the anonymous row applies.
     JsonLoginOnly,
@@ -154,6 +154,13 @@ async fn send(
         .method(row.method)
         .uri(&path)
         .header("x-forwarded-for", test_ip_for(bucket));
+    // An HTML route is asked as a browser asks it.
+    if matches!(row.kind, Kind::Html | Kind::HtmlLoginOnly) {
+        builder = builder.header(
+            header::ACCEPT,
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        );
+    }
     if let Some(content_type) = row.content_type {
         builder = builder.header(header::CONTENT_TYPE, content_type);
     }
@@ -212,8 +219,14 @@ fn every_route_refuses_by_one_rule() {
                     assert_app_error(&body, &format!("{what} anonymous"));
                 }
                 Kind::Html | Kind::HtmlLoginOnly => {
-                    assert_eq!(status, StatusCode::SEE_OTHER, "{what} anonymous: {body}");
-                    assert_eq!(location.as_deref(), Some("/user/login"), "{what} anonymous");
+                    // A browser: 403 "Access denied" with the login form on
+                    // the page, never a redirect that loses the page.
+                    assert_eq!(status, StatusCode::FORBIDDEN, "{what} anonymous: {body}");
+                    assert!(location.is_none(), "{what} anonymous: {location:?}");
+                    assert!(
+                        body.contains(r#"action="/user/login""#),
+                        "{what} anonymous: no login form: {body}"
+                    );
                 }
             }
 

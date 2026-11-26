@@ -427,7 +427,7 @@ fn test_e2e_admin_alias_list_requires_auth() {
     run_test(async {
         let app = shared_app().await;
 
-        // Request without login - should redirect to login
+        // Request without login: refused, `401` to a script
         let response = app
             .request(
                 Request::get("/admin/structure/aliases")
@@ -438,8 +438,8 @@ fn test_e2e_admin_alias_list_requires_auth() {
 
         assert_eq!(
             response.status(),
-            StatusCode::SEE_OTHER,
-            "admin page should redirect when not logged in"
+            StatusCode::UNAUTHORIZED,
+            "admin page is refused when not logged in"
         );
     });
 }
