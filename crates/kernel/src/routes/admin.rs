@@ -20,6 +20,7 @@ use crate::form::csrf::generate_csrf_token;
 
 use crate::error::AppError;
 
+use super::admin_list::{ListQuery, PER_PAGE};
 use super::helpers::{
     CsrfOnlyForm, admin_user_context, render_admin_template, render_not_found, render_server_error,
     require_csrf, require_permission,
@@ -542,13 +543,6 @@ async fn ajax_callback(
 // Comment Moderation
 // =============================================================================
 
-/// Query params for comment list.
-#[derive(Debug, Default, Deserialize)]
-struct CommentListQuery {
-    status: Option<i16>,
-    page: Option<i64>,
-}
-
 /// Form data for editing a comment.
 #[derive(Debug, Deserialize)]
 struct EditCommentForm {
@@ -630,37 +624,49 @@ const COMMENT_STATUS_FILTERS: [CommentStatus; 4] = [
     CommentStatus::Spam,
 ];
 
-/// List all comments for moderation.
+/// The comment listing's sortable columns: key and SQL (`c` is the comment,
+/// `u` its author).
+const COMMENT_SORTS: &[(&str, &str)] = &[
+    ("author", "lower(u.name)"),
+    ("status", "c.status"),
+    ("posted", "c.created"),
+];
+
+/// List comments for moderation, a page at a time, filtered by status and by
+/// subject, body or author.
 ///
 /// GET /admin/content/comments
 async fn list_comments(
     State(state): State<AppState>,
     session: Session,
-    axum::extract::Query(query): axum::extract::Query<CommentListQuery>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     if let Err(redirect) = require_permission(&state, &session, "administer comments").await {
         return redirect;
     }
 
-    let page = query.page.unwrap_or(1).max(1);
-    let per_page: i64 = 25;
-    let offset = (page - 1) * per_page;
+    let status_filter = params.get("status").and_then(|s| s.parse::<i16>().ok());
+    let query = ListQuery::from_params(&params);
+    let sort = query.sort(COMMENT_SORTS, ("posted", true));
+    let like = query.like();
 
-    let comments = if let Some(status) = query.status {
-        state
-            .comments()
-            .list_by_status(status, per_page, offset)
-            .await
-            .unwrap_or_default()
-    } else {
-        state
-            .comments()
-            .list_all(per_page, offset)
-            .await
-            .unwrap_or_default()
+    let (comments, total) = match state
+        .comments()
+        .admin_page(
+            status_filter,
+            like.as_deref(),
+            &sort.order_by(),
+            PER_PAGE,
+            query.offset(),
+        )
+        .await
+    {
+        Ok(page) => page,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to list comments");
+            return render_server_error("Failed to load comments.");
+        }
     };
-
-    let total = state.comments().count_all().await.unwrap_or(0);
 
     // Get author names
     let mut authors: std::collections::HashMap<uuid::Uuid, String> =
@@ -705,12 +711,10 @@ async fn list_comments(
     );
     context.insert("authors", &authors);
     context.insert("items", &items);
-    context.insert("total", &total);
-    context.insert("page", &page);
-    context.insert("per_page", &per_page);
+    context.insert("list", &query.view(total, rows.len(), Some(&sort)));
     context.insert(
         "status_filter",
-        &query.status.map(|s| s.to_string()).unwrap_or_default(),
+        &status_filter.map(|s| s.to_string()).unwrap_or_default(),
     );
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/content/comments");
@@ -999,7 +1003,7 @@ async fn comment_settings_page(State(state): State<AppState>, session: Session) 
     list_comments(
         State(state),
         session,
-        axum::extract::Query(CommentListQuery::default()),
+        axum::extract::Query(std::collections::HashMap::new()),
     )
     .await
 }

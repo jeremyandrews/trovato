@@ -222,6 +222,19 @@ impl CommentService {
         Comment::list_by_status(&self.inner.pool, status, limit, offset).await
     }
 
+    /// One page of the admin comment listing, and how many comments match
+    /// (see [`Comment::admin_page`]).
+    pub async fn admin_page(
+        &self,
+        status: Option<i16>,
+        like: Option<&str>,
+        order_by: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<Comment>, i64)> {
+        Comment::admin_page(&self.inner.pool, status, like, order_by, limit, offset).await
+    }
+
     /// Count all comments.
     pub async fn count_all(&self) -> Result<i64> {
         Comment::count_all(&self.inner.pool).await
