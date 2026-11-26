@@ -173,6 +173,9 @@
         - listitem:
           - link "Search report":
             - /url: /admin/reports/search
+        - listitem:
+          - link "Accessibility":
+            - /url: /admin/reports/accessibility
 - main:
   - navigation "Breadcrumb":
     - list:
@@ -202,6 +205,9 @@
     - checkbox "Administrator"
     - text: Administrator
     - paragraph: Administrators have full access to the site. Only an administrator can grant or remove this.
+    - checkbox "Notify user of new account"
+    - text: Notify user of new account
+    - paragraph: Mails the new user a welcome message with a one-time link to sign in and choose their own password.
   - group "Roles":
     - text: Roles
     - paragraph: A role grants its permissions to every user who holds it.
@@ -225,3 +231,6 @@
   - button "Create user"
   - link "Cancel":
     - /url: /admin/people
+  - paragraph:
+    - link "Who can do this?":
+      - /url: /admin/people/who-can?path=/admin/people/add

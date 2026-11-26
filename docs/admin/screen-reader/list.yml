@@ -173,6 +173,9 @@
         - listitem:
           - link "Search report":
             - /url: /admin/reports/search
+        - listitem:
+          - link "Accessibility":
+            - /url: /admin/reports/accessibility
 - main:
   - navigation "Breadcrumb":
     - list:
@@ -921,3 +924,6 @@
             - 'link "Revisions of Post 40: cedar violet orchard"':
               - /url: /item/54ff1f6b-d0d2-9b4a-65b2-063132fa42df/revisions
             - 'button "Delete Post 40: cedar violet orchard"'
+  - paragraph:
+    - link "Who can do this?":
+      - /url: /admin/people/who-can?path=/admin/content

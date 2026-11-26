@@ -31,7 +31,7 @@ Configuration because that is where someone looking for it goes.
 | People | `people` | Users (with each user's sessions), Add user, Roles, Permissions, Access rules |
 | Extend | `extend` | Plugins, AI providers, AI budgets, AI chat, AI assistant, and every plugin-declared page whose section names no other group |
 | Configuration | `config` | Site settings, Text formats, Search settings, Stages, Account recovery |
-| Reports | `reports` | Recent log messages, Audit log, Cron, Search report (and, from Part 5, the accessibility check) |
+| Reports | `reports` | Recent log messages, Audit log, Cron, Search report, Accessibility |
 
 The Dashboard (`/admin`) and Your admin preferences (`/admin/preferences`) are
 personal pages and belong to no group.
@@ -123,7 +123,10 @@ Every admin page has the same skeleton, drawn by `templates/page--admin.html`:
      `role="tablist"`, because each loads a page;
    - messages: status in `role="status"`, errors in `role="alert"`, each with
      a text prefix ("Done:", "Error:"), never colour alone, rendered once;
-   - the page's own content.
+   - the page's own content;
+   - for someone who may change who can do what (`administer users`), a
+     "Who can do this?" link to `/admin/people/who-can?path=<this page>`,
+     the last thing in `main` (section 11).
 
 The `<title>` is `Page, Group, Site name` (`Page, Site name` on personal
 pages). It is filled from the rendered `h1` after rendering, so the two cannot
@@ -470,3 +473,43 @@ query can be edited at any time. It works in Chromium and WebKit, which the
 browser checks run in. If a screen reader is found not to follow it, the
 fallback is to move real focus to the options (each `tabindex="-1"`) and
 keep typing routed to the input.
+
+## 11. Dashboard and "Who can do this?"
+
+**Panels.** Above the area cards, the Dashboard shows what needs the viewer
+now (`routes::admin_dashboard`):
+
+| Panel | Says | Shown to whoever may open |
+|---|---|---|
+| Your recent content | how many items the viewer wrote and how many are not published; the last five, linked as the content listing links them: the admin edit form for someone who may edit any content, otherwise the item's own edit form or page | anyone who has written something or may create content |
+| Waiting for you | drafts to review; comments waiting for approval | `/admin/content/moderated`; `/admin/content/comments` |
+| Scheduled tasks | whether the last cron run worked, failed or was skipped; plugin queue jobs that stopped after repeated failures | `/admin/reports/cron` |
+| Recent errors | errors logged in the last 24 hours, the newest five, each linking to the log filtered to it | `/admin/reports/log` |
+
+Each panel is a `section` labelled by its `h2`, with its state in one
+sentence ("Nothing is waiting for you.", "3 errors in the last 24 hours.").
+Numbers are words in a sentence, with plural forms per language, and never
+a figure alone, a chart or a colour. A panel's gate is the gate of the page
+it is about, through `offered_pages`, so the Dashboard offers nothing that
+answers 403. The cards below are unchanged: one per area, one per plugin
+card, Create and You.
+
+**"Who can do this?"** Each admin page the registry knows ends with a link
+to `/admin/people/who-can?path=<the page>`, for someone who holds
+`administer users` (the Permissions page's gate). The page:
+- works the answer out again from the path, with the registry's gate for
+  that page (`admin_nav::placement`), so nothing in the address can change
+  it, and accepts only a clean path under `/admin`;
+- names the permission, or any of several, or "only site administrators";
+- lists the roles that hold it, how many people each has (or "everyone
+  signed in" for the built-in roles), and links to edit each role and to the
+  Permissions page.
+
+Without a path, it lists what opens every page, kernel and plugin, each
+linking to its own answer. The page leaves itself out of its own link.
+
+**The accessibility report** (Reports, `administer site`) lists images
+without a text alternative, newest first, each linking to the file page
+where one is set (for someone who may open files). It also shows the
+viewer's own settings (theme, search shortcuts), with a link to change
+them, and how this administration is checked.

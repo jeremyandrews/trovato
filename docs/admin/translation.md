@@ -53,6 +53,12 @@ UiMessage::new("{type} {title} has been created.")
 UiMessage::new("{count} item published.").plural("{count} items published.", n);
 ```
 
+The same message serves anywhere a handler hands words to a template: the
+dashboard's panels and admin search results carry `UiMessage`s for their
+sentences, and data (a title, a log message) goes in as an argument, so it is
+escaped and never translated. A count always goes through `.plural(…)`, so
+"1 error" and "3 errors" are each right in every language.
+
 The admin shell renders it with `{{ t_message(m=flash) }}`, which translates,
 escapes, and adds the link only when it is a path on this site. A plain string
 in the same session key still works.
@@ -135,6 +141,11 @@ proves the check can see them: the front end's form templates print the same
 words untranslated, and the test finds every one.
 
 ## Words scripts show
+
+Words a script fetches from the server arrive already translated. The
+command palette's results (`GET /admin/search/suggest`) are rendered with
+`UiMessage::text` in the viewer's admin language, markers stripped, so the
+script only places them.
 
 An admin script must not build English sentences. The admin shell renders a
 table of the words the scripts use, translated:

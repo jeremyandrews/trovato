@@ -16,6 +16,7 @@ zoom. This page says how that is checked and what a screen reader user hears.
 | axe-core, WCAG 2.0/2.1/2.2 A and AA, on every GET page in the inventory, in four modes: light, dark, 320 px, and the right-to-left pseudo locale; no sideways page scroll at 320 px | `tests/admin-a11y/specs/axe.spec.mjs` | CI job "Admin accessibility" |
 | Keyboard: skip link, sidebar disclosures by Enter and Space (and remembered), the narrow-screen menu (Escape closes it and returns focus), search by Tab and Enter, a visible focus ring on everything focusable | `tests/admin-a11y/specs/keyboard.spec.mjs` | same |
 | The accessibility tree of each page type, and of the open command palette | `tests/admin-a11y/specs/aria.spec.mjs` | same |
+| The dashboard's panels (regions named by their headings, state in words), "Who can do this?" (last in `main`, answers for its page) and the accessibility report | `tests/admin-a11y/specs/dashboard.spec.mjs` | CI job "Admin accessibility" |
 | The command palette: modal, combobox and grouped listbox, Up/Down/Enter/Escape, focus returned, `/` ignored in text fields, the live count, the same results as the page, axe on the open palette | `tests/admin-a11y/specs/palette.spec.mjs` (also run under WebKit, Safari's engine, by hand) | CI job "Admin accessibility" |
 
 Running the browser checks locally, against a site started with
@@ -57,7 +58,11 @@ Main follows. On every page except the Dashboard it starts with the
 Content", where the last item is the current page and not a link. Then comes
 the page's one level-1 heading and its intro sentence.
 
-- **Dashboard**: "Dashboard, heading level 1", the intro, then "Areas you
+- **Dashboard**: "Dashboard, heading level 1", the intro, then the panels,
+  each a region named by its level-2 heading: "Your recent content", "Waiting
+  for you", "Scheduled tasks", "Recent errors". Each starts with a sentence
+  that gives the state and its numbers in words ("Nothing is waiting for
+  you.", "1 error in the last 24 hours."), then a list of links. Then "Areas you
   may use, heading level 2". Each group is a region named for it, with a
   level-3 heading, its one-line description and a list of links. A "Create"
   region lists one link per content type. "You" says "Signed in as
@@ -129,6 +134,17 @@ the page's one level-1 heading and its intro sentence.
   lives or what it is ("Setting on Site settings", "page, published",
   "Plugin, enabled"). A kind with more matches ends with a link such as
   "All matches in Content".
+- **Who can do this?** (the link at the foot of each page, for someone who
+  may change permissions): "Who can open Menus, heading level 1", then the
+  region "What it needs" ("Menus needs the permission “administer site”."),
+  then "Roles that may open it", a table captioned "Roles that may open
+  Menus" with one row per role, headed by the role's name as a link. Tree:
+  [screen-reader/who-can.yml](screen-reader/who-can.yml).
+- **Accessibility report** (Reports): three regions, "Images without a text
+  alternative" (a sentence with the number, then a captioned table whose
+  row headers are links such as "Add a text alternative to photo.jpg"),
+  "Your settings" and "How this administration is checked". Tree:
+  [screen-reader/a11y-report.yml](screen-reader/a11y-report.yml).
 - **Command palette** (Quick search, `/`): a modal dialog "Quick search"
   holding a search landmark: "Quick search, heading level 2", then
   "Search the administration, combobox, collapsed" and the instruction
@@ -170,6 +186,9 @@ too. In the palette, type to search. Down and Up move through the results
 and wrap at the ends. Enter opens the active result, or the full results
 page when none is active. Escape or Close shuts it, and focus returns to
 where it was.
+
+On every page, for someone who may change permissions, the last stop in
+the page content is "Who can do this?". Enter opens the answer for that page.
 
 On a listing, Tab reaches the filter fields, then the column headers' sort
 buttons (Enter sorts), then each row's checkbox and actions. Space checks a
