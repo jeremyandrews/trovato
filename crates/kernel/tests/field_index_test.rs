@@ -4,7 +4,7 @@
 //! the index.
 //!
 //! Each test seeds its own scratch database (never the shared test database)
-//! with 30,000 items of one type, runs the real `GatherService`, captures the
+//! with 12,000 items of one type, runs the real `GatherService`, captures the
 //! statements it sends, and asks Postgres how it would run each one.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
