@@ -21,6 +21,7 @@ use super::helpers::{
     render_forbidden, render_not_found, render_server_error, require_csrf, require_permission,
     validate_password,
 };
+use super::admin_list::{ListQuery, PER_PAGE};
 use super::user_delete::blocks_last_admin;
 
 /// User form data.
@@ -199,16 +200,35 @@ async fn may_lose_a_superuser(state: &AppState) -> bool {
 /// creates an account an access rule blocks.
 const ACCESS_RULE_WARNING_KEY: &str = "admin_user_access_rule_warning";
 
-/// List all users.
+/// The people listing's sortable columns: key and SQL.
+const USER_SORTS: &[(&str, &str)] = &[
+    ("name", "lower(name)"),
+    ("email", "lower(mail)"),
+    ("status", "status"),
+];
+
+/// List users, a page at a time, filtered by name or email address.
 ///
 /// GET /admin/people
-async fn list_users(State(state): State<AppState>, session: Session) -> Response {
+async fn list_users(
+    State(state): State<AppState>,
+    session: Session,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
     if let Err(redirect) = require_permission(&state, &session, "administer users").await {
         return redirect;
     }
 
-    let users = match state.users().list().await {
-        Ok(users) => users,
+    let query = ListQuery::from_params(&params);
+    let sort = query.sort(USER_SORTS, ("name", false));
+    let like = query.like();
+
+    let (users, total) = match state
+        .users()
+        .admin_page(like.as_deref(), &sort.order_by(), PER_PAGE, query.offset())
+        .await
+    {
+        Ok(page) => page,
         Err(e) => {
             tracing::error!(error = %e, "failed to list users");
             return render_server_error("Failed to load users.");
@@ -221,6 +241,7 @@ async fn list_users(State(state): State<AppState>, session: Session) -> Response
     let mut context = tera::Context::new();
     context.insert("warning", &warning);
     context.insert("users", &users);
+    context.insert("list", &query.view(total, users.len(), Some(&sort)));
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/people");
 

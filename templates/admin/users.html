@@ -1,5 +1,9 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
+
+{#- The people listing. `list` is its filter, sort and page
+    (routes::admin_list); the filter matches the name or the email address. -#}
 
 {% block page_title %}{{ t(s="Users") }}{% endblock page_title %}
 {% block page_actions %}{{ list::add_link(url="/admin/people/add", label=t(s="Add user")) }}{% endblock page_actions %}
@@ -9,45 +13,58 @@
 <div class="notice notice--warning" role="status"><strong class="notice__label">{{ t(s="Warning:") }}</strong> {{ t(s=warning) }}</div>
 {% endif %}
 
-{% if users %}
-<div class="table-scroll" role="region" aria-labelledby="users-caption" tabindex="0">
-    <table class="table">
-        <caption id="users-caption">{{ t(s="User accounts") }}</caption>
-        <thead>
-            <tr>
-                <th scope="col">{{ t(s="Username") }}</th>
-                <th scope="col">{{ t(s="Email") }}</th>
-                <th scope="col">{{ t(s="Status") }}</th>
-                <th scope="col">{{ t(s="Admin") }}</th>
-                <th scope="col">{{ t(s="Operations") }}</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for user in users %}
-            <tr>
-                <th scope="row">
-                    <a href="/admin/people/{{ user.id }}/edit">{{ user.name }}</a>
-                </th>
-                <td>{{ user.mail }}</td>
-                <td>
-                    {% if user.status == 1 %}
-                    <span class="status status--active">{{ t(s="Active") }}</span>
-                    {% else %}
-                    <span class="status status--inactive">{{ t(s="Blocked") }}</span>
-                    {% endif %}
-                </td>
-                <td>{% if user.is_admin %}{{ t(s="Yes") }}{% else %}{{ t(s="No") }}{% endif %}</td>
-                <td class="operations">
-                    <a href="/admin/people/{{ user.id }}/edit">{{ t(s="Edit {name}", name=user.name) }}</a>
-                    {% if user.id != "00000000-0000-0000-0000-000000000000" %}
-                    {{ list::delete_button(action="/admin/people/" ~ user.id ~ "/delete", label=t(s="Delete {name}", name=user.name), confirm_text=t(s="Delete the user {name}?", name=user.name), csrf_token=csrf_token) }}
-                    {% endif %}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+<div class="admin-card">
+    {{ list::filter_start(action="/admin/people", label=t(s="Filter users")) }}
+        {{ form::field(name="q", type="search", label=t(s="Name or email contains"), value=list.q, width="20", wrapper="filter-item") }}
+    {{ list::filter_end(list=list, action="/admin/people") }}
 </div>
+{{ list::sort_form(list=list, action="/admin/people") }}
+
+{% if users %}
+<div class="admin-card">
+    {{ list::count(list=list) }}
+    <div class="table-scroll" role="region" aria-labelledby="users-caption" tabindex="0">
+        <table class="table table--stack">
+            <caption id="users-caption">{{ t(s="User accounts") }}</caption>
+            <thead>
+                <tr>
+                    {{ list::sort_th(label=t(s="Username"), key="name", list=list) }}
+                    {{ list::sort_th(label=t(s="Email"), key="email", list=list) }}
+                    {{ list::sort_th(label=t(s="Status"), key="status", list=list) }}
+                    <th scope="col">{{ t(s="Admin") }}</th>
+                    <th scope="col" class="operations">{{ t(s="Operations") }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users %}
+                <tr>
+                    <th scope="row">
+                        <a href="/admin/people/{{ user.id }}/edit">{{ user.name }}</a>
+                    </th>
+                    <td>{{ user.mail }}</td>
+                    <td>
+                        {% if user.status == 1 %}
+                        <span class="status status--active">{{ t(s="Active") }}</span>
+                        {% else %}
+                        <span class="status status--inactive">{{ t(s="Blocked") }}</span>
+                        {% endif %}
+                    </td>
+                    <td>{% if user.is_admin %}{{ t(s="Yes") }}{% else %}{{ t(s="No") }}{% endif %}</td>
+                    <td class="operations">
+                        <a href="/admin/people/{{ user.id }}/edit">{{ t(s="Edit {name}", name=user.name) }}</a>
+                        {% if user.id != "00000000-0000-0000-0000-000000000000" %}
+                        {{ list::delete_button(action="/admin/people/" ~ user.id ~ "/delete", label=t(s="Delete {name}", name=user.name), confirm_text=t(s="Delete the user {name}?", name=user.name), csrf_token=csrf_token) }}
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {{ list::pager(list=list, action="/admin/people", label=t(s="Pages of users")) }}
+</div>
+{% elif list.filtered %}
+{{ list::empty(message=t(s="No users match this filter."), add_url="/admin/people", add_label=t(s="Clear filter")) }}
 {% else %}
 {{ list::empty(message=t(s="No users found."), add_url="/admin/people/add", add_label=t(s="Add user")) }}
 {% endif %}
