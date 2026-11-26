@@ -9,6 +9,7 @@
     - text: Search the administration
     - searchbox "Search the administration"
     - button "Search"
+  - button "Quick search"
   - list:
     - listitem:
       - link "View site":
@@ -196,6 +197,17 @@
     - option "English" [selected]
     - option "Pseudo (accented, longer)"
     - option "Pseudo (right to left)"
+  - group "Search shortcuts":
+    - text: Search shortcuts
+    - checkbox "Open search with /" [checked]
+    - text: Open search with /
+    - paragraph: Pressing / anywhere outside a text field opens search. Turn it off if it gets in the way of your screen reader or other keys.
+    - text: Another key to open search
+    - paragraph: Works in text fields too. Control+K replaces the browser's own use of that key on these pages.
+    - combobox "Another key to open search":
+      - option "None" [selected]
+      - option "Control+K (Command+K on a Mac)"
+      - option "Alt+K (Option+K on a Mac)"
   - paragraph:
     - strong: "What this changes:"
     - text: only how this administration looks and reads for you. Nobody else is affected.

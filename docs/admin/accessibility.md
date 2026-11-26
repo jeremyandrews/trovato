@@ -15,7 +15,8 @@ zoom. This page says how that is checked and what a screen reader user hears.
 | No untranslated interface text on any admin page | `crates/kernel/tests/admin_i18n_test.rs` (see [translation.md](translation.md)) | `cargo test` |
 | axe-core, WCAG 2.0/2.1/2.2 A and AA, on every GET page in the inventory, in four modes: light, dark, 320 px, and the right-to-left pseudo locale; no sideways page scroll at 320 px | `tests/admin-a11y/specs/axe.spec.mjs` | CI job "Admin accessibility" |
 | Keyboard: skip link, sidebar disclosures by Enter and Space (and remembered), the narrow-screen menu (Escape closes it and returns focus), search by Tab and Enter, a visible focus ring on everything focusable | `tests/admin-a11y/specs/keyboard.spec.mjs` | same |
-| The accessibility tree of each page type | `tests/admin-a11y/specs/aria.spec.mjs` | same |
+| The accessibility tree of each page type, and of the open command palette | `tests/admin-a11y/specs/aria.spec.mjs` | same |
+| The command palette: modal, combobox and grouped listbox, Up/Down/Enter/Escape, focus returned, `/` ignored in text fields, the live count, the same results as the page, axe on the open palette | `tests/admin-a11y/specs/palette.spec.mjs` (also run under WebKit, Safari's engine, by hand) | CI job "Admin accessibility" |
 
 Running the browser checks locally, against a site started with
 `TROVATO_PSEUDO_LOCALES=1` and seeded with `trovato generate`:
@@ -113,15 +114,31 @@ the page's one level-1 heading and its intro sentence.
 - **Your preferences**: a group "Colour theme" with three radio buttons,
   System, Light and Dark, and the hint as their description. Next is the
   "Administration language" combobox, where each language is named in its own
-  language and marked with its language code. A sentence says what the
+  language and marked with its language code. A "Search shortcuts" group
+  holds the checkbox "Open search with /" and the combobox "Another key to
+  open search", each with a hint. A sentence says what the
   change affects, and a "Save preferences" button follows. A separate "Sign
   out" section holds the Log out button. After a save the page says "Done:
   Your preferences were saved." as a status message, which is announced
   without moving focus.
 - **Search results**: "Search results for “content”, heading level 1", a
   second "Search again" search landmark with the query filled in, then
-  "11 results" as a status message. The "Pages" region lists each result as
-  a link, then where it lives and what it is for.
+  "N results" as a status message. Then one region per kind, named by its
+  level 2 heading (Pages, Settings, Content, People, Plugins, Log
+  messages). Each lists its results as links, each followed by where it
+  lives or what it is ("Setting on Site settings", "page, published",
+  "Plugin, enabled"). A kind with more matches ends with a link such as
+  "All matches in Content".
+- **Command palette** (Quick search, `/`): a modal dialog "Quick search"
+  holding a search landmark: "Quick search, heading level 2", then
+  "Search the administration, combobox, collapsed" and the instruction
+  "Up and Down move through the results, Enter opens one, Escape closes."
+  as its description. After typing, the combobox is expanded, and
+  "18 results" is announced politely. The listbox "Results" holds a group
+  per kind, named "Pages", "Settings" and so on. Down makes an option active:
+  the tree gives its name, for example "Content Administration › Content",
+  and its selected state. Focus stays in the combobox throughout. Tree:
+  [screen-reader/palette.yml](screen-reader/palette.yml).
 
 Messages say what they are in words as well as colour: "Done:", "Warning:"
 and "Error:". Errors are alerts, read as soon as they appear; the rest are
@@ -144,6 +161,16 @@ bar stays at the bottom of the screen, and the page scrolls a focused field
 clear of it. Leaving a form with unsaved changes asks first (the browser's
 own question), and only then.
 
+Search: in the banner, type and press Enter for the results page, which
+works without JavaScript. With JavaScript, "Quick search" opens the command
+palette. So does `/` while focus is not in a text field, unless you turn it
+off in Your preferences ("Open search with /"). There you can also add
+Control+K (Command+K on a Mac) or Alt+K (Option+K), which work in text fields
+too. In the palette, type to search. Down and Up move through the results
+and wrap at the ends. Enter opens the active result, or the full results
+page when none is active. Escape or Close shuts it, and focus returns to
+where it was.
+
 On a listing, Tab reaches the filter fields, then the column headers' sort
 buttons (Enter sorts), then each row's checkbox and actions. Space checks a
 box; checking "Select all items" checks every row. Delete leads to a page
@@ -155,7 +182,11 @@ without that second press.
 - **No live VoiceOver session.** No recorded VoiceOver or Guidepup session:
   driving VoiceOver needs the macOS accessibility permissions granted
   interactively, which an unattended run cannot do. The trees above are what
-  VoiceOver reads, but its exact wording and verbosity were not heard.
+  VoiceOver reads, but its exact wording and verbosity were not heard. For
+  the command palette this matters most: `aria-activedescendant` is checked
+  in Chromium and in WebKit (Safari's engine), but not yet heard through
+  VoiceOver in Safari. If VoiceOver does not follow it, the fallback in
+  [design.md section 10](design.md#10-search-pattern) applies.
 - **Pages never opened.** The parameterised pages with nothing seeded to open
   (an access rule, a tile, a menu link, a record, an AI provider, a
   translation, a deletable text format) were not opened by the browser checks.

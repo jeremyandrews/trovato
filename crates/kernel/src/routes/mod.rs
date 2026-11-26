@@ -26,6 +26,7 @@ pub mod admin_record_type;
 pub mod admin_redirect;
 pub mod admin_reports;
 pub mod admin_search;
+pub mod admin_search_index;
 pub mod admin_search_report;
 pub mod admin_shell;
 pub mod admin_stage;

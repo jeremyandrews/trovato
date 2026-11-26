@@ -71,3 +71,28 @@ for (const [type, path] of Object.entries(PAGE_TYPES)) {
     fs.writeFileSync(`${dir}/${type}.yml`, tree + '\n');
   });
 }
+
+// The command palette open with results: a modal dialog, so its tree is
+// the dialog's own. The combobox names its listbox and the active option.
+test('the open command palette is a dialog with a combobox and a grouped listbox', async ({ page }, info) => {
+  test.skip(info.project.name !== 'light', 'the tree is the same in every colour mode');
+  await page.goto('/admin');
+  await page.locator('.admin-palette-open').click();
+  await page.keyboard.type('content');
+  await expect(page.locator('#admin-palette-results [role=option]').first()).toBeVisible();
+  await page.keyboard.press('ArrowDown');
+  const dialog = page.getByRole('dialog');
+  await expect(dialog).toMatchAriaSnapshot(`
+    - dialog:
+      - search:
+        - heading [level=2]
+        - combobox [expanded]
+        - listbox:
+          - group:
+            - option [selected]
+  `);
+  const tree = await dialog.ariaSnapshot();
+  const dir = process.env.ADMIN_A11Y_RECORD_ARIA ? '../../docs/admin/screen-reader' : 'test-results/aria';
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(`${dir}/palette.yml`, tree + '\n');
+});

@@ -94,8 +94,7 @@ the group: a group's title (`Structure`, `Content`, …), case-insensitively, or
 the pre-B199 name `System`, which maps to Configuration; any other name puts the
 link in Extend. Its `card_description`, when set, is also its line on the
 landing page and what search matches beside its label; the declaration itself
-is unchanged, so no plugin needs rebuilding. (Part 4 adds search keywords to the
-declaration.)
+is unchanged, so no plugin needs rebuilding.
 
 Filtering is the one function every surface calls: the viewer passes the
 entry's gate, and its plugin is enabled. The sidebar and search are display
@@ -413,10 +412,61 @@ query and `templates/admin/macros/list.html` draws it:
 
 ## 10. Search pattern
 
-Part 1 ships the server side: `/admin/search?q=` searches the registry (title,
-description, group, synonyms), filtered by the viewer's permissions, with
-results under headings by kind. The form is in the header on every page, in a
-`search` landmark, and works with JavaScript off. Part 4 adds settings,
-content, people, plugins and log messages to the index, and the command
-palette (APG modal dialog with an ARIA 1.2 combobox) opened by a visible
-Search button or `/`.
+One search, two ways in. `/admin/search?q=` is a page that works with
+JavaScript off; the command palette is a quicker way to the same results.
+Both call `routes::admin_search_index::search`, so they cannot disagree, and
+a test compares them link by link.
+
+**What it finds**, in this order, each kind under its own heading:
+
+| Group | What matches | Links to | Shown to whoever may open |
+|---|---|---|---|
+| Pages | a registry page's title, description, group and synonyms, in English and in the viewer's language | the page | that page |
+| Settings | a setting field's label, hint and synonyms | the field itself (`/admin/config/site#site_slogan`) | the form it is on |
+| Content | item titles; the 8 most recently changed, then "All matches in Content" | the item's edit form | `/admin/content` |
+| People | account names and email addresses | the account's edit form | `/admin/people` |
+| Plugins | the pages enabled plugins declare (label, section, card description), and the plugins page's rows by name and description | the page, or the plugin's row (`/admin/plugins#plugin-blog`) | that page, or `/admin/plugins` |
+| Log messages | site log message text; the 8 newest | the site log filtered to it | `/admin/reports/log` |
+
+The gate of each group is the gate of the page it links to, through the
+same `offered_pages` the sidebar uses. Search never shows a record the
+viewer could not reach by the sidebar, and every route still checks its own
+permission. The queries run live, with the listings' own filters, so a
+deleted item or a disabled plugin is gone from the next search. Setting
+fields are a fixed list in `admin_search_index::SETTINGS`; a test opens
+each form and checks that every anchor is a field id there.
+
+**The results page.** A `search` landmark with the query, then "N results"
+as a status, then one `section` per group, labelled by its `h2`. A group
+with more matches than it shows ends with "All matches in Content" (or
+People, or Log messages), which opens that listing filtered by the query.
+With nothing found, it says so and suggests shorter or task words.
+
+**The command palette** (`static/js/admin-palette.js`):
+- **Opening.** The banner's "Quick search" button (`aria-haspopup="dialog"`),
+  shown only when the script runs. `/` opens it when focus is not in a text
+  field. Each viewer may turn `/` off (WCAG 2.1.4) and add Control+K
+  (Command+K on a Mac) or Alt+K (Option+K) under "Search shortcuts" in Your
+  preferences; those work in text fields too. The button's
+  `aria-keyshortcuts` names the keys in force, and its `<kbd>` shows `/`.
+- **The dialog.** A native `<dialog>` opened with `showModal()`, so the
+  page behind is inert (the APG modal dialog pattern). It is labelled by its
+  `h2`. Escape, the Close button and a click outside close it; focus goes
+  back to whatever opened it.
+- **The combobox** (ARIA 1.2, editable, list autocomplete). The input keeps
+  focus. `aria-controls` names the listbox, `aria-expanded` says whether it
+  has options, and `aria-activedescendant` names the active option, which
+  also carries `aria-selected="true"`. The listbox holds one `group` per
+  kind, labelled by its heading. Down and Up move through every option and
+  wrap. Enter opens the active option, or with none active, submits to the
+  results page. A polite status says "N results" after each answer.
+- **The answers** come from `GET /admin/search/suggest?q=`, as JSON already
+  in the viewer's language. It refuses anyone who may not use the
+  administration (403). Typing waits 150ms between requests, and a late
+  answer to an older query is dropped.
+
+`aria-activedescendant` was chosen over moving focus into the list, so the
+query can be edited at any time. It works in Chromium and WebKit, which the
+browser checks run in. If a screen reader is found not to follow it, the
+fallback is to move real focus to the options (each `tabindex="-1"`) and
+keep typing routed to the input.

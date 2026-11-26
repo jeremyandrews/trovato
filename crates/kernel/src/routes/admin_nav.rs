@@ -1195,9 +1195,26 @@ pub struct Preferences {
     /// The slugs of the sidebar groups the viewer collapsed.
     #[serde(default)]
     pub collapsed: Vec<String>,
+    /// Whether the viewer turned off the single-key `/` search shortcut
+    /// (WCAG 2.1.4: a one-character shortcut can be turned off).
+    #[serde(default)]
+    pub search_slash_off: bool,
+    /// The other key that opens search, if the viewer chose one: `ctrl-k`
+    /// or `alt-k`.
+    #[serde(default)]
+    pub search_key: Option<String>,
 }
 
 impl Preferences {
+    /// The other key that opens search: `ctrl-k`, `alt-k`, or empty.
+    pub fn search_key(&self) -> &str {
+        match self.search_key.as_deref() {
+            Some("ctrl-k") => "ctrl-k",
+            Some("alt-k") => "alt-k",
+            _ => "",
+        }
+    }
+
     /// The colour theme, one of `system`, `light`, `dark`.
     pub fn theme(&self) -> &str {
         match self.theme.as_deref() {
@@ -1778,6 +1795,27 @@ mod tests {
         let editor = viewer(&["access administration pages", "edit any content"]);
         assert!(search(&editor, &[], &[], &[], "roles", &id).is_empty());
         assert!(search(&admin, &[], &[], &[], "   ", &id).is_empty());
+    }
+
+    /// A plugin entry is found by its label, for a viewer holding its
+    /// permission while its plugin is enabled, and not otherwise.
+    #[test]
+    fn search_finds_a_plugin_entry_only_when_offered() {
+        let id = |s: &str| s.to_string();
+        let links = [groups_link()];
+        let found = |hits: Vec<SearchHit>| hits.iter().any(|h| h.href == "/admin/groups");
+        let holder = viewer(&["access administration pages", "administer groups"]);
+        let enabled = ["groups".to_string()];
+        assert!(found(search(&holder, &enabled, &links, &[], "groups", &id)));
+        assert!(
+            !found(search(&holder, &[], &links, &[], "groups", &id)),
+            "disabled"
+        );
+        let other = viewer(&["access administration pages"]);
+        assert!(
+            !found(search(&other, &enabled, &links, &[], "groups", &id)),
+            "no permission"
+        );
     }
 
     #[test]

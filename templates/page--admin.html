@@ -56,6 +56,20 @@
         <button class="button admin-search__button" type="submit">{{ t(s="Search") }}</button>
     </form>
 
+    {#- The command palette's button: shown by admin-palette.js. Without
+        JavaScript the search form above does the same job. The shortcuts
+        are the viewer's own (Your preferences). -#}
+    {% set search_key = admin_prefs.search_key | default(value="") %}
+    {% set slash_on = not admin_prefs.search_slash_off | default(value=false) %}
+    {% if search_key == "ctrl-k" %}{% set extra_keys = ["Control+K", "Meta+K"] %}{% elif search_key == "alt-k" %}{% set extra_keys = ["Alt+K"] %}{% else %}{% set extra_keys = [] %}{% endif %}
+    {% if slash_on %}{% set all_keys = ["/"] | concat(with=extra_keys) %}{% else %}{% set all_keys = extra_keys %}{% endif %}
+    <button type="button" class="button admin-palette-open" aria-haspopup="dialog" aria-controls="admin-palette" hidden
+        data-search-slash="{% if slash_on %}on{% else %}off{% endif %}"
+        data-search-key="{% if extra_keys %}{{ search_key }}{% endif %}"{% if all_keys %}
+        aria-keyshortcuts="{{ all_keys | join(sep=" ") }}"{% endif %}>
+        {{ t(s="Quick search") }}{% if slash_on %} <kbd aria-hidden="true">/</kbd>{% endif %}
+    </button>
+
     <ul class="admin-account">
         <li><a href="/">{{ t(s="View site") }}</a></li>
         <li><a href="/admin/preferences"{% if admin_current_path | default(value="") == "/admin/preferences" %} aria-current="page"{% endif %}>{{ t(s="Your preferences") }}</a></li>
@@ -155,16 +169,36 @@
 
 <div class="visually-hidden" id="trovato-announcements" aria-live="polite"></div>
 
+{#- The command palette (admin-palette.js): a modal dialog holding a
+    combobox and its listbox of grouped results. It stays closed without
+    JavaScript, where the banner's search form leads to the same results. -#}
+<dialog class="admin-palette" id="admin-palette" aria-labelledby="admin-palette-title">
+    <form class="admin-palette__form" role="search" method="get" action="/admin/search">
+        <h2 class="admin-palette__title" id="admin-palette-title">{{ t(s="Quick search") }}</h2>
+        <label class="admin-palette__label" for="admin-palette-q">{{ t(s="Search the administration") }}</label>
+        <input class="admin-palette__input" id="admin-palette-q" type="text" name="q" autocomplete="off" spellcheck="false"
+            role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="admin-palette-results" aria-describedby="admin-palette-help">
+        <p class="admin-palette__help hint" id="admin-palette-help">{{ t(s="Up and Down move through the results, Enter opens one, Escape closes.") }}</p>
+        <div class="admin-palette__results" id="admin-palette-results" role="listbox" aria-label="{{ t(s="Results") }}" hidden></div>
+        <p class="admin-palette__count" id="admin-palette-count" role="status"></p>
+        <div class="admin-palette__actions">
+            <button class="button" type="submit">{{ t(s="All results") }}</button>
+            <button class="button button--secondary" type="button" data-palette-close>{{ t(s="Close") }}</button>
+        </div>
+    </form>
+</dialog>
+
 {#- The words the admin's scripts show, translated: admin-shell.js reads
     them (window.trovatoText). A script finds its English source here, or
     shows the source itself where the table is absent (the front end). -#}
-<template id="admin-text"><span data-s="Close">{{ t(s="Close") }}</span><span data-s="Choose media">{{ t(s="Choose media") }}</span><span data-s="Browse existing">{{ t(s="Browse existing") }}</span><span data-s="Upload new">{{ t(s="Upload new") }}</span><span data-s="Type">{{ t(s="Type") }}</span><span data-s="All types">{{ t(s="All types") }}</span><span data-s="Images">{{ t(s="Images") }}</span><span data-s="Documents">{{ t(s="Documents") }}</span><span data-s="Search files">{{ t(s="Search files") }}</span><span data-s="Load more">{{ t(s="Load more") }}</span><span data-s="Insert">{{ t(s="Insert") }}</span><span data-s="Loading…">{{ t(s="Loading…") }}</span><span data-s="No media found.">{{ t(s="No media found.") }}</span><span data-s="The media could not be loaded.">{{ t(s="The media could not be loaded.") }}</span><span data-s="Choose files to upload">{{ t(s="Choose files to upload") }}</span><span data-s="Upload failed. Please try again.">{{ t(s="Upload failed. Please try again.") }}</span><span data-s="Uploaded. Choose it from the list.">{{ t(s="Uploaded. Choose it from the list.") }}</span><span data-s="{count} files shown.">{{ t(s="{count} files shown.") }}</span><span data-s="Selected: {name}">{{ t(s="Selected: {name}") }}</span><span data-s="Drag to reorder">{{ t(s="Drag to reorder") }}</span><span data-s="Move section up">{{ t(s="Move section up") }}</span><span data-s="Move section down">{{ t(s="Move section down") }}</span><span data-s="Remove section">{{ t(s="Remove section") }}</span><span data-s="Maximum of {count} section(s) reached">{{ t(s="Maximum of {count} section(s) reached") }}</span><span data-s="Move up">{{ t(s="Move up") }}</span><span data-s="Move down">{{ t(s="Move down") }}</span><span data-s="Selected: {count}">{{ t(s="Selected: {count}") }}</span></template>
+<template id="admin-text"><span data-s="Close">{{ t(s="Close") }}</span><span data-s="Choose media">{{ t(s="Choose media") }}</span><span data-s="Browse existing">{{ t(s="Browse existing") }}</span><span data-s="Upload new">{{ t(s="Upload new") }}</span><span data-s="Type">{{ t(s="Type") }}</span><span data-s="All types">{{ t(s="All types") }}</span><span data-s="Images">{{ t(s="Images") }}</span><span data-s="Documents">{{ t(s="Documents") }}</span><span data-s="Search files">{{ t(s="Search files") }}</span><span data-s="Load more">{{ t(s="Load more") }}</span><span data-s="Insert">{{ t(s="Insert") }}</span><span data-s="Loading…">{{ t(s="Loading…") }}</span><span data-s="No media found.">{{ t(s="No media found.") }}</span><span data-s="The media could not be loaded.">{{ t(s="The media could not be loaded.") }}</span><span data-s="Choose files to upload">{{ t(s="Choose files to upload") }}</span><span data-s="Upload failed. Please try again.">{{ t(s="Upload failed. Please try again.") }}</span><span data-s="Uploaded. Choose it from the list.">{{ t(s="Uploaded. Choose it from the list.") }}</span><span data-s="{count} files shown.">{{ t(s="{count} files shown.") }}</span><span data-s="Selected: {name}">{{ t(s="Selected: {name}") }}</span><span data-s="Drag to reorder">{{ t(s="Drag to reorder") }}</span><span data-s="Move section up">{{ t(s="Move section up") }}</span><span data-s="Move section down">{{ t(s="Move section down") }}</span><span data-s="Remove section">{{ t(s="Remove section") }}</span><span data-s="Maximum of {count} section(s) reached">{{ t(s="Maximum of {count} section(s) reached") }}</span><span data-s="Move up">{{ t(s="Move up") }}</span><span data-s="Move down">{{ t(s="Move down") }}</span><span data-s="Selected: {count}">{{ t(s="Selected: {count}") }}</span><span data-s="Searching…">{{ t(s="Searching…") }}</span><span data-s="No results. Press Enter to search every page.">{{ t(s="No results. Press Enter to search every page.") }}</span><span data-s="The search could not be run.">{{ t(s="The search could not be run.") }}</span></template>
 
 {% block scripts %}{% endblock scripts %}
 <script src="/static/js/trovato.js"></script>
 <script src="/static/js/admin-helpers.js?v={{ asset_version() }}"></script>
 <script src="/static/js/admin-forms.js?v={{ asset_version() }}"></script>
 <script src="/static/js/admin-lists.js?v={{ asset_version() }}"></script>
+<script src="/static/js/admin-palette.js?v={{ asset_version() }}"></script>
 <script src="/static/js/admin-media-picker.js?v={{ asset_version() }}"></script>
 </body>
 </html>

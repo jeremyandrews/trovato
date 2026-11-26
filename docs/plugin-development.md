@@ -1266,6 +1266,12 @@ changes its link and card at the next restart, the same moment its routes
 appear or go. The permission, by contrast, is checked against the viewer on
 every request, exactly as for the kernel's own links.
 
+Admin search (`/admin/search` and the command palette) finds the entry by
+its label, its section and its card description, and lists it under
+"Plugins", for the same viewers who see the link. The plugins page's row for
+the plugin is also found by the plugin's name and description, for whoever
+may manage plugins.
+
 `href` must be the plugin's own path below `/admin/` (`/admin/groups`, not
 `/administrator` or `/admin/../groups`: no empty, `.` or `..` segments, encoded or
 not, and no backslash), and distinct from every kernel link, every prefix a
