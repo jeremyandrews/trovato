@@ -34,6 +34,7 @@ mod migration_rule;
 mod models;
 mod net_policy;
 mod pagination;
+mod password_prompt;
 mod permissions;
 mod plugin;
 mod recovery;
@@ -1287,14 +1288,14 @@ async fn run_user_command(action: UserAction) -> Result<()> {
             let password = if no_password {
                 None
             } else {
-                Some(read_password_from_stdin("Password: ")?)
+                Some(password_prompt::read_password_from_stdin("Password: ")?)
             };
             create_user_from_cli(&config, account, password).await?;
         }
         UserAction::ResetPassword { username, password } => {
             let password = match password {
                 Some(p) => p,
-                None => read_password_from_stdin("New password: ")?,
+                None => password_prompt::read_password_from_stdin("New password: ")?,
             };
 
             if password.len() < 12 {
@@ -1369,62 +1370,6 @@ async fn run_user_command(action: UserAction) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Read one line from stdin as a password, prompting on stderr: how
-/// `user create` and `user reset-password` take one, so it never appears in
-/// argv, the shell history or the output.
-///
-/// From a terminal the password is read with echo off, so what is typed is
-/// not shown, and the prompt comes only then: a person typing gets one, piped
-/// input does not, so it does not run into the command's own output.
-fn read_password_from_stdin(prompt: &str) -> Result<String> {
-    use std::io::IsTerminal;
-    let line = if std::io::stdin().is_terminal() {
-        read_line_unechoed(prompt)
-    } else {
-        read_line()
-    };
-    Ok(line
-        .context("failed to read password from stdin")?
-        .trim()
-        .to_string())
-}
-
-fn read_line() -> std::io::Result<String> {
-    let mut buf = String::new();
-    std::io::stdin().read_line(&mut buf)?;
-    Ok(buf)
-}
-
-/// Prompt on stderr and read one line from the terminal on stdin with echo
-/// off, putting the terminal back as it was whatever the read did. The line
-/// end is still echoed (`ECHONL`), so the output after it starts on a new line.
-#[cfg(unix)]
-fn read_line_unechoed(prompt: &str) -> std::io::Result<String> {
-    use rustix::termios::{LocalModes, OptionalActions, tcgetattr, tcsetattr};
-    let stdin = std::io::stdin();
-    let saved = tcgetattr(&stdin)?;
-    let mut quiet = saved.clone();
-    quiet.local_modes.remove(LocalModes::ECHO);
-    quiet.local_modes.insert(LocalModes::ECHONL);
-    // Echo goes off before the prompt appears, so nothing typed in answer to
-    // the prompt is ever shown.
-    tcsetattr(&stdin, OptionalActions::Flush, &quiet)?;
-    eprint!("{prompt}");
-    let line = read_line();
-    let restored = tcsetattr(&stdin, OptionalActions::Now, &saved);
-    let line = line?;
-    restored?;
-    Ok(line)
-}
-
-/// Without termios the prompt says the input will be shown, so nobody types
-/// a password at it believing otherwise.
-#[cfg(not(unix))]
-fn read_line_unechoed(prompt: &str) -> std::io::Result<String> {
-    eprint!("{prompt}(shown as typed; pipe it in to hide it) ");
-    read_line()
 }
 
 /// What `trovato user create` was asked for, short of the password.
