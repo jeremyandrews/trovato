@@ -13,6 +13,9 @@ use crate::services;
 /// Temporary file max age in seconds (6 hours).
 const TEMP_FILE_MAX_AGE_SECS: i64 = 6 * 60 * 60;
 
+/// Items scanned per [`CronTasks::backfill_accessibility_scan`] run.
+const ACCESSIBILITY_BACKFILL_BATCH: i64 = 500;
+
 /// Collection of cron tasks.
 pub struct CronTasks {
     pool: PgPool,
@@ -421,6 +424,39 @@ impl CronTasks {
             .map(|e| e.config().clone())
             .unwrap_or_default();
         crate::services::mail_worker::purge(&self.pool, &config, 1000).await
+    }
+
+    /// Scans items an earlier release never counted (no `item_accessibility`
+    /// row yet) for images in their rich text with no alternative, one
+    /// bounded batch per run, so a site with existing content catches up over
+    /// a few cron runs rather than one query that parses every item's HTML at
+    /// once (B251). Returns how many it scanned.
+    pub async fn backfill_accessibility_scan(&self) -> Result<u64> {
+        let rows: Vec<(uuid::Uuid, serde_json::Value)> = sqlx::query_as(
+            "SELECT item.id, item.fields FROM item \
+             LEFT JOIN item_accessibility ON item_accessibility.item_id = item.id \
+             WHERE item_accessibility.item_id IS NULL \
+             LIMIT $1",
+        )
+        .bind(ACCESSIBILITY_BACKFILL_BATCH)
+        .fetch_all(&self.pool)
+        .await
+        .context("accessibility backfill: find items with no scan yet")?;
+
+        let scanned = rows.len() as u64;
+        for (item_id, fields) in rows {
+            let count = crate::content::accessibility_scan::count_missing_alt(&fields);
+            sqlx::query(
+                "INSERT INTO item_accessibility (item_id, images_missing_alt) VALUES ($1, $2) \
+                 ON CONFLICT (item_id) DO UPDATE SET images_missing_alt = EXCLUDED.images_missing_alt",
+            )
+            .bind(item_id)
+            .bind(count)
+            .execute(&self.pool)
+            .await
+            .context("accessibility backfill: store a scan")?;
+        }
+        Ok(scanned)
     }
 
     /// Process a single reindex queue item.
