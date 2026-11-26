@@ -98,6 +98,9 @@ pub struct ViewItemQuery {
     /// form submission, so a reader without JavaScript is told what happened —
     /// a held comment would otherwise appear to have vanished.
     pub comment: Option<String>,
+    /// The page of the comment thread, from 1. Read loosely: a value that is
+    /// not a number is the first page, not a 400 for the whole item page.
+    pub page: Option<String>,
 }
 
 /// Query parameters for getting a single item.
@@ -848,6 +851,7 @@ async fn view_item(
         &user,
         &canonical_path,
         query.comment.as_deref(),
+        query.page.as_deref().and_then(|p| p.trim().parse().ok()),
     )
     .await;
     let item_html = format!("{item_html}{comments_html}");

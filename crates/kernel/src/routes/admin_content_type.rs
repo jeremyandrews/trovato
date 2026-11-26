@@ -45,6 +45,30 @@ const PREVIEW_OPTIONS: &[(&str, &str)] = &[
     ("required", "Preview required before saving"),
 ];
 
+/// The choices of the comment settings fieldset, value and label.
+const COMMENT_MODE_OPTIONS: &[(&str, &str)] = &[
+    ("open", "Open"),
+    ("closed", "Closed: shown, no new comments"),
+    ("hidden", "Hidden: not shown, no new comments"),
+];
+const COMMENT_THREADING_OPTIONS: &[(&str, &str)] = &[
+    (
+        "threaded",
+        "Threaded: replies under the comment they answer",
+    ),
+    ("flat", "Flat: every comment in date order"),
+];
+const COMMENT_ORDER_OPTIONS: &[(&str, &str)] =
+    &[("oldest", "Oldest first"), ("newest", "Newest first")];
+
+/// Put the form's option lists in `context`.
+fn insert_options(context: &mut tera::Context) {
+    context.insert("preview_options", PREVIEW_OPTIONS);
+    context.insert("comment_mode_options", COMMENT_MODE_OPTIONS);
+    context.insert("comment_threading_options", COMMENT_THREADING_OPTIONS);
+    context.insert("comment_order_options", COMMENT_ORDER_OPTIONS);
+}
+
 /// Content type form data.
 #[derive(Debug, Deserialize)]
 struct ContentTypeFormData {
@@ -62,6 +86,10 @@ struct ContentTypeFormData {
     sticky_default: Option<String>,
     moderation: Option<String>,
     preview_mode: Option<String>,
+    comment_mode: Option<String>,
+    comment_threading: Option<String>,
+    comment_order: Option<String>,
+    comment_per_page: Option<String>,
 }
 
 /// The per-type defaults the content type form edits, by settings key. Each
@@ -110,6 +138,9 @@ impl ContentTypeFormData {
             crate::content::preview::SETTING.to_string(),
             serde_json::Value::from(self.preview_mode().as_str()),
         );
+        for (key, value) in self.comment_settings().to_settings() {
+            settings.insert(key.to_string(), value);
+        }
         serde_json::Value::Object(settings)
     }
 
@@ -117,6 +148,22 @@ impl ContentTypeFormData {
     /// default.
     fn preview_mode(&self) -> crate::content::preview::PreviewMode {
         crate::content::preview::PreviewMode::parse(self.preview_mode.as_deref())
+    }
+
+    /// The comment settings this submission asks for; anything unrecognised
+    /// is the default.
+    fn comment_settings(&self) -> crate::content::comment_settings::CommentSettings {
+        use crate::content::comment_settings::{CommentMode, CommentSettings};
+        CommentSettings {
+            mode: CommentMode::parse(self.comment_mode.as_deref()),
+            threaded: self.comment_threading.as_deref() != Some("flat"),
+            newest_first: self.comment_order.as_deref() == Some("newest"),
+            per_page: CommentSettings::clamp_per_page(
+                self.comment_per_page
+                    .as_deref()
+                    .and_then(|v| v.trim().parse().ok()),
+            ),
+        }
     }
 
     /// The values to show this submission again with.
@@ -132,6 +179,9 @@ impl ContentTypeFormData {
         }
         values[crate::content::preview::SETTING] =
             serde_json::Value::from(self.preview_mode().as_str());
+        for (key, value) in self.comment_settings().to_settings() {
+            values[key] = value;
+        }
         values
     }
 }
@@ -205,7 +255,7 @@ async fn add_content_type_form(State(state): State<AppState>, session: Session) 
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &false);
-    context.insert("preview_options", PREVIEW_OPTIONS);
+    insert_options(&mut context);
     context.insert("values", &serde_json::json!({}));
     context.insert("path", "/admin/structure/types/add");
 
@@ -313,7 +363,7 @@ async fn render_add_form_with_errors(
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &false);
-    context.insert("preview_options", PREVIEW_OPTIONS);
+    insert_options(&mut context);
     context.insert("errors", &errors);
     context.insert("values", &form.values());
     context.insert("path", "/admin/structure/types/add");
@@ -354,7 +404,7 @@ async fn edit_content_type_form(
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &true);
-    context.insert("preview_options", PREVIEW_OPTIONS);
+    insert_options(&mut context);
     // Load the database model to access settings (not available on ContentTypeDefinition)
     let db_type = crate::models::ItemType::find_by_type(state.db(), &type_name)
         .await
@@ -382,6 +432,13 @@ async fn edit_content_type_form(
     values[crate::content::preview::SETTING] = serde_json::Value::from(
         crate::content::preview::PreviewMode::of(db_type.as_ref().map(|it| &it.settings)).as_str(),
     );
+    for (key, value) in crate::content::comment_settings::CommentSettings::of(
+        db_type.as_ref().map(|it| &it.settings),
+    )
+    .to_settings()
+    {
+        values[key] = value;
+    }
     context.insert("values", &values);
     context.insert("path", &format!("/admin/structure/types/{type_name}/edit"));
 
@@ -435,7 +492,7 @@ async fn edit_content_type_submit(
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &true);
-        context.insert("preview_options", PREVIEW_OPTIONS);
+        insert_options(&mut context);
         context.insert("errors", &errors);
         context.insert("values", &form.values());
         context.insert("path", &format!("/admin/structure/types/{type_name}/edit"));

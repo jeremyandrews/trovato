@@ -1906,7 +1906,17 @@ html {
     margin-top: 0.75rem;
 }
 
-.comment__reply-link {
+.comment__links {
+    display: flex;
+    gap: 1rem;
+    list-style: none;
+    margin: 0;
+    padding: 0;
+}
+
+.comment__reply-link,
+.comment__edit-link,
+.comment__delete-link {
     font-size: 0.8125rem;
     font-weight: 600;
     color: var(--primary);
@@ -1914,7 +1924,9 @@ html {
     transition: color var(--transition-fast);
 }
 
-.comment__reply-link:hover {
+.comment__reply-link:hover,
+.comment__edit-link:hover,
+.comment__delete-link:hover {
     color: var(--primary-dark);
 }
 

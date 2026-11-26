@@ -323,7 +323,18 @@ async fn create_comment(
 
     // A browser posting a form gets a redirect back to the item, so the page it
     // lands on is the page it came from and a reload does not repost.
-    let target = item_path_for(&state, item_id).await;
+    let posted = match &result {
+        Ok(response) => state.comments().load(response.id).await.ok().flatten(),
+        Err(_) => None,
+    };
+    let (target, anchor) = match &posted {
+        // The page of the thread the new comment is on, at the comment.
+        Some(comment) if comment.status == CommentStatus::Published.as_i16() => (
+            comment_location(&state, comment).await,
+            format!("comment-{}", comment.id),
+        ),
+        _ => (item_path_for(&state, item_id).await, "comments".to_string()),
+    };
     let outcome = match &result {
         Ok(response) => {
             if crate::models::CommentStatus::from_i16(response.status)
@@ -341,7 +352,11 @@ async fn create_comment(
         tracing::debug!(status = %refusal.status(), error = %refusal.public_message(), "comment form submission refused");
     }
 
-    axum::response::Redirect::to(&format!("{target}?comment={outcome}#comments")).into_response()
+    axum::response::Redirect::to(&format!(
+        "{}#{anchor}",
+        with_query(&target, "comment", outcome)
+    ))
+    .into_response()
 }
 
 /// The item's own address, alias included when it has one, for the post-submit
@@ -394,6 +409,18 @@ async fn create_comment_inner(
         return Err(AppError::with_status(
             StatusCode::NOT_FOUND,
             "Item not found",
+        ));
+    }
+
+    // Only an item whose type takes comments. Closed shows the thread and
+    // takes nothing new; hidden shows nothing. The form is not offered on
+    // either, and this is what stops a post that does not come from it.
+    if settings_for_type(state, &item.item_type).await.mode
+        != crate::content::comment_settings::CommentMode::Open
+    {
+        return Err(AppError::with_status(
+            StatusCode::FORBIDDEN,
+            "Comments are closed for this item",
         ));
     }
 
@@ -797,11 +824,82 @@ async fn delete_comment(
 // Front-end rendering
 // =============================================================================
 
+/// A content type's comment settings: one query, per page rather than per
+/// comment.
+pub(crate) async fn settings_for_type(
+    state: &AppState,
+    item_type: &str,
+) -> crate::content::comment_settings::CommentSettings {
+    let row = crate::models::ItemType::find_by_type(state.db(), item_type)
+        .await
+        .ok()
+        .flatten();
+    crate::content::comment_settings::CommentSettings::of(row.as_ref().map(|t| &t.settings))
+}
+
+/// An item's published comments in the order its type shows them: threaded
+/// (each reply under its parent) or flat (by date), oldest or newest first.
+async fn ordered_thread(
+    comments: &crate::services::comment::CommentService,
+    item_id: Uuid,
+    settings: crate::content::comment_settings::CommentSettings,
+) -> anyhow::Result<Vec<Comment>> {
+    let mut thread = comments
+        .list_for_item_ordered(item_id, settings.newest_first)
+        .await?;
+    if !settings.threaded {
+        thread.sort_by_key(|c| (c.created, c.id));
+        if settings.newest_first {
+            thread.reverse();
+        }
+    }
+    Ok(thread)
+}
+
+/// Add `key=value` to a path that may already carry a query string.
+fn with_query(path: &str, key: &str, value: &str) -> String {
+    let separator = if path.contains('?') { '&' } else { '?' };
+    format!("{path}{separator}{key}={value}")
+}
+
+/// Where a comment is read: its item's address, on the page of the thread
+/// that holds it (`?page=N` from the second page on).
+///
+/// For the redirect after a comment is posted or edited, so the writer lands
+/// on their comment and not on the first page of a long thread.
+pub(crate) async fn comment_location(state: &AppState, comment: &Comment) -> String {
+    let item_path = item_path_for(state, comment.item_id).await;
+    let (Some(comments), Ok(Some(item))) = (
+        state.comments_if_enabled(),
+        state.items().load(comment.item_id).await,
+    ) else {
+        return item_path;
+    };
+    let settings = settings_for_type(state, &item.item_type).await;
+    let page = ordered_thread(comments, item.id, settings)
+        .await
+        .ok()
+        .and_then(|thread| thread.iter().position(|c| c.id == comment.id))
+        .map_or(1, |index| {
+            crate::content::comment_settings::page_of(index, settings.per_page)
+        });
+    if page > 1 {
+        with_query(&item_path, "page", &page.to_string())
+    } else {
+        item_path
+    }
+}
+
 /// Render the comment thread and form for an item page.
 ///
-/// Returns an empty string when there is nothing to show: comments disabled, or
-/// a template that failed to render. An item page must not fail because its
-/// comment section did.
+/// Returns an empty string when there is nothing to show: comments disabled,
+/// comments hidden for the item's type, or a template that failed to render.
+/// An item page must not fail because its comment section did.
+///
+/// The type's comment settings decide the rest: closed shows the thread and
+/// no form; the thread is threaded or flat, oldest or newest first, and paged
+/// at the type's count (50 unless it says otherwise) with `page` (1-based; a
+/// page past the end is the last page).
 ///
 /// `elements/comments.html` existed before this and was rendered by nothing —
 /// the only comment template any route used was the admin one. It is resolved
@@ -813,12 +911,20 @@ pub(crate) async fn render_thread(
     viewer: &crate::tap::UserContext,
     current_path: &str,
     outcome: Option<&str>,
+    requested_page: Option<usize>,
 ) -> String {
+    use crate::content::comment_settings::{CommentMode, page_window};
+
     let Some(comments) = state.comments_if_enabled() else {
         return String::new();
     };
 
-    let thread = match comments.list_for_item(item.id).await {
+    let settings = settings_for_type(state, &item.item_type).await;
+    if settings.mode == CommentMode::Hidden {
+        return String::new();
+    }
+
+    let thread = match ordered_thread(comments, item.id, settings).await {
         Ok(thread) => thread,
         Err(e) => {
             tracing::warn!(item_id = %item.id, error = %e, "failed to load comments for item page");
@@ -826,7 +932,10 @@ pub(crate) async fn render_thread(
         }
     };
 
-    // Author names, one lookup per distinct author rather than per comment.
+    let (page, pages, window) = page_window(thread.len(), settings.per_page, requested_page);
+    let shown = &thread[window];
+
+    // Author names, one cached lookup per distinct author on this page.
     // An author's name links to their account page when this viewer may read
     // it (B156): an active account, and `access user profiles`.
     let may_read_profiles = viewer.is_admin()
@@ -834,7 +943,7 @@ pub(crate) async fn render_thread(
         || viewer.has_permission("administer users");
     let mut names: std::collections::HashMap<Uuid, String> = std::collections::HashMap::new();
     let mut linked: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
-    for comment in &thread {
+    for comment in shown {
         if !names.contains_key(&comment.author_id)
             && let Ok(Some(user)) = state.users().find_by_id(comment.author_id).await
         {
@@ -847,12 +956,12 @@ pub(crate) async fn render_thread(
 
     // Edit and Delete links where the pages behind them would let the viewer
     // in, decided from the permissions already loaded: no query per comment.
-    let rendered: Vec<serde_json::Value> = thread
+    let rendered: Vec<serde_json::Value> = shown
         .iter()
         .map(|comment| {
             serde_json::json!({
                 "id": comment.id,
-                "depth": comment.depth,
+                "depth": if settings.threaded { comment.depth } else { 0 },
                 "created": comment.created,
                 "author_name": names.get(&comment.author_id),
                 // Plain text: the template prints it with autoescape on, never
@@ -869,18 +978,23 @@ pub(crate) async fn render_thread(
         .collect();
 
     // Posting is what the create route will actually allow, asked the same way.
-    let can_comment =
-        viewer.authenticated && (viewer.is_admin() || viewer.has_permission("post comments"));
+    let open = settings.mode == CommentMode::Open;
+    let can_comment = open
+        && viewer.authenticated
+        && (viewer.is_admin() || viewer.has_permission("post comments"));
 
     let mut context = tera::Context::new();
     context.insert("comments", &rendered);
-    context.insert("total", &rendered.len());
+    context.insert("total", &thread.len());
     context.insert("item_id", &item.id);
+    context.insert("comments_open", &open);
     context.insert("can_comment", &can_comment);
     context.insert("can_reply", &can_comment);
     context.insert("user_logged_in", &viewer.authenticated);
     context.insert("current_path", &current_path);
     context.insert("comment_outcome", &outcome);
+    context.insert("comment_page", &page);
+    context.insert("comment_pages", &pages);
     if can_comment {
         // The form posts this in `_csrf`; the JS layer reads the meta tag in the
         // head instead. Only generated for a viewer who can post.
@@ -1017,6 +1131,10 @@ async fn render_comment_page(
     mut context: tera::Context,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
+    // The page's own heading is its <title> too.
+    if let Some(title) = context.get("page_title").cloned() {
+        context.insert("title", &title);
+    }
     crate::routes::helpers::inject_site_context(state, session, &mut context, path).await;
     let template = state
         .theme()
@@ -1067,6 +1185,11 @@ async fn reply_page(
     };
     if !viewer.can("post comments") {
         return comment_page_forbidden("You are not authorized to post comments.");
+    }
+    if settings_for_type(state, &target.item.item_type).await.mode
+        != crate::content::comment_settings::CommentMode::Open
+    {
+        return comment_page_forbidden("Comments are closed for this item.");
     }
     let parent = match parent_id {
         Some(parent_id) => match viewable_comment(state, &viewer, parent_id).await {
@@ -1273,9 +1396,13 @@ async fn edit_submit(
         subject: Some(subject),
     };
     match state.comments().update(id, input, &viewer).await {
-        Ok(Some(_)) => axum::response::Redirect::to(&format!(
-            "{}?comment=updated#comment-{id}",
-            target.item_path
+        Ok(Some(updated)) => axum::response::Redirect::to(&format!(
+            "{}#comment-{id}",
+            with_query(
+                &comment_location(&state, &updated).await,
+                "comment",
+                "updated"
+            )
         ))
         .into_response(),
         Ok(None) => crate::routes::helpers::render_not_found(),

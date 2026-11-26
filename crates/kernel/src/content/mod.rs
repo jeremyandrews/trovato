@@ -15,6 +15,7 @@ pub const MAX_TITLE_LENGTH: usize = 1000;
 pub mod block_render;
 pub mod block_types;
 pub mod body_field;
+pub mod comment_settings;
 pub mod compound;
 pub mod field_value;
 pub mod field_values;
