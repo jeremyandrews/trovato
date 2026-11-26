@@ -13,8 +13,8 @@ zoom. This page says how that is checked and what a screen reader user hears.
 | Every admin route listed once, in the group the registry gives it | same, against `docs/admin/inventory.md` | `cargo test` |
 | Page anatomy: skip link first, one `main#main`, banner, `nav` "Administration", search landmark, one `h1` that leads the `<title>`, breadcrumb ending at the page with `aria-current`, no tablists | `crates/kernel/tests/admin_anatomy_test.rs` | `cargo test` |
 | No untranslated interface text on any admin page | `crates/kernel/tests/admin_i18n_test.rs` (see [translation.md](translation.md)) | `cargo test` |
-| axe-core, WCAG 2.0/2.1/2.2 A and AA, on every GET page in the inventory, in four modes: light, dark, 320 px, and the right-to-left pseudo locale; no sideways page scroll at 320 px | `tests/admin-a11y/specs/axe.spec.mjs` | CI job "Admin accessibility" |
-| Keyboard: skip link, sidebar disclosures by Enter and Space (and remembered), the narrow-screen menu (Escape closes it and returns focus), search by Tab and Enter, a visible focus ring on everything focusable | `tests/admin-a11y/specs/keyboard.spec.mjs` | same |
+| axe-core, WCAG 2.0/2.1/2.2 A and AA, on every GET page in the inventory, in four modes: light, dark, 320 px, and the right-to-left pseudo locale; no sideways page scroll at 320 px; every admin icon (`svg.admin-icon`) hidden, not focusable, and never the only content of a link or button | `tests/admin-a11y/specs/axe.spec.mjs` | CI job "Admin accessibility" |
+| Keyboard: skip link, sidebar disclosures by Enter and Space (and remembered), the current page's group never saved, the narrow-screen menu (Escape closes it and returns focus), search by Tab and Enter, a visible focus ring on everything focusable | `tests/admin-a11y/specs/keyboard.spec.mjs` | same |
 | The accessibility tree of each page type, and of the open command palette | `tests/admin-a11y/specs/aria.spec.mjs` | same |
 | The dashboard's panels (regions named by their headings, state in words), "Who can do this?" (last in `main`, answers for its page) and the accessibility report | `tests/admin-a11y/specs/dashboard.spec.mjs` | CI job "Admin accessibility" |
 | The command palette: modal, combobox and grouped listbox, Up/Down/Enter/Escape, focus returned, `/` ignored in text fields, the live count, the same results as the page, axe on the open palette | `tests/admin-a11y/specs/palette.spec.mjs` (also run under WebKit, Safari's engine, by hand) | CI job "Admin accessibility" |
@@ -50,9 +50,13 @@ done" below).
 Trovato link to the Dashboard, then a search landmark holding "Search the
 administration, search field" and a "Search" button, then "View site" and
 "Your preferences". Next is the "Administration" navigation: the Dashboard
-link, then seven level-2 headings, each holding a collapsible button named for
-its group ("Content, collapsed" or "expanded"), followed by the group's links:
-Overview, then its pages. The current page is announced as "current page".
+link, then seven level-2 headings, each holding a button named for its group
+("Content, collapsed" or "expanded"). Only the group holding the current page
+is expanded, so only its links follow its heading: Overview, then its pages,
+the current one announced as "current page". Every other group is a
+collapsed button, and on the Dashboard all seven are. A group's icon is
+silent: the button's name is the group's name alone. Tree of a page three
+levels down (Edit role): [screen-reader/deep-page.yml](screen-reader/deep-page.yml).
 Main follows. On every page except the Dashboard it starts with the
 "Breadcrumb" navigation, for example "Administration, link; Content, link;
 Content", where the last item is the current page and not a link. Then comes
@@ -61,15 +65,34 @@ the page's one level-1 heading and its intro sentence.
 - **Dashboard**: "Dashboard, heading level 1", the intro, then the panels,
   each a region named by its level-2 heading: "Your recent content", "Waiting
   for you", "Scheduled tasks", "Recent errors". Each starts with a sentence
-  that gives the state and its numbers in words ("Nothing is waiting for
-  you.", "1 error in the last 24 hours."), then a list of links. Then "Areas you
-  may use, heading level 2". Each group is a region named for it, with a
-  level-3 heading, its one-line description and a list of links. A "Create"
-  region lists one link per content type. "You" says "Signed in as
-  gen_admin" and offers Your preferences and a Log out button.
-- **Group landing page** (People): "People, heading level 1", what the group
-  is for, then a list. Each page in the list is a link with its description
-  under it. Only pages the listener may open are there.
+  that gives the state and its numbers in words ("7 things wait for you.",
+  "4 errors in the last 24 hours"), then a list of links; the comments row is
+  the link "7 comments waiting for moderation". Then "Areas you may use,
+  heading level 2". Each group is a region named for it, holding a level-3
+  heading that is a link to the group's landing page ("Content, link"), then
+  its status lines as sentences ("4 unpublished items", "0 blocked
+  accounts"), then its main action as a link ("Add content", "Add content
+  type", "Add user"). A count a panel gives is not repeated on a card, so no
+  number is heard twice, and the Dashboard says nothing about cron outside
+  the Scheduled tasks panel. The icon chips are silent. A "Create" region
+  lists one link per content type. "You" says "Signed in as gen_admin" and
+  offers Your preferences and a Log out button. Tree:
+  [screen-reader/dashboard.yml](screen-reader/dashboard.yml).
+- **Group landing page** (Content, Structure, Reports, People): "Content,
+  heading level 1", what the group is for, the main action as a link ("Add
+  content"; Reports has none), then a list of tiles. Each tile is a level-2
+  heading that is a link to its page ("Comments, heading level 2, link"), the
+  page's one sentence, and, where the page has one, its state as a sentence
+  ("7 comments waiting for moderation", "4 unpublished items", "4 errors in
+  the last 24 hours", "No run in the last 24 hours"). Waiting work is drawn
+  as a badge, but the badge is the same paragraph: it is heard once, as the
+  sentence, and its words say that something waits. Only pages the listener
+  may open are there, and a count is only there for whoever may open all it
+  counts. Trees:
+  [landing-content.yml](screen-reader/landing-content.yml),
+  [landing-structure.yml](screen-reader/landing-structure.yml),
+  [landing-reports.yml](screen-reader/landing-reports.yml),
+  [landing.yml](screen-reader/landing.yml) (People).
 - **List** (Content; the pattern is [design.md section 9](design.md#9-table-pattern)):
   the heading, the intro, "Moderated content" and "Add content" links, then
   a search landmark named "Filter content". It holds a "Title contains"
@@ -164,8 +187,11 @@ status messages.
 
 Nothing opens on hover. Tab order follows reading order: skip link, banner
 (search, account links), sidebar, then the page. A sidebar group's button
-toggles with Enter or Space, and its state is remembered for the next page.
-The group holding the current page is always open. Below 48rem the sidebar
+toggles with Enter or Space. Only the group holding the current page starts
+open; a group opened (or closed again) by hand is remembered for the next
+page. Closing the current page's own group is not remembered: it is open
+again on the next page in it. A focused sidebar link or group button shows
+the hover surface as well as the focus ring. Below 48rem the sidebar
 sits behind a "Menu" button. Opening it does not move focus, so the sidebar
 is the next stop after the banner. Escape closes it and returns focus to
 the button. Every focusable element shows a 3px ring 2px outside it, in
@@ -206,6 +232,15 @@ without that second press.
   in Chromium and in WebKit (Safari's engine), but not yet heard through
   VoiceOver in Safari. If VoiceOver does not follow it, the fallback in
   [design.md section 10](design.md#10-search-pattern) applies.
+  The B245 pass (wayfinding: the sidebar, landing tiles, status lines and
+  badges) was again written from the recorded trees: on the Mac Studio,
+  turning on VoiceOver's AppleScript control and retrying still left every
+  VoiceOver command waiting on an Automation permission that only a person
+  at the machine can grant.
+- **The Cron line in right to left.** "Last run {when} UTC" puts a
+  timestamp in a right to left sentence; in the right to left pseudo locale
+  its digits and dashes may display out of order. It is left as it is: the
+  words are right and a real translation can place the time.
 - **Pages never opened.** The parameterised pages with nothing seeded to open
   (an access rule, a tile, a menu link, a record, an AI provider, a
   translation, a deletable text format) were not opened by the browser checks.

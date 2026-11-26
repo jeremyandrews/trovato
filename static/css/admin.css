@@ -1653,6 +1653,7 @@
 
     a > .status-line {
         color: inherit;
+        text-decoration: underline;
     }
 
     .status-line--waiting,

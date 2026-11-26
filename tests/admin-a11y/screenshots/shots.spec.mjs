@@ -1,22 +1,26 @@
-// The review images in docs/images/b199/: each page type in light, dark, the
-// right-to-left pseudo locale, and 320 px wide, full page. `npm run
+// The review images: each set writes to its own directory under docs/images/
+// (b199's sets to docs/images/b199/, b245's to docs/images/b245/). A shot is
+// taken in light, dark, the right-to-left pseudo locale and 320 px wide unless
+// it names its own modes, full page unless it says otherwise. `npm run
 // screenshots` against a seeded site; not part of `npm test`.
 import { test } from '@playwright/test';
 import { setLanguage } from '../specs/helpers.mjs';
 
-const OUT = '../../docs/images/b199';
+const B199 = '../../docs/images/b199';
+const B245 = '../../docs/images/b245';
 // SHOTS picks the set: the shell's page types (default), "forms", "lists",
-// "search" or "dashboard".
+// "search", "dashboard" or "b245". Each set is { out, shots }; a shot is a
+// path, a function that opens the page, or { open, modes, fullPage }.
 const SETS = {
-  shell: {
+  shell: { out: B199, shots: {
     dashboard: '/admin',
     landing: '/admin/people/overview',
     list: '/admin/content',
     form: '/admin/structure/stages/add',
     preferences: '/admin/preferences',
     search: '/admin/search?q=content',
-  },
-  forms: {
+  } },
+  forms: { out: B199, shots: {
     // A hand-written form, a form built in Rust, a settings form with its
     // "What this changes" line, and a failed submit with its error summary.
     'forms-user': '/admin/people/add',
@@ -31,8 +35,8 @@ const SETS = {
       await page.locator('#mail').fill('not-an-address');
       await Promise.all([page.waitForLoadState('load'), page.locator('form#user-form [type=submit]').click()]);
     },
-  },
-  lists: {
+  } },
+  lists: { out: B199, shots: {
     // The listing pattern: a filtered, sorted listing; people; the site
     // log; and the page a Delete asks on.
     'lists-content': '/admin/content?status=1&sort=title',
@@ -42,14 +46,14 @@ const SETS = {
       await page.goto('/admin/content');
       await Promise.all([page.waitForURL('**/admin/confirm'), page.locator('tbody tr').first().locator('button.link-button--danger').click()]);
     },
-  },
-  dashboard: {
+  } },
+  dashboard: { out: B199, shots: {
     // The dashboard's panels, who can open a page, the accessibility report.
     'dashboard-panels': '/admin',
     'dashboard-who-can': '/admin/people/who-can?path=/admin/structure/menus',
     'dashboard-a11y-report': '/admin/reports/accessibility',
-  },
-  search: {
+  } },
+  search: { out: B199, shots: {
     // Admin search: the grouped results page, and the command palette open
     // with results and the first option active.
     'search-results': '/admin/search?q=site',
@@ -60,9 +64,32 @@ const SETS = {
       await page.locator('#admin-palette-results [role=option]').first().waitFor();
       await page.keyboard.press('ArrowDown');
     },
-  },
+  } },
+  b245: { out: B245, shots: {
+    // Wayfinding: every group's landing page and the sidebar on a deep page
+    // in light; the Dashboard and the Structure landing page in every mode
+    // (the first screen); and the whole Dashboard.
+    'landing-content': { open: '/admin/content/overview', modes: ['light'] },
+    'landing-structure': { open: '/admin/structure/overview', fullPage: false },
+    'landing-appearance': { open: '/admin/appearance/overview', modes: ['light'] },
+    'landing-people': { open: '/admin/people/overview', modes: ['light'] },
+    'landing-extend': { open: '/admin/extend/overview', modes: ['light'] },
+    'landing-config': { open: '/admin/config/overview', modes: ['light'] },
+    'landing-reports': { open: '/admin/reports/overview', modes: ['light'] },
+    'sidebar-deep': {
+      open: async (page) => {
+        await page.goto('/admin/people/roles');
+        const href = await page.locator('main a[href^="/admin/people/roles/"][href$="/edit"]').first().getAttribute('href');
+        await page.goto(href);
+      },
+      modes: ['light'],
+      fullPage: false,
+    },
+    dashboard: { open: '/admin', fullPage: false },
+    'dashboard-full': { open: '/admin', modes: ['light'] },
+  } },
 };
-const PAGES = SETS[process.env.SHOTS || 'shell'];
+const SET = SETS[process.env.SHOTS || 'shell'];
 const MODES = [
   { mode: 'light', width: 1280, scheme: 'light' },
   { mode: 'dark', width: 1280, scheme: 'dark' },
@@ -70,7 +97,15 @@ const MODES = [
   { mode: 'rtl', width: 1280, scheme: 'light', language: 'ar-XB' },
 ];
 
+/** A shot as { open, modes, fullPage }, from any of the forms a set uses. */
+function shot(spec) {
+  const full = typeof spec === 'object' && spec !== null ? spec : { open: spec };
+  return { modes: MODES.map((m) => m.mode), fullPage: true, ...full };
+}
+
 for (const { mode, width, scheme, language } of MODES) {
+  const shots = Object.entries(SET.shots).map(([type, spec]) => [type, shot(spec)]).filter(([, s]) => s.modes.includes(mode));
+  if (shots.length === 0) continue;
   test.describe(mode, () => {
     test.use({ viewport: { width, height: 900 }, colorScheme: scheme });
     if (language) {
@@ -85,14 +120,14 @@ for (const { mode, width, scheme, language } of MODES) {
         await page.close();
       });
     }
-    for (const [type, path] of Object.entries(PAGES)) {
+    for (const [type, { open, fullPage }] of shots) {
       test(`${type} ${mode}`, async ({ page }) => {
-        if (typeof path === 'function') await path(page);
-        else await page.goto(path);
+        if (typeof open === 'function') await open(page);
+        else await page.goto(open);
         // A full page capture draws a sticky action bar where the first
         // screen ends, over the form; lay it out in place for the image.
         await page.addStyleTag({ content: '.form-actions--sticky { position: static; }' });
-        await page.screenshot({ path: `${OUT}/${type}-${mode}.png`, fullPage: true });
+        await page.screenshot({ path: `${SET.out}/${type}-${mode}.png`, fullPage });
       });
     }
   });

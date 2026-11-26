@@ -1,0 +1,109 @@
+- link "Skip to main content":
+  - /url: "#main"
+- banner:
+  - link "Trovato Administration":
+    - /url: /admin
+    - img "Trovato"
+    - text: Administration
+  - search:
+    - text: Search the administration
+    - searchbox "Search the administration"
+    - button "Search"
+  - button "Quick search"
+  - list:
+    - listitem:
+      - link "View site":
+        - /url: /
+    - listitem:
+      - link "Your preferences":
+        - /url: /admin/preferences
+- navigation "Administration":
+  - list:
+    - listitem:
+      - link "Dashboard":
+        - /url: /admin
+    - listitem:
+      - heading "Content" [level=2]:
+        - button "Content" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/content/overview
+        - listitem:
+          - link "Content":
+            - /url: /admin/content
+        - listitem:
+          - link "Add content":
+            - /url: /admin/content/add
+        - listitem:
+          - link "Moderated content":
+            - /url: /admin/content/moderated
+        - listitem:
+          - link "Comments":
+            - /url: /admin/content/comments
+        - listitem:
+          - link "Files":
+            - /url: /admin/content/files
+        - listitem:
+          - link "Media":
+            - /url: /admin/media
+    - listitem:
+      - heading "Structure" [level=2]:
+        - button "Structure"
+    - listitem:
+      - heading "Appearance" [level=2]:
+        - button "Appearance"
+    - listitem:
+      - heading "People" [level=2]:
+        - button "People"
+    - listitem:
+      - heading "Extend" [level=2]:
+        - button "Extend"
+    - listitem:
+      - heading "Configuration" [level=2]:
+        - button "Configuration"
+    - listitem:
+      - heading "Reports" [level=2]:
+        - button "Reports"
+- main:
+  - navigation "Breadcrumb":
+    - list:
+      - listitem:
+        - link "Administration":
+          - /url: /admin
+      - listitem: Content
+  - heading "Content" [level=1]
+  - paragraph: Write, find, review and publish what the site says, and the files it uses.
+  - link "Add content":
+    - /url: /admin/content/add
+  - list:
+    - listitem:
+      - heading "Content" [level=2]:
+        - link "Content":
+          - /url: /admin/content
+      - paragraph: Find, filter and edit every item on the site.
+      - paragraph: 4 unpublished items
+    - listitem:
+      - heading "Moderated content" [level=2]:
+        - link "Moderated content":
+          - /url: /admin/content/moderated
+      - paragraph: Items with a newer version waiting to be reviewed or published.
+    - listitem:
+      - heading "Comments" [level=2]:
+        - link "Comments":
+          - /url: /admin/content/comments
+      - paragraph: Approve, edit and remove comments, and set how new ones are published.
+      - paragraph: 7 comments waiting for moderation
+    - listitem:
+      - heading "Files" [level=2]:
+        - link "Files":
+          - /url: /admin/content/files
+      - paragraph: Every uploaded file, with its details and alternative text.
+    - listitem:
+      - heading "Media" [level=2]:
+        - link "Media":
+          - /url: /admin/media
+      - paragraph: Browse images and other media by file name.
+  - paragraph:
+    - link "Who can do this?":
+      - /url: /admin/people/who-can?path=/admin/content/overview
