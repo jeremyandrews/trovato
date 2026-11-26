@@ -385,8 +385,10 @@ fn an_author_edits_their_own_comment() {
         assert_eq!(status, StatusCode::FORBIDDEN);
         let (status, _, _) = get(app, &plain, &format!("/comment/{plain_comment}/edit")).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
-        let (status, location, _) = get(app, "", &format!("/comment/{mine}/edit")).await;
-        assert!(status.is_redirection() && location.starts_with("/user/login"));
+        // Nobody: refused, `401` to a script (a browser is shown the
+        // access-denied page with the login form).
+        let (status, _, _) = get(app, "", &format!("/comment/{mine}/edit")).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     });
 }
 
