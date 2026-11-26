@@ -827,11 +827,20 @@ pub(crate) async fn render_thread(
     };
 
     // Author names, one lookup per distinct author rather than per comment.
+    // An author's name links to their account page when this viewer may read
+    // it (B156): an active account, and `access user profiles`.
+    let may_read_profiles = viewer.is_admin()
+        || viewer.has_permission(super::user_profile::ACCESS_USER_PROFILES)
+        || viewer.has_permission("administer users");
     let mut names: std::collections::HashMap<Uuid, String> = std::collections::HashMap::new();
+    let mut linked: std::collections::HashSet<Uuid> = std::collections::HashSet::new();
     for comment in &thread {
         if !names.contains_key(&comment.author_id)
             && let Ok(Some(user)) = state.users().find_by_id(comment.author_id).await
         {
+            if may_read_profiles && user.is_active() && !user.is_anonymous() {
+                linked.insert(user.id);
+            }
             names.insert(comment.author_id, user.name);
         }
     }
@@ -849,6 +858,9 @@ pub(crate) async fn render_thread(
                 // Plain text: the template prints it with autoescape on, never
                 // `| safe`, the same rule `body_html` is the one exception to.
                 "subject": comment.subject,
+                "author_url": linked
+                    .contains(&comment.author_id)
+                    .then(|| format!("/user/{}", comment.author_id)),
                 "body_html": render_comment_body(comment),
                 "can_edit": crate::services::comment::permission_allows(comment, "edit", viewer),
                 "can_delete": crate::services::comment::permission_allows(comment, "delete", viewer),
