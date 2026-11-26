@@ -69,7 +69,9 @@ fn defer_clear_lock() {
 #[test]
 fn a_task_stuck_on_redis_is_timed_out_and_the_next_run_proceeds() {
     run_test(async {
-        let _lock = CRON_LOCK.lock().await;
+        // Held until the cleanups below have run: released at the end of the body,
+        // this test's `DEL cron:lock` would land in the middle of the next test.
+        common::hold_until_cleanup(CRON_LOCK.lock().await);
         let app = shared_app().await;
         clear_lock().await;
         defer_clear_lock();
@@ -192,7 +194,9 @@ async fn skip_behind(held_secs: i64) -> (CronResult, String) {
 #[test]
 fn a_skip_behind_a_lock_held_too_long_warns_with_its_age() {
     run_test(async {
-        let _lock = CRON_LOCK.lock().await;
+        // Held until the cleanups below have run: released at the end of the body,
+        // this test's `DEL cron:lock` would land in the middle of the next test.
+        common::hold_until_cleanup(CRON_LOCK.lock().await);
         defer_clear_lock();
 
         let (result, logged) = skip_behind(2_000).await;
@@ -213,7 +217,9 @@ fn a_skip_behind_a_lock_held_too_long_warns_with_its_age() {
 #[test]
 fn a_skip_behind_a_fresh_lock_stays_at_debug() {
     run_test(async {
-        let _lock = CRON_LOCK.lock().await;
+        // Held until the cleanups below have run: released at the end of the body,
+        // this test's `DEL cron:lock` would land in the middle of the next test.
+        common::hold_until_cleanup(CRON_LOCK.lock().await);
         defer_clear_lock();
 
         let (result, logged) = skip_behind(5).await;
