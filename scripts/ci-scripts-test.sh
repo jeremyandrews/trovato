@@ -179,6 +179,40 @@ awk '/^  test:/ { inc = 1 } /^  coverage:/ { inc = 0 }
   inc && /run: \.\/scripts\/ci-build-plugins\.sh/ { print "        run: echo no plugins"; next }
   { print }' "$ROOT/.github/workflows/ci.yml" > "$WORK/no-call.yml"
 expect "parity: a Test job that skips the script fails" 1 parity "$WORK/no-call.yml"
+# Coverage's call made conditional: the step would be skipped on the pushes to
+# main that are the only place Coverage runs.
+awk '/^  coverage:/ { inc = 1 }
+  inc && /run: \.\/scripts\/ci-build-plugins\.sh/ { print "        if: github.event_name == '"'"'pull_request'"'"'"; inc = 0 }
+  { print }' "$ROOT/.github/workflows/ci.yml" > "$WORK/conditional.yml"
+expect "parity: a Coverage build step under an if: fails" 1 parity "$WORK/conditional.yml"
+if grep -q "job 'coverage' runs .* only under a step 'if:'" "$WORK/out"; then
+  pass "parity: it says the call is conditional"
+else
+  fail "parity: it says the call is conditional"; sed 's/^/     /' "$WORK/out"
+fi
+# A plugin the Test job builds on top of the script, spelled so no literal
+# `-p` or `release/<name>.wasm` appears.
+awk '/^  test:/ { inc = 1 }
+  inc && /run: \.\/scripts\/ci-build-plugins\.sh/ {
+    print; print "      - name: One more plugin"; print "        run: |"
+    print "          cargo build --package new_plugin --target wasm32-wasip1 --release"
+    print "          p=new_plugin"
+    print "          cp \"target/wasm32-wasip1/release/$p.wasm\" \"plugins/$p/\""
+    inc = 0; next }
+  { print }' "$ROOT/.github/workflows/ci.yml" > "$WORK/extra-step.yml"
+expect "parity: a Test-only plugin build beside the script fails" 1 parity "$WORK/extra-step.yml"
+if grep -q "job 'test' builds or copies wasm32-wasip1 plugins outside" "$WORK/out" && grep -q "keeps its own list" "$WORK/out"; then
+  pass "parity: it names the extra build, --package included"
+else
+  fail "parity: it names the extra build, --package included"; sed 's/^/     /' "$WORK/out"
+fi
+# A list command that fails, or prints nothing, is not an empty list that passes.
+printf '#!/bin/sh\nexit 3\n' > "$WORK/list-fails.sh"
+printf '#!/bin/sh\nexit 0\n' > "$WORK/list-empty.sh"
+chmod +x "$WORK/list-fails.sh" "$WORK/list-empty.sh"
+parity_with() { CI_BUILD_PLUGINS_SCRIPT="$1" "$ROOT/scripts/ci-check-plugin-build-parity.sh" "$ROOT/.github/workflows/ci.yml"; }
+expect "parity: a failing --list fails" 1 parity_with "$WORK/list-fails.sh"
+expect "parity: an empty --list fails" 1 parity_with "$WORK/list-empty.sh"
 # A job building a set it reads from a file is its own business.
 cat "$ROOT/.github/workflows/ci.yml" > "$WORK/from-file.yml"
 cat >> "$WORK/from-file.yml" <<'YML'
