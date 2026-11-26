@@ -15,9 +15,10 @@ category select it requires, and the edit screen can point it at another
 category. The item form renders it as the existing reference widget, one tag
 per slot on the repeating mechanism, showing labels and posting uuids, backed by
 `GET /api/v1/tags/autocomplete?category=<id>&q=<text>` beside the items
-endpoint, with the same response shape and rate limit bucket; the one
+endpoint, from the category's cached tag list; the one
 autocomplete script now takes its endpoint from the widget and binds slots added
-by "Add another".
+by "Add another". The endpoint answers as the viewer: an owned vocabulary the
+viewer may not read offers nothing, by the rule every category read applies.
 
 One check, `content::field_values`, counts each written field's values against
 its cardinality and checks every `CategoryReference` value against the field's
@@ -32,7 +33,18 @@ it was is not judged again.
 The item page has `referenced_tags`, keyed by field name: each tag's id, label,
 slug, the URL of the gather route whose `tag_category` parameter lists its
 category (null when none does), and its ancestors root first, from one query
-for the tags and one recursive query for all their ancestors. The item template
+for the tags and one recursive query for all their ancestors, leaving out the
+tags of an owned vocabulary the viewer may not read. The item template
 variables are documented, with an example, in `docs/design/Design-Render-Theme.md`.
-The plugin API version does not move: 0.105.0 is unreleased and the variant
-ships in it.
+
+**Plugin-facing change in 0.107.0: `FieldType` is `#[non_exhaustive]`.** A new
+field kind had no way to be additive: `FieldType` was an exhaustive enum, so
+adding `CategoryReference` broke every plugin with an exhaustive `match` on it,
+and every kind added after 1.0 would have needed a major version. With the
+attribute, the next kind is an additive change. A plugin that matches
+`FieldType` needs a `_` arm for the kinds it does not handle; one that only
+constructs field types, or already has a `_` arm, is unaffected. Both this and
+`CategoryReference` ship in the unreleased 0.107.0 and change no released
+version, so the plugin API version does not move for them. An SDK test now
+matches every kind exhaustively, so adding one points at the kernel's `_` arms
+(`content::field_value`, `content::form`) that must learn it.

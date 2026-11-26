@@ -259,6 +259,7 @@ impl FieldDefinition {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive] // a new kind is additive; match it with a `_` arm
 pub enum FieldType {
     Text { max_length: Option<usize> },
     TextLong,                          // no length limit, has format

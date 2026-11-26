@@ -501,6 +501,9 @@ impl FormBuilder {
                     )
                     .default_value(text)
             }
+            // `FieldType` is `#[non_exhaustive]`: a kind this kernel has no
+            // widget for yet edits as plain text.
+            _ => FormElement::textfield().default_value(text),
         };
         element = element.title(field.label.clone());
         // A checkbox that must be ticked is not what "required" means for a
