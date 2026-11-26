@@ -391,6 +391,14 @@ pub const USE_STAGES: &str = "use stages";
 /// site imported from Drupal keeps it on the roles that held it there.
 pub const VIEW_OWN_UNPUBLISHED: &str = "view own unpublished content";
 
+/// The permission that lets a user set an item's own comment override —
+/// `inherit`, `open`, `closed` or `hidden` — whatever its content type's
+/// comment setting is (B239). The type's own setting is behind `administer
+/// site`, which does not fit a day to day editor; this is the narrower
+/// permission `trovato_comments` declares for just this. Granted by no
+/// migration; an administrator holds it implicitly.
+pub const SET_ITEM_COMMENT_STATUS: &str = "set item comment status";
+
 /// A write refused by one of the two item write gates.
 ///
 /// Returned inside `anyhow::Error` so every caller finds it the same way —
@@ -427,6 +435,9 @@ pub enum WriteDenied {
         /// The state the write asked for.
         to: String,
     },
+    /// The write would change the item's own comment override, and the user
+    /// does not hold [`SET_ITEM_COMMENT_STATUS`].
+    CommentMode,
 }
 
 impl std::fmt::Display for WriteDenied {
@@ -454,6 +465,10 @@ impl std::fmt::Display for WriteDenied {
                 "you may not move this item from {} to {}",
                 moderation::label(from),
                 moderation::label(to)
+            ),
+            Self::CommentMode => write!(
+                f,
+                "changing this item's comment status requires `{SET_ITEM_COMMENT_STATUS}`"
             ),
         }
     }
@@ -2874,6 +2889,59 @@ impl ItemService {
         }
     }
 
+    /// Decide whether a write may set an item's own comment override
+    /// (B239). Only a holder of [`SET_ITEM_COMMENT_STATUS`] (or the
+    /// background principal) may; unlike [`Self::gate_promotion`] this asks
+    /// nothing about what changed, because [`Self::set_comment_mode`] is
+    /// only ever called when the caller is asking to change it.
+    pub fn gate_comment_mode(user: &UserContext) -> Result<(), WriteDenied> {
+        if user.is_background() || user.can(SET_ITEM_COMMENT_STATUS) {
+            Ok(())
+        } else {
+            Err(WriteDenied::CommentMode)
+        }
+    }
+
+    /// Set `id`'s own comment override: `"open"`, `"closed"`, `"hidden"`, or
+    /// anything else (including `"inherit"`) to clear it back to the type's
+    /// own setting (B239). `Ok(None)` when no item answers `id`; the write
+    /// gate is [`Self::gate_comment_mode`], checked after the ordinary edit
+    /// access gate every other item write checks first.
+    ///
+    /// Not a revisioned write, as `promote` and `sticky` are not: it does not
+    /// fire `tap_item_presave` or `tap_item_update`, and it is not recorded as
+    /// a new revision.
+    pub async fn set_comment_mode(
+        &self,
+        id: Uuid,
+        requested: &str,
+        user: &UserContext,
+    ) -> Result<Option<Item>> {
+        let Some(existing) = self.load(id).await? else {
+            return Ok(None);
+        };
+        if !self.check_access(&existing, "edit", user).await? {
+            anyhow::bail!("access denied");
+        }
+        Self::gate_comment_mode(user)?;
+        let normalized = match requested {
+            "open" => Some("open"),
+            "closed" => Some("closed"),
+            "hidden" => Some("hidden"),
+            _ => None,
+        };
+        Item::set_comment_mode(&self.inner.pool, id, normalized).await?;
+        self.invalidate(id);
+        self.audit(
+            "update",
+            id,
+            Some(user),
+            serde_json::json!({ "comment_mode": normalized }),
+        )
+        .await;
+        self.load(id).await
+    }
+
     /// Flush this server's field-access decision cache (design amendment α).
     ///
     /// What another server's `FieldAccess` bump does here. The writing server
@@ -3067,7 +3135,7 @@ impl ItemService {
         );
         sqlx::query_as::<_, Item>(
             "SELECT id, current_revision_id, type, title, author_id, status, created, changed, \
-             promote, sticky, fields, stage_id, language, item_group_id, retention_days \
+             promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode \
              FROM item WHERE type = $1 AND title ILIKE $2 AND status = 1 ORDER BY title LIMIT $3",
         )
         .bind(item_type)
@@ -3472,6 +3540,7 @@ mod tests {
             language: "en".to_string(),
             item_group_id: Uuid::nil(),
             retention_days: None,
+            comment_mode: None,
         }
     }
 

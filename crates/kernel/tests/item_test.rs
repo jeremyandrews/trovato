@@ -182,6 +182,7 @@ fn form_builder_edit_form_includes_values() {
         language: "en".to_string(),
         item_group_id: Uuid::now_v7(),
         retention_days: None,
+        comment_mode: None,
     };
 
     let form = html(builder.build_edit_form(&item, "/item/123/edit"));
@@ -221,6 +222,7 @@ fn item_status_checks() {
         language: "en".to_string(),
         item_group_id: Uuid::now_v7(),
         retention_days: None,
+        comment_mode: None,
     };
 
     assert!(item.is_published());
@@ -474,6 +476,7 @@ fn sdk_item_field_access() {
         created: 0,
         changed: 0,
         language: None,
+        comment_mode: None,
     };
 
     // Get text value
@@ -506,6 +509,7 @@ fn sdk_item_set_field() {
         created: 0,
         changed: 0,
         language: None,
+        comment_mode: None,
     };
 
     item.set_field("tags", vec!["rust", "wasm"]);
@@ -678,6 +682,7 @@ fn form_builder_edit_form_populates_all_types() {
         language: "en".to_string(),
         item_group_id: Uuid::now_v7(),
         retention_days: None,
+        comment_mode: None,
     };
 
     let form = html(builder.build_edit_form(&item, "/item/123/edit"));
@@ -721,6 +726,7 @@ fn form_builder_escapes_html_in_values() {
         language: "en".to_string(),
         item_group_id: Uuid::now_v7(),
         retention_days: None,
+        comment_mode: None,
     };
 
     let form = html(builder.build_edit_form(&item, "/item/123/edit"));
@@ -801,6 +807,7 @@ fn item_status_unpublished() {
         language: "en".to_string(),
         item_group_id: Uuid::now_v7(),
         retention_days: None,
+        comment_mode: None,
     };
 
     assert!(!item.is_published());
@@ -962,6 +969,7 @@ fn populated_blog_item(status: i16) -> Item {
         language: "en".to_string(),
         item_group_id: Uuid::now_v7(),
         retention_days: None,
+        comment_mode: None,
     }
 }
 

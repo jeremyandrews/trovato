@@ -1515,3 +1515,115 @@ async fn save_item_runs_the_field_value_check() {
         .await
         .ok();
 }
+
+// =============================================================================
+// Comment override (B239)
+// =============================================================================
+
+/// A plugin reads an item's own comment override through `get-item` and sets
+/// it through `save-item`, through `ItemService::set_comment_mode`: gated by
+/// `set item comment status` the same way every other item write is gated,
+/// and a refused write changes nothing.
+#[tokio::test]
+async fn save_item_sets_the_items_comment_override_through_the_host_call() {
+    let pool = probe_pool().await;
+    ensure_type(&pool, "page").await;
+    let author = some_user(&pool).await;
+    let id = seed_item(&pool, "page", author, 1, json!({})).await;
+    let items = items_for(&pool);
+
+    // A fresh item has no override: `get-item` reads `comment_mode` as null.
+    let seen = run(
+        &pool,
+        admin(),
+        &items,
+        "get-item",
+        &id.to_string(),
+        true,
+        false,
+    )
+    .await;
+    assert!(
+        seen.body.contains("\"comment_mode\":null"),
+        "a fresh item has no override: {}",
+        seen.body
+    );
+
+    // Without `set item comment status` the write is refused, and the column
+    // stays untouched.
+    let stranger = UserContext::authenticated(
+        rightless_user(&pool).await,
+        vec!["edit any content".to_string(), "access content".to_string()],
+    );
+    let refused = run(
+        &pool,
+        stranger,
+        &items,
+        "save-item",
+        &json!({"id": id.to_string(), "comment_mode": "hidden"}).to_string(),
+        true,
+        false,
+    )
+    .await;
+    assert_eq!(
+        refused.code,
+        host_errors::ERR_ITEM_ACCESS_DENIED,
+        "setting the comment override needs `set item comment status`"
+    );
+    let untouched: Option<String> =
+        sqlx::query_scalar("SELECT comment_mode FROM item WHERE id = $1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(untouched, None, "the refused write changed nothing");
+
+    // A holder of the permission sets it, and `get-item` reads it back.
+    let holder = UserContext::authenticated(
+        rightless_user(&pool).await,
+        vec![
+            "edit any content".to_string(),
+            "access content".to_string(),
+            "set item comment status".to_string(),
+        ],
+    );
+    let answer = run(
+        &pool,
+        holder,
+        &items,
+        "save-item",
+        &json!({"id": id.to_string(), "comment_mode": "hidden"}).to_string(),
+        true,
+        false,
+    )
+    .await;
+    assert!(answer.code > 0, "the write must succeed: {}", answer.code);
+    let stored: Option<String> = sqlx::query_scalar("SELECT comment_mode FROM item WHERE id = $1")
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some("hidden"));
+
+    let seen_again = run(
+        &pool,
+        admin(),
+        &items,
+        "get-item",
+        &id.to_string(),
+        true,
+        false,
+    )
+    .await;
+    assert!(
+        seen_again.body.contains("\"comment_mode\":\"hidden\""),
+        "get-item must read the override back: {}",
+        seen_again.body
+    );
+
+    sqlx::query("DELETE FROM item WHERE id = $1")
+        .bind(id)
+        .execute(&pool)
+        .await
+        .ok();
+}

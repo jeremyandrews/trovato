@@ -638,6 +638,18 @@ async fn add_content_submit(
         .await
     {
         Ok(item) => {
+            // The item's own comment override (B239): not part of
+            // `CreateItem`, since it is not revisioned, so applied as its own
+            // write once the create above has already succeeded.
+            if let Some(mode) = super::item_form::requested_comment_mode(&posted)
+                && let Err(e) = state
+                    .items()
+                    .set_comment_mode(item.id, &mode, &user_ctx)
+                    .await
+            {
+                tracing::error!(error = %e, item_id = %item.id, "failed to set the new item's comment status");
+            }
+
             state
                 .forms()
                 .submitted(
@@ -940,6 +952,19 @@ async fn edit_content_submit(
     {
         Ok(updated) => {
             super::item::release_edit_lock(&state, &user_ctx, item_id).await;
+
+            // The item's own comment override (B239): not part of
+            // `UpdateItem`, since it is not revisioned, so applied as its own
+            // write once the update above has already succeeded.
+            if let Some(mode) = super::item_form::requested_comment_mode(&posted)
+                && let Err(e) = state
+                    .items()
+                    .set_comment_mode(item_id, &mode, &user_ctx)
+                    .await
+            {
+                tracing::error!(error = %e, item_id = %item_id, "failed to set the item's comment status");
+            }
+
             state
                 .forms()
                 .submitted(

@@ -13,6 +13,11 @@ pub fn tap_perm() -> Vec<PermissionDefinition> {
         PermissionDefinition::new("edit own comments", "Edit own comments"),
         PermissionDefinition::new("delete own comments", "Delete own comments"),
         PermissionDefinition::new("skip comment approval", "Skip comment approval"),
+        // An item's own override of its content type's comment setting
+        // (B239): open, closed or hidden on this item alone. The type's own
+        // setting is behind `administer site`, which does not fit an editor
+        // who should only ever touch one item's comments.
+        PermissionDefinition::new("set item comment status", "Set an item's comment status"),
     ]
 }
 
@@ -32,9 +37,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn perm_returns_five_permissions() {
+    fn perm_returns_six_permissions() {
         let perms = __inner_tap_perm();
-        assert_eq!(perms.len(), 5);
+        assert_eq!(perms.len(), 6);
+        assert!(perms.iter().any(|p| p.name == "set item comment status"));
     }
 
     #[test]

@@ -207,6 +207,7 @@ pub(crate) fn access_item_from_row(row: &serde_json::Value) -> Option<Item> {
         language: "en".to_string(),
         item_group_id: Uuid::nil(),
         retention_days: None,
+        comment_mode: None,
     })
 }
 

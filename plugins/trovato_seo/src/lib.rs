@@ -277,6 +277,7 @@ mod tests {
             created: 1_704_067_200,
             changed: 1_704_067_200,
             language: None,
+            comment_mode: None,
         };
         let output = __inner_tap_item_view(item);
         assert!(output.contains("application/ld+json"));
@@ -309,6 +310,7 @@ mod tests {
             created: 1_704_067_200,
             changed: 1_704_067_200,
             language: None,
+            comment_mode: None,
         };
         let output = __inner_tap_item_view(item);
         assert!(output.contains("\"@type\":\"Event\""));
@@ -328,6 +330,7 @@ mod tests {
             created: 1_704_067_200,
             changed: 1_704_067_200,
             language: None,
+            comment_mode: None,
         };
         let output = __inner_tap_item_view(item);
         assert!(output.contains("SpeakableSpecification"));
@@ -349,6 +352,7 @@ mod tests {
             created: 1_704_067_200,
             changed: 1_704_067_200,
             language: None,
+            comment_mode: None,
         };
         let output = __inner_tap_item_view(item);
         // Should have both the primary schema and the WebSite schema
@@ -372,6 +376,7 @@ mod tests {
             created: 1_704_067_200,
             changed: 1_704_067_200,
             language: None,
+            comment_mode: None,
         };
         let output = __inner_tap_item_view(item);
         assert!(!output.contains("\"@type\":\"WebSite\""));
@@ -396,6 +401,7 @@ mod tests {
             created: 1_704_067_200,
             changed: 1_704_067_200,
             language: None,
+            comment_mode: None,
         };
         let output = __inner_tap_item_view(item);
         assert!(output.contains("My content body"));

@@ -47,8 +47,8 @@ pub use form::{
 pub use item_service::{
     ADMINISTER_CONTENT, DELETE_REVISIONS, FileAccess, ItemRevisions, ItemService, ItemTranslation,
     PUBLISH_CONTENT, PageBuilderInvalid, RevisionAccess, RevisionDeleted, RevisionSelection,
-    TRANSLATE_CONTENT, TranslationRefused, USE_STAGES, VIEW_REVISIONS, WriteDenied,
-    decode_view_output,
+    SET_ITEM_COMMENT_STATUS, TRANSLATE_CONTENT, TranslationRefused, USE_STAGES, VIEW_REVISIONS,
+    WriteDenied, decode_view_output,
 };
 pub use page_meta::PageMeta;
 pub use record_type::{RecordTypeDef, RecordTypeLoadError, RecordTypeRegistry};

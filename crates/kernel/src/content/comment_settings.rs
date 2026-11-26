@@ -131,6 +131,83 @@ impl CommentSettings {
     }
 }
 
+/// One item's own override of its type's `mode` (B239): `inherit` (the
+/// default, defer to the type), or one of the type's own three. Held in
+/// `item.comment_mode`, `NULL` for `inherit`, so every existing item is
+/// `inherit` and nothing about it changes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CommentOverride {
+    /// Use the type's own `mode`.
+    #[default]
+    Inherit,
+    /// The thread and the form, whatever the type says.
+    Open,
+    /// The thread, and no new comments, whatever the type says.
+    Closed,
+    /// Neither, whatever the type says.
+    Hidden,
+}
+
+impl CommentOverride {
+    /// Read a stored or submitted value; anything else (including `None`,
+    /// the column's own default) is `Inherit`.
+    pub fn parse(value: Option<&str>) -> Self {
+        match value {
+            Some("open") => Self::Open,
+            Some("closed") => Self::Closed,
+            Some("hidden") => Self::Hidden,
+            _ => Self::Inherit,
+        }
+    }
+
+    /// The value to store: `None` (a `NULL` column) for `Inherit`, which
+    /// clears the override back to the type's own setting.
+    pub fn as_stored(self) -> Option<&'static str> {
+        match self {
+            Self::Inherit => None,
+            Self::Open => Some("open"),
+            Self::Closed => Some("closed"),
+            Self::Hidden => Some("hidden"),
+        }
+    }
+
+    /// The item form's select value, `inherit` included.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Inherit => "inherit",
+            Self::Open => "open",
+            Self::Closed => "closed",
+            Self::Hidden => "hidden",
+        }
+    }
+}
+
+/// The item form's four choices for [`CommentOverride`]: value and English
+/// label, translated by the select macro.
+pub const COMMENT_OVERRIDE_OPTIONS: &[(&str, &str)] = &[
+    ("inherit", "Use the content type's setting"),
+    ("open", "Open"),
+    ("closed", "Closed: shown, no new comments"),
+    ("hidden", "Hidden: not shown, no new comments"),
+];
+
+/// The setting that actually governs one item: its own override if it has
+/// one, otherwise its type's `mode`.
+///
+/// The one function every comment surface reads through (B239): the item
+/// form shows it, every write route (the HTML form and the JSON API,
+/// replies included) refuses a comment unless it answers `Open`, and the
+/// thread, the comment listing API and the search index all omit comments
+/// when it answers `Hidden`.
+pub fn effective_mode(item_override: Option<&str>, type_mode: CommentMode) -> CommentMode {
+    match CommentOverride::parse(item_override) {
+        CommentOverride::Inherit => type_mode,
+        CommentOverride::Open => CommentMode::Open,
+        CommentOverride::Closed => CommentMode::Closed,
+        CommentOverride::Hidden => CommentMode::Hidden,
+    }
+}
+
 /// One page of a thread: which page is shown (1-based), how many there are,
 /// and the range of the thread it covers.
 ///
@@ -195,6 +272,54 @@ mod tests {
         assert_eq!(
             CommentSettings::of(Some(&serde_json::json!({ PER_PAGE: "25" }))).per_page,
             25
+        );
+    }
+
+    #[test]
+    fn an_item_with_no_override_is_inherit() {
+        assert_eq!(CommentOverride::parse(None), CommentOverride::Inherit);
+        assert_eq!(CommentOverride::parse(Some("")), CommentOverride::Inherit);
+        assert_eq!(
+            CommentOverride::parse(Some("garbage")),
+            CommentOverride::Inherit
+        );
+        assert_eq!(CommentOverride::Inherit.as_stored(), None);
+    }
+
+    #[test]
+    fn an_override_round_trips_through_its_stored_value() {
+        for (value, parsed) in [
+            ("open", CommentOverride::Open),
+            ("closed", CommentOverride::Closed),
+            ("hidden", CommentOverride::Hidden),
+        ] {
+            assert_eq!(CommentOverride::parse(Some(value)), parsed);
+            assert_eq!(parsed.as_stored(), Some(value));
+            assert_eq!(parsed.as_str(), value);
+        }
+    }
+
+    /// The resolver every comment surface reads through: an item's own
+    /// override wins when it has one; `inherit` (every existing item) defers
+    /// to the type.
+    #[test]
+    fn effective_mode_prefers_the_item_then_falls_back_to_the_type() {
+        for type_mode in [CommentMode::Open, CommentMode::Closed, CommentMode::Hidden] {
+            assert_eq!(effective_mode(None, type_mode), type_mode);
+            assert_eq!(effective_mode(Some("inherit"), type_mode), type_mode);
+            assert_eq!(effective_mode(Some("garbage"), type_mode), type_mode);
+        }
+        assert_eq!(
+            effective_mode(Some("open"), CommentMode::Hidden),
+            CommentMode::Open
+        );
+        assert_eq!(
+            effective_mode(Some("closed"), CommentMode::Open),
+            CommentMode::Closed
+        );
+        assert_eq!(
+            effective_mode(Some("hidden"), CommentMode::Open),
+            CommentMode::Hidden
         );
     }
 

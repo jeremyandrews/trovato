@@ -406,6 +406,19 @@ pub fn register_item_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                         items.create(create, &writer).await.map(Some)
                     };
 
+                    // The item's own comment override (B239), applied after
+                    // the create or update above: not part of `CreateItem` or
+                    // `UpdateItem` (it is not revisioned, as `promote` and
+                    // `sticky` are not), but settable through this same host
+                    // call, gated as every other item write is.
+                    let result = match result {
+                        Ok(Some(item)) => match text("comment_mode") {
+                            Some(mode) => items.set_comment_mode(item.id, mode, &writer).await,
+                            None => Ok(Some(item)),
+                        },
+                        other => other,
+                    };
+
                     let json = match result {
                         Ok(Some(item)) => match serde_json::to_string(&item) {
                             Ok(json) => json,
