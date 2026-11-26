@@ -1400,12 +1400,12 @@ async fn a_revert_fires_presave_and_reindexes() {
 /// `save-item` runs the same field value check as every other write path:
 /// more values than a field's cardinality allows, or a value that is not a tag
 /// of a `CategoryReference` field's category, is refused with
-/// `ERR_ITEM_INVALID_FIELDS` (-64) and writes nothing; values within the
+/// `ERR_ITEM_INVALID_FIELDS` (-65) and writes nothing; values within the
 /// limits save as the array they were given.
 #[tokio::test]
 async fn save_item_runs_the_field_value_check() {
     // `host_errors::ERR_ITEM_INVALID_FIELDS`.
-    const ERR_ITEM_INVALID_FIELDS: i32 = -64;
+    const ERR_ITEM_INVALID_FIELDS: i32 = -65;
     const TYPE: &str = "b72_plugin_tags";
     let pool = probe_pool().await;
 

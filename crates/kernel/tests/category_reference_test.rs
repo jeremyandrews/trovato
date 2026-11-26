@@ -459,6 +459,8 @@ fn the_item_service_enforces_cardinality_and_category() {
                     })),
                     log: None,
                     stage_id: None,
+                    author_id: None,
+                    created: None,
                 },
                 &admin(),
             )
