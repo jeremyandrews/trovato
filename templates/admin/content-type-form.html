@@ -28,6 +28,16 @@
             {{ form::select(name="preview_mode", label=t(s="Preview"), options=preview_options, value=preview_mode, translate_options=true, hint=t(s="Whether the item form offers a Preview button, and whether an item must be previewed before it can be saved."), errors=errs) }}
         {{ form::fieldset_end() }}
 
+        {{ form::fieldset_start(legend=t(s="Comment settings")) }}
+            {% if values.comment_mode is defined and values.comment_mode %}{% set comment_mode = values.comment_mode %}{% else %}{% set comment_mode = "open" %}{% endif %}
+            {{ form::select(name="comment_mode", label=t(s="Comments"), options=comment_mode_options, value=comment_mode, translate_options=true, hint=t(s="Open: readers with permission may comment. Closed: existing comments are shown and no new ones are taken. Hidden: no comments are shown and none are taken."), errors=errs) }}
+            {% if values.comment_threading is defined and values.comment_threading %}{% set comment_threading = values.comment_threading %}{% else %}{% set comment_threading = "threaded" %}{% endif %}
+            {{ form::select(name="comment_threading", label=t(s="Display mode"), options=comment_threading_options, value=comment_threading, translate_options=true, errors=errs) }}
+            {% if values.comment_order is defined and values.comment_order %}{% set comment_order = values.comment_order %}{% else %}{% set comment_order = "oldest" %}{% endif %}
+            {{ form::select(name="comment_order", label=t(s="Display order"), options=comment_order_options, value=comment_order, translate_options=true, hint=t(s="In threaded mode this orders the threads; replies stay under the comment they answer, in the order they were written."), errors=errs) }}
+            {{ form::field(name="comment_per_page", label=t(s="Comments per page"), type="number", value=values.comment_per_page | default(value=50), width="4", attrs='min="1" max="300"', errors=errs) }}
+        {{ form::fieldset_end() }}
+
         {{ form::fieldset_start(legend=t(s="Publishing options")) }}
             {{ form::checkbox(name="published_default", label=t(s="Published by default"), checked=values.published_default | default(value=false), errors=errs) }}
             {{ form::checkbox(name="revision_default", label=t(s="Create new revision by default"), checked=values.revision_default | default(value=false), errors=errs) }}

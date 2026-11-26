@@ -207,6 +207,16 @@ impl CommentService {
         Comment::list_for_item(&self.inner.pool, item_id).await
     }
 
+    /// List an item's comments in thread order, the threads oldest or newest
+    /// first.
+    pub async fn list_for_item_ordered(
+        &self,
+        item_id: Uuid,
+        newest_first: bool,
+    ) -> Result<Vec<Comment>> {
+        Comment::list_for_item_ordered(&self.inner.pool, item_id, newest_first).await
+    }
+
     /// List all comments (admin moderation).
     pub async fn list_all(&self, limit: i64, offset: i64) -> Result<Vec<Comment>> {
         Comment::list_all(&self.inner.pool, limit, offset).await

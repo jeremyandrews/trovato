@@ -294,8 +294,8 @@ fn a_form_encoded_post_creates_the_comment_and_redirects() {
             "redirect must return to the item, was {location}"
         );
         assert!(
-            location.contains("comment=posted") && location.ends_with("#comments"),
-            "the redirect must say what happened and land on the thread, was {location}"
+            location.contains("comment=posted#comment-"),
+            "the redirect must say what happened and land on the new comment, was {location}"
         );
 
         let page = item_page(app, &cookies, item_id).await;
