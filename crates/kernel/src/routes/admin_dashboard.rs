@@ -3,10 +3,12 @@
 //!
 //! - **Your recent content**: what the viewer wrote last, and how much of it
 //!   is not published.
-//! - **Waiting for you**: drafts to review and comments to approve.
+//! - **Waiting for you**: drafts to review and comments waiting for
+//!   moderation (the `CommentsWaiting` status line).
 //! - **Scheduled tasks**: whether the last cron run worked, and plugin queue
 //!   jobs that stopped after repeated failures.
-//! - **Recent errors**: errors the site log recorded in the last day.
+//! - **Recent errors**: errors the site log recorded in the last day (the
+//!   `LogErrors` status line).
 //!
 //! A panel is shown only to someone who may open the page it is about, by
 //! the same rule as the sidebar (`admin_nav::offered_pages`), and every row
