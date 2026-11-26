@@ -389,3 +389,320 @@ fn the_running_server_serves_imported_content_without_a_restart() {
         );
     });
 }
+
+// =============================================================================
+// Comments, aliases and redirects (part 2)
+// =============================================================================
+
+fn forget_rows(app: &TestApp, table: &'static str, ids: Vec<Uuid>) {
+    let pool = app.db.clone();
+    common::defer_cleanup(move || async move {
+        for id in ids {
+            let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                "DELETE FROM {table} WHERE id = $1"
+            )))
+            .bind(id)
+            .execute(&pool)
+            .await;
+        }
+    });
+}
+
+fn comment_line(
+    id: Uuid,
+    item: Uuid,
+    parent: Option<Uuid>,
+    author: Uuid,
+    body: &str,
+    created: i64,
+) -> serde_json::Value {
+    json!({
+        "type": "comment", "id": id, "item_id": item, "parent_id": parent,
+        "author_id": author, "subject": format!("Re: {body}"), "body": format!("<p>{body}</p>"),
+        "created": created, "changed": created
+    })
+}
+
+#[test]
+fn imported_comments_keep_their_ids_dates_and_threads() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_plugin_enabled("trovato_comments").await;
+        let writer = author(app, "b167_comment").await;
+        let item = Uuid::now_v7();
+        forget_items(app, vec![item]);
+        let (top, reply) = (Uuid::now_v7(), Uuid::now_v7());
+        forget_rows(app, "comment", vec![reply, top]);
+        let (mut lines, _, _) = history(item, writer, "B167 comments");
+        lines.push(comment_line(
+            top,
+            item,
+            None,
+            writer,
+            "B167 first comment",
+            Y2015,
+        ));
+        lines.push(comment_line(
+            reply,
+            item,
+            Some(top),
+            writer,
+            "B167 a reply",
+            Y2016,
+        ));
+
+        let report = run(app, &lines, false).await.expect("imports");
+        assert_eq!(report.of("comment").created, 2);
+        let rows: Vec<(Uuid, Option<Uuid>, i64, i64, i16)> = sqlx::query_as(
+            "SELECT id, parent_id, created, changed, depth FROM comment WHERE item_id = $1 ORDER BY created",
+        )
+        .bind(item)
+        .fetch_all(&app.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (top, None, Y2015, Y2015, 0),
+                (reply, Some(top), Y2016, Y2016, 1)
+            ],
+            "ids, dates and the thread kept; the trigger set the depth"
+        );
+        let count: i32 = sqlx::query_scalar("SELECT comment_count FROM item WHERE id = $1")
+            .bind(item)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(count, 2, "the trigger counted them");
+
+        let again = run(app, &lines, false).await.expect("rerun");
+        assert_eq!(again.changes(), 0, "{:?}", again.counts);
+        assert_eq!(again.of("comment").unchanged, 2);
+
+        let mut edited = lines.clone();
+        edited[4]["body"] = json!("<p>B167 a reply, edited</p>");
+        edited[4]["changed"] = json!(Y2017);
+        let changed = run(app, &edited, false).await.expect("the edit");
+        assert_eq!(changed.changes(), 1, "{:?}", changed.counts);
+        assert_eq!(changed.of("comment").updated, 1);
+        let (body, stamp): (String, i64) =
+            sqlx::query_as("SELECT body, changed FROM comment WHERE id = $1")
+                .bind(reply)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            (body.as_str(), stamp),
+            ("<p>B167 a reply, edited</p>", Y2017)
+        );
+
+        let (status, html) = get(app, "", &format!("/item/{item}")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            html.contains("B167 a reply, edited"),
+            "the page shows the imported comment"
+        );
+    });
+}
+
+#[test]
+fn a_comment_that_fails_validation_writes_nothing() {
+    run_test(async {
+        let app = shared_app().await;
+        let writer = author(app, "b167_badcomment").await;
+        let (one, two) = (Uuid::now_v7(), Uuid::now_v7());
+        forget_items(app, vec![one, two]);
+        let elsewhere = Uuid::now_v7();
+        let base = vec![
+            item_line(one, writer, "B167 comment one", Y2016),
+            item_line(two, writer, "B167 comment two", Y2016),
+            comment_line(elsewhere, two, None, writer, "on two", Y2015),
+        ];
+        let cases = vec![
+            (
+                comment_line(Uuid::now_v7(), one, Some(elsewhere), writer, "x", Y2015),
+                "another item",
+            ),
+            (
+                comment_line(
+                    Uuid::now_v7(),
+                    one,
+                    Some(Uuid::now_v7()),
+                    writer,
+                    "x",
+                    Y2015,
+                ),
+                "does not exist",
+            ),
+            (
+                comment_line(Uuid::now_v7(), Uuid::now_v7(), None, writer, "x", Y2015),
+                "does not exist",
+            ),
+            (
+                {
+                    let mut c = comment_line(Uuid::now_v7(), one, None, writer, "x", Y2015);
+                    c["body"] = json!("  ");
+                    c
+                },
+                "body",
+            ),
+            (
+                {
+                    let mut c = comment_line(Uuid::now_v7(), one, None, writer, "x", Y2015);
+                    c["subject"] = json!("s".repeat(300));
+                    c
+                },
+                "subject",
+            ),
+            (
+                {
+                    let mut c = comment_line(Uuid::now_v7(), one, None, writer, "x", Y2015);
+                    c["status"] = json!(9);
+                    c
+                },
+                "status",
+            ),
+            (
+                {
+                    let mut c = comment_line(Uuid::now_v7(), one, None, writer, "x", Y2015);
+                    c["body_format"] = json!("b167_nope");
+                    c
+                },
+                "text format",
+            ),
+        ];
+        for (line, expected) in cases {
+            let mut lines = base.clone();
+            lines.push(line.clone());
+            let error = run(app, &lines, false).await.expect_err("refused");
+            let failed = error
+                .downcast_ref::<ImportFailed>()
+                .expect("an ImportFailed");
+            assert_eq!(failed.line, 4, "{line}: {failed}");
+            assert!(failed.message.contains(expected), "{line}: {failed}");
+            assert!(
+                dates_of(app, one).await.is_none(),
+                "{line}: nothing written"
+            );
+        }
+    });
+}
+
+#[test]
+fn an_imported_alias_serves_its_item_and_reruns_unchanged() {
+    run_test(async {
+        let app = shared_app().await;
+        let writer = author(app, "b167_alias").await;
+        let item = Uuid::now_v7();
+        forget_items(app, vec![item]);
+        let alias = Uuid::now_v7();
+        forget_rows(app, "url_alias", vec![alias]);
+        let address = format!("/b167/{}", item.simple());
+        let mut lines = vec![item_line(item, writer, "B167 aliased", Y2016)];
+        lines.push(json!({
+            "type": "alias", "id": alias, "source": format!("/item/{item}"),
+            "alias": address, "created": Y2015, "changed": Y2016
+        }));
+
+        let report = run(app, &lines, false).await.expect("imports");
+        assert_eq!(report.of("alias").created, 1);
+        let (created, changed): (i64, i64) =
+            sqlx::query_as("SELECT created, changed FROM url_alias WHERE id = $1")
+                .bind(alias)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        assert_eq!((created, changed), (Y2015, Y2016));
+        let (status, html) = get(app, "", &address).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains("B167 aliased"));
+
+        assert_eq!(run(app, &lines, false).await.unwrap().changes(), 0);
+
+        let moved = format!("{address}-moved");
+        lines[1]["alias"] = json!(moved);
+        let report = run(app, &lines, false).await.expect("the change");
+        assert_eq!(report.of("alias").updated, 1);
+        let (status, _) = get(app, "", &moved).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "the running server serves the new address"
+        );
+
+        // An address another alias holds is refused, naming the line.
+        let mut clash = lines.clone();
+        clash.push(json!({
+            "type": "alias", "id": Uuid::now_v7(), "source": "/b167-elsewhere",
+            "alias": moved, "created": Y2015, "changed": Y2016
+        }));
+        let error = run(app, &clash, false).await.expect_err("refused");
+        let failed = error.downcast_ref::<ImportFailed>().unwrap();
+        assert_eq!(failed.line, 3);
+        assert!(failed.message.contains("already alias"), "{failed}");
+    });
+}
+
+#[test]
+fn an_imported_redirect_redirects_and_reruns_unchanged() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_plugin_enabled("trovato_redirects").await;
+        common::ensure_plugin_tables(app, "trovato_redirects");
+        let redirect = Uuid::now_v7();
+        forget_rows(app, "redirect", vec![redirect]);
+        let source = format!("/b167-old/{}", redirect.simple());
+        let mut lines = vec![json!({
+            "type": "redirect", "id": redirect, "source": source,
+            "destination": "/b167-new", "created": Y2015
+        })];
+
+        let report = run(app, &lines, false).await.expect("imports");
+        assert_eq!(report.of("redirect").created, 1);
+        let (status_code, language, created): (i16, String, i64) =
+            sqlx::query_as("SELECT status_code, language, created FROM redirect WHERE id = $1")
+                .bind(redirect)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        assert_eq!((status_code, language.as_str(), created), (301, "", Y2015));
+        let response = through_redirects(app, &source).await;
+        assert_eq!(response.status(), StatusCode::MOVED_PERMANENTLY);
+        assert_eq!(response.headers()["location"], "/b167-new");
+
+        assert_eq!(run(app, &lines, false).await.unwrap().changes(), 0);
+
+        lines[0]["destination"] = json!("javascript:alert(1)");
+        let error = run(app, &lines, false).await.expect_err("refused");
+        let failed = error.downcast_ref::<ImportFailed>().unwrap();
+        assert!(failed.message.contains("destination"), "{failed}");
+
+        lines[0]["destination"] = json!("/b167-newer");
+        lines[0]["status_code"] = json!(302);
+        let report = run(app, &lines, false).await.expect("the change");
+        assert_eq!(report.of("redirect").updated, 1);
+        let response = through_redirects(app, &source).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::FOUND,
+            "the running server's cache dropped"
+        );
+        assert_eq!(response.headers()["location"], "/b167-newer");
+    });
+}
+
+/// `uri` through the redirect middleware alone, as the redirect tests drive
+/// it: the shared app's router is built before this test enables the plugin.
+async fn through_redirects(app: &TestApp, uri: &str) -> axum::response::Response {
+    use tower::ServiceExt;
+    let router = axum::Router::new()
+        .fallback(|| async { "no redirect" })
+        .layer(axum::middleware::from_fn_with_state(
+            app.state.clone(),
+            trovato_kernel::middleware::check_redirect,
+        ));
+    router
+        .oneshot(Request::get(uri).body(Body::empty()).unwrap())
+        .await
+        .unwrap()
+}

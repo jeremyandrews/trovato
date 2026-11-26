@@ -11,6 +11,8 @@
 //! or a date, and the only way in is the `trovato import` command. No route,
 //! API or plugin host function calls [`import`].
 
+mod alias;
+mod comment;
 mod item;
 mod record;
 
@@ -236,6 +238,9 @@ async fn apply(run: &mut Run<'_>, record: Record) -> Result<Outcome> {
     match record {
         Record::Item(r) => item::import_item(run, r).await,
         Record::Revision(r) => item::import_revision(run, r).await,
+        Record::Comment(r) => comment::import_comment(run, r).await,
+        Record::Alias(r) => alias::import_alias(run, r).await,
+        Record::Redirect(r) => alias::import_redirect(run, r).await,
     }
 }
 

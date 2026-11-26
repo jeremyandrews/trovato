@@ -19,7 +19,8 @@ way every time (a UUIDv5 of `"<table>:<old id>"` under a namespace of the
 port's own, for example), so a rerun finds the records the last run wrote.
 
 The full format is in [`docs/design/import.md`](design/import.md). This
-release imports `item` and `revision` records; the authors must already
+release imports `item`, `revision`, `comment`, `alias` and `redirect`
+records; the authors must already
 exist (`trovato user create`).
 
 ### A worked example
@@ -53,6 +54,23 @@ Running servers have dropped their cached copies; the next request reads the dat
 
 The article is at `/item/0192f0a0-0000-7000-8000-000000000101`, dated
 4 March 2019, with three revisions on its revisions page.
+
+### Its comments, its address and its old address
+
+The same file can carry the article's comments, the address it had on the old
+site, and a redirect from the address before that. Each comes after what it
+refers to:
+
+```json
+{"type":"comment","id":"0192f0a0-0000-7000-8000-000000000201","item_id":"0192f0a0-0000-7000-8000-000000000101","author_id":"0192f0a0-0000-7000-8000-00000000a001","subject":"Which Friday?","body":"<p>This Friday or next?</p>","created":"2021-06-02T08:00:00Z","changed":"2021-06-02T08:00:00Z"}
+{"type":"comment","id":"0192f0a0-0000-7000-8000-000000000202","item_id":"0192f0a0-0000-7000-8000-000000000101","parent_id":"0192f0a0-0000-7000-8000-000000000201","author_id":"0192f0a0-0000-7000-8000-00000000a001","body":"<p>This one.</p>","created":"2021-06-02T09:30:00Z","changed":"2021-06-02T09:30:00Z"}
+{"type":"alias","id":"0192f0a0-0000-7000-8000-000000000301","source":"/item/0192f0a0-0000-7000-8000-000000000101","alias":"/news/moving-the-archive","created":"2019-03-04T09:00:00Z","changed":"2019-03-04T09:00:00Z"}
+{"type":"redirect","id":"0192f0a0-0000-7000-8000-000000000401","source":"/node/101","destination":"/news/moving-the-archive","created":"2019-03-04T09:00:00Z"}
+```
+
+The reply names its parent, so it is threaded under it. The alias serves the
+article at `/news/moving-the-archive`, and the redirect sends the old site's
+`/node/101` there with a 301. Redirects need the `trovato_redirects` plugin.
 
 ### Running it again
 

@@ -106,6 +106,11 @@ A past revision of an item, for the history the revisions page lists.
 | `status` | no | 0 unpublished, 1 published, 2 pending, 3 spam; default 1. |
 | `created`, `changed` | yes | `changed` not before `created`. |
 
+Whether the item's content type takes new comments is not asked: that setting
+decides what visitors may post, and a closed thread keeps the comments it
+already has. A stored comment is not moved to another item or parent (its
+depth was set when it was written); its other values are updated in place.
+
 ### `alias`
 
 | Key | Required | Meaning |
