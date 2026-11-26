@@ -373,7 +373,13 @@ pub fn check_json(
     }
     if crate::content::field_values::stores_a_list(field) {
         let values = form_values(Some(value));
-        if let Some(message) = crate::content::field_values::too_many_values(field, values.len()) {
+        // A category reference's count is judged with its tags by the field
+        // value check the item service runs (`content::field_values`, a 422
+        // naming the field), so it is not refused here as a malformed body.
+        if !matches!(field.field_type, FieldType::CategoryReference(_))
+            && let Some(message) =
+                crate::content::field_values::too_many_values(field, values.len())
+        {
             return Err(message);
         }
         return values
