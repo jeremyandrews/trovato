@@ -1479,10 +1479,53 @@ async fn delete_submit(
     }
 }
 
+/// The query a comment permalink passes on: what just happened to it.
+#[derive(Debug, Deserialize)]
+pub struct PermalinkQuery {
+    /// `posted`, `pending` or `updated`; anything else is dropped.
+    pub comment: Option<String>,
+}
+
+/// A comment's own address.
+///
+/// GET /comment/{id}
+///
+/// Redirects to the item, on the page of the thread that holds the comment,
+/// at the comment. comment-post.js goes here after a comment is posted, with
+/// `?comment=posted`, so the writer sees their comment and the confirmation
+/// whichever page of a long thread it landed on. An id that is not one, a
+/// comment that does not exist and one the viewer may not see are all 404.
+async fn permalink(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<String>,
+    Query(query): Query<PermalinkQuery>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let Ok(id) = id.parse::<Uuid>() else {
+        return crate::routes::helpers::render_not_found();
+    };
+    let viewer = crate::routes::item::get_user_context(&session, &state).await;
+    let comment = match viewable_comment(&state, &viewer, id).await {
+        Ok((comment, _)) => comment,
+        Err(refusal) => return refusal,
+    };
+    let mut target = comment_location(&state, &comment).await;
+    if let Some(outcome) = query
+        .comment
+        .as_deref()
+        .filter(|o| matches!(*o, "posted" | "pending" | "updated"))
+    {
+        target = with_query(&target, "comment", outcome);
+    }
+    axum::response::Redirect::to(&format!("{target}#comment-{id}")).into_response()
+}
+
 /// The comment pages, served while `trovato_comments` is enabled.
 pub fn router() -> Router<AppState> {
     use axum::routing::get;
     Router::new()
+        .route("/comment/{id}", get(permalink))
         .route("/comment/reply/{item_id}", get(reply_to_item))
         .route(
             "/comment/reply/{item_id}/{parent_id}",

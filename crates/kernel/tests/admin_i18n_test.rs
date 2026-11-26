@@ -413,3 +413,50 @@ fn form_builder_words_are_translated_on_admin_forms_and_caught_where_not() {
         );
     }
 }
+
+/// The form for a moderated type says its current state through the
+/// translation function too, not as English written in Rust.
+#[test]
+fn the_moderation_state_on_an_item_form_is_translated() {
+    markers_on();
+    run_test(async {
+        let app = shared_app().await;
+        let name = format!(
+            "b199mod{}",
+            &uuid::Uuid::now_v7().simple().to_string()[20..]
+        );
+        let settings = serde_json::json!({ "fields": [], "moderation": true });
+        sqlx::query(
+            "INSERT INTO item_type (type, label, description, has_title, title_label, plugin, settings) \
+             VALUES ($1, $1, '', true, 'Title', 'b199_test', $2)",
+        )
+        .bind(&name)
+        .bind(&settings)
+        .execute(&app.db)
+        .await
+        .unwrap();
+        app.state
+            .content_types()
+            .replace(&name, &name, None, settings)
+            .await
+            .ok();
+        let admin = common::username("b199i18nmod");
+        let cookies = app
+            .create_and_login_admin(
+                &admin,
+                "correct-horse-battery-staple",
+                &format!("{admin}@test.local"),
+            )
+            .await;
+        let (status, _, html) = get(app, &cookies, &format!("/admin/content/add/{name}")).await;
+        forget(app, "b199i18nmod").await;
+        sqlx::query("DELETE FROM item_type WHERE type = $1")
+            .bind(&name)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains("moderation-current"), "{html}");
+        assert_eq!(untranslated(&html), Vec::<String>::new());
+    });
+}

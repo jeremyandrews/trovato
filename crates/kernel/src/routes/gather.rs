@@ -379,7 +379,7 @@ async fn execute_query(
         return Ok(gather_denied_json(&denied));
     }
     let user_id = viewer.authenticated.then_some(viewer.id);
-    let language = language_for_context(&resolved_lang, state.default_language());
+    let language = language_for_context(&resolved_lang, &state.default_language());
     let context = QueryContext {
         current_user_id: user_id,
         viewer: Some(viewer),
@@ -428,7 +428,7 @@ async fn execute_adhoc_query(
 
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
     let user_id = viewer.authenticated.then_some(viewer.id);
-    let language = language_for_context(&resolved_lang, state.default_language());
+    let language = language_for_context(&resolved_lang, &state.default_language());
     let context = QueryContext {
         current_user_id: user_id,
         viewer: Some(viewer),
@@ -495,7 +495,7 @@ async fn render_query_html(
         params = params.with_link_base(requested_path.clone());
     }
     let base_path = canonical.unwrap_or_else(|| format!("/gather/{query_id}"));
-    let language = language_for_context(&resolved_lang, state.default_language());
+    let language = language_for_context(&resolved_lang, &state.default_language());
     match execute_and_render(
         &state,
         &session,

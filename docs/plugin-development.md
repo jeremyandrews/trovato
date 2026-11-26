@@ -1266,6 +1266,30 @@ changes its link and card at the next restart, the same moment its routes
 appear or go. The permission, by contrast, is checked against the viewer on
 every request, exactly as for the kernel's own links.
 
+One declaration feeds every place the administration lists pages, each
+filtered to viewers who hold `permission` while the plugin is enabled:
+
+| Where | What the entry becomes |
+|---|---|
+| Sidebar | a link under its group: the `section` names the group (`Structure`, `People`, …, or `System` for Configuration); any other name joins Extend |
+| The group's landing page (`/admin/{group}/overview`) | the link, with `card_description` as its line when set |
+| Dashboard | a card titled `label`, when `card_description` is set |
+| Admin search and the command palette | a result under "Plugins", found by `label`, `section` and `card_description` |
+| Breadcrumb and `<title>` of your page and the pages below it | Administration › group › `label` |
+| "Who can do this?" | `permission`, and the roles that hold it |
+
+Write `label` and `card_description` in English. The
+administration shows them through its translation table, so a site that
+translates them sees them in the admin language. Write the page itself the
+same way as a kernel page (`docs/admin/design.md`): one `h1`, an intro
+sentence, and the form and table patterns.
+
+Admin search (`/admin/search` and the command palette) finds the entry by
+its label, its section and its card description, and lists it under
+"Plugins", for the same viewers who see the link. The plugins page's row for
+the plugin is also found by the plugin's name and description, for whoever
+may manage plugins.
+
 `href` must be the plugin's own path below `/admin/` (`/admin/groups`, not
 `/administrator` or `/admin/../groups`: no empty, `.` or `..` segments, encoded or
 not, and no backslash), and distinct from every kernel link, every prefix a

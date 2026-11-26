@@ -82,8 +82,8 @@ async fn translation_list(
         return render_not_found();
     };
 
-    let languages = state.known_languages();
-    let default_lang = state.default_language();
+    let languages = &state.known_languages();
+    let default_lang = &state.default_language();
 
     // List existing translations via ItemService
     let translations = match state.items().list_translations(id).await {
@@ -176,7 +176,7 @@ async fn translation_edit(
     let mut context = tera::Context::new();
     context.insert("item", &item);
     context.insert("language", &lang);
-    context.insert("default_language", state.default_language());
+    context.insert("default_language", &state.default_language());
     context.insert("translation", &translation);
     context.insert("item_id", &id.to_string());
     context.insert("content_type", &content_type);

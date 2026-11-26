@@ -1,0 +1,34 @@
+- dialog "Quick search":
+  - search:
+    - heading "Quick search" [level=2]
+    - text: Search the administration
+    - combobox "Search the administration" [expanded]: content
+    - paragraph: Up and Down move through the results, Enter opens one, Escape closes.
+    - listbox "Results":
+      - group "Pages":
+        - text: Pages
+        - option "Content Administration › Content" [selected]
+        - option "Add content Administration › Content"
+        - option "Moderated content Administration › Content"
+        - option "Content types Administration › Structure"
+        - option "Comments Administration › Content"
+        - option "Files Administration › Content"
+        - option "Media Administration › Content"
+        - option "Gathers Administration › Structure"
+        - option "Categories Administration › Structure"
+        - option "URL alias patterns Administration › Structure"
+        - option "Stages Administration › Configuration"
+      - group "Settings":
+        - text: Settings
+        - option "Count content views Setting on Site settings"
+        - option "Administration language Setting on Your admin preferences"
+      - group "Plugins":
+        - text: Plugins
+        - option "trovato_ai Plugin, not enabled"
+        - option "trovato_audit_log Plugin, enabled"
+        - option "trovato_blog Plugin, enabled"
+        - option "trovato_content_locking Plugin, enabled"
+        - option "trovato_content_translation Plugin, enabled"
+    - status: 18 results
+    - button "All results"
+    - button "Close"

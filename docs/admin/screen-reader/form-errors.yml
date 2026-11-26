@@ -9,6 +9,7 @@
     - text: Search the administration
     - searchbox "Search the administration"
     - button "Search"
+  - button "Quick search"
   - list:
     - listitem:
       - link "View site":
@@ -172,6 +173,9 @@
         - listitem:
           - link "Search report":
             - /url: /admin/reports/search
+        - listitem:
+          - link "Accessibility":
+            - /url: /admin/reports/accessibility
 - main:
   - navigation "Breadcrumb":
     - list:
@@ -200,3 +204,6 @@
   - button "Create role"
   - link "Cancel":
     - /url: /admin/people/roles
+  - paragraph:
+    - link "Who can do this?":
+      - /url: /admin/people/who-can?path=/admin/people/roles/add

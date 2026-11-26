@@ -179,6 +179,12 @@ async fn dashboard(State(state): State<AppState>, session: Session) -> Response 
             state.plugin_admin_nav().cards(),
         ),
     );
+    // What needs the viewer now: each panel only for someone who may open
+    // the page it is about.
+    context.insert(
+        "dashboard_panels",
+        &super::admin_dashboard::panels(&state, &viewer).await,
+    );
     context.insert("path", "/admin");
     context.insert("user", &user);
     context.insert("csrf_token", &csrf_token);
@@ -1136,12 +1142,17 @@ pub fn router() -> Router<AppState> {
         .merge(super::admin_ai_assistant::router())
         // Site configuration
         .merge(super::admin_config::router())
+        // Clear all caches (B161)
+        .merge(super::admin_performance::router())
+        // Languages (B161)
+        .merge(super::admin_language::router())
         // Search settings and the search report
         .merge(super::admin_search::router())
         .merge(super::admin_shell::router())
         .merge(super::admin_search_report::router())
         // The cron report and the site log (B107)
         .merge(super::admin_reports::router())
+        .merge(super::admin_who_can::router())
         // Access rules (B108)
         .merge(super::admin_access_rules::router())
         // Text formats (B108)

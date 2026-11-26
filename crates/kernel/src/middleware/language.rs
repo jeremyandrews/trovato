@@ -13,7 +13,7 @@ use axum::{
     extract::State,
     http::{Request, Uri},
     middleware::Next,
-    response::Response,
+    response::{IntoResponse, Response},
 };
 use tower_sessions::Session;
 
@@ -93,30 +93,28 @@ pub trait LanguageNegotiator: Send + Sync {
 /// Uses a HashSet for O(1) language lookup. Only matches exact language codes
 /// followed by `/` or end-of-path, preventing false matches like `/enterprise`.
 ///
-/// The default language is excluded from prefix matching to prevent SEO
-/// duplicate content (e.g., `/en/about` and `/about` would serve the same page).
+/// The default language's prefix is read too (`/en/about` is `/about` in
+/// English): an old link that carried it keeps working. Whether `/en/about`
+/// is then served or sent to `/about` is [`negotiate_language`]'s decision,
+/// from [`LanguageSet::prefix_default`], so one page never has two addresses.
 /// Non-default languages require the prefix (e.g., `/fr/about`).
 pub struct UrlPrefixNegotiator {
     known_languages: HashSet<String>,
-    default_language: String,
 }
 
 impl UrlPrefixNegotiator {
-    pub fn new(known_languages: Vec<String>, default_language: String) -> Self {
+    pub fn new(known_languages: Vec<String>) -> Self {
         Self {
             known_languages: known_languages.into_iter().collect(),
-            default_language,
         }
     }
 
     /// Extract the language code from a URL prefix.
     ///
-    /// Returns `Some((language, remaining_path))` if the path starts with
-    /// a known non-default language prefix. The prefix must be followed by `/`
-    /// or be the entire path. Uses O(1) HashSet lookup by extracting the first
-    /// path segment as a candidate.
-    ///
-    /// The default language is skipped to prevent SEO duplicate content.
+    /// Returns `Some((language, remaining_path))` if the path starts with a
+    /// known language prefix, the default language's included. The prefix
+    /// must be followed by `/` or be the entire path. Uses O(1) HashSet lookup
+    /// by extracting the first path segment as a candidate.
     pub fn extract_prefix<'a>(&self, path: &'a str) -> Option<(&str, &'a str)> {
         let trimmed = path.strip_prefix('/')?;
 
@@ -125,12 +123,6 @@ impl UrlPrefixNegotiator {
             Some(pos) => (&trimmed[..pos], &trimmed[pos..]),
             None => (trimmed, ""),
         };
-
-        // Skip default language to prevent SEO duplicate content:
-        // /en/about and /about should not both serve the same page.
-        if candidate == self.default_language {
-            return None;
-        }
 
         // O(1) HashSet lookup instead of linear scan
         let lang = self.known_languages.get(candidate)?;
@@ -238,6 +230,90 @@ impl LanguageNegotiator for AcceptLanguageNegotiator {
     }
 }
 
+/// The site key that serves the default language under its own prefix too
+/// (`/en/...`), and makes every link the site writes carry it (B161).
+pub const PREFIX_DEFAULT_KEY: &str = "language_prefix_default";
+
+/// The site's languages as this server last read them: the codes in weight
+/// order, the default, whether the default is prefixed, and the negotiator
+/// chain built from them.
+///
+/// Held in [`AppState`] behind a lock and replaced whole when the languages
+/// page changes anything ([`AppState::reload_languages`]), so a language
+/// added in the admin is served at once, on every server (the change bumps
+/// [`crate::cache::generation::CacheKind::Languages`]).
+pub struct LanguageSet {
+    known: std::sync::Arc<[String]>,
+    default: String,
+    prefix_default: bool,
+    negotiators: Vec<std::sync::Arc<dyn LanguageNegotiator>>,
+}
+
+impl LanguageSet {
+    /// Build the set and its negotiator chain.
+    pub fn new(known: Vec<String>, default: String, prefix_default: bool) -> Self {
+        let mut negotiators: Vec<std::sync::Arc<dyn LanguageNegotiator>> = vec![
+            std::sync::Arc::new(UrlPrefixNegotiator::new(known.clone())),
+            std::sync::Arc::new(AcceptLanguageNegotiator::new(known.clone())),
+        ];
+        negotiators.sort_by_key(|n| std::cmp::Reverse(n.priority()));
+        Self {
+            known: known.into(),
+            default,
+            prefix_default,
+            negotiators,
+        }
+    }
+
+    /// Read the languages and the prefix setting from the database.
+    pub async fn load(pool: &sqlx::PgPool) -> anyhow::Result<Self> {
+        let languages = crate::models::Language::list_all(pool).await?;
+        let known: Vec<String> = languages.iter().map(|l| l.id.clone()).collect();
+        let default = languages
+            .iter()
+            .find(|l| l.is_default)
+            .map(|l| l.id.clone())
+            .unwrap_or_else(|| "en".to_string());
+        let prefix_default = crate::models::SiteConfig::get(pool, PREFIX_DEFAULT_KEY)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        Ok(Self::new(known, default, prefix_default))
+    }
+
+    /// The language codes, in weight order.
+    pub fn known(&self) -> std::sync::Arc<[String]> {
+        self.known.clone()
+    }
+
+    /// The default language's code.
+    pub fn default_language(&self) -> &str {
+        &self.default
+    }
+
+    /// Whether the default language is served and linked under its prefix.
+    pub fn prefix_default(&self) -> bool {
+        self.prefix_default
+    }
+
+    /// The negotiator chain, highest priority first.
+    pub fn negotiators(&self) -> &[std::sync::Arc<dyn LanguageNegotiator>] {
+        &self.negotiators
+    }
+
+    /// The prefix the site writes before a path in `language`: `/{language}`,
+    /// or nothing for the default language unless it is prefixed.
+    pub fn prefix(&self, language: &str) -> String {
+        if language == self.default && !self.prefix_default {
+            String::new()
+        } else {
+            format!("/{language}")
+        }
+    }
+}
+
 /// Whether a local path is served under every language's prefix.
 ///
 /// Everything [`negotiate_language`] handles is: it strips `/{lang}` off the
@@ -288,7 +364,8 @@ pub async fn negotiate_language(
     }
 
     let path = request.uri().path();
-    let default_language = state.default_language();
+    let languages = state.languages();
+    let default_language = languages.default_language();
 
     // Skip system paths that don't need language negotiation.
     //
@@ -304,8 +381,8 @@ pub async fn negotiate_language(
         return next.run(request).await;
     }
 
-    let negotiators = state.language_negotiators();
-    let known_languages = state.known_languages();
+    let negotiators = languages.negotiators();
+    let known_languages = languages.known();
 
     // 1. Strip URL language prefix and capture the language in a single pass.
     //    Only negotiators that rewrite the URI (i.e., return Some(rewritten_path))
@@ -332,6 +409,30 @@ pub async fn negotiate_language(
         // it will be consulted again via negotiate() in select_language.
     }
 
+    // An old link with the default language's prefix (`/en/about`) on a site
+    // that does not prefix it: one permanent redirect to the unprefixed
+    // address, so the link works and the page keeps one address (B161). A
+    // form post is served where it was sent: a redirect would drop its body.
+    if url_language.as_deref() == Some(default_language)
+        && !languages.prefix_default()
+        && matches!(
+            *request.method(),
+            axum::http::Method::GET | axum::http::Method::HEAD
+        )
+    {
+        let asked = request
+            .extensions()
+            .get::<crate::middleware::RequestedPath>()
+            .map(|p| p.0.clone())
+            .unwrap_or_default();
+        let bare = without_prefix(&asked, default_language);
+        let location = match request.uri().query() {
+            Some(query) => format!("{bare}?{query}"),
+            None => bare.to_string(),
+        };
+        return axum::response::Redirect::permanent(&location).into_response();
+    }
+
     // 2. Read session language (async) then select language (sync, testable).
     let session_lang: Option<String> = session
         .get::<Option<String>>(SESSION_ACTIVE_LANGUAGE)
@@ -343,7 +444,7 @@ pub async fn negotiate_language(
     let language = select_language(
         session_lang.as_deref(),
         url_language.as_deref(),
-        known_languages,
+        &known_languages,
         negotiators,
         &request,
         default_language,
@@ -352,6 +453,19 @@ pub async fn negotiate_language(
     request.extensions_mut().insert(ResolvedLanguage(language));
 
     next.run(request).await
+}
+
+/// `path` without a leading `/{language}`: `/en/about` is `/about`, `/en` is
+/// `/`.
+fn without_prefix<'a>(path: &'a str, language: &str) -> &'a str {
+    match path
+        .strip_prefix('/')
+        .and_then(|p| p.strip_prefix(language))
+    {
+        Some("") | Some("/") => "/",
+        Some(rest) if rest.starts_with('/') => rest,
+        _ => path,
+    }
 }
 
 /// Select the active language from available sources (sync, testable).
@@ -432,8 +546,7 @@ mod tests {
     #[test]
     fn url_prefix_matches_non_default_language_with_path() {
         // "en" is default, so only "fr" should match as a URL prefix
-        let negotiator =
-            UrlPrefixNegotiator::new(vec!["en".to_string(), "fr".to_string()], "en".to_string());
+        let negotiator = UrlPrefixNegotiator::new(vec!["en".to_string(), "fr".to_string()]);
 
         let result = negotiator.extract_prefix("/fr/page/123");
         assert_eq!(result, Some(("fr", "/page/123")));
@@ -441,26 +554,39 @@ mod tests {
 
     #[test]
     fn url_prefix_matches_bare_non_default_language() {
-        let negotiator =
-            UrlPrefixNegotiator::new(vec!["en".to_string(), "fr".to_string()], "en".to_string());
+        let negotiator = UrlPrefixNegotiator::new(vec!["en".to_string(), "fr".to_string()]);
 
         let result = negotiator.extract_prefix("/fr");
         assert_eq!(result, Some(("fr", "/")));
     }
 
     #[test]
-    fn url_prefix_skips_default_language() {
-        // Default language prefix should NOT match to prevent SEO duplicate content
-        let negotiator =
-            UrlPrefixNegotiator::new(vec!["en".to_string(), "fr".to_string()], "en".to_string());
+    fn url_prefix_reads_the_default_language_too() {
+        // An old `/en/...` link names English; whether it is served there or
+        // sent to the unprefixed address is the middleware's decision (B161).
+        let negotiator = UrlPrefixNegotiator::new(vec!["en".to_string(), "fr".to_string()]);
 
-        assert_eq!(negotiator.extract_prefix("/en/about"), None);
-        assert_eq!(negotiator.extract_prefix("/en"), None);
+        assert_eq!(
+            negotiator.extract_prefix("/en/about"),
+            Some(("en", "/about"))
+        );
+        assert_eq!(negotiator.extract_prefix("/en"), Some(("en", "/")));
+    }
+
+    #[test]
+    fn the_default_language_is_prefixed_only_when_the_site_says_so() {
+        let known = vec!["en".to_string(), "es".to_string()];
+        let plain = LanguageSet::new(known.clone(), "en".to_string(), false);
+        assert_eq!(plain.prefix("en"), "");
+        assert_eq!(plain.prefix("es"), "/es");
+        let prefixed = LanguageSet::new(known, "en".to_string(), true);
+        assert_eq!(prefixed.prefix("en"), "/en");
+        assert_eq!(prefixed.prefix("es"), "/es");
     }
 
     #[test]
     fn url_prefix_does_not_match_enterprise() {
-        let negotiator = UrlPrefixNegotiator::new(vec!["en".to_string()], "en".to_string());
+        let negotiator = UrlPrefixNegotiator::new(vec!["en".to_string()]);
 
         let result = negotiator.extract_prefix("/enterprise");
         assert_eq!(result, None);
@@ -468,7 +594,7 @@ mod tests {
 
     #[test]
     fn url_prefix_does_not_match_unknown_language() {
-        let negotiator = UrlPrefixNegotiator::new(vec!["en".to_string()], "en".to_string());
+        let negotiator = UrlPrefixNegotiator::new(vec!["en".to_string()]);
 
         let result = negotiator.extract_prefix("/de/page");
         assert_eq!(result, None);
@@ -476,7 +602,7 @@ mod tests {
 
     #[test]
     fn url_prefix_no_match_root() {
-        let negotiator = UrlPrefixNegotiator::new(vec!["en".to_string()], "en".to_string());
+        let negotiator = UrlPrefixNegotiator::new(vec!["en".to_string()]);
 
         let result = negotiator.extract_prefix("/");
         assert_eq!(result, None);
@@ -485,8 +611,7 @@ mod tests {
     #[test]
     fn url_prefix_case_sensitive_no_match() {
         // URL prefix matching is case-sensitive: /EN/about should NOT match "en"
-        let negotiator =
-            UrlPrefixNegotiator::new(vec!["en".to_string(), "fr".to_string()], "en".to_string());
+        let negotiator = UrlPrefixNegotiator::new(vec!["en".to_string(), "fr".to_string()]);
 
         assert_eq!(negotiator.extract_prefix("/EN/about"), None);
         assert_eq!(negotiator.extract_prefix("/FR/about"), None);
@@ -495,8 +620,7 @@ mod tests {
 
     #[test]
     fn url_prefix_negotiate_with_rewrite_returns_both() {
-        let negotiator =
-            UrlPrefixNegotiator::new(vec!["en".to_string(), "fr".to_string()], "en".to_string());
+        let negotiator = UrlPrefixNegotiator::new(vec!["en".to_string(), "fr".to_string()]);
 
         let request = Request::builder()
             .uri("/fr/about")
@@ -509,8 +633,7 @@ mod tests {
 
     #[test]
     fn url_prefix_negotiate_with_rewrite_bare() {
-        let negotiator =
-            UrlPrefixNegotiator::new(vec!["en".to_string(), "fr".to_string()], "en".to_string());
+        let negotiator = UrlPrefixNegotiator::new(vec!["en".to_string(), "fr".to_string()]);
 
         let request = Request::builder().uri("/fr").body(Body::empty()).unwrap();
 
@@ -520,7 +643,7 @@ mod tests {
 
     #[test]
     fn url_prefix_negotiate_with_rewrite_no_match() {
-        let negotiator = UrlPrefixNegotiator::new(vec!["en".to_string()], "en".to_string());
+        let negotiator = UrlPrefixNegotiator::new(vec!["en".to_string()]);
 
         let request = Request::builder()
             .uri("/about")

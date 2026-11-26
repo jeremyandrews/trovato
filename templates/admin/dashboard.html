@@ -14,6 +14,30 @@
 </div>
 {% endif %}
 
+{#- What needs the viewer now (routes::admin_dashboard): each panel is a
+    section with a heading, its state in a sentence, numbers as words. -#}
+{% if dashboard_panels %}
+<div class="dashboard-panels">
+    {% for panel in dashboard_panels %}
+    <section class="admin-card dashboard-panel" aria-labelledby="dashboard-panel-{{ panel.key }}">
+        <h2 id="dashboard-panel-{{ panel.key }}">{{ t(s=panel.title) }}</h2>
+        <p class="dashboard-panel__summary">{{ t_message(m=panel.summary) }}</p>
+        {% if panel.rows %}
+        <ul class="dashboard-panel__rows">
+            {% for row in panel.rows %}
+            <li>
+                {% if row.href %}<a href="{{ row.href }}">{{ t_message(m=row.text) }}</a>{% else %}{{ t_message(m=row.text) }}{% endif %}
+                {% if row.detail %}<span class="dashboard-panel__detail">{{ t_message(m=row.detail) }}</span>{% endif %}
+            </li>
+            {% endfor %}
+        </ul>
+        {% endif %}
+        {% if panel.more %}<p><a href="{{ panel.more.1 }}">{{ t_message(m=panel.more.0) }}</a></p>{% endif %}
+    </section>
+    {% endfor %}
+</div>
+{% endif %}
+
 <h2 class="visually-hidden">{{ t(s="Areas you may use") }}</h2>
 <div class="dashboard-grid">
     {#- Built by `routes::admin_nav::dashboard`: one card per group the viewer

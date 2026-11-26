@@ -300,15 +300,15 @@ pub async fn inject_site_context_for(
     // outcome: a route that set the language before calling this helper had it
     // silently replaced by the site default, and every translated page it served
     // rendered with the wrong `<html lang>`.
-    context.insert("available_languages", state.known_languages());
-    context.insert("default_language", state.default_language());
+    context.insert("available_languages", &state.known_languages());
+    context.insert("default_language", &state.default_language());
     if !context.contains_key("active_language") {
-        context.insert("active_language", state.default_language());
+        context.insert("active_language", &state.default_language());
     }
     if !context.contains_key("text_direction") {
         context.insert(
             "text_direction",
-            crate::middleware::language::text_direction_for_language(state.default_language()),
+            crate::middleware::language::text_direction_for_language(&state.default_language()),
         );
     }
 
@@ -318,8 +318,8 @@ pub async fn inject_site_context_for(
     let active_language = context
         .get("active_language")
         .and_then(|v| v.as_str())
-        .unwrap_or_else(|| state.default_language())
-        .to_string();
+        .map(str::to_string)
+        .unwrap_or_else(|| state.default_language());
 
     // The address as asked for, kept beside `current_path` rather than instead
     // of it. A route that knows the original sets it before calling this; the
@@ -1248,11 +1248,14 @@ pub async fn available_translations(
     item_id: uuid::Uuid,
     canonical_path: &str,
 ) -> Vec<TranslationLink> {
-    let default_language = state.default_language();
+    let languages = state.languages();
+    let default_language = languages.default_language().to_string();
 
+    // The default language's address carries its prefix on a site that
+    // prefixes it (B161).
     let mut links = vec![TranslationLink {
-        language: default_language.to_string(),
-        path: canonical_path.to_string(),
+        path: format!("{}{canonical_path}", languages.prefix(&default_language)),
+        language: default_language.clone(),
     }];
 
     let translated = state

@@ -5,7 +5,8 @@ import { test } from '@playwright/test';
 import { setLanguage } from '../specs/helpers.mjs';
 
 const OUT = '../../docs/images/b199';
-// SHOTS picks the set: the shell's page types (default), "forms" or "lists".
+// SHOTS picks the set: the shell's page types (default), "forms", "lists",
+// "search" or "dashboard".
 const SETS = {
   shell: {
     dashboard: '/admin',
@@ -40,6 +41,24 @@ const SETS = {
     'lists-confirm': async (page) => {
       await page.goto('/admin/content');
       await Promise.all([page.waitForURL('**/admin/confirm'), page.locator('tbody tr').first().locator('button.link-button--danger').click()]);
+    },
+  },
+  dashboard: {
+    // The dashboard's panels, who can open a page, the accessibility report.
+    'dashboard-panels': '/admin',
+    'dashboard-who-can': '/admin/people/who-can?path=/admin/structure/menus',
+    'dashboard-a11y-report': '/admin/reports/accessibility',
+  },
+  search: {
+    // Admin search: the grouped results page, and the command palette open
+    // with results and the first option active.
+    'search-results': '/admin/search?q=site',
+    'search-palette': async (page) => {
+      await page.goto('/admin');
+      await page.locator('.admin-palette-open').click();
+      await page.keyboard.type('site');
+      await page.locator('#admin-palette-results [role=option]').first().waitFor();
+      await page.keyboard.press('ArrowDown');
     },
   },
 };

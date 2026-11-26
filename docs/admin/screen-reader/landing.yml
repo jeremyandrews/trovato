@@ -9,6 +9,7 @@
     - text: Search the administration
     - searchbox "Search the administration"
     - button "Search"
+  - button "Quick search"
   - list:
     - listitem:
       - link "View site":
@@ -172,6 +173,9 @@
         - listitem:
           - link "Search report":
             - /url: /admin/reports/search
+        - listitem:
+          - link "Accessibility":
+            - /url: /admin/reports/accessibility
 - main:
   - navigation "Breadcrumb":
     - list:
@@ -199,6 +203,13 @@
         - /url: /admin/people/permissions
       - paragraph: What each role may do, as a grid of roles and permissions.
     - listitem:
+      - link "Who can do this?":
+        - /url: /admin/people/who-can
+      - paragraph: Which permission opens each administration page, and the roles that hold it.
+    - listitem:
       - link "Access rules":
         - /url: /admin/people/rules
       - paragraph: Names, addresses and hosts that may or may not register and sign in.
+  - paragraph:
+    - link "Who can do this?":
+      - /url: /admin/people/who-can?path=/admin/people/overview

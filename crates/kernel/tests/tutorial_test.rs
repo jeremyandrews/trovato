@@ -678,7 +678,7 @@ fn test_part01_step04_conferences_url_alias() {
             &app.db,
             "/conferences",
             LIVE_STAGE_ID,
-            app.state.default_language(),
+            &app.state.default_language(),
         )
         .await
         .expect("alias lookup should not error");
@@ -1009,7 +1009,7 @@ fn test_part01_step05_aliases_resolvable_by_middleware_lookup() {
                 &app.db,
                 alias_path,
                 LIVE_STAGE_ID,
-                app.state.default_language(),
+                &app.state.default_language(),
             )
             .await
             .unwrap_or_else(|e| panic!("alias lookup failed for {alias_path}: {e}"));

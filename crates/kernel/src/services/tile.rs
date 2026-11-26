@@ -233,7 +233,7 @@ async fn render_gather_tile(tile: &Tile, render: &TileRenderContext<'_>) -> Opti
         state,
         query_id,
         ExecuteParams::new(1, String::new(), HashMap::new()),
-        query_language(render.language, state.default_language()),
+        query_language(render.language, &state.default_language()),
         render.viewer.clone(),
         Some(items),
         render.current_item,
@@ -366,9 +366,11 @@ fn render_tile_template(
 /// `None`, and so no tile at all, on a site with one enabled language: there
 /// is nothing to switch to.
 fn render_language_switcher_tile(tile: &Tile, render: &TileRenderContext<'_>) -> Option<String> {
+    let languages = render.state.languages();
     let links = language_switcher_links(
-        render.state.known_languages(),
-        render.state.default_language(),
+        &languages.known(),
+        languages.default_language(),
+        languages.prefix_default(),
         render.language,
         render.current_path,
         render.translations,
@@ -393,6 +395,7 @@ fn render_language_switcher_tile(tile: &Tile, render: &TileRenderContext<'_>) ->
 fn language_switcher_links(
     known_languages: &[String],
     default_language: &str,
+    prefix_default: bool,
     active_language: &str,
     current_path: &str,
     translations: Option<&[TranslationLink]>,
@@ -410,7 +413,9 @@ fn language_switcher_links(
                 translations
                     .and_then(|list| list.iter().find(|t| &t.language == language))
                     .map(|t| t.path.clone())
-                    .unwrap_or_else(|| language_front_page(language, default_language))
+                    .unwrap_or_else(|| {
+                        language_front_page(language, default_language, prefix_default)
+                    })
             };
             serde_json::json!({
                 "language": language,
@@ -421,11 +426,11 @@ fn language_switcher_links(
         .collect()
 }
 
-/// Where a language's front page is: `/` for the site's default language,
-/// `/{language}` for any other — the same address the front page route reads
-/// a language prefix back from.
-fn language_front_page(language: &str, default_language: &str) -> String {
-    if language == default_language {
+/// Where a language's front page is: `/` for the site's default language
+/// (`/{language}` when the site prefixes it), `/{language}` for any other — the
+/// same address the front page route reads a language prefix back from.
+fn language_front_page(language: &str, default_language: &str, prefix_default: bool) -> String {
+    if language == default_language && !prefix_default {
         "/".to_string()
     } else {
         format!("/{language}")
@@ -577,14 +582,14 @@ mod tests {
 
     #[test]
     fn a_single_language_site_has_nothing_to_switch_to() {
-        let links = language_switcher_links(&[lang("en")], "en", "en", "/about", None);
+        let links = language_switcher_links(&[lang("en")], "en", false, "en", "/about", None);
         assert!(links.is_empty());
     }
 
     #[test]
     fn one_link_per_enabled_language_the_current_one_marked() {
         let known = vec![lang("en"), lang("it"), lang("he")];
-        let links = language_switcher_links(&known, "en", "it", "/it/why", None);
+        let links = language_switcher_links(&known, "en", false, "it", "/it/why", None);
         assert_eq!(links.len(), 3);
 
         let en = links.iter().find(|l| l["language"] == "en").unwrap();
@@ -613,8 +618,14 @@ mod tests {
                 path: "/it/articolo-di-prova".to_string(),
             },
         ];
-        let links =
-            language_switcher_links(&known, "en", "en", "/test-article", Some(&translations));
+        let links = language_switcher_links(
+            &known,
+            "en",
+            false,
+            "en",
+            "/test-article",
+            Some(&translations),
+        );
 
         let it = links.iter().find(|l| l["language"] == "it").unwrap();
         assert_eq!(it["path"], "/it/articolo-di-prova");
@@ -628,10 +639,29 @@ mod tests {
             language: "en".to_string(),
             path: "/test-article".to_string(),
         }];
-        let links =
-            language_switcher_links(&known, "en", "en", "/test-article", Some(&translations));
+        let links = language_switcher_links(
+            &known,
+            "en",
+            false,
+            "en",
+            "/test-article",
+            Some(&translations),
+        );
 
         let he = links.iter().find(|l| l["language"] == "he").unwrap();
         assert_eq!(he["path"], "/he");
+    }
+
+    /// On a site that prefixes its default language, the switcher sends a
+    /// reader of another language to `/en`, not `/` (B161).
+    #[test]
+    fn the_default_language_front_page_carries_its_prefix_when_the_site_says_so() {
+        let known = vec![lang("en"), lang("es")];
+        let links = language_switcher_links(&known, "en", true, "es", "/es/recetas", None);
+        let en = links.iter().find(|l| l["language"] == "en").unwrap();
+        assert_eq!(en["path"], "/en");
+        let links = language_switcher_links(&known, "en", false, "es", "/es/recetas", None);
+        let en = links.iter().find(|l| l["language"] == "en").unwrap();
+        assert_eq!(en["path"], "/");
     }
 }

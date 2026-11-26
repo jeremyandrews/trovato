@@ -172,7 +172,7 @@ async fn load_config_menus(
         state.db(),
         &paths,
         &[crate::models::stage::LIVE_STAGE_ID],
-        state.default_language(),
+        &state.default_language(),
     )
     .await?;
 
@@ -224,8 +224,23 @@ async fn localize_menu_links(
     sources: &HashMap<String, String>,
     language: &str,
 ) -> anyhow::Result<Vec<MenuLink>> {
-    if language == state.default_language() || links.is_empty() {
+    let languages = state.languages();
+    if links.is_empty() || languages.prefix(language).is_empty() {
         return Ok(links);
+    }
+    // The default language on a site that prefixes it: every link the
+    // language serves gains `/{default}`, and there is nothing to translate.
+    if language == languages.default_language() {
+        let known = languages.known();
+        return Ok(links
+            .into_iter()
+            .map(|mut link| {
+                if let Some(path) = path_in_language(&link.path, language, &known) {
+                    link.path = path;
+                }
+                link
+            })
+            .collect());
     }
 
     // What each link points at. A path is either an item source path already or
@@ -256,12 +271,8 @@ async fn localize_menu_links(
             let Some(id) = target else {
                 // Not an item: a gather page, a term, the front page, a plugin
                 // route. Those are served under every language's prefix.
-                if let Some(path) = path_in_language(
-                    &link.path,
-                    language,
-                    state.known_languages(),
-                    state.default_language(),
-                ) {
+                if let Some(path) = path_in_language(&link.path, language, &state.known_languages())
+                {
                     link.path = path;
                 }
                 return link;
@@ -334,18 +345,13 @@ fn strip_query(path: &str) -> &str {
 /// ([`is_served_per_language`](crate::middleware::language::is_served_per_language)),
 /// and for a path already in a language. `/` becomes `/{language}`, the address
 /// the front page route reads a language back from.
-fn path_in_language(
-    path: &str,
-    language: &str,
-    known_languages: &[String],
-    default_language: &str,
-) -> Option<String> {
+fn path_in_language(path: &str, language: &str, known_languages: &[String]) -> Option<String> {
     if !path.starts_with('/') || path.starts_with("//") {
         return None;
     }
     let bare = strip_query(path);
     if !crate::middleware::language::is_served_per_language(bare)
-        || without_language(bare, known_languages, default_language) != bare
+        || without_language(bare, known_languages) != bare
     {
         return None;
     }
@@ -353,10 +359,10 @@ fn path_in_language(
     Some(format!("/{language}{rest}"))
 }
 
-/// `path` without a leading `/{language}` for a known non-default language: the
-/// form the router serves it in, and the form active links are compared in.
-fn without_language(path: &str, known_languages: &[String], default_language: &str) -> String {
-    crate::middleware::path_alias::strip_language_prefix(path, known_languages, default_language).0
+/// `path` without a leading `/{language}` for a known language: the form the
+/// router serves it in, and the form active links are compared in.
+fn without_language(path: &str, known_languages: &[String]) -> String {
+    crate::middleware::path_alias::strip_language_prefix(path, known_languages).0
 }
 
 /// The item a source path names, or `None` if it names something else.
@@ -411,7 +417,9 @@ struct RequestedPage<'a> {
     /// The language the page is rendered in.
     language: &'a str,
     known_languages: &'a [String],
-    default_language: &'a str,
+    /// Whether links on this page carry `/{language}`: any language but the
+    /// default, and the default too on a site that prefixes it (B161).
+    prefixed: bool,
 }
 
 impl<'a> RequestedPage<'a> {
@@ -419,13 +427,13 @@ impl<'a> RequestedPage<'a> {
         requested: &str,
         language: &'a str,
         known_languages: &'a [String],
-        default_language: &'a str,
+        prefixed: bool,
     ) -> Self {
         Self {
-            path: without_language(requested, known_languages, default_language),
+            path: without_language(requested, known_languages),
             language,
             known_languages,
-            default_language,
+            prefixed,
         }
     }
 }
@@ -435,7 +443,6 @@ impl Requested for RequestedPage<'_> {
         let (link_path, link_language) = crate::middleware::path_alias::strip_language_prefix(
             strip_query(link_path),
             self.known_languages,
-            self.default_language,
         );
         link_language.is_none_or(|l| l == self.language) && is_active(&link_path, &self.path)
     }
@@ -543,16 +550,10 @@ fn plugin_trees(
     let registry = state.menu_registry();
     let parents: Vec<String> = registry.parent_paths().map(str::to_string).collect();
     let in_language = |path: String| -> String {
-        if requested.language == requested.default_language {
+        if !requested.prefixed {
             return path;
         }
-        path_in_language(
-            &path,
-            requested.language,
-            requested.known_languages,
-            requested.default_language,
-        )
-        .unwrap_or(path)
+        path_in_language(&path, requested.language, requested.known_languages).unwrap_or(path)
     };
     let node = |parent: Option<&str>, (registered, entry): (String, MenuDefinition)| TreeNode {
         key: registered,
@@ -627,11 +628,13 @@ pub async fn site_menus(
             .cloned()
             .collect()
     };
+    let languages = state.languages();
+    let known_languages = languages.known();
     let requested = RequestedPage::new(
         requested,
         language,
-        state.known_languages(),
-        state.default_language(),
+        &known_languages,
+        !languages.prefix(language).is_empty(),
     );
     let (menus_tree, menus_by_parent) = plugin_trees(state, viewer, &requested);
     SiteMenus {
@@ -702,7 +705,7 @@ mod tests {
     }
 
     fn in_spanish(path: &str) -> Option<String> {
-        path_in_language(path, "es", &languages(), "en")
+        path_in_language(path, "es", &languages())
     }
 
     #[test]
@@ -738,38 +741,38 @@ mod tests {
     #[test]
     fn active_compares_link_and_page_without_their_language() {
         let languages = languages();
-        let here = RequestedPage::new("/es/recipes", "es", &languages, "en");
+        let here = RequestedPage::new("/es/recipes", "es", &languages, true);
         assert!(here.is_active("/es/recipes"));
         assert!(here.is_active("/recipes"));
         assert!(!here.is_active("/es/about"));
 
-        let under = RequestedPage::new("/es/recipes/paella", "es", &languages, "en");
+        let under = RequestedPage::new("/es/recipes/paella", "es", &languages, true);
         assert!(under.is_active("/es/recipes"));
 
-        let home = RequestedPage::new("/es", "es", &languages, "en");
+        let home = RequestedPage::new("/es", "es", &languages, true);
         assert!(home.is_active("/es"));
         assert!(!home.is_active("/es/recipes"));
-        assert!(RequestedPage::new("/es/", "es", &languages, "en").is_active("/es"));
+        assert!(RequestedPage::new("/es/", "es", &languages, true).is_active("/es"));
 
-        let english = RequestedPage::new("/recipes", "en", &languages, "en");
+        let english = RequestedPage::new("/recipes", "en", &languages, false);
         assert!(english.is_active("/recipes"));
         assert!(!english.is_active("/about"));
-        assert!(!RequestedPage::new("/", "en", &languages, "en").is_active("/recipes"));
+        assert!(!RequestedPage::new("/", "en", &languages, false).is_active("/recipes"));
     }
 
     #[test]
     fn a_link_into_another_language_is_never_the_current_page() {
         let languages = vec!["en".to_string(), "es".to_string(), "fr".to_string()];
-        let english = RequestedPage::new("/recipes", "en", &languages, "en");
+        let english = RequestedPage::new("/recipes", "en", &languages, false);
         assert!(english.is_active("/recipes"));
         assert!(!english.is_active("/es/recipes"));
 
-        let spanish = RequestedPage::new("/es/recipes", "es", &languages, "en");
+        let spanish = RequestedPage::new("/es/recipes", "es", &languages, true);
         assert!(spanish.is_active("/es/recipes"));
         assert!(!spanish.is_active("/fr/recipes"));
 
         // Read in Spanish by session, without a prefix in the address.
-        let by_session = RequestedPage::new("/recipes", "es", &languages, "en");
+        let by_session = RequestedPage::new("/recipes", "es", &languages, true);
         assert!(by_session.is_active("/es/recipes"));
     }
 }

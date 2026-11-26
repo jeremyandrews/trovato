@@ -1,0 +1,49 @@
+{% extends "page--admin.html" %}
+{#- The status report (routes::admin_reports::status_report): what was
+    checked, what it found and how much it matters, checked when the page was
+    asked for. Context: rows (title, value, severity, description), errors,
+    warnings, last_cron, may_run_cron. No row holds a secret. -#}
+
+{% block page_title %}{{ t(s="Status report") }}{% endblock page_title %}
+
+{% block content %}
+<section class="admin-card" aria-labelledby="status-summary">
+    <h2 id="status-summary" class="report-heading">{{ t(s="Summary") }}</h2>
+    {% if errors == 0 and warnings == 0 %}
+    <p>{{ t(s="Every check passed.") }}</p>
+    {% else %}
+    <p>{{ t(s="{count} error", plural="{count} errors", count=errors) }}, {{ t(s="{count} warning", plural="{count} warnings", count=warnings) }}.</p>
+    {% endif %}
+</section>
+
+<section class="admin-card" aria-labelledby="status-checks">
+    <h2 id="status-checks" class="report-heading">{{ t(s="Checks") }}</h2>
+    <div class="table-scroll" role="region" aria-labelledby="status-checks-caption" tabindex="0">
+    <table class="table table--stack report-facts">
+        <caption id="status-checks-caption" class="visually-hidden">{{ t(s="Checks") }}</caption>
+        <thead>
+            <tr>
+                <th scope="col">{{ t(s="Check") }}</th>
+                <th scope="col">{{ t(s="Status") }}</th>
+                <th scope="col">{{ t(s="Found") }}</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in rows %}
+            <tr>
+                <th scope="row">{{ t(s=row.title) }}</th>
+                <td>{% if row.severity == "error" %}<span class="badge badge--error">{{ t(s="Error") }}</span>{% elif row.severity == "warning" %}<span class="badge badge--warning">{{ t(s="Warning") }}</span>{% else %}<span class="badge badge--success">{{ t(s="OK") }}</span>{% endif %}</td>
+                <td>
+                    {{ row.value }}
+                    {% if row.description %}<p class="form-hint">{{ t(s=row.description) }}</p>{% endif %}
+                    {% if row.title == "Cron maintenance tasks" %}
+                    {% if may_run_cron %}<p><a href="/admin/reports/cron">{{ t(s="You can run cron manually.") }}</a></p>{% endif %}
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+</section>
+{% endblock content %}

@@ -9,6 +9,7 @@
     - text: Search the administration
     - searchbox "Search the administration"
     - button "Search"
+  - button "Quick search"
   - list:
     - listitem:
       - link "View site":
@@ -172,9 +173,44 @@
         - listitem:
           - link "Search report":
             - /url: /admin/reports/search
+        - listitem:
+          - link "Accessibility":
+            - /url: /admin/reports/accessibility
 - main:
   - heading "Dashboard" [level=1]
   - paragraph: What needs your attention, and a way into every area you may use.
+  - region "Your recent content":
+    - heading "Your recent content" [level=2]
+    - paragraph: You have not written anything yet.
+  - region "Waiting for you":
+    - heading "Waiting for you" [level=2]
+    - paragraph: Nothing is waiting for you.
+    - list:
+      - listitem:
+        - link "0 drafts to review":
+          - /url: /admin/content/moderated?state=draft
+      - listitem:
+        - link "0 comments waiting for approval":
+          - /url: /admin/content/comments?status=2
+  - region "Scheduled tasks":
+    - heading "Scheduled tasks" [level=2]
+    - paragraph: Scheduled tasks are working.
+    - list:
+      - listitem:
+        - link "Cron has not run yet.":
+          - /url: /admin/reports/cron
+      - listitem: 0 queued jobs stopped after failing repeatedly
+  - region "Recent errors":
+    - heading "Recent errors" [level=2]
+    - paragraph: 1 error in the last 24 hours.
+    - list:
+      - listitem:
+        - link "JWT_SECRET is not configured; OAuth2 disabled":
+          - /url: /admin/reports/log?level=error&q=JWT_SECRET%20is%20not%20configured%3B%20OAuth2%20disabled
+        - text: state, 2026-11-26 06:36 UTC
+    - paragraph:
+      - link "All errors in the log":
+        - /url: /admin/reports/log?level=error
   - heading "Areas you may use" [level=2]
   - region "Content":
     - heading "Content" [level=3]
@@ -306,6 +342,9 @@
       - listitem:
         - link "Search report":
           - /url: /admin/reports/search
+      - listitem:
+        - link "Accessibility":
+          - /url: /admin/reports/accessibility
   - region "Create":
     - heading "Create" [level=3]
     - list:
@@ -330,3 +369,6 @@
           - /url: /health
       - listitem:
         - button "Log out"
+  - paragraph:
+    - link "Who can do this?":
+      - /url: /admin/people/who-can?path=/admin

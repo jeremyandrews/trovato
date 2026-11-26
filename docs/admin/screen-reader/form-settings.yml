@@ -9,6 +9,7 @@
     - text: Search the administration
     - searchbox "Search the administration"
     - button "Search"
+  - button "Quick search"
   - list:
     - listitem:
       - link "View site":
@@ -172,6 +173,9 @@
         - listitem:
           - link "Search report":
             - /url: /admin/reports/search
+        - listitem:
+          - link "Accessibility":
+            - /url: /admin/reports/accessibility
 - main:
   - navigation "Breadcrumb":
     - list:
@@ -204,6 +208,8 @@
     - text: User registration
     - radio "Open — anyone can register"
     - text: Open — anyone can register
+    - radio "Visitors, but administrator approval is required — a new account stays blocked until an administrator activates it"
+    - text: Visitors, but administrator approval is required — a new account stays blocked until an administrator activates it
     - radio "Admin only — administrators create accounts, and /user/register is closed" [checked]
     - text: Admin only — administrators create accounts, and /user/register is closed
   - group "Email delivery":
@@ -256,3 +262,6 @@
     - text: Message
     - textbox "Message": The site is down for maintenance. Please check back again soon.
     - button "Save maintenance mode"
+  - paragraph:
+    - link "Who can do this?":
+      - /url: /admin/people/who-can?path=/admin/config/site

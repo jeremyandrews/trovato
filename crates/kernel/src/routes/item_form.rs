@@ -74,7 +74,8 @@ pub(crate) async fn build(
         .with_publish_allowed(user.can(PUBLISH_CONTENT) && moderation.is_none());
     let mut extra = extra;
     if let Some(moderation) = &moderation {
-        extra.push(moderation_element(user, moderation.state));
+        let text = super::admin_nav::AdminText::for_page(state, user, action).await;
+        extra.push(moderation_element(user, &text, moderation.state));
     }
     extra.extend(publishing_element(state, user, type_name, item).await);
     let mode = preview_mode(state, type_name).await;
@@ -360,7 +361,11 @@ pub(crate) async fn moderation_context(
 /// The moderation control: the current state, and a `moderation_state`
 /// select of the states this user may move the item to, defaulting to the
 /// current one when they may stay. The service decides the transition again.
-fn moderation_element(user: &UserContext, current: &'static str) -> (String, FormElement) {
+fn moderation_element(
+    user: &UserContext,
+    text: &super::admin_nav::AdminText,
+    current: &'static str,
+) -> (String, FormElement) {
     use crate::content::moderation;
 
     let targets = moderation::targets(current, user);
@@ -372,16 +377,19 @@ fn moderation_element(user: &UserContext, current: &'static str) -> (String, For
         .child(
             "_moderation_current",
             FormElement::markup(format!(
-                r#"<p class="moderation-current">Current state: <strong>{current_label}</strong></p>"#
+                r#"<p class="moderation-current">{} <strong>{}</strong></p>"#,
+                text.html("Current state:", &[]),
+                text.html(current_label, &[])
             ))
             .weight(0),
         );
     if targets.is_empty() {
         fieldset = fieldset.child(
             "_moderation_none",
-            FormElement::markup(
-                r#"<p class="moderation-none">You may not change the state of this item.</p>"#,
-            )
+            FormElement::markup(format!(
+                r#"<p class="moderation-none">{}</p>"#,
+                text.html("You may not change the state of this item.", &[])
+            ))
             .weight(1),
         );
     } else {
