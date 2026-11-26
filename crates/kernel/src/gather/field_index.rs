@@ -14,9 +14,10 @@
 //! for the type's existing items in 256 slices (row locks only, a few
 //! seconds each at a million items), creates the statistics, then the index
 //! with `CREATE INDEX CONCURRENTLY`, so writes to `item` never wait for it;
-//! a drop uses `DROP INDEX CONCURRENTLY`. Both run in the background
-//! ([`spawn_reconcile`]): at startup, after a field or a gather is saved,
-//! after a config import, and on every cron run.
+//! a drop uses `DROP INDEX CONCURRENTLY`, [`DROP_GRACE`] after the field is
+//! unmarked, and the copy keeps the field until then. Both run in the
+//! background ([`spawn_reconcile`]): at startup, after a field or a gather is
+//! saved, after a config import, and on every cron run.
 //!
 //! Gather reads a field from the copy only once its build is done
 //! ([`GatherService::refresh_served`]); until then, and for every field that
@@ -285,19 +286,6 @@ pub async fn reconcile_with(
             );
         }
     }
-    let copied: Vec<(String, Vec<(String, FieldKind)>)> = copied
-        .into_iter()
-        .map(|(t, mut fields)| {
-            fields.sort_by(|a, b| a.0.cmp(&b.0));
-            (t, fields)
-        })
-        .collect();
-
-    let mut out = Reconciled {
-        trigger_changed: install_trigger(pool, &copied).await?,
-        ..Reconciled::default()
-    };
-
     #[derive(sqlx::FromRow)]
     struct Row {
         item_type: String,
@@ -315,6 +303,41 @@ pub async fn reconcile_with(
     .fetch_all(pool)
     .await
     .context("reading item field indexes")?;
+
+    // A field keeps being copied for as long as it has a row, its index
+    // being dropped included. A server reads a field from the copy until it
+    // learns the field is no longer served (a cache bump, at the latest its
+    // next cron run), and an unmarked field's row is dropped only after
+    // DROP_GRACE, so the copy stays complete for every server still reading
+    // it; a field marked again before then has a complete copy already.
+    for row in &rows {
+        if row.field_name == TYPE_ROW
+            || row.field_name == CREATED_ROW
+            || !is_safe_identifier(&row.item_type)
+            || !is_safe_identifier(&row.field_name)
+        {
+            continue;
+        }
+        let Some(kind) = FieldKind::parse(&row.kind) else {
+            continue;
+        };
+        let fields = copied.entry(row.item_type.clone()).or_default();
+        if !fields.iter().any(|(name, _)| *name == row.field_name) {
+            fields.push((row.field_name.clone(), kind));
+        }
+    }
+    let copied: Vec<(String, Vec<(String, FieldKind)>)> = copied
+        .into_iter()
+        .map(|(t, mut fields)| {
+            fields.sort_by(|a, b| a.0.cmp(&b.0));
+            (t, fields)
+        })
+        .collect();
+
+    let mut out = Reconciled {
+        trigger_changed: install_trigger(pool, &copied).await?,
+        ..Reconciled::default()
+    };
 
     let now = chrono::Utc::now().timestamp();
     let mut seen = HashSet::new();
@@ -420,20 +443,37 @@ async fn install_trigger(
 /// none is left. Returns how many it did. Safe to run on several servers at
 /// once: each job is claimed by one.
 pub async fn drain(pool: &PgPool) -> Result<usize> {
+    drain_with(pool, DROP_GRACE).await
+}
+
+/// Seconds an unmarked field's index and copy are kept before its drop runs.
+///
+/// Every server reads a field from the copy until it learns the field is no
+/// longer served: at once from the cache bump the change makes, at the
+/// latest on its next cron run when Redis is unreachable. The trigger keeps
+/// copying the field until its row is gone, so a drop that waits longer
+/// than that leaves no server reading a copy that has stopped being kept.
+pub const DROP_GRACE: i64 = 600;
+
+/// [`drain`], dropping an unmarked field's index once it has been waiting
+/// `grace` seconds (0: at once).
+pub async fn drain_with(pool: &PgPool, grace: i64) -> Result<usize> {
     let mut done = 0;
     loop {
-        // Claim one job.
+        // Claim one job: a queued build, or a drop whose grace has passed.
         let claimed: Option<(String, String, String, String, String)> = sqlx::query_as(
             "UPDATE item_field_index f SET \
                state = CASE WHEN f.state = 'queued' THEN 'building' ELSE f.state END, \
                started = $1 \
              WHERE (f.item_type, f.field_name) = ( \
                SELECT item_type, field_name FROM item_field_index \
-               WHERE state = 'queued' OR (state = 'dropping' AND (started IS NULL OR started < $1 - 3600)) \
+               WHERE state = 'queued' OR (state = 'dropping' AND requested <= $1 - $2 \
+                 AND (started IS NULL OR started < $1 - 3600)) \
                ORDER BY requested LIMIT 1 FOR UPDATE SKIP LOCKED) \
              RETURNING f.item_type, f.field_name, f.kind, f.state, f.index_name",
         )
         .bind(chrono::Utc::now().timestamp())
+        .bind(grace)
         .fetch_optional(pool)
         .await
         .context("claiming an item field index job")?;
@@ -743,12 +783,16 @@ async fn fill_locked(pool: &PgPool, item_type: &str, field_name: &str) -> Result
         .filter(|(name, _)| is_safe_identifier(name))
         .filter_map(|(name, kind)| FieldKind::parse(&kind).map(|k| (name, k)))
         .collect();
+    // The copy is computed from the row being updated, not from a second
+    // scan of `item`: when a save holds a row, this statement waits for it
+    // and then re-evaluates on the saved version, so it copies the saved
+    // fields. A value from a separate scan would be the one read before the
+    // wait, and would overwrite the copy the save's trigger just wrote.
     let copy = field_sql::copy_object_sql("fields", &fields);
     let sql = format!(
-        "UPDATE item SET filter_values = s.v \
-         FROM (SELECT id, {copy} AS v FROM item \
-               WHERE type = $1 AND id >= $2::uuid AND ($3::uuid IS NULL OR id < $3::uuid)) s \
-         WHERE item.id = s.id AND item.filter_values IS DISTINCT FROM s.v"
+        "UPDATE item SET filter_values = {copy} \
+         WHERE type = $1 AND id >= $2::uuid AND ($3::uuid IS NULL OR id < $3::uuid) \
+           AND filter_values IS DISTINCT FROM {copy}"
     );
     for slice in 0..SLICES {
         set_phase(pool, item_type, field_name, "filling", Some(slice)).await?;
@@ -816,20 +860,65 @@ pub async fn served(pool: &PgPool) -> Result<HashMap<String, (HashSet<String>, b
 /// Run [`reconcile`] then [`drain`] in the background, once at a time per
 /// server: a call while one is running asks that one to go round again.
 pub fn spawn_reconcile(pool: PgPool, types: Arc<ContentTypeRegistry>, gather: Arc<GatherService>) {
-    static RUNNING: AtomicBool = AtomicBool::new(false);
-    static AGAIN: AtomicBool = AtomicBool::new(false);
-    AGAIN.store(true, Ordering::SeqCst);
-    if RUNNING.swap(true, Ordering::SeqCst) {
+    static RECONCILE: Coalesced = Coalesced::new();
+    if !RECONCILE.request() {
         return;
     }
     tokio::spawn(async move {
-        while AGAIN.swap(false, Ordering::SeqCst) {
-            if let Err(e) = reconcile_and_drain(&pool, &types, &gather).await {
-                tracing::warn!(error = %e, "item field index reconcile failed");
+        loop {
+            while RECONCILE.take() {
+                if let Err(e) = reconcile_and_drain(&pool, &types, &gather).await {
+                    tracing::warn!(error = %e, "item field index reconcile failed");
+                }
+            }
+            if !RECONCILE.finish() {
+                break;
             }
         }
-        RUNNING.store(false, Ordering::SeqCst);
     });
+}
+
+/// Requests for work that runs once at a time and folds the requests made
+/// while it runs into one more round.
+///
+/// A requester calls [`Self::request`] and starts a worker when it says so.
+/// The worker serves requests while [`Self::take`] says there is one, then
+/// calls [`Self::finish`], and goes round again when that says a request
+/// came in after its last `take`: one made between that `take` and the
+/// worker stopping would otherwise see the worker running, start none, and
+/// wait for some later request.
+pub(crate) struct Coalesced {
+    running: AtomicBool,
+    again: AtomicBool,
+}
+
+impl Coalesced {
+    pub(crate) const fn new() -> Self {
+        Self {
+            running: AtomicBool::new(false),
+            again: AtomicBool::new(false),
+        }
+    }
+
+    /// Ask for a round. True when no worker is running and the caller must
+    /// start one.
+    pub(crate) fn request(&self) -> bool {
+        self.again.store(true, Ordering::SeqCst);
+        !self.running.swap(true, Ordering::SeqCst)
+    }
+
+    /// For the worker: whether a request is waiting, taking it if so.
+    pub(crate) fn take(&self) -> bool {
+        self.again.swap(false, Ordering::SeqCst)
+    }
+
+    /// For the worker, once `take` says nothing is waiting: stop, unless a
+    /// request came in meanwhile and no other worker has started for it, in
+    /// which case this one carries on (true).
+    pub(crate) fn finish(&self) -> bool {
+        self.running.store(false, Ordering::SeqCst);
+        self.again.load(Ordering::SeqCst) && !self.running.swap(true, Ordering::SeqCst)
+    }
 }
 
 /// [`reconcile`], then [`drain`], in the caller's task, refreshing what
@@ -920,4 +1009,42 @@ pub async fn unindexed_fields(
         });
     }
     out
+}
+
+// Tests are allowed to use unwrap/expect freely.
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::Coalesced;
+
+    #[test]
+    fn a_request_while_the_worker_stops_is_not_lost() {
+        let c = Coalesced::new();
+        // The first request starts a worker, which serves it.
+        assert!(c.request());
+        assert!(c.take());
+        // The worker finds nothing more waiting...
+        assert!(!c.take());
+        // ...and before it has stopped, another request comes in: the worker
+        // is still running, so the requester starts none.
+        assert!(!c.request());
+        // The worker must go round again for it rather than stop.
+        assert!(c.finish());
+        assert!(c.take());
+        assert!(!c.take());
+        assert!(!c.finish());
+        // Stopped: the next request starts a worker again.
+        assert!(c.request());
+    }
+
+    #[test]
+    fn requests_while_running_fold_into_one_round() {
+        let c = Coalesced::new();
+        assert!(c.request());
+        assert!(!c.request());
+        assert!(!c.request());
+        assert!(c.take());
+        assert!(!c.take());
+        assert!(!c.finish());
+    }
 }

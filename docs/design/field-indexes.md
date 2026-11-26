@@ -166,8 +166,13 @@ shape was not run for it. What it costs to set up, at 1M items of the type:
 - Marking a field queues a job (`item_field_index`), which fills the copy for
   the type's existing items in 256 short statements, creates the statistics,
   builds the index with `CREATE INDEX CONCURRENTLY` and analyzes the table;
-  progress shows on the content type's fields page. Unmarking or deleting the
-  field drops the index (`DROP INDEX CONCURRENTLY`) and statistics. A check
+  progress shows on the content type's fields page. The fill computes each
+  copy from the row it updates, so a save that commits during the fill keeps
+  its value. Unmarking or deleting the field drops the index (`DROP INDEX
+  CONCURRENTLY`) and statistics ten minutes later (`DROP_GRACE`); until the
+  drop, the trigger keeps copying the field, so a server still reading it
+  from the copy finds every item, and a field marked again in the meantime
+  is served at once without a second fill. A check
   at startup and on every cron run requeues a marked field whose index is
   missing or invalid, and a build that failed an hour or more before.
 - Builds take turns, on one server or several. One fill per type runs at a
@@ -183,7 +188,9 @@ shape was not run for it. What it costs to set up, at 1M items of the type:
   transaction, which the build holding the lock would wait for.
 - Gather reads every field through one function, `field_sql::read`: from the
   copy once the field's index is ready, from `fields` before that and for any
-  field not marked. Both give the same answer. The Gather editor names the
+  field not marked. Both give the same answer: a list field's elements are
+  compared as text either way, so a list of numbers `[7]` holds the value
+  `7` whether or not the field is marked. The Gather editor names the
   fields a gather uses that have no ready index.
 - Facets ask once per option whether any item in scope has it (each answered
   by an index and stopping at the first match), with the option list from a
@@ -199,6 +206,13 @@ shape was not run for it. What it costs to set up, at 1M items of the type:
   performance page.
 - The copy can hold a key after its field is unmarked, until the item is
   next saved; nothing reads it.
+- An index is named `item_fx_<type>__<field>` when that fits in 63 bytes
+  and splits back into one type and field (no `__` in either name, no `_`
+  at the end of the type or the start of the field); otherwise by a hash of
+  both names.
+- A number held as a string reads as a number only when it has at most 100
+  characters and an exponent of at most three digits; `"1e200000"` reads as
+  no number rather than failing the save or the build.
 - `item.*` now includes `filter_values`; Gather removes it from its rows.
 - Ties in a sort keep PostgreSQL's order, which can differ between the
   indexed and the unindexed plan (as it could before between any two plans):
@@ -210,5 +224,5 @@ shape was not run for it. What it costs to set up, at 1M items of the type:
   `fields` as text, and a reconcile then would have dropped every index.
 - A server learns that another server built or dropped an index on its next
   reconcile (a field or gather save, a cron run); until then it keeps reading
-  as it did. A field unmarked on another server is read from its stale copy
-  for up to one cron interval.
+  as it did. A field unmarked on another server is read from the copy until
+  then, which stays current until the drop.

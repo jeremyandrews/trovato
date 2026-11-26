@@ -14,14 +14,17 @@
 -- trovato_field_numeric is the reader of a number field: a field value (the
 -- payload of a {"value": ...} wrapper, or the bare value) as numeric, or NULL
 -- when it is not a number. IMMUTABLE, so an index can be built on it; a
--- string is converted only when it spells a number, so building an index
--- never fails on a stray value.
+-- string is converted only when it spells a number numeric can hold (at
+-- most 100 characters, an exponent of at most three digits: "1e200000"
+-- spells a number but overflows numeric), so neither a save nor building an
+-- index ever fails on a stray value.
 CREATE OR REPLACE FUNCTION trovato_field_numeric(v jsonb) RETURNS numeric
 LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
   SELECT CASE jsonb_typeof(v)
     WHEN 'number' THEN v::numeric
     WHEN 'string' THEN CASE
-      WHEN (v #>> '{}') ~ '^\s*[-+]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][-+]?[0-9]+)?\s*$'
+      WHEN length(v #>> '{}') <= 100
+       AND (v #>> '{}') ~ '^\s*[-+]?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][-+]?[0-9]{1,3})?\s*$'
       THEN (v #>> '{}')::numeric
     END
   END

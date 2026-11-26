@@ -1049,8 +1049,8 @@ impl GatherQueryBuilder {
         }))
     }
 
-    /// `reader @> ["value"]` for each value, ORed: what a GIN
-    /// `jsonb_path_ops` index on the reader serves.
+    /// Whether the list field holds any of `values`: one overlap when the
+    /// field is served, a containment for each value, ORed, otherwise.
     fn contains_any(&self, key: &str, values: &[String]) -> SimpleExpr {
         if let Some(sql) = self.list_overlaps(&self.definition.base_table, key, values.len()) {
             return Expr::cust_with_values(sql, values.iter().cloned());

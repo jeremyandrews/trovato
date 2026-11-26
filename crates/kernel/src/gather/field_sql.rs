@@ -236,11 +236,24 @@ pub fn trigger_body_sql(types: &[(String, Vec<(String, FieldKind)>)]) -> String 
     format!("\nBEGIN\n  {body}\n  RETURN NEW;\nEND\n")
 }
 
-/// A stable short name for `item_type` and `field` under `prefix`, readable
-/// when it fits PostgreSQL's 63 byte limit, a hash of both names when not.
+/// A stable short name for `item_type` and `field` under `prefix`: readable
+/// when it fits PostgreSQL's 63 byte limit and names one pair only, a hash
+/// of both names otherwise.
+///
+/// The readable form joins the two with `__`, which a name may also hold:
+/// type `a__b` with field `c` and type `a` with field `b__c` would both be
+/// `item_fx_a__b__c`, and one field's build or drop would replace the
+/// other's index. It is used only when the joint is the one `__` in it (no
+/// `__` in either name, no `_` at the end of the type or the start of the
+/// field), so it splits back into one pair; the hashed form has no `__`, so
+/// it never equals a readable one.
 fn object_name(prefix: &str, item_type: &str, field: &str) -> String {
     let readable = format!("{prefix}_{item_type}__{field}");
-    if readable.len() <= 63 {
+    let unambiguous = !item_type.contains("__")
+        && !field.contains("__")
+        && !item_type.ends_with('_')
+        && !field.starts_with('_');
+    if unambiguous && readable.len() <= 63 {
         return readable;
     }
     // FNV-1a: stable across builds and platforms, no dependency.
@@ -306,28 +319,39 @@ fn indexed_expr(column: &str, field: &str, kind: FieldKind) -> String {
 
 /// Whether a list field on `table` contains the value of `placeholder`
 /// (`$1`): on the indexed `text[]` form of the copy when `served`, on the
-/// jsonb reader of `fields` otherwise. Both give the same answer.
+/// same `text[]` form of the reader of `fields` otherwise.
+///
+/// Both compare elements as text, so marking a field never changes which
+/// items match: a list of numbers `[7]` contains the value `7` either way.
+/// (Containment on the jsonb array would not, as `[7]` does not contain
+/// `["7"]`.)
 ///
 /// `table` and `field` must already have passed `is_safe_identifier`.
 pub fn list_contains(table: &str, field: &str, served: bool, placeholder: &str) -> String {
+    format!(
+        "{} @> array_append('{{}}'::text[], {placeholder}::text)",
+        list_elements(table, field, served)
+    )
+}
+
+/// The `text[]` of a list field's elements on `table`: from the copy when
+/// `served`, from `fields` otherwise.
+fn list_elements(table: &str, field: &str, served: bool) -> String {
     if served {
-        format!(
-            "{} @> array_append('{{}}'::text[], {placeholder}::text)",
-            indexed_expr(&format!("{table}.{COPY_COLUMN}"), field, FieldKind::List)
-        )
+        indexed_expr(&format!("{table}.{COPY_COLUMN}"), field, FieldKind::List)
     } else {
         format!(
-            "{} @> json_build_array({placeholder}::text)::jsonb",
+            "trovato_field_list({})",
             reader(table, field, FieldKind::List)
         )
     }
 }
 
 /// Whether a list field on `table` contains any of the values of
-/// `placeholders` (`$1`, `$2`, …): one overlap (`&&`) on the indexed `text[]`
-/// form of the copy when `served`, which the planner estimates from the
-/// element statistics as one condition; an `OR` of [`list_contains`]
-/// otherwise. `None` for no placeholders.
+/// `placeholders` (`$1`, `$2`, …): one overlap (`&&`) on the `text[]` of
+/// [`list_contains`], which, when `served`, the planner estimates from the
+/// indexed form's element statistics as one condition. `None` for no
+/// placeholders.
 ///
 /// The array is built with `array_append`, not `ARRAY[…]`: the query
 /// builder's placeholder parser does not see a `$1` inside brackets.
@@ -342,23 +366,15 @@ pub fn list_overlaps(
     if placeholders.is_empty() {
         return None;
     }
-    if served {
-        let array = placeholders
-            .iter()
-            .fold("'{}'::text[]".to_string(), |acc, p| {
-                format!("array_append({acc}, {p}::text)")
-            });
-        Some(format!(
-            "{} && {array}",
-            indexed_expr(&format!("{table}.{COPY_COLUMN}"), field, FieldKind::List)
-        ))
-    } else {
-        let any: Vec<String> = placeholders
-            .iter()
-            .map(|p| list_contains(table, field, false, p))
-            .collect();
-        Some(format!("({})", any.join(" OR ")))
-    }
+    let array = placeholders
+        .iter()
+        .fold("'{}'::text[]".to_string(), |acc, p| {
+            format!("array_append({acc}, {p}::text)")
+        });
+    Some(format!(
+        "{} && {array}",
+        list_elements(table, field, served)
+    ))
 }
 
 /// `CREATE STATISTICS` on the copy reader of `field`.
@@ -494,9 +510,10 @@ mod tests {
             list_contains("item", "tags", true, "$2"),
             "trovato_field_list(item.filter_values->'tags') @> array_append('{}'::text[], $2::text)"
         );
-        assert!(
-            list_contains("item", "tags", false, "$1")
-                .ends_with("@> json_build_array($1::text)::jsonb")
+        assert_eq!(
+            list_contains("item", "tags", false, "$1"),
+            "trovato_field_list(COALESCE(item.fields->'tags'->'value', item.fields->'tags')) \
+             @> array_append('{}'::text[], $1::text)"
         );
         let two = ["$1".to_string(), "$2".to_string()];
         assert_eq!(
@@ -504,8 +521,12 @@ mod tests {
             "trovato_field_list(item.filter_values->'tags') && \
              array_append(array_append('{}'::text[], $1::text), $2::text)"
         );
-        let or = list_overlaps("item", "tags", false, &two).unwrap();
-        assert!(or.starts_with('(') && or.contains(" OR "), "{or}");
+        let any = list_overlaps("item", "tags", false, &two).unwrap();
+        assert!(
+            any.starts_with("trovato_field_list(COALESCE(item.fields"),
+            "{any}"
+        );
+        assert!(any.contains(" && "), "{any}");
         assert!(list_overlaps("item", "tags", true, &[]).is_none());
         let stats = stats_ddl("blog", "price", FieldKind::Number).unwrap();
         assert!(
@@ -553,5 +574,32 @@ mod tests {
             "CREATE INDEX CONCURRENTLY item_fc_blog__created ON item (created) WHERE type = 'blog'"
         );
         assert!(type_created_index_ddl("bl'og").is_none());
+    }
+
+    #[test]
+    fn names_that_could_split_two_ways_hash() {
+        // Type `a__b` with field `c` and type `a` with field `b__c` read
+        // alike, as do `a_` + `b` and `a` + `_b`.
+        let pairs = [
+            ("a__b", "c"),
+            ("a", "b__c"),
+            ("a_", "_b"),
+            ("a_", "b"),
+            ("a", "_b"),
+        ];
+        let names: Vec<String> = pairs.iter().map(|(t, f)| index_name(t, f)).collect();
+        for (i, a) in names.iter().enumerate() {
+            for b in &names[i + 1..] {
+                assert_ne!(a, b);
+            }
+            assert!(!a.contains("__"), "{a}");
+            assert_eq!(a, &index_name(pairs[i].0, pairs[i].1));
+        }
+        assert_ne!(stats_name("a__b", "c"), stats_name("a", "b__c"));
+        // A single underscore inside either name keeps the readable form.
+        assert_eq!(
+            index_name("blog_post", "sub_title"),
+            "item_fx_blog_post__sub_title"
+        );
     }
 }

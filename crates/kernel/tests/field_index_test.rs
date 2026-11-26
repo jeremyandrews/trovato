@@ -130,6 +130,7 @@ fn fields_setting(note_filterable: Option<bool>) -> Value {
         field("active", json!("Boolean"), 1, Some(true)),
         field("note", json!({"Text": {"max_length": 255}}), 1, note_filterable),
         field("body", json!("TextLong"), 1, Some(true)),
+        field("scores", json!("Integer"), -1, Some(true)),
     ]})
 }
 
@@ -190,6 +191,7 @@ async fn site_with_ttl(label: &str, type_ttl: Duration) -> Site {
                                             md5('tag' || (1 + (n * 7) % 50))::uuid::text), \
                   'owner', to_jsonb(md5('owner' || (n % 300))::uuid::text), \
                   'active', to_jsonb(n % 10 = 0), \
+                  'scores', jsonb_build_array(n % 9, n % 4), \
                   'note', to_jsonb('n' || (n % 20)), \
                   'body', jsonb_build_object('value', repeat(md5(n::text), 60), 'format', 'plain_text') \
                 )), 'en' \
@@ -224,6 +226,17 @@ async fn site_with_ttl(label: &str, type_ttl: Duration) -> Site {
         Default::default(),
     ));
     types.reload_from_db().await.unwrap();
+    let gather = gather_service(&pool, &types);
+    Site {
+        _db: db,
+        pool,
+        types,
+        gather,
+    }
+}
+
+/// A Gather service on `pool`, as one server runs it.
+fn gather_service(pool: &PgPool, types: &Arc<ContentTypeRegistry>) -> Arc<GatherService> {
     let categories =
         CategoryService::new(pool.clone(), Duration::from_secs(60), Default::default());
     let gather = GatherService::new(
@@ -240,12 +253,7 @@ async fn site_with_ttl(label: &str, type_ttl: Duration) -> Site {
         Default::default(),
     );
     gather.set_content_types(types.clone());
-    Site {
-        _db: db,
-        pool,
-        types,
-        gather,
-    }
+    gather
 }
 
 impl Site {
@@ -253,7 +261,7 @@ impl Site {
         field_index::reconcile_with(&self.pool, &self.types.list(), &HashSet::new())
             .await
             .unwrap();
-        field_index::drain(&self.pool).await.unwrap();
+        field_index::drain_with(&self.pool, 0).await.unwrap();
         self.gather.refresh_served().await;
     }
 
@@ -371,6 +379,9 @@ async fn shapes(pool: &PgPool) -> Vec<(&'static str, Shape)> {
             f("fields.price", "equals", json!(7))]}], "sorts": newest()}))),
         ("tag containment", gather(json!({"filters": [f("fields.tags", "has_tag", json!(tag_id.clone()))], "sorts": newest()}))),
         ("any of two tags", gather(json!({"filters": [f("fields.tags", "has_any_tag", json!([tag_id.clone(), tag_id2.clone()]))], "sorts": newest()}))),
+        // A list of numbers holds the value 7 whether or not the field is
+        // served.
+        ("numbers in a list", gather(json!({"filters": [f("fields.scores", "equals", json!("7"))], "sorts": newest()}))),
         ("reference", gather(json!({"filters": [f("fields.owner", "equals", json!(owner.clone()))], "sorts": newest()}))),
         ("exposed filter", Shape::Gather {
             def: Box::new(definition(json!({"filters": [{"field": "fields.city", "operator": "equals", "value": null, "exposed": true}], "sorts": newest()}))),
@@ -510,13 +521,95 @@ fn scans(plan: &Value, out: &mut Vec<(String, Option<String>, Option<String>)>) 
     }
 }
 
+/// The conditions and sort keys of a plan that read an item's document,
+/// `fields`, rather than its copy, `filter_values`: what a step on a marked
+/// field must never do, as it decompresses every document it looks at. Each
+/// is (step type, where in the step, the expression).
+fn document_reads(plan: &Value, out: &mut Vec<(String, String, String)>) {
+    const KEYS: [&str; 6] = [
+        "Filter",
+        "Index Cond",
+        "Recheck Cond",
+        "Join Filter",
+        "Hash Cond",
+        "Sort Key",
+    ];
+    let kind = plan["Node Type"].as_str().unwrap_or_default();
+    // A step on the translation table reads its own `fields`.
+    let on_item = plan["Relation Name"].as_str().is_none_or(|r| r == "item");
+    for key in KEYS {
+        let exprs: Vec<&str> = match &plan[key] {
+            Value::String(s) => vec![s.as_str()],
+            Value::Array(a) => a.iter().filter_map(Value::as_str).collect(),
+            _ => vec![],
+        };
+        for expr in exprs {
+            let reads = expr
+                .replace("item_translation.fields", "")
+                .replace("t.fields", "")
+                .contains("fields ->");
+            if on_item && reads {
+                out.push((kind.to_string(), key.to_string(), expr.to_string()));
+            }
+        }
+    }
+    if let Some(children) = plan["Plans"].as_array() {
+        for child in children {
+            document_reads(child, out);
+        }
+    }
+    if let Some(root) = plan.get(0) {
+        document_reads(&root["Plan"], out);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
+/// The plan check sees a document read anywhere in a plan, and only there.
+#[test]
+fn the_plan_check_finds_reads_of_the_document() {
+    let plan = json!([{"Plan": {
+        "Node Type": "Limit",
+        "Plans": [{
+            "Node Type": "Bitmap Heap Scan", "Relation Name": "item",
+            "Recheck Cond": "(((filter_values ->> 'city'::text)) = 'city7'::text)",
+            "Filter": "(COALESCE(((fields -> 'note'::text) ->> 'value'::text), (fields ->> 'note'::text)) = 'n4'::text)",
+            "Plans": [{
+                "Node Type": "Bitmap Index Scan", "Index Name": "item_fx_fx_rec__city",
+                "Index Cond": "(((filter_values ->> 'city'::text)) = 'city7'::text)"
+            }]
+        }, {
+            "Node Type": "Index Scan", "Relation Name": "item_translation",
+            "Filter": "((t.fields ->> 'city'::text) IS NOT NULL)"
+        }, {
+            "Node Type": "Sort",
+            "Sort Key": ["(trovato_field_numeric((item.fields -> 'price'::text))) DESC"]
+        }]
+    }}]);
+    let mut found = Vec::new();
+    document_reads(&plan, &mut found);
+    let at: Vec<(&str, &str)> = found
+        .iter()
+        .map(|(k, w, _)| (k.as_str(), w.as_str()))
+        .collect();
+    assert_eq!(at, [("Bitmap Heap Scan", "Filter"), ("Sort", "Sort Key")]);
+
+    let clean = json!([{"Plan": {
+        "Node Type": "Index Scan", "Relation Name": "item",
+        "Index Name": "item_fx_fx_rec__city",
+        "Index Cond": "((filter_values ->> 'city'::text) = 'city7'::text)"
+    }}]);
+    let mut found = Vec::new();
+    document_reads(&clean, &mut found);
+    assert!(found.is_empty(), "{found:?}");
+}
+
 /// Every filter, sort, exposed and contextual filter and facet shape on a
 /// marked field is planned through that field's index: no statement reads
-/// `item` with a sequential scan, and each uses a field index (`item_fx_`, or the type's `item_fv_` GIN).
+/// `item` with a sequential scan, each uses a field index (`item_fx_`, or the
+/// type's `item_fv_` GIN), and none filters or sorts on the document.
 #[tokio::test]
 async fn planner_uses_the_field_index_for_every_shape() {
     let site = site("field_index_plan").await;
@@ -552,8 +645,10 @@ async fn planner_uses_the_field_index_for_every_shape() {
                 i.as_deref()
                     .is_some_and(|i| i.starts_with("item_fx_") || i.starts_with("item_fv_"))
             });
-            if seq || !field_index {
-                failures.push(format!("{name}: {found:?}\n  {sql}"));
+            let mut document = Vec::new();
+            document_reads(&plan, &mut document);
+            if seq || !field_index || !document.is_empty() {
+                failures.push(format!("{name}: {found:?} {document:?}\n  {sql}"));
             }
         }
         assert!(checked > 0, "{name}: no statement checked");
@@ -623,13 +718,13 @@ async fn the_setting_creates_and_drops_the_index() {
     field_index::reconcile_with(&site.pool, &site.types.list(), &used)
         .await
         .unwrap();
-    field_index::drain(&site.pool).await.unwrap();
+    field_index::drain_with(&site.pool, 0).await.unwrap();
     site.gather.refresh_served().await;
     assert!(site.indexes().await.contains("item_fx_fx_rec__note"));
     field_index::reconcile_with(&site.pool, &site.types.list(), &HashSet::new())
         .await
         .unwrap();
-    field_index::drain(&site.pool).await.unwrap();
+    field_index::drain_with(&site.pool, 0).await.unwrap();
     site.gather.refresh_served().await;
     assert!(!site.indexes().await.contains("item_fx_fx_rec__note"));
 
@@ -823,10 +918,10 @@ async fn drains_at_once_build_every_index() {
         .await
         .unwrap();
     let (a, b, c, d) = tokio::join!(
-        field_index::drain(&site.pool),
-        field_index::drain(&site.pool),
-        field_index::drain(&site.pool),
-        field_index::drain(&site.pool),
+        field_index::drain_with(&site.pool, 0),
+        field_index::drain_with(&site.pool, 0),
+        field_index::drain_with(&site.pool, 0),
+        field_index::drain_with(&site.pool, 0),
     );
     for done in [a, b, c, d] {
         done.unwrap();
@@ -899,6 +994,231 @@ async fn an_expired_content_type_entry_still_reads_by_kind() {
         .await
         .unwrap();
     assert_eq!((r.queued_drops, r.trigger_changed), (0, false), "{r:?}");
-    field_index::drain(&site.pool).await.unwrap();
+    field_index::drain_with(&site.pool, 0).await.unwrap();
     assert_eq!(site.indexes().await, before);
+}
+
+/// The ids of every item whose `field` equals `value`, as `gather` answers.
+async fn matching(gather: &GatherService, field: &str, value: &str) -> Vec<String> {
+    let def =
+        definition(json!({"filters": [f(&format!("fields.{field}"), "equals", json!(value))]}));
+    let result = gather
+        .execute_definition(
+            &def,
+            &QueryDisplay::default(),
+            1,
+            HashMap::new(),
+            LIVE_STAGE_ID,
+            &QueryContext::default(),
+        )
+        .await
+        .unwrap();
+    result
+        .items
+        .iter()
+        .filter_map(|r| r["id"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// Insert an item of the type whose `note` is `note`; returns its id.
+async fn insert_with_note(pool: &PgPool, note: &str) -> String {
+    sqlx::query_scalar(
+        "INSERT INTO item (id, type, title, author_id, status, created, changed, fields, language) \
+         VALUES (gen_random_uuid(), $1, 'New', '00000000-0000-0000-0000-000000000000', 1, \
+                 1800000000, 1800000000, jsonb_build_object('note', $2::text), 'en') \
+         RETURNING id::text",
+    )
+    .bind(TYPE)
+    .bind(note)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// A save that commits while the copy of a newly marked field is being
+/// filled leaves the copy with the saved value.
+///
+/// Before, the fill read each slice's copies in its own snapshot, then wrote
+/// them: an item saved between the two kept the copy of the value it had
+/// before the save, and an indexed filter on the new value missed it.
+#[tokio::test]
+async fn a_save_during_the_fill_keeps_its_value() {
+    let site = site("field_index_fill_race").await;
+    site.build_indexes().await;
+
+    // A save of item 44's note, held open.
+    let mut save = site.pool.begin().await.unwrap();
+    sqlx::query(
+        "UPDATE item SET fields = fields || jsonb_build_object('note', 'saved') \
+         WHERE id = md5('item44')::uuid",
+    )
+    .execute(&mut *save)
+    .await
+    .unwrap();
+
+    // Mark the note; its fill waits on the open save's row.
+    site.set_note_filterable(Some(true)).await;
+    field_index::reconcile_with(&site.pool, &site.types.list(), &HashSet::new())
+        .await
+        .unwrap();
+    let pool = site.pool.clone();
+    let drain = tokio::spawn(async move { field_index::drain_with(&pool, 0).await });
+    let mut waited = 0;
+    loop {
+        let fill_waiting: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE wait_event_type = 'Lock' \
+             AND query LIKE 'UPDATE item SET filter_values%')",
+        )
+        .fetch_one(&site.pool)
+        .await
+        .unwrap();
+        if fill_waiting {
+            break;
+        }
+        waited += 1;
+        assert!(waited < 600, "the fill never reached the saved item");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    save.commit().await.unwrap();
+    drain.await.unwrap().unwrap();
+    site.gather.refresh_served().await;
+
+    let copy: Option<String> = sqlx::query_scalar(
+        "SELECT filter_values->>'note' FROM item WHERE id = md5('item44')::uuid",
+    )
+    .fetch_one(&site.pool)
+    .await
+    .unwrap();
+    assert_eq!(copy.as_deref(), Some("saved"));
+    let id: String = sqlx::query_scalar("SELECT md5('item44')::uuid::text")
+        .fetch_one(&site.pool)
+        .await
+        .unwrap();
+    assert_eq!(matching(&site.gather, "note", "saved").await, vec![id]);
+}
+
+/// An unmarked field's index and copy stay whole until its drop runs, a
+/// grace period after: a server that has not yet learnt of the change still
+/// finds an item saved meanwhile, and marking the field again before the
+/// drop finds it too, without filling the copy again.
+///
+/// Before, the copy stopped holding the field as soon as it was unmarked,
+/// while the index stayed and another server kept reading the copy; an item
+/// saved then was missing from both, until its next save.
+#[tokio::test]
+async fn an_unmarked_field_stays_whole_until_its_drop() {
+    let site = site("field_index_unmark").await;
+    site.set_note_filterable(Some(true)).await;
+    site.build_indexes().await;
+    // A second server, serving the note from its index.
+    let other_types = Arc::new(ContentTypeRegistry::new(
+        site.pool.clone(),
+        Duration::from_secs(60),
+        Default::default(),
+    ));
+    other_types.reload_from_db().await.unwrap();
+    let other = gather_service(&site.pool, &other_types);
+    other.refresh_served().await;
+
+    // Unmarked on this server; the other has not heard yet.
+    site.set_note_filterable(Some(false)).await;
+    field_index::reconcile_with(&site.pool, &site.types.list(), &HashSet::new())
+        .await
+        .unwrap();
+    site.gather.refresh_served().await;
+    // A drain before the grace has passed keeps the index.
+    field_index::drain(&site.pool).await.unwrap();
+    assert!(site.indexes().await.contains("item_fx_fx_rec__note"));
+
+    let id = insert_with_note(&site.pool, "meanwhile").await;
+    let (_, statements) = captured(matching(&other, "note", "meanwhile")).await;
+    assert!(
+        statements
+            .iter()
+            .any(|s| s.contains("filter_values->>'note'")),
+        "the other server reads the copy: {statements:#?}"
+    );
+    assert_eq!(
+        matching(&other, "note", "meanwhile").await,
+        vec![id.clone()]
+    );
+    assert_eq!(
+        matching(&site.gather, "note", "meanwhile").await,
+        vec![id.clone()]
+    );
+
+    // Marked again before the drop: built from the copy as it stands.
+    site.set_note_filterable(Some(true)).await;
+    site.build_indexes().await;
+    let filled: bool = sqlx::query_scalar(
+        "SELECT filled FROM item_field_index WHERE item_type = $1 AND field_name = 'note'",
+    )
+    .bind(TYPE)
+    .fetch_one(&site.pool)
+    .await
+    .unwrap();
+    assert!(filled);
+    let (found, statements) = captured(matching(&site.gather, "note", "meanwhile")).await;
+    assert!(
+        statements
+            .iter()
+            .any(|s| s.contains("filter_values->>'note'")),
+        "served again: {statements:#?}"
+    );
+    assert_eq!(found, vec![id]);
+
+    // Once the grace has passed, the drop runs.
+    site.set_note_filterable(Some(false)).await;
+    field_index::reconcile_with(&site.pool, &site.types.list(), &HashSet::new())
+        .await
+        .unwrap();
+    sqlx::query("UPDATE item_field_index SET requested = requested - $2 WHERE field_name = $1")
+        .bind("note")
+        .bind(field_index::DROP_GRACE)
+        .execute(&site.pool)
+        .await
+        .unwrap();
+    field_index::drain(&site.pool).await.unwrap();
+    assert!(!site.indexes().await.contains("item_fx_fx_rec__note"));
+}
+
+/// A number field holding a string that spells a number too large for
+/// `numeric` reads as no number: the index builds, and items with it save,
+/// before the build and after.
+#[tokio::test]
+async fn a_number_too_large_for_numeric_reads_as_none() {
+    let site = site("field_index_overflow").await;
+    let insert = "INSERT INTO item (id, type, title, author_id, status, created, changed, fields, language) \
+         VALUES (gen_random_uuid(), $1, 'Huge', '00000000-0000-0000-0000-000000000000', 1, \
+                 1800000000, 1800000000, jsonb_build_object('price', $2::text), 'en')";
+    sqlx::query(insert)
+        .bind(TYPE)
+        .bind("1e200000")
+        .execute(&site.pool)
+        .await
+        .unwrap();
+    site.build_indexes().await;
+    let price: (String, Option<String>) = sqlx::query_as(
+        "SELECT state, error FROM item_field_index WHERE item_type = $1 AND field_name = 'price'",
+    )
+    .bind(TYPE)
+    .fetch_one(&site.pool)
+    .await
+    .unwrap();
+    assert_eq!(price, ("ready".to_string(), None));
+    for huge in ["1e200000", &format!("1{}", "0".repeat(200))] {
+        sqlx::query(insert)
+            .bind(TYPE)
+            .bind(huge)
+            .execute(&site.pool)
+            .await
+            .unwrap();
+    }
+    let numbers: Vec<Option<String>> = sqlx::query_scalar(
+        "SELECT trovato_field_numeric(filter_values->'price')::text FROM item WHERE title = 'Huge'",
+    )
+    .fetch_all(&site.pool)
+    .await
+    .unwrap();
+    assert_eq!(numbers, vec![None, None, None]);
 }

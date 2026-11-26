@@ -30,10 +30,14 @@ Now:
 - Indexes are built in the background with `CREATE INDEX CONCURRENTLY`, one
   at a time, after the copy is filled in 256 short statements. Progress shows
   on the content type's fields page. Unmarking or deleting the field drops
-  its index. A check at startup and on each cron run rebuilds a missing or
-  invalid index and retries a failed build after an hour.
+  its index ten minutes later; until then the copy stays current, so a
+  server that has not yet heard of the change still finds every item. A
+  check at startup and on each cron run rebuilds a missing or invalid index
+  and retries a failed build after an hour.
 - Gather reads every field through one function, from the copy once the
-  field's index is ready. Numbers compare as numbers. Facet option lists walk
+  field's index is ready. Numbers compare as numbers. A list field's
+  values compare as text, marked or not: a list of numbers now matches a
+  filter on one of them, which it did not before. Facet option lists walk
   the index, and a facet with a filter applied asks once per option.
 - A field that is not marked still works as before, read from the document.
   The Gather editor names it as not indexed.
