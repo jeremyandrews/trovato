@@ -1572,6 +1572,7 @@ mod tests {
         context.insert("editing", &false);
         context.insert("values", &serde_json::json!({ "items": 5 }));
         context.insert("path", "/admin/structure/tiles/add");
+        crate::routes::tile_admin::insert_choices(&mut context);
         let html = engine
             .tera()
             .render("admin/tile-form.html", &context)

@@ -86,6 +86,13 @@ const TILE_CHOICES: &[(&str, &[(&str, &str)])] = &[
     ),
 ];
 
+/// Put the tile form's choices in `context` (see [`TILE_CHOICES`]).
+pub(crate) fn insert_choices(context: &mut tera::Context) {
+    for (key, options) in TILE_CHOICES {
+        context.insert(*key, options);
+    }
+}
+
 /// The `audience` values the tile form's select may post, besides "" for
 /// "Everyone".
 const AUDIENCE_VALUES: [&str; 2] = ["anonymous", "authenticated"];
@@ -195,9 +202,7 @@ async fn add_tile_form(State(state): State<AppState>, session: Session) -> Respo
     context.insert("action", "/admin/structure/tiles/add");
     context.insert("csrf_token", &csrf_token);
     context.insert("editing", &false);
-    for (key, options) in TILE_CHOICES {
-        context.insert(*key, options);
-    }
+    insert_choices(&mut context);
     context.insert(
         "values",
         &serde_json::json!({ "items": GATHER_TILE_DEFAULT_ITEMS, "audience": "" }),
@@ -287,9 +292,7 @@ async fn edit_tile_form(
     context.insert("action", &format!("/admin/structure/tiles/{tile_id}/edit"));
     context.insert("csrf_token", &csrf_token);
     context.insert("editing", &true);
-    for (key, options) in TILE_CHOICES {
-        context.insert(*key, options);
-    }
+    insert_choices(&mut context);
     context.insert("tile_id", &tile_id.to_string());
     context.insert(
         "values",
