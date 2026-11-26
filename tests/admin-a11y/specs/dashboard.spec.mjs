@@ -1,7 +1,10 @@
 // The dashboard's panels, "Who can do this?" and the accessibility report
 // in a browser. Nothing here changes anything.
 import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
 import { useProjectLanguage } from './helpers.mjs';
+
+const TAGS = ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22a', 'wcag22aa'];
 
 useProjectLanguage(test);
 
@@ -56,4 +59,11 @@ test('the accessibility report sits under Reports with a section per topic', asy
     await expect(page.locator(`section[aria-labelledby="${id}"] h2#${id}`)).toHaveCount(1);
   }
   await expect(page.locator('section[aria-labelledby="a11y-you"] a[href="/admin/preferences"]')).toBeVisible();
+});
+
+test('the answer for one page has no WCAG 2.2 A or AA violations', async ({ page }) => {
+  await page.goto('/admin/people/who-can?path=/admin/structure/menus');
+  await expect(page.locator('#who-can-needs')).toBeVisible();
+  const results = await new AxeBuilder({ page }).withTags(TAGS).analyze();
+  expect(results.violations.map((v) => `${v.id}: ${v.nodes.length}`)).toEqual([]);
 });
