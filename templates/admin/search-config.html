@@ -54,8 +54,10 @@
                     </td>
                     <td>
                         {% if weight %}
-                        <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/{{ field.field_name }}/delete" class="inline-form" novalidate>
+                        <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/{{ field.field_name }}/delete?confirm" class="inline-form" novalidate>
                             <input type="hidden" name="_token" value="{{ csrf_token }}">
+                            <input type="hidden" name="_confirm" value="{{ t(s='Remove the search weight of {name}? It is searched at the default weight until you set another.', name=field.label) }}">
+                            <input type="hidden" name="_confirm_label" value="{{ t(s='Remove the weight of {name}', name=field.label) }}">
                             <button type="submit" class="link-button">{{ t(s="Remove the weight of {name}", name=field.label) }}</button>
                         </form>
                         {% else %}
