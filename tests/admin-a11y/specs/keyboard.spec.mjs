@@ -40,6 +40,21 @@ test('a sidebar group opens and closes with Enter and Space, and stays that way 
   await expect(page.locator('button[aria-controls="admin-nav-reports"]')).toHaveAttribute('aria-expanded', before);
 });
 
+test('closing the current page\'s group is not saved: it opens again on the next page', async ({ page }, info) => {
+  test.skip(info.project.name === 'narrow', 'the sidebar is behind the menu button at this width');
+  await page.goto('/admin/people/roles');
+  const toggle = page.locator('button[aria-controls="admin-nav-people"]');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  let posted = false;
+  page.on('request', (r) => { if (r.url().endsWith('/admin/preferences/nav')) posted = true; });
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await page.goto('/admin/people/roles');
+  expect(posted, 'the current group\'s state was posted').toBe(false);
+  await expect(page.locator('button[aria-controls="admin-nav-people"]')).toHaveAttribute('aria-expanded', 'true');
+});
+
 test('the group holding the current page is open', async ({ page }) => {
   await page.goto('/admin/people/roles');
   const current = page.locator('#admin-nav a[aria-current="page"]');

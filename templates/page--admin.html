@@ -1,3 +1,4 @@
+{% import "admin/macros/icons.html" as icons -%}
 <!DOCTYPE html>
 {#- The administration shell: every admin page, kernel and plugin alike.
 
@@ -81,7 +82,9 @@
         {#- Built by `routes::admin_nav::sidebar`: only the pages this viewer may
             open, each gated on what its own page asks for. One list: the
             Dashboard, then one item per group, each an h2 holding a disclosure
-            button followed by the group's own list. -#}
+            button followed by the group's own list. Only the group holding
+            the current page opens by default (`NavSection.open`), and any the
+            viewer opened by hand. -#}
         <ul class="admin-nav">
             {% for section in admin_nav | default(value=[]) %}
             {% if not section.title %}
@@ -89,15 +92,16 @@
             <li class="admin-nav__item"><a class="admin-nav__link" href="{{ link.href | safe }}"{% if link.active %} aria-current="page"{% endif %}>{{ t(s=link.label) }}</a></li> {# SAFE: each href is either a constant in `routes::admin_nav::LINKS` or a plugin's own `tap_admin_nav` declaration, validated at boot — never user text #}
             {% endfor %}
             {% else %}
-            <li class="admin-nav__group" data-group="{{ section.slug }}">
+            <li class="admin-nav__group" data-group="{{ section.slug }}"{% if section.current %} data-current{% endif %}>
                 <h2 class="admin-nav__heading">
-                    <button type="button" class="admin-nav__toggle" aria-expanded="{% if section.current %}true{% else %}false{% endif %}" aria-controls="admin-nav-{{ section.slug }}" hidden>
+                    <button type="button" class="admin-nav__toggle" aria-expanded="{% if section.open %}true{% else %}false{% endif %}" aria-controls="admin-nav-{{ section.slug }}" hidden>
                         <svg class="admin-nav__chevron" aria-hidden="true" focusable="false" width="12" height="12" viewBox="0 0 12 12"><path d="M4 2.5 7.5 6 4 9.5" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>
+                        {{ icons::icon(name=section.icon) }}
                         <span>{{ t(s=section.title) }}</span>
                     </button>
-                    <span class="admin-nav__heading-text">{{ t(s=section.title) }}</span>
+                    <span class="admin-nav__heading-text">{{ icons::icon(name=section.icon) }}<span>{{ t(s=section.title) }}</span></span>
                 </h2>
-                <ul class="admin-nav__list" id="admin-nav-{{ section.slug }}"{% if not section.current %} data-collapsed{% endif %}>
+                <ul class="admin-nav__list" id="admin-nav-{{ section.slug }}"{% if not section.open %} data-collapsed{% endif %}>
                     <li class="admin-nav__item"><a class="admin-nav__link admin-nav__link--overview" href="{{ section.href | safe }}"{% if section.landing_active %} aria-current="page"{% endif %}>{{ t(s="Overview") }}</a></li> {# SAFE: a landing page address built from a constant group slug #}
                     {% for link in section.links %}
                     <li class="admin-nav__item"><a class="admin-nav__link" href="{{ link.href | safe }}"{% if link.active %} aria-current="page"{% endif %}>{{ t(s=link.label) }}</a></li> {# SAFE: as above, a registry constant or a validated plugin declaration #}

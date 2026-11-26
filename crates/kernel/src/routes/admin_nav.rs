@@ -991,8 +991,13 @@ pub struct NavSection {
     pub href: Option<String>,
     /// Whether the current page is the landing page.
     pub landing_active: bool,
-    /// Whether the current page is in this group, which keeps it open.
+    /// Whether the current page is in this group. Such a group is always
+    /// open, and its state is never saved.
     pub current: bool,
+    /// Whether the group is drawn open: it holds the current page, or the
+    /// viewer opened it by hand ([`Preferences::expanded`]). Every other
+    /// group is collapsed, so a first visit shows one group's links.
+    pub open: bool,
     /// The group's icon; empty for the links above the first group.
     pub icon: String,
     pub links: Vec<NavLink>,
@@ -1077,6 +1082,7 @@ pub fn sidebar(
             href: None,
             landing_active: false,
             current: false,
+            open: false,
             icon: String::new(),
             links: personal,
         });
@@ -1098,6 +1104,7 @@ pub fn sidebar(
             href: Some(g.group.landing_href()),
             landing_active: landing == Some(g.group),
             current: current_group == Some(g.group),
+            open: current_group == Some(g.group),
             icon: g.icon.to_string(),
             links,
         });
@@ -1345,9 +1352,12 @@ pub struct Preferences {
     /// The admin language, when not the site default.
     #[serde(default)]
     pub language: Option<String>,
-    /// The slugs of the sidebar groups the viewer collapsed.
+    /// The slugs of the sidebar groups the viewer opened by hand. A group
+    /// holding the current page is open whatever this says, and every other
+    /// group is collapsed unless named here. The `collapsed` list saved
+    /// before B245 is ignored, so every viewer starts at that default.
     #[serde(default)]
-    pub collapsed: Vec<String>,
+    pub expanded: Vec<String>,
     /// Whether the viewer turned off the single-key `/` search shortcut
     /// (WCAG 2.1.4: a one-character shortcut can be turned off).
     #[serde(default)]
@@ -1392,9 +1402,10 @@ impl Preferences {
             .unwrap_or_default()
     }
 
-    /// Store the fields in `changes` (a JSON object with some of
-    /// `theme`, `language`, `collapsed`) as `user`'s, leaving the others
-    /// as they are.
+    /// Store the fields in `changes` (a JSON object with some of `theme`,
+    /// `language`, `search_slash_off`, `search_key`) as `user`'s, leaving the
+    /// others as they are. The sidebar's opened groups are saved by
+    /// [`Self::toggle_group`], never here.
     ///
     /// The merge happens in the one statement, not by reading the row, changing
     /// it and writing it all back: the preferences form and the sidebar's
@@ -1413,6 +1424,43 @@ impl Preferences {
         )
         .bind(user)
         .bind(changes)
+        .execute(pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Record that `user` opened (`open`) or closed the sidebar group
+    /// `slug`, leaving every other preference as it is.
+    ///
+    /// One statement, for the reason [`Self::merge`] gives: an upsert, so a
+    /// viewer with no row gets one, that appends the slug to `expanded` when
+    /// it is not there yet, or removes it, starting from an empty list when
+    /// the key is absent so `expanded` is never null (a stored object that
+    /// does not deserialize would lose every preference in [`Self::load`]).
+    /// The `collapsed` list saved before B245 is dropped on the way.
+    pub async fn toggle_group(
+        pool: &sqlx::PgPool,
+        user: uuid::Uuid,
+        slug: &str,
+        open: bool,
+    ) -> anyhow::Result<()> {
+        sqlx::query(
+            "INSERT INTO admin_preference (user_id, prefs, changed) \
+             VALUES ($1, jsonb_build_object('expanded', \
+                 CASE WHEN $3 THEN jsonb_build_array($2::text) ELSE '[]'::jsonb END), now()) \
+             ON CONFLICT (user_id) DO UPDATE SET prefs = jsonb_set( \
+                 admin_preference.prefs - 'collapsed', '{expanded}', \
+                 CASE \
+                     WHEN NOT $3 THEN COALESCE(admin_preference.prefs->'expanded', '[]') - $2::text \
+                     WHEN COALESCE(admin_preference.prefs->'expanded', '[]') ? $2::text \
+                         THEN COALESCE(admin_preference.prefs->'expanded', '[]') \
+                     ELSE COALESCE(admin_preference.prefs->'expanded', '[]') || to_jsonb($2::text) \
+                 END), \
+             changed = now()",
+        )
+        .bind(user)
+        .bind(slug)
+        .bind(open)
         .execute(pool)
         .await?;
         Ok(())
@@ -1476,9 +1524,8 @@ pub async fn insert_context(
     };
     for section in &mut sections {
         if let Some(slug) = &section.slug {
-            // Collapsed when the viewer collapsed it, unless the current page
-            // is in it.
-            section.current = section.current || !prefs.collapsed.contains(slug);
+            // Open when the current page is in it or the viewer opened it.
+            section.open = section.current || prefs.expanded.contains(slug);
         }
     }
     let lang = admin_language(state, &prefs);
