@@ -2405,6 +2405,54 @@
     }
 }
 
+@layer components {
+    /* The dashboard's panels (routes::admin_dashboard): what needs the
+       viewer now, above the area cards. */
+    .dashboard-panels {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(min(100%, 20rem), 1fr));
+        gap: var(--space-4);
+        margin-block-end: var(--space-6);
+    }
+
+    .dashboard-panel h2 {
+        margin: 0 0 var(--space-2);
+        font-size: var(--step-1);
+    }
+
+    .dashboard-panel__summary {
+        margin-block: 0 var(--space-3);
+    }
+
+    .dashboard-panel__rows {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+    }
+
+    .dashboard-panel__rows li {
+        padding-block: var(--space-2);
+        border-block-start: 1px solid var(--border);
+        overflow-wrap: anywhere;
+    }
+
+    .dashboard-panel__detail {
+        display: block;
+        color: var(--text-muted);
+        font-size: 0.875rem;
+    }
+}
+
+@layer components {
+    /* "Who can do this?" at the foot of an admin page. */
+    .who-can-link {
+        margin-block-start: var(--space-7);
+        padding-block-start: var(--space-3);
+        border-block-start: 1px solid var(--border);
+        font-size: 0.875rem;
+    }
+}
+
 /* The login form on the access-denied page shown to a visitor who is not
    signed in on an admin path (templates/error.html). */
 .error-page__login {

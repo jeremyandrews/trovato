@@ -1,0 +1,59 @@
+{% extends "page--admin.html" %}
+{#- The accessibility report (routes::admin_reports): images without a text
+    alternative, your own settings, and how the administration is checked.
+    Context: missing_total, missing (id, filename, created), may_fix,
+    pref_theme, pref_slash, pref_key. -#}
+
+{% block content %}
+<section class="admin-card" aria-labelledby="a11y-images">
+    <h2 id="a11y-images">{{ t(s="Images without a text alternative") }}</h2>
+    {% if missing_total == 0 %}
+    <p>{{ t(s="Every image has a text alternative.") }}</p>
+    {% else %}
+    <p>{{ t(s="{count} image has no text alternative. A screen reader says nothing useful for it, and nothing shows if it fails to load.", plural="{count} images have no text alternative. A screen reader says nothing useful for them, and nothing shows if they fail to load.", count=missing_total) }}</p>
+    {% if missing_total > missing | length %}<p>{{ t(s="The newest {count} are listed.", count=missing | length) }}</p>{% endif %}
+    <div class="table-scroll" role="region" aria-labelledby="a11y-images-caption" tabindex="0">
+    <table class="table table--stack">
+        <caption id="a11y-images-caption">{{ t(s="Images without a text alternative") }}</caption>
+        <thead>
+            <tr>
+                <th scope="col">{{ t(s="File") }}</th>
+                <th scope="col">{{ t(s="Uploaded") }}</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for file in missing %}
+            <tr>
+                <th scope="row">{% if may_fix %}<a href="/admin/content/files/{{ file.id }}">{{ t(s="Add a text alternative to {name}", name=file.filename) }}</a>{% else %}{{ file.filename }}{% endif %}</th>
+                <td>{{ file.created | format_date(format="%Y-%m-%d %H:%M") }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% endif %}
+</section>
+
+<section class="admin-card" aria-labelledby="a11y-you">
+    <h2 id="a11y-you">{{ t(s="Your settings") }}</h2>
+    <ul>
+        <li>{% if pref_theme == "dark" %}{{ t(s="Colour theme: dark.") }}{% elif pref_theme == "light" %}{{ t(s="Colour theme: light.") }}{% else %}{{ t(s="Colour theme: follows your device.") }}{% endif %}</li>
+        <li>{% if pref_slash %}{{ t(s="The / key opens search.") }}{% else %}{{ t(s="The / key does not open search.") }}{% endif %}</li>
+        <li>{% if pref_key == "ctrl-k" %}{{ t(s="Control+K (Command+K on a Mac) opens search.") }}{% elif pref_key == "alt-k" %}{{ t(s="Alt+K (Option+K on a Mac) opens search.") }}{% else %}{{ t(s="No other key opens search.") }}{% endif %}</li>
+    </ul>
+    <p><a href="/admin/preferences">{{ t(s="Change them in Your preferences") }}</a></p>
+</section>
+
+<section class="admin-card" aria-labelledby="a11y-checks">
+    <h2 id="a11y-checks">{{ t(s="How this administration is checked") }}</h2>
+    <p>{{ t(s="The administration aims at WCAG 2.2 level AA. Each change to Trovato is checked by:") }}</p>
+    <ul>
+        <li>{{ t(s="axe-core on every administration page, in light and dark themes, at 320 pixels wide and right to left;") }}</li>
+        <li>{{ t(s="keyboard checks: the skip link, the sidebar, forms, listings, the confirmation page and search;") }}</li>
+        <li>{{ t(s="the colour contrast of every pair of theme colours, in both themes;") }}</li>
+        <li>{{ t(s="the accessibility tree of each kind of page, as a screen reader is given it;") }}</li>
+        <li>{{ t(s="a test that finds interface text left untranslated.") }}</li>
+    </ul>
+    <p>{{ t(s="What is not done yet is listed in docs/admin/accessibility.md, with these checks.") }}</p>
+</section>
+{% endblock content %}

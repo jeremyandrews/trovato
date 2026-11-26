@@ -1,0 +1,82 @@
+{% extends "page--admin.html" %}
+{#- "Who can do this?" for one admin page (routes::admin_who_can). Context:
+    target_path (none when the path is not an admin page the registry
+    knows), entry, permissions, roles (id, name, holds, everyone, members). -#}
+
+{% block page_title %}{% if target_path %}{{ t(s="Who can open {page}", page=t(s=entry)) }}{% else %}{{ t(s="Who can do this?") }}{% endif %}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="The roles whose members may open an administration page. Change them on the Permissions page.") }}</p>{% endblock page_intro %}
+
+{% block content %}
+{% if not target_path %}
+{% if asked %}
+<div class="notice notice--warning" role="status"><strong class="notice__label">{{ t(s="Warning:") }}</strong> {{ t(s="That is not an administration page this site knows. Open the page you are asking about and follow its “Who can do this?” link, or choose it below.") }}</div>
+{% endif %}
+<div class="table-scroll" role="region" aria-labelledby="who-can-pages-caption" tabindex="0">
+<table class="table table--stack">
+    <caption id="who-can-pages-caption">{{ t(s="What opens each administration page") }}</caption>
+    <thead>
+        <tr>
+            <th scope="col">{{ t(s="Page") }}</th>
+            <th scope="col">{{ t(s="Group") }}</th>
+            <th scope="col">{{ t(s="Permission") }}</th>
+        </tr>
+    </thead>
+    <tbody>
+        {% for page in pages %}
+        <tr>
+            <th scope="row"><a href="/admin/people/who-can?path={{ page.href | urlencode }}">{{ t(s="Who can open {page}", page=t(s=page.label)) }}</a></th>
+            <td>{% if page.group %}{{ t(s=page.group) }}{% else %}{{ t(s="Your own") }}{% endif %}</td>
+            <td>{% if page.permissions %}{{ page.permissions | join(sep=", ") }}{% else %}{{ t(s="Site administrators only") }}{% endif %}</td>
+        </tr>
+        {% endfor %}
+    </tbody>
+</table>
+</div>
+{% else %}
+<section class="admin-card" aria-labelledby="who-can-needs">
+    <h2 id="who-can-needs">{{ t(s="What it needs") }}</h2>
+    {% if not permissions %}
+    <p>{{ t(s="Only site administrators may open {page}. No permission opens it.", page=t(s=entry)) }}</p>
+    {% elif permissions | length == 1 %}
+    <p>{{ t(s="{page} needs the permission “{permission}”.", page=t(s=entry), permission=permissions.0) }}</p>
+    {% else %}
+    <p>{{ t(s="{page} needs any one of these permissions:", page=t(s=entry)) }}</p>
+    <ul>{% for permission in permissions %}<li>{{ permission }}</li>{% endfor %}</ul>
+    {% endif %}
+    <p>{{ t(s="Site administrators may open every page.") }}</p>
+    {% if target_path != "/admin" %}<p><a href="{{ target_path }}">{{ t(s="Back to {page}", page=t(s=entry)) }}</a></p>{% endif %}
+</section>
+
+{% if permissions %}
+<section class="admin-card" aria-labelledby="who-can-roles">
+    <h2 id="who-can-roles">{{ t(s="Roles that may open it") }}</h2>
+    {% if roles %}
+    <div class="table-scroll" role="region" aria-labelledby="who-can-roles-caption" tabindex="0">
+    <table class="table table--stack">
+        <caption id="who-can-roles-caption">{{ t(s="Roles that may open {page}", page=t(s=entry)) }}</caption>
+        <thead>
+            <tr>
+                <th scope="col">{{ t(s="Role") }}</th>
+                <th scope="col">{{ t(s="Who has it") }}</th>
+                <th scope="col">{{ t(s="Through") }}</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for role in roles %}
+            <tr>
+                <th scope="row"><a href="/admin/people/roles/{{ role.id }}/edit">{{ role.name }}</a></th>
+                <td>{% if role.everyone %}{{ t(s=role.everyone) }}{% else %}{{ t(s="{count} person", plural="{count} people", count=role.members) }}{% endif %}</td>
+                <td>{{ role.holds | join(sep=", ") }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% else %}
+    <p>{{ t(s="No role holds it, so only site administrators may open it.") }}</p>
+    {% endif %}
+    <p><a href="/admin/people/permissions">{{ t(s="Change who can on the Permissions page") }}</a></p>
+</section>
+{% endif %}
+{% endif %}
+{% endblock content %}

@@ -173,6 +173,9 @@
         - listitem:
           - link "Search report":
             - /url: /admin/reports/search
+        - listitem:
+          - link "Accessibility":
+            - /url: /admin/reports/accessibility
 - main:
   - navigation "Breadcrumb":
     - list:
@@ -923,3 +926,6 @@
             - 'link "Revisions of Post 9: atlas umber marble"':
               - /url: /item/0edac9e7-b53d-2347-2894-c4069fad3d4f/revisions
             - 'button "Delete Post 9: atlas umber marble"'
+  - paragraph:
+    - link "Who can do this?":
+      - /url: /admin/people/who-can?path=/admin/content

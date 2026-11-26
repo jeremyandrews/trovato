@@ -164,6 +164,12 @@
         {% block content %}
         {{ content | safe }} {# SAFE: kernel render pipeline output — a plugin's admin page body or the rendered error page #}
         {% endblock content %}
+
+        {#- For someone who may change who can do what: the roles that may
+            open this page (routes::admin_who_can). -#}
+        {% if admin_who_can | default(value=false) and error_title is not defined %}
+        <p class="who-can-link"><a href="/admin/people/who-can?path={{ admin_current_path | urlencode }}">{{ t(s="Who can do this?") }}</a></p>
+        {% endif %}
     </main>
 </div>
 
