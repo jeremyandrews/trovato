@@ -9,6 +9,7 @@
     - text: Search the administration
     - searchbox "Search the administration"
     - button "Search"
+  - button "Quick search"
   - list:
     - listitem:
       - link "View site":
@@ -195,8 +196,8 @@
     - combobox "Type":
       - option "- Any -" [selected]
       - option "Basic Page"
-      - option "Media"
       - option "Blog Post"
+      - option "Media"
     - text: Status
     - combobox "Status":
       - option "- Any -" [selected]

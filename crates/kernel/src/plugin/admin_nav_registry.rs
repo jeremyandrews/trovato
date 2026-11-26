@@ -25,6 +25,9 @@ use trovato_sdk::types::AdminNavDefinition;
 /// layout assumptions rather than any protocol limit.
 const MAX_TEXT_LEN: usize = 255;
 
+/// Most search keywords one entry may declare.
+const MAX_KEYWORDS: usize = 20;
+
 /// One sidebar link a plugin declared, with the plugin that declared it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct PluginNavLink {
@@ -33,6 +36,8 @@ pub struct PluginNavLink {
     pub label: String,
     pub href: String,
     pub permission: String,
+    /// More words admin search finds this link by.
+    pub keywords: Vec<String>,
 }
 
 /// One dashboard card a plugin declared, from an [`AdminNavDefinition`] that
@@ -116,6 +121,7 @@ impl AdminNavRegistry {
                     label: def.label.clone(),
                     href: def.href.clone(),
                     permission: def.permission.clone(),
+                    keywords: def.keywords.clone(),
                 });
                 if let Some(description) = def.card_description {
                     registry.cards.push(PluginNavCard {
@@ -202,6 +208,12 @@ fn validate(def: &AdminNavDefinition, seen_hrefs: &HashSet<String>) -> Result<()
             return Err(format!("{field} is longer than {MAX_TEXT_LEN} bytes"));
         }
     }
+    if def.keywords.len() > MAX_KEYWORDS {
+        return Err(format!("more than {MAX_KEYWORDS} keywords"));
+    }
+    if def.keywords.iter().any(|k| k.len() > MAX_TEXT_LEN) {
+        return Err(format!("a keyword is longer than {MAX_TEXT_LEN} bytes"));
+    }
     if let Some(description) = &def.card_description
         && description.len() > MAX_TEXT_LEN
     {
@@ -277,6 +289,31 @@ mod tests {
         assert_eq!(registry.cards()[0].title, "Groups");
         assert_eq!(registry.cards()[0].description, "Manage user groups.");
         assert_eq!(registry.cards()[0].href, "/admin/groups");
+    }
+
+    #[test]
+    fn keywords_are_kept_optional_and_limited() {
+        let with_keywords = def("/admin/groups").keywords(["teams", "circles"]);
+        let registry = AdminNavRegistry::from_tap_results(vec![(
+            "groups".to_string(),
+            serde_json::to_string(&vec![with_keywords]).unwrap(),
+        )]);
+        assert_eq!(registry.links()[0].keywords, ["teams", "circles"]);
+
+        // A plugin built before keywords existed declares none.
+        let older = r#"[{"section":"Structure","label":"Groups","href":"/admin/groups","permission":"administer groups"}]"#;
+        let registry =
+            AdminNavRegistry::from_tap_results(vec![("groups".to_string(), older.to_string())]);
+        assert_eq!(registry.links().len(), 1);
+        assert!(registry.links()[0].keywords.is_empty());
+
+        let too_many = def("/admin/groups").keywords((0..=MAX_KEYWORDS).map(|i| format!("k{i}")));
+        let registry = AdminNavRegistry::from_tap_results(vec![(
+            "groups".to_string(),
+            serde_json::to_string(&vec![too_many]).unwrap(),
+        )]);
+        assert!(registry.links().is_empty());
+        assert_eq!(registry.rejections().len(), 1);
     }
 
     #[test]

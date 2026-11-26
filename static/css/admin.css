@@ -402,6 +402,11 @@
         min-inline-size: 0;
     }
 
+    .admin-search__button,
+    .admin-palette-open {
+        white-space: nowrap;
+    }
+
     .admin-account {
         display: flex;
         flex-wrap: wrap;

@@ -384,9 +384,8 @@ async fn suggest(
     session: Session,
     Query(query): Query<SearchQuery>,
 ) -> Response {
-    let (_, q, lang, groups) = match run_search(&state, &session, &query.q).await {
-        Ok(found) => found,
-        Err(_) => return StatusCode::FORBIDDEN.into_response(),
+    let Ok((_, q, lang, groups)) = run_search(&state, &session, &query.q).await else {
+        return StatusCode::FORBIDDEN.into_response();
     };
     let locale = state.locale().cloned();
     let text = |m: &crate::i18n::UiMessage| {

@@ -9,6 +9,7 @@
     - text: Search the administration
     - searchbox "Search the administration"
     - button "Search"
+  - button "Quick search"
   - list:
     - listitem:
       - link "View site":
@@ -313,11 +314,11 @@
         - link "Add Basic Page":
           - /url: /item/add/page
       - listitem:
-        - link "Add Media":
-          - /url: /item/add/media
-      - listitem:
         - link "Add Blog Post":
           - /url: /item/add/blog
+      - listitem:
+        - link "Add Media":
+          - /url: /item/add/media
   - region "You":
     - heading "You" [level=3]
     - paragraph: Signed in as gen_admin.

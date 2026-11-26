@@ -243,17 +243,19 @@ fn search_groups_pages_settings_content_people_and_log_messages() {
                 .any(|h| h == "/admin/reports/log"),
             "{groups:?}"
         );
-        // A plugin on disk, by name, linking to its row.
-        let (_, html) = get(app, &cookies, "/admin/search?q=blog").await;
+        // A plugin on disk, by name, linking to its row on the plugins page.
+        let (_, plugins) = get(app, &cookies, "/admin/plugins").await;
+        let needle = r#"<th scope="row" id="plugin-"#;
+        let at = plugins.find(needle).expect("the plugins page lists a plugin") + needle.len();
+        let name = &plugins[at..at + plugins[at..].find('"').unwrap()];
+        let (_, html) = get(app, &cookies, &format!("/admin/search?q={name}")).await;
         let groups = page_groups(&html);
         assert!(
             hrefs_in(&groups, "plugins")
                 .iter()
-                .any(|h| h == "/admin/plugins#plugin-blog"),
-            "{groups:?}"
+                .any(|h| *h == format!("/admin/plugins#plugin-{name}")),
+            "{name}: {groups:?}"
         );
-        let (_, plugins) = get(app, &cookies, "/admin/plugins").await;
-        assert!(plugins.contains(r#"id="plugin-blog""#), "the row is the anchor");
     });
 }
 
@@ -286,8 +288,8 @@ fn search_never_shows_what_the_viewer_may_not_open() {
         let (_, html) = get(app, &editor, "/admin/search?q=site+slogan").await;
         assert!(hrefs_in(&page_groups(&html), "settings").is_empty());
         // Plugins on disk are not listed for someone who may not manage them.
-        let (_, html) = get(app, &editor, "/admin/search?q=blog").await;
-        assert!(!html.contains("/admin/plugins#plugin-blog"));
+        let (_, html) = get(app, &editor, "/admin/search?q=trovato").await;
+        assert!(!html.contains("/admin/plugins#plugin-"), "{html}");
 
         // May open the admin but no listing at all.
         let visitor = holding(app, &["access administration pages"]).await;

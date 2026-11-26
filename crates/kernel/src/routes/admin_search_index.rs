@@ -371,13 +371,25 @@ pub async fn search(
     // enabled ones declare.
     let mut plugin_hits: Vec<Hit> = plugin_pages.into_iter().map(as_hit).collect();
     if may_open("/admin/plugins") {
+        // The plugins page's rows: those on disk, and those installed but
+        // no longer on disk.
         let discovered =
             crate::plugin::runtime::PluginRuntime::discover_plugins(state.plugins_dirs()).await;
-        let mut names: Vec<&String> = discovered.keys().collect();
-        names.sort();
-        for name in names {
-            let (info, _) = &discovered[name];
-            if all_words(&words, &[name, &info.description]) {
+        let mut known: Vec<(String, String)> = discovered
+            .iter()
+            .map(|(name, (info, _))| (name.clone(), info.description.clone()))
+            .collect();
+        for installed in crate::plugin::status::get_all_statuses(state.db())
+            .await
+            .unwrap_or_default()
+        {
+            if !discovered.contains_key(&installed.name) {
+                known.push((installed.name, String::new()));
+            }
+        }
+        known.sort();
+        for (name, description) in &known {
+            if all_words(&words, &[name, description]) {
                 plugin_hits.push(Hit {
                     label: name.clone(),
                     translate: false,
@@ -416,7 +428,7 @@ pub async fn search(
             hits: entries
                 .into_iter()
                 .map(|e| Hit {
-                    label: e.message.chars().take(120).collect(),
+                    label: shorten(&e.message, 120),
                     translate: false,
                     context: UiMessage::new("{level} in {type}")
                         .arg("level", e.level)
@@ -435,6 +447,17 @@ pub async fn search(
     groups
 }
 
+/// `text` cut to `max` characters, with an ellipsis when it was longer.
+fn shorten(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let mut cut: String = text.chars().take(max - 1).collect();
+    cut.truncate(cut.trim_end().len());
+    cut.push('…');
+    cut
+}
+
 /// How many results the groups hold.
 pub fn count(groups: &[HitGroup]) -> usize {
     groups.iter().map(|g| g.hits.len()).sum()
@@ -443,6 +466,15 @@ pub fn count(groups: &[HitGroup]) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_long_log_message_is_shortened_with_an_ellipsis() {
+        assert_eq!(shorten("short", 120), "short");
+        let long = "word ".repeat(40);
+        let cut = shorten(&long, 120);
+        assert!(cut.chars().count() <= 120);
+        assert!(cut.ends_with("word…"), "{cut}");
+    }
 
     #[test]
     fn every_setting_names_a_page_and_an_anchor() {
