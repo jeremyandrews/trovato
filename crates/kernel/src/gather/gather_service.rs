@@ -494,6 +494,38 @@ impl GatherService {
         })
     }
 
+    /// The URL of the page that lists items tagged `slug` in `category`: the
+    /// path of a gather route whose one parameter maps its path segment through
+    /// `tag_category = category` (`/topics/{slug}`), with the slug in place of
+    /// the segment. `None` when no route maps the category that way.
+    ///
+    /// When several routes map one category, the one of the query with the
+    /// smallest id, then the shortest path, wins, so the answer does not depend
+    /// on the order of the in-memory query cache.
+    pub fn tag_url(&self, category: &str, slug: &str) -> Option<String> {
+        self.queries
+            .iter()
+            .flat_map(|(_k, query)| {
+                query
+                    .display
+                    .routes
+                    .iter()
+                    .filter_map(|route| {
+                        let [param] = route.params.as_slice() else {
+                            return None;
+                        };
+                        let placeholder = format!("{{{}}}", param.segment);
+                        (param.tag_category.as_deref() == Some(category)
+                            && route.path.matches('{').count() == 1
+                            && route.path.contains(&placeholder))
+                        .then(|| (query.query_id.clone(), route.path.clone(), placeholder))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .min_by(|a, b| (&a.0, a.1.len(), &a.1).cmp(&(&b.0, b.1.len(), &b.1)))
+            .map(|(_, path, placeholder)| path.replace(&placeholder, slug))
+    }
+
     /// Maximum number of distinct values returned by [`Self::fetch_distinct_values`].
     const DISTINCT_VALUES_LIMIT: i64 = 200;
 

@@ -97,6 +97,37 @@ applied, so `trovato migrate` finds nothing to do.
 
 ## Unreleased
 
+### A `CategoryReference` field kind; `FieldType` is `#[non_exhaustive]`; cardinality is enforced on every write
+
+**Who is affected:** a plugin that matches on `FieldType`; anyone who writes
+items through the item API, a plugin's `save-item` or `config import`; a site
+whose stored items hold more values than a field's `cardinality` allows.
+
+**What changed.** **API change:** `trovato_sdk::types::FieldType` has a new
+variant, `CategoryReference(String)`, naming a category; its value is a JSON
+array of tag uuid strings, whatever the cardinality. `FieldType` is now
+`#[non_exhaustive]`, so that field kinds added later are additive. A plugin
+with an exhaustive `match` on it stops compiling against this SDK until it adds
+a `_` arm; a plugin that only constructs field types, or already has a `_` arm,
+is unaffected. Both changes ship in the unreleased 0.107.0 (plugin API 0.107)
+and change nothing in a released version, so the plugin API version does not
+move for them. `save-item` has a new error, `ERR_ITEM_INVALID_FIELDS` (-65).
+
+Behaviour changes that follow: every item write (the item forms, the item API,
+`save-item`, revert and `config import`) refuses more values than a field's
+`cardinality` allows (a JSON array counts its elements; anything else counts as
+one) and, for a `CategoryReference` field, any value that is not a tag of its
+category. The item API answers 422 naming each value, `save-item` returns -65,
+and `config import` fails the set before writing anything. Only written values
+are judged: nothing stored is rewritten, and an update that leaves a field as
+it was does not re-check it.
+
+**How to find out.** Items that hold more values than a field now allows (run
+per type and field, `N` being the field's `cardinality`):
+`SELECT id FROM item WHERE type = '<type>' AND jsonb_typeof(fields -> '<field>') = 'array' AND jsonb_array_length(fields -> '<field>') > N;`.
+They stay as they are until someone edits that field. To find matches that
+need a `_` arm: `grep -rn "match .*field_type" plugins/*/src`.
+
 ### Migrations can run as their own step; `/health` answers anonymous callers with its status only
 
 **Who is affected:** anyone running more than one server, anyone running on

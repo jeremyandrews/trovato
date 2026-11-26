@@ -317,7 +317,7 @@ impl FormBuilder {
         weight: i32,
     ) -> Vec<(String, FormElement)> {
         let name = &field.field_name;
-        if field.cardinality == 1 {
+        if !crate::content::field_values::stores_a_list(field) {
             // A long text in a format this user may not use is shown, not
             // offered: the selector could not show its format, so a save would
             // change it (or be refused). Disabled, it is not submitted and the
@@ -459,6 +459,26 @@ impl FormBuilder {
                 }
                 element.default_value(id)
             }
+            // The tag picker: the same widget and script, asking the tags
+            // endpoint for this category. One slot holds one tag uuid; the
+            // field is always the repeating container (`stores_a_list`), so
+            // what it posts back is an array. The box shows the tag's label.
+            FieldType::CategoryReference(category) => {
+                let display = self
+                    .reference_titles
+                    .get(&text)
+                    .cloned()
+                    .unwrap_or_default();
+                FormElement::widget("record_reference")
+                    .attribute("data-target-type", category.clone())
+                    .attribute(
+                        "data-autocomplete-url",
+                        "/api/v1/tags/autocomplete?category=",
+                    )
+                    .attribute("data-display", display)
+                    .attribute("data-placeholder", self.default_placeholder.clone())
+                    .default_value(text)
+            }
             FieldType::File => FormElement::widget("file").default_value(text),
             FieldType::Blocks => FormElement::widget("blocks").default_value(text),
             FieldType::PageBuilder => FormElement::widget("page_builder").default_value(text),
@@ -485,6 +505,9 @@ impl FormBuilder {
                     )
                     .default_value(text)
             }
+            // `FieldType` is `#[non_exhaustive]`: a kind this kernel has no
+            // widget for yet edits as plain text.
+            _ => FormElement::textfield().default_value(text),
         };
         element = element.title(field.label.clone());
         // A checkbox that must be ticked is not what "required" means for a

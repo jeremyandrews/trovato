@@ -188,7 +188,8 @@ pub(crate) async fn render_preview(
 ///
 /// A `category_term` field points at a term, not an item, and shows the
 /// term's name: the editor may edit this item, which already holds it, and
-/// term names are what every term page shows.
+/// term names are what every term page shows. So does every tag a
+/// `CategoryReference` field holds.
 async fn reference_titles(
     state: &AppState,
     user: &UserContext,
@@ -199,12 +200,14 @@ async fn reference_titles(
     let mut ids: Vec<Uuid> = Vec::new();
     let mut term_ids: Vec<Uuid> = Vec::new();
     for field in &content_type.fields {
-        let FieldType::RecordReference(target) = &field.field_type else {
-            continue;
-        };
         if modes.get(&field.field_name) == Some(&FieldMode::Hidden) {
             continue;
         }
+        let target = match &field.field_type {
+            FieldType::RecordReference(target) => target.as_str(),
+            FieldType::CategoryReference(_) => "category_term",
+            _ => continue,
+        };
         let values: Vec<&Value> = match item.fields.get(&field.field_name) {
             Some(Value::Array(values)) => values.iter().collect(),
             Some(value) => vec![value],
@@ -670,7 +673,7 @@ fn add_another(
         .and_then(|ct| {
             ct.fields
                 .iter()
-                .find(|f| f.field_name == field && f.cardinality != 1)
+                .find(|f| f.field_name == field && crate::content::field_values::stores_a_list(f))
                 .cloned()
                 .map(|f| (ct, f))
         })

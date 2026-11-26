@@ -88,6 +88,7 @@ returns `-14` for a language the site does not have, or the item's own, and
 | -62 | `ERR_ITEM_NOT_FOUND` | `delete-item` was given an id that names no item | Treat as already deleted if that is what you meant |
 | -63 | `ERR_ITEM_WRITE_DEPTH` | A write made from inside item write taps nested 4 deep | A tap that writes items should not depend on a chain of other plugins' taps writing in turn |
 | -64 | `ERR_ITEM_SERVICE_UNAVAILABLE` | The dispatch path carries no item service, so nothing was decided or written; the server log names the plugin and the call | A kernel wiring fault or a test harness that never bound one, not a plugin error: report it |
+| -65 | `ERR_ITEM_INVALID_FIELDS` | `save-item` was refused by the field value check every item write runs: a field holds more values than its `cardinality` allows, or a `CategoryReference` field holds something that is not a tag of its category. Nothing was written | Send no more values than the field's cardinality, and only tag ids of the field's category, as a list |
 
 ## Text Format Errors
 
