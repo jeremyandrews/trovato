@@ -20,6 +20,7 @@ and `trovato <command> --help` print the same, from the binary.
 | `trovato user role-add <user> <role>` / `role-remove <user> <role>` / `roles <user>` | Manage a user's roles. |
 | `trovato cache clear [--kind <kind>]...` | Tell every running server to drop its in-memory caches (all kinds, or the ones named). |
 | `trovato item revision-delete <item> <revision>` | Delete a past revision of an item. |
+| `trovato import <file> [--dry-run]` | Import content from another site (users, items and their revisions, comments, aliases, redirects, tiles), keeping each record's id and dates. |
 | `trovato generate --items <N> --admin-password <PASSWORD>` | Write a deterministic test site of a given size (for performance tests and benchmarks). |
 
 ## `trovato migrate`
@@ -207,3 +208,50 @@ not this item's, or one that does not exist.
 
 Bumps the `Items` cache generation, the same as any other write to an item or
 its revisions, so a running server's cached copy of the item drops.
+
+## `trovato import`
+
+```
+trovato import <file> [--dry-run]
+```
+
+Imports content from another site, keeping each record's id and its created
+and changed dates: what a site migration writes instead of SQL. The file is
+newline delimited JSON, one record per line, each with a `type`, a caller
+chosen `id` (a UUID) and that type's keys; `-` reads stdin. Every record
+type in the format is imported: `user`, `item`, `revision`, `comment`, `alias`,
+`redirect` and `tile`. The format, every key and every rule
+are in [`docs/design/import.md`](design/import.md); a worked example is in
+[`docs/migrating-a-site.md`](migrating-a-site.md).
+
+- **One transaction.** Every record is checked as the forms check it (as an
+  administrator: every text format is allowed) and written in turn; the file
+  commits only after its last line passed. A record that fails is printed as
+  `line <n>: <what is wrong> (nothing was imported)`, the command exits
+  nonzero, and nothing from the file is kept.
+- **Upsert by id.** A record identical to what is stored writes nothing, so
+  running the same file again reports 0 changes. A changed `item` gains one
+  revision, dated the record's `changed`. A stored revision is never
+  rewritten: a `revision` record whose id is stored with other content fails
+  the import. Records absent from the file are left alone.
+- **No restart.** After a commit that changed anything, every cache kind is
+  bumped once, as `trovato cache clear` does, so running servers serve the
+  imported content on their next request. The search vectors and the static
+  search index queue are kept current by the database's own triggers.
+- **Not a form save.** No plugin taps fire (no mail to subscribers, no presave
+  rewriting), no pathauto alias is made, and no moderation transition is
+  asked: the file says what is stored.
+- `--dry-run` checks every record and prints what would change, and writes
+  nothing.
+
+Runs as the operator, like every command on this page; no web route, API or
+plugin host function can choose an id or a date.
+
+```
+$ trovato import site.ndjson
+Imported 150 records from site.ndjson:
+  item: 50 created, 0 updated, 0 unchanged
+  revision: 100 created, 0 updated, 0 unchanged
+150 change(s).
+Running servers have dropped their cached copies; the next request reads the database.
+```

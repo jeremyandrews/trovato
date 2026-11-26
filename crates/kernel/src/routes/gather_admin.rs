@@ -50,6 +50,106 @@ const BUILDER_CANNOT_SHOW: &str = "This gather uses filter groups or a summary \
     it here would lose them, so it is not saved. Change it where it is defined: its \
     config file or the plugin that installs it.";
 
+// -------------------------------------------------------------------------
+// Row-builder words (B253)
+// -------------------------------------------------------------------------
+//
+// `static/js/gather-builder.js` builds the filter, sort, relationship and
+// include rows at runtime: an option list, a placeholder, an aria-label, a
+// button, a preview message. None of those words live in the script as a
+// literal; each is English here, named the same as the script reads it from
+// the `gather-i18n` data block `templates/admin/gather-form.html` renders,
+// and `t()` translates when the template builds that block (the mechanism
+// `templates/admin/ai-provider-form.html`'s `ai-operations` block already
+// uses for `static/js/ai-admin.js`).
+
+/// The filter operators the builder offers, value and English label.
+const BUILDER_OPERATORS: &[(&str, &str)] = &[
+    ("equals", "Equals"),
+    ("not_equals", "Not equals"),
+    ("contains", "Contains"),
+    ("not_contains", "Not contains"),
+    ("greater_than", "Greater than"),
+    ("less_than", "Less than"),
+    ("in", "In"),
+    ("not_in", "Not in"),
+    ("is_null", "Is null"),
+    ("is_not_null", "Is not null"),
+    ("full_text_search", "Full-text search"),
+];
+
+/// The relationship join types the builder offers.
+const BUILDER_JOIN_TYPES: &[(&str, &str)] = &[
+    ("inner", "Inner join"),
+    ("left", "Left join"),
+    ("right", "Right join"),
+];
+
+/// The sort directions the builder offers.
+const BUILDER_SORT_DIRECTIONS: &[(&str, &str)] = &[("asc", "Ascending"), ("desc", "Descending")];
+
+/// Every other word the builder's script puts on the page. `{name}`
+/// placeholders in a value are filled by the script itself at the point it
+/// knows the number (a status code, a count), the same convention `t()`
+/// placeholders use everywhere else.
+const BUILDER_STRINGS: &[(&str, &str)] = &[
+    ("field_name", "Field name"),
+    ("filter_field_name", "Filter field name"),
+    ("filter_operator", "Filter operator"),
+    ("value", "Value"),
+    ("filter_value", "Filter value"),
+    ("remove", "Remove"),
+    ("remove_filter", "Remove filter"),
+    ("sort_field_name", "Sort field name"),
+    ("sort_direction", "Sort direction"),
+    ("remove_sort", "Remove sort"),
+    ("join_type", "Join type"),
+    ("target_table", "Target table"),
+    ("local_field", "Local field"),
+    ("foreign_field", "Foreign field"),
+    ("name_alias", "Name (alias)"),
+    ("relationship_name", "Relationship name"),
+    ("remove_relationship", "Remove relationship"),
+    (
+        "max_relationships_reached",
+        "Maximum of {max} relationships reached",
+    ),
+    ("include_name", "Include name"),
+    ("parent_field_example", "Parent field (e.g., id)"),
+    ("parent_field", "Parent field"),
+    ("child_field_example", "Child field (e.g., fields.story_id)"),
+    ("child_field", "Child field"),
+    ("child_base_table", "Child base table"),
+    ("child_item_type_optional", "Child item type (optional)"),
+    ("child_item_type", "Child item type"),
+    ("singular_label", "Singular (single object, not array)"),
+    ("limit", "Limit (default: 1000)"),
+    ("include_limit", "Include limit"),
+    ("remove_include", "Remove include"),
+    ("loading", "Loading..."),
+    ("loading_preview", "Loading preview..."),
+    ("load_preview", "Load preview"),
+    ("invalid_response", "Invalid response from server."),
+    ("preview_failed", "Preview failed ({status})"),
+    (
+        "network_error",
+        "Network error. Please check your connection.",
+    ),
+    ("no_results_found", "No results found."),
+    ("showing_results", "Showing {shown} of {total} results."),
+];
+
+/// Insert the row-builder option lists into a gather form render's context,
+/// alongside `base_table_options` and `display_format_options`: every render
+/// of `admin/gather-form.html` needs them, success or redisplayed-with-errors
+/// alike.
+fn insert_builder_words(context: &mut tera::Context) {
+    context.insert("builder_operators", BUILDER_OPERATORS);
+    context.insert("builder_join_types", BUILDER_JOIN_TYPES);
+    context.insert("builder_sort_directions", BUILDER_SORT_DIRECTIONS);
+    context.insert("builder_strings", BUILDER_STRINGS);
+}
+
 /// Whether a definition uses a shape the builder has no control for. The
 /// builder rebuilds the definition from its controls on save, so it would
 /// drop such a shape; it refuses instead.
@@ -168,6 +268,7 @@ async fn create_form(State(state): State<AppState>, session: Session) -> Respons
     context.insert("editing", &false);
     context.insert("base_table_options", BASE_TABLE_OPTIONS);
     context.insert("display_format_options", DISPLAY_FORMAT_OPTIONS);
+    insert_builder_words(&mut context);
     context.insert("definition", &default_definition);
     context.insert("definition_json", &empty_definition);
     context.insert("display_json", &empty_display);
@@ -284,6 +385,7 @@ async fn create_submit(
         context.insert("editing", &false);
         context.insert("base_table_options", BASE_TABLE_OPTIONS);
         context.insert("display_format_options", DISPLAY_FORMAT_OPTIONS);
+        insert_builder_words(&mut context);
         context.insert("errors", &errors);
         context.insert("definition", &definition);
         context.insert("definition_json", &form.definition_json);
@@ -362,6 +464,7 @@ async fn edit_form(
     context.insert("editing", &true);
     context.insert("base_table_options", BASE_TABLE_OPTIONS);
     context.insert("display_format_options", DISPLAY_FORMAT_OPTIONS);
+    insert_builder_words(&mut context);
     context.insert(
         "builder_cannot_show",
         &builder_cannot_show(&query.definition),
@@ -474,6 +577,7 @@ async fn save_submit(
         context.insert("editing", &true);
         context.insert("base_table_options", BASE_TABLE_OPTIONS);
         context.insert("display_format_options", DISPLAY_FORMAT_OPTIONS);
+        insert_builder_words(&mut context);
         context.insert(
             "builder_cannot_show",
             &(builder_cannot_show(&existing.definition) || builder_cannot_show(&definition)),
