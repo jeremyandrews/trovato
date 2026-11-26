@@ -319,7 +319,15 @@ async fn tile(app: &'static TestApp, machine_name: &str, label: &str) {
         "machine_name": machine_name, "label": label, "region": "sidebar"
     }))
     .unwrap();
-    let tile = app.state.tiles().create(create).await.expect("create tile");
+    let tile = app
+        .state
+        .tiles()
+        .create(
+            create,
+            &trovato_kernel::tap::UserContext::administrator(Uuid::nil(), vec![]),
+        )
+        .await
+        .expect("create tile");
     common::defer_cleanup(move || async move {
         app.state.tiles().delete(tile.id).await.ok();
         forget_audit(app, &tile.id.to_string()).await;

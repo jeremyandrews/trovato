@@ -222,6 +222,37 @@ pub fn get(format: &str) -> Option<TextFormat> {
     all().iter().find(|f| f.format == format).cloned()
 }
 
+/// A text format save refused: named for whoever gets the message
+/// ([`check_permitted`]'s `label`), already worded for display.
+#[derive(Debug, Clone, thiserror::Error)]
+#[error("{0}")]
+pub struct FormatRefused(String);
+
+/// Check `format` for `label` against what exists and what `permitted_formats`
+/// allows: the one rule an item field, a comment body and a custom HTML tile
+/// body are all saved through.
+///
+/// Two refusals, told apart so a typo does not read as a permission problem:
+/// a format that does not exist at all, and one that exists but is not among
+/// `permitted_formats`.
+pub fn check_permitted(
+    label: &str,
+    format: &str,
+    permitted_formats: &[String],
+) -> Result<(), FormatRefused> {
+    if get(format).is_none() {
+        return Err(FormatRefused(format!(
+            "{label}: the {format} text format does not exist."
+        )));
+    }
+    if !permitted_formats.iter().any(|f| f == format) {
+        return Err(FormatRefused(format!(
+            "{label}: you may not use the {format} text format."
+        )));
+    }
+    Ok(())
+}
+
 /// Replace what the registry holds.
 pub fn replace(formats: Vec<TextFormat>) {
     let formats = Arc::new(sorted(formats));
@@ -631,5 +662,28 @@ mod tests {
             permission_for("filtered_html").as_deref(),
             Some("use filtered_html")
         );
+    }
+
+    /// The one rule an item field, a comment and a tile body save through: a
+    /// format that does not exist answers differently from one that exists
+    /// but is not among the writer's permitted formats, and a permitted one
+    /// passes.
+    #[test]
+    fn check_permitted_tells_missing_from_forbidden() {
+        let permitted = vec!["plain_text".to_string()];
+
+        let err = check_permitted("Body", "nope_at_all", &permitted).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Body: the nope_at_all text format does not exist."
+        );
+
+        let err = check_permitted("Body", "full_html", &permitted).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "Body: you may not use the full_html text format."
+        );
+
+        assert!(check_permitted("Body", "plain_text", &permitted).is_ok());
     }
 }

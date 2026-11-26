@@ -241,9 +241,10 @@ async fn add_tile_submit(
     session: Session,
     Form(form): Form<TileFormData>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     if let Err(resp) = require_csrf(&session, &form.token).await {
         return resp;
@@ -276,12 +277,10 @@ async fn add_tile_submit(
         stage_id: None,
     };
 
-    match state.tiles().create(input).await {
+    let user_ctx = crate::routes::helpers::user_context_for(&state, &user).await;
+    match state.tiles().create(input, &user_ctx).await {
         Ok(_) => Redirect::to("/admin/structure/tiles").into_response(),
-        Err(e) => {
-            tracing::error!(error = %e, "failed to create tile");
-            render_server_error("Failed to create tile.")
-        }
+        Err(e) => tile_save_error(e, "failed to create tile", "Failed to create tile."),
     }
 }
 
@@ -346,9 +345,10 @@ async fn edit_tile_submit(
     Path(tile_id): Path<Uuid>,
     Form(form): Form<TileFormData>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     if let Err(resp) = require_csrf(&session, &form.token).await {
         return resp;
@@ -378,11 +378,21 @@ async fn edit_tile_submit(
         stage_id: None,
     };
 
-    match state.tiles().update(tile_id, input).await {
+    let user_ctx = crate::routes::helpers::user_context_for(&state, &user).await;
+    match state.tiles().update(tile_id, input, &user_ctx).await {
         Ok(_) => Redirect::to("/admin/structure/tiles").into_response(),
+        Err(e) => tile_save_error(e, "failed to update tile", "Failed to update tile."),
+    }
+}
+
+/// A tile create or update failure: the text format check's message when it
+/// was that, else the generic failure logged and shown as today.
+fn tile_save_error(e: anyhow::Error, action: &str, generic_message: &str) -> Response {
+    match e.downcast::<crate::content::text_format::FormatRefused>() {
+        Ok(refused) => render_error(&refused.to_string()),
         Err(e) => {
-            tracing::error!(error = %e, "failed to update tile");
-            render_server_error("Failed to update tile.")
+            tracing::error!(error = %e, action, "failed to save tile");
+            render_server_error(generic_message)
         }
     }
 }

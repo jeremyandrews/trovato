@@ -76,17 +76,24 @@ impl TileService {
     /// Create a tile.
     ///
     /// Tile writes go through here rather than the model so that what a tile
-    /// write must also do has one place to live. Today there is nothing more:
-    /// tiles are read per render, not cached, and the kernel defines no tile
-    /// taps.
-    pub async fn create(&self, input: CreateTile) -> Result<Tile> {
+    /// write must also do has one place to live. Today there is nothing more
+    /// besides the text format check: tiles are read per render, not cached,
+    /// and the kernel defines no tile taps.
+    pub async fn create(&self, input: CreateTile, user: &UserContext) -> Result<Tile> {
+        check_custom_html_format(input.tile_type.as_deref(), input.config.as_ref(), user)?;
         let tile = Tile::create(&self.db, input).await?;
         self.audit("create", &tile).await;
         Ok(tile)
     }
 
     /// Update a tile. `None` when there is no such tile.
-    pub async fn update(&self, id: uuid::Uuid, input: UpdateTile) -> Result<Option<Tile>> {
+    pub async fn update(
+        &self,
+        id: uuid::Uuid,
+        input: UpdateTile,
+        user: &UserContext,
+    ) -> Result<Option<Tile>> {
+        check_custom_html_format(input.tile_type.as_deref(), input.config.as_ref(), user)?;
         let tile = Tile::update(&self.db, id, input).await?;
         if let Some(tile) = &tile {
             self.audit("update", tile).await;
@@ -150,6 +157,33 @@ impl TileService {
         }
         Ok(html)
     }
+}
+
+/// A `custom_html` tile's body can only be saved in a text format that exists
+/// and that `user` may use, the same check an item field and a comment body
+/// run. `config` is `None` when this write sets no body at all (another tile
+/// type, or a save that leaves the body untouched), which needs no check.
+fn check_custom_html_format(
+    tile_type: Option<&str>,
+    config: Option<&serde_json::Value>,
+    user: &UserContext,
+) -> Result<()> {
+    let Some(config) = config else {
+        return Ok(());
+    };
+    if tile_type.unwrap_or("custom_html") != "custom_html" {
+        return Ok(());
+    }
+    let format = config
+        .get("format")
+        .and_then(|v| v.as_str())
+        .unwrap_or("filtered_html");
+    crate::content::text_format::check_permitted(
+        "Custom HTML tile",
+        format,
+        &crate::content::submission::permitted_text_formats(user),
+    )?;
+    Ok(())
 }
 
 /// Render a single tile to an HTML string: its body by type, in the wrapper.

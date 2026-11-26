@@ -647,6 +647,7 @@ fn each_footer_mode_saves_and_renders_its_footer() {
                     "visibility": { "paths": paths },
                 }))
                 .unwrap(),
+                &admin(),
             )
             .await
             .expect("create the footer tile");

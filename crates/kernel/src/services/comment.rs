@@ -10,6 +10,9 @@ use sqlx::PgPool;
 use tracing::info;
 use uuid::Uuid;
 
+use crate::content::submission::permitted_text_formats;
+use crate::content::text_format::check_permitted;
+use crate::models::comment::DEFAULT_BODY_FORMAT;
 use crate::models::{Comment, CreateComment, UpdateComment};
 use crate::services::audit::AuditTrail;
 use crate::tap::{RequestServices, RequestState, TapDispatcher, UserContext};
@@ -68,6 +71,13 @@ impl CommentService {
         RequestState::new(user.clone(), self.inner.tap_services.clone())
     }
 
+    /// A comment body can only be saved in a text format that exists and that
+    /// `user` may use, the same check an item field runs.
+    fn check_format(user: &UserContext, format: &str) -> Result<()> {
+        check_permitted("Comment", format, &permitted_text_formats(user))?;
+        Ok(())
+    }
+
     /// Load a comment by ID.
     pub async fn load(&self, id: Uuid) -> Result<Option<Comment>> {
         Comment::find_by_id(&self.inner.pool, id).await
@@ -75,6 +85,10 @@ impl CommentService {
 
     /// Create a comment with `tap_comment_insert` invocation.
     pub async fn create(&self, input: CreateComment, user: &UserContext) -> Result<Comment> {
+        Self::check_format(
+            user,
+            input.body_format.as_deref().unwrap_or(DEFAULT_BODY_FORMAT),
+        )?;
         let comment = Comment::create(&self.inner.pool, input).await?;
         self.created(&comment, user).await?;
         Ok(comment)
@@ -94,6 +108,10 @@ impl CommentService {
         email: &crate::services::email::EmailService,
         mail: impl FnOnce(&Comment) -> Option<crate::services::email::NewMail>,
     ) -> Result<Comment> {
+        Self::check_format(
+            user,
+            input.body_format.as_deref().unwrap_or(DEFAULT_BODY_FORMAT),
+        )?;
         let mut tx = self.inner.pool.begin().await?;
         let comment = Comment::create(&mut *tx, input).await?;
         if let Some(message) = mail(&comment) {
@@ -128,6 +146,9 @@ impl CommentService {
         input: UpdateComment,
         user: &UserContext,
     ) -> Result<Option<Comment>> {
+        if let Some(format) = input.body_format.as_deref() {
+            Self::check_format(user, format)?;
+        }
         let comment = Comment::update(&self.inner.pool, id, input).await?;
         self.updated(comment.as_ref(), user).await?;
         Ok(comment)
@@ -147,6 +168,9 @@ impl CommentService {
         email: &crate::services::email::EmailService,
         mail: impl FnOnce(Option<&Comment>, &Comment) -> Option<crate::services::email::NewMail>,
     ) -> Result<Option<Comment>> {
+        if let Some(format) = input.body_format.as_deref() {
+            Self::check_format(user, format)?;
+        }
         let mut tx = self.inner.pool.begin().await?;
         let before = Comment::find_by_id(&mut *tx, id).await?;
         let comment = Comment::update_in(&mut tx, id, input).await?;
