@@ -123,6 +123,9 @@ fn panel<'a>(html: &'a str, key: &str) -> Option<&'a str> {
 fn the_dashboard_panels_say_what_needs_the_viewer() {
     run_test(async {
         let app = shared_app().await;
+        // Comments to approve come from the comments plugin.
+        common::ensure_plugin_tables(app, "trovato_comments");
+        app.ensure_plugin_enabled("trovato_comments").await;
         let (cookies, id) = admin(app).await;
         let tag = tag();
         let item_id = item(app, &format!("Draft {tag}"), id).await;
