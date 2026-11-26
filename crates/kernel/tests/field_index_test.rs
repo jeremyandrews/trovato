@@ -344,8 +344,12 @@ async fn shapes(pool: &PgPool) -> Vec<(&'static str, Shape)> {
             f("fields.published_on", "greater_or_equal", json!("2024-01-01")),
             f("fields.published_on", "less_or_equal", json!("2024-03-31"))],
             "sorts": [{"field": "fields.published_on", "direction": "desc"}, {"field": "created", "direction": "desc"}]}))),
+        // Page 500 of a range most items match, as page 500 is at scale: a
+        // range that leaves only a few more items than the offset skips makes
+        // reading the whole type and sorting it a fair plan, and PostgreSQL
+        // 16 takes it.
         ("date range, page 500", Shape::Gather {
-            def: Box::new(definition(json!({"filters": [f("fields.published_on", "greater_or_equal", json!("2024-06-01"))],
+            def: Box::new(definition(json!({"filters": [f("fields.published_on", "greater_or_equal", json!("2021-01-01"))],
                 "sorts": [{"field": "fields.published_on", "direction": "desc"}, {"field": "created", "direction": "desc"}]}))),
             page: 500,
             exposed: HashMap::new(),
