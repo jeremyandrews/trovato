@@ -112,6 +112,18 @@ impl fmt::Display for ProviderProtocol {
     }
 }
 
+/// The env var reference [`AiProviderService::mask_key_ref`] masks a
+/// provider's key behind, for a template to turn into words.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeyRefDisplay {
+    /// The provider names no environment variable at all.
+    NotConfigured,
+    /// The named variable currently holds a value.
+    Set(String),
+    /// The named variable is not currently set in the environment.
+    NotSet(String),
+}
+
 /// A model bound to a specific operation type within a provider.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OperationModel {
@@ -1143,17 +1155,21 @@ impl AiProviderService {
         Self::resolve_api_key(config).is_some()
     }
 
-    /// Return a masked representation of the key reference for display.
+    /// The masked key reference for display: never the key itself, only
+    /// which environment variable holds it (if any) and whether it is
+    /// currently set.
     ///
-    /// Example: `"OPENAI_API_KEY (set)"` or `"OPENAI_API_KEY (not set)"`.
-    pub fn mask_key_ref(config: &AiProviderConfig) -> String {
+    /// Display text does not belong in a service (B253), so this returns
+    /// the env var name and its state rather than English words; the
+    /// template turns it into a sentence with `t()`.
+    pub fn mask_key_ref(config: &AiProviderConfig) -> KeyRefDisplay {
         if config.api_key_env.is_empty() {
-            return "(no env var configured)".to_string();
+            return KeyRefDisplay::NotConfigured;
         }
         if Self::key_is_set(config) {
-            format!("{} (set)", config.api_key_env)
+            KeyRefDisplay::Set(config.api_key_env.clone())
         } else {
-            format!("{} (not set)", config.api_key_env)
+            KeyRefDisplay::NotSet(config.api_key_env.clone())
         }
     }
 
@@ -2514,7 +2530,7 @@ mod tests {
         };
         assert_eq!(
             AiProviderService::mask_key_ref(&config),
-            "(no env var configured)"
+            KeyRefDisplay::NotConfigured
         );
     }
 
@@ -2530,7 +2546,30 @@ mod tests {
             rate_limit_rpm: 0,
             enabled: false,
         };
-        let result = AiProviderService::mask_key_ref(&config);
-        assert!(result.contains("(not set)"), "got: {result}");
+        assert_eq!(
+            AiProviderService::mask_key_ref(&config),
+            KeyRefDisplay::NotSet("VERY_UNLIKELY_UNSET_VAR_XYZ_12345".to_string())
+        );
+    }
+
+    #[test]
+    fn mask_key_ref_with_set_var() {
+        let var = "VERY_UNLIKELY_SET_VAR_XYZ_67890";
+        let mut guard = trovato_test_utils::env::EnvGuard::new();
+        guard.set(var, "shh");
+        let config = AiProviderConfig {
+            id: String::new(),
+            label: String::new(),
+            protocol: ProviderProtocol::OpenAiCompatible,
+            base_url: String::new(),
+            api_key_env: var.to_string(),
+            models: vec![],
+            rate_limit_rpm: 0,
+            enabled: false,
+        };
+        assert_eq!(
+            AiProviderService::mask_key_ref(&config),
+            KeyRefDisplay::Set(var.to_string())
+        );
     }
 }

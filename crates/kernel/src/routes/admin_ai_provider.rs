@@ -10,8 +10,8 @@ use tower_sessions::Session;
 use crate::form::csrf::generate_csrf_token;
 use crate::routes::admin_form::FieldError;
 use crate::services::ai_provider::{
-    AiDefaults, AiOperationType, AiProviderConfig, AiProviderService, OperationModel,
-    ProviderProtocol, validate_base_url, validate_env_var_name,
+    AiDefaults, AiOperationType, AiProviderConfig, AiProviderService, KeyRefDisplay,
+    OperationModel, ProviderProtocol, validate_base_url, validate_env_var_name,
 };
 use crate::state::AppState;
 
@@ -105,14 +105,23 @@ fn parse_protocol(s: &str) -> Option<ProviderProtocol> {
 ///
 /// Values are not pre-escaped here because Tera autoescapes all `{{ }}`
 /// interpolations. Pre-escaping would cause double encoding.
+///
+/// `key_ref_state` and `api_key_env` carry [`KeyRefDisplay`] apart so the
+/// template can translate the sentence with `t()` (B253): the env var name
+/// itself is data, never translated, only the words around it.
 fn provider_view(config: &AiProviderConfig) -> serde_json::Value {
+    let (key_ref_state, api_key_env) = match AiProviderService::mask_key_ref(config) {
+        KeyRefDisplay::NotConfigured => ("not_configured", String::new()),
+        KeyRefDisplay::Set(env) => ("set", env),
+        KeyRefDisplay::NotSet(env) => ("not_set", env),
+    };
     serde_json::json!({
         "id": config.id,
         "label": config.label,
         "protocol": config.protocol.to_string(),
         "base_url": config.base_url,
-        "api_key_status": AiProviderService::mask_key_ref(config),
-        "key_is_set": AiProviderService::key_is_set(config),
+        "key_ref_state": key_ref_state,
+        "api_key_env": api_key_env,
         "models": config.models.iter().map(|m| serde_json::json!({
             "operation": m.operation.to_string(),
             "model": m.model,

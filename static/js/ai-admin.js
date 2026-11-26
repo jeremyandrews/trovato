@@ -6,10 +6,28 @@
  * - Provider list: connection test via fetch
  *
  * For the provider form, operations are passed via a <script type="application/json">
- * element with id="ai-operations".
+ * element with id="ai-operations". Every word this script puts on the page
+ * (both sections) comes from the translated <script type="application/json">
+ * element with id="ai-i18n" (B253): none of it is a literal here, so the
+ * admin JS i18n guard has nothing to catch on this file.
  */
 (function() {
     'use strict';
+
+    function readJson(id) {
+        var el = document.getElementById(id);
+        if (!el) return null;
+        try { return JSON.parse(el.textContent); } catch (e) { return null; }
+    }
+
+    var i18n = readJson('ai-i18n') || {};
+
+    /** Replace each `{name}` in `template` with `values[name]`. */
+    function fillTemplate(template, values) {
+        return template.replace(/\{(\w+)\}/g, function(match, name) {
+            return Object.prototype.hasOwnProperty.call(values, name) ? values[name] : match;
+        });
+    }
 
     // -------------------------------------------------------------------------
     // AI provider form: dynamic model rows
@@ -37,9 +55,9 @@
             row.className = 'form-item form-item--inline';
             row.style.cssText = 'display: flex; gap: 1rem; align-items: center; margin-bottom: 0.5rem;';
             row.innerHTML =
-                '<select name="op_' + idx + '" style="flex: 1;"><option value="">\u2014 Select operation \u2014</option>' + optionsHtml + '</select>' +
-                '<input type="text" name="model_' + idx + '" value="" placeholder="Model ID (e.g. gpt-4o)" style="flex: 2;">' +
-                '<button type="button" class="button button--small button--danger js-remove-row" title="Remove">&times;</button>';
+                '<select name="op_' + idx + '" style="flex: 1;"><option value="">' + i18n.select_operation + '</option>' + optionsHtml + '</select>' +
+                '<input type="text" name="model_' + idx + '" value="" placeholder="' + i18n.model_id_placeholder + '" style="flex: 2;">' +
+                '<button type="button" class="button button--small button--danger js-remove-row" title="' + i18n.remove_title + '">&times;</button>';
             container.appendChild(row);
         });
 
@@ -62,7 +80,7 @@
             var resultDiv = document.getElementById('test-result');
             var msgEl = document.getElementById('test-message');
             var latEl = document.getElementById('test-latency');
-            msgEl.textContent = 'Testing connection...';
+            msgEl.textContent = i18n.testing_connection;
             latEl.textContent = '';
             resultDiv.style.display = 'block';
 
@@ -73,11 +91,11 @@
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 msgEl.textContent = (data.success ? '\u2705 ' : '\u274c ') + data.message;
-                latEl.textContent = 'Latency: ' + data.latency_ms + 'ms';
+                latEl.textContent = fillTemplate(i18n.latency_template, { ms: data.latency_ms });
                 msgEl.style.color = data.success ? 'var(--success, green)' : 'var(--danger, red)';
             })
             .catch(function(err) {
-                msgEl.textContent = '\u274c Request failed: ' + err;
+                msgEl.textContent = '\u274c ' + fillTemplate(i18n.request_failed_template, { error: err });
                 msgEl.style.color = 'var(--danger, red)';
             });
         });

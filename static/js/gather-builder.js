@@ -5,33 +5,38 @@
  * form, syncing state to hidden JSON inputs (#definition_json and
  * #display_json) for server-side persistence. Provides live preview
  * via AJAX POST to /api/v1/gather/query.
+ *
+ * Every word this script puts on the page, the option lists included, comes
+ * from the translated <script type="application/json"> element with
+ * id="gather-i18n" (B253): none of it is a literal here.
  */
 (function () {
     'use strict';
+
+    function readJson(id) {
+        var el = document.getElementById(id);
+        if (!el) return null;
+        try { return JSON.parse(el.textContent); } catch (e) { return null; }
+    }
+
+    /** Replace each `{name}` in `template` with `values[name]`. */
+    function fillTemplate(template, values) {
+        return template.replace(/\{(\w+)\}/g, function (match, name) {
+            return Object.prototype.hasOwnProperty.call(values, name) ? values[name] : match;
+        });
+    }
 
     // -------------------------------------------------------------------------
     // Constants
     // -------------------------------------------------------------------------
 
-    var OPERATORS = [
-        { value: 'equals',       label: 'Equals' },
-        { value: 'not_equals',   label: 'Not equals' },
-        { value: 'contains',     label: 'Contains' },
-        { value: 'not_contains', label: 'Not contains' },
-        { value: 'greater_than', label: 'Greater than' },
-        { value: 'less_than',    label: 'Less than' },
-        { value: 'in',           label: 'In' },
-        { value: 'not_in',       label: 'Not in' },
-        { value: 'is_null',           label: 'Is null' },
-        { value: 'is_not_null',        label: 'Is not null' },
-        { value: 'full_text_search',   label: 'Full-text search' }
-    ];
+    var I18N = readJson('gather-i18n') || { operators: [], join_types: [], sort_directions: [], strings: {} };
 
-    var JOIN_TYPES = [
-        { value: 'inner', label: 'Inner join' },
-        { value: 'left',  label: 'Left join' },
-        { value: 'right', label: 'Right join' }
-    ];
+    var OPERATORS = I18N.operators;
+
+    var JOIN_TYPES = I18N.join_types;
+
+    var SORT_DIRECTIONS = I18N.sort_directions;
 
     var MAX_RELATIONSHIPS = 3;
 
@@ -257,15 +262,16 @@
         var fieldInput = document.createElement('input');
         fieldInput.type = 'text';
         fieldInput.className = 'form-text';
-        fieldInput.placeholder = 'Field name';
+        fieldInput.placeholder = I18N.strings.field_name;
         fieldInput.value = data.field || '';
-        fieldInput.setAttribute('aria-label', 'Filter field name');
+        fieldInput.setAttribute('aria-label', I18N.strings.filter_field_name);
         fieldInput.setAttribute('list', 'gather-item-columns');
+        fieldInput.dataset.role = 'field-name';
 
         // Operator
         var opSelect = document.createElement('select');
         opSelect.className = 'form-select';
-        opSelect.setAttribute('aria-label', 'Filter operator');
+        opSelect.setAttribute('aria-label', I18N.strings.filter_operator);
         OPERATORS.forEach(function (op) {
             var opt = document.createElement('option');
             opt.value = op.value;
@@ -278,9 +284,10 @@
         var valueInput = document.createElement('input');
         valueInput.type = 'text';
         valueInput.className = 'form-text';
-        valueInput.placeholder = 'Value';
+        valueInput.placeholder = I18N.strings.value;
         valueInput.value = data.value !== undefined && data.value !== null ? data.value : '';
-        valueInput.setAttribute('aria-label', 'Filter value');
+        valueInput.setAttribute('aria-label', I18N.strings.filter_value);
+        valueInput.dataset.role = 'value';
 
         // Disable value for null operators
         function updateValueState() {
@@ -295,8 +302,8 @@
         var removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'button button--secondary gather-block-row__remove';
-        removeBtn.textContent = 'Remove';
-        removeBtn.setAttribute('aria-label', 'Remove filter');
+        removeBtn.textContent = I18N.strings.remove;
+        removeBtn.setAttribute('aria-label', I18N.strings.remove_filter);
 
         // Events
         fieldInput.addEventListener('input', function () {
@@ -330,9 +337,9 @@
         var rows = filtersContainer.querySelectorAll('.gather-block-row--filter');
         definition.filters = [];
         rows.forEach(function (row) {
-            var field    = row.querySelector('input[placeholder="Field name"]').value.trim();
+            var field    = row.querySelector('[data-role="field-name"]').value.trim();
             var operator = row.querySelector('select').value;
-            var value    = row.querySelector('input[placeholder="Value"]').value;
+            var value    = row.querySelector('[data-role="value"]').value;
             var filter   = { field: field, operator: operator };
             if (operator !== 'is_null' && operator !== 'is_not_null') {
                 filter.value = value;
@@ -353,16 +360,17 @@
         var fieldInput = document.createElement('input');
         fieldInput.type = 'text';
         fieldInput.className = 'form-text';
-        fieldInput.placeholder = 'Field name';
+        fieldInput.placeholder = I18N.strings.field_name;
         fieldInput.value = data.field || '';
-        fieldInput.setAttribute('aria-label', 'Sort field name');
+        fieldInput.setAttribute('aria-label', I18N.strings.sort_field_name);
         fieldInput.setAttribute('list', 'gather-item-columns');
+        fieldInput.dataset.role = 'field-name';
 
         // Direction
         var dirSelect = document.createElement('select');
         dirSelect.className = 'form-select';
-        dirSelect.setAttribute('aria-label', 'Sort direction');
-        [{ value: 'asc', label: 'Ascending' }, { value: 'desc', label: 'Descending' }].forEach(function (d) {
+        dirSelect.setAttribute('aria-label', I18N.strings.sort_direction);
+        SORT_DIRECTIONS.forEach(function (d) {
             var opt = document.createElement('option');
             opt.value = d.value;
             opt.textContent = d.label;
@@ -374,8 +382,8 @@
         var removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'button button--secondary gather-block-row__remove';
-        removeBtn.textContent = 'Remove';
-        removeBtn.setAttribute('aria-label', 'Remove sort');
+        removeBtn.textContent = I18N.strings.remove;
+        removeBtn.setAttribute('aria-label', I18N.strings.remove_sort);
 
         // Events
         fieldInput.addEventListener('input', function () {
@@ -403,7 +411,7 @@
         var rows = sortsContainer.querySelectorAll('.gather-block-row--sort');
         definition.sorts = [];
         rows.forEach(function (row) {
-            var field     = row.querySelector('input[placeholder="Field name"]').value.trim();
+            var field     = row.querySelector('[data-role="field-name"]').value.trim();
             var direction = row.querySelector('select').value;
             definition.sorts.push({ field: field, direction: direction });
         });
@@ -420,7 +428,7 @@
         // Join type
         var joinSelect = document.createElement('select');
         joinSelect.className = 'form-select';
-        joinSelect.setAttribute('aria-label', 'Join type');
+        joinSelect.setAttribute('aria-label', I18N.strings.join_type);
         JOIN_TYPES.forEach(function (jt) {
             var opt = document.createElement('option');
             opt.value = jt.value;
@@ -433,40 +441,40 @@
         var targetInput = document.createElement('input');
         targetInput.type = 'text';
         targetInput.className = 'form-text';
-        targetInput.placeholder = 'Target table';
+        targetInput.placeholder = I18N.strings.target_table;
         targetInput.value = data.target_table || '';
-        targetInput.setAttribute('aria-label', 'Target table');
+        targetInput.setAttribute('aria-label', I18N.strings.target_table);
 
         // Local field
         var localInput = document.createElement('input');
         localInput.type = 'text';
         localInput.className = 'form-text';
-        localInput.placeholder = 'Local field';
+        localInput.placeholder = I18N.strings.local_field;
         localInput.value = data.local_field || '';
-        localInput.setAttribute('aria-label', 'Local field');
+        localInput.setAttribute('aria-label', I18N.strings.local_field);
 
         // Foreign field
         var foreignInput = document.createElement('input');
         foreignInput.type = 'text';
         foreignInput.className = 'form-text';
-        foreignInput.placeholder = 'Foreign field';
+        foreignInput.placeholder = I18N.strings.foreign_field;
         foreignInput.value = data.foreign_field || '';
-        foreignInput.setAttribute('aria-label', 'Foreign field');
+        foreignInput.setAttribute('aria-label', I18N.strings.foreign_field);
 
         // Name (used as table alias in joins)
         var nameInput = document.createElement('input');
         nameInput.type = 'text';
         nameInput.className = 'form-text';
-        nameInput.placeholder = 'Name (alias)';
+        nameInput.placeholder = I18N.strings.name_alias;
         nameInput.value = data.name || '';
-        nameInput.setAttribute('aria-label', 'Relationship name');
+        nameInput.setAttribute('aria-label', I18N.strings.relationship_name);
 
         // Remove button
         var removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'button button--secondary gather-block-row__remove';
-        removeBtn.textContent = 'Remove';
-        removeBtn.setAttribute('aria-label', 'Remove relationship');
+        removeBtn.textContent = I18N.strings.remove;
+        removeBtn.setAttribute('aria-label', I18N.strings.remove_relationship);
 
         // Change handler shared by all inputs in this row
         function onChange() {
@@ -518,7 +526,7 @@
         var count = relationshipsContainer.querySelectorAll('.gather-block-row--relationship').length;
         if (count >= MAX_RELATIONSHIPS) {
             addRelationshipBtn.disabled = true;
-            addRelationshipBtn.title = 'Maximum of ' + MAX_RELATIONSHIPS + ' relationships reached';
+            addRelationshipBtn.title = fillTemplate(I18N.strings.max_relationships_reached, { max: MAX_RELATIONSHIPS });
         } else {
             addRelationshipBtn.disabled = false;
             addRelationshipBtn.title = '';
@@ -538,45 +546,45 @@
         var nameInput = document.createElement('input');
         nameInput.type = 'text';
         nameInput.className = 'form-text';
-        nameInput.placeholder = 'Include name';
+        nameInput.placeholder = I18N.strings.include_name;
         nameInput.value = name || '';
-        nameInput.setAttribute('aria-label', 'Include name');
+        nameInput.setAttribute('aria-label', I18N.strings.include_name);
         nameInput.dataset.role = 'include-name';
 
         // Parent field
         var parentInput = document.createElement('input');
         parentInput.type = 'text';
         parentInput.className = 'form-text';
-        parentInput.placeholder = 'Parent field (e.g., id)';
+        parentInput.placeholder = I18N.strings.parent_field_example;
         parentInput.value = data.parent_field || '';
-        parentInput.setAttribute('aria-label', 'Parent field');
+        parentInput.setAttribute('aria-label', I18N.strings.parent_field);
         parentInput.dataset.role = 'parent-field';
 
         // Child field
         var childInput = document.createElement('input');
         childInput.type = 'text';
         childInput.className = 'form-text';
-        childInput.placeholder = 'Child field (e.g., fields.story_id)';
+        childInput.placeholder = I18N.strings.child_field_example;
         childInput.value = data.child_field || '';
-        childInput.setAttribute('aria-label', 'Child field');
+        childInput.setAttribute('aria-label', I18N.strings.child_field);
         childInput.dataset.role = 'child-field';
 
         // Child base table
         var childTableInput = document.createElement('input');
         childTableInput.type = 'text';
         childTableInput.className = 'form-text';
-        childTableInput.placeholder = 'Child base table';
+        childTableInput.placeholder = I18N.strings.child_base_table;
         childTableInput.value = (data.definition && data.definition.base_table) || 'item';
-        childTableInput.setAttribute('aria-label', 'Child base table');
+        childTableInput.setAttribute('aria-label', I18N.strings.child_base_table);
         childTableInput.dataset.role = 'child-table';
 
         // Child item type
         var childTypeInput = document.createElement('input');
         childTypeInput.type = 'text';
         childTypeInput.className = 'form-text';
-        childTypeInput.placeholder = 'Child item type (optional)';
+        childTypeInput.placeholder = I18N.strings.child_item_type_optional;
         childTypeInput.value = (data.definition && data.definition.item_type) || '';
-        childTypeInput.setAttribute('aria-label', 'Child item type');
+        childTypeInput.setAttribute('aria-label', I18N.strings.child_item_type);
         childTypeInput.dataset.role = 'child-type';
 
         // Singular checkbox
@@ -587,15 +595,15 @@
         singularCheckbox.checked = data.singular || false;
         singularCheckbox.dataset.role = 'singular';
         singularLabel.appendChild(singularCheckbox);
-        singularLabel.appendChild(document.createTextNode(' Singular (single object, not array)'));
+        singularLabel.appendChild(document.createTextNode(' ' + I18N.strings.singular_label));
 
         // Limit
         var limitInput = document.createElement('input');
         limitInput.type = 'number';
         limitInput.className = 'form-text';
-        limitInput.placeholder = 'Limit (default: 1000)';
+        limitInput.placeholder = I18N.strings.limit;
         limitInput.value = (data.display && data.display.items_per_page) || '';
-        limitInput.setAttribute('aria-label', 'Include limit');
+        limitInput.setAttribute('aria-label', I18N.strings.include_limit);
         limitInput.dataset.role = 'include-limit';
         limitInput.style.width = '120px';
 
@@ -603,8 +611,8 @@
         var removeBtn = document.createElement('button');
         removeBtn.type = 'button';
         removeBtn.className = 'button button--secondary gather-block-row__remove';
-        removeBtn.textContent = 'Remove';
-        removeBtn.setAttribute('aria-label', 'Remove include');
+        removeBtn.textContent = I18N.strings.remove;
+        removeBtn.setAttribute('aria-label', I18N.strings.remove_include);
 
         // Events
         function onChange() {
@@ -844,12 +852,12 @@
 
         // Disable button during request
         previewBtn.disabled = true;
-        previewBtn.textContent = 'Loading...';
+        previewBtn.textContent = I18N.strings.loading;
 
         // Clear previous results
         previewResults.innerHTML = '';
         var loadingMsg = document.createElement('p');
-        loadingMsg.textContent = 'Loading preview...';
+        loadingMsg.textContent = I18N.strings.loading_preview;
         loadingMsg.className = 'gather-preview__loading';
         previewResults.appendChild(loadingMsg);
 
@@ -864,7 +872,7 @@
 
         xhr.addEventListener('load', function () {
             previewBtn.disabled = false;
-            previewBtn.textContent = 'Load preview';
+            previewBtn.textContent = I18N.strings.load_preview;
             previewResults.innerHTML = '';
 
             if (xhr.status === 200) {
@@ -872,23 +880,23 @@
                     var response = JSON.parse(xhr.responseText);
                     renderPreviewResults(response);
                 } catch (e) {
-                    showPreviewError('Invalid response from server.');
+                    showPreviewError(I18N.strings.invalid_response);
                 }
             } else {
                 try {
                     var errResponse = JSON.parse(xhr.responseText);
-                    showPreviewError(errResponse.message || 'Preview failed (' + xhr.status + ')');
+                    showPreviewError(errResponse.message || fillTemplate(I18N.strings.preview_failed, { status: xhr.status }));
                 } catch (e) {
-                    showPreviewError('Preview failed (' + xhr.status + ')');
+                    showPreviewError(fillTemplate(I18N.strings.preview_failed, { status: xhr.status }));
                 }
             }
         });
 
         xhr.addEventListener('error', function () {
             previewBtn.disabled = false;
-            previewBtn.textContent = 'Load preview';
+            previewBtn.textContent = I18N.strings.load_preview;
             previewResults.innerHTML = '';
-            showPreviewError('Network error. Please check your connection.');
+            showPreviewError(I18N.strings.network_error);
         });
 
         xhr.send(payload);
@@ -900,7 +908,7 @@
         if (!rows.length) {
             var empty = document.createElement('p');
             empty.className = 'gather-preview__empty';
-            empty.textContent = display.empty_text || 'No results found.';
+            empty.textContent = display.empty_text || I18N.strings.no_results_found;
             previewResults.appendChild(empty);
             return;
         }
@@ -942,7 +950,7 @@
         if (response.total !== undefined) {
             var summary = document.createElement('p');
             summary.className = 'gather-preview__summary';
-            summary.textContent = 'Showing ' + rows.length + ' of ' + response.total + ' results.';
+            summary.textContent = fillTemplate(I18N.strings.showing_results, { shown: rows.length, total: response.total });
             previewResults.appendChild(summary);
         }
     }
