@@ -20,7 +20,7 @@ use super::admin_list::{ListQuery, PER_PAGE};
 use super::helpers::{
     CsrfOnlyForm, admin_user_context, build_local_tasks, render_admin_template, render_error,
     render_forbidden, render_not_found, render_server_error, require_csrf, require_permission,
-    validate_password,
+    validate_password, validate_username,
 };
 use super::user_delete::blocks_last_admin;
 
@@ -305,6 +305,8 @@ pub(crate) async fn new_account_problems(
 
     if name.trim().is_empty() {
         errors.push(FieldError::on("name", "Username is required."));
+    } else if let Err(msg) = validate_username(name.trim()) {
+        errors.push(FieldError::on("name", msg));
     }
 
     if mail.trim().is_empty() {
@@ -672,6 +674,8 @@ async fn edit_user_submit(
 
     if form.name.trim().is_empty() {
         errors.push(FieldError::on("name", "Username is required."));
+    } else if let Err(msg) = validate_username(form.name.trim()) {
+        errors.push(FieldError::on("name", msg));
     }
 
     if form.mail.trim().is_empty() {

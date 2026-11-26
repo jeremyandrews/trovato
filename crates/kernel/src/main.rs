@@ -1464,10 +1464,8 @@ async fn create_user_from_cli(
         }
     }
     if !missing.is_empty() {
-        println!(
-            "{}",
-            bump_from_cli(config, &[CacheKind::Users, CacheKind::Permissions]).await
-        );
+        // Users is already bumped by `UserService::create`/`create_with_status`.
+        println!("{}", bump_from_cli(config, &[CacheKind::Permissions]).await);
         let mut message = format!(
             "User '{}' ({}) was created, but {} of its roles could not be granted:",
             user.name,
@@ -1502,10 +1500,8 @@ async fn create_user_from_cli(
     {
         println!("Warning: {warning}");
     }
-    println!(
-        "{}",
-        bump_from_cli(config, &[CacheKind::Users, CacheKind::Permissions]).await
-    );
+    // Users is already bumped by `UserService::create`/`create_with_status`.
+    println!("{}", bump_from_cli(config, &[CacheKind::Permissions]).await);
     Ok(())
 }
 
