@@ -39,6 +39,7 @@ pub use tasks::UpdateCheckConfig;
 pub use queue::{Queue, RedisQueue};
 pub use tasks::CronTasks;
 
+use crate::redis_conn::BoundedRedis;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -1348,7 +1349,7 @@ impl CronService {
 
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
 
@@ -1372,7 +1373,7 @@ impl CronService {
     async fn release_lock(&self, lock_value: &str) -> Result<()> {
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
 
@@ -2046,7 +2047,7 @@ impl CronService {
     async fn claim_daily(&self, key: &str) -> Result<bool> {
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
         let claimed: Option<String> = redis::cmd("SET")
@@ -2065,7 +2066,7 @@ impl CronService {
     pub async fn last_run(&self) -> Result<Option<LastCronRun>> {
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
 
@@ -2105,7 +2106,7 @@ impl CronService {
 
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
 
@@ -2207,7 +2208,7 @@ pub(crate) async fn run_heartbeat(
                     gave_up = true;
                     continue;
                 }
-                if let Ok(mut conn) = redis.get_multiplexed_async_connection().await {
+                if let Ok(mut conn) = redis.bounded_connection().await {
                     // Extend lock TTL if we still own it
                     let script = redis::Script::new(EXTEND_LOCK_SCRIPT);
                     if let Err(e) = script
@@ -2452,7 +2453,7 @@ mod tests {
         let Ok(client) = redis::Client::open(trovato_test_utils::env::redis_url()) else {
             return;
         };
-        let Ok(mut conn) = client.get_multiplexed_async_connection().await else {
+        let Ok(mut conn) = client.bounded_connection().await else {
             return; // No Redis in this environment; the bound is covered above.
         };
 

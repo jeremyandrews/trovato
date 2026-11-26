@@ -11,6 +11,7 @@
 //! on the server that wrote. When Redis cannot be reached the poller logs once
 //! and keeps trying, and the caches' own TTLs bound how stale they get.
 
+use crate::redis_conn::BoundedRedis;
 use std::collections::HashMap;
 use std::future::Future;
 use std::sync::OnceLock;
@@ -179,12 +180,12 @@ pub async fn bump_now(redis: &redis::Client, kinds: &[CacheKind]) -> anyhow::Res
 /// counter has never been bumped; a caller that cannot tell those apart from
 /// "unchanged" is already relying on `changed` timestamps for its exactness.
 pub async fn current(redis: &redis::Client, kind: CacheKind) -> Option<i64> {
-    let mut conn = redis.get_multiplexed_async_connection().await.ok()?;
+    let mut conn = redis.bounded_connection().await.ok()?;
     conn.hget(GENERATION_KEY, kind.as_str()).await.ok()
 }
 
 async fn increment(redis: &redis::Client, kinds: &[CacheKind]) -> anyhow::Result<()> {
-    let mut conn = redis.get_multiplexed_async_connection().await?;
+    let mut conn = redis.bounded_connection().await?;
     for kind in kinds {
         conn.hincr::<_, _, _, i64>(GENERATION_KEY, kind.as_str(), 1)
             .await?;
@@ -210,7 +211,7 @@ where
             tick.tick().await;
             let read = match conn.as_mut() {
                 Some(c) => read(c).await,
-                None => match redis.get_multiplexed_async_connection().await {
+                None => match redis.bounded_connection().await {
                     Ok(mut c) => {
                         let r = read(&mut c).await;
                         conn = Some(c);

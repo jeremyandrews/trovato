@@ -5,6 +5,7 @@
 
 pub mod generation;
 
+use crate::redis_conn::BoundedRedis;
 use std::sync::Arc;
 
 use redis::AsyncCommands;
@@ -33,7 +34,7 @@ const DEFAULT_TTL_SECS: u64 = 300;
 pub async fn clear_everywhere(redis: &RedisClient, kinds: &[CacheKind]) -> anyhow::Result<()> {
     generation::bump_now(redis, kinds).await?;
     if kinds.contains(&CacheKind::SiteConfig) {
-        let mut conn = redis.get_multiplexed_async_connection().await?;
+        let mut conn = redis.bounded_connection().await?;
         conn.del::<_, ()>(crate::search::settings::SETTINGS_CACHE_KEY)
             .await?;
     }
@@ -75,7 +76,7 @@ impl CacheLayer {
         let metrics = &self.inner.metrics;
         // A Redis that cannot be reached answers nothing, which is a miss to
         // the caller and is counted as one.
-        let mut conn = match self.inner.redis.get_multiplexed_async_connection().await {
+        let mut conn = match self.inner.redis.bounded_connection().await {
             Ok(c) => c,
             Err(e) => {
                 warn!(error = %e, "failed to get Redis connection for cache");
@@ -98,7 +99,7 @@ impl CacheLayer {
     }
 
     async fn set_inner(&self, key: &str, value: &str, ttl_secs: u64, tags: &[&str]) {
-        let Ok(mut conn) = self.inner.redis.get_multiplexed_async_connection().await else {
+        let Ok(mut conn) = self.inner.redis.bounded_connection().await else {
             warn!("failed to get Redis connection for cache set");
             return;
         };
@@ -134,7 +135,7 @@ impl CacheLayer {
     }
 
     async fn invalidate_inner(&self, key: &str) {
-        let Ok(mut conn) = self.inner.redis.get_multiplexed_async_connection().await else {
+        let Ok(mut conn) = self.inner.redis.bounded_connection().await else {
             warn!("failed to get Redis connection for cache invalidate");
             return;
         };
@@ -158,7 +159,7 @@ impl CacheLayer {
     async fn invalidate_tag_inner(&self, tag: &str) {
         let tag_key = format!("tag:{tag}");
 
-        let Ok(mut conn) = self.inner.redis.get_multiplexed_async_connection().await else {
+        let Ok(mut conn) = self.inner.redis.bounded_connection().await else {
             warn!("failed to get Redis connection for tag invalidation");
             return;
         };
@@ -213,7 +214,7 @@ impl CacheLayer {
 
         let pattern = format!("st:{stage_id}:*");
 
-        let Ok(mut conn) = self.inner.redis.get_multiplexed_async_connection().await else {
+        let Ok(mut conn) = self.inner.redis.bounded_connection().await else {
             warn!("failed to get Redis connection for stage invalidation");
             return;
         };
@@ -261,7 +262,7 @@ impl CacheLayer {
     ///
     /// `redis_keys` is `None` when Redis cannot be reached.
     pub async fn stats(&self) -> CacheStats {
-        let redis_keys = match self.inner.redis.get_multiplexed_async_connection().await {
+        let redis_keys = match self.inner.redis.bounded_connection().await {
             Ok(mut conn) => redis::cmd("DBSIZE")
                 .query_async::<u64>(&mut conn)
                 .await

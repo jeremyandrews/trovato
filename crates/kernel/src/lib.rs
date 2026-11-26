@@ -37,6 +37,7 @@ pub mod pagination;
 pub mod permissions;
 pub mod plugin;
 pub mod recovery;
+pub mod redis_conn;
 pub mod routes;
 pub mod search;
 pub mod services;
