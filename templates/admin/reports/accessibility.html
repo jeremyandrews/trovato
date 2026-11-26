@@ -2,6 +2,7 @@
 {#- The accessibility report (routes::admin_reports): images without a text
     alternative, your own settings, and how the administration is checked.
     Context: missing_total, missing (id, filename, created), may_fix,
+    content_missing_total, content_missing (title, item_type, count, href),
     pref_theme, pref_slash, pref_key. -#}
 
 {% block content %}
@@ -26,6 +27,37 @@
             <tr>
                 <th scope="row">{% if may_fix %}<a href="/admin/content/files/{{ file.id }}">{{ t(s="Add a text alternative to {name}", name=file.filename) }}</a>{% else %}{{ file.filename }}{% endif %}</th>
                 <td>{{ file.created | format_date(format="%Y-%m-%d %H:%M") }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    </div>
+    {% endif %}
+</section>
+
+<section class="admin-card" aria-labelledby="a11y-content">
+    <h2 id="a11y-content">{{ t(s="In content") }}</h2>
+    {% if content_missing_total == 0 %}
+    <p>{{ t(s="No content has an image without a text alternative.") }}</p>
+    {% else %}
+    <p>{{ t(s="{count} item has an image with no text alternative. A screen reader says nothing useful for it, and nothing shows if it fails to load.", plural="{count} items have an image with no text alternative. A screen reader says nothing useful for them, and nothing shows if they fail to load.", count=content_missing_total) }}</p>
+    {% if content_missing_total > content_missing | length %}<p>{{ t(s="The newest {count} are listed.", count=content_missing | length) }}</p>{% endif %}
+    <div class="table-scroll" role="region" aria-labelledby="a11y-content-caption" tabindex="0">
+    <table class="table table--stack">
+        <caption id="a11y-content-caption">{{ t(s="Content with images without a text alternative") }}</caption>
+        <thead>
+            <tr>
+                <th scope="col">{{ t(s="Title") }}</th>
+                <th scope="col">{{ t(s="Type") }}</th>
+                <th scope="col">{{ t(s="Images without alt text") }}</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for item in content_missing %}
+            <tr>
+                <th scope="row"><a href="{{ item.href }}">{{ item.title }}</a></th>
+                <td>{{ item.item_type }}</td>
+                <td>{{ item.count }}</td>
             </tr>
             {% endfor %}
         </tbody>
