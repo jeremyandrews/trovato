@@ -1969,6 +1969,30 @@ viewer may not see, an item of another type than `item_type`, a gather the
 viewer may not run, or one that no longer exists is simply absent, and the
 template renders without it.
 
+#### Markdown
+
+A `rich_text` field's `<name>_html` and the `markdown` Tera filter
+(`{{ body | markdown | safe }}`, `markdown(min_heading=2)` to shift headings)
+are one renderer, `trovato_kernel::theme::render_markdown`. It reads CommonMark
+plus four GitHub extensions, and nothing else (no smart punctuation, heading
+attributes, definition lists or math):
+
+| Extension | Source | Renders as |
+|-----------|--------|------------|
+| Tables | a pipe table with a delimiter row, `:--`, `:-:` and `--:` for alignment | `<table>` with `<thead>` and `<tbody>`; an aligned column's `th` and `td` carry `class="align-left"`, `"align-center"` or `"align-right"`, never an inline `style` |
+| Footnotes | `text[^note]` and a `[^note]: definition` block | `<sup class="footnote-reference"><a href="#fn-1" id="fnref-1">1</a></sup>`, and the definition as `<div class="footnote-definition" id="fn-1">`, numbered in order of first appearance |
+| Strikethrough | `~~text~~` | `<del>text</del>`; a single tilde stays a tilde, so `~1,200` is not struck out |
+| Task lists | `- [ ]` and `- [x]` list items | `<input type="checkbox" disabled="">` (`<input type="checkbox" checked="" disabled="">` when ticked) at the start of the `li` |
+
+The output is sanitized after rendering. Raw HTML in the source is cleaned to
+the same allowlist, which admits exactly what the table above lists: the
+alignment and footnote classes on their own elements, ids of the form `fn-<n>`
+on a `div` and `fnref-<n>` on an `a`, and an `input` the sanitizer always
+makes `disabled`, whose `type` survives only as `checkbox` and whose only other
+attribute may be `checked`. A theme
+styles alignment with the classes, for example
+`td.align-right { text-align: right; }`; the kernel ships no table CSS.
+
 ### Templates
 
 A component's template is found on the kernel's template search path, the

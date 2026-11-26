@@ -153,6 +153,31 @@ fn is_allowed_class(element: &str, class: &str) -> bool {
     element == "span" && HIGHLIGHT_TOKEN_CLASSES.contains(&class)
 }
 
+/// Whether a `class` value on a table cell or footnote element survives
+/// sanitizing: exactly the values [`markdown_events`] writes, on the element it
+/// writes them on.
+fn is_allowed_extension_class(element: &str, class: &str) -> bool {
+    match element {
+        "th" | "td" => matches!(class, "align-left" | "align-center" | "align-right"),
+        "sup" => matches!(class, "footnote-reference" | "footnote-definition-label"),
+        "div" => class == "footnote-definition",
+        _ => false,
+    }
+}
+
+/// Whether an `id` value survives sanitizing: only the footnote anchors
+/// [`markdown_events`] writes, `fn-<n>` on a definition and `fnref-<n>` on a
+/// reference. Any other id, including one written as raw HTML in the source,
+/// is removed, so Markdown cannot claim an id a template or a heading owns.
+fn is_allowed_id(element: &str, id: &str) -> bool {
+    let number = match element {
+        "div" => id.strip_prefix("fn-"),
+        "a" => id.strip_prefix("fnref-"),
+        _ => None,
+    };
+    number.is_some_and(|n| !n.is_empty() && n.len() <= 6 && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// The sanitizer the `markdown` filter runs its output through.
 ///
 /// `ammonia::clean`'s defaults strip every `class`, which is what made a
@@ -165,36 +190,186 @@ fn is_allowed_class(element: &str, class: &str) -> bool {
 /// values [`is_allowed_class`] accepts. Everything else is unchanged from
 /// ammonia's defaults, so a `class` on a `div`, a `style` attribute, an `onclick`
 /// and a `<script>` are all still removed.
+///
+/// The Markdown extensions [`MARKDOWN_OPTIONS`] turns on add exactly what they
+/// write and nothing more. Tables, `<del>` and `<sup>` are in ammonia's defaults
+/// already. Column alignment is a class on `th` and `td`, never the inline
+/// `style` pulldown-cmark would write, which this sanitizer drops and a strict
+/// CSP forbids. Footnotes keep their classes and their `fn-<n>` / `fnref-<n>`
+/// ids ([`is_allowed_id`]). A task list marker is an `<input>`, and every
+/// `<input>` that leaves here is disabled, whatever the source said: the
+/// sanitizer forces `disabled` rather than reading it, keeps `type` only when
+/// it is `checkbox`, and allows `checked` and nothing else.
 static MARKDOWN_SANITIZER: LazyLock<ammonia::Builder<'static>> = LazyLock::new(|| {
     let mut builder = ammonia::Builder::default();
     builder.add_tag_attributes("code", ["class"]);
     builder.add_tag_attributes("pre", ["class"]);
     builder.add_tag_attributes("span", ["class"]);
-    builder.attribute_filter(|element, attribute, value| {
-        if attribute != "class" {
-            return Some(value.into());
+    builder.add_tag_attributes("th", ["class"]);
+    builder.add_tag_attributes("td", ["class"]);
+    builder.add_tag_attributes("sup", ["class"]);
+    builder.add_tag_attributes("div", ["class", "id"]);
+    builder.add_tag_attributes("a", ["id"]);
+    // `disabled` is the one forced attribute. ammonia keeps forced attributes
+    // in a HashMap and writes them in its iteration order, which changes from
+    // process to process, so forcing `type` as well would make the same
+    // Markdown render as different bytes on different runs.
+    builder.add_tags(["input"]);
+    builder.add_tag_attributes("input", ["checked"]);
+    builder.add_tag_attribute_values("input", "type", ["checkbox"]);
+    builder.set_tag_attribute_value("input", "disabled", "");
+    builder.attribute_filter(|element, attribute, value| match attribute {
+        "class" => {
+            let kept: Vec<&str> = value
+                .split_whitespace()
+                .filter(|class| {
+                    is_allowed_class(element, class) || is_allowed_extension_class(element, class)
+                })
+                .collect();
+            // No surviving class means no attribute, rather than `class=""`.
+            if kept.is_empty() {
+                None
+            } else {
+                Some(kept.join(" ").into())
+            }
         }
-        let kept: Vec<&str> = value
-            .split_whitespace()
-            .filter(|class| is_allowed_class(element, class))
-            .collect();
-        // No surviving class means no attribute, rather than `class=""`.
-        if kept.is_empty() {
-            None
-        } else {
-            Some(kept.join(" ").into())
-        }
+        "id" => is_allowed_id(element, value).then(|| value.into()),
+        _ => Some(value.into()),
     });
     builder
 });
 
+/// The Markdown every Trovato site renders: CommonMark plus the GitHub
+/// extensions people write without thinking of them as extensions — tables,
+/// footnotes, strikethrough and task lists.
+///
+/// Nothing else: smart punctuation, heading attributes, definition lists, math
+/// and the rest would change what existing text renders as.
+const MARKDOWN_OPTIONS: pulldown_cmark::Options = pulldown_cmark::Options::ENABLE_TABLES
+    .union(pulldown_cmark::Options::ENABLE_FOOTNOTES)
+    .union(pulldown_cmark::Options::ENABLE_STRIKETHROUGH)
+    .union(pulldown_cmark::Options::ENABLE_TASKLISTS);
+
+/// The parser's events, with the extensions' markup rewritten into the shape
+/// [`MARKDOWN_SANITIZER`] lets through.
+///
+/// - A table cell is written here rather than by pulldown-cmark, with its
+///   column's alignment as an `align-left`, `align-center` or `align-right`
+///   class instead of an inline `style`.
+/// - A footnote reference links to `#fn-<n>`, the first reference to each
+///   note carries `id="fnref-<n>"`, and the definition carries `id="fn-<n>"`,
+///   numbered in order of first appearance. Numbers rather than the author's
+///   label, so an id is always valid and never collides with a heading's or a
+///   template's.
+/// - Strikethrough is `~~text~~` only. pulldown-cmark, like the GFM spec,
+///   also strikes a pair of single tildes, which would turn "~1,200 lines …
+///   ~4%" in existing text into struck-out text; a single tilde stays a tilde.
+fn markdown_events<'a>(source: &'a str) -> impl Iterator<Item = pulldown_cmark::Event<'a>> {
+    use pulldown_cmark::{Alignment, CowStr, Event, Tag, TagEnd};
+
+    let mut alignments: Vec<Alignment> = Vec::new();
+    let mut in_head = false;
+    let mut column = 0usize;
+    let mut numbers: std::collections::HashMap<CowStr<'a>, usize> =
+        std::collections::HashMap::new();
+    let mut referenced: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    // One entry per open strikethrough: whether it is a real `~~` one.
+    let mut struck: Vec<bool> = Vec::new();
+
+    pulldown_cmark::Parser::new_ext(source, MARKDOWN_OPTIONS)
+        .into_offset_iter()
+        .map(move |(event, range)| {
+            let mut number_of = |name: CowStr<'a>| {
+                let next = numbers.len() + 1;
+                *numbers.entry(name).or_insert(next)
+            };
+            match event {
+                Event::Start(Tag::Table(columns)) => {
+                    alignments.clone_from(&columns);
+                    Event::Start(Tag::Table(columns))
+                }
+                Event::Start(Tag::TableHead) => {
+                    in_head = true;
+                    column = 0;
+                    event
+                }
+                Event::End(TagEnd::TableHead) => {
+                    in_head = false;
+                    event
+                }
+                Event::Start(Tag::TableRow) => {
+                    column = 0;
+                    event
+                }
+                Event::Start(Tag::TableCell) => {
+                    let cell = if in_head { "th" } else { "td" };
+                    let class = match alignments.get(column) {
+                        Some(Alignment::Left) => " class=\"align-left\"",
+                        Some(Alignment::Center) => " class=\"align-center\"",
+                        Some(Alignment::Right) => " class=\"align-right\"",
+                        Some(Alignment::None) | None => "",
+                    };
+                    Event::Html(format!("<{cell}{class}>").into())
+                }
+                Event::End(TagEnd::TableCell) => {
+                    column += 1;
+                    Event::Html(if in_head { "</th>" } else { "</td>" }.into())
+                }
+                Event::FootnoteReference(name) => {
+                    let n = number_of(name);
+                    let id = if referenced.insert(n) {
+                        format!(" id=\"fnref-{n}\"")
+                    } else {
+                        String::new()
+                    };
+                    Event::InlineHtml(
+                        format!(
+                            "<sup class=\"footnote-reference\"><a href=\"#fn-{n}\"{id}>{n}</a></sup>"
+                        )
+                        .into(),
+                    )
+                }
+                Event::Start(Tag::FootnoteDefinition(name)) => {
+                    let n = number_of(name);
+                    Event::Html(
+                        format!(
+                            "<div class=\"footnote-definition\" id=\"fn-{n}\">\
+                             <sup class=\"footnote-definition-label\">{n}</sup>"
+                        )
+                        .into(),
+                    )
+                }
+                Event::End(TagEnd::FootnoteDefinition) => Event::Html("</div>\n".into()),
+                Event::Start(Tag::Strikethrough) => {
+                    let double = source.get(range).is_some_and(|s| s.starts_with("~~"));
+                    struck.push(double);
+                    if double {
+                        event
+                    } else {
+                        Event::Text("~".into())
+                    }
+                }
+                Event::End(TagEnd::Strikethrough) => {
+                    if struck.pop().unwrap_or(true) {
+                        event
+                    } else {
+                        Event::Text("~".into())
+                    }
+                }
+                other => other,
+            }
+        })
+}
+
 /// Render Markdown to sanitized HTML, rewriting headings so none is above
 /// `min_heading` (1 leaves them alone).
 ///
-/// The `markdown` Tera filter and the page builder's rich text fields both
-/// come through here, so one sanitizer decides what Markdown may produce:
-/// raw HTML in the source is cleaned, a code block keeps the class it needs to
-/// be highlighted.
+/// The only place in the kernel Markdown becomes HTML. The `markdown` Tera
+/// filter and the page builder's rich text fields both come through here, so
+/// one set of options decides what Markdown means (CommonMark plus tables,
+/// footnotes, strikethrough and task lists) and one sanitizer decides what it
+/// may produce: raw HTML in the source is cleaned, a code block keeps the class
+/// it needs to be highlighted, a table cell keeps its alignment.
 pub fn render_markdown(text: &str, min_heading: usize) -> String {
     let processed = if min_heading > 1 {
         crate::content::page_builder::rewrite_markdown_headings(text, min_heading)
@@ -202,12 +377,11 @@ pub fn render_markdown(text: &str, min_heading: usize) -> String {
         text.to_string()
     };
 
-    let parser = pulldown_cmark::Parser::new(&processed);
     let mut html_output = String::new();
-    pulldown_cmark::html::push_html(&mut html_output, parser);
+    pulldown_cmark::html::push_html(&mut html_output, markdown_events(&processed));
 
     // Sanitize to prevent XSS from raw HTML in Markdown, keeping the
-    // class attribute a code block needs to be highlightable.
+    // classes a code block and a table need.
     MARKDOWN_SANITIZER.clean(&html_output).to_string()
 }
 
@@ -1820,6 +1994,158 @@ mod tests {
         let mut ctx = tera::Context::new();
         ctx.insert("body", body);
         tera.render("test", &ctx).unwrap()
+    }
+
+    /// The `markdown` filter and `render_markdown` are one renderer: render
+    /// `body` both ways, require the same bytes, and return them.
+    fn both_ways(body: &str) -> String {
+        let direct = render_markdown(body, 1);
+        assert_eq!(
+            markdown(body),
+            direct,
+            "the filter and render_markdown must agree"
+        );
+        direct
+    }
+
+    /// A pipe table renders as a table, and its column alignment survives
+    /// sanitizing as a class rather than as the inline `style` pulldown-cmark
+    /// writes, which the sanitizer drops and the CSP forbids.
+    #[test]
+    fn a_table_renders_with_alignment_classes() {
+        let result = both_ways(
+            "| Tool | Language | Users | Notes |\n\
+             |:-----|:--------:|------:|-------|\n\
+             | k6 | JavaScript | 100 | fast |\n\
+             | Locust | Python | 50 | flexible |\n",
+        );
+        assert_eq!(
+            result,
+            "<table><thead><tr>\
+             <th class=\"align-left\">Tool</th>\
+             <th class=\"align-center\">Language</th>\
+             <th class=\"align-right\">Users</th>\
+             <th>Notes</th>\
+             </tr></thead><tbody>\n\
+             <tr><td class=\"align-left\">k6</td>\
+             <td class=\"align-center\">JavaScript</td>\
+             <td class=\"align-right\">100</td>\
+             <td>fast</td></tr>\n\
+             <tr><td class=\"align-left\">Locust</td>\
+             <td class=\"align-center\">Python</td>\
+             <td class=\"align-right\">50</td>\
+             <td>flexible</td></tr>\n\
+             </tbody></table>\n"
+        );
+        assert!(!result.contains("style"), "no inline style: {result}");
+    }
+
+    /// A footnote renders as a numbered reference linking to its definition,
+    /// with ids that cannot collide with a heading's or a template's.
+    #[test]
+    fn a_footnote_renders_as_a_linked_reference_and_definition() {
+        let result = both_ways("Load tests need a baseline.[^base]\n\n[^base]: Measured first.\n");
+        assert_eq!(
+            result,
+            "<p>Load tests need a baseline.<sup class=\"footnote-reference\">\
+             <a href=\"#fn-1\" id=\"fnref-1\" rel=\"noopener noreferrer\">1</a></sup></p>\n\
+             <div class=\"footnote-definition\" id=\"fn-1\">\
+             <sup class=\"footnote-definition-label\">1</sup>\n\
+             <p>Measured first.</p>\n\
+             </div>\n"
+        );
+    }
+
+    /// A second reference to the same footnote links to it too, without a
+    /// second element carrying the first one's id.
+    #[test]
+    fn a_repeated_footnote_reference_does_not_repeat_its_id() {
+        let result = both_ways("One[^a] and again[^a].\n\n[^a]: Note.\n");
+        assert_eq!(result.matches("id=\"fnref-1\"").count(), 1, "{result}");
+        assert_eq!(result.matches("href=\"#fn-1\"").count(), 2, "{result}");
+    }
+
+    #[test]
+    fn strikethrough_renders_as_del() {
+        assert_eq!(
+            both_ways("~~k6 0.18~~ k6 0.19\n"),
+            "<p><del>k6 0.18</del> k6 0.19</p>\n"
+        );
+    }
+
+    /// A task list item renders a checkbox nobody can tick. The exact bytes
+    /// matter: with two forced attributes their order came out of a HashMap
+    /// and changed between test processes.
+    #[test]
+    fn a_task_list_renders_disabled_checkboxes() {
+        assert_eq!(
+            both_ways("- [x] Write the test\n- [ ] Ship it\n"),
+            "<ul>\n\
+             <li><input type=\"checkbox\" checked=\"\" disabled=\"\">\nWrite the test</li>\n\
+             <li><input type=\"checkbox\" disabled=\"\">\nShip it</li>\n\
+             </ul>\n"
+        );
+    }
+
+    /// What the new allowances let through is exactly what the renderer
+    /// writes: raw HTML in the source cannot use them to smuggle anything else.
+    #[test]
+    fn the_extension_allowances_admit_nothing_else() {
+        let result = both_ways(
+            "<input type=\"text\" name=\"q\" value=\"x\" form=\"login\" onfocus=\"steal()\">\n\n\
+             <table><tr><td class=\"align-left evil\" style=\"color:red\" id=\"fn-1\">x</td></tr></table>\n\n\
+             <div id=\"main\" class=\"footnote-definition\">y</div>\n\n\
+             <a href=\"#top\" id=\"fnref-1x\">z</a>\n",
+        );
+        assert!(
+            result.contains("<input disabled=\"\">"),
+            "an input is disabled, and keeps no type but checkbox: {result}"
+        );
+        for forbidden in [
+            "text",
+            "name=",
+            "value=",
+            "form=",
+            "onfocus",
+            "steal",
+            "evil",
+            "style",
+            "color",
+            "id=\"fn-1\"",
+            "main",
+            "fnref-1x",
+        ] {
+            assert!(
+                !result.contains(forbidden),
+                "{forbidden} survived: {result}"
+            );
+        }
+        assert!(result.contains("class=\"align-left\""), "{result}");
+        assert!(result.contains("class=\"footnote-definition\""), "{result}");
+    }
+
+    /// What `commonmark_output_is_unchanged_by_the_extensions`'s source rendered
+    /// as before the extensions were turned on, captured from `origin/main`.
+    const COMMONMARK_BASELINE: &str = "<h1>Title</h1>\n<p>Some <em>emphasis</em>, <strong>strong</strong>, <code>code</code> and a <a href=\"https://www.tag1.com/\" title=\"Tag1\" rel=\"noopener noreferrer\">link</a>.</p>\n<h2>Section</h2>\n<pre><code class=\"language-rust\">fn main() {}\n</code></pre>\n<blockquote>\n<p>A quote -- with \"quotes\" and ... dots.</p>\n</blockquote>\n<ol>\n<li>one</li>\n<li>two</li>\n</ol>\n<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n<hr>\n<p>A | B</p>\n<p>~single tilde~ and [ ] brackets [^x]</p>\n";
+
+    /// The same source with `min_heading = 2`, captured the same way.
+    const COMMONMARK_BASELINE_MIN_HEADING_2: &str = "<h2>Title</h2>\n<p>Some <em>emphasis</em>, <strong>strong</strong>, <code>code</code> and a <a href=\"https://www.tag1.com/\" title=\"Tag1\" rel=\"noopener noreferrer\">link</a>.</p>\n<h2>Section</h2>\n<pre><code class=\"language-rust\">fn main() {}\n</code></pre>\n<blockquote>\n<p>A quote -- with \"quotes\" and ... dots.</p>\n</blockquote>\n<ol>\n<li>one</li>\n<li>two</li>\n</ol>\n<ul>\n<li>a</li>\n<li>b</li>\n</ul>\n<hr>\n<p>A | B</p>\n<p>~single tilde~ and [ ] brackets [^x]</p>\n";
+
+    /// Turning the extensions on changes nothing that was not using them:
+    /// these are the bytes CommonMark only rendering produced.
+    #[test]
+    fn commonmark_output_is_unchanged_by_the_extensions() {
+        let source = "# Title\n\nSome *emphasis*, **strong**, `code` and a \
+                      [link](https://www.tag1.com/ \"Tag1\").\n\n\
+                      ## Section\n\n```rust\nfn main() {}\n```\n\n\
+                      > A quote -- with \"quotes\" and ... dots.\n\n\
+                      1. one\n2. two\n\n* a\n* b\n\n---\n\n\
+                      A | B\n\n~single tilde~ and [ ] brackets [^x]\n";
+        assert_eq!(both_ways(source), COMMONMARK_BASELINE);
+        assert_eq!(
+            render_markdown(source, 2),
+            COMMONMARK_BASELINE_MIN_HEADING_2
+        );
     }
 
     /// The defect, stated directly: `ammonia::clean`'s defaults stripped every
