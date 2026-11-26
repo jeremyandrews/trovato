@@ -811,8 +811,19 @@ jobs:
     # contract is the SDK crate `trovato-sdk` (its `#[link_name]` host externs,
     # its types, its tap-side support) plus the macros plugins compile against
     # (`trovato-sdk-macros`). This job runs cargo-semver-checks against the crate
-    # as it stood on the merge base and FAILS on any SDK-breaking change that is
-    # not accompanied by a MAJOR version bump.
+    # as it stood at the latest RELEASED version and FAILS on any SDK-breaking
+    # change that is not accompanied by a MAJOR version bump.
+    #
+    # Baseline: the newest `v*` tag reachable from the PR's base (from the push's
+    # previous commit on main). It used to be the merge base, which compared a
+    # change against other changes of the same unreleased version: once the
+    # version had been bumped for a cycle, every later SDK change in that cycle
+    # read as "0.105.0 -> 0.105.0 (no change)" and failed, though no plugin
+    # author had ever been handed the API it changed (PR #178, a `FieldType`
+    # variant added inside the unreleased 0.105.0 cycle). What a plugin can be
+    # broken against is what was released, so that is what the gate compares
+    # with. With no `v*` tag reachable it falls back to the base commit itself,
+    # and on the root commit there is nothing to compare and it passes.
     #
     # Bump protocol. The SDK crates no longer carry their own version: they
     # inherit the one project version from [workspace.package], which moves in
@@ -890,9 +901,17 @@ jobs:
               exit 0
             fi
           fi
-          echo "cargo-semver-checks baseline rev: $BASE"
+          # The latest release reachable from the base, not the base itself:
+          # see the job comment. `fetch-depth: 0` brings the tags.
+          if RELEASE="$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$BASE" 2>/dev/null)"; then
+            BASELINE="$RELEASE"
+          else
+            echo "No released v* tag reachable from $BASE; comparing against $BASE itself."
+            BASELINE="$BASE"
+          fi
+          echo "cargo-semver-checks baseline rev: $BASELINE (base $BASE)"
           cargo semver-checks check-release \
-            --baseline-rev "$BASE" \
+            --baseline-rev "$BASELINE" \
             --package trovato-sdk \
             --package trovato-sdk-macros
 

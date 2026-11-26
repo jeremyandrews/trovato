@@ -122,6 +122,9 @@ struct FieldFormData {
     label: String,
     name: String,
     field_type: String,
+    /// The category a `category_reference` field holds tags of.
+    #[serde(default)]
+    category: Option<String>,
 }
 
 /// Search field configuration form data.
@@ -466,6 +469,7 @@ async fn manage_fields(
     let mut context = tera::Context::new();
     context.insert("content_type", &content_type);
     context.insert("fields", &content_type.fields);
+    context.insert("categories", &categories(&state).await);
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert(
@@ -480,6 +484,18 @@ async fn manage_fields(
         context,
     )
     .await
+}
+
+/// Every category, for the category select a category reference field needs.
+async fn categories(state: &AppState) -> Vec<crate::models::Category> {
+    state
+        .categories()
+        .list_categories()
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to list categories for the field screens");
+            Vec::new()
+        })
 }
 
 /// Add a field to a content type.
@@ -528,7 +544,13 @@ async fn add_field(
     // Add the field
     match state
         .content_types()
-        .add_field(&type_name, &form.name, &form.label, &form.field_type)
+        .add_field_in_category(
+            &type_name,
+            &form.name,
+            &form.label,
+            &form.field_type,
+            form.category.as_deref(),
+        )
         .await
     {
         Ok(_) => {
@@ -539,10 +561,13 @@ async fn add_field(
             );
             Redirect::to(&format!("/admin/structure/types/{type_name}/fields")).into_response()
         }
-        // The two the person at the screen can fix are shown to them. The
+        // The ones the person at the screen can fix are shown to them. The
         // registry owns the wording, so it is not written out again here.
         Err(
-            e @ (AddFieldError::DuplicateFieldName { .. } | AddFieldError::UnknownFieldType { .. }),
+            e @ (AddFieldError::DuplicateFieldName { .. }
+            | AddFieldError::UnknownFieldType { .. }
+            | AddFieldError::CategoryRequired
+            | AddFieldError::UnknownCategory { .. }),
         ) => rerender_field_list(&state, &session, &type_name, &form, vec![e.to_string()]).await,
         Err(e) => {
             tracing::error!(error = %e, "failed to add field");
@@ -576,6 +601,7 @@ async fn rerender_field_list(
     let mut context = tera::Context::new();
     context.insert("content_type", &content_type);
     context.insert("fields", &content_type.fields);
+    context.insert("categories", &categories(state).await);
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("errors", &errors);
@@ -585,6 +611,7 @@ async fn rerender_field_list(
             "label": form.label,
             "name": form.name,
             "field_type": form.field_type,
+            "category": form.category,
         }),
     );
     context.insert(
@@ -615,6 +642,17 @@ struct FieldEditFormData {
     label: String,
     required: Option<String>,
     cardinality: Option<i32>,
+    /// A category reference field's category.
+    #[serde(default)]
+    category: Option<String>,
+}
+
+/// The category a field holds tags of, when it is a category reference.
+fn field_category(field: &trovato_sdk::types::FieldDefinition) -> Option<&str> {
+    match &field.field_type {
+        trovato_sdk::types::FieldType::CategoryReference(category) => Some(category),
+        _ => None,
+    }
 }
 
 /// Show field edit form.
@@ -647,6 +685,8 @@ async fn edit_field_form(
     let mut context = tera::Context::new();
     context.insert("type_name", &type_name);
     context.insert("field", field);
+    context.insert("field_category", &field_category(field));
+    context.insert("categories", &categories(&state).await);
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert(
@@ -704,6 +744,25 @@ async fn edit_field_submit(
         errors.push("Number of values must be 1 or more, or -1 for unlimited.".to_string());
     }
 
+    // A category reference keeps a category: the one chosen, which must exist.
+    let category = match field_category(field) {
+        Some(current) => {
+            let chosen = form.category.as_deref().map(str::trim).unwrap_or(current);
+            if chosen.is_empty() {
+                errors.push(AddFieldError::CategoryRequired.to_string());
+            } else if !categories(&state).await.iter().any(|c| c.id == chosen) {
+                errors.push(
+                    AddFieldError::UnknownCategory {
+                        category: chosen.to_string(),
+                    }
+                    .to_string(),
+                );
+            }
+            Some(chosen.to_string())
+        }
+        None => None,
+    };
+
     if !errors.is_empty() {
         let csrf_token = generate_csrf_token(&session).await;
         let form_build_id = uuid::Uuid::new_v4().to_string();
@@ -717,6 +776,8 @@ async fn edit_field_submit(
         let mut context = tera::Context::new();
         context.insert("type_name", &type_name);
         context.insert("field", &edited_field);
+        context.insert("field_category", &category);
+        context.insert("categories", &categories(&state).await);
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("errors", &errors);
@@ -735,6 +796,16 @@ async fn edit_field_submit(
     }
 
     let required = form.required.is_some();
+
+    if let Some(category) = category.as_deref()
+        && let Err(e) = state
+            .content_types()
+            .set_field_category(&type_name, &field_name, category)
+            .await
+    {
+        tracing::error!(error = %e, "failed to change the field's category");
+        return render_server_error("Failed to update field.");
+    }
 
     match state
         .content_types()
@@ -1204,6 +1275,7 @@ pub(crate) async fn handle_ajax_add_field(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .trim();
+    let category = request.values.get("category").and_then(|v| v.as_str());
 
     // Validate
     if label.is_empty() {
@@ -1222,14 +1294,17 @@ pub(crate) async fn handle_ajax_add_field(
     // Add the field
     match state
         .content_types()
-        .add_field(type_name, name, label, field_type)
+        .add_field_in_category(type_name, name, label, field_type, category)
         .await
     {
         Ok(()) => {}
-        // Same two user-fixable refusals as the form post, same wording: the
+        // Same user-fixable refusals as the form post, same wording: the
         // registry owns the message.
         Err(
-            e @ (AddFieldError::DuplicateFieldName { .. } | AddFieldError::UnknownFieldType { .. }),
+            e @ (AddFieldError::DuplicateFieldName { .. }
+            | AddFieldError::UnknownFieldType { .. }
+            | AddFieldError::CategoryRequired
+            | AddFieldError::UnknownCategory { .. }),
         ) => {
             return Json(AjaxResponse::new().alert(e.to_string())).into_response();
         }

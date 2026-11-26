@@ -607,6 +607,18 @@ CREATE INDEX idx_term_hierarchy_parent ON category_term_hierarchy(parent_id);
 
 ### Item-Term Relationship
 
+> **As built (B72):** a field of kind `CategoryReference(category_id)` holds
+> tags of one category, stored as a plain JSON array of tag uuid strings
+> whatever the field's cardinality (`"field_topics": ["<uuid>", "<uuid>"]`):
+> the shape gather's `has_tag`, `has_any_tag`, `has_all_tags` and
+> `has_tag_or_descendants` read. Every write checks that each value names a
+> tag of that category and that there are no more values than the field's
+> `cardinality` allows (`content::field_values`, run by the item service on
+> create, update and revert, by the item form, and by config import before it
+> writes anything). The item page resolves the field into `referenced_tags`
+> (labels, slugs, route URLs and ancestors, in two queries). The
+> `{target_id, target_type}` objects sketched below were the original design.
+
 Term references are stored as field values in the item's JSONB column, consistent with all other record references:
 
 ```json

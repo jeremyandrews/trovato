@@ -23,8 +23,10 @@ package trovato:kernel;
 /// Writes go through the kernel's item service, exactly as a person's edit does:
 /// save-item and delete-item fire tap-item-presave, tap-item-insert or
 /// tap-item-update, tap-item-update-index and tap-item-delete on the other
-/// plugins, run the field and publish write gates (a refusal is -60), record a
-/// revision and refresh the item cache. A tap handling a write may write again:
+/// plugins, run the field and publish write gates (a refusal is -60) and the
+/// field value check (too many values for a field's cardinality, or a value
+/// that is not a tag of a category reference field's category: -65,
+/// ERR_ITEM_INVALID_FIELDS), record a revision and refresh the item cache. A tap handling a write may write again:
 /// the nested write fires its taps to every plugin except those whose write tap
 /// is already running around it, and a write nested 4 write taps deep is
 /// refused with -63 (ERR_ITEM_WRITE_DEPTH). A call made while an access

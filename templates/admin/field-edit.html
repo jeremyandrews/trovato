@@ -33,6 +33,18 @@
             </div>
         </dl>
 
+        {% if field_category %}
+        <div class="form-item">
+            <label for="edit_field_category" class="form-item__label">{{ t(s="Category") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
+            <p class="form-item__description" id="edit_field_category-hint">{{ t(s="The field holds tags of this category. Values already saved are not changed; the next save of the field is checked against the category chosen here.") }}</p>
+            <select id="edit_field_category" name="category" class="form-select" required aria-describedby="edit_field_category-hint">
+                {% for category in categories %}
+                <option value="{{ category.id }}"{% if field_category == category.id %} selected{% endif %}>{{ category.label }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        {% endif %}
+
         <div class="form-item">
             <div class="form-checkbox-wrapper">
                 <input type="checkbox" id="edit_field_required" name="required" value="1" aria-describedby="edit_field_required-hint"

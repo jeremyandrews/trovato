@@ -637,7 +637,8 @@ fn tap_item_info() -> Vec<ContentTypeDefinition> {
 | Date | `FieldType::Date` | Date value |
 | Email | `FieldType::Email` | Email address |
 | File | `FieldType::File` | File upload |
-| Reference | `FieldType::RecordReference(target_type)` | Reference to another record |
+| Reference | `FieldType::RecordReference(target_type)` | Reference to another item, of one content type |
+| Category reference | `FieldType::CategoryReference(category_id)` | Tags of one category: a JSON array of tag uuid strings, whatever the cardinality. Every write refuses a value that is not a tag of that category. Added in B72 (0.107.0). `FieldType` is `#[non_exhaustive]`, so a plugin that matches on it needs a `_` arm |
 
 ### Field Options
 
@@ -647,7 +648,7 @@ these options besides its name, type and label:
 | Option | Default | Meaning |
 |--------|---------|---------|
 | `required` | `false` | The form refuses a save without a value |
-| `cardinality` | `1` | How many values: `1` single, `-1` unlimited, `n` at most `n`. The form shows each stored value plus one empty slot and an "Add another" button, and refuses more than `n` |
+| `cardinality` | `1` | How many values: `1` single, `-1` unlimited, `n` at most `n`. The form shows each stored value plus one empty slot and an "Add another" button. Every write path refuses more than `n` (the item form, the item API, `save-item`, config import): a JSON array counts its elements, any other value counts as one |
 | `settings` | `{}` | Type specific settings, and `visible_when` (below) |
 | `personal_data` | `false` | Included in data exports and anonymised on account deletion |
 
