@@ -308,6 +308,39 @@ impl Category {
 }
 
 impl Tag {
+    /// A slug for `label` that no tag of `category_id` has yet, or `None` when
+    /// the label slugifies to nothing. One query for the taken slugs.
+    async fn free_slug(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        category_id: &str,
+        label: &str,
+    ) -> Result<Option<String>> {
+        let mut base = crate::services::pathauto::slugify(label);
+        if base.len() > 120 {
+            base.truncate(120);
+            base = base.trim_end_matches('-').to_string();
+        }
+        if base.is_empty() {
+            return Ok(None);
+        }
+        let taken: Vec<String> = sqlx::query_scalar(
+            "SELECT slug FROM category_tag WHERE category_id = $1 \
+             AND (slug = $2 OR slug LIKE $2 || '-%')",
+        )
+        .bind(category_id)
+        .bind(&base)
+        .fetch_all(&mut **tx)
+        .await
+        .context("failed to read the slugs a category has")?;
+        if !taken.contains(&base) {
+            return Ok(Some(base));
+        }
+        let free = (1..)
+            .map(|n| format!("{base}-{n}"))
+            .find(|candidate| !taken.contains(candidate));
+        Ok(free)
+    }
+
     /// Find a tag by ID.
     pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Self>> {
         let tag = sqlx::query_as::<_, Self>(
@@ -454,11 +487,22 @@ impl Tag {
     }
 
     /// Create a new tag.
-    pub async fn create(pool: &PgPool, input: CreateTag) -> Result<Self> {
+    ///
+    /// A tag created without a slug gets one from its label (B161), unique in
+    /// its category (`pv2-term`, then `pv2-term-1`, ...): the slug is the
+    /// address of the tag's page (`/category/tags/pv2-term`, through a gather
+    /// route's `tag_category` segment), so a tag added in the admin has a page
+    /// at once, as Drupal's pathauto gave a new term an alias. A label with
+    /// nothing a slug can carry gets none, as before.
+    pub async fn create(pool: &PgPool, mut input: CreateTag) -> Result<Self> {
         let now = chrono::Utc::now().timestamp();
         let id = Uuid::now_v7();
 
         let mut tx = pool.begin().await.context("failed to start transaction")?;
+
+        if input.slug.as_deref().is_none_or(str::is_empty) {
+            input.slug = Self::free_slug(&mut tx, &input.category_id, &input.label).await?;
+        }
 
         // Insert tag
         sqlx::query(

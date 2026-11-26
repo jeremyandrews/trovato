@@ -38,6 +38,18 @@ pub struct UrlAlias {
     pub changed: i64,
 }
 
+/// What [`UrlAlias::resolve_path`] found for a requested path.
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct AliasMatch {
+    #[sqlx(flatten)]
+    pub alias: UrlAlias,
+    /// Whether the path matched the alias exactly (as requested or
+    /// percent-decoded), not only ignoring case.
+    pub exact: bool,
+    /// The same source's alias in the requested language, if it has one.
+    pub own_alias: Option<String>,
+}
+
 /// Input for creating a URL alias.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateUrlAlias {
@@ -136,6 +148,55 @@ impl UrlAlias {
         .context("failed to fetch url alias by alias path")?;
 
         Ok(alias)
+    }
+
+    /// Resolve a requested path to an alias, in one indexed query (B161).
+    ///
+    /// `candidates` are the forms the path may be stored in, each matched
+    /// exactly: the path as requested (percent-encoded) and percent-decoded, so
+    /// `/es/recipes/quiche-mediterr%C3%A1neo-profundo` finds the alias stored
+    /// as `quiche-mediterráneo-profundo` and an alias stored encoded still
+    /// resolves as it did. When none matches exactly, a match ignoring case
+    /// (`lower(alias)`, its own index) is returned with `exact` false, for the
+    /// caller to redirect to the stored spelling.
+    ///
+    /// Rows are preferred as [`Self::find_by_alias_with_context`] prefers them
+    /// (exact first, then `language`, then `en`, then any). `own_alias` is the
+    /// same source's alias in `language` on the same stage, if it has one: the
+    /// address to send a request to when it named the source by another
+    /// language's alias.
+    pub async fn resolve_path(
+        pool: &PgPool,
+        candidates: &[&str],
+        stage_id: Uuid,
+        language: &str,
+    ) -> Result<Option<AliasMatch>> {
+        let Some(lowered) = candidates.last() else {
+            return Ok(None);
+        };
+        let found = sqlx::query_as::<_, AliasMatch>(
+            r#"
+            SELECT a.id, a.source, a.alias, a.language, a.stage_id, a.created, a.changed,
+                   (a.alias = ANY($1)) AS exact,
+                   (SELECT o.alias FROM url_alias o
+                     WHERE o.source = a.source AND o.stage_id = a.stage_id AND o.language = $3
+                     ORDER BY o.created DESC, o.id DESC LIMIT 1) AS own_alias
+            FROM url_alias a
+            WHERE (a.alias = ANY($1) OR lower(a.alias) = lower($2)) AND a.stage_id = $4
+            ORDER BY (a.alias = ANY($1)) DESC,
+                     CASE WHEN a.language = $3 THEN 0 WHEN a.language = 'en' THEN 1 ELSE 2 END,
+                     a.created DESC, a.id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(candidates)
+        .bind(*lowered)
+        .bind(language)
+        .bind(stage_id)
+        .fetch_optional(pool)
+        .await
+        .context("failed to resolve a path to an alias")?;
+        Ok(found)
     }
 
     /// Find all URL aliases for a given source path.
