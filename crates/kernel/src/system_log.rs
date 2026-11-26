@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use serde::Serialize;
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use tokio::sync::mpsc;
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
@@ -303,34 +303,46 @@ pub struct LogEntry {
 pub struct LogFilter {
     pub level: Option<String>,
     pub log_type: Option<String>,
+    /// An escaped `ILIKE` pattern the message must match.
+    pub message_like: Option<String>,
 }
 
-/// One page of entries, newest first, and the total that match.
+/// The conditions a [`LogFilter`] adds, its values bound as `$1` to `$3`.
+const LOG_FILTER_SQL: &str = "WHERE ($1::text IS NULL OR level = $1) \
+     AND ($2::text IS NULL OR log_type = $2) \
+     AND ($3::text IS NULL OR message ILIKE $3)";
+
+/// One page of entries and the total that match, ordered newest first, or
+/// by `order_by` when given. `order_by` must come from the screen's own
+/// allowed columns (`routes::admin_list::Sort::order_by`), never from a
+/// request.
 pub async fn list(
     pool: &PgPool,
     filter: &LogFilter,
+    order_by: Option<&str>,
     limit: i64,
     offset: i64,
 ) -> Result<(Vec<LogEntry>, i64), sqlx::Error> {
-    let entries = sqlx::query_as::<_, LogEntry>(
+    let order_by = order_by.unwrap_or("id DESC");
+    let list_sql = format!(
         "SELECT id, created, level, log_type, message, context FROM system_log \
-         WHERE ($1::text IS NULL OR level = $1) AND ($2::text IS NULL OR log_type = $2) \
-         ORDER BY id DESC LIMIT $3 OFFSET $4",
-    )
-    .bind(&filter.level)
-    .bind(&filter.log_type)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(pool)
-    .await?;
-    let total: i64 = sqlx::query_scalar(
-        "SELECT count(*) FROM system_log \
-         WHERE ($1::text IS NULL OR level = $1) AND ($2::text IS NULL OR log_type = $2)",
-    )
-    .bind(&filter.level)
-    .bind(&filter.log_type)
-    .fetch_one(pool)
-    .await?;
+         {LOG_FILTER_SQL} ORDER BY {order_by}, id DESC LIMIT $4 OFFSET $5"
+    );
+    let entries = sqlx::query_as::<_, LogEntry>(AssertSqlSafe(list_sql))
+        .bind(&filter.level)
+        .bind(&filter.log_type)
+        .bind(&filter.message_like)
+        .bind(limit)
+        .bind(offset)
+        .fetch_all(pool)
+        .await?;
+    let count_sql = format!("SELECT count(*) FROM system_log {LOG_FILTER_SQL}");
+    let total: i64 = sqlx::query_scalar(AssertSqlSafe(count_sql))
+        .bind(&filter.level)
+        .bind(&filter.log_type)
+        .bind(&filter.message_like)
+        .fetch_one(pool)
+        .await?;
     Ok((entries, total))
 }
 

@@ -2,14 +2,17 @@
 //!
 //! `/admin/reports/cron` shows the last cron run (when, on which server, how
 //! long, what it did) and runs cron now, in this process, from a button.
-//! `/admin/reports/log` pages through `system_log`, filtered by level and
-//! type. Both take `administer site`, as `/cron/status` does.
+//! `/admin/reports/log` pages through `system_log`, filtered by message text,
+//! level and type, and sorted by time, level or type. Both take
+//! `administer site`, as `/cron/status` does.
+
+use std::collections::HashMap;
 
 use axum::extract::{Query, State};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
 use axum::{Form, Router};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tower_sessions::Session;
 
 use crate::content::submission::PostedForm;
@@ -18,6 +21,7 @@ use crate::form::{FormElement, FormState, ProcessError};
 use crate::state::AppState;
 use crate::system_log::LogFilter;
 
+use super::admin_list::{ListQuery, PER_PAGE};
 use super::helpers::{
     render_admin_template, render_error, render_server_error, require_permission,
 };
@@ -27,9 +31,6 @@ const PERMISSION: &str = "administer site";
 
 /// Session key for the cron report's message after Run now.
 const CRON_FLASH_KEY: &str = "cron_report_flash";
-
-/// Entries per page on the log screen.
-const PER_PAGE: i64 = 50;
 
 /// The levels the log filter offers.
 const LEVELS: &[&str] = &["error", "warn", "info"];
@@ -182,20 +183,25 @@ async fn run_cron_now(
 // Log
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
-struct LogQuery {
-    #[serde(default)]
-    level: String,
-    #[serde(default, rename = "type")]
-    log_type: String,
-    page: Option<i64>,
-}
+/// The log's sortable columns: key and SQL. `time` is the row id, which is
+/// the order rows were written in; `level` orders by severity, least first.
+const LOG_SORTS: &[(&str, &str)] = &[
+    ("time", "id"),
+    (
+        "level",
+        "CASE level WHEN 'error' THEN 3 WHEN 'warn' THEN 2 ELSE 1 END",
+    ),
+    ("type", "log_type"),
+];
 
 /// GET /admin/reports/log
+///
+/// The parameters: `q` (message contains), `level`, `type`, `sort` and
+/// `page`.
 async fn log_report(
     State(state): State<AppState>,
     session: Session,
-    Query(query): Query<LogQuery>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> Response {
     let user = match require_permission(&state, &session, PERMISSION).await {
         Ok(user) => user,
@@ -203,49 +209,45 @@ async fn log_report(
     };
     let viewer = super::helpers::user_context_for(&state, &user).await;
 
+    let query = ListQuery::from_params(&params);
+    let sort = query.sort(LOG_SORTS, ("time", true));
+    let wanted_level = params.get("level").map(String::as_str).unwrap_or("");
     let level = LEVELS
         .iter()
-        .find(|l| **l == query.level)
+        .find(|l| **l == wanted_level)
         .map(|l| (*l).to_string());
-    let log_type = Some(query.log_type.trim().to_string()).filter(|t| !t.is_empty());
+    let log_type = params
+        .get("type")
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty());
     let filter = LogFilter {
         level: level.clone(),
         log_type: log_type.clone(),
+        message_like: query.like(),
     };
-    let page = query.page.unwrap_or(1).max(1);
 
-    let (entries, total) =
-        match crate::system_log::list(state.db(), &filter, PER_PAGE, (page - 1) * PER_PAGE).await {
-            Ok(found) => found,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to read the system log");
-                return render_server_error("The log could not be read.");
-            }
-        };
+    let (entries, total) = match crate::system_log::list(
+        state.db(),
+        &filter,
+        Some(&sort.order_by()),
+        PER_PAGE,
+        query.offset(),
+    )
+    .await
+    {
+        Ok(found) => found,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to read the system log");
+            return render_server_error("The log could not be read.");
+        }
+    };
     let types = crate::system_log::types(state.db())
         .await
         .unwrap_or_default();
 
-    // The query string for the pager links, so a page keeps its filter.
-    let mut filter_query: Vec<(&str, String)> = Vec::new();
-    if let Some(level) = &level {
-        filter_query.push(("level", level.clone()));
-    }
-    if let Some(log_type) = &log_type {
-        filter_query.push(("type", log_type.clone()));
-    }
-    let filter_qs = filter_query
-        .iter()
-        .map(|(k, v)| format!("{k}={}", urlencoding::encode(v)))
-        .collect::<Vec<_>>()
-        .join("&");
-
     let mut context = tera::Context::new();
+    context.insert("list", &query.view(total, entries.len(), Some(&sort)));
     context.insert("entries", &entries);
-    context.insert("total", &total);
-    context.insert("page", &page);
-    context.insert("per_page", &PER_PAGE);
-    context.insert("total_pages", &((total + PER_PAGE - 1) / PER_PAGE).max(1));
     context.insert("levels", LEVELS);
     context.insert("types", &types);
     context.insert("level_filter", &level.unwrap_or_default());
@@ -256,7 +258,6 @@ async fn log_report(
     context.insert("level_options", &level_options);
     let type_options: Vec<(&str, &str)> = types.iter().map(|t| (t.as_str(), t.as_str())).collect();
     context.insert("type_options", &type_options);
-    context.insert("filter_qs", &filter_qs);
     context.insert("path", "/admin/reports/log");
     render_admin_template(&state, &viewer, "admin/reports/log.html", context).await
 }

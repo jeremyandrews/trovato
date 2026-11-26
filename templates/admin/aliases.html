@@ -1,56 +1,58 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
+
+{#- The URL alias listing. `list` is its filter, sort and page
+    (routes::admin_list); the filter and the page are in the query. -#}
 
 {% block page_title %}{{ t(s="URL aliases") }}{% endblock page_title %}
 {% block page_actions %}{{ list::add_link(url="/admin/structure/aliases/add", label=t(s="Add URL alias")) }}{% endblock page_actions %}
 
 {% block content %}
-{% if aliases %}
-<p class="result-count">{{ t(s="{count} alias in total.", plural="{count} aliases in total.", count=total) }}</p>
-
-<div class="table-scroll" role="region" aria-labelledby="aliases-caption" tabindex="0">
-    <table class="table">
-        <caption id="aliases-caption">{{ t(s="URL aliases") }}</caption>
-        <thead>
-            <tr>
-                <th scope="col">{{ t(s="Alias") }}</th>
-                <th scope="col">{{ t(s="Source") }}</th>
-                <th scope="col">{{ t(s="Language") }}</th>
-                <th scope="col">{{ t(s="Created") }}</th>
-                <th scope="col">{{ t(s="Operations") }}</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for alias in aliases %}
-            <tr>
-                <th scope="row">
-                    <a href="{{ alias.alias }}">{{ alias.alias }}</a>
-                </th>
-                <td><code>{{ alias.source }}</code></td>
-                <td>{{ alias.language }}</td>
-                <td>{{ alias.created_display }}</td>
-                <td class="operations">
-                    <a href="/admin/structure/aliases/{{ alias.id }}/edit">{{ t(s="Edit {name}", name=alias.alias) }}</a>
-                    {{ list::delete_button(action="/admin/structure/aliases/" ~ alias.id ~ "/delete", label=t(s="Delete {name}", name=alias.alias), confirm_text=t(s="Are you sure you want to delete this alias?"), csrf_token=csrf_token) }}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+<div class="admin-card">
+    {{ list::filter_start(action="/admin/structure/aliases", label=t(s="Filter URL aliases")) }}
+        {{ form::field(name="q", type="search", label=t(s="Alias or source contains"), value=list.q, width="20", wrapper="filter-item") }}
+    {{ list::filter_end(list=list, action="/admin/structure/aliases") }}
 </div>
+{{ list::sort_form(list=list, action="/admin/structure/aliases") }}
 
-{% if total_pages > 1 %}
-<nav class="pagination" aria-label="{{ t(s='Pagination') }}">
-    {% for p in range(start=1, end=total_pages + 1) %}
-        {% if p == page %}
-        <span class="pagination__current" aria-current="page">{{ p }}</span>
-        {% else %}
-        <a href="/admin/structure/aliases?page={{ p }}" class="pagination__link">{{ p }}</a>
-        {% endif %}
-    {% endfor %}
-</nav>
-{% endif %}
-
+{% if aliases %}
+<div class="admin-card">
+    {{ list::count(list=list) }}
+    <div class="table-scroll" role="region" aria-labelledby="aliases-caption" tabindex="0">
+        <table class="table table--stack">
+            <caption id="aliases-caption">{{ t(s="URL aliases") }}</caption>
+            <thead>
+                <tr>
+                    {{ list::sort_th(label=t(s="Alias"), key="alias", list=list) }}
+                    {{ list::sort_th(label=t(s="Source"), key="source", list=list) }}
+                    {{ list::sort_th(label=t(s="Language"), key="language", list=list) }}
+                    {{ list::sort_th(label=t(s="Created"), key="created", list=list) }}
+                    <th scope="col" class="operations">{{ t(s="Operations") }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for alias in aliases %}
+                <tr>
+                    <th scope="row">
+                        <a href="{{ alias.alias }}">{{ alias.alias }}</a>
+                    </th>
+                    <td><code>{{ alias.source }}</code></td>
+                    <td>{{ alias.language }}</td>
+                    <td>{{ alias.created_display }}</td>
+                    <td class="operations">
+                        <a href="/admin/structure/aliases/{{ alias.id }}/edit">{{ t(s="Edit {name}", name=alias.alias) }}</a>
+                        {{ list::delete_button(action="/admin/structure/aliases/" ~ alias.id ~ "/delete", label=t(s="Delete {name}", name=alias.alias), confirm_text=t(s="Are you sure you want to delete this alias?"), csrf_token=csrf_token) }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {{ list::pager(list=list, action="/admin/structure/aliases", label=t(s="Pages of URL aliases")) }}
+</div>
+{% elif list.filtered %}
+{{ list::empty(message=t(s="No URL alias matches this filter."), add_url="/admin/structure/aliases", add_label=t(s="Clear filter")) }}
 {% else %}
 {{ list::empty(message=t(s="No URL aliases found."), add_url="/admin/structure/aliases/add", add_label=t(s="Add URL alias")) }}
 {% endif %}

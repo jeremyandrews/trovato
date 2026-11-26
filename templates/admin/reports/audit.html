@@ -1,44 +1,58 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
-{% import "admin/macros/pager.html" as pager %}
+
+{#- The audit log. `list` is its filter, sort and page (routes::admin_list),
+    newest first unless a column says otherwise. -#}
 
 {% block page_title %}{{ t(s="Audit log") }}{% endblock page_title %}
 
 {% block content %}
-{% if entries %}
-<div class="table-scroll" role="region" aria-labelledby="audit-caption" tabindex="0">
-    <table class="table">
-        <caption id="audit-caption">{{ t(s="Recorded changes, newest first") }}</caption>
-        <thead>
-            <tr>
-                <th scope="col">{{ t(s="Time (UTC)") }}</th>
-                <th scope="col">{{ t(s="User") }}</th>
-                <th scope="col">{{ t(s="Action") }}</th>
-                <th scope="col">{{ t(s="Type") }}</th>
-                <th scope="col">{{ t(s="ID") }}</th>
-                <th scope="col">{{ t(s="Address") }}</th>
-                <th scope="col">{{ t(s="Details") }}</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for entry in entries %}
-            <tr>
-                <th scope="row" class="log-time">{{ entry.created | format_date(format="%Y-%m-%d %H:%M:%S") }}</th>
-                <td>{% if entry.user_name %}{{ entry.user_name }}{% elif entry.user_id %}{{ entry.user_id }}{% else %}-{% endif %}</td>
-                <td>{{ entry.action }}</td>
-                <td>{{ entry.entity_type }}</td>
-                <td>{% if entry.entity_type == "item" %}<a href="/item/{{ entry.entity_id }}">{{ entry.entity_id }}</a>{% else %}{{ entry.entity_id }}{% endif %}</td>
-                <td>{{ entry.ip_address }}</td>
-                <td class="log-context">
-                    {% for key, value in entry.details %}<span class="log-context__pair">{{ key }}={% if value is string %}{{ value }}{% else %}{{ value | json_encode }}{% endif %}</span> {% endfor %}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+<div class="admin-card">
+    {{ list::filter_start(action="/admin/reports/audit", label=t(s="Filter the audit log")) }}
+        {{ form::field(name="q", type="search", label=t(s="Action, type, ID or user contains"), value=list.q, width="20", wrapper="filter-item") }}
+    {{ list::filter_end(list=list, action="/admin/reports/audit") }}
 </div>
-<p class="pagination-info">{{ t(s="{count} entry", plural="{count} entries", count=total) }}</p>
-{{ pager::pager(current_page=page, total_pages=total_pages, base_url="/admin/reports/audit") }}
+{{ list::sort_form(list=list, action="/admin/reports/audit") }}
+
+{% if entries %}
+<div class="admin-card">
+    {{ list::count(list=list) }}
+    <div class="table-scroll" role="region" aria-labelledby="audit-caption" tabindex="0">
+        <table class="table table--stack">
+            <caption id="audit-caption">{{ t(s="Recorded changes") }}</caption>
+            <thead>
+                <tr>
+                    {{ list::sort_th(label=t(s="Time (UTC)"), key="time", list=list) }}
+                    {{ list::sort_th(label=t(s="User"), key="user", list=list) }}
+                    {{ list::sort_th(label=t(s="Action"), key="action", list=list) }}
+                    {{ list::sort_th(label=t(s="Type"), key="type", list=list) }}
+                    <th scope="col">{{ t(s="ID") }}</th>
+                    <th scope="col">{{ t(s="Address") }}</th>
+                    <th scope="col">{{ t(s="Details") }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for entry in entries %}
+                <tr>
+                    <th scope="row" class="log-time">{{ entry.created | format_date(format="%Y-%m-%d %H:%M:%S") }}</th>
+                    <td>{% if entry.user_name %}{{ entry.user_name }}{% elif entry.user_id %}{{ entry.user_id }}{% else %}-{% endif %}</td>
+                    <td>{{ entry.action }}</td>
+                    <td>{{ entry.entity_type }}</td>
+                    <td>{% if entry.entity_type == "item" %}<a href="/item/{{ entry.entity_id }}">{{ entry.entity_id }}</a>{% else %}{{ entry.entity_id }}{% endif %}</td>
+                    <td>{{ entry.ip_address }}</td>
+                    <td class="log-context">
+                        {% for key, value in entry.details %}<span class="log-context__pair">{{ key }}={% if value is string %}{{ value }}{% else %}{{ value | json_encode }}{% endif %}</span> {% endfor %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {{ list::pager(list=list, action="/admin/reports/audit", label=t(s="Pages of the audit log")) }}
+</div>
+{% elif list.filtered %}
+{{ list::empty(message=t(s="No audit entry matches this filter."), add_url="/admin/reports/audit", add_label=t(s="Clear filter")) }}
 {% else %}
 {{ list::empty(message=t(s="Nothing has been recorded yet.")) }}
 {% endif %}
