@@ -442,6 +442,7 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Events {
 
 /// `run`'s own result, and the number of `sqlx::query` statements it issued.
 async fn statement_count<F: std::future::Future<Output = T>, T>(run: F) -> (T, usize) {
+    common::scoped_subscribers_see_every_callsite();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let subscriber = tracing_subscriber::registry().with(Events(seen.clone()));
     let result = run.with_subscriber(subscriber).await;
@@ -500,6 +501,11 @@ fn a_gather_costs_the_same_queries_for_one_author_as_for_twenty() {
             statement_count(gather_rows(app, &many_marker, Vec::new(), profile_viewer())).await;
         assert_eq!(many_rows.len(), 20);
 
+        assert!(
+            one_count > 0,
+            "the scoped subscriber counted no statements at all, so it is broken rather \
+             than measuring a real zero: a gather over 20 rows cannot issue zero queries"
+        );
         assert_eq!(
             one_count, many_count,
             "a gather's queries must not grow with its row count: {one_count} for one \
