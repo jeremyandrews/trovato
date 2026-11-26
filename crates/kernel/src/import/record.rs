@@ -4,7 +4,9 @@ use serde::{Deserialize, Deserializer};
 use uuid::Uuid;
 
 /// Every record type, in the order the report lists them.
-pub const RECORD_TYPES: &[&str] = &["item", "revision", "comment", "alias", "redirect"];
+pub const RECORD_TYPES: &[&str] = &[
+    "user", "item", "revision", "comment", "alias", "redirect", "tile",
+];
 
 /// One line of the file, by its `type`.
 #[derive(Debug, Deserialize)]
@@ -15,6 +17,8 @@ pub(crate) enum Record {
     Comment(CommentRecord),
     Alias(AliasRecord),
     Redirect(RedirectRecord),
+    User(UserRecord),
+    Tile(TileRecord),
 }
 
 impl Record {
@@ -26,6 +30,8 @@ impl Record {
             Self::Comment(_) => "comment",
             Self::Alias(_) => "alias",
             Self::Redirect(_) => "redirect",
+            Self::User(_) => "user",
+            Self::Tile(_) => "tile",
         }
     }
 }
@@ -131,6 +137,47 @@ pub(crate) struct RedirectRecord {
     pub language: Option<String>,
     #[serde(deserialize_with = "timestamp")]
     pub created: i64,
+}
+
+/// An account. The password, if any, only as a hash.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct UserRecord {
+    pub id: Uuid,
+    pub name: String,
+    pub mail: String,
+    #[serde(default)]
+    pub status: Option<i16>,
+    #[serde(deserialize_with = "timestamp")]
+    pub created: i64,
+    #[serde(default)]
+    pub password_hash: Option<String>,
+    #[serde(default)]
+    pub roles: Vec<String>,
+}
+
+/// A tile.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TileRecord {
+    pub id: Uuid,
+    pub machine_name: String,
+    pub label: String,
+    pub region: String,
+    #[serde(default)]
+    pub tile_type: Option<String>,
+    #[serde(default)]
+    pub config: Option<serde_json::Value>,
+    #[serde(default)]
+    pub visibility: Option<serde_json::Value>,
+    #[serde(default)]
+    pub weight: Option<i32>,
+    #[serde(default)]
+    pub status: Option<i16>,
+    #[serde(deserialize_with = "timestamp")]
+    pub created: i64,
+    #[serde(deserialize_with = "timestamp")]
+    pub changed: i64,
 }
 
 /// A date as the file may give it: Unix seconds, or an RFC 3339 string.

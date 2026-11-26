@@ -15,6 +15,8 @@ mod alias;
 mod comment;
 mod item;
 mod record;
+mod tile;
+mod user;
 
 use std::collections::BTreeMap;
 use std::io::BufRead;
@@ -241,6 +243,8 @@ async fn apply(run: &mut Run<'_>, record: Record) -> Result<Outcome> {
         Record::Comment(r) => comment::import_comment(run, r).await,
         Record::Alias(r) => alias::import_alias(run, r).await,
         Record::Redirect(r) => alias::import_redirect(run, r).await,
+        Record::User(r) => user::import_user(run, r).await,
+        Record::Tile(r) => tile::import_tile(run, r).await,
     }
 }
 

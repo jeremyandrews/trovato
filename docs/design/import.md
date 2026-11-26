@@ -65,7 +65,7 @@ The item as it is now: its current revision.
 | `title` | yes | Non-empty, at most 1000 bytes (the forms' limit). |
 | `author_id` | yes | A user id, stored or on an earlier line. |
 | `created` | yes | Authored on. |
-| `changed` | yes | Last changed; the current revision's date. Not before `created`. |
+| `changed` | yes | Last changed; the current revision's date. Not before `created`. On a change, not before the stored `changed`. |
 | `status` | no | 0 or 1; default 1. |
 | `promote`, `sticky` | no | 0 or 1; default the content type's publishing defaults. |
 | `language` | no | A configured language; default the site's default language. |
@@ -161,6 +161,15 @@ Needs the `trovato_redirects` plugin's table.
 A hash from another system (Drupal's `$S$`, bcrypt, MD5) is not accepted and
 not stored: the kernel could not verify it, so it would be an account that
 looks like it has a password and cannot sign in.
+
+A user record without `password_hash` leaves a stored password alone, so a
+password set with `reset-password` after the first run survives every later
+run. Roles listed are granted; none is taken away. The users table has no
+`changed`. A refused hash is never repeated in the error. No
+`tap_user_register` fires, so a migrated account gets no welcome mail.
+
+Tiles are on the live stage; a `machine_name` another tile holds there is
+refused, naming that tile.
 
 ## Upsert by id
 
