@@ -94,11 +94,7 @@ the group: a group's title (`Structure`, `Content`, …), case-insensitively, or
 the pre-B199 name `System`, which maps to Configuration; any other name puts the
 link in Extend. Its `card_description`, when set, is also its line on the
 landing page and what search matches beside its label; the declaration itself
-is unchanged, so no plugin needs rebuilding. An entry may also declare
-`keywords`, more words search should find it by
-(`AdminNavDefinition::new(…).keywords(["teams"])`). The field is optional, so
-a plugin built before it existed still loads; at most 20, each up to 255
-bytes.
+is unchanged, so no plugin needs rebuilding.
 
 Filtering is the one function every surface calls: the viewer passes the
 entry's gate, and its plugin is enabled. The sidebar and search are display
@@ -429,7 +425,7 @@ a test compares them link by link.
 | Settings | a setting field's label, hint and synonyms | the field itself (`/admin/config/site#site_slogan`) | the form it is on |
 | Content | item titles; the 8 most recently changed, then "All matches in Content" | the item's edit form | `/admin/content` |
 | People | account names and email addresses | the account's edit form | `/admin/people` |
-| Plugins | the pages enabled plugins declare (label, card description, keywords), and the plugins page's rows by name and description | the page, or the plugin's row (`/admin/plugins#plugin-blog`) | that page, or `/admin/plugins` |
+| Plugins | the pages enabled plugins declare (label, section, card description), and the plugins page's rows by name and description | the page, or the plugin's row (`/admin/plugins#plugin-blog`) | that page, or `/admin/plugins` |
 | Log messages | site log message text; the 8 newest | the site log filtered to it | `/admin/reports/log` |
 
 The gate of each group is the gate of the page it links to, through the

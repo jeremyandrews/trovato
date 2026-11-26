@@ -1248,8 +1248,7 @@ fn tap_admin_nav() -> Vec<AdminNavDefinition> {
             "/admin/groups",         // must start with /admin
             "administer groups",     // permission that gates the link and card
         )
-        .card("Manage user groups.")  // optional: also show a dashboard card
-        .keywords(["teams", "circles"]), // optional: more words admin search finds it by
+        .card("Manage user groups."), // optional: also show a dashboard card
     ]
 }
 ```
@@ -1268,13 +1267,10 @@ appear or go. The permission, by contrast, is checked against the viewer on
 every request, exactly as for the kernel's own links.
 
 Admin search (`/admin/search` and the command palette) finds the entry by
-its label, its section, its card description and its `keywords`, and lists
-it under "Plugins", for the same viewers who see the link. Keywords are
-optional: at most 20, each up to 255 bytes. Choose the words someone would
-type for the task ("teams" for Groups). A plugin built before `keywords`
-existed declares none and loads unchanged. The plugins page's row for the
-plugin is also found by the plugin's name and description, for whoever may
-manage plugins.
+its label, its section and its card description, and lists it under
+"Plugins", for the same viewers who see the link. The plugins page's row for
+the plugin is also found by the plugin's name and description, for whoever
+may manage plugins.
 
 `href` must be the plugin's own path below `/admin/` (`/admin/groups`, not
 `/administrator` or `/admin/../groups`: no empty, `.` or `..` segments, encoded or

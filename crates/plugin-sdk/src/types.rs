@@ -766,12 +766,6 @@ pub struct AdminNavDefinition {
     /// `label`, with this one line of description, linking to `href`.
     #[serde(default)]
     pub card_description: Option<String>,
-    /// More words admin search should find this entry by, beside its label,
-    /// section and card description: what someone might type for it
-    /// ("groups", "teams"). Optional; a plugin built before this field
-    /// existed declares none.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub keywords: Vec<String>,
 }
 
 impl AdminNavDefinition {
@@ -787,23 +781,12 @@ impl AdminNavDefinition {
             href: href.into(),
             permission: permission.into(),
             card_description: None,
-            keywords: Vec::new(),
         }
     }
 
     /// Also show this entry as a dashboard card on `/admin`.
     pub fn card(mut self, description: impl Into<String>) -> Self {
         self.card_description = Some(description.into());
-        self
-    }
-
-    /// More words admin search should find this entry by.
-    pub fn keywords<I, S>(mut self, words: I) -> Self
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<String>,
-    {
-        self.keywords = words.into_iter().map(Into::into).collect();
         self
     }
 }

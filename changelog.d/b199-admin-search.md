@@ -35,7 +35,3 @@ leads to the same results. The palette:
 `/` opens it when focus is not in a text field. Under "Search shortcuts" in
 Your preferences, each person can turn `/` off and add Control+K (Command+K
 on a Mac) or Alt+K (Option+K).
-
-Plugin authors can give an admin link search keywords:
-`AdminNavDefinition::new(…).keywords(["teams"])`. The field is optional, so
-plugins built before it existed load unchanged.

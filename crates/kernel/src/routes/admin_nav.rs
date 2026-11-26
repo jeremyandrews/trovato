@@ -755,9 +755,7 @@ pub fn offered_pages(
                     .unwrap_or_default(),
                 href: l.href.clone(),
                 also: Vec::new(),
-                synonyms: std::iter::once(l.section.clone())
-                    .chain(l.keywords.iter().cloned())
-                    .collect(),
+                synonyms: vec![l.section.clone()],
                 sidebar: true,
                 plugin: Some(l.plugin.clone()),
             }),
@@ -1500,7 +1498,6 @@ mod tests {
             label: "Groups".to_string(),
             href: "/admin/groups".to_string(),
             permission: "administer groups".to_string(),
-            keywords: vec!["teams".to_string()],
         }
     }
 
@@ -1783,24 +1780,23 @@ mod tests {
         assert!(search(&admin, &[], &[], &[], "   ", &id).is_empty());
     }
 
-    /// A plugin entry's declared keywords find it, for a viewer holding its
+    /// A plugin entry is found by its label, for a viewer holding its
     /// permission while its plugin is enabled, and not otherwise.
     #[test]
-    fn search_finds_a_plugin_entry_by_its_keywords_only_when_offered() {
+    fn search_finds_a_plugin_entry_only_when_offered() {
         let id = |s: &str| s.to_string();
         let links = [groups_link()];
+        let found = |hits: Vec<SearchHit>| hits.iter().any(|h| h.href == "/admin/groups");
         let holder = viewer(&["access administration pages", "administer groups"]);
         let enabled = ["groups".to_string()];
-        let hits = search(&holder, &enabled, &links, &[], "teams", &id);
-        assert_eq!(hits.len(), 1, "{hits:?}");
-        assert_eq!(hits[0].href, "/admin/groups");
+        assert!(found(search(&holder, &enabled, &links, &[], "groups", &id)));
         assert!(
-            search(&holder, &[], &links, &[], "teams", &id).is_empty(),
+            !found(search(&holder, &[], &links, &[], "groups", &id)),
             "disabled"
         );
         let other = viewer(&["access administration pages"]);
         assert!(
-            search(&other, &enabled, &links, &[], "teams", &id).is_empty(),
+            !found(search(&other, &enabled, &links, &[], "groups", &id)),
             "no permission"
         );
     }
