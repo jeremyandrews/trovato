@@ -4,7 +4,7 @@ use serde::{Deserialize, Deserializer};
 use uuid::Uuid;
 
 /// Every record type, in the order the report lists them.
-pub const RECORD_TYPES: &[&str] = &["item", "revision"];
+pub const RECORD_TYPES: &[&str] = &["item", "revision", "comment", "alias", "redirect"];
 
 /// One line of the file, by its `type`.
 #[derive(Debug, Deserialize)]
@@ -12,6 +12,9 @@ pub const RECORD_TYPES: &[&str] = &["item", "revision"];
 pub(crate) enum Record {
     Item(ItemRecord),
     Revision(RevisionRecord),
+    Comment(CommentRecord),
+    Alias(AliasRecord),
+    Redirect(RedirectRecord),
 }
 
 impl Record {
@@ -20,6 +23,9 @@ impl Record {
         match self {
             Self::Item(_) => "item",
             Self::Revision(_) => "revision",
+            Self::Comment(_) => "comment",
+            Self::Alias(_) => "alias",
+            Self::Redirect(_) => "redirect",
         }
     }
 }
@@ -73,6 +79,58 @@ pub(crate) struct RevisionRecord {
     pub fields: Option<serde_json::Value>,
     #[serde(default)]
     pub log: Option<String>,
+}
+
+/// A comment on an item.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CommentRecord {
+    pub id: Uuid,
+    pub item_id: Uuid,
+    #[serde(default)]
+    pub parent_id: Option<Uuid>,
+    pub author_id: Uuid,
+    #[serde(default)]
+    pub subject: Option<String>,
+    pub body: String,
+    #[serde(default)]
+    pub body_format: Option<String>,
+    #[serde(default)]
+    pub status: Option<i16>,
+    #[serde(deserialize_with = "timestamp")]
+    pub created: i64,
+    #[serde(deserialize_with = "timestamp")]
+    pub changed: i64,
+}
+
+/// A URL alias.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct AliasRecord {
+    pub id: Uuid,
+    pub source: String,
+    pub alias: String,
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(deserialize_with = "timestamp")]
+    pub created: i64,
+    #[serde(deserialize_with = "timestamp")]
+    pub changed: i64,
+}
+
+/// A redirect from an old path.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RedirectRecord {
+    pub id: Uuid,
+    pub source: String,
+    pub destination: String,
+    #[serde(default)]
+    pub status_code: Option<i16>,
+    #[serde(default)]
+    pub language: Option<String>,
+    #[serde(deserialize_with = "timestamp")]
+    pub created: i64,
 }
 
 /// A date as the file may give it: Unix seconds, or an RFC 3339 string.
