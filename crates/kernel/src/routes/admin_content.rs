@@ -14,9 +14,13 @@ use crate::state::AppState;
 use super::admin_list::{ListQuery, PER_PAGE};
 use super::helpers::{
     CsrfOnlyForm, admin_user_context, build_local_tasks, render_admin_template, render_error,
-    render_forbidden, render_not_found, render_server_error, require_csrf, require_permission,
-    single_form_field,
+    render_forbidden, render_not_found, render_server_error, require_any_permission, require_csrf,
+    require_login, require_permission, single_form_field,
 };
+
+/// Drupal's permission for the content list, without the right to edit
+/// everything on it: what an author holds to find their own work.
+pub const ACCESS_CONTENT_OVERVIEW: &str = "access content overview";
 
 /// Session key for flash messages on the content list page.
 const CONTENT_FLASH_KEY: &str = "content_admin_flash";
@@ -37,9 +41,16 @@ async fn list_content(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "edit any content").await {
-        return redirect;
-    }
+    let user = match require_any_permission(
+        &state,
+        &session,
+        &[ACCESS_CONTENT_OVERVIEW, "edit any content"],
+    )
+    .await
+    {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
 
     let type_filter = params
         .get("type")
@@ -68,6 +79,39 @@ async fn list_content(
             return render_server_error("Failed to load content.");
         }
     };
+
+    // What this viewer may do with each row. `edit any content` sees every
+    // item, as the list always showed it; whoever holds only the overview
+    // sees the items they may view, Drupal's content overview under item
+    // access, and is offered Edit and Delete only where the item pages would
+    // let them. The answers are `check_access`'s, so the list never shows or
+    // offers more than the items themselves allow.
+    let viewer = admin_user_context(&state, &user).await;
+    let editor = viewer.can("edit any content");
+    let deleter = viewer.can("delete any content");
+    let mut shown = Vec::with_capacity(items.len());
+    let mut operations: std::collections::HashMap<String, serde_json::Value> =
+        std::collections::HashMap::new();
+    for item in items {
+        if !editor && !allowed(&state, &item, "view", &viewer).await {
+            continue;
+        }
+        // Which edit form the row links to: the admin one, the item page's, or none.
+        let edit = if editor {
+            Some("admin")
+        } else if allowed(&state, &item, "edit", &viewer).await {
+            Some("item")
+        } else {
+            None
+        };
+        let delete = deleter || allowed(&state, &item, "delete", &viewer).await;
+        operations.insert(
+            item.id.to_string(),
+            serde_json::json!({ "edit": edit, "delete": delete }),
+        );
+        shown.push(item);
+    }
+    let items = shown;
 
     // Get authors for display
     let mut authors: std::collections::HashMap<String, String> = std::collections::HashMap::new();
@@ -103,6 +147,7 @@ async fn list_content(
 
     let mut context = tera::Context::new();
     context.insert("items", &items);
+    context.insert("operations", &operations);
     context.insert("authors", &authors);
     context.insert("content_types", &content_types);
     context.insert("stages", &stages);
@@ -131,6 +176,9 @@ async fn list_content(
     if !stages.is_empty() {
         bulk_options.push(("move_to_stage", "Move selected to stage"));
     }
+    // Only the actions the viewer may take are offered; the bulk handler asks
+    // the same question again.
+    bulk_options.retain(|(action, _)| bulk_action_offered(&viewer, action));
     context.insert("bulk_options", &bulk_options);
     let stage_options: Vec<(String, &str)> = stages
         .iter()
@@ -146,13 +194,7 @@ async fn list_content(
     context.insert("list", &query.view(total, items.len(), Some(&sort)));
     context.insert("path", "/admin/content");
 
-    render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/content-list.html",
-        context,
-    )
-    .await
+    render_admin_template(&state, &viewer, "admin/content-list.html", context).await
 }
 
 /// The moderated content list: every item of a moderated type whose latest
@@ -250,15 +292,43 @@ async fn list_moderated(
     render_admin_template(&state, &viewer, "admin/content-moderated.html", context).await
 }
 
+/// Whether `viewer` may do `op` to `item`; a failed check is a no.
+async fn allowed(
+    state: &AppState,
+    item: &crate::models::Item,
+    op: &str,
+    viewer: &crate::tap::UserContext,
+) -> bool {
+    matches!(state.items().check_access(item, op, viewer).await, Ok(true))
+}
+
 /// Select content type before adding.
 ///
 /// GET /admin/content/add
 async fn select_content_type(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "create content").await {
-        return redirect;
-    }
+    let user = match require_login(&state, &session).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
+    let viewer = admin_user_context(&state, &user).await;
 
-    let content_types = state.content_types().list_all().await;
+    // Drupal's chooser opens to whoever may create some type and lists those
+    // types: each link leads to `/admin/content/add/{type}`, which asks for
+    // `create {type} content`. `create content` still lists every type, as it
+    // did; nobody who may create nothing is let in.
+    let content_types: Vec<_> = state
+        .content_types()
+        .list_all()
+        .await
+        .into_iter()
+        .filter(|t| {
+            viewer.can("create content")
+                || viewer.can(&format!("create {} content", t.machine_name))
+        })
+        .collect();
+    if content_types.is_empty() && !viewer.can("create content") {
+        return render_forbidden("You do not have permission to view this page.");
+    }
 
     let mut context = tera::Context::new();
     context.insert("content_types", &content_types);
@@ -965,7 +1035,16 @@ async fn delete_content(
     Path(item_id): Path<uuid::Uuid>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    let user = match require_permission(&state, &session, "delete any content").await {
+    // `delete own content` is enough to come in, as on Drupal; whether this
+    // item may go is the item's own access check, asked before the delete so
+    // a refusal is a 403 and not a failed write.
+    let user = match require_any_permission(
+        &state,
+        &session,
+        &["delete any content", "delete own content"],
+    )
+    .await
+    {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
@@ -975,6 +1054,12 @@ async fn delete_content(
     }
 
     let user_ctx = admin_user_context(&state, &user).await;
+    let Some(item) = state.items().load(item_id).await.ok().flatten() else {
+        return render_not_found();
+    };
+    if !allowed(&state, &item, "delete", &user_ctx).await {
+        return render_forbidden("You do not have permission to delete this content.");
+    }
     match state.items().delete(item_id, &user_ctx).await {
         Ok(true) => {
             tracing::info!(item_id = %item_id, "content deleted");
@@ -1114,14 +1199,10 @@ async fn bulk_content_action(
     // each item's move is then decided by the workflow in
     // `ItemService::update`. An unrecognized action asks for the edit
     // permission and is then rejected as unknown below.
-    let required: &[&str] = match form.action.as_str() {
-        "delete" => &["delete any content"],
-        "publish" | "unpublish" => &["edit any content", crate::content::PUBLISH_CONTENT],
-        _ => &["edit any content"],
-    };
+    let required = bulk_permissions(&form.action);
     let mut holder = None;
-    for permission in required {
-        match require_permission(&state, &session, permission).await {
+    for permissions in required {
+        match require_any_permission(&state, &session, permissions).await {
             Ok(user) => holder = Some(user),
             Err(redirect) => return redirect,
         }
@@ -1380,6 +1461,36 @@ pub fn router() -> Router<AppState> {
         )
         .route("/admin/content/{id}/delete", post(delete_content))
         .route("/admin/content/bulk", post(bulk_content_action))
+}
+
+/// The permission sets a bulk action needs: one of each set must be held. The
+/// "own" permissions admit an author to act on their own items, as on Drupal;
+/// every item is then checked by the service, so an author's selection of
+/// someone else's item fails for that item and changes nothing.
+fn bulk_permissions(action: &str) -> &'static [&'static [&'static str]] {
+    const EDIT: &[&str] = &["edit any content", "edit own content"];
+    const DELETE: &[&str] = &["delete any content", "delete own content"];
+    const PUBLISH: &[&str] = &[crate::content::PUBLISH_CONTENT];
+    match action {
+        "delete" => &[DELETE],
+        "publish" | "unpublish" => &[EDIT, PUBLISH],
+        _ => &[EDIT],
+    }
+}
+
+/// Whether the content list offers a bulk action to this viewer: the
+/// permissions `bulk_permissions` names, and for promote and sticky the
+/// publish or administer permission the bulk handler also asks for.
+fn bulk_action_offered(viewer: &crate::tap::UserContext, action: &str) -> bool {
+    let holds = bulk_permissions(action)
+        .iter()
+        .all(|set| set.iter().any(|p| viewer.can(p)));
+    if PROMOTION_ACTIONS.contains(&action) {
+        return holds
+            && (viewer.can(crate::content::PUBLISH_CONTENT)
+                || viewer.can(crate::content::ADMINISTER_CONTENT));
+    }
+    holds
 }
 
 #[cfg(test)]

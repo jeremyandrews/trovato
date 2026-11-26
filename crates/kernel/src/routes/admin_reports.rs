@@ -4,7 +4,8 @@
 //! long, what it did) and runs cron now, in this process, from a button.
 //! `/admin/reports/log` pages through `system_log`, filtered by message text,
 //! level and type, and sorted by time, level or type. Both take
-//! `administer site`, as `/cron/status` does.
+//! `administer site`, as `/cron/status` does; the log also opens to
+//! `access site reports`, as Drupal's recent log messages do.
 
 use std::collections::HashMap;
 
@@ -23,11 +24,15 @@ use crate::system_log::LogFilter;
 
 use super::admin_list::{ListQuery, PER_PAGE};
 use super::helpers::{
-    render_admin_template, render_error, render_server_error, require_permission,
+    render_admin_template, render_error, render_server_error, require_any_permission,
+    require_permission,
 };
 
 /// The permission both reports take.
 const PERMISSION: &str = "administer site";
+
+/// The site log's own permission, Drupal's: it opens the log and nothing else.
+pub const LOG_PERMISSION: &str = "access site reports";
 
 /// Session key for the cron report's message after Run now.
 const CRON_FLASH_KEY: &str = "cron_report_flash";
@@ -203,7 +208,7 @@ async fn log_report(
     session: Session,
     Query(params): Query<HashMap<String, String>>,
 ) -> Response {
-    let user = match require_permission(&state, &session, PERMISSION).await {
+    let user = match require_any_permission(&state, &session, &[LOG_PERMISSION, PERMISSION]).await {
         Ok(user) => user,
         Err(refusal) => return refusal,
     };
