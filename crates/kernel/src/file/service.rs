@@ -530,6 +530,62 @@ impl FileService {
         Ok(rows.into_iter().map(FileInfo::from).collect())
     }
 
+    /// One page of the admin file listing, and how many files match.
+    ///
+    /// `like` is an `ILIKE` pattern matched against the file name, bound as a
+    /// parameter like `status`. `order_by` must come from the listing's own
+    /// list of sortable columns (see `routes::admin_list`), never from the
+    /// request.
+    pub async fn admin_page(
+        &self,
+        status: Option<FileStatus>,
+        like: Option<&str>,
+        order_by: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<FileInfo>, i64)> {
+        let mut conditions = String::new();
+        let mut n = 0;
+        if status.is_some() {
+            n += 1;
+            conditions.push_str(&format!(" AND status = ${n}"));
+        }
+        if like.is_some() {
+            n += 1;
+            conditions.push_str(&format!(" AND filename ILIKE ${n}"));
+        }
+        let list_sql = format!(
+            "SELECT id, owner_id, filename, uri, filemime, filesize, status, created, changed, \
+             alt_text FROM file_managed WHERE 1=1{conditions} \
+             ORDER BY {order_by}, created DESC, id DESC LIMIT ${} OFFSET ${}",
+            n + 1,
+            n + 2
+        );
+        let count_sql = format!("SELECT COUNT(*) FROM file_managed WHERE 1=1{conditions}");
+
+        let mut list = sqlx::query_as::<_, FileRow>(AssertSqlSafe(list_sql));
+        let mut count = sqlx::query_scalar::<_, i64>(AssertSqlSafe(count_sql));
+        if let Some(s) = status {
+            list = list.bind(s as i16);
+            count = count.bind(s as i16);
+        }
+        if let Some(l) = like {
+            list = list.bind(l);
+            count = count.bind(l);
+        }
+        let rows = list
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to list the admin file page")?;
+        let total = count
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to count the admin file page")?;
+        Ok((rows.into_iter().map(FileInfo::from).collect(), total))
+    }
+
     /// Count all files.
     pub async fn count(&self) -> Result<i64> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM file_managed")
