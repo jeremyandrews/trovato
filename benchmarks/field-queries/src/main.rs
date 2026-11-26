@@ -1029,6 +1029,35 @@ impl ItemSnapshot {
         .execute(&mut *tx)
         .await
         .context("restoring the saved items")?;
+        // Writing `title`, `fields` or `type` fires the triggers that
+        // recompute `search_vector` (and any other column derived from
+        // them), which overwrite the values just restored. A recomputed
+        // vector need not match the stored one: `item_search_vector` joins
+        // the fields' vectors in the order an unordered UNION returns them,
+        // and `||` shifts positions. A second pass that sets every other
+        // column fires none of them, and puts back what was stored.
+        let derived: Vec<&String> = columns
+            .iter()
+            .filter(|c| !matches!(c.as_str(), "title" | "fields" | "type"))
+            .collect();
+        let targets = derived
+            .iter()
+            .map(|c| c.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sources = derived
+            .iter()
+            .map(|c| format!("s.{c}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        sqlx::query(AssertSqlSafe(format!(
+            "UPDATE item i SET ({targets}) = ROW({sources}) \
+             FROM jsonb_populate_recordset(NULL::item, $1::jsonb) s WHERE i.id = s.id"
+        )))
+        .bind(&self.rows)
+        .execute(&mut *tx)
+        .await
+        .context("restoring the columns triggers derive")?;
         sqlx::query("DELETE FROM item_revision WHERE item_id = ANY($1) AND NOT (id = ANY($2))")
             .bind(&self.ids)
             .bind(&self.revisions)
