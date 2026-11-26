@@ -964,10 +964,17 @@ impl Item {
             n += 1;
             conditions.push_str(&format!(" AND title ILIKE ${n}"));
         }
+        // Ties fall back to the newest first, then the id, so a page is
+        // stable; a sort by `changed` needs only the id after it.
+        let ties = if order_by.starts_with("changed ") {
+            "id DESC"
+        } else {
+            "changed DESC, id DESC"
+        };
         let list_sql = format!(
             "SELECT id, current_revision_id, type, title, author_id, status, created, changed, \
              promote, sticky, fields, stage_id, language, item_group_id, retention_days \
-             FROM item WHERE 1=1{conditions} ORDER BY {order_by}, changed DESC, id DESC \
+             FROM item WHERE 1=1{conditions} ORDER BY {order_by}, {ties} \
              LIMIT ${} OFFSET ${}",
             n + 1,
             n + 2

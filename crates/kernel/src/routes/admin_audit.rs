@@ -77,12 +77,18 @@ async fn audit_report(
         "SELECT COUNT(*) FROM audit_log a LEFT JOIN users u ON u.id = a.user_id{condition}"
     );
     let mut count = sqlx::query_scalar::<_, i64>(AssertSqlSafe(count_sql));
+    // Ties: newest first, then the id; a sort by time needs only the id.
+    let order_by = sort.order_by();
+    let ties = if order_by.starts_with("a.created ") {
+        "a.id DESC"
+    } else {
+        "a.created DESC, a.id DESC"
+    };
     let list_sql = format!(
         "SELECT a.created, a.action, a.entity_type, a.entity_id, a.user_id, \
                 u.name AS user_name, a.ip_address, a.details \
          FROM audit_log a LEFT JOIN users u ON u.id = a.user_id{condition} \
-         ORDER BY {}, a.created DESC, a.id DESC LIMIT ${} OFFSET ${}",
-        sort.order_by(),
+         ORDER BY {order_by}, {ties} LIMIT ${} OFFSET ${}",
         n + 1,
         n + 2
     );
