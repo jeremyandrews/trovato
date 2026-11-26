@@ -1,0 +1,14 @@
+{#- The sitewide footer call to action (test_page_builder_components): the
+    `pb_footer_cta` custom HTML tile, unless the page's root fields say
+    otherwise. `page_root.footer_cta_mode` is the page's choice or the
+    declared default; an empty template leaves the tile off the page. -#}
+{%- set mode = "default" -%}
+{%- if page_root.footer_cta_mode is defined %}{% set mode = page_root.footer_cta_mode %}{% endif -%}
+{%- if mode == "hide" -%}
+{%- elif mode == "custom" and page_root.footer_cta_content_html is defined -%}
+{# SAFE: footer_cta_content_html is the kernel's sanitized Markdown rendering of a rich_text root field. #}
+<div class="footer-cta footer-cta--custom">{{ page_root.footer_cta_content_html | safe }}</div>
+{%- else -%}
+{# SAFE: body is the tile's body, already through its text format's filter pipeline. #}
+<div class="footer-cta footer-cta--default">{{ body | safe }}</div>
+{%- endif -%}

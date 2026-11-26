@@ -12,9 +12,9 @@ use crate::models::CreateItem;
 use crate::state::AppState;
 
 use super::helpers::{
-    CsrfOnlyForm, admin_user_context, build_local_tasks, html_escape, render_admin_template,
-    render_error, render_forbidden, render_not_found, render_server_error, require_csrf,
-    require_permission, single_form_field,
+    CsrfOnlyForm, admin_user_context, build_local_tasks, render_admin_template, render_error,
+    render_forbidden, render_not_found, render_server_error, require_csrf, require_permission,
+    single_form_field,
 };
 
 /// Session key for flash messages on the content list page.
@@ -72,7 +72,7 @@ async fn list_content(
     let csrf_token = generate_csrf_token(&session).await;
 
     // Read and clear flash message
-    let flash: Option<String> = session.get(CONTENT_FLASH_KEY).await.ok().flatten();
+    let flash: Option<serde_json::Value> = session.get(CONTENT_FLASH_KEY).await.ok().flatten();
     if flash.is_some()
         && let Err(e) = session.remove::<String>(CONTENT_FLASH_KEY).await
     {
@@ -100,6 +100,97 @@ async fn list_content(
         context,
     )
     .await
+}
+
+/// The moderated content list: every item of a moderated type whose latest
+/// revision is a Draft or Archived, newest change first.
+///
+/// GET /admin/content/moderated, `?state=draft` or `?state=archived` to narrow
+/// it. For a holder of `view latest version` or `edit any content`.
+async fn list_moderated(
+    State(state): State<AppState>,
+    session: Session,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    use crate::content::moderation;
+
+    let viewer = crate::routes::helpers::get_user_context(&session, &state).await;
+    if !(viewer.can(moderation::VIEW_LATEST_VERSION) || viewer.can("edit any content")) {
+        return match require_permission(&state, &session, moderation::VIEW_LATEST_VERSION).await {
+            Err(refusal) => refusal,
+            Ok(_) => render_forbidden("You may not see the moderated content list."),
+        };
+    }
+    let state_filter = params
+        .get("state")
+        .and_then(|s| moderation::state(s))
+        .filter(|s| *s != moderation::PUBLISHED);
+
+    let rows = match crate::models::Item::list_moderated(state.db(), state_filter, 200).await {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to list moderated content");
+            return render_server_error("Failed to load moderated content.");
+        }
+    };
+    let mut ids: Vec<uuid::Uuid> = rows.iter().map(|r| r.id).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    // An item this viewer may not see is not listed.
+    let items = crate::models::Item::find_by_ids(state.db(), &ids)
+        .await
+        .unwrap_or_default();
+    let mut visible = std::collections::HashSet::new();
+    for item in &items {
+        if state
+            .items()
+            .check_access(item, "view", &viewer)
+            .await
+            .unwrap_or(false)
+        {
+            visible.insert(item.id);
+        }
+    }
+    let mut author_ids: Vec<uuid::Uuid> = rows.iter().map(|r| r.author_id).collect();
+    author_ids.sort_unstable();
+    author_ids.dedup();
+    let authors = state
+        .users()
+        .names_by_ids(&author_ids)
+        .await
+        .unwrap_or_default();
+    let labels: std::collections::HashMap<String, String> = state
+        .content_types()
+        .list_all()
+        .await
+        .into_iter()
+        .map(|ct| (ct.machine_name, ct.label))
+        .collect();
+    let listed: Vec<serde_json::Value> = rows
+        .iter()
+        .filter(|r| visible.contains(&r.id))
+        .map(|r| {
+            serde_json::json!({
+                "id": r.id,
+                "title": r.title,
+                "type": labels.get(&r.item_type).unwrap_or(&r.item_type),
+                "author": authors.get(&r.author_id).cloned().unwrap_or_else(|| {
+                    crate::models::user::ANONYMOUS_DISPLAY_NAME.to_string()
+                }),
+                "state": moderation::label(&r.state),
+                "ahead": r.ahead,
+                "changed": chrono::DateTime::from_timestamp(r.changed, 0)
+                    .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
+                    .unwrap_or_default(),
+            })
+        })
+        .collect();
+
+    let mut context = tera::Context::new();
+    context.insert("items", &listed);
+    context.insert("state_filter", &state_filter.unwrap_or(""));
+    context.insert("path", "/admin/content/moderated");
+    render_admin_template(&state, &viewer, "admin/content-moderated.html", context).await
 }
 
 /// Select content type before adding.
@@ -167,35 +258,107 @@ async fn render_content_form(
     posted: Option<&PostedForm>,
     errors: &[crate::form::ValidationError],
 ) -> Response {
+    render_content_form_page(
+        state,
+        session,
+        user_ctx,
+        content_type,
+        item,
+        posted,
+        errors,
+        None,
+    )
+    .await
+}
+
+/// The preview of a submission, above the admin content form shown again
+/// with what was posted. Nothing is saved.
+async fn render_content_preview(
+    state: &AppState,
+    session: &Session,
+    user_ctx: &crate::tap::UserContext,
+    content_type: &trovato_sdk::types::ContentTypeDefinition,
+    item: Option<&crate::models::Item>,
+    posted: &PostedForm,
+    fields: &serde_json::Map<String, serde_json::Value>,
+) -> Response {
+    let title = posted.get("title").unwrap_or_default().trim().to_string();
+    let preview = super::item_form::render_preview(
+        state,
+        user_ctx,
+        content_type,
+        &title,
+        fields,
+        "/admin/content",
+    )
+    .await;
+    render_content_form_page(
+        state,
+        session,
+        user_ctx,
+        content_type,
+        item,
+        Some(posted),
+        &[],
+        Some(preview),
+    )
+    .await
+}
+
+/// [`render_content_form`], under `preview_html` when the page answers a
+/// preview.
+#[allow(clippy::too_many_arguments)]
+async fn render_content_form_page(
+    state: &AppState,
+    session: &Session,
+    user_ctx: &crate::tap::UserContext,
+    content_type: &trovato_sdk::types::ContentTypeDefinition,
+    item: Option<&crate::models::Item>,
+    posted: Option<&PostedForm>,
+    errors: &[crate::form::ValidationError],
+    preview_html: Option<String>,
+) -> Response {
     let type_name = &content_type.machine_name;
     let path = match item {
         Some(item) => format!("/admin/content/{}/edit", item.id),
         None => format!("/admin/content/add/{type_name}"),
     };
+    let text = super::admin_nav::AdminText::for_page(state, user_ctx, &path).await;
     let mut extra = vec![(
         "cancel".to_string(),
-        crate::form::FormElement::markup(
-            r#"<a href="/admin/content" class="button button--secondary">Cancel</a>"#,
-        )
+        crate::form::FormElement::markup(format!(
+            r#"<a href="/admin/content" class="button button--secondary">{}</a>"#,
+            text.html("Cancel", &[])
+        ))
         .weight(crate::content::SUBMIT_WEIGHT + 1),
     )];
     if let Some(item) = item {
         extra.extend(super::item_form::stage_element(state, user_ctx, item).await);
     }
-    let mut form =
-        match super::item_form::build(state, session, user_ctx, content_type, item, &path, extra)
-            .await
-        {
-            Ok(form) => form,
-            Err(e) => {
-                tracing::error!(error = %e, "failed to build the content form");
-                return render_server_error("Failed to build the form.");
-            }
-        };
+    let mut form = match super::item_form::build(
+        state,
+        session,
+        user_ctx,
+        content_type,
+        item,
+        &path,
+        extra,
+        preview_html.is_some(),
+    )
+    .await
+    {
+        Ok(form) => form,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to build the content form");
+            return render_server_error("Failed to build the form.");
+        }
+    };
     if let Some(posted) = posted {
         super::item_form::redisplay(&mut form, posted);
     }
-    let form_html = match state.theme().render_form_with_errors(&form, errors) {
+    // In the viewer's admin language: the form templates' own words go
+    // through `t`.
+    let form_html = match text.scope(|| state.theme().render_form_with_errors(&form, errors)) {
         Ok(html) => html,
         Err(e) => {
             tracing::error!(error = %e, "failed to render the content form");
@@ -207,6 +370,9 @@ async fn render_content_form(
     context.insert("editing", &item.is_some());
     context.insert("content_type", content_type);
     context.insert("form_html", &form_html);
+    if let Some(preview_html) = &preview_html {
+        context.insert("preview_html", preview_html);
+    }
     context.insert("path", &path);
     if let Some(item) = item
         && let Some(lock) = super::item::take_edit_lock(state, user_ctx, item.id).await
@@ -275,6 +441,18 @@ async fn add_content_submit(
         match super::item_form::process(&state, &session, &user_ctx, &content_type, None, &posted)
             .await
         {
+            Ok((_, fields)) if super::item_form::wants_preview(&posted) => {
+                return render_content_preview(
+                    &state,
+                    &session,
+                    &user_ctx,
+                    &content_type,
+                    None,
+                    &posted,
+                    &fields,
+                )
+                .await;
+            }
             Ok(processed) => processed,
             Err(crate::form::ProcessError::Csrf) => {
                 return render_error("Invalid or expired form token. Please try again.");
@@ -324,7 +502,12 @@ async fn add_content_submit(
 
     match state
         .items()
-        .create_authored(input, publishing.created, &user_ctx)
+        .create_moderated(
+            input,
+            publishing.created,
+            requested_moderation_state(&posted),
+            &user_ctx,
+        )
         .await
     {
         Ok(item) => {
@@ -341,12 +524,10 @@ async fn add_content_submit(
             tracing::info!(item_id = %item.id, "content created");
 
             // Flash success message with link to edit the created item
-            let msg = format!(
-                "{} <a href=\"/admin/content/{}/edit\">{}</a> has been created.",
-                html_escape(&content_type.label),
-                item.id,
-                html_escape(&item.title),
-            );
+            let msg = crate::i18n::UiMessage::new("{type} {title} has been created.")
+                .arg("type", content_type.label.clone())
+                .arg("title", item.title.clone())
+                .link(format!("/admin/content/{}/edit", item.id), "Edit {title}");
             if let Err(e) = session.insert(CONTENT_FLASH_KEY, &msg).await {
                 tracing::warn!(error = %e, "failed to set flash message");
             }
@@ -354,9 +535,10 @@ async fn add_content_submit(
             Redirect::to("/admin/content").into_response()
         }
         Err(e) => {
-            // A write the field or publish gate refused is the user's to fix,
-            // so the form comes back with the reason on it rather than a 500.
-            if let Some(denied) = e.downcast_ref::<crate::content::WriteDenied>() {
+            // A write the field or publish gate or the field value check
+            // refused is the user's to fix, so the form comes back with the
+            // reason on it rather than a 500.
+            if let Some(errors) = write_refusal(&e) {
                 return render_content_form(
                     &state,
                     &session,
@@ -364,7 +546,7 @@ async fn add_content_submit(
                     &content_type,
                     None,
                     Some(&posted),
-                    &[crate::form::ValidationError::form(denied.to_string())],
+                    &errors,
                 )
                 .await;
             }
@@ -409,6 +591,24 @@ async fn add_content_submit(
             render_server_error("Failed to create content.")
         }
     }
+}
+
+/// The form errors for a write the service refused for a reason the person at
+/// the form can fix: a write gate ([`crate::content::WriteDenied`]) or the
+/// field value check ([`crate::content::InvalidFieldValues`]), each value's
+/// error beside its field. `None` for any other failure.
+fn write_refusal(e: &anyhow::Error) -> Option<Vec<crate::form::ValidationError>> {
+    if let Some(denied) = e.downcast_ref::<crate::content::WriteDenied>() {
+        return Some(vec![crate::form::ValidationError::form(denied.to_string())]);
+    }
+    e.downcast_ref::<crate::content::InvalidFieldValues>()
+        .map(|invalid| {
+            invalid
+                .0
+                .iter()
+                .map(|v| crate::form::ValidationError::field(&v.field, v.message.clone()))
+                .collect()
+        })
 }
 
 /// Show edit content form.
@@ -470,6 +670,12 @@ fn requested_status(posted: &PostedForm) -> Option<i16> {
         .then(|| i16::from(posted.contains("status")))
 }
 
+/// The content moderation state a submission asks for, on a moderated type;
+/// `None` when the form offered no choice.
+fn requested_moderation_state(posted: &PostedForm) -> Option<&str> {
+    posted.get("moderation_state").filter(|s| !s.is_empty())
+}
+
 /// The stage a submission asks to move the item to: `Ok(None)` when it asked
 /// for none, `Err` when the value is not a stage id. Whether the move is
 /// allowed is `ItemService::update`'s decision.
@@ -516,6 +722,18 @@ async fn edit_content_submit(
     )
     .await
     {
+        Ok((_, fields)) if super::item_form::wants_preview(&posted) => {
+            return render_content_preview(
+                &state,
+                &session,
+                &user_ctx,
+                &content_type,
+                Some(&item),
+                &posted,
+                &fields,
+            )
+            .await;
+        }
         Ok(processed) => processed,
         Err(crate::form::ProcessError::Csrf) => {
             return render_error("Invalid or expired form token. Please try again.");
@@ -583,7 +801,16 @@ async fn edit_content_submit(
         return response;
     }
 
-    match state.items().update(item_id, input, &user_ctx).await {
+    match state
+        .items()
+        .update_moderated(
+            item_id,
+            input,
+            requested_moderation_state(&posted),
+            &user_ctx,
+        )
+        .await
+    {
         Ok(updated) => {
             super::item::release_edit_lock(&state, &user_ctx, item_id).await;
             state
@@ -599,12 +826,10 @@ async fn edit_content_submit(
             tracing::info!(item_id = %item_id, "content updated");
 
             if let Some(ref updated_item) = updated {
-                let msg = format!(
-                    "{} <a href=\"/admin/content/{}/edit\">{}</a> has been updated.",
-                    html_escape(&content_type.label),
-                    item_id,
-                    html_escape(&updated_item.title),
-                );
+                let msg = crate::i18n::UiMessage::new("{type} {title} has been updated.")
+                    .arg("type", content_type.label.clone())
+                    .arg("title", updated_item.title.clone())
+                    .link(format!("/admin/content/{item_id}/edit"), "Edit {title}");
                 if let Err(e) = session.insert(CONTENT_FLASH_KEY, &msg).await {
                     tracing::warn!(error = %e, "failed to set flash message");
                 }
@@ -613,9 +838,8 @@ async fn edit_content_submit(
             Redirect::to("/admin/content").into_response()
         }
         Err(e) => {
-            // As on the add path: a gate refusal belongs on the form, not in a
-            // 500.
-            if let Some(denied) = e.downcast_ref::<crate::content::WriteDenied>() {
+            // As on the add path: a refusal belongs on the form, not in a 500.
+            if let Some(errors) = write_refusal(&e) {
                 return render_content_form(
                     &state,
                     &session,
@@ -623,7 +847,7 @@ async fn edit_content_submit(
                     &content_type,
                     Some(&item),
                     Some(&posted),
-                    &[crate::form::ValidationError::form(denied.to_string())],
+                    &errors,
                 )
                 .await;
             }
@@ -784,6 +1008,9 @@ impl BulkActionForm {
     }
 }
 
+/// The bulk actions that set an item's promote or sticky flag.
+const PROMOTION_ACTIONS: &[&str] = &["promote", "demote", "sticky", "unsticky"];
+
 /// Bulk operations on content items.
 ///
 /// POST /admin/content/bulk
@@ -846,6 +1073,17 @@ async fn bulk_content_action(
         // Unreachable: every arm above names at least one permission.
         return render_server_error("No permission to check for this action.");
     };
+    // Promote and sticky are set by a holder of `publish content` or
+    // `administer content`, the answer `ItemService::gate_promotion` gives one
+    // item at a time, asked once here for the same reason as publish above.
+    if PROMOTION_ACTIONS.contains(&form.action.as_str()) {
+        let ctx = admin_user_context(&state, &user).await;
+        if !(ctx.can(crate::content::PUBLISH_CONTENT)
+            || ctx.can(crate::content::ADMINISTER_CONTENT))
+        {
+            return render_forbidden("You may not promote items or make them sticky.");
+        }
+    }
     if let Err(resp) = require_csrf(&session, &form.token).await {
         return resp;
     }
@@ -854,11 +1092,14 @@ async fn bulk_content_action(
     if !matches!(
         form.action.as_str(),
         "publish" | "unpublish" | "delete" | "move_to_stage"
-    ) {
+    ) && !PROMOTION_ACTIONS.contains(&form.action.as_str())
+    {
         if let Err(e) = session
             .insert(
                 CONTENT_FLASH_KEY,
-                format!("Unknown action: {}", html_escape(&form.action)),
+                crate::i18n::UiMessage::new("Unknown action: {action}")
+                    .arg("action", form.action.chars().take(64).collect::<String>())
+                    .error(),
             )
             .await
         {
@@ -874,10 +1115,11 @@ async fn bulk_content_action(
         if let Err(e) = session
             .insert(
                 CONTENT_FLASH_KEY,
-                format!(
-                    "Nothing was changed: \"{}\" is not a valid item id.",
-                    html_escape(&shown)
-                ),
+                crate::i18n::UiMessage::new(
+                    "Nothing was changed: \"{value}\" is not a valid item id.",
+                )
+                .arg("value", shown)
+                .error(),
             )
             .await
         {
@@ -888,7 +1130,10 @@ async fn bulk_content_action(
 
     if form.ids.is_empty() {
         if let Err(e) = session
-            .insert(CONTENT_FLASH_KEY, "No items selected.")
+            .insert(
+                CONTENT_FLASH_KEY,
+                crate::i18n::UiMessage::new("No items selected.").error(),
+            )
             .await
         {
             tracing::warn!(error = %e, "failed to set flash message");
@@ -908,7 +1153,10 @@ async fn bulk_content_action(
             Some(stage) => Some(stage),
             None => {
                 if let Err(e) = session
-                    .insert(CONTENT_FLASH_KEY, "Nothing was moved: choose a stage.")
+                    .insert(
+                        CONTENT_FLASH_KEY,
+                        crate::i18n::UiMessage::new("Nothing was moved: choose a stage.").error(),
+                    )
                     .await
                 {
                     tracing::warn!(error = %e, "failed to set flash message");
@@ -941,6 +1189,35 @@ async fn bulk_content_action(
                 };
                 // `Ok(None)` is an id that names no item: a failure, as the
                 // delete arm's `Ok(false)` is, not a success.
+                match state.items().update(*id, update, &user_ctx).await {
+                    Ok(Some(_)) => success_count += 1,
+                    Ok(None) => fail_count += 1,
+                    Err(e) => {
+                        tracing::warn!(item_id = %id, error = %e, "bulk action failed");
+                        fail_count += 1;
+                    }
+                }
+            }
+        }
+        "promote" | "demote" | "sticky" | "unsticky" => {
+            let (promote, sticky) = match form.action.as_str() {
+                "promote" => (Some(1), None),
+                "demote" => (Some(0), None),
+                "sticky" => (None, Some(1)),
+                _ => (None, Some(0)),
+            };
+            for id in &form.ids {
+                let update = crate::models::UpdateItem {
+                    author_id: None,
+                    created: None,
+                    stage_id: None,
+                    title: None,
+                    status: None,
+                    fields: None,
+                    promote,
+                    sticky,
+                    log: Some(format!("Bulk {}", form.action)),
+                };
                 match state.items().update(*id, update, &user_ctx).await {
                     Ok(Some(_)) => success_count += 1,
                     Ok(None) => fail_count += 1,
@@ -989,17 +1266,39 @@ async fn bulk_content_action(
         _ => unreachable!(), // Validated above
     }
 
-    let action_label = match form.action.as_str() {
-        "publish" => "published",
-        "unpublish" => "unpublished",
-        "delete" => "deleted",
-        "move_to_stage" => "moved",
+    // One whole sentence per action, singular and plural, so each can be
+    // translated; the failures are a second sentence of their own.
+    let (one, many) = match form.action.as_str() {
+        "publish" => ("{count} item published.", "{count} items published."),
+        "unpublish" => ("{count} item unpublished.", "{count} items unpublished."),
+        "delete" => ("{count} item deleted.", "{count} items deleted."),
+        "move_to_stage" => ("{count} item moved.", "{count} items moved."),
+        "promote" => (
+            "{count} item promoted to the front page.",
+            "{count} items promoted to the front page.",
+        ),
+        "demote" => (
+            "{count} item removed from the front page.",
+            "{count} items removed from the front page.",
+        ),
+        "sticky" => ("{count} item made sticky.", "{count} items made sticky."),
+        "unsticky" => (
+            "{count} item made not sticky.",
+            "{count} items made not sticky.",
+        ),
         _ => unreachable!(),
     };
     let msg = if fail_count > 0 {
-        format!("{success_count} item(s) {action_label}. {fail_count} item(s) failed.")
+        // The failures follow as a number: "2 items published. Failed: 1."
+        crate::i18n::UiMessage::new(format!("{one} Failed: {{failed}}."))
+            .plural(
+                format!("{many} Failed: {{failed}}."),
+                i64::from(success_count),
+            )
+            .arg("failed", fail_count.to_string())
+            .error()
     } else {
-        format!("{success_count} item(s) {action_label}.")
+        crate::i18n::UiMessage::new(one).plural(many, i64::from(success_count))
     };
     if let Err(e) = session.insert(CONTENT_FLASH_KEY, msg).await {
         tracing::warn!(error = %e, "failed to set flash message");
@@ -1012,6 +1311,7 @@ async fn bulk_content_action(
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/admin/content", get(list_content))
+        .route("/admin/content/moderated", get(list_moderated))
         .route("/admin/content/add", get(select_content_type))
         .route(
             "/admin/content/add/{type}",

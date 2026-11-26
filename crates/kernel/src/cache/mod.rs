@@ -9,12 +9,37 @@ use std::sync::Arc;
 
 use redis::AsyncCommands;
 use redis::Client as RedisClient;
-use tracing::{debug, warn};
+use tracing::{Instrument, debug, warn};
 
 use crate::metrics::{CacheName, Metrics};
+use generation::CacheKind;
 
 /// Default TTL for a cached value (5 minutes).
 const DEFAULT_TTL_SECS: u64 = 300;
+
+/// Clear `kinds` on every running server, from a process that runs none: the
+/// one invalidation path of the command line. `trovato cache clear` is this
+/// and nothing else; every other command that writes behind the servers'
+/// backs (`config import`, `plugin ...`, `user ...`, `generate`) ends with it.
+///
+/// Bumps each kind's generation ([`generation`]), waits for Redis to answer,
+/// then waits [`generation::SETTLE`], so that by the time it returns every
+/// running server has read the new counters and cleared those caches: the
+/// request after the command reads the database, not a copy one poll from
+/// being dropped. Clearing [`CacheKind::SiteConfig`] also drops the search
+/// settings' copy in the shared tier ([`crate::search::settings::SETTINGS_CACHE_KEY`]): the one value read
+/// from `site_config` that is held in Redis rather than in a server's memory,
+/// so no generation reaches it and it would otherwise wait out its TTL.
+pub async fn clear_everywhere(redis: &RedisClient, kinds: &[CacheKind]) -> anyhow::Result<()> {
+    generation::bump_now(redis, kinds).await?;
+    if kinds.contains(&CacheKind::SiteConfig) {
+        let mut conn = redis.get_multiplexed_async_connection().await?;
+        conn.del::<_, ()>(crate::search::settings::SETTINGS_CACHE_KEY)
+            .await?;
+    }
+    tokio::time::sleep(generation::SETTLE).await;
+    Ok(())
+}
 
 /// The shared cache layer.
 #[derive(Clone)]
@@ -40,6 +65,13 @@ impl CacheLayer {
 
     /// Get a value from cache.
     pub async fn get(&self, key: &str) -> Option<String> {
+        let span = cache_span("cache.get", key);
+        let found = self.get_inner(key).instrument(span.clone()).await;
+        span.record("cache.hit", found.is_some());
+        found
+    }
+
+    async fn get_inner(&self, key: &str) -> Option<String> {
         let metrics = &self.inner.metrics;
         // A Redis that cannot be reached answers nothing, which is a miss to
         // the caller and is counted as one.
@@ -60,6 +92,12 @@ impl CacheLayer {
 
     /// Set a value in cache with TTL and tags.
     pub async fn set(&self, key: &str, value: &str, ttl_secs: u64, tags: &[&str]) {
+        self.set_inner(key, value, ttl_secs, tags)
+            .instrument(cache_span("cache.set", key))
+            .await;
+    }
+
+    async fn set_inner(&self, key: &str, value: &str, ttl_secs: u64, tags: &[&str]) {
         let Ok(mut conn) = self.inner.redis.get_multiplexed_async_connection().await else {
             warn!("failed to get Redis connection for cache set");
             return;
@@ -75,6 +113,7 @@ impl CacheLayer {
             warn!(error = %e, key = %key, "failed to set cache value in Redis");
             return;
         }
+        self.inner.metrics.count_cache_set(CacheName::LayerL2);
 
         // Register key with each tag
         for tag in tags {
@@ -89,6 +128,12 @@ impl CacheLayer {
 
     /// Invalidate a single cache key.
     pub async fn invalidate(&self, key: &str) {
+        self.invalidate_inner(key)
+            .instrument(cache_span("cache.invalidate", key))
+            .await;
+    }
+
+    async fn invalidate_inner(&self, key: &str) {
         let Ok(mut conn) = self.inner.redis.get_multiplexed_async_connection().await else {
             warn!("failed to get Redis connection for cache invalidate");
             return;
@@ -105,6 +150,12 @@ impl CacheLayer {
     ///
     /// Uses Lua script for atomic operation.
     pub async fn invalidate_tag(&self, tag: &str) {
+        self.invalidate_tag_inner(tag)
+            .instrument(cache_span("cache.invalidate_tag", tag))
+            .await;
+    }
+
+    async fn invalidate_tag_inner(&self, tag: &str) {
         let tag_key = format!("tag:{tag}");
 
         let Ok(mut conn) = self.inner.redis.get_multiplexed_async_connection().await else {
@@ -219,6 +270,19 @@ impl CacheLayer {
         };
         CacheStats { redis_keys }
     }
+}
+
+/// The span of one Redis cache call: its operation and the key's bin, never
+/// the key itself.
+fn cache_span(operation: &'static str, key: &str) -> tracing::Span {
+    tracing::trace_span!(
+        target: crate::telemetry::TARGET,
+        "cache",
+        otel.name = operation,
+        cache.tier = "redis",
+        cache.bin = crate::telemetry::cache_bin(key),
+        cache.hit = tracing::field::Empty,
+    )
 }
 
 /// Cache statistics.

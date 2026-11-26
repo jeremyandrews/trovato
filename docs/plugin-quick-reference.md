@@ -37,11 +37,11 @@ dependencies = []
 implements = ["tap_item_info", "tap_item_view"]
 weight = 0
 
-# Optional (API 0.106): tables of your own holding site configuration,
+# Optional (API 0.105): tables of your own holding site configuration,
 # carried by `trovato config export` / `config import`.
 [config]
 tables = ["my_plugin_setting"]
-# Optional (API 0.107): columns holding a secret, password, token, key or a
+# Optional (API 0.105): columns holding a secret, password, token, key or a
 # hash of one. Exported as env:TROVATO_SECRET_<TABLE>_<PK>_<COLUMN>, never as
 # the value; import reads that variable.
 secret_columns = { my_plugin_setting = ["api_key"] }
@@ -71,6 +71,10 @@ fn tap_cron(_input: serde_json::Value) -> Result<(), String> {
 }
 ```
 
+**Size limit:** a tap or `tap_api` route may send and receive up to **8 MiB**
+each way (`trovato_sdk::abi::PLUGIN_IO_MAX_BYTES`). Over that, the kernel
+refuses the call with a documented error rather than truncating it.
+
 ---
 
 ## Available Taps
@@ -93,6 +97,7 @@ fn tap_cron(_input: serde_json::Value) -> Result<(), String> {
 | **Forms** | `tap_form_ajax` | `{trigger, form_id, values}` (CSRF, form access checked; full host API) | `{"commands": [...]}` or `{}` |
 | **System** | `tap_menu` | - | `Vec<MenuDefinition>` |
 | **System** | `tap_perm` | - | `Vec<PermissionDefinition>` |
+| **System** | `tap_admin_nav` | - | `Vec<AdminNavDefinition>` |
 | **System** | `tap_cron` | - | `Result<(), String>` |
 | **Lifecycle** | `tap_install` | - | `Result<(), String>` |
 | **Lifecycle** | `tap_enable` | - | `Result<(), String>` |
@@ -111,7 +116,8 @@ FieldType::Boolean                          // True/false
 FieldType::Date                             // Date
 FieldType::Email                            // Email address
 FieldType::File                             // File upload
-FieldType::RecordReference("category_term".into())  // Reference
+FieldType::RecordReference("speaker".into())       // Reference to an item type
+FieldType::CategoryReference("topics".into())      // Tags of one category
 ```
 
 ---
@@ -237,6 +243,10 @@ let has_perm = host::user::has_permission("permission name");
 // Other users' public facts, by id (≤ 100 a call). Needs `user-api` and
 // `user_directory = true` under [capabilities]; never an address.
 let users = host::load_users(&[id_a, id_b])?;   // Vec<UserSummary>
+// By exact name (case-insensitive, like login) or by a name prefix (≤ 10
+// results, sorted). Same capability, same never-an-address rule.
+let user = host::find_user_by_name("jsmith")?;           // Option<UserSummary>
+let matches = host::find_users_by_name_prefix("js")?;    // Vec<UserSummary>
 ```
 
 ### Mail
@@ -320,6 +330,15 @@ let n = db::insert_many("my_votes", &rows)?;                      // ≤ 500, al
 language; the admin listing and the boot log name every holder. Before asking
 for it, read [plugin-capabilities.md](plugin-capabilities.md#raw_sql).
 
+Writes to items, comments and URL aliases, raw SQL included, are queued for the
+static search index by the database. After changing anything else that decides
+what an item's search page holds (data your `tap_field_access` reads), queue
+the items yourself, or search never sees the change
+([the rule](plugin-development.md#the-static-search-index-queue-what-you-change)):
+```rust
+host::search_index_enqueue(&[id.as_str()])?;                      // ≤ 10,000 ids; Err(-14), Err(-82)
+```
+
 ### Inter-Plugin
 ```rust
 if host::plugin::exists("other_plugin") {
@@ -401,6 +420,8 @@ host::cache::set("views", &cache_key, &result, json!(["tag:items"]));
 - Concatenate SQL strings
 - Expose secrets in errors
 - Return HTML a user wrote without `host::filter_text`
+- Change what `tap_field_access` lets an anonymous visitor see and forget
+  `host::search_index_enqueue`
 
 ## Do
 

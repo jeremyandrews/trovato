@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use crate::content::{FieldMode, FilterPipeline, ItemRevisions, RevisionAccess, RevisionSelection};
+use crate::content::{
+    FieldMode, FilterPipeline, ItemRevisions, RevisionAccess, RevisionDeleted, RevisionSelection,
+};
 use crate::error::AppError;
 use crate::form::csrf::generate_csrf_token;
 use crate::middleware::language::ResolvedLanguage;
@@ -59,6 +61,23 @@ pub struct ItemApiResponse {
 pub struct AuthorResponse {
     pub id: Uuid,
     pub name: String,
+}
+
+/// One item's author for `/api/item`'s `include=author`: `None` when the id
+/// matches no user row at all. Resolved through `UserService::find_many`, the
+/// one cached author lookup the item page and a gather row
+/// (`UserService::author_views`) go through too.
+async fn resolve_author(state: &AppState, author_id: Uuid) -> Option<AuthorResponse> {
+    state
+        .users()
+        .find_many(&[author_id])
+        .await
+        .ok()?
+        .remove(&author_id)
+        .map(|user| AuthorResponse {
+            id: user.id,
+            name: user.name,
+        })
 }
 
 /// Query parameters for listing items.
@@ -155,6 +174,9 @@ pub struct ItemSubmission {
     /// The stage asked for, as sent: `_stage` on a form, `stage_id` in JSON.
     /// Read through `ItemSubmission::requested_stage`.
     pub stage: Option<String>,
+    /// The content moderation state asked for, on a moderated type:
+    /// `moderation_state` on a form and in JSON.
+    pub moderation_state: Option<String>,
 }
 
 impl ItemSubmission {
@@ -192,6 +214,7 @@ impl ItemSubmission {
                 .filter(|l| !l.is_empty()),
             url_alias: get("url_alias"),
             stage: get("_stage"),
+            moderation_state: get("moderation_state").filter(|s| !s.is_empty()),
             posted: Some(form),
         }
     }
@@ -212,6 +235,10 @@ impl ItemSubmission {
                 .map(String::from),
             stage: body
                 .get("stage_id")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            moderation_state: body
+                .get("moderation_state")
                 .and_then(|v| v.as_str())
                 .map(String::from),
             posted: None,
@@ -261,6 +288,17 @@ fn write_error(e: anyhow::Error, context: &'static str) -> AppError {
     }
     if let Some(invalid) = e.downcast_ref::<crate::content::PageBuilderInvalid>() {
         return page_builder_invalid(invalid);
+    }
+    // A value the field value check refused (cardinality, a tag outside the
+    // field's category) is the client's to fix: 422, naming each one.
+    if let Some(invalid) = e.downcast_ref::<crate::content::InvalidFieldValues>() {
+        return AppError::validation(
+            invalid
+                .0
+                .iter()
+                .map(|v| AppError::field_error(v.field.clone(), "invalid_value", v.message.clone()))
+                .collect(),
+        );
     }
     if let Some(refused) = e.downcast_ref::<crate::content::owned_vocabulary::TermsNotOwned>() {
         return AppError::validation(
@@ -322,8 +360,13 @@ pub fn router() -> Router<AppState> {
         // Revision history
         .route("/item/{id}/revisions", get(list_revisions))
         .route("/item/{id}/revisions/compare", get(compare_revisions))
+        .route("/item/{id}/latest", get(latest_version))
         .route("/item/{id}/revisions/{rev_id}", get(preview_revision))
         .route("/item/{id}/revert/{rev_id}", post(revert_revision))
+        .route(
+            "/item/{id}/revisions/{rev_id}/delete",
+            get(confirm_delete_revision).post(delete_revision),
+        )
 }
 
 /// The item JSON API, under `/api/v1` ([`super::api`]).
@@ -478,7 +521,7 @@ async fn view_item(
         .unwrap_or_default();
 
     // Render fields through filter pipeline
-    let (mut children_html, page_stylesheets) =
+    let (mut children_html, page_stylesheets, page_root) =
         render_item_fields(&state, &user, &item.fields, &content_type_fields).await;
 
     // Every plugin's `tap_item_view` output, collected once. It reaches the
@@ -545,6 +588,39 @@ async fn view_item(
         .await
         .unwrap_or_else(|e| {
             tracing::warn!(error = %e, item_id = %item.id, "failed to resolve file fields");
+            std::collections::HashMap::new()
+        });
+
+    // Resolve CategoryReference fields to their tags: one query for the tags,
+    // one recursive query for their ancestors, and the URL of the gather route
+    // that lists each tag's category. A tag of a category the viewer may not
+    // read (an owned one, B189) is left out: the rule every category read
+    // applies, decided once per category the fields name.
+    let mut readable_categories = std::collections::HashSet::new();
+    for field in &content_type_fields {
+        if let trovato_sdk::types::FieldType::CategoryReference(category) = &field.field_type
+            && !readable_categories.contains(category)
+            && crate::content::owned_vocabulary::visible_category(&state, &user, category)
+                .await
+                .ok()
+                .flatten()
+                .is_some()
+        {
+            readable_categories.insert(category.clone());
+        }
+    }
+    let gather = state.gather();
+    let referenced_tags = state
+        .items()
+        .referenced_tags(
+            &item,
+            &content_type_fields,
+            |category| readable_categories.contains(category),
+            |category, slug| gather.tag_url(category, slug),
+        )
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, item_id = %item.id, "failed to resolve tag fields");
             std::collections::HashMap::new()
         });
 
@@ -624,15 +700,45 @@ async fn view_item(
     context.insert("item", &item);
     context.insert("children", &children_html);
     context.insert("page_stylesheets", &page_stylesheets);
+    // The page's root values (declared defaults when it has no page builder
+    // content), for the item and page templates and every tile on the page.
+    context.insert(
+        "page_root",
+        &page_root.unwrap_or_else(|| {
+            crate::content::page_builder::page_root_defaults(state.theme().components())
+        }),
+    );
     context.insert("plugin_output", &plugin_output);
     // The viewer this route already loaded, so the item template can name it
     // and `inject_site_context_for` below does not load it again.
     context.insert("viewer", &crate::theme::Viewer::of(&user));
+    // The author's display name, and a profile link only when this viewer may
+    // see one — so a theme prints "by {{ author.name }}" without hardcoding
+    // it. A single id costs no query beyond the cached lookup `/api/item`
+    // already pays for (`UserService::author_views`).
+    if let Some(author) = state
+        .users()
+        .author_views(&[item.author_id], &user)
+        .await
+        .remove(&item.author_id)
+    {
+        context.insert("author", &author);
+    }
     context.insert("referenced_items", &referenced_items);
     context.insert("referenced_files", &referenced_files);
+    context.insert("referenced_tags", &referenced_tags);
     context.insert("reverse_references", &reverse_references);
     context.insert("safe_urls", &safe_urls);
     context.insert("active_language", &active_language);
+    // The view counter (B160): this view is counted when the site counts
+    // views, and the total shown to a role holding `view post access counter`.
+    match state.items().record_view(item.id).await {
+        Ok(Some(total)) if user.can(crate::content::view_counter::VIEW_COUNT_PERMISSION) => {
+            context.insert("view_count", &total);
+        }
+        Ok(_) => {}
+        Err(e) => tracing::warn!(error = %e, item = %item.id, "failed to count an item view"),
+    }
     context.insert(
         "text_direction",
         crate::middleware::language::text_direction_for_language(&active_language),
@@ -656,6 +762,40 @@ async fn view_item(
     if let Some(Extension(crate::middleware::RequestedPath(ref requested_path))) = requested {
         context.insert("requested_path", requested_path);
     }
+
+    // The canonical address, and every language this item can be read in with
+    // its address there, computed before `inject_site_context_for` so that the
+    // tiles it renders (a language switcher among them) see the same facts a
+    // crawler is told below rather than none at all. Served as the front page,
+    // the item's address is `/`: the canonical link and the language
+    // alternates name the front page, not the path it is configured as.
+    let canonical_path = if super::front::is_front_page_request() {
+        "/".to_string()
+    } else {
+        UrlAlias::get_canonical_alias_with_context(
+            state.db(),
+            &item_path,
+            item.stage_id,
+            &active_language,
+        )
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| item_path.clone())
+    };
+    // A theme builds a language switcher out of `available_translations`;
+    // `hreflang_links` is the same facts for a crawler, and is left out
+    // entirely when there is only one language to name, since a lone
+    // self-referential alternate says nothing.
+    let translations = super::helpers::available_translations(&state, id, &canonical_path).await;
+    if translations.len() > 1 {
+        context.insert(
+            "hreflang_links",
+            &super::helpers::build_hreflang_links(&translations, state.default_language()),
+        );
+    }
+    context.insert("available_translations", &translations);
+
     super::helpers::inject_site_context_for(&state, &session, &user, &mut context, &item_path)
         .await;
 
@@ -676,23 +816,7 @@ async fn view_item(
     // here rather than in a plugin because `<head>` is not reachable from one —
     // `tap_item_view` output is appended to the item's body. The canonical URL
     // is the item's alias when it has one, so the address a crawler indexes is
-    // the address the site links to. Served as the front page, the item's
-    // address is `/`: the canonical link and the language alternates name the
-    // front page, not the path it is configured as.
-    let canonical_path = if super::front::is_front_page_request() {
-        "/".to_string()
-    } else {
-        UrlAlias::get_canonical_alias_with_context(
-            state.db(),
-            &item_path,
-            item.stage_id,
-            &active_language,
-        )
-        .await
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| item_path.clone())
-    };
+    // the address the site links to.
     let site_name = context
         .get("site_name")
         .and_then(|v| v.as_str())
@@ -706,19 +830,6 @@ async fn view_item(
         &content_type_fields,
     );
     context.insert("page_meta", &page_meta);
-
-    // Every language this item can be read in, and where. A theme builds a
-    // language switcher out of `available_translations`; `hreflang_links` is the
-    // same facts for a crawler, and is left out entirely when there is only one
-    // language to name, since a lone self-referential alternate says nothing.
-    let translations = super::helpers::available_translations(&state, id, &canonical_path).await;
-    if translations.len() > 1 {
-        context.insert(
-            "hreflang_links",
-            &super::helpers::build_hreflang_links(&translations, state.default_language()),
-        );
-    }
-    context.insert("available_translations", &translations);
 
     // The AI Assistant's launcher, for every scope that names this item's type.
     //
@@ -755,16 +866,20 @@ async fn view_item(
 ///
 /// One body for the item page and the revision preview, so a past revision is
 /// shown exactly as it would have been. The caller hands in fields already cut
-/// to what the viewer may see. Returns the HTML and the stylesheets the page
-/// builder components in it declared, for the page head.
+/// to what the viewer may see. Returns the HTML, the stylesheets the page
+/// builder components in it declared, for the page head, and the first page
+/// builder field's root values (`page_root`, see
+/// `content::page_builder::page_root_values`), `None` when the item has no
+/// page builder content.
 pub(crate) async fn render_item_fields(
     state: &AppState,
     viewer: &UserContext,
     fields: &serde_json::Value,
     content_type_fields: &[trovato_sdk::types::FieldDefinition],
-) -> (String, Vec<String>) {
+) -> (String, Vec<String>, Option<serde_json::Value>) {
     let mut children_html = String::new();
     let mut stylesheets: Vec<String> = Vec::new();
+    let mut page_root: Option<serde_json::Value> = None;
     if let Some(fields) = fields.as_object() {
         for (name, value) in fields {
             // A text field's format, stored beside it as `<name>_format`, is
@@ -810,6 +925,9 @@ pub(crate) async fn render_item_fields(
                                 stylesheets.push(sheet);
                             }
                         }
+                        if page_root.is_none() {
+                            page_root = Some(serde_json::Value::Object(rendered.root));
+                        }
                     }
                     Err(e) => {
                         tracing::warn!(field = %name, error = %e, "failed to render page builder field");
@@ -846,7 +964,7 @@ pub(crate) async fn render_item_fields(
                                 val.get("value").and_then(|v| v.as_str()),
                                 val.get("format").and_then(|v| v.as_str()),
                             ) {
-                                let filtered = FilterPipeline::for_format_safe(fmt).process(text);
+                                let filtered = FilterPipeline::for_format(fmt).process(text);
                                 section_fields_html.push_str(&filtered);
                             } else if let Some(text) = val.as_str() {
                                 let filtered =
@@ -929,7 +1047,7 @@ pub(crate) async fn render_item_fields(
                     .get("format")
                     .and_then(|v| v.as_str())
                     .unwrap_or("plain_text");
-                let filtered = FilterPipeline::for_format_safe(raw_fmt).process(text_val);
+                let filtered = FilterPipeline::for_format(raw_fmt).process(text_val);
                 children_html.push_str(&format!(
                     "<div class=\"field field-{}\">{}</div>",
                     html_escape(name),
@@ -957,7 +1075,7 @@ pub(crate) async fn render_item_fields(
             }
         }
     }
-    (children_html, stylesheets)
+    (children_html, stylesheets, page_root)
 }
 
 /// Whether `key` is `<name>_format` for a field `<name>` the item type declares
@@ -1047,11 +1165,23 @@ async fn add_item_form(
         .get(&item_type)
         .ok_or_else(|| AppError::not_found("content type"))?;
 
-    item_form_page(&state, &session, &user, &content_type, None, None, &[]).await
+    item_form_page(
+        &state,
+        &session,
+        &user,
+        &content_type,
+        None,
+        None,
+        &[],
+        None,
+    )
+    .await
 }
 
 /// The item form page, inside the site theme: the form built through the
-/// pipeline, showing `posted` and `errors` when a submission failed (422).
+/// pipeline, showing `posted` and `errors` when a submission failed (422),
+/// or `posted` under `preview_html` when it asked for a preview.
+#[allow(clippy::too_many_arguments)]
 async fn item_form_page(
     state: &AppState,
     session: &Session,
@@ -1060,6 +1190,7 @@ async fn item_form_page(
     item: Option<&crate::models::Item>,
     posted: Option<&crate::content::submission::PostedForm>,
     errors: &[crate::form::ValidationError],
+    preview_html: Option<String>,
 ) -> Result<Response, AppError> {
     let (action, heading, extra) = match item {
         Some(item) => {
@@ -1092,10 +1223,18 @@ async fn item_form_page(
         ),
     };
 
-    let mut form =
-        super::item_form::build(state, session, user, content_type, item, &action, extra)
-            .await
-            .map_err(|e| AppError::internal_ctx(e, "build item form"))?;
+    let mut form = super::item_form::build(
+        state,
+        session,
+        user,
+        content_type,
+        item,
+        &action,
+        extra,
+        preview_html.is_some(),
+    )
+    .await
+    .map_err(|e| AppError::internal_ctx(e, "build item form"))?;
     if let Some(posted) = posted {
         super::item_form::redisplay(&mut form, posted);
     }
@@ -1107,6 +1246,9 @@ async fn item_form_page(
     let mut context = tera::Context::new();
     context.insert("title", &heading);
     context.insert("form_html", &form_html);
+    if let Some(preview_html) = &preview_html {
+        context.insert("preview_html", preview_html);
+    }
     if let Some(item) = item
         && let Some(lock) = take_edit_lock(state, user, item.id).await
     {
@@ -1136,7 +1278,8 @@ async fn item_form_page(
 enum Submitted {
     /// Save this, then (for a form) dispatch `tap_form_submit` for this state.
     Fields(Option<serde_json::Value>, Option<crate::form::FormState>),
-    /// The form, re-rendered with what refused it.
+    /// The form, re-rendered with what refused it, or under a preview of
+    /// what was submitted: a page to answer with, and nothing to save.
     Refused(Response),
 }
 
@@ -1157,6 +1300,33 @@ async fn submitted_fields(
         return Ok(Submitted::Fields(request.fields.clone(), None));
     };
     match super::item_form::process(state, session, user, content_type, item, posted).await {
+        // A preview: the submission rendered above the form shown again,
+        // and nothing saved.
+        Ok((_, fields)) if super::item_form::wants_preview(posted) => {
+            let title = posted.get("title").unwrap_or_default().trim().to_string();
+            let preview = super::item_form::render_preview(
+                state,
+                user,
+                content_type,
+                &title,
+                &fields,
+                "/item",
+            )
+            .await;
+            Ok(Submitted::Refused(
+                item_form_page(
+                    state,
+                    session,
+                    user,
+                    content_type,
+                    item,
+                    Some(posted),
+                    &[],
+                    Some(preview),
+                )
+                .await?,
+            ))
+        }
         Ok((form_state, fields)) => Ok(Submitted::Fields(
             Some(serde_json::Value::Object(fields)),
             Some(form_state),
@@ -1173,6 +1343,7 @@ async fn submitted_fields(
                 item,
                 Some(posted),
                 &errors,
+                None,
             )
             .await?,
         )),
@@ -1274,7 +1445,12 @@ async fn create_item(
 
     let item = state
         .items()
-        .create_authored(input, publishing.created, &user)
+        .create_moderated(
+            input,
+            publishing.created,
+            request.moderation_state.as_deref(),
+            &user,
+        )
         .await
         .map_err(|e| write_error(e, "create item"))?;
 
@@ -1507,6 +1683,7 @@ async fn edit_item_form(
         Some(&item),
         None,
         &[],
+        None,
     )
     .await
 }
@@ -1592,7 +1769,11 @@ async fn update_item(
         return Err(refusal);
     }
 
-    match state.items().update(id, input, &user).await {
+    match state
+        .items()
+        .update_moderated(id, input, request.moderation_state.as_deref(), &user)
+        .await
+    {
         Ok(Some(item)) => {
             release_edit_lock(&state, &user, id).await;
             // An alias the form names replaces the one `update` derived from
@@ -1709,7 +1890,9 @@ async fn revision_authors(
         std::collections::HashMap::new()
     });
     for id in ids {
-        names.entry(id).or_insert_with(|| "anonymous".to_string());
+        names
+            .entry(id)
+            .or_insert_with(|| crate::models::user::ANONYMOUS_DISPLAY_NAME.to_string());
     }
     names
 }
@@ -1730,6 +1913,11 @@ fn revision_summary(
         "log": revision.log,
         "author": authors.get(&revision.author_id),
         "is_current": Some(revision.id) == current,
+        // The moderation state, on a revision of a moderated type.
+        "state": revision
+            .moderation_state
+            .as_deref()
+            .map(crate::content::moderation::label),
     })
 }
 
@@ -1755,9 +1943,25 @@ async fn list_revisions(
         .map(|rev| revision_summary(rev, &authors, item.current_revision_id))
         .collect();
 
+    // What each row offers. A revert is an edit of the item; a delete needs
+    // `delete revisions` and delete access. The submit decides both again.
+    let viewer = get_user_context(&session, &state).await;
+    let may_revert = state
+        .items()
+        .check_access(&item, "edit", &viewer)
+        .await
+        .unwrap_or(false);
+    let may_delete = state
+        .items()
+        .may_delete_revisions(&item, &viewer)
+        .await
+        .unwrap_or(false);
+
     let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
+    context.insert("may_revert", &may_revert);
+    context.insert("may_delete", &may_delete);
     context.insert("path", &format!("/item/{id}/revisions"));
     context.insert("item_id", &id);
     context.insert("item_title", &item.title);
@@ -1801,7 +2005,7 @@ async fn preview_revision(
         .map(|ct| ct.fields.clone())
         .unwrap_or_default();
     let viewer = crate::routes::helpers::get_user_context(&session, &state).await;
-    let (fields_html, page_stylesheets) =
+    let (fields_html, page_stylesheets, page_root) =
         render_item_fields(&state, &viewer, &revision.fields, &content_type_fields).await;
     let authors = revision_authors(&state, &revisions).await;
 
@@ -1816,9 +2020,106 @@ async fn preview_revision(
     context.insert("current_revision_id", &item.current_revision_id);
     context.insert("fields_html", &fields_html);
     context.insert("page_stylesheets", &page_stylesheets);
+    if let Some(page_root) = &page_root {
+        context.insert("page_root", page_root);
+    }
 
     super::helpers::render_admin_template(&state, &viewer, "admin/revision-preview.html", context)
         .await
+}
+
+/// The latest version of a moderated item: the draft ahead of its published
+/// revision, rendered as a past revision is.
+///
+/// `GET /item/{id}/latest`. A user who may view the item and holds edit
+/// access, `view revisions` or `view latest version` reads it; anyone else who
+/// may view the item is refused, and one who may not gets 404. With no draft
+/// ahead, the item itself is the latest version, and the page redirects there.
+async fn latest_version(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<Uuid>,
+) -> Result<Response, AppError> {
+    let viewer = get_user_context(&session, &state).await;
+    let items = state.items();
+    let item = items
+        .load(id)
+        .await
+        .map_err(|e| AppError::internal_ctx(e, "load item"))?
+        .ok_or_else(|| AppError::not_found("Item"))?;
+    if !items
+        .check_access(&item, "view", &viewer)
+        .await
+        .unwrap_or(false)
+    {
+        return Err(AppError::not_found("Item"));
+    }
+    let may_read = viewer.can(crate::content::moderation::VIEW_LATEST_VERSION)
+        || items
+            .may_read_revisions(&item, &viewer)
+            .await
+            .unwrap_or(false);
+    if !may_read {
+        return Err(super::helpers::refusal_for(
+            &viewer,
+            "You may not read the latest version of this item.",
+        ));
+    }
+    let Some(mut revision) = items
+        .latest_version(&item, &viewer)
+        .await
+        .map_err(|e| AppError::internal_ctx(e, "load the latest version"))?
+    else {
+        return Ok(Redirect::to(&format!("/item/{id}")).into_response());
+    };
+
+    let content_type_fields = state
+        .content_types()
+        .get(&item.item_type)
+        .map(|ct| ct.fields.clone())
+        .unwrap_or_default();
+    // The fields this viewer may see, as every revision page cuts them.
+    if let Some(fields) = revision.fields.as_object_mut() {
+        let names: Vec<String> = fields.keys().cloned().collect();
+        let visible: std::collections::HashSet<String> = items
+            .accessible_fields(&viewer, &item.item_type, &names, "view")
+            .await
+            .into_iter()
+            .collect();
+        fields.retain(|name, _| visible.contains(name));
+    }
+    let (fields_html, page_stylesheets, page_root) =
+        render_item_fields(&state, &viewer, &revision.fields, &content_type_fields).await;
+    let authors = revision_authors(&state, std::slice::from_ref(&revision)).await;
+    let latest_state = crate::content::moderation::label(crate::content::moderation::state_of(
+        revision.moderation_state.as_deref(),
+        revision.status,
+    ))
+    .to_lowercase();
+
+    let mut context = tera::Context::new();
+    context.insert("path", &format!("/item/{id}/latest"));
+    context.insert("item_id", &id);
+    context.insert("item_title", &item.title);
+    context.insert(
+        "revision",
+        &revision_summary(&revision, &authors, item.current_revision_id),
+    );
+    context.insert("current_revision_id", &item.current_revision_id);
+    context.insert("latest_state", &latest_state);
+    context.insert("fields_html", &fields_html);
+    context.insert("page_stylesheets", &page_stylesheets);
+    if let Some(page_root) = &page_root {
+        context.insert("page_root", page_root);
+    }
+
+    Ok(super::helpers::render_admin_template(
+        &state,
+        &viewer,
+        "admin/revision-preview.html",
+        context,
+    )
+    .await)
 }
 
 /// The two revisions a compare is asked for.
@@ -1916,6 +2217,95 @@ async fn revert_revision(
     }
 }
 
+/// Confirm deleting one past revision of an item.
+///
+/// `GET /item/{id}/revisions/{rev_id}/delete`: what the revision list's
+/// Delete link opens, so the destructive POST is never one click away. The
+/// same gates the POST checks are checked here too, and answer the same way,
+/// so a user who cannot do it never sees a form offering to.
+async fn confirm_delete_revision(
+    State(state): State<AppState>,
+    session: Session,
+    Path((id, rev_id)): Path<(Uuid, Uuid)>,
+) -> Response {
+    let ItemRevisions { item, revisions } = match revisions_for_session(
+        &state,
+        &session,
+        id,
+        RevisionSelection::Ids(&[rev_id]),
+    )
+    .await
+    {
+        Ok(loaded) => loaded,
+        Err(refusal) => return refusal,
+    };
+    let Some(revision) = revisions.first() else {
+        return super::helpers::render_not_found();
+    };
+    let user = get_user_context(&session, &state).await;
+    if !state
+        .items()
+        .may_delete_revisions(&item, &user)
+        .await
+        .unwrap_or(false)
+    {
+        return super::helpers::render_forbidden("You may not delete this item's revisions.");
+    }
+    if item.current_revision_id == Some(rev_id) {
+        return AppError::conflict("The current revision cannot be deleted.").into_response();
+    }
+
+    let authors = revision_authors(&state, &revisions).await;
+    let csrf_token = generate_csrf_token(&session).await;
+    let mut context = tera::Context::new();
+    context.insert("path", &format!("/item/{id}/revisions/{rev_id}/delete"));
+    context.insert("item_id", &id);
+    context.insert("item_title", &item.title);
+    context.insert(
+        "revision",
+        &revision_summary(revision, &authors, item.current_revision_id),
+    );
+    context.insert("csrf_token", &csrf_token);
+
+    super::helpers::render_admin_template(
+        &state,
+        &user,
+        "admin/revision-delete-confirm.html",
+        context,
+    )
+    .await
+}
+
+/// Delete one past revision of an item.
+///
+/// `POST /item/{id}/revisions/{rev_id}/delete`, with the form token. The
+/// current revision is refused (409); a user who may view the item but not
+/// delete its revisions gets 403, and one who may not view it 404.
+async fn delete_revision(
+    State(state): State<AppState>,
+    session: Session,
+    Path((id, rev_id)): Path<(Uuid, Uuid)>,
+    Form(form): Form<CsrfOnlyForm>,
+) -> Result<Response, AppError> {
+    let user = get_user_context(&session, &state).await;
+    crate::routes::helpers::require_csrf(&session, &form.token)
+        .await
+        .map_err(|_| AppError::forbidden("Invalid or expired form token. Please try again."))?;
+
+    match state.items().delete_revision(id, rev_id, &user).await {
+        Ok(()) => Ok(Redirect::to(&format!("/item/{id}/revisions")).into_response()),
+        Err(RevisionDeleted::NotFound) => Err(AppError::not_found("Revision")),
+        Err(RevisionDeleted::Forbidden) => Err(super::helpers::refusal_for(
+            &user,
+            "You may not delete this item's revisions.",
+        )),
+        Err(RevisionDeleted::Current) => Err(AppError::conflict(
+            "The current revision cannot be deleted.",
+        )),
+        Err(RevisionDeleted::Failed(e)) => Err(AppError::internal_ctx(e, "delete revision")),
+    }
+}
+
 /// List all content types (API endpoint).
 async fn list_content_types(
     State(state): State<AppState>,
@@ -1998,13 +2388,7 @@ async fn get_item_api(
         .unwrap_or(false);
 
     let author = if include_author {
-        match state.users().find_by_id(item.author_id).await {
-            Ok(Some(user)) => Some(AuthorResponse {
-                id: user.id,
-                name: user.name,
-            }),
-            _ => None,
-        }
+        resolve_author(&state, item.author_id).await
     } else {
         None
     };

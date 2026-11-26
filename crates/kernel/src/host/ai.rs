@@ -5,8 +5,6 @@
 //! request, and returns a normalized `AiResponse`. API keys never cross
 //! the WASM boundary.
 
-use std::time::Instant;
-
 use anyhow::Result;
 use tracing::{info, warn};
 use wasmtime::Linker;
@@ -15,9 +13,9 @@ use super::trace::TracedLinker;
 
 use crate::plugin::{PluginState, WasmtimeExt};
 use crate::services::ai_provider::{
-    EMBEDDING_INPUT_MAX_CHARS, ProviderProtocol, ResolvedProvider, cap_embedding_input,
+    AiCallError, AiCaller, AiProviderService, ChatRequest, EmbeddingResult, ResolvedProvider,
 };
-use crate::services::ai_token_budget::{BudgetAction, UsageLogEntry};
+use crate::services::ai_tools::{ChatCompletion, ChatMessage};
 use crate::tap::UserContext;
 use trovato_sdk::host_errors;
 use trovato_sdk::types::{AiRequest, AiResponse, AiUsage};
@@ -129,397 +127,145 @@ fn authorize_ai_request(
 }
 
 // =============================================================================
-// HTTP request building
+// The send, through the kernel's one send path
 // =============================================================================
 
-/// One outbound provider request, ready to send: `(url, body, headers)`.
-type BuiltRequest = (String, String, Vec<(String, String)>);
-
-/// Build and execute an HTTP request based on the provider protocol.
+/// The send path's request for a plugin's chat `AiRequest`.
 ///
-/// `timeout` is the per-request outbound timeout resolved from the AI timeout
-/// config (P11c / D-43); it overrides the shared client's default so a
-/// background/analyze-class call is not clipped at the request-scoped default,
-/// and a request-scoped call is still cut at its (short) configured timeout.
-async fn execute_ai_request(
-    http: &reqwest::Client,
-    resolved: &ResolvedProvider,
-    request: &AiRequest,
-    timeout: std::time::Duration,
-) -> Result<(String, u16), (i32, String)> {
-    // Branch on the *operation* first, then the protocol. Before K1 fix 2 this
-    // branched on protocol alone, so `operation: Embedding` was posted to
-    // `/chat/completions` with an empty `messages` array and `request.input` was
-    // never read at all (G-AI-EMBED-UNROUTED, Argus M2).
-    let (url, body, headers) = match request.operation {
-        trovato_sdk::types::AiOperationType::Chat => match resolved.config.protocol {
-            ProviderProtocol::OpenAiCompatible => build_openai_request(resolved, request),
-            ProviderProtocol::Anthropic => build_anthropic_request(resolved, request),
-        },
-        trovato_sdk::types::AiOperationType::Embedding => {
-            build_openai_embedding_request(resolved, request)?
-        }
-        other => {
-            return Err((
-                host_errors::ERR_AI_OPERATION_UNSUPPORTED,
-                format!("the kernel serves no route for AI operation {other:?}"),
-            ));
-        }
-    };
-
-    let mut req = http.post(&url).timeout(timeout);
-    for (key, value) in &headers {
-        req = req.header(key.as_str(), value.as_str());
-    }
-    req = req.header("content-type", "application/json");
-    req = req.body(body);
-
-    let response = req.send().await.map_err(|e| {
-        (
-            host_errors::ERR_AI_REQUEST_FAILED,
-            format!("HTTP request failed: {e}"),
-        )
-    })?;
-
-    let status = response.status().as_u16();
-    let body = response.text().await.map_err(|e| {
-        (
-            host_errors::ERR_AI_REQUEST_FAILED,
-            format!("Failed to read response body: {e}"),
-        )
-    })?;
-
-    if !(200..=299).contains(&status) {
-        crate::services::ai_provider::log_provider_failure(
-            "plugin_ai_request",
-            resolved,
-            status,
-            &body,
-        );
-    }
-
-    // Map HTTP errors to specific error codes
-    match status {
-        200..=299 => {}
-        401 | 403 => {
-            return Err((
-                host_errors::ERR_AI_AUTH_FAILED,
-                format!("Authentication failed (HTTP {status})"),
-            ));
-        }
-        429 => {
-            return Err((
-                host_errors::ERR_AI_RATE_LIMITED,
-                "Rate limited by provider (HTTP 429)".to_string(),
-            ));
-        }
-        _ => {
-            let truncated = if body.len() > 200 {
-                // Find a safe char boundary to avoid panicking on multi-byte UTF-8
-                let mut end = 200;
-                while end > 0 && !body.is_char_boundary(end) {
-                    end -= 1;
-                }
-                format!("{}...", &body[..end])
-            } else {
-                body
-            };
-            return Err((
-                host_errors::ERR_AI_PROVIDER_ERROR,
-                format!("Provider error (HTTP {status}): {truncated}"),
-            ));
-        }
-    }
-
-    Ok((body, status))
-}
-
-/// Build an OpenAI-compatible chat completions request.
-fn build_openai_request(resolved: &ResolvedProvider, request: &AiRequest) -> BuiltRequest {
-    let url = format!(
-        "{}/chat/completions",
-        resolved.config.base_url.trim_end_matches('/')
-    );
-
-    let messages: Vec<serde_json::Value> = request
-        .messages
-        .iter()
-        .map(|m| {
-            serde_json::json!({
-                "role": m.role,
-                "content": m.content,
+/// Message roles are already validated to `system|user|assistant`.
+fn chat_request_for(request: &AiRequest) -> ChatRequest {
+    ChatRequest {
+        messages: request
+            .messages
+            .iter()
+            .map(|m| match m.role.as_str() {
+                "system" => ChatMessage::System(m.content.clone()),
+                "assistant" => ChatMessage::Assistant {
+                    text: Some(m.content.clone()),
+                    tool_calls: Vec::new(),
+                },
+                _ => ChatMessage::User(m.content.clone()),
             })
-        })
-        .collect();
-
-    let mut body = serde_json::json!({
-        "model": resolved.model,
-        "messages": messages,
-    });
-
-    if let Some(max_tokens) = request.options.max_tokens {
-        body["max_tokens"] = serde_json::json!(max_tokens);
+            .collect(),
+        max_tokens: request.options.max_tokens,
+        temperature: request.options.temperature,
+        top_p: request.options.top_p,
+        stop: request.options.stop.clone().unwrap_or_default(),
+        ..ChatRequest::default()
     }
-    if let Some(temperature) = request.options.temperature {
-        body["temperature"] = serde_json::json!(temperature);
-    }
-    if let Some(top_p) = request.options.top_p {
-        body["top_p"] = serde_json::json!(top_p);
-    }
-    if let Some(ref stop) = request.options.stop
-        && !stop.is_empty()
-    {
-        body["stop"] = serde_json::json!(stop);
-    }
-
-    let mut headers = Vec::new();
-    if let Some(ref key) = resolved.api_key {
-        headers.push(("authorization".to_string(), format!("Bearer {key}")));
-    }
-
-    // Infallible: serde_json::Value serialization to string cannot fail.
-    let body_str = serde_json::to_string(&body).unwrap_or_default();
-    (url, body_str, headers)
 }
 
-/// Build an OpenAI-compatible **embeddings** request (K1 fix 2,
-/// G-AI-EMBED-UNROUTED).
-///
-/// Reads [`AiRequest::input`] — the field the SDK has always carried for this
-/// operation and which the chat builder never looked at — and posts it to
-/// `{base_url}/embeddings`, the same endpoint and body shape the kernel's own
-/// [`crate::services::ai_provider::AiProviderService::embed`] uses, so the two
-/// callers cannot drift.
-///
-/// Input is capped at [`EMBEDDING_INPUT_MAX_CHARS`] by the same helper the
-/// kernel path uses: over-budget input would otherwise be rejected by the
-/// provider, and unbounded payloads are a cost surface.
-///
-/// Returns `Err` rather than a request when the operation cannot be served:
-/// Anthropic exposes no embeddings API, and an embedding with no input is not
-/// a request at all.
-fn build_openai_embedding_request(
-    resolved: &ResolvedProvider,
-    request: &AiRequest,
-) -> Result<BuiltRequest, (i32, String)> {
-    if resolved.config.protocol != ProviderProtocol::OpenAiCompatible {
-        return Err((
-            host_errors::ERR_AI_OPERATION_UNSUPPORTED,
-            format!(
-                "provider protocol {} exposes no embeddings API",
-                resolved.config.protocol
-            ),
-        ));
+/// The host error code a plugin gets for a failed send. The detail is in the
+/// log; the plugin, like a person, gets no provider text.
+fn host_error_code(error: &AiCallError) -> i32 {
+    match error {
+        AiCallError::Unauthorized => host_errors::ERR_AI_AUTH_FAILED,
+        AiCallError::RateLimited => host_errors::ERR_AI_RATE_LIMITED,
+        AiCallError::Provider { .. } | AiCallError::Malformed(_) => {
+            host_errors::ERR_AI_PROVIDER_ERROR
+        }
+        AiCallError::Unsupported(_) => host_errors::ERR_AI_OPERATION_UNSUPPORTED,
+        AiCallError::BudgetExceeded => host_errors::ERR_AI_BUDGET_EXCEEDED,
+        AiCallError::BaseUrlRefused
+        | AiCallError::Timeout
+        | AiCallError::BreakerOpen
+        | AiCallError::Transport(_) => host_errors::ERR_AI_REQUEST_FAILED,
     }
+}
 
-    let input = request.input.as_deref().unwrap_or("");
-    if input.trim().is_empty() {
-        return Err((
-            host_errors::ERR_AI_INVALID_REQUEST,
-            "an Embedding request requires a non-empty `input`".to_string(),
-        ));
-    }
-
-    let (input, truncated_from) = cap_embedding_input(input);
-    if let Some(original) = truncated_from {
-        warn!(
-            original_chars = original,
-            capped_chars = EMBEDDING_INPUT_MAX_CHARS,
-            "plugin embedding input exceeds budget; truncating before request"
-        );
-    }
-
-    let url = format!(
-        "{}/embeddings",
-        resolved.config.base_url.trim_end_matches('/')
+/// A chat completion in the shape a plugin reads.
+fn chat_response(completion: ChatCompletion) -> AiResponse {
+    let (prompt_tokens, completion_tokens, total_tokens) = completion.usage;
+    let cost_estimate = completion.cost_estimate;
+    let mut response = AiResponse::new(
+        completion.text.unwrap_or_default(),
+        completion.model,
+        AiUsage {
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+        },
+        completion.latency_ms,
+        completion.finish_reason,
     );
-    let body = serde_json::json!({
-        "model": resolved.model,
-        "input": input.as_ref(),
-    });
-
-    let mut headers = Vec::new();
-    if let Some(ref key) = resolved.api_key {
-        headers.push(("authorization".to_string(), format!("Bearer {key}")));
-    }
-
-    // Infallible: serde_json::Value serialization to string cannot fail.
-    let body_str = serde_json::to_string(&body).unwrap_or_default();
-    Ok((url, body_str, headers))
+    // The figure the send path recorded, surfaced to the plugin (G-COST-OPAQUE,
+    // p11j), so a plugin reads its cost here rather than from the kernel-owned
+    // `ai_usage_log`.
+    response.cost_estimate = cost_estimate;
+    response
 }
 
-/// Build an Anthropic Messages API request.
-fn build_anthropic_request(resolved: &ResolvedProvider, request: &AiRequest) -> BuiltRequest {
-    let url = format!(
-        "{}/messages",
-        resolved.config.base_url.trim_end_matches('/')
-    );
-
-    // Anthropic: system messages go in a separate "system" field.
-    // Multiple system messages are concatenated with newlines.
-    let mut system_parts: Vec<&str> = Vec::new();
-    let messages: Vec<serde_json::Value> = request
-        .messages
-        .iter()
-        .filter_map(|m| {
-            if m.role == "system" {
-                system_parts.push(&m.content);
-                None
-            } else {
-                Some(serde_json::json!({
-                    "role": m.role,
-                    "content": m.content,
-                }))
-            }
-        })
-        .collect();
-    let system_content = if system_parts.is_empty() {
-        None
-    } else {
-        Some(system_parts.join("\n"))
-    };
-
-    let mut body = serde_json::json!({
-        "model": resolved.model,
-        "messages": messages,
-        "max_tokens": request.options.max_tokens.unwrap_or(1024),
-    });
-
-    if let Some(ref system) = system_content {
-        body["system"] = serde_json::json!(system);
-    }
-    if let Some(temperature) = request.options.temperature {
-        body["temperature"] = serde_json::json!(temperature);
-    }
-    if let Some(top_p) = request.options.top_p {
-        body["top_p"] = serde_json::json!(top_p);
-    }
-    if let Some(ref stop) = request.options.stop
-        && !stop.is_empty()
-    {
-        body["stop_sequences"] = serde_json::json!(stop);
-    }
-
-    let mut headers = Vec::new();
-    if let Some(ref key) = resolved.api_key {
-        headers.push(("x-api-key".to_string(), key.clone()));
-    }
-    headers.push(("anthropic-version".to_string(), "2023-06-01".to_string()));
-
-    // Infallible: serde_json::Value serialization to string cannot fail.
-    let body_str = serde_json::to_string(&body).unwrap_or_default();
-    (url, body_str, headers)
-}
-
-// =============================================================================
-// Response parsing
-// =============================================================================
-
-/// Parse an OpenAI-compatible response into a normalized `AiResponse`.
-fn parse_openai_response(body: &str, latency_ms: u64) -> Result<AiResponse, String> {
-    let json: serde_json::Value =
-        serde_json::from_str(body).map_err(|e| format!("Failed to parse response: {e}"))?;
-
-    let content = json["choices"]
-        .get(0)
-        .and_then(|c| c["message"]["content"].as_str())
-        .unwrap_or("")
-        .to_string();
-
-    let model = json["model"].as_str().unwrap_or("unknown").to_string();
-
-    let finish_reason = json["choices"]
-        .get(0)
-        .and_then(|c| c["finish_reason"].as_str())
-        .map(|s| s.to_string());
-
-    let usage = AiUsage {
-        prompt_tokens: json["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32,
-        completion_tokens: json["usage"]["completion_tokens"].as_u64().unwrap_or(0) as u32,
-        total_tokens: json["usage"]["total_tokens"].as_u64().unwrap_or(0) as u32,
-    };
-
-    Ok(AiResponse::new(
-        content,
-        model,
-        usage,
-        latency_ms,
-        finish_reason,
-    ))
-}
-
-/// Parse an OpenAI-compatible **embeddings** response into a normalized
-/// `AiResponse` (K1 fix 2, G-AI-EMBED-UNROUTED).
+/// An embedding in the shape a plugin reads (K1 fix 2, G-AI-EMBED-UNROUTED).
 ///
 /// `AiResponse` carries no vector field — adding one would break the frozen SDK
 /// type — so the vector travels in `content` as a JSON float array, which is
 /// exactly what a plugin already parses it as (Argus's `HostProvider::embed`,
-/// `plugins/argus/src/host_ports.rs` in the jeremyandrews/argus repository,
-/// written against that assumption in M1 and unusable until now).
-///
-/// An embeddings response reports `usage.prompt_tokens` / `usage.total_tokens`
-/// and no completion tokens, so `completion_tokens` is zero rather than absent,
-/// and `ai_usage_log` records the operation with the real prompt count instead
-/// of a chat call's shape.
-fn parse_openai_embedding_response(body: &str, latency_ms: u64) -> Result<AiResponse, String> {
-    let json: serde_json::Value =
-        serde_json::from_str(body).map_err(|e| format!("Failed to parse response: {e}"))?;
-
-    let vector = crate::services::ai_provider::parse_embedding_vector(&json)
-        .map_err(|e| format!("embedding response had no usable vector: {e}"))?;
-
-    let content =
-        serde_json::to_string(&vector).map_err(|e| format!("failed to serialize vector: {e}"))?;
-
-    let model = json["model"].as_str().unwrap_or("unknown").to_string();
-
-    let prompt_tokens = json["usage"]["prompt_tokens"].as_u64().unwrap_or(0) as u32;
-    let total_tokens = json["usage"]["total_tokens"]
-        .as_u64()
-        .unwrap_or(u64::from(prompt_tokens)) as u32;
-    let usage = AiUsage {
-        prompt_tokens,
-        completion_tokens: 0,
-        total_tokens,
-    };
-
-    Ok(AiResponse::new(content, model, usage, latency_ms, None))
+/// `plugins/argus/src/host_ports.rs` in the jeremyandrews/argus repository).
+/// An embeddings response reports no completion tokens, so
+/// `completion_tokens` is zero rather than absent.
+fn embedding_response(result: EmbeddingResult) -> AiResponse {
+    // Infallible: a Vec<f32> of finite floats always serializes.
+    let content = serde_json::to_string(&result.vector).unwrap_or_default();
+    let cost_estimate = result.cost_estimate;
+    let mut response = AiResponse::new(
+        content,
+        result.served_model,
+        AiUsage {
+            prompt_tokens: result.prompt_tokens,
+            completion_tokens: 0,
+            total_tokens: result.total_tokens,
+        },
+        result.latency_ms,
+        None,
+    );
+    response.cost_estimate = cost_estimate;
+    response
 }
 
-/// Parse an Anthropic Messages API response into a normalized `AiResponse`.
-fn parse_anthropic_response(body: &str, latency_ms: u64) -> Result<AiResponse, String> {
-    let json: serde_json::Value =
-        serde_json::from_str(body).map_err(|e| format!("Failed to parse response: {e}"))?;
-
-    // Concatenate all text content blocks (Anthropic may return multiple).
-    let content = json["content"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|block| block["text"].as_str())
-                .collect::<Vec<_>>()
-                .join("")
-        })
-        .unwrap_or_default();
-
-    let model = json["model"].as_str().unwrap_or("unknown").to_string();
-
-    let finish_reason = json["stop_reason"].as_str().map(|s| s.to_string());
-
-    let usage = AiUsage {
-        prompt_tokens: json["usage"]["input_tokens"].as_u64().unwrap_or(0) as u32,
-        completion_tokens: json["usage"]["output_tokens"].as_u64().unwrap_or(0) as u32,
-        total_tokens: (json["usage"]["input_tokens"].as_u64().unwrap_or(0)
-            + json["usage"]["output_tokens"].as_u64().unwrap_or(0)) as u32,
+/// Send a plugin's request through the kernel's one send path
+/// ([`AiProviderService::chat_once`] or [`AiProviderService::embed_with`]),
+/// which checks the base URL, applies the configured timeout and the
+/// per-operation breaker, and logs a provider's own error text.
+///
+/// Branches on the *operation* first: before K1 fix 2 an `Embedding` request
+/// was posted to `/chat/completions` with an empty `messages` array and
+/// `request.input` was never read at all (G-AI-EMBED-UNROUTED, Argus M2).
+async fn send_plugin_request(
+    ai_svc: &AiProviderService,
+    resolved: &ResolvedProvider,
+    request: &AiRequest,
+    caller: &AiCaller,
+) -> Result<AiResponse, i32> {
+    use trovato_sdk::types::AiOperationType;
+    let sent = match request.operation {
+        AiOperationType::Chat => ai_svc
+            .chat_once(resolved, caller, &chat_request_for(request))
+            .await
+            .map(chat_response),
+        AiOperationType::Embedding => {
+            let input = request.input.as_deref().unwrap_or("");
+            if input.trim().is_empty() {
+                return Err(host_errors::ERR_AI_INVALID_REQUEST);
+            }
+            ai_svc
+                .embed_with(resolved, input, caller)
+                .await
+                .map(embedding_response)
+        }
+        // The kernel serves no route for any other operation; refusing it is
+        // better than posting it to `/chat/completions` and handing back a
+        // plausible-looking answer.
+        _ => return Err(host_errors::ERR_AI_OPERATION_UNSUPPORTED),
     };
-
-    Ok(AiResponse::new(
-        content,
-        model,
-        usage,
-        latency_ms,
-        finish_reason,
-    ))
+    sent.map_err(|e| {
+        warn!(
+            plugin = %caller.source,
+            provider = %resolved.config.label,
+            error = %e,
+            "AI request failed"
+        );
+        host_error_code(&e)
+    })
 }
 
 // =============================================================================
@@ -668,188 +414,28 @@ pub fn register_ai_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                         return host_errors::ERR_AI_RATE_LIMITED;
                     }
 
-                    // Check token budget. A background principal (P11c / D-42) is
-                    // metered against its per-plugin background cap; a web/user
-                    // call keeps the per-user/role budget path unchanged.
                     let user_id = caller.data().request.user.id;
                     let is_background = caller.data().request.user.is_background();
-                    if let Some(ref budget_svc) = services.ai_budgets {
-                        let budget_result = if is_background {
-                            budget_svc
-                                .check_plugin_budget(&services.db, &plugin_name, &resolved.config.id)
-                                .await
-                        } else {
-                            budget_svc
-                                .check_budget(&services.db, user_id, &resolved.config.id)
-                                .await
+
+                    // Send through the kernel's one send path: base URL
+                    // check, the caller's budget (a background principal's
+                    // per-plugin token and currency caps, P11c / D-42, D-44; a
+                    // web call's per-user or anonymous cap), configured
+                    // timeout, per-operation breaker, and the usage row with
+                    // its cost. The epoch deadline cuts plugin CPU; the
+                    // provider timeout cuts the HTTP call — both apply, the
+                    // tighter wins.
+                    let ai_caller = if is_background {
+                        AiCaller::plugin_background(plugin_name.clone())
+                    } else {
+                        AiCaller::user(user_id, plugin_name.clone())
+                    };
+                    let ai_response =
+                        match send_plugin_request(&ai_svc, &resolved, &request, &ai_caller).await {
+                            Ok(response) => response,
+                            Err(code) => return code,
                         };
-                        match budget_result {
-                            Ok(result) if !result.allowed => match result.action {
-                                BudgetAction::Deny | BudgetAction::Queue => {
-                                    warn!(
-                                        plugin = %plugin_name,
-                                        provider = %resolved.config.label,
-                                        user = %user_id,
-                                        used = result.used,
-                                        limit = result.limit,
-                                        "AI token budget exceeded"
-                                    );
-                                    return host_errors::ERR_AI_BUDGET_EXCEEDED;
-                                }
-                                BudgetAction::Warn => {
-                                    warn!(
-                                        plugin = %plugin_name,
-                                        provider = %resolved.config.label,
-                                        user = %user_id,
-                                        used = result.used,
-                                        limit = result.limit,
-                                        "AI token budget exceeded (warn mode, allowing)"
-                                    );
-                                }
-                            },
-                            Err(e) => {
-                                warn!(
-                                    error = %e,
-                                    plugin = %plugin_name,
-                                    "failed to check AI budget, allowing request"
-                                );
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    // Additionally enforce a per-plugin currency budget for
-                    // background calls (P11c / D-44), if one is configured.
-                    if is_background
-                        && let Some(ref budget_svc) = services.ai_budgets
-                    {
-                        match budget_svc
-                            .check_plugin_cost_budget(
-                                &services.db,
-                                &plugin_name,
-                                &resolved.config.id,
-                            )
-                            .await
-                        {
-                            Ok(result) if !result.allowed => match result.action {
-                                BudgetAction::Deny | BudgetAction::Queue => {
-                                    warn!(
-                                        plugin = %plugin_name,
-                                        provider = %resolved.config.label,
-                                        used = result.used,
-                                        limit = result.limit,
-                                        "AI currency budget exceeded"
-                                    );
-                                    return host_errors::ERR_AI_BUDGET_EXCEEDED;
-                                }
-                                BudgetAction::Warn => {
-                                    warn!(
-                                        plugin = %plugin_name,
-                                        provider = %resolved.config.label,
-                                        used = result.used,
-                                        limit = result.limit,
-                                        "AI currency budget exceeded (warn mode, allowing)"
-                                    );
-                                }
-                            },
-                            Err(e) => {
-                                warn!(
-                                    error = %e,
-                                    plugin = %plugin_name,
-                                    "failed to check AI currency budget, allowing request"
-                                );
-                            }
-                            _ => {}
-                        }
-                    }
-
-                    // Resolve the per-request outbound timeout and the
-                    // per-operation breaker window from config (P11c / D-43).
-                    // Degrade gracefully to defaults if the config read fails.
-                    let timeout_cfg = ai_svc.get_timeout_config().await.unwrap_or_else(|e| {
-                        warn!(
-                            error = %e,
-                            plugin = %plugin_name,
-                            "failed to read AI timeout config, using defaults"
-                        );
-                        crate::services::ai_provider::AiTimeoutConfig::default()
-                    });
-                    let op_key = kernel_op.config_key();
-                    let timeout =
-                        timeout_cfg.resolve_timeout(op_key, &resolved.config.id, is_background);
-                    // The circuit breakers stay per server on purpose: each one
-                    // reacts to the failures this server sees, opens and probes
-                    // on its own, and sharing them would add a Redis round trip
-                    // to every AI call to save a few failed requests per server.
-                    let breaker =
-                        ai_svc.breaker_for_operation(op_key, timeout_cfg.resolve_breaker_window(op_key));
-
-                    let started = Instant::now();
-
-                    // Execute the HTTP request through the per-operation circuit
-                    // breaker. The epoch deadline cuts plugin CPU; the provider
-                    // timeout cuts the HTTP call — both apply, the tighter wins.
-                    let exec = breaker
-                        .call(|| execute_ai_request(ai_svc.http(), &resolved, &request, timeout))
-                        .await;
-                    let (response_body, _status) = match exec {
-                        Ok(r) => r,
-                        Err(crate::circuit_breaker::CircuitBreakerError::Open) => {
-                            warn!(
-                                plugin = %plugin_name,
-                                provider = %resolved.config.label,
-                                operation = %op_key,
-                                "AI request rejected: circuit breaker open for this operation"
-                            );
-                            return host_errors::ERR_AI_REQUEST_FAILED;
-                        }
-                        Err(crate::circuit_breaker::CircuitBreakerError::ServiceError((
-                            code,
-                            msg,
-                        ))) => {
-                            warn!(
-                                plugin = %plugin_name,
-                                provider = %resolved.config.label,
-                                error = %msg,
-                                "AI request failed"
-                            );
-                            return code;
-                        }
-                    };
-
-                    let latency_ms = started.elapsed().as_millis() as u64;
-
-                    // Parse the response with the parser matching the request
-                    // that was actually built — by operation first, then
-                    // protocol (K1 fix 2, G-AI-EMBED-UNROUTED). An embeddings
-                    // response has no `choices[0].message.content`, so reading
-                    // it as a chat completion is what used to hand a plugin an
-                    // empty string where it expected a vector.
-                    let ai_response = match request.operation {
-                        trovato_sdk::types::AiOperationType::Embedding => {
-                            parse_openai_embedding_response(&response_body, latency_ms)
-                        }
-                        _ => match resolved.config.protocol {
-                            ProviderProtocol::OpenAiCompatible => {
-                                parse_openai_response(&response_body, latency_ms)
-                            }
-                            ProviderProtocol::Anthropic => {
-                                parse_anthropic_response(&response_body, latency_ms)
-                            }
-                        },
-                    };
-
-                    let mut ai_response = match ai_response {
-                        Ok(r) => r,
-                        Err(msg) => {
-                            warn!(
-                                plugin = %plugin_name,
-                                error = %msg,
-                                "failed to parse AI provider response"
-                            );
-                            return host_errors::ERR_AI_PROVIDER_ERROR;
-                        }
-                    };
+                    let latency_ms = ai_response.latency_ms;
 
                     // Log request details
                     info!(
@@ -861,64 +447,6 @@ pub fn register_ai_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                         latency_ms = latency_ms,
                         "ai_request completed"
                     );
-
-                    // Record usage in ai_usage_log + surface cost to the plugin.
-                    if let Some(ref budget_svc) = services.ai_budgets {
-                        // Estimate cost (P11c / D-44) from the model + token
-                        // counts; None for an unpriced model (tokens-only).
-                        //
-                        // Priced on `resolved.model`, the model this request
-                        // ASKED for, not on `ai_response.model`, the string the
-                        // provider reports having served. Anthropic resolves an
-                        // alias server side, so a request for `claude-haiku-4-5`
-                        // answers as `claude-haiku-4-5-20251001` and matched no
-                        // row in a pricing table keyed by the name the operator
-                        // configured. Every call then logged unpriced, the
-                        // currency cap enforced nothing, and the spend read
-                        // zero while real money was being spent.
-                        let cost_estimate = budget_svc
-                            .estimate_call_cost(
-                                &resolved.model,
-                                &ai_response.model,
-                                i64::from(ai_response.usage.prompt_tokens.min(i32::MAX as u32)),
-                                i64::from(ai_response.usage.completion_tokens.min(i32::MAX as u32)),
-                            )
-                            .await;
-                        // Surface the same figure to the plugin (G-COST-OPAQUE,
-                        // p11j): the plugin now reads cost from the response rather
-                        // than the kernel-owned ai_usage_log. `Option<f64>` is
-                        // Copy, so it also feeds the log entry below.
-                        ai_response.cost_estimate = cost_estimate;
-                        let entry = UsageLogEntry {
-                            user_id: if user_id.is_nil() {
-                                None
-                            } else {
-                                Some(user_id)
-                            },
-                            plugin_name: plugin_name.clone(),
-                            provider_id: resolved.config.id.clone(),
-                            operation: kernel_op.to_string(),
-                            model: ai_response.model.clone(),
-                            prompt_tokens: ai_response.usage.prompt_tokens.min(i32::MAX as u32)
-                                as i32,
-                            completion_tokens: ai_response
-                                .usage
-                                .completion_tokens
-                                .min(i32::MAX as u32)
-                                as i32,
-                            total_tokens: ai_response.usage.total_tokens.min(i32::MAX as u32)
-                                as i32,
-                            latency_ms: latency_ms as i64,
-                            cost_estimate,
-                        };
-                        if let Err(e) = budget_svc.record_usage(&services.db, entry).await {
-                            warn!(
-                                error = %e,
-                                plugin = %plugin_name,
-                                "failed to record AI usage"
-                            );
-                        }
-                    }
 
                     // Serialize response and write to WASM memory
                     let Ok(response_json) = serde_json::to_string(&ai_response) else {
@@ -957,6 +485,7 @@ pub fn register_ai_functions(linker: &mut Linker<PluginState>) -> Result<()> {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::services::ai_provider::ProviderProtocol;
     use std::sync::Arc;
     use std::sync::Mutex;
     use trovato_sdk::types::{AiMessage, AiOperationType, AiRequestOptions};
@@ -968,13 +497,14 @@ mod tests {
     // -------------------------------------------------------------------------
 
     // -------------------------------------------------------------------------
-    // P11c / D-43 — per-request outbound timeout applied by execute_ai_request.
+    // P11c / D-43 — the per-request outbound timeout, applied by the send path.
     // Drives the real HTTP path against a local slow "provider" (no wiremock
     // dependency): a generous timeout completes; a short timeout cuts the call.
     // -------------------------------------------------------------------------
 
     /// Bind a local one-shot HTTP server that waits `delay` before responding
-    /// 200. Returns its `http://addr` base URL.
+    /// 200. Returns its `http://addr` base URL, allowed past the send path's
+    /// loopback refusal.
     async fn slow_http_server(delay: std::time::Duration) -> String {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -994,7 +524,24 @@ mod tests {
                 let _ = sock.flush().await;
             }
         });
-        format!("http://{addr}")
+        let base = format!("http://{addr}");
+        crate::services::ai_provider::allow_loopback_provider_for_tests(&base);
+        base
+    }
+
+    /// A provider service whose database is unreachable, so the `ai_timeouts`
+    /// read falls back to defaults quickly.
+    fn provider_service() -> AiProviderService {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(std::time::Duration::from_millis(50))
+            .connect_lazy("postgres://trovato:unused@127.0.0.1:1/unused")
+            .expect("a lazy pool never connects here");
+        AiProviderService::new(pool)
+    }
+
+    fn caller() -> AiCaller {
+        AiCaller::plugin_background("host_ai_test")
     }
 
     fn resolved_for(base_url: String) -> ResolvedProvider {
@@ -1068,24 +615,24 @@ mod tests {
                 let _ = sock.flush().await;
             }
         });
-        (format!("http://{addr}"), seen)
+        let base = format!("http://{addr}");
+        crate::services::ai_provider::allow_loopback_provider_for_tests(&base);
+        (base, seen)
     }
 
     #[tokio::test]
     async fn an_embedding_request_hits_the_embeddings_endpoint_with_its_input() {
         let (base, seen) = embedding_http_server().await;
         let resolved = resolved_for(base);
-        let client = reqwest::Client::new();
 
-        let (body, status) = execute_ai_request(
-            &client,
+        let parsed = send_plugin_request(
+            &provider_service(),
             &resolved,
             &embedding_request("embed me"),
-            std::time::Duration::from_secs(5),
+            &caller(),
         )
         .await
         .expect("embedding request should be routed");
-        assert_eq!(status, 200);
 
         let request = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
         // The defect, gone: the path is /embeddings, not /chat/completions...
@@ -1107,8 +654,7 @@ mod tests {
             "an embeddings request must not carry a messages array:\n{request}"
         );
 
-        // And it parses as a vector, which is what a plugin does with `content`.
-        let parsed = parse_openai_embedding_response(&body, 12).expect("parse embedding response");
+        // And it comes back as a vector, which is what a plugin does with `content`.
         let vector: Vec<f32> = serde_json::from_str(&parsed.content).expect("content is a vector");
         assert_eq!(vector, vec![0.25, -0.5, 0.75]);
         assert_eq!(parsed.model, "text-embedding-3-small");
@@ -1119,43 +665,55 @@ mod tests {
 
     #[test]
     fn an_embeddings_response_read_as_a_chat_completion_yields_nothing() {
-        // Why the parser had to branch too: this is what a plugin used to get.
-        let body = r#"{"model":"e","data":[{"embedding":[1.0,2.0]}],"usage":{"prompt_tokens":3,"total_tokens":3}}"#;
-        let as_chat = parse_openai_response(body, 0).expect("chat parse is lenient");
-        assert!(as_chat.content.is_empty(), "an empty string, not a vector");
-        assert!(serde_json::from_str::<Vec<f32>>(&as_chat.content).is_err());
+        // Why the send had to branch too: an embeddings response is not a
+        // completion, and reading it as one is what a plugin used to get.
+        let body = serde_json::json!({"model":"e","data":[{"embedding":[1.0,2.0]}],"usage":{"prompt_tokens":3,"total_tokens":3}});
+        assert!(
+            crate::services::ai_tools::parse_chat_response(
+                ProviderProtocol::OpenAiCompatible,
+                &body
+            )
+            .is_none()
+        );
     }
 
-    #[test]
-    fn an_embedding_with_no_input_is_an_invalid_request() {
+    #[tokio::test]
+    async fn an_embedding_with_no_input_is_an_invalid_request() {
+        let service = provider_service();
+        let resolved = resolved_for("http://x.test".into());
         let mut req = embedding_request("");
         req.input = None;
-        let err = build_openai_embedding_request(&resolved_for("http://x.test".into()), &req)
+        let err = send_plugin_request(&service, &resolved, &req, &caller())
+            .await
             .expect_err("no input is not a request");
-        assert_eq!(err.0, host_errors::ERR_AI_INVALID_REQUEST);
+        assert_eq!(err, host_errors::ERR_AI_INVALID_REQUEST);
 
-        let err = build_openai_embedding_request(
-            &resolved_for("http://x.test".into()),
-            &embedding_request("   "),
-        )
-        .expect_err("whitespace is not input either");
-        assert_eq!(err.0, host_errors::ERR_AI_INVALID_REQUEST);
+        let err = send_plugin_request(&service, &resolved, &embedding_request("   "), &caller())
+            .await
+            .expect_err("whitespace is not input either");
+        assert_eq!(err, host_errors::ERR_AI_INVALID_REQUEST);
     }
 
-    #[test]
-    fn an_embedding_on_anthropic_is_refused_rather_than_mis_posted() {
+    #[tokio::test]
+    async fn an_embedding_on_anthropic_is_refused_rather_than_mis_posted() {
         let mut resolved = resolved_for("http://x.test".into());
         resolved.config.protocol = ProviderProtocol::Anthropic;
-        let err = build_openai_embedding_request(&resolved, &embedding_request("hi"))
-            .expect_err("Anthropic has no embeddings API");
-        assert_eq!(err.0, host_errors::ERR_AI_OPERATION_UNSUPPORTED);
+        let err = send_plugin_request(
+            &provider_service(),
+            &resolved,
+            &embedding_request("hi"),
+            &caller(),
+        )
+        .await
+        .expect_err("Anthropic has no embeddings API");
+        assert_eq!(err, host_errors::ERR_AI_OPERATION_UNSUPPORTED);
     }
 
     #[tokio::test]
     async fn an_unrouted_operation_is_refused_rather_than_served_as_chat() {
         // The bad kind of quiet, closed: Moderation used to be posted to
         // /chat/completions and the caller got a plausible-looking response.
-        let client = reqwest::Client::new();
+        let service = provider_service();
         for op in [
             AiOperationType::ImageGeneration,
             AiOperationType::SpeechToText,
@@ -1164,70 +722,74 @@ mod tests {
         ] {
             let mut req = chat_request();
             req.operation = op;
-            let err = execute_ai_request(
-                &client,
-                &resolved_for("http://127.0.0.1:1".into()),
+            let err = send_plugin_request(
+                &service,
+                &resolved_for("https://provider.example".into()),
                 &req,
-                std::time::Duration::from_millis(200),
+                &caller(),
             )
             .await
             .expect_err("{op:?} has no route");
             assert_eq!(
-                err.0,
+                err,
                 host_errors::ERR_AI_OPERATION_UNSUPPORTED,
                 "{op:?} must be refused with a distinct code, got {err:?}"
             );
         }
     }
 
-    #[test]
-    fn a_long_embedding_input_is_capped_before_it_leaves() {
-        let long = "x".repeat(EMBEDDING_INPUT_MAX_CHARS + 1_000);
-        let (_url, body, _headers) = build_openai_embedding_request(
-            &resolved_for("http://x.test".into()),
-            &embedding_request(&long),
-        )
-        .expect("over-budget input is capped, not refused");
-        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(
-            json["input"].as_str().unwrap().chars().count(),
-            EMBEDDING_INPUT_MAX_CHARS
-        );
+    /// **B50.** A private IP literal is refused at send time, before any byte
+    /// leaves: the row may have reached `site_config` without the admin form.
+    #[tokio::test]
+    async fn a_private_ip_literal_is_refused_before_sending() {
+        for base in [
+            "http://10.0.0.1/v1",
+            "http://192.168.1.1",
+            "http://127.0.0.1:1",
+        ] {
+            let err = send_plugin_request(
+                &provider_service(),
+                &resolved_for(base.into()),
+                &chat_request(),
+                &caller(),
+            )
+            .await
+            .expect_err("a private literal is refused");
+            assert_eq!(err, host_errors::ERR_AI_REQUEST_FAILED, "{base}");
+        }
+    }
+
+    async fn chat_with_timeout(
+        base: String,
+        timeout: std::time::Duration,
+    ) -> Result<AiResponse, i32> {
+        let request = ChatRequest {
+            timeout: Some(timeout),
+            ..chat_request_for(&chat_request())
+        };
+        provider_service()
+            .chat_once(&resolved_for(base), &caller(), &request)
+            .await
+            .map(chat_response)
+            .map_err(|e| host_error_code(&e))
     }
 
     #[tokio::test]
     async fn generous_timeout_completes_a_slow_call() {
         let base = slow_http_server(std::time::Duration::from_millis(200)).await;
-        let resolved = resolved_for(base);
-        let client = reqwest::Client::new();
         // A 5s timeout comfortably clears a 200ms-slow provider.
-        let out = execute_ai_request(
-            &client,
-            &resolved,
-            &chat_request(),
-            std::time::Duration::from_secs(5),
-        )
-        .await;
-        let (body, status) = out.expect("generous timeout should let the call complete");
-        assert_eq!(status, 200);
-        assert!(body.contains("ok"));
+        let out = chat_with_timeout(base, std::time::Duration::from_secs(5)).await;
+        let response = out.expect("generous timeout should let the call complete");
+        assert_eq!(response.content, "ok");
     }
 
     #[tokio::test]
     async fn short_timeout_cuts_a_slow_call() {
         let base = slow_http_server(std::time::Duration::from_secs(3)).await;
-        let resolved = resolved_for(base);
-        let client = reqwest::Client::new();
         // A 300ms timeout cuts a 3s-slow provider — the configured (short)
         // request-scoped timeout is honored per request.
-        let out = execute_ai_request(
-            &client,
-            &resolved,
-            &chat_request(),
-            std::time::Duration::from_millis(300),
-        )
-        .await;
-        let (code, _msg) = out.expect_err("short timeout must cut the slow call");
+        let out = chat_with_timeout(base, std::time::Duration::from_millis(300)).await;
+        let code = out.expect_err("short timeout must cut the slow call");
         assert_eq!(code, host_errors::ERR_AI_REQUEST_FAILED);
     }
 
@@ -1320,6 +882,16 @@ mod tests {
         );
     }
 
+    /// Parse a provider response the way the send path does and hand it back
+    /// in the shape a plugin reads.
+    fn parse(protocol: ProviderProtocol, json: &str, latency_ms: u64) -> AiResponse {
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        let mut completion =
+            crate::services::ai_tools::parse_chat_response(protocol, &value).unwrap();
+        completion.latency_ms = latency_ms;
+        chat_response(completion)
+    }
+
     #[test]
     fn parse_openai_response_valid() {
         let json = r#"{
@@ -1338,7 +910,7 @@ mod tests {
             }
         }"#;
 
-        let resp = parse_openai_response(json, 42).unwrap();
+        let resp = parse(ProviderProtocol::OpenAiCompatible, json, 42);
         assert_eq!(resp.content, "Hello world");
         assert_eq!(resp.model, "gpt-4o");
         assert_eq!(resp.usage.prompt_tokens, 10);
@@ -1363,7 +935,7 @@ mod tests {
             }
         }"#;
 
-        let resp = parse_anthropic_response(json, 100).unwrap();
+        let resp = parse(ProviderProtocol::Anthropic, json, 100);
         assert_eq!(resp.content, "Hello from Claude");
         assert_eq!(resp.model, "claude-sonnet-4-20250514");
         assert_eq!(resp.usage.prompt_tokens, 8);
@@ -1375,16 +947,22 @@ mod tests {
 
     #[test]
     fn parse_openai_response_empty_choices() {
-        let json = r#"{"choices": [], "model": "gpt-4o", "usage": {}}"#;
-        let resp = parse_openai_response(json, 0).unwrap();
-        assert_eq!(resp.content, "");
-        assert_eq!(resp.finish_reason, None);
+        // No choice is no completion: the plugin gets a provider error rather
+        // than an empty string that reads as an answer.
+        let json = serde_json::json!({"choices": [], "model": "gpt-4o", "usage": {}});
+        assert!(
+            crate::services::ai_tools::parse_chat_response(
+                ProviderProtocol::OpenAiCompatible,
+                &json
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn parse_anthropic_response_empty_content() {
         let json = r#"{"content": [], "model": "claude-3", "usage": {}}"#;
-        let resp = parse_anthropic_response(json, 0).unwrap();
+        let resp = parse(ProviderProtocol::Anthropic, json, 0);
         assert_eq!(resp.content, "");
     }
 
@@ -1421,7 +999,11 @@ mod tests {
             },
         };
 
-        let (url, body, headers) = build_openai_request(&resolved, &request);
+        let (url, parsed, headers) = crate::services::ai_tools::build_chat_request(
+            &resolved,
+            &chat_request_for(&request),
+            false,
+        );
         assert_eq!(url, "https://api.openai.com/v1/chat/completions");
         assert!(
             headers
@@ -1429,7 +1011,6 @@ mod tests {
                 .any(|(k, v)| k == "authorization" && v == "Bearer sk-test-key")
         );
 
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed["model"], "gpt-4o");
         assert_eq!(parsed["messages"].as_array().unwrap().len(), 2);
         assert_eq!(parsed["messages"][0]["role"], "system");
@@ -1470,7 +1051,11 @@ mod tests {
             },
         };
 
-        let (url, body, headers) = build_anthropic_request(&resolved, &request);
+        let (url, parsed, headers) = crate::services::ai_tools::build_chat_request(
+            &resolved,
+            &chat_request_for(&request),
+            false,
+        );
         assert_eq!(url, "https://api.anthropic.com/v1/messages");
         assert!(
             headers
@@ -1483,7 +1068,6 @@ mod tests {
                 .any(|(k, v)| k == "anthropic-version" && v == "2023-06-01")
         );
 
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
         assert_eq!(parsed["model"], "claude-sonnet-4-20250514");
         assert_eq!(parsed["system"], "You are a poet.");
         // System message should NOT be in the messages array
@@ -1523,9 +1107,12 @@ mod tests {
             options: AiRequestOptions::default(),
         };
 
-        let (_url, body, _headers) = build_anthropic_request(&resolved, &request);
-        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
-        assert_eq!(parsed["system"], "You are a poet.\nUse haiku form only.");
+        let (_url, parsed, _headers) = crate::services::ai_tools::build_chat_request(
+            &resolved,
+            &chat_request_for(&request),
+            false,
+        );
+        assert_eq!(parsed["system"], "You are a poet.\n\nUse haiku form only.");
         assert_eq!(parsed["messages"].as_array().unwrap().len(), 1);
     }
 
@@ -1541,7 +1128,7 @@ mod tests {
             "usage": {"input_tokens": 5, "output_tokens": 2}
         }"#;
 
-        let resp = parse_anthropic_response(json, 50).unwrap();
+        let resp = parse(ProviderProtocol::Anthropic, json, 50);
         assert_eq!(resp.content, "Hello world!");
     }
 

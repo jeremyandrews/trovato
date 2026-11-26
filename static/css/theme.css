@@ -331,6 +331,26 @@ html {
     font-weight: 600;
 }
 
+/* A language switcher tile: one link per enabled language, inline. */
+.tile-language-switcher__list {
+    list-style: none;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin: 0;
+    padding: 0;
+}
+
+.tile-language-switcher__item a {
+    display: block;
+    padding: 0.25rem 0.5rem;
+}
+
+.tile-language-switcher__item--current a {
+    font-weight: 600;
+    text-decoration: underline;
+}
+
 /* A gather tile: the first rows of a gather, then a link to all of them. */
 .tile-gather__list {
     list-style: none;

@@ -201,8 +201,11 @@ async fn create_submit(
 
     // Cap items_per_page
     let mut display = display;
-    if display.items_per_page > MAX_ITEMS_PER_PAGE {
-        display.items_per_page = MAX_ITEMS_PER_PAGE;
+    if display
+        .items_per_page
+        .is_some_and(|n| n > MAX_ITEMS_PER_PAGE)
+    {
+        display.items_per_page = Some(MAX_ITEMS_PER_PAGE);
     }
 
     if !errors.is_empty() {
@@ -357,8 +360,11 @@ async fn save_submit(
         }
     };
 
-    // Parse display JSON
-    let display: QueryDisplay = match serde_json::from_str(&form.display_json) {
+    // Parse display JSON, over the stored display: a key the form did not send
+    // keeps its stored value (B160). The builder edits only some of a
+    // display's keys, so saving a gather there dropped its feed, its routes,
+    // its header and footer.
+    let display: QueryDisplay = match display_over_stored(&existing.display, &form.display_json) {
         Ok(d) => d,
         Err(e) => {
             errors.push(format!("Invalid display JSON: {e}"));
@@ -377,8 +383,11 @@ async fn save_submit(
 
     // Cap items_per_page
     let mut display = display;
-    if display.items_per_page > MAX_ITEMS_PER_PAGE {
-        display.items_per_page = MAX_ITEMS_PER_PAGE;
+    if display
+        .items_per_page
+        .is_some_and(|n| n > MAX_ITEMS_PER_PAGE)
+    {
+        display.items_per_page = Some(MAX_ITEMS_PER_PAGE);
     }
 
     if !errors.is_empty() {
@@ -441,6 +450,31 @@ async fn save_submit(
             render_server_error("Failed to update gather query.")
         }
     }
+}
+
+/// The display a save submits, laid over the stored one: each top-level key the
+/// submitted JSON object carries replaces the stored key, and every key it
+/// leaves out keeps its stored value.
+///
+/// So a form that edits some of a display's keys (the gather builder edits
+/// format, page size, empty text, canonical URL, pager and feed settings) cannot
+/// erase the others (routes, a feed it never showed, header and footer) by not
+/// knowing them. A key sent as `null` is cleared.
+fn display_over_stored(
+    stored: &QueryDisplay,
+    submitted_json: &str,
+) -> Result<QueryDisplay, serde_json::Error> {
+    let submitted: serde_json::Value = serde_json::from_str(submitted_json)?;
+    let mut merged = serde_json::to_value(stored)?;
+    if let (Some(merged), Some(submitted)) = (merged.as_object_mut(), submitted.as_object()) {
+        for (key, value) in submitted {
+            merged.insert(key.clone(), value.clone());
+        }
+    } else {
+        // Not an object: let deserialization say what is wrong with it.
+        return serde_json::from_value(submitted);
+    }
+    serde_json::from_value(merged)
 }
 
 /// Clone a gather query.

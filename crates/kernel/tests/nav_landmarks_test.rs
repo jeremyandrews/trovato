@@ -27,6 +27,15 @@ use uuid::Uuid;
 const TYPE_SEED_LOCK: i64 = 0x_F406_0000_0001;
 const ITEM_TYPE: &str = "nav_landmark_test";
 
+/// The config menu cache is process-wide and filled by whichever render reads
+/// it first after a write. A render that started reading before a test wrote
+/// its menu link can fill the cache after the write's invalidation, without
+/// the link, for the cache's whole TTL. `the_active_main_menu_link_is_marked_as_the_current_page`
+/// writes a link and reads it off the page, so it holds this for writing and
+/// the other tests here, which render pages, for reading, each through its
+/// cleanup.
+static MENUS: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
+
 fn admin_ctx() -> UserContext {
     UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()])
 }
@@ -138,6 +147,7 @@ async fn admin_session(app: &TestApp) -> String {
 fn every_nav_landmark_on_every_rendered_page_is_labelled() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.read().await);
         ensure_item_type(app).await;
         let item_id = create_item(app).await;
         let cookies = admin_session(app).await;
@@ -187,6 +197,7 @@ fn every_nav_landmark_on_every_rendered_page_is_labelled() {
 fn the_active_main_menu_link_is_marked_as_the_current_page() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.write().await);
         ensure_item_type(app).await;
         let item_id = create_item(app).await;
         let item_path = format!("/item/{item_id}");
@@ -244,6 +255,7 @@ fn the_active_main_menu_link_is_marked_as_the_current_page() {
 fn the_last_breadcrumb_is_marked_as_the_current_page() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.read().await);
         ensure_item_type(app).await;
         let item_id = create_item(app).await;
 
@@ -273,14 +285,17 @@ fn the_last_breadcrumb_is_marked_as_the_current_page() {
 fn the_admin_sidebar_marks_the_current_screen() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.read().await);
         let cookies = admin_session(app).await;
 
         let (status, html) = get(app, &cookies, "/admin").await;
         assert_eq!(status, StatusCode::OK);
 
-        let active_at = html
-            .find("class=\"active\"")
-            .expect("the dashboard link must render as active on /admin");
+        let nav_at = html.find(r#"id="admin-nav""#).expect("the admin sidebar");
+        let active_at = nav_at
+            + html[nav_at..]
+                .find(r#"href="/admin""#)
+                .expect("the dashboard link must be in the sidebar on /admin");
         let tag_start = html[..active_at].rfind('<').expect("an opening tag");
         let tag_end = html[active_at..].find('>').expect("a tag end") + active_at;
 

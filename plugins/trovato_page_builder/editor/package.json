@@ -1,7 +1,7 @@
 {
   "name": "trovato-page-builder-editor",
   "private": true,
-  "version": "0.106.0",
+  "version": "0.105.0",
   "description": "The Puck editor for Trovato's page builder field, built from the kernel's component registry",
   "license": "MIT OR Apache-2.0",
   "type": "module",

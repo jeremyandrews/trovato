@@ -224,7 +224,13 @@ pub struct CompoundSection {
 }
 
 /// Field type definitions for content type registration.
+///
+/// `#[non_exhaustive]`: the kernel adds field kinds (`CategoryReference` was
+/// one), and a new kind must be an additive change, not one that breaks every
+/// plugin with an exhaustive `match`. Match it with a `_` arm for the kinds a
+/// plugin does not handle. Construct it as before.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum FieldType {
     Text {
         max_length: Option<usize>,
@@ -252,6 +258,17 @@ pub enum FieldType {
     /// Storage format: `{"root": {...}, "content": [{type, props, zones}, ...]}`.
     /// Supports 12 component types with nested zones for visual page composition.
     PageBuilder,
+    /// Tags of one category, named by the category's machine name.
+    ///
+    /// Storage format: a JSON array of tag uuid strings (`["<uuid>", …]`), the
+    /// shape gather's `has_tag` and `has_tag_or_descendants` filters read. Every
+    /// write is checked: each value must name a tag of this category, and there
+    /// may be no more values than the field's `cardinality` allows. The item
+    /// page resolves the tags into `referenced_tags`.
+    ///
+    /// Added in 0.105 (B72). Additive: a plugin that matches on `FieldType`
+    /// needs a `_` arm or this one.
+    CategoryReference(String),
 }
 
 /// A content type definition returned by `tap_item_info`.
@@ -712,6 +729,68 @@ impl MenuDefinition {
     }
 }
 
+/// One admin sidebar link, and optionally one dashboard card, returned by
+/// `tap_admin_nav`.
+///
+/// A plugin's own admin page is reached the same way any kernel admin page
+/// is — the kernel builds the same sidebar context for both (BL-162) — but
+/// before this tap existed the sidebar itself was a fixed kernel list a
+/// plugin could not add to, so a plugin's admin screen was invisible in
+/// navigation however it gated its own route. This mirrors `tap_perm` and
+/// `tap_menu`: a declaration collected once at boot, not queried per request.
+///
+/// `permission` is display filtering only — the kernel shows or hides the
+/// link by it, exactly as it does for its own links, but never substitutes
+/// for the route's own access check. A plugin whose route requires more than
+/// this permission (or something else entirely) is still safe: the viewer who
+/// sees the link because they hold it can still be refused by the route.
+///
+/// `href` must be the plugin's own path below `/admin/`, with no empty, `.` or
+/// `..` segment. A disabled plugin's
+/// declaration is dropped entirely — it contributes no link and no card,
+/// exactly as its routes stop being reachable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminNavDefinition {
+    /// The sidebar section heading this link sits under (for example
+    /// `"Structure"` or `"People"`). Joins an existing kernel section when
+    /// one by that name exists, otherwise starts a new one.
+    pub section: String,
+    /// The link text, and the dashboard card's title when `card_description`
+    /// is set.
+    pub label: String,
+    /// Where it goes: a path below `/admin/`.
+    pub href: String,
+    /// What the viewer must hold to see this link and card.
+    pub permission: String,
+    /// When set, this entry also becomes a dashboard card on `/admin`, titled
+    /// `label`, with this one line of description, linking to `href`.
+    #[serde(default)]
+    pub card_description: Option<String>,
+}
+
+impl AdminNavDefinition {
+    pub fn new(
+        section: impl Into<String>,
+        label: impl Into<String>,
+        href: impl Into<String>,
+        permission: impl Into<String>,
+    ) -> Self {
+        Self {
+            section: section.into(),
+            label: label.into(),
+            href: href.into(),
+            permission: permission.into(),
+            card_description: None,
+        }
+    }
+
+    /// Also show this entry as a dashboard card on `/admin`.
+    pub fn card(mut self, description: impl Into<String>) -> Self {
+        self.card_description = Some(description.into());
+        self
+    }
+}
+
 // =============================================================================
 // Plugin-served requests (`tap_api`) — added in KERNEL_API_VERSION (0,99)
 // =============================================================================
@@ -863,6 +942,60 @@ impl From<MenuDefinition> for MenuRoute {
     }
 }
 
+/// One file a plugin-served multipart request uploaded, handed to `tap_api` in
+/// [`ApiRequest::files`] (**G-FILE-NO-HOST-API**, BL-107).
+///
+/// Before this existed, a plugin route's body was UTF-8 text capped at 256 KiB
+/// for the trip across the WASM boundary, so a multipart upload was either
+/// refused by that cap or arrived as bytes no plugin could make sense of —
+/// there was no host call a plugin could store them through either. The file
+/// named here is not that: it already exists in the kernel's file storage,
+/// `Temporary`, by the time the plugin sees this.
+///
+/// `#[non_exhaustive]`: construct with [`UploadedFile::new`] (the kernel is the
+/// only producer) and match with `..`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct UploadedFile {
+    /// The multipart field name the file arrived under, e.g. `"attachment"`.
+    pub field: String,
+    /// The `file_managed` id, as a uuid string — the value a File field holds.
+    /// Put this in one to attach the file to an item through `host::save_item`.
+    pub id: String,
+    /// The name the uploader's browser sent.
+    pub filename: String,
+    /// The validated MIME type: the multipart part's declared `Content-Type`
+    /// when that was understood, otherwise the one the filename's extension
+    /// gives.
+    pub mime_type: String,
+    /// Size in bytes.
+    pub size: i64,
+    /// The URL the file is served from once it is referenced.
+    pub url: String,
+}
+
+impl UploadedFile {
+    /// Construct one. The kernel is the only caller; a plugin only ever reads
+    /// a value handed to it in [`ApiRequest::files`].
+    pub fn new(
+        field: impl Into<String>,
+        id: impl Into<String>,
+        filename: impl Into<String>,
+        mime_type: impl Into<String>,
+        size: i64,
+        url: impl Into<String>,
+    ) -> Self {
+        Self {
+            field: field.into(),
+            id: id.into(),
+            filename: filename.into(),
+            mime_type: mime_type.into(),
+            size,
+            url: url.into(),
+        }
+    }
+}
+
 /// One HTTP request handed to a plugin's `tap_api` (**G-NO-PLUGIN-HTTP**).
 ///
 /// Before `KERNEL_API_VERSION (0,99)` there was **no surface through which a
@@ -936,6 +1069,34 @@ pub struct ApiRequest {
     /// from a kernel that does not send it deserializes with it empty.
     #[serde(default)]
     pub csrf_token: String,
+    /// Files the kernel stored on this request's behalf before dispatch
+    /// (**G-FILE-NO-HOST-API**, BL-107).
+    ///
+    /// Populated only when the request's `Content-Type` was
+    /// `multipart/form-data`; empty for every other request, JSON and
+    /// form-urlencoded included. Each file was already validated and written
+    /// through the kernel's `FileService` — the same size limit, MIME
+    /// allowlist and magic-byte check a direct `/file/upload` gets — and
+    /// stored `Temporary`, so its bytes never cross the WASM boundary and
+    /// [`Self::body`] never holds them.
+    ///
+    /// To attach one: put [`UploadedFile::id`] (a string) in a File field's
+    /// value when calling `host::save_item`. The kernel's existing item-write
+    /// path indexes the reference and promotes the file out of `Temporary`,
+    /// exactly as it does for a kernel form's own upload widget — a plugin
+    /// does not promote a file itself.
+    ///
+    /// For a multipart request, [`Self::body`] carries the request's other
+    /// (non-file) fields re-encoded as a JSON object — the same shape
+    /// [`Self::json`] already expects from a JSON POST — so a handler reads
+    /// one shape regardless of how the browser encoded the form. The `_token`
+    /// field, if the form carried one, is consumed by the CSRF check and is
+    /// not included.
+    ///
+    /// `#[serde(default)]`: a payload from a kernel built before this field
+    /// existed deserializes with it empty.
+    #[serde(default)]
+    pub files: Vec<UploadedFile>,
 }
 
 impl ApiRequest {
@@ -957,6 +1118,7 @@ impl ApiRequest {
             user_id: user_id.into(),
             authenticated,
             csrf_token: String::new(),
+            files: Vec::new(),
         }
     }
 
@@ -2069,16 +2231,23 @@ pub struct Vocabulary {
 }
 
 /// What the kernel sends `tap_vocabulary_owner_access` when a request reaches
-/// an owner route the plugin declared.
+/// an owner route the plugin declared, or a category read route reaches one of
+/// its owners' vocabularies.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct VocabularyOwnerAccessRequest {
     /// The owner type the route serves.
     pub owner_type: String,
     /// The route's `{owner}` segment, as requested: a slug, an id, whatever
-    /// the plugin puts in its links.
+    /// the plugin puts in its links. For `"view"`, the owner id the
+    /// vocabulary stores.
     pub owner_key: String,
-    /// `"administer terms"`.
+    /// `"administer terms"` for the owner route, or `"view"` (B189) when a
+    /// category read route asks whether this user may read the owner's
+    /// vocabularies and terms. Only `grant` naming the same owner id admits a
+    /// `"view"`; a plugin that does not answer it leaves them hidden from
+    /// everyone but holders of the declared permission and of `administer
+    /// categories`.
     pub operation: String,
     /// The user asking.
     pub user_id: String,
@@ -2136,6 +2305,35 @@ impl VocabularyOwnerAccess {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// Every `FieldType` kind, matched exhaustively. Inside this crate
+    /// `#[non_exhaustive]` does not apply, so adding a variant stops this from
+    /// compiling: the kernel matches `FieldType` with `_` arms (it has to, from
+    /// another crate), and a new kind falls into them silently. Handle it in
+    /// `trovato_kernel::content::field_value` (`form_text`, `parse`,
+    /// `check_json`, `type_name`) and `content::form` (`widget`), then add it
+    /// here.
+    #[test]
+    fn every_field_kind_is_handled_by_the_kernel() {
+        fn handled(kind: &FieldType) {
+            match kind {
+                FieldType::Text { .. }
+                | FieldType::TextLong
+                | FieldType::Integer
+                | FieldType::Float
+                | FieldType::Boolean
+                | FieldType::RecordReference(_)
+                | FieldType::CategoryReference(_)
+                | FieldType::File
+                | FieldType::Date
+                | FieldType::Email
+                | FieldType::Compound { .. }
+                | FieldType::Blocks
+                | FieldType::PageBuilder => {}
+            }
+        }
+        handled(&FieldType::CategoryReference("topics".into()));
+    }
 
     #[test]
     fn cron_input_round_trip() {

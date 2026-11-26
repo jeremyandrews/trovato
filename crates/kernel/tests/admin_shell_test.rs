@@ -49,7 +49,11 @@ fn hrefs_in(html: &str, open: &str, close: &str) -> Vec<String> {
 }
 
 fn sidebar_links(html: &str) -> Vec<String> {
-    hrefs_in(html, r#"<nav aria-label="Admin navigation">"#, "</nav>")
+    hrefs_in(
+        html,
+        r#"<nav class="admin-sidebar" id="admin-nav" aria-label="Administration">"#,
+        "</nav>",
+    )
 }
 
 fn dashboard_links(html: &str) -> Vec<String> {
@@ -179,6 +183,10 @@ fn the_comment_settings_address_answers_a_get() {
 /// A site theme that replaces `base.html` with one of its own, which links
 /// none of the kernel's stylesheets, still gets the admin stylesheet on an
 /// admin page: it is linked from `page--admin.html`, not from `base.html`.
+///
+/// Since B199 `page--admin.html` is a whole document of its own, so the site
+/// base no longer reaches the admin at all (before, it was used, and this
+/// asserted so).
 #[test]
 fn an_admin_page_under_a_minimal_site_base_still_links_the_admin_stylesheet() {
     let site = std::env::temp_dir().join(format!("b107_site_theme_{}", std::process::id()));
@@ -205,8 +213,8 @@ fn an_admin_page_under_a_minimal_site_base_still_links_the_admin_stylesheet() {
     std::fs::remove_dir_all(&site).ok();
 
     assert!(
-        html.contains("<title>Site</title>"),
-        "the site base is used"
+        !html.contains("<title>Site</title>"),
+        "the site base does not draw the admin"
     );
     assert!(
         html.contains(r#"<link rel="stylesheet" href="/static/css/admin.css?v="#),
@@ -215,8 +223,11 @@ fn an_admin_page_under_a_minimal_site_base_still_links_the_admin_stylesheet() {
     assert!(!html.contains("<style>"), "admin CSS is inline again");
 }
 
-/// The stylesheets are served, and the admin one carries the base component
-/// sheet for a theme that does not link it.
+/// The stylesheets are served. Before B199 the admin sheet imported the base
+/// component sheet, for a theme that did not link it; since B199 the admin is
+/// its own document whose sheet defines every component it draws (and the
+/// names the shared form sheets read), so neither a theme nor base.css can
+/// leave it unstyled, and base.css is no longer pulled in.
 #[test]
 fn the_admin_and_base_stylesheets_are_served() {
     run_test(async {
@@ -224,15 +235,21 @@ fn the_admin_and_base_stylesheets_are_served() {
         let (status, css) = get(app, "", "/static/css/admin.css").await;
         assert_eq!(status, StatusCode::OK);
         assert!(css.contains(".admin-sidebar"));
-        assert!(css.contains(r#"@import url("/static/css/base.css") layer(trovato-base);"#));
+        assert!(!css.contains("@import"), "the admin sheet stands alone");
+        assert!(
+            css.contains("--gray-300:"),
+            "and defines what forms.css reads"
+        );
         let (status, css) = get(app, "", "/static/css/base.css").await;
         assert_eq!(status, StatusCode::OK);
         assert!(css.contains("--gray-900"));
 
-        // And the stock base links the base sheet, with nothing left inline.
+        // And the admin shell links the admin sheet, with nothing left inline.
+        // Since B199 the shell is not drawn by base.html, so base.css is not
+        // linked.
         let admin = admin_cookies(app, "b107css").await;
         let (_, html) = get(app, &admin, "/admin").await;
-        assert!(html.contains(r#"href="/static/css/base.css?v="#));
+        assert!(!html.contains(r#"href="/static/css/base.css?v="#));
         assert!(html.contains(r#"href="/static/css/admin.css?v="#));
         assert!(!html.contains("<style>"), "inline CSS on the dashboard");
     });

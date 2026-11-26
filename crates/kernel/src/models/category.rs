@@ -235,6 +235,39 @@ impl Category {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Every distinct `(owner_type, owner_id)` that owns a vocabulary.
+    pub async fn owners(pool: &PgPool) -> Result<Vec<(String, String)>> {
+        sqlx::query_as::<_, (String, String)>(
+            "SELECT DISTINCT owner_type, owner_id FROM category \
+             WHERE owner_type IS NOT NULL AND owner_id IS NOT NULL",
+        )
+        .fetch_all(pool)
+        .await
+        .context("failed to list vocabulary owners")
+    }
+
+    /// The site-wide vocabularies and those of the owners named by the
+    /// parallel arrays `owner_types` / `owner_ids`, in [`Self::list`]'s order.
+    pub async fn list_visible(
+        pool: &PgPool,
+        owner_types: &[String],
+        owner_ids: &[String],
+    ) -> Result<Vec<Self>> {
+        sqlx::query_as::<_, Self>(
+            "SELECT id, label, description, hierarchy, weight, owner_type, owner_id \
+             FROM category \
+             WHERE owner_type IS NULL \
+                OR (owner_type, owner_id) IN \
+                   (SELECT * FROM unnest($1::text[], $2::text[])) \
+             ORDER BY weight, label",
+        )
+        .bind(owner_types)
+        .bind(owner_ids)
+        .fetch_all(pool)
+        .await
+        .context("failed to list visible categories")
+    }
+
     /// Every vocabulary `owner_type` / `owner_id` owns, ordered by weight.
     pub async fn list_owned(pool: &PgPool, owner_type: &str, owner_id: &str) -> Result<Vec<Self>> {
         sqlx::query_as::<_, Self>(
@@ -286,6 +319,22 @@ impl Tag {
         .context("failed to fetch tag")?;
 
         Ok(tag)
+    }
+
+    /// Find every tag in `ids`, in one query. Ids that name no tag are
+    /// skipped; the order is the database's.
+    pub async fn find_by_ids(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Self>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as::<_, Self>(
+            "SELECT id, category_id, label, description, slug, weight, created, changed \
+             FROM category_tag WHERE id = ANY($1)",
+        )
+        .bind(ids)
+        .fetch_all(pool)
+        .await
+        .context("failed to fetch tags")
     }
 
     /// Find a tag by slug within a category.
@@ -576,10 +625,25 @@ impl Tag {
         Ok(roots)
     }
 
-    /// Get all ancestors of a tag using recursive CTE.
+    /// Get all ancestors of a tag using recursive CTE, root first.
     pub async fn get_ancestors(pool: &PgPool, id: Uuid) -> Result<Vec<TagWithDepth>> {
+        Ok(Self::get_ancestors_of(pool, &[id])
+            .await?
+            .remove(&id)
+            .unwrap_or_default())
+    }
+
+    /// The ancestors of every tag in `ids`, keyed by that tag, each list root
+    /// first (`depth` counts up from the tag's direct parents), in one
+    /// recursive query for the whole set. A root tag, or an id naming no tag,
+    /// has no entry.
+    pub async fn get_ancestors_of(
+        pool: &PgPool,
+        ids: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, Vec<TagWithDepth>>> {
         #[derive(sqlx::FromRow)]
         struct AncestorRow {
+            origin: Uuid,
             id: Uuid,
             category_id: String,
             label: String,
@@ -591,37 +655,42 @@ impl Tag {
             depth: i32,
         }
 
+        let mut ancestors: std::collections::HashMap<Uuid, Vec<TagWithDepth>> =
+            std::collections::HashMap::new();
+        if ids.is_empty() {
+            return Ok(ancestors);
+        }
+
         let rows = sqlx::query_as::<_, AncestorRow>(
             r#"
             WITH RECURSIVE ancestors AS (
-                -- Base case: direct parents
-                SELECT t.id, t.category_id, t.label, t.description, t.slug, t.weight, t.created, t.changed, 1 as depth
+                -- Base case: direct parents of each tag in the set
+                SELECT h.tag_id AS origin, t.id, t.category_id, t.label, t.description, t.slug, t.weight, t.created, t.changed, 1 as depth
                 FROM category_tag t
                 INNER JOIN category_tag_hierarchy h ON t.id = h.parent_id
-                WHERE h.tag_id = $1 AND h.parent_id IS NOT NULL
+                WHERE h.tag_id = ANY($1) AND h.parent_id IS NOT NULL
 
                 UNION ALL
 
                 -- Recursive case: parents of parents
-                SELECT t.id, t.category_id, t.label, t.description, t.slug, t.weight, t.created, t.changed, a.depth + 1
+                SELECT a.origin, t.id, t.category_id, t.label, t.description, t.slug, t.weight, t.created, t.changed, a.depth + 1
                 FROM category_tag t
                 INNER JOIN category_tag_hierarchy h ON t.id = h.parent_id
                 INNER JOIN ancestors a ON h.tag_id = a.id
                 WHERE h.parent_id IS NOT NULL
             )
-            SELECT DISTINCT id, category_id, label, description, slug, weight, created, changed, depth
+            SELECT DISTINCT origin, id, category_id, label, description, slug, weight, created, changed, depth
             FROM ancestors
-            ORDER BY depth DESC
+            ORDER BY origin, depth DESC, weight, label
             "#,
         )
-        .bind(id)
+        .bind(ids)
         .fetch_all(pool)
         .await
         .context("failed to fetch ancestors")?;
 
-        Ok(rows
-            .into_iter()
-            .map(|r| TagWithDepth {
+        for r in rows {
+            ancestors.entry(r.origin).or_default().push(TagWithDepth {
                 tag: Tag {
                     id: r.id,
                     category_id: r.category_id,
@@ -633,8 +702,9 @@ impl Tag {
                     changed: r.changed,
                 },
                 depth: r.depth,
-            })
-            .collect())
+            });
+        }
+        Ok(ancestors)
     }
 
     /// Get all descendants of a tag using recursive CTE.

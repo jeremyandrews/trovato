@@ -142,6 +142,23 @@ mod tests {
         assert!(build_webauthn("https://example.com", "Trovato").is_ok());
     }
 
+    /// B144: `webauthn-rs` refuses an IP address as a relying party id — it is
+    /// not an "effective domain" — for both IPv4 and IPv6. `AppState` treats
+    /// this as "disable passkeys", not a startup failure, but the failure
+    /// itself has to keep happening here for that fallback to have anything
+    /// to catch.
+    #[test]
+    fn build_webauthn_rejects_an_ip_site_url() {
+        assert!(
+            build_webauthn("http://10.20.250.7", "Trovato").is_err(),
+            "an IPv4 SITE_URL must not be a usable relying party"
+        );
+        assert!(
+            build_webauthn("http://[fe80::1]:3000", "Trovato").is_err(),
+            "an IPv6 SITE_URL must not be a usable relying party"
+        );
+    }
+
     #[test]
     fn ceremony_ttl_is_bounded_and_short() {
         // Long enough for a human to touch a key, far shorter than a session.

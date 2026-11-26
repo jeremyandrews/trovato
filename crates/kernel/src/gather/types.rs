@@ -502,6 +502,17 @@ pub enum FilterValue {
     /// Boolean value.
     Boolean(bool),
     /// UUID value.
+    ///
+    /// Only the canonical lowercase hyphenated spelling (`Uuid`'s own
+    /// `Display`) deserializes here. `uuid::Uuid`'s `Deserialize` impl
+    /// otherwise also accepts the simple (no hyphens), braced, URN and
+    /// uppercase spellings, which would make this variant swallow a value a
+    /// writer meant as plain text. Anything not already in that one spelling
+    /// falls through to [`FilterValue::String`] unchanged — a filter value
+    /// spelled that way compares as the exact text it was written as, which
+    /// is what a JSONB text column storing that same spelling needs to match
+    /// against.
+    #[serde(deserialize_with = "deserialize_canonical_uuid")]
     Uuid(Uuid),
     /// List of values (for In/NotIn operators).
     List(Vec<FilterValue>),
@@ -509,6 +520,23 @@ pub enum FilterValue {
     Contextual(ContextualValue),
     /// String value (catch-all for remaining string values).
     String(String),
+}
+
+/// Accepts only a string holding the canonical lowercase hyphenated spelling
+/// of a UUID. Any other spelling (unhyphenated, braced, URN, uppercase) is a
+/// deserialization error here, which — inside the `FilterValue` untagged
+/// enum — makes serde fall through to [`FilterValue::String`] instead.
+fn deserialize_canonical_uuid<'de, D>(deserializer: D) -> Result<Uuid, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let s = String::deserialize(deserializer)?;
+    let parsed = Uuid::parse_str(&s).map_err(serde::de::Error::custom)?;
+    if parsed.to_string() == s {
+        Ok(parsed)
+    } else {
+        Err(serde::de::Error::custom("not the canonical UUID spelling"))
+    }
 }
 
 impl FilterValue {
@@ -709,15 +737,17 @@ pub enum JoinType {
 }
 
 /// Display configuration for rendering results.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct QueryDisplay {
     /// Output format.
     #[serde(default)]
     pub format: DisplayFormat,
 
-    /// Number of items per page.
-    #[serde(default = "default_items_per_page")]
-    pub items_per_page: u32,
+    /// Number of items per page. `None` (the key absent) is the site's
+    /// items per page, set at `/admin/config/site` (B160): a gather that
+    /// replaces a Drupal listing paged by "posts per page" leaves it out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub items_per_page: Option<u32>,
 
     /// Pager configuration.
     #[serde(default)]
@@ -807,26 +837,6 @@ fn default_feed_items() -> u32 {
     20
 }
 
-fn default_items_per_page() -> u32 {
-    10
-}
-
-impl Default for QueryDisplay {
-    fn default() -> Self {
-        Self {
-            format: DisplayFormat::default(),
-            items_per_page: default_items_per_page(),
-            pager: PagerConfig::default(),
-            empty_text: None,
-            header: None,
-            footer: None,
-            canonical_url: None,
-            routes: Vec::new(),
-            feed: None,
-        }
-    }
-}
-
 /// Display format options.
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -866,6 +876,16 @@ pub struct PagerConfig {
     /// Whether to show total count.
     #[serde(default = "default_true")]
     pub show_count: bool,
+
+    /// Count `?page=` from 0, the way Drupal's pager did: `?page=1` is the
+    /// second page and the first page's link carries no `?page=` at all.
+    ///
+    /// For a gather that replaces a Drupal listing, so every paged link the old
+    /// site published lands on the same items. Off by default, and nothing
+    /// turns it on but the gather's own definition: a gather that has always
+    /// counted from 1 keeps its links (B160).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub zero_based: bool,
 }
 
 fn default_true() -> bool {
@@ -878,6 +898,7 @@ impl Default for PagerConfig {
             enabled: true,
             style: PagerStyle::default(),
             show_count: true,
+            zero_based: false,
         }
     }
 }
@@ -1270,6 +1291,46 @@ mod tests {
     }
 
     #[test]
+    fn filter_value_uuid_only_accepts_canonical_spelling() {
+        // Must contain hex letters so the uppercase spelling actually
+        // differs from the canonical one (unlike `Uuid::nil()`, all zeros).
+        let uuid = Uuid::parse_str("123e4567-e89b-12d3-a456-426614174000").unwrap();
+
+        // Canonical lowercase hyphenated spelling deserializes as `Uuid`.
+        let canonical = serde_json::json!(uuid.to_string());
+        match serde_json::from_value::<FilterValue>(canonical).unwrap() {
+            FilterValue::Uuid(parsed) => assert_eq!(parsed, uuid),
+            other => panic!("expected Uuid, got {other:?}"),
+        }
+
+        // Every other spelling falls through to `String`, holding the exact
+        // text it was written as.
+        let unhyphenated = uuid.simple().to_string();
+        match serde_json::from_value::<FilterValue>(serde_json::json!(unhyphenated)).unwrap() {
+            FilterValue::String(s) => assert_eq!(s, unhyphenated),
+            other => panic!("expected String, got {other:?}"),
+        }
+
+        let uppercase = uuid.to_string().to_uppercase();
+        match serde_json::from_value::<FilterValue>(serde_json::json!(uppercase)).unwrap() {
+            FilterValue::String(s) => assert_eq!(s, uppercase),
+            other => panic!("expected String, got {other:?}"),
+        }
+
+        let braced = format!("{{{uuid}}}");
+        match serde_json::from_value::<FilterValue>(serde_json::json!(braced)).unwrap() {
+            FilterValue::String(s) => assert_eq!(s, braced),
+            other => panic!("expected String, got {other:?}"),
+        }
+
+        let urn = format!("urn:uuid:{uuid}");
+        match serde_json::from_value::<FilterValue>(serde_json::json!(urn)).unwrap() {
+            FilterValue::String(s) => assert_eq!(s, urn),
+            other => panic!("expected String, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn filter_operator_serialization() {
         let op = FilterOperator::HasTagOrDescendants;
         let json = serde_json::to_string(&op).unwrap();
@@ -1282,7 +1343,10 @@ mod tests {
     #[test]
     fn query_display_defaults() {
         let display = QueryDisplay::default();
-        assert_eq!(display.items_per_page, 10);
+        assert_eq!(
+            display.items_per_page, None,
+            "no size of its own: the site's"
+        );
         assert!(display.pager.enabled);
     }
 
@@ -1479,7 +1543,7 @@ mod tests {
         }"#;
         let display: QueryDisplay = serde_json::from_str(json).unwrap();
         assert_eq!(display.format, DisplayFormat::List);
-        assert_eq!(display.items_per_page, 10);
+        assert_eq!(display.items_per_page, Some(10));
     }
 
     #[test]
@@ -1602,7 +1666,7 @@ mod tests {
         }"#;
         let display: QueryDisplay = serde_json::from_str(json).unwrap();
         assert_eq!(display.format, DisplayFormat::Table);
-        assert_eq!(display.items_per_page, 50);
+        assert_eq!(display.items_per_page, Some(50));
     }
 
     #[test]
@@ -1617,7 +1681,7 @@ mod tests {
         }"#;
         let display: QueryDisplay = serde_json::from_str(json).unwrap();
         assert_eq!(display.format, DisplayFormat::Table);
-        assert_eq!(display.items_per_page, 100);
+        assert_eq!(display.items_per_page, Some(100));
     }
 
     #[test]
@@ -1632,7 +1696,7 @@ mod tests {
         }"#;
         let display: QueryDisplay = serde_json::from_str(json).unwrap();
         assert_eq!(display.format, DisplayFormat::List);
-        assert_eq!(display.items_per_page, 20);
+        assert_eq!(display.items_per_page, Some(20));
     }
 
     #[test]
@@ -1647,7 +1711,7 @@ mod tests {
         }"#;
         let display: QueryDisplay = serde_json::from_str(json).unwrap();
         assert_eq!(display.format, DisplayFormat::Table);
-        assert_eq!(display.items_per_page, 20);
+        assert_eq!(display.items_per_page, Some(20));
     }
 
     #[test]

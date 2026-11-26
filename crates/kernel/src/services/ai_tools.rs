@@ -1,23 +1,20 @@
-//! Tool-calling chat completions, for the AI Assistant.
+//! The chat wire formats: request bodies and response parsers for both
+//! provider protocols, for every chat call the kernel makes.
 //!
-//! The kernel already speaks to AI providers in two places, and neither can
-//! carry a tool call. [`crate::services::ai_chat`] streams a text-only visitor
-//! conversation; the plugin AI host (`host::ai`) serves a plugin's one-shot `ai_request`,
-//! whose message roles are validated to `system|user|assistant`. Neither builds
-//! a `tools` array and neither parses `tool_calls` or `tool_use` out of a
-//! response, so before this module a model could not ask for anything to be
-//! done.
+//! [`AiProviderService::chat_once`](crate::services::ai_provider::AiProviderService::chat_once)
+//! and [`chat_stream`](crate::services::ai_provider::AiProviderService::chat_stream)
+//! are the only senders; this module is the one copy of what they send and how
+//! they read the answer. Before B89 the search endpoints, the writing
+//! assistant, the plugin host, the streaming chatbot and the AI Assistant each
+//! carried their own builder and parser, and they disagreed (one read only the
+//! first Anthropic text block, two discarded the token counts).
 //!
-//! This is the third path, and it is deliberately separate rather than an
-//! extension of either: the existing text-only request builders and parsers are
-//! left byte for byte alone, so nothing about the visitor chatbot or a plugin's
-//! `ai_request` changes shape because the assistant exists.
-//!
-//! What it adds over the text paths:
+//! The format is a superset of what any one caller needs:
 //!
 //! - **Tools on the wire**, in each protocol's own shape: OpenAI's
 //!   `tools: [{type:"function", function:{…}}]` with `tool_choice: "auto"`, and
-//!   Anthropic's `tools: [{name, description, input_schema}]`.
+//!   Anthropic's `tools: [{name, description, input_schema}]`. With no tools,
+//!   neither protocol is sent a tools array at all.
 //! - **A conversation that contains tool calls**, so a second turn can carry
 //!   what the first one did. The two protocols disagree about how: OpenAI puts
 //!   the call on the assistant message and answers it with a `role:"tool"`
@@ -25,22 +22,12 @@
 //!   requires **the very next user turn** to answer every one of them with
 //!   `tool_result` blocks. The Anthropic body builder merges consecutive
 //!   [`ChatMessage::ToolResult`]s into one user message for exactly that reason.
-//! - **No streaming.** A turn is a loop of complete calls: the caller cannot act
-//!   on a tool call until the whole message has arrived, so streaming would buy
-//!   nothing and would have to be re-assembled anyway.
-//!
-//! The outbound call goes through the provider's per-operation circuit breaker,
-//! like the other chat paths, and distinguishes auth, rate-limit and other
-//! provider failures so the caller can say something honest without leaking the
-//! provider's response body to the person.
-
-use std::time::{Duration, Instant};
+//! - **Streaming**, for the chatbot: the same body with `stream: true` (and,
+//!   for OpenAI, a request for the usage chunk).
 
 use serde_json::{Value, json};
 
-use crate::services::ai_provider::{
-    AiOperationType, AiProviderService, ProviderProtocol, ResolvedProvider,
-};
+use crate::services::ai_provider::{ChatRequest, ProviderProtocol, ResolvedProvider};
 
 // =============================================================================
 // Types
@@ -116,191 +103,58 @@ pub struct ChatCompletion {
     pub model: String,
     /// Round-trip latency in milliseconds.
     pub latency_ms: u64,
+    /// The estimated cost the send path recorded for the call (P11c / D-44);
+    /// `None` for an unpriced model.
+    pub cost_estimate: Option<f64>,
 }
-
-/// Why a completion failed, at the granularity the caller needs to say something
-/// useful without repeating the provider's body to the person.
-#[derive(Debug, thiserror::Error)]
-pub enum ChatError {
-    /// The provider rejected our credentials (401/403).
-    #[error("the AI provider rejected the site's credentials")]
-    Unauthorized,
-    /// The provider rate-limited us (429).
-    #[error("the AI provider is rate limiting this site")]
-    RateLimited,
-    /// Any other non-2xx status.
-    #[error("the AI provider returned HTTP {status}")]
-    Provider {
-        /// The HTTP status the provider returned.
-        status: u16,
-        /// A truncated copy of the body, for the log only.
-        detail: String,
-    },
-    /// The call did not complete within the timeout.
-    #[error("the AI provider did not answer within the timeout")]
-    Timeout,
-    /// The circuit breaker for this operation is open.
-    #[error("the AI provider circuit breaker is open")]
-    BreakerOpen,
-    /// The transport failed, or the response was not the shape we parse.
-    #[error("{0}")]
-    Transport(String),
-}
-
-impl ChatError {
-    /// A short, provider-agnostic sentence for the person. The detail belongs in
-    /// the log, never here.
-    pub fn user_message(&self) -> &'static str {
-        match self {
-            Self::Unauthorized => "The model provider refused the request.",
-            Self::RateLimited => "The model provider is busy. Try again shortly.",
-            Self::Timeout => "The model took too long to answer.",
-            Self::BreakerOpen => "The model provider is unavailable right now.",
-            Self::Provider { .. } | Self::Transport(_) => {
-                "Something went wrong talking to the model provider."
-            }
-        }
-    }
-}
-
-/// Longest slice of a provider's error body kept for the log.
-const ERROR_DETAIL_MAX: usize = 500;
 
 // =============================================================================
-// Entry point
+// Entry points
 // =============================================================================
 
-/// Run one tool-calling chat completion.
-///
-/// `tools` may be empty, in which case neither protocol is sent a tools array at
-/// all — a request with an empty `tools: []` is rejected by some providers and
-/// means nothing to the rest.
-///
-/// The call is wrapped in the provider's per-operation circuit breaker, the same
-/// one the other chat paths use, so a provider that is failing stops being
-/// hammered.
-pub async fn chat_complete(
-    providers: &AiProviderService,
+/// The URL, body and headers for one chat request to `resolved`.
+pub(crate) fn build_chat_request(
     resolved: &ResolvedProvider,
-    messages: &[ChatMessage],
-    tools: &[ToolSpec],
-    temperature: Option<f32>,
-    max_tokens: u32,
-    timeout: Duration,
-) -> Result<ChatCompletion, ChatError> {
-    let op_key = AiOperationType::Chat.config_key();
-    let window = providers
-        .get_timeout_config()
-        .await
-        .unwrap_or_default()
-        .resolve_breaker_window(op_key);
-    let breaker = providers.breaker_for_operation(op_key, window);
-
-    let result = breaker
-        .call(|| async {
-            send_once(
-                providers,
-                resolved,
-                messages,
-                tools,
-                temperature,
-                max_tokens,
-                timeout,
-            )
-            .await
-        })
-        .await;
-
-    match result {
-        Ok(completion) => Ok(completion),
-        Err(crate::circuit_breaker::CircuitBreakerError::Open) => Err(ChatError::BreakerOpen),
-        Err(crate::circuit_breaker::CircuitBreakerError::ServiceError(e)) => Err(e),
-    }
-}
-
-/// One HTTP round trip, without the breaker.
-#[allow(clippy::too_many_arguments)]
-async fn send_once(
-    providers: &AiProviderService,
-    resolved: &ResolvedProvider,
-    messages: &[ChatMessage],
-    tools: &[ToolSpec],
-    temperature: Option<f32>,
-    max_tokens: u32,
-    timeout: Duration,
-) -> Result<ChatCompletion, ChatError> {
+    request: &ChatRequest,
+    stream: bool,
+) -> (String, Value, Vec<(String, String)>) {
     let base = resolved.config.base_url.trim_end_matches('/');
-    let (url, body, headers) = match resolved.config.protocol {
-        ProviderProtocol::OpenAiCompatible => (
-            format!("{base}/chat/completions"),
-            build_openai_body(&resolved.model, messages, tools, temperature, max_tokens),
-            openai_headers(resolved),
-        ),
-        ProviderProtocol::Anthropic => (
-            format!("{base}/messages"),
-            build_anthropic_body(&resolved.model, messages, tools, temperature, max_tokens),
-            anthropic_headers(resolved),
-        ),
-    };
-
-    let body_str = serde_json::to_string(&body).unwrap_or_default();
-    let started = Instant::now();
-
-    let mut request = providers
-        .http()
-        .post(&url)
-        .timeout(timeout)
-        .header("content-type", "application/json")
-        .body(body_str);
-    for (name, value) in &headers {
-        request = request.header(name.as_str(), value.as_str());
-    }
-
-    let response = request.send().await.map_err(|e| {
-        if e.is_timeout() {
-            ChatError::Timeout
-        } else {
-            ChatError::Transport(e.to_string())
+    match resolved.config.protocol {
+        ProviderProtocol::OpenAiCompatible => {
+            let mut body = build_openai_body(&resolved.model, request);
+            if stream {
+                body["stream"] = json!(true);
+                body["stream_options"] = json!({"include_usage": true});
+            }
+            (
+                format!("{base}/chat/completions"),
+                body,
+                openai_headers(resolved),
+            )
         }
-    })?;
-
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        crate::services::ai_provider::log_provider_failure(
-            "chat",
-            resolved,
-            status.as_u16(),
-            &body,
-        );
-        let detail = truncate_on_char_boundary(&body, ERROR_DETAIL_MAX);
-        return Err(match status.as_u16() {
-            401 | 403 => ChatError::Unauthorized,
-            429 => ChatError::RateLimited,
-            other => ChatError::Provider {
-                status: other,
-                detail,
-            },
-        });
+        ProviderProtocol::Anthropic => {
+            let mut body = build_anthropic_body(&resolved.model, request);
+            if stream {
+                body["stream"] = json!(true);
+            }
+            (
+                format!("{base}/messages"),
+                body,
+                anthropic_headers(resolved),
+            )
+        }
     }
+}
 
-    let value: Value = response
-        .json()
-        .await
-        .map_err(|e| ChatError::Transport(format!("unreadable provider response: {e}")))?;
-    let latency_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
-
-    let mut completion = match resolved.config.protocol {
-        ProviderProtocol::OpenAiCompatible => parse_openai_response(&value),
-        ProviderProtocol::Anthropic => parse_anthropic_response(&value),
+/// Parse a complete (non-streaming) chat response in `protocol`'s shape.
+pub(crate) fn parse_chat_response(
+    protocol: ProviderProtocol,
+    value: &Value,
+) -> Option<ChatCompletion> {
+    match protocol {
+        ProviderProtocol::OpenAiCompatible => parse_openai_response(value),
+        ProviderProtocol::Anthropic => parse_anthropic_response(value),
     }
-    .ok_or_else(|| ChatError::Transport("provider response had no completion in it".to_string()))?;
-
-    completion.latency_ms = latency_ms;
-    if completion.model.is_empty() {
-        completion.model = resolved.model.clone();
-    }
-    Ok(completion)
 }
 
 // =============================================================================
@@ -317,14 +171,9 @@ fn openai_headers(resolved: &ResolvedProvider) -> Vec<(String, String)> {
 /// Build an OpenAI-compatible `/chat/completions` body.
 ///
 /// `tools` and `tool_choice` are omitted entirely when there are no tools.
-pub(crate) fn build_openai_body(
-    model: &str,
-    messages: &[ChatMessage],
-    tools: &[ToolSpec],
-    temperature: Option<f32>,
-    max_tokens: u32,
-) -> Value {
-    let wire: Vec<Value> = messages
+pub(crate) fn build_openai_body(model: &str, request: &ChatRequest) -> Value {
+    let wire: Vec<Value> = request
+        .messages
         .iter()
         .map(|message| match message {
             ChatMessage::System(text) => json!({"role": "system", "content": text}),
@@ -369,16 +218,25 @@ pub(crate) fn build_openai_body(
     let mut body = json!({
         "model": model,
         "messages": wire,
-        "max_tokens": max_tokens,
     });
+    if let Some(max_tokens) = request.max_tokens {
+        body["max_tokens"] = json!(max_tokens);
+    }
     // Only when a site set one: see `build_anthropic_body`.
-    if let Some(temperature) = temperature {
+    if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
     }
+    if let Some(top_p) = request.top_p {
+        body["top_p"] = json!(top_p);
+    }
+    if !request.stop.is_empty() {
+        body["stop"] = json!(request.stop);
+    }
 
-    if !tools.is_empty() {
+    if !request.tools.is_empty() {
         body["tools"] = Value::Array(
-            tools
+            request
+                .tools
                 .iter()
                 .map(|tool| {
                     json!({
@@ -459,12 +317,17 @@ pub(crate) fn parse_openai_response(value: &Value) -> Option<ChatCompletion> {
             .unwrap_or_default()
             .to_string(),
         latency_ms: 0,
+        cost_estimate: None,
     })
 }
 
 // =============================================================================
 // Anthropic
 // =============================================================================
+
+/// The `max_tokens` an Anthropic request carries when the caller set none: the
+/// Messages API requires the field.
+const ANTHROPIC_DEFAULT_MAX_TOKENS: u32 = 1024;
 
 fn anthropic_headers(resolved: &ResolvedProvider) -> Vec<(String, String)> {
     let mut headers = vec![("anthropic-version".to_string(), "2023-06-01".to_string())];
@@ -483,20 +346,14 @@ fn anthropic_headers(resolved: &ResolvedProvider) -> Vec<(String, String)> {
 ///   into a single user message carrying one `tool_result` block each.
 /// - An assistant message must never have an empty `content` array, so the text
 ///   block is omitted only when there is also at least one tool call.
-pub(crate) fn build_anthropic_body(
-    model: &str,
-    messages: &[ChatMessage],
-    tools: &[ToolSpec],
-    temperature: Option<f32>,
-    max_tokens: u32,
-) -> Value {
+pub(crate) fn build_anthropic_body(model: &str, request: &ChatRequest) -> Value {
     let mut system_parts: Vec<&str> = Vec::new();
     let mut wire: Vec<Value> = Vec::new();
     // Blocks for the user message currently being accumulated from a run of
     // consecutive tool results.
     let mut pending_results: Vec<Value> = Vec::new();
 
-    for message in messages {
+    for message in &request.messages {
         // Anything that is not a tool result closes an open run of them.
         if !matches!(message, ChatMessage::ToolResult { .. }) && !pending_results.is_empty() {
             wire.push(json!({
@@ -551,22 +408,30 @@ pub(crate) fn build_anthropic_body(
 
     let mut body = json!({
         "model": model,
-        "max_tokens": max_tokens,
+        // The Messages API requires a limit; 1024 when the caller set none.
+        "max_tokens": request.max_tokens.unwrap_or(ANTHROPIC_DEFAULT_MAX_TOKENS),
         "messages": wire,
     });
     // Only when a site set one. Anthropic models newer than `claude-sonnet-4-6`
     // answer 400 to a request that carries `temperature` at all, so absent is
     // the only value that works everywhere.
-    if let Some(temperature) = temperature {
+    if let Some(temperature) = request.temperature {
         body["temperature"] = json!(temperature);
+    }
+    if let Some(top_p) = request.top_p {
+        body["top_p"] = json!(top_p);
+    }
+    if !request.stop.is_empty() {
+        body["stop_sequences"] = json!(request.stop);
     }
 
     if !system_parts.is_empty() {
         body["system"] = json!(system_parts.join("\n\n"));
     }
-    if !tools.is_empty() {
+    if !request.tools.is_empty() {
         body["tools"] = Value::Array(
-            tools
+            request
+                .tools
                 .iter()
                 .map(|tool| {
                     json!({
@@ -681,6 +546,7 @@ pub(crate) fn parse_anthropic_response(value: &Value) -> Option<ChatCompletion> 
             .unwrap_or_default()
             .to_string(),
         latency_ms: 0,
+        cost_estimate: None,
     })
 }
 
@@ -845,7 +711,12 @@ pub mod scripted_provider {
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        (format!("http://{addr}"), recorder)
+        let base_url = format!("http://{addr}");
+        // A scripted provider is a loopback address, which the send path
+        // refuses; this one exact URL is let through for the test that
+        // started it.
+        crate::services::ai_provider::allow_loopback_provider_for_tests(&base_url);
+        (base_url, recorder)
     }
 }
 
@@ -855,9 +726,13 @@ pub mod scripted_provider {
 mod tests {
     use std::sync::Arc;
 
+    use std::time::Duration;
+
     use super::scripted_provider::{Scripted, start};
     use super::*;
-    use crate::services::ai_provider::AiProviderConfig;
+    use crate::services::ai_provider::{
+        AiCallError, AiCaller, AiProviderConfig, AiProviderService,
+    };
 
     fn resolved(base_url: String, protocol: ProviderProtocol) -> ResolvedProvider {
         ResolvedProvider {
@@ -901,7 +776,7 @@ mod tests {
     ///
     /// The short `acquire_timeout` is load-bearing rather than tidy: sqlx keeps
     /// retrying a refused connection until the acquire timeout expires, which
-    /// defaults to 30 seconds, and `chat_complete` reads `ai_timeouts` on every
+    /// defaults to 30 seconds, and `chat_once` reads `ai_timeouts` on every
     /// call. Left at the default, three of these tests sat for a minute apiece
     /// waiting for a database nobody wants here.
     fn provider_service() -> AiProviderService {
@@ -913,23 +788,55 @@ mod tests {
         AiProviderService::new(pool)
     }
 
+    /// A request carrying `messages` and `temperature`, with a 64-token limit.
+    fn req(messages: &[ChatMessage], temperature: Option<f32>) -> ChatRequest {
+        ChatRequest {
+            messages: messages.to_vec(),
+            temperature,
+            max_tokens: Some(64),
+            ..ChatRequest::default()
+        }
+    }
+
+    /// Who the unit tests call as.
+    fn caller() -> AiCaller {
+        AiCaller::kernel("ai_tools_test", false)
+    }
+
+    async fn send(
+        service: &AiProviderService,
+        provider: &ResolvedProvider,
+        messages: &[ChatMessage],
+        timeout: Duration,
+    ) -> Result<ChatCompletion, AiCallError> {
+        let request = ChatRequest {
+            messages: messages.to_vec(),
+            temperature: Some(0.2),
+            max_tokens: Some(64),
+            timeout: Some(timeout),
+            ..ChatRequest::default()
+        };
+        service.chat_once(provider, &caller(), &request).await
+    }
+
     async fn complete(
         base: &str,
         protocol: ProviderProtocol,
         messages: &[ChatMessage],
         tools: &[ToolSpec],
-    ) -> Result<ChatCompletion, ChatError> {
+    ) -> Result<ChatCompletion, AiCallError> {
         let service = provider_service();
-        chat_complete(
-            &service,
-            &resolved(base.to_string(), protocol),
-            messages,
-            tools,
-            Some(0.2),
-            256,
-            Duration::from_secs(5),
-        )
-        .await
+        let request = ChatRequest {
+            messages: messages.to_vec(),
+            tools: tools.to_vec(),
+            temperature: Some(0.2),
+            max_tokens: Some(256),
+            timeout: Some(Duration::from_secs(5)),
+            ..ChatRequest::default()
+        };
+        service
+            .chat_once(&resolved(base.to_string(), protocol), &caller(), &request)
+            .await
     }
 
     fn openai_text(text: &str) -> serde_json::Value {
@@ -1337,13 +1244,13 @@ mod tests {
         // which the API will not take. One turn is what it becomes.
         let body = build_anthropic_body(
             "m",
-            &[
-                ChatMessage::User("[Trovato] Applied: x".into()),
-                ChatMessage::User("thanks, now do y".into()),
-            ],
-            &[],
-            Some(0.2),
-            64,
+            &req(
+                &[
+                    ChatMessage::User("[Trovato] Applied: x".into()),
+                    ChatMessage::User("thanks, now do y".into()),
+                ],
+                Some(0.2),
+            ),
         );
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 1, "{body}");
@@ -1356,18 +1263,18 @@ mod tests {
         // the same turn, keeping the blocks and appending the text.
         let body = build_anthropic_body(
             "m",
-            &[
-                ChatMessage::ToolResult {
-                    call_id: "t1".into(),
-                    name: "read".into(),
-                    content: "teal".into(),
-                    is_error: false,
-                },
-                ChatMessage::User("[Trovato] Applied: x".into()),
-            ],
-            &[],
-            Some(0.2),
-            64,
+            &req(
+                &[
+                    ChatMessage::ToolResult {
+                        call_id: "t1".into(),
+                        name: "read".into(),
+                        content: "teal".into(),
+                        is_error: false,
+                    },
+                    ChatMessage::User("[Trovato] Applied: x".into()),
+                ],
+                Some(0.2),
+            ),
         );
         let messages = body["messages"].as_array().unwrap();
         assert_eq!(messages.len(), 1, "{body}");
@@ -1379,13 +1286,13 @@ mod tests {
     fn anthropic_never_sends_an_empty_assistant_content_array() {
         let body = build_anthropic_body(
             "m",
-            &[ChatMessage::Assistant {
-                text: None,
-                tool_calls: Vec::new(),
-            }],
-            &[],
-            Some(0.2),
-            64,
+            &req(
+                &[ChatMessage::Assistant {
+                    text: None,
+                    tool_calls: Vec::new(),
+                }],
+                Some(0.2),
+            ),
         );
         let content = body["messages"][0]["content"].as_array().unwrap();
         assert_eq!(content.len(), 1, "{body}");
@@ -1396,14 +1303,14 @@ mod tests {
     #[test]
     fn temperature_is_sent_only_when_set() {
         let messages = [ChatMessage::User("hi".into())];
-        let unset = build_anthropic_body("m", &messages, &[], None, 64);
+        let unset = build_anthropic_body("m", &req(&messages, None));
         assert!(unset.get("temperature").is_none(), "{unset}");
-        let unset = build_openai_body("m", &messages, &[], None, 64);
+        let unset = build_openai_body("m", &req(&messages, None));
         assert!(unset.get("temperature").is_none(), "{unset}");
 
-        let set = build_anthropic_body("m", &messages, &[], Some(0.5), 64);
+        let set = build_anthropic_body("m", &req(&messages, Some(0.5)));
         assert_eq!(set["temperature"], json!(0.5));
-        let set = build_openai_body("m", &messages, &[], Some(0.5), 64);
+        let set = build_openai_body("m", &req(&messages, Some(0.5)));
         assert_eq!(set["temperature"], json!(0.5));
     }
 
@@ -1426,9 +1333,9 @@ mod tests {
                     .await
                     .expect_err("a failing status must be an error");
                 match (expect, &error) {
-                    ("unauthorized", ChatError::Unauthorized) => {}
-                    ("rate", ChatError::RateLimited) => {}
-                    ("provider", ChatError::Provider { status: s, detail }) => {
+                    ("unauthorized", AiCallError::Unauthorized) => {}
+                    ("rate", AiCallError::RateLimited) => {}
+                    ("provider", AiCallError::Provider { status: s, detail }) => {
                         assert_eq!(*s, 500);
                         assert!(detail.contains("scripted failure"), "{detail}");
                     }
@@ -1446,19 +1353,16 @@ mod tests {
         recorder.push(Scripted::ok(openai_text("too late")).after(Duration::from_secs(5)));
 
         let service = provider_service();
-        let error = chat_complete(
+        let error = send(
             &service,
             &resolved(base, ProviderProtocol::OpenAiCompatible),
             &[ChatMessage::User("hi".into())],
-            &[],
-            Some(0.2),
-            64,
             Duration::from_millis(150),
         )
         .await
         .expect_err("a slow provider must time out");
 
-        assert!(matches!(error, ChatError::Timeout), "{error:?}");
+        assert!(matches!(error, AiCallError::Timeout), "{error:?}");
     }
 
     #[tokio::test]
@@ -1473,13 +1377,10 @@ mod tests {
         let mut last = None;
         for _ in 0..4 {
             last = Some(
-                chat_complete(
+                send(
                     &service,
                     &provider,
                     &[ChatMessage::User("hi".into())],
-                    &[],
-                    Some(0.2),
-                    64,
                     Duration::from_secs(5),
                 )
                 .await
@@ -1487,7 +1388,7 @@ mod tests {
             );
         }
         assert!(
-            matches!(last, Some(ChatError::BreakerOpen)),
+            matches!(last, Some(AiCallError::BreakerOpen)),
             "the fourth call should be short-circuited, got {last:?}"
         );
         // The breaker stopped the call before it left the process.
@@ -1592,7 +1493,7 @@ mod tests {
         let first = redirect_server(format!("{target}/latest/meta-data/")).await;
 
         let service = provider_service();
-        let result = service.http().get(&first).send().await;
+        let result = crate::telemetry::send(service.http().get(&first)).await;
 
         assert!(
             result.is_err(),

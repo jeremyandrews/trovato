@@ -252,27 +252,32 @@ async fn themed_page(
     context.insert("admin_path", &admin_path);
     crate::routes::helpers::inject_site_context_for(state, session, &viewer, &mut context, path)
         .await;
-    if admin_path {
-        let mut enabled: Vec<String> = state.enabled_plugins().into_iter().collect();
-        enabled.sort();
-        context.insert(
-            "admin_nav",
-            &crate::routes::admin_nav::sidebar(&viewer, &enabled, path),
-        );
-        context.insert("enabled_plugins", &enabled);
-    }
+    let shell = if admin_path {
+        Some(crate::routes::admin_nav::insert_context(state, &viewer, path, &mut context).await)
+    } else {
+        None
+    };
 
     let specific = format!("error--{}", marker.status.as_u16());
     let theme = state.theme();
     let template = theme.resolve_template(&[specific.as_str(), "error"])?;
-    let content = match theme.tera().render(&template, &context) {
+    // On an admin path, in the viewer's admin language, with the heading
+    // copied into the title (`AdminShell::render`).
+    let in_shell = |f: &mut dyn FnMut() -> anyhow::Result<String>| -> anyhow::Result<String> {
+        match &shell {
+            Some(shell) => crate::i18n::scope(&shell.lang, f)
+                .map(|html| crate::routes::admin_nav::finish_page(&html)),
+            None => f(),
+        }
+    };
+    let content = match in_shell(&mut || Ok(theme.tera().render(&template, &context)?)) {
         Ok(html) => html,
         Err(e) => {
             tracing::error!(error = %e, template = %template, "failed to render the error page");
             return None;
         }
     };
-    match theme.render_page(path, title, &content, &mut context) {
+    match in_shell(&mut || theme.render_page(path, title, &content, &mut context.clone())) {
         Ok(html) => Some(html),
         Err(e) => {
             tracing::error!(error = %e, "failed to render the error page wrapper");

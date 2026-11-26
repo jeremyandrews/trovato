@@ -378,14 +378,51 @@
     }
   }
 
+  // --- Text and HTML: one rule (B160) ---
+  //
+  // Pagefind hands back HTML, not text: its `excerpt` (and `content`) is the
+  // page text with `<`, `>`, `&` and quotes already escaped, and `<mark>`
+  // around the matches. Every value from Pagefind is turned into plain text
+  // with htmlToText first; everything this file writes into the page is
+  // escaped exactly once, at the moment it is written, by escapeHtml or
+  // highlightText. Escaping Pagefind's excerpt again, as this file used to,
+  // showed a visitor "Tom &amp; Jerry".
+
+  // Escape text for an element's content or a quoted attribute value. Pure
+  // string replacement: no DOM, and quotes are escaped too, so the result is
+  // safe inside `"..."`.
   function escapeHtml(text) {
-    const div = document.createElement("div");
-    div.textContent = text;
-    return div.innerHTML;
+    return String(text)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  const NAMED_ENTITIES = { amp: "&", lt: "<", gt: ">", quot: "\"", apos: "'", nbsp: " " };
+
+  // Turn an HTML fragment into the text a reader sees: tags removed, character
+  // references decoded once. A `<` that does not open a tag is text, and an
+  // unknown named reference is left as written.
+  function htmlToText(html) {
+    if (!html) return "";
+    return String(html)
+      .replace(/<\/?[A-Za-z][^<>]*>/g, "")
+      .replace(/&(#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z]+);/g, function (whole, ref) {
+        if (ref.charAt(0) === "#") {
+          const hex = ref.charAt(1) === "x" || ref.charAt(1) === "X";
+          const code = parseInt(ref.substring(hex ? 2 : 1), hex ? 16 : 10);
+          if (!Number.isFinite(code) || code < 1 || code > 0x10ffff) return whole;
+          try { return String.fromCodePoint(code); } catch (e) { return whole; }
+        }
+        const named = NAMED_ENTITIES[ref.toLowerCase()];
+        return named === undefined ? whole : named;
+      });
   }
 
   function stripHtml(text) {
-    return text.replace(/<[^>]*>/g, "");
+    return htmlToText(text);
   }
 
   // Convert machine_name type to display label: "conference" → "Conference"
@@ -464,12 +501,15 @@
     const terms = extractSearchTerms(question);
     const searchQuery = terms.length > 0 ? terms.join(' ') : question;
     try {
-      const search = await pagefindSearch(searchQuery, new Set());
-      const toLoad = Math.min(search.results.length, 20);
+      const { toLoad, loaded } = await withIndexReload(async () => {
+        const search = await pagefindSearch(searchQuery, new Set());
+        const toLoad = Math.min(search.results.length, 20);
+        const loaded = await Promise.all(
+          search.results.slice(0, toLoad).map(r => r.data())
+        );
+        return { toLoad, loaded };
+      });
       if (toLoad === 0) return '';
-      const loaded = await Promise.all(
-        search.results.slice(0, toLoad).map(r => r.data())
-      );
       const scored = scoreResults(loaded, searchQuery, 1.0);
       scored.sort((a, b) => b.score - a.score);
       const best = scored.slice(0, 5);
@@ -611,6 +651,42 @@
   }
 
   // --- Pagefind search helper ---
+
+  // The index is updated in place (B218): each update publishes new content
+  // addressed files and a new `pagefind-entry.json`, and keeps the files it
+  // replaced for 24 hours. A tab that loaded the index longer ago than that
+  // can ask for a chunk or fragment that is gone, and Pagefind throws (the
+  // 404 body does not decompress). Reload the index once, which fetches the
+  // current entry and meta, and run the search again. Concurrent failures
+  // share one reload.
+  let reloading = null;
+
+  function reloadIndex() {
+    if (!reloading) {
+      reloading = (async () => {
+        try {
+          await pagefind.destroy();
+        } catch (e) {
+          // Nothing loaded to destroy.
+        }
+        await pagefind.init();
+      })().finally(() => {
+        reloading = null;
+      });
+    }
+    return reloading;
+  }
+
+  async function withIndexReload(run) {
+    try {
+      return await run();
+    } catch (err) {
+      if (!pagefind) throw err;
+      console.warn("[scolta] search failed; reloading the index once", err);
+      await reloadIndex();
+      return run();
+    }
+  }
 
   async function pagefindSearch(query, filters) {
     const searchOpts = {};
@@ -922,8 +998,11 @@
       ? Promise.resolve(lastExpandedTerms)
       : expandQuery(query);
 
-    const primarySearch = await pagefindSearch(searchQuery, activeFilters);
-    allScoredResults = await loadAndScoreSearch(primarySearch, searchQuery, 1.0);
+    const primarySearch = await withIndexReload(async () => {
+      const search = await pagefindSearch(searchQuery, activeFilters);
+      allScoredResults = await loadAndScoreSearch(search, searchQuery, 1.0);
+      return search;
+    });
 
     // OR fallback: only activate when AND search returns ZERO results.
     // This prevents diluting precision when the user provides many terms
@@ -1021,39 +1100,55 @@
 
   // --- Result rendering ---
 
-  function highlightTerms(text) {
-    if (!text || allHighlightTerms.length === 0) return text;
-    let result = text;
-    for (const term of allHighlightTerms) {
-      const regex = new RegExp(`(${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, "gi");
-      result = result.replace(regex, "<mark>$1</mark>");
-    }
-    return result;
+  // Plain text in, HTML out: the text escaped once, each highlight term
+  // wrapped in <mark>. Matching runs on the text, never on escaped HTML, so a
+  // term can neither match inside an entity nor smuggle markup in.
+  function highlightText(text, terms) {
+    if (!text) return "";
+    terms = (terms || allHighlightTerms).filter(function (t) { return t && t.length > 0; });
+    if (terms.length === 0) return escapeHtml(text);
+    const pattern = terms
+      .slice()
+      .sort(function (a, b) { return b.length - a.length; })
+      .map(function (t) { return t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); })
+      .join("|");
+    const regex = new RegExp(`(${pattern})`, "gi");
+    return String(text)
+      .split(regex)
+      .map(function (piece, i) {
+        // split() with one capture group puts the matches at the odd indexes.
+        return i % 2 === 1 ? `<mark>${escapeHtml(piece)}</mark>` : escapeHtml(piece);
+      })
+      .join("");
   }
 
+  // Plain text, cut to maxLen at a word boundary where one is near.
   function truncateExcerpt(text, maxLen) {
-    const clean = escapeHtml(stripHtml(text));
+    const clean = htmlToText(text);
     if (clean.length <= maxLen) return clean;
     const truncated = clean.substring(0, maxLen);
     const lastSpace = truncated.lastIndexOf(" ");
-    return (lastSpace > maxLen * 0.8 ? truncated.substring(0, lastSpace) : truncated) + "\u2026";
+    return (lastSpace > maxLen * 0.8 ? truncated.substring(0, lastSpace) : truncated) + "…";
   }
 
   /**
-   * Find the best excerpt to display for a result.
+   * Find the best excerpt to display for a result, as plain text.
    *
    * If the default excerpt contains a search/highlight term, use it.
    * Otherwise, scan the full content for a passage that contains a
    * matching term and extract a window around it. This ensures expanded-
    * term matches show WHY the result matched, not just the city name.
+   *
+   * Returns text, not HTML: the renderer escapes it once with highlightText.
    */
-  function bestExcerpt(data, maxLen) {
+  function bestExcerpt(data, maxLen, terms) {
+    terms = terms || allHighlightTerms;
     var raw = data.excerpt || "";
-    var clean = escapeHtml(stripHtml(raw)).toLowerCase();
+    var clean = htmlToText(raw).toLowerCase();
 
     // Check if the default excerpt already contains a highlight term
-    for (var i = 0; i < allHighlightTerms.length; i++) {
-      if (clean.indexOf(allHighlightTerms[i].toLowerCase()) !== -1) {
+    for (var i = 0; i < terms.length; i++) {
+      if (clean.indexOf(terms[i].toLowerCase()) !== -1) {
         return truncateExcerpt(raw, maxLen);
       }
     }
@@ -1062,24 +1157,23 @@
     var content = data.content || "";
     if (!content) return truncateExcerpt(raw, maxLen);
 
-    var contentClean = stripHtml(content).toLowerCase();
+    var contentPlain = htmlToText(content);
+    var contentClean = contentPlain.toLowerCase();
     var bestPos = -1;
-    var bestTerm = "";
 
-    for (var j = 0; j < allHighlightTerms.length; j++) {
-      var pos = contentClean.indexOf(allHighlightTerms[j].toLowerCase());
+    for (var j = 0; j < terms.length; j++) {
+      var pos = contentClean.indexOf(terms[j].toLowerCase());
       if (pos !== -1 && (bestPos === -1 || pos < bestPos)) {
         bestPos = pos;
-        bestTerm = allHighlightTerms[j];
       }
     }
 
     if (bestPos === -1) {
       // No highlight term in excerpt or content. Check if the TITLE
       // contains a term — if so, show the excerpt as context.
-      var titleClean = (data.meta?.title || "").toLowerCase();
-      for (var k = 0; k < allHighlightTerms.length; k++) {
-        if (titleClean.indexOf(allHighlightTerms[k].toLowerCase()) !== -1) {
+      var titleClean = htmlToText(data.meta?.title || "").toLowerCase();
+      for (var k = 0; k < terms.length; k++) {
+        if (titleClean.indexOf(terms[k].toLowerCase()) !== -1) {
           return truncateExcerpt(raw, maxLen);
         }
       }
@@ -1089,7 +1183,6 @@
     }
 
     // Extract a window around the match
-    var contentPlain = stripHtml(content);
     var windowStart = Math.max(0, bestPos - 60);
     var windowEnd = Math.min(contentPlain.length, bestPos + maxLen - 60);
 
@@ -1102,7 +1195,7 @@
     if (lastSpace > bestPos) windowEnd = lastSpace;
 
     var snippet = contentPlain.substring(windowStart, windowEnd);
-    return (windowStart > 0 ? "\u2026" : "") + escapeHtml(snippet) + (windowEnd < contentPlain.length ? "\u2026" : "");
+    return (windowStart > 0 ? "…" : "") + snippet + (windowEnd < contentPlain.length ? "…" : "");
   }
 
   function renderResults(isExpanded) {
@@ -1134,20 +1227,21 @@
     let html = "";
     for (let i = displayedCount; i < showing; i++) {
       const { data } = filtered[i];
-      const title = data.meta?.title || "Untitled";
+      // Every value from Pagefind as plain text (see htmlToText).
+      const meta = function (key) { return htmlToText(data.meta?.[key] || ""); };
+      const title = meta("title") || "Untitled";
       const url = data.meta?.url || data.url || "#";
-      const site = data.meta?.site || "";
-      const date = data.meta?.date || "";
-      const itemType = data.meta?.type || "";
-      const location = data.meta?.location || "";
-      const eventDates = data.meta?.event_dates || "";
-      const description = data.meta?.description || "";
+      const site = meta("site");
+      const date = meta("date");
+      const itemType = meta("type");
+      const location = meta("location");
+      const eventDates = meta("event_dates");
+      const description = meta("description");
       const excerpt = bestExcerpt(data, CONFIG.EXCERPT_LENGTH);
       if (excerpt === null) continue; // Skip false-positive results
-      const highlighted = highlightTerms(excerpt);
+      const highlighted = excerpt !== description ? highlightText(excerpt) : "";
 
-      const safeTitle = escapeHtml(stripHtml(title));
-      const displayTitle = safeTitle.length > 90 ? safeTitle.substring(0, 87) + "\u2026" : safeTitle;
+      const displayTitle = title.length > 90 ? title.substring(0, 87) + "\u2026" : title;
 
       // Build metadata chips (type badge, location, dates)
       let metaHtml = "";
@@ -1168,18 +1262,18 @@
       // Show description if available, otherwise fall back to search excerpt
       let bodyHtml = "";
       if (description) {
-        bodyHtml += `<div class="scolta-result-description">${highlightTerms(escapeHtml(description))}</div>`;
+        bodyHtml += `<div class="scolta-result-description">${highlightText(description)}</div>`;
       }
-      if (highlighted && highlighted !== escapeHtml(description)) {
+      if (highlighted) {
         bodyHtml += `<div class="scolta-result-excerpt">${highlighted}</div>`;
       }
 
       html += `<div class="scolta-result-card">
-        <a class="scolta-result-title" href="${url}"
-           title="${safeTitle.replace(/"/g, '&quot;')}">${highlightTerms(displayTitle)}</a>
+        <a class="scolta-result-title" href="${escapeHtml(url)}"
+           title="${escapeHtml(title)}">${highlightText(displayTitle)}</a>
         <div class="scolta-result-meta">${metaHtml}</div>
         ${bodyHtml}
-        <a class="scolta-result-url" href="${url}">${escapeHtml(url)}</a>
+        <a class="scolta-result-url" href="${escapeHtml(url)}">${escapeHtml(url)}</a>
       </div>`;
     }
 
@@ -1301,8 +1395,20 @@
       }
     });
 
-    // Init Pagefind.
-    initPagefind();
+    // Init Pagefind. The interface stays hidden, and the server results stay
+    // the page, until the index has loaded: with no index built
+    // (/pagefind/pagefind.js answering 404) a visitor keeps the results the
+    // server rendered instead of an empty box (B160). The promise is init's
+    // answer, so search-init.js hides the server results only when it resolves.
+    root.hidden = true;
+    const ready = initPagefind().then(function () {
+      root.hidden = false;
+    }, function (err) {
+      console.warn("[scolta] Pagefind unavailable; keeping the server results", err);
+      pagefind = null;
+      root.innerHTML = "";
+      throw err;
+    });
 
     // Auto-search from URL ?q= parameter.
     var params = new URLSearchParams(window.location.search);
@@ -1322,6 +1428,7 @@
     }
 
     console.log("[scolta] Initialized");
+    return ready;
   }
 
   // Expose public API.
@@ -1333,6 +1440,13 @@
     clearSearch,
     doSearch,
     showMore,
+    // The text and HTML rules, exposed for static/js/test/scolta.test.js.
+    _text: { escapeHtml, htmlToText, highlightText, truncateExcerpt, bestExcerpt },
+    // The index reload, exposed for static/js/test/scolta.test.js.
+    _index: {
+      withIndexReload,
+      setPagefind(p) { pagefind = p; },
+    },
   };
 
 })(typeof window !== 'undefined' ? window : this);

@@ -1,7 +1,7 @@
 # Roadmap
 
 <!-- version:begin -->
-Trovato is at 0.107.0.
+Trovato is at 0.105.0.
 <!-- version:end -->
 This page says what stands between that and 1.0, and what comes after.
 [KNOWN-ISSUES.md](KNOWN-ISSUES.md) describes each item in more detail; this one
@@ -190,8 +190,10 @@ content grows, and the point at which it matters is the point to do it.
 
 ### Migration rollback
 
-Migrations only move forward. Down migrations, or a supported way to recover
-without restoring a backup.
+Migrations only move forward. A release is rolled back by redeploying the
+previous image, which runs on the newer schema (`UPGRADING.md`, "Rolling back").
+What is left is rolling back the schema itself: down migrations, or a supported
+way to recover from a bad data migration without restoring a backup.
 
 ### Production template reloading
 

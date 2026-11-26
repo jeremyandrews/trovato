@@ -14,16 +14,40 @@ use trovato_sdk::host;
 use trovato_sdk::prelude::*;
 use trovato_sdk::types::{ApiRequest, ApiResponse, MailAttachment, MenuRoute};
 
+/// Permission required to upload an attachment. Separate from [`PERM_WRITE`] so
+/// the suite can grant one without the other.
+const PERM_UPLOAD: &str = "upload test attachments";
+
 /// Permission required to write a note. Anonymous callers do not hold it.
 const PERM_WRITE: &str = "write test notes";
+
+/// This plugin's one admin screen, declared to `tap_admin_nav` below
+/// (BL-162): the kernel fixture proving a plugin's own admin page gets the
+/// kernel's sidebar, and that a plugin can add its own link and card to it.
+const ADMIN_DASHBOARD_PATH: &str = "/admin/tpa/dashboard";
 
 /// Declare the permission the menu entries gate on.
 #[plugin_tap]
 pub fn tap_perm() -> Vec<PermissionDefinition> {
-    vec![PermissionDefinition::new(
-        PERM_WRITE,
-        "Write a note through the test plugin API",
-    )]
+    vec![
+        PermissionDefinition::new(PERM_WRITE, "Write a note through the test plugin API"),
+        PermissionDefinition::new(
+            PERM_UPLOAD,
+            "Upload an attachment through the test plugin API",
+        ),
+    ]
+}
+
+/// Declare this plugin's one admin sidebar link and dashboard card (BL-162).
+///
+/// Gated on the same permission its route checks — [`PERM_WRITE`] — so the
+/// two cannot disagree about who may reach the screen the link points at.
+#[plugin_tap]
+pub fn tap_admin_nav() -> Vec<AdminNavDefinition> {
+    vec![
+        AdminNavDefinition::new("System", "TPA Dashboard", ADMIN_DASHBOARD_PATH, PERM_WRITE)
+            .card("Notes written through the test plugin API."),
+    ]
 }
 
 /// Register the plugin-served routes.
@@ -59,8 +83,27 @@ pub fn tap_menu() -> Vec<MenuRoute> {
         // host call (B71), as the caller. Public: the kernel decides which
         // formats the caller may use, and an anonymous caller gets plain text.
         MenuRoute::api("POST", "/tpa/filter", "filter_text").title("Filter text"),
+        // B182: a multipart form carrying a file. The kernel stores it through
+        // `FileService` before dispatch and hands this route `ApiRequest::files`;
+        // the plugin attaches the id to a `conference` item's `field_logo`
+        // through `host::save_item`, which is what promotes it out of
+        // `Temporary` — the plugin never touches file storage itself.
+        MenuRoute::api("POST", "/tpa/upload", "upload_attachment")
+            .title("Upload an attachment")
+            .permission(PERM_UPLOAD),
+        // The receive half on its own, with no `save-item` call: proves a file
+        // the kernel stored ahead of dispatch is `Temporary` until something
+        // references it, not promoted just for having been uploaded.
+        MenuRoute::api("POST", "/tpa/upload/echo", "echo_upload")
+            .title("Upload and echo, no save")
+            .permission(PERM_UPLOAD),
         // A page entry, to prove the kernel routes only `api` entries here.
         MenuRoute::page("/tpa/page", "Not an API"),
+        // This plugin's one admin screen (BL-162): themed, under `/admin`, and
+        // gated on the same permission `tap_admin_nav` declares the link with.
+        MenuRoute::api("GET", ADMIN_DASHBOARD_PATH, "show_admin_dashboard")
+            .title("TPA Dashboard")
+            .permission(PERM_WRITE),
     ]
 }
 
@@ -75,6 +118,9 @@ pub fn tap_api(request: ApiRequest) -> ApiResponse {
         "send_mail" => send_mail(&request),
         "show_themed" => show_themed(),
         "filter_text" => filter_text(&request),
+        "show_admin_dashboard" => show_admin_dashboard(),
+        "upload_attachment" => upload_attachment(&request),
+        "echo_upload" => echo_upload(&request),
         other => ApiResponse::error(404, &format!("no such callback: {other}")),
     }
 }
@@ -125,6 +171,17 @@ fn show_themed() -> ApiResponse {
     )
 }
 
+/// This plugin's one admin screen: themed, so it renders inside
+/// `page--admin.html` with the kernel's sidebar (BL-162) — the route itself
+/// still checks [`PERM_WRITE`] before this is ever called, exactly as the
+/// sidebar link's permission says to expect.
+fn show_admin_dashboard() -> ApiResponse {
+    ApiResponse::themed(
+        "TPA Dashboard",
+        "<p id=\"tpa-admin-content\">Notes written through the test plugin API.</p>",
+    )
+}
+
 /// Send the submitted message to the site's contact address.
 ///
 /// The plugin names no recipient: `mail_send_to_site_contacts` sends to the
@@ -164,6 +221,72 @@ fn filter_text(request: &ApiRequest) -> ApiResponse {
         Err(code) => serde_json::json!({ "code": code }),
     };
     ApiResponse::json(&answer).unwrap_or_else(|_| ApiResponse::error(500, "serialize failed"))
+}
+
+/// Attach an uploaded file to a `conference` item's `field_logo` (B182).
+///
+/// `request.files` is what proves the point: the kernel already stored the
+/// upload through `FileService` and handed over its id and metadata, no bytes
+/// included. Putting that id in a File field and calling `host::save_item` is
+/// the whole plugin-side job — the item write path indexes the reference and
+/// promotes the file out of `Temporary` on its own, the same as it would for a
+/// person's own upload widget.
+fn upload_attachment(request: &ApiRequest) -> ApiResponse {
+    if !request.authenticated {
+        return ApiResponse::error(401, "authentication required");
+    }
+    let Some(upload) = request.files.first() else {
+        return ApiResponse::error(400, "no file uploaded");
+    };
+
+    // The non-file multipart fields arrive as a JSON object, the same shape a
+    // JSON POST's body would parse to.
+    let fields: serde_json::Value = request.json().unwrap_or(serde_json::Value::Null);
+    let title = fields
+        .get("title")
+        .and_then(|v| v.as_str())
+        .unwrap_or("Untitled")
+        .to_string();
+
+    match host::save_item(&serde_json::json!({
+        "type": "conference",
+        "title": title,
+        "fields": { "field_logo": upload.id },
+    })) {
+        Ok(Some(item)) => ApiResponse::json(&serde_json::json!({
+            "item_id": item.id,
+            "field": upload.field,
+            "file_id": upload.id,
+            "filename": upload.filename,
+            "mime_type": upload.mime_type,
+            "size": upload.size,
+        }))
+        .unwrap_or_else(|_| ApiResponse::error(500, "serialize failed")),
+        Ok(None) => ApiResponse::error(404, "save-item returned nothing"),
+        Err(code) => ApiResponse::error(500, &format!("save failed with code {code}")),
+    }
+}
+
+/// Receive an upload and answer with its metadata; never calls `save-item`.
+///
+/// The control for [`upload_attachment`]: this route proves a file the kernel
+/// stored ahead of dispatch is not promoted on arrival alone, only once
+/// something — here, nothing — references it.
+fn echo_upload(request: &ApiRequest) -> ApiResponse {
+    if !request.authenticated {
+        return ApiResponse::error(401, "authentication required");
+    }
+    let Some(upload) = request.files.first() else {
+        return ApiResponse::error(400, "no file uploaded");
+    };
+    ApiResponse::json(&serde_json::json!({
+        "field": upload.field,
+        "file_id": upload.id,
+        "filename": upload.filename,
+        "mime_type": upload.mime_type,
+        "size": upload.size,
+    }))
+    .unwrap_or_else(|_| ApiResponse::error(500, "serialize failed"))
 }
 
 /// Read one field out of a URL-encoded body.
@@ -277,10 +400,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_menu_declares_seven_api_routes_with_callbacks() {
+    fn the_menu_declares_ten_api_routes_with_callbacks() {
         let menus = __inner_tap_menu();
         let api: Vec<&MenuRoute> = menus.iter().filter(|m| m.handler_type == "api").collect();
-        assert_eq!(api.len(), 7);
+        assert_eq!(api.len(), 10);
         assert!(api.iter().all(|m| !m.callback.is_empty()));
         assert_eq!(
             api.iter()
@@ -289,6 +412,43 @@ mod tests {
                 .permission,
             PERM_WRITE
         );
+        assert_eq!(
+            api.iter()
+                .find(|m| m.callback == "upload_attachment")
+                .unwrap()
+                .permission,
+            PERM_UPLOAD
+        );
+    }
+
+    #[test]
+    fn the_admin_nav_declaration_points_at_the_menu_route_it_gates() {
+        let nav = __inner_tap_admin_nav();
+        assert_eq!(nav.len(), 1);
+        assert_eq!(nav[0].href, ADMIN_DASHBOARD_PATH);
+        assert_eq!(nav[0].permission, PERM_WRITE);
+        assert!(nav[0].card_description.is_some());
+
+        let menus = __inner_tap_menu();
+        let route = menus
+            .iter()
+            .find(|m| m.path == ADMIN_DASHBOARD_PATH)
+            .expect("the admin dashboard is a real menu route");
+        assert_eq!(route.permission, nav[0].permission);
+    }
+
+    #[test]
+    fn the_admin_dashboard_is_themed_and_needs_its_permission() {
+        let response = __inner_tap_api(ApiRequest::new(
+            "show_admin_dashboard",
+            "GET",
+            ADMIN_DASHBOARD_PATH,
+            "",
+            false,
+        ));
+        assert_eq!(response.status, 200);
+        assert!(response.theme, "the admin page must ask for the site theme");
+        assert!(response.body.contains("tpa-admin-content"));
     }
 
     #[test]
@@ -394,5 +554,24 @@ mod tests {
         assert_eq!(form_field("", "message"), None);
         // A pair with no `=` is skipped rather than read as an empty value.
         assert_eq!(form_field("message", "message"), None);
+    }
+
+    #[test]
+    fn an_unauthenticated_upload_is_refused_before_any_file_is_looked_at() {
+        let request = ApiRequest::new("upload_attachment", "POST", "/tpa/upload", "", false);
+        assert_eq!(__inner_tap_api(request).status, 401);
+    }
+
+    #[test]
+    fn an_upload_with_no_file_is_a_400() {
+        let request = ApiRequest::new(
+            "upload_attachment",
+            "POST",
+            "/tpa/upload",
+            "00000000-0000-0000-0000-000000000001",
+            true,
+        );
+        assert_eq!(request.files, Vec::new(), "test setup: no files attached");
+        assert_eq!(__inner_tap_api(request).status, 400);
     }
 }

@@ -61,16 +61,36 @@
 //! stored markup with `content::page_meta::plain_text` and escaped
 //! exactly once ([`xml_escape`]). The only HTML a feed carries is the
 //! `full_content` body, rendered through its text format
-//! ([`FilterPipeline::for_format_safe`]) and then either wrapped in CDATA (RSS)
+//! ([`FilterPipeline::for_format`]) and then either wrapped in CDATA (RSS)
 //! or escaped once as the text of a `type="html"` element (Atom).
 //!
 //! # Polling
 //!
-//! Every response carries an `ETag` and, when it has entries, a
-//! `Last-Modified`. Both come from the entries' ids, their `changed` timestamps
-//! and links, and the feed's config. A request whose `If-None-Match` (or, with
-//! none, `If-Modified-Since`) still matches is answered `304` before terms are
-//! loaded or anything is rendered.
+//! Every response carries an `ETag` and a `Last-Modified`. The `ETag` hashes
+//! the entries' ids, their `changed` timestamps, links and author names, a
+//! stamp for the taxonomy terms the entries carry (B172), the resolved
+//! channel link, and the feed's config. `Last-Modified` is the latest of the
+//! newest entry's `changed` (or `created`), the gather's own `changed` (so a
+//! title, description or other config edit moves it, not only the `ETag`),
+//! and, when the channel link resolves through a `url_alias` row rather than
+//! a fixed path, that row's own `changed` (so repointing the link moves it
+//! too). A request whose `If-None-Match` (or, with none, `If-Modified-Since`)
+//! still matches is answered `304` before terms are loaded or anything is
+//! rendered.
+//!
+//! An item's title, summary and body are not hashed directly: they can only
+//! change through an edit to the item, which is the same write that bumps
+//! `changed`, so `changed` already stands in for them exactly. An author's
+//! account name and a term's label are edited on a different row (`users`,
+//! `category_tag`) that an entry's `changed` knows nothing about, which is
+//! what B172 fixed: the author name actually fetched for the entry goes into
+//! the hash, and so does each printed term's id and label, read in one
+//! batched query for the whole response before the `304` check (never one
+//! per entry). A global counter such as the `Categories` cache generation
+//! would have saved that query, but it moves on any tag write anywhere on the
+//! install, so no feed would ever see two polls with the same `ETag` while
+//! anyone edits tags; the labels themselves move only the feeds that print
+//! them.
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
@@ -163,12 +183,33 @@ struct FeedConfig {
     full_content: bool,
     /// The page the feed is a feed of: for an argument feed, the gather route
     /// with the same argument when there is one; else the query's canonical
-    /// URL; else its `/gather/{query_id}` page. A pattern, like `path`.
-    home_path: String,
+    /// URL; else the outbound URL alias of its `/gather/{query_id}` page, when
+    /// one exists; else that page itself.
+    home_path: HomePath,
     /// The gather query's own `changed`, so a config edit changes the `ETag`.
     query_changed: i64,
     /// The path argument and the `display.routes` mapping that binds it.
     argument: Option<GatherRouteParam>,
+}
+
+/// Where a feed's channel link comes from.
+///
+/// The first two tiers are literal paths, known at registration from the
+/// query's own config (an argument route or `canonical_url`), the same way
+/// `display.routes` and `canonical_url` are already read once at startup
+/// elsewhere in this file — editing either needs a restart to reach a running
+/// feed. The third has no config to read: whether `/gather/{query_id}` has an
+/// outbound alias is a fact of the `url_alias` table, resolved per request
+/// (through [`crate::gather::GatherService::outbound_alias_for_gather`]'s
+/// cache, so this costs no query once warm) so that an alias written after
+/// startup reaches the feed without one.
+#[derive(Debug, Clone)]
+enum HomePath {
+    /// The argument's own route, or the query's `canonical_url`.
+    Fixed(String),
+    /// Neither of the above: resolved at request time to the outbound alias
+    /// of `/gather/{query_id}`, else that path itself.
+    GatherDefault,
 }
 
 /// A feed as a template sees it, for autodiscovery link tags.
@@ -421,7 +462,8 @@ pub fn build_feed_router(queries: &[GatherQuery]) -> Router<AppState> {
                 .as_deref()
                 .and_then(|segment| argument_home_path(query, segment))
                 .or(canonical)
-                .unwrap_or_else(|| format!("/gather/{}", query.query_id));
+                .map(HomePath::Fixed)
+                .unwrap_or(HomePath::GatherDefault);
 
             let config = Arc::new(FeedConfig {
                 query_id: query.query_id.clone(),
@@ -557,12 +599,16 @@ async fn serve_feed(
     format: FeedFormat,
     segments: HashMap<String, String>,
 ) -> Response {
+    let viewer = crate::routes::item::get_user_context(&session, &state).await;
     // The argument, resolved by the same code the gather's page route uses:
-    // an unknown tag or author is a 404, not an empty feed.
+    // an unknown tag or author is a 404, not an empty feed, and so is a tag
+    // of a vocabulary this viewer may not read.
     let (url_args, raw_value) = match &config.argument {
         None => (HashMap::new(), None),
         Some(binding) => {
-            match resolve_route_params(&state, std::slice::from_ref(binding), &segments).await {
+            match resolve_route_params(&state, &viewer, std::slice::from_ref(binding), &segments)
+                .await
+            {
                 Ok(resolved) => (resolved, segments.get(&binding.segment).cloned()),
                 Err(RouteParamError::NotFound) => {
                     return (StatusCode::NOT_FOUND, "Feed not found").into_response();
@@ -579,7 +625,6 @@ async fn serve_feed(
         _ => pattern.to_string(),
     };
 
-    let viewer = crate::routes::item::get_user_context(&session, &state).await;
     // A signed-in viewer's feed is that viewer's execution of the query, so no
     // shared cache may keep it; an anonymous one is the same for every
     // anonymous reader.
@@ -634,14 +679,9 @@ async fn serve_feed(
     let rows: Vec<&serde_json::Value> = result.items.iter().take(config.items as usize).collect();
     let item_ids: Vec<Uuid> = rows.iter().filter_map(|row| row_uuid(row)).collect();
     let meta = load_entry_meta(&state, &item_ids).await;
-
-    let rss_path = filled(&config.path);
-    let validators = Validators::compute(config, format, &site_url, &rss_path, &rows, &meta);
-    let cache_headers = validators.headers(&cache_control);
-    if validators.matches(&headers) {
-        return (StatusCode::NOT_MODIFIED, cache_headers).into_response();
-    }
-
+    // The labels the document prints, in one query for the whole response:
+    // they go into the validators (see "Polling" above), so they are read
+    // before a `304`, not after.
     let term_ids: Vec<Uuid> = {
         let mut seen = HashSet::new();
         rows.iter()
@@ -650,6 +690,27 @@ async fn serve_feed(
             .collect()
     };
     let terms = load_term_labels(&state, &term_ids).await;
+
+    let rss_path = filled(&config.path);
+    // Resolved before the validators, not after: the channel link is part of
+    // the document, so an alias write that changes it must change the ETag
+    // and, through `home_path_changed`, `Last-Modified`.
+    let (home_path, home_path_changed) = resolve_home_path(&state, config, &filled).await;
+    let validators = Validators::compute(
+        config,
+        format,
+        &site_url,
+        &rss_path,
+        &home_path,
+        home_path_changed,
+        &rows,
+        &meta,
+        &terms,
+    );
+    let cache_headers = validators.headers(&cache_control);
+    if validators.matches(&headers) {
+        return (StatusCode::NOT_MODIFIED, cache_headers).into_response();
+    }
 
     let entries: Vec<Entry> = rows
         .iter()
@@ -663,7 +724,7 @@ async fn serve_feed(
     let channel = Channel {
         title: &title,
         description: &config.description,
-        home_url: format!("{site_url}{}", filled(&config.home_path)),
+        home_url: format!("{site_url}{home_path}"),
         rss_url: format!("{site_url}{rss_path}"),
         atom_url: format!("{site_url}{}", filled(&config.atom_path)),
         updated: validators.last_modified.unwrap_or(config.query_changed),
@@ -680,6 +741,34 @@ async fn serve_feed(
         HeaderValue::from_static(format.content_type()),
     );
     response
+}
+
+/// The feed's channel link: `config.home_path`, filled with the request's
+/// argument when it has a literal pattern, else the outbound URL alias of
+/// `/gather/{query_id}` (cached — see
+/// [`crate::gather::GatherService::outbound_alias_for_gather`]), else that
+/// path itself.
+///
+/// Also the alias row's own `changed`, when the link came from one: a
+/// `Fixed` link is part of the gather's own config (an argument route or
+/// `canonical_url`), so editing it already moves `config.query_changed`, and
+/// no separate time is needed.
+async fn resolve_home_path(
+    state: &AppState,
+    config: &FeedConfig,
+    filled: &impl Fn(&str) -> String,
+) -> (String, Option<i64>) {
+    match &config.home_path {
+        HomePath::Fixed(pattern) => (filled(pattern), None),
+        HomePath::GatherDefault => match state
+            .gather()
+            .outbound_alias_for_gather(&config.query_id)
+            .await
+        {
+            Some((alias, changed)) => (alias, Some(changed)),
+            None => (format!("/gather/{}", config.query_id), None),
+        },
+    }
 }
 
 /// What the feed needs from the `item` table for each entry: what the row may
@@ -893,8 +982,7 @@ impl Entry {
             .then(|| row_body(row))
             .flatten()
             .map(|(text, format)| {
-                FilterPipeline::for_format_safe(format.as_deref().unwrap_or("plain_text"))
-                    .process(&text)
+                FilterPipeline::for_format(format.as_deref().unwrap_or("plain_text")).process(&text)
             });
 
         Entry {
@@ -946,22 +1034,45 @@ fn row_body(row: &serde_json::Value) -> Option<(String, Option<String>)> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Validators {
     etag: String,
-    /// Newest `changed` among the entries.
+    /// The latest of: the newest entry's `changed` (or `created`), the
+    /// feed's own `config.query_changed` (so a title, description or other
+    /// config edit moves it, not only the `ETag`), and `home_path_changed`
+    /// (so does an edit to the `url_alias` row the channel link resolves
+    /// through, when it resolves through one). Always `Some`:
+    /// `config.query_changed` is always a real timestamp, so a feed with no
+    /// entries still has a `Last-Modified`.
     last_modified: Option<i64>,
 }
 
 impl Validators {
     /// Hash everything the document is a function of that can change between
-    /// polls without a restart: each entry's id, `changed` and link, in order,
-    /// and the site URL. The feed's config is in too, with its query's
-    /// `changed`, so editing the feed declaration invalidates old copies.
+    /// polls without a restart: each entry's id, `changed`, link and author
+    /// name, in order, the terms it carries, the site URL, and the resolved
+    /// channel link — a `HomePath::GatherDefault` feed's is a `url_alias` row
+    /// the query's own `changed` knows nothing about, so it must be hashed as
+    /// given, already resolved, rather than recomputed from `config`. The
+    /// feed's config is in too, with its query's `changed`, so editing the
+    /// feed declaration invalidates old copies.
+    ///
+    /// `home_path_changed` is `home_path`'s own change time when it came from
+    /// a `url_alias` row (`None` for a `Fixed` link, whose edits already move
+    /// `config.query_changed`); it folds into `last_modified` only, since the
+    /// resolved `home_path` string is already in the `ETag` hash.
+    ///
+    /// `terms` is every printed term id to its label, loaded once by the
+    /// caller: a relabelled term changes the hash of exactly the feeds that
+    /// print it, and no write anywhere else on the site does.
+    #[allow(clippy::too_many_arguments)] // each is a distinct input the hash covers
     fn compute(
         config: &FeedConfig,
         format: FeedFormat,
         site_url: &str,
         request_path: &str,
+        home_path: &str,
+        home_path_changed: Option<i64>,
         rows: &[&serde_json::Value],
         meta: &HashMap<Uuid, EntryMeta>,
+        terms: &HashMap<Uuid, String>,
     ) -> Self {
         let mut hasher = Sha256::new();
         let mut line = |s: &str| {
@@ -974,33 +1085,51 @@ impl Validators {
         line(&config.path);
         // The argument's value: two authors' feeds are two documents.
         line(request_path);
+        line(home_path);
         line(&config.title);
         line(&config.description);
         line(&config.items.to_string());
         line(&config.full_content.to_string());
         line(&config.query_changed.to_string());
 
-        let mut newest: Option<i64> = None;
+        // The channel's own floor: always a real timestamp, so a feed with no
+        // entries still gets a `Last-Modified`.
+        let mut newest = config.query_changed;
+        if let Some(home_path_changed) = home_path_changed {
+            newest = newest.max(home_path_changed);
+        }
         for row in rows {
             let uuid = row_uuid(row);
-            let changed = uuid
-                .and_then(|u| meta.get(&u))
+            let entry_meta = uuid.and_then(|u| meta.get(&u));
+            let changed = entry_meta
                 .map(|m| m.changed)
                 .or_else(|| row.get("changed").and_then(|v| v.as_i64()))
                 .or_else(|| row.get("created").and_then(|v| v.as_i64()));
             if let Some(changed) = changed {
-                newest = Some(newest.map_or(changed, |n| n.max(changed)));
+                newest = newest.max(changed);
             }
             line(&row_id(row).unwrap_or_default());
             line(&changed.unwrap_or_default().to_string());
             line(row.get("url").and_then(|v| v.as_str()).unwrap_or_default());
+            // The author's account name, not an id: a feed never prints the
+            // id, so an id-only change (impossible) must not matter and a
+            // name-only change (an account rename) must.
+            line(entry_meta.and_then(|m| m.author.as_deref()).unwrap_or(""));
+            // Each term the entry prints, by id and by its label: a tag added
+            // or removed moves the ids, a relabel moves the label, and neither
+            // needs to touch the item.s `changed`.
+            let printed: Vec<String> = row_term_ids(row)
+                .iter()
+                .map(|id| format!("{id}={}", terms.get(id).map(String::as_str).unwrap_or("")))
+                .collect();
+            line(&printed.join(","));
         }
         let digest = hasher.finalize();
         let hex: String = digest[..16].iter().map(|b| format!("{b:02x}")).collect();
 
         Validators {
             etag: format!("\"{hex}\""),
-            last_modified: newest,
+            last_modified: Some(newest),
         }
     }
 
@@ -1308,7 +1437,7 @@ mod tests {
             description: "D".to_string(),
             items: 20,
             full_content: false,
-            home_path: "/".to_string(),
+            home_path: HomePath::Fixed("/".to_string()),
             query_changed: 0,
             argument: None,
         }
@@ -1467,6 +1596,21 @@ mod tests {
         for url in ["https://example.com", "http://192.168.1.20:3000"] {
             assert!(!warn_if_site_url_unusable(url), "{url} must not warn");
         }
+    }
+
+    /// B144: a site reached by IP address still builds absolute feed links —
+    /// `SITE_URL` feeds `Entry::from_row` as a plain string, with no dependency
+    /// on WebAuthn's effective-domain rule.
+    #[test]
+    fn a_feed_entry_link_is_absolute_under_an_ip_site_url() {
+        let entry = Entry::from_row(
+            &blog_row(),
+            "http://10.20.250.7",
+            &meta(Some("jeremy"), 1_700_000_500),
+            &terms(),
+            false,
+        );
+        assert_eq!(entry.link, "http://10.20.250.7/blog/a-post");
     }
 
     /// The defect: an entry carried title, link, description and date only.
@@ -1631,26 +1775,55 @@ mod tests {
         );
     }
 
+    /// [`Validators::compute`] with no term labels loaded, for tests not about
+    /// the labels themselves.
+    fn compute(
+        config: &FeedConfig,
+        format: FeedFormat,
+        site_url: &str,
+        request_path: &str,
+        home_path: &str,
+        home_path_changed: Option<i64>,
+        rows: &[&serde_json::Value],
+        meta: &HashMap<Uuid, EntryMeta>,
+    ) -> Validators {
+        Validators::compute(
+            config,
+            format,
+            site_url,
+            request_path,
+            home_path,
+            home_path_changed,
+            rows,
+            meta,
+            &HashMap::new(),
+        )
+    }
+
     #[test]
     fn the_etag_follows_the_entries_and_the_config() {
         let row = blog_row();
         let rows = vec![&row];
-        let base = Validators::compute(
+        let base = compute(
             &config(),
             FeedFormat::Rss,
             "https://e",
             "/rss/q.xml",
+            "/blog",
+            None,
             &rows,
             &meta(None, 10),
         );
 
         assert_eq!(
             base,
-            Validators::compute(
+            compute(
                 &config(),
                 FeedFormat::Rss,
                 "https://e",
                 "/rss/q.xml",
+                "/blog",
+                None,
                 &rows,
                 &meta(None, 10)
             ),
@@ -1659,11 +1832,13 @@ mod tests {
         assert_eq!(base.last_modified, Some(10));
         assert_ne!(
             base.etag,
-            Validators::compute(
+            compute(
                 &config(),
                 FeedFormat::Rss,
                 "https://e",
                 "/rss/q.xml",
+                "/blog",
+                None,
                 &rows,
                 &meta(None, 11)
             )
@@ -1672,11 +1847,13 @@ mod tests {
         );
         assert_ne!(
             base.etag,
-            Validators::compute(
+            compute(
                 &config(),
                 FeedFormat::Atom,
                 "https://e",
                 "/rss/q.xml",
+                "/blog",
+                None,
                 &rows,
                 &meta(None, 10)
             )
@@ -1687,17 +1864,205 @@ mod tests {
         edited.full_content = true;
         assert_ne!(
             base.etag,
-            Validators::compute(
+            compute(
                 &edited,
                 FeedFormat::Rss,
                 "https://e",
                 "/rss/q.xml",
+                "/blog",
+                None,
                 &rows,
                 &meta(None, 10)
             )
             .etag,
             "a config change changes the etag"
         );
+        // The defect: an alias write that moves the channel link does not touch
+        // `query.changed`, so without this the ETag would not follow it.
+        assert_ne!(
+            base.etag,
+            compute(
+                &config(),
+                FeedFormat::Rss,
+                "https://e",
+                "/rss/q.xml",
+                "/gather/q",
+                None,
+                &rows,
+                &meta(None, 10)
+            )
+            .etag,
+            "a changed channel link changes the etag"
+        );
+        // The defect this change fixes: a title/description edit (`query.changed`)
+        // or an alias edit (`home_path_changed`) left `Last-Modified` where it
+        // was, so a reader polling with only `If-Modified-Since` kept the old
+        // channel values.
+        let mut config_edited = config();
+        config_edited.query_changed = 20;
+        assert_eq!(
+            compute(
+                &config_edited,
+                FeedFormat::Rss,
+                "https://e",
+                "/rss/q.xml",
+                "/blog",
+                None,
+                &rows,
+                &meta(None, 10),
+            )
+            .last_modified,
+            Some(20),
+            "a config edit newer than the entries moves Last-Modified"
+        );
+        assert_eq!(
+            compute(
+                &config(),
+                FeedFormat::Rss,
+                "https://e",
+                "/rss/q.xml",
+                "/blog",
+                Some(30),
+                &rows,
+                &meta(None, 10),
+            )
+            .last_modified,
+            Some(30),
+            "an alias edit newer than the entries moves Last-Modified"
+        );
+    }
+
+    /// B172: an account rename or a tag relabel leaves every entry's id,
+    /// `changed` and link untouched, so the hash must carry the printed name
+    /// and a stamp for the printed labels directly, not only derive them from
+    /// `changed`.
+    #[test]
+    fn a_renamed_author_changes_the_etag_though_nothing_else_moved() {
+        let row = blog_row();
+        let rows = vec![&row];
+
+        let before = compute(
+            &config(),
+            FeedFormat::Rss,
+            "https://e",
+            "/rss/q.xml",
+            "/blog",
+            None,
+            &rows,
+            &meta(Some("jeremy"), 10),
+        );
+        let renamed = compute(
+            &config(),
+            FeedFormat::Rss,
+            "https://e",
+            "/rss/q.xml",
+            "/blog",
+            None,
+            &rows,
+            &meta(Some("jeremy-dev"), 10),
+        );
+        assert_ne!(
+            before.etag, renamed.etag,
+            "the account name changed, so the document now reads differently"
+        );
+        assert_eq!(
+            before.last_modified, renamed.last_modified,
+            "a rename is not an edit to the item"
+        );
+
+        let no_name = compute(
+            &config(),
+            FeedFormat::Rss,
+            "https://e",
+            "/rss/q.xml",
+            "/blog",
+            None,
+            &rows,
+            &meta(None, 10),
+        );
+        assert_ne!(
+            before.etag, no_name.etag,
+            "an author gaining or losing a publishable name changes the document"
+        );
+    }
+
+    /// A term's label lives on `category_tag`, not on the item, so relabelling
+    /// one moves neither the entry's `changed` nor its term ids: the label
+    /// itself has to be in the hash.
+    #[test]
+    fn a_relabelled_term_changes_the_etag_though_the_terms_are_the_same() {
+        let row = blog_row();
+        let rows = vec![&row];
+        let tag_a: Uuid = TAG_A.parse().unwrap();
+        let tag_b: Uuid = TAG_B.parse().unwrap();
+        let labels = |a: &str| -> HashMap<Uuid, String> {
+            [(tag_a, a.to_string()), (tag_b, "Other".to_string())]
+                .into_iter()
+                .collect()
+        };
+        let with = |terms: &HashMap<Uuid, String>| {
+            Validators::compute(
+                &config(),
+                FeedFormat::Rss,
+                "https://e",
+                "/rss/q.xml",
+                "/blog",
+                None,
+                &rows,
+                &meta(None, 10),
+                terms,
+            )
+        };
+
+        let before = with(&labels("Before"));
+        assert_eq!(
+            before,
+            with(&labels("Before")),
+            "the same labels give the same validators"
+        );
+        let after = with(&labels("After"));
+        assert_ne!(
+            before.etag, after.etag,
+            "the document prints the new label, so it is a new document"
+        );
+        assert_eq!(
+            before.last_modified, after.last_modified,
+            "relabelling a term is not an edit to the item"
+        );
+    }
+
+    /// An entry's own term ids are hashed directly (free: already parsed off
+    /// the row), so gaining or losing a tag changes the `ETag` even if nothing
+    /// relabels anything.
+    #[test]
+    fn an_entrys_changed_term_ids_change_the_etag() {
+        let with_both = blog_row();
+        let mut one_tag = blog_row();
+        one_tag["fields"]["field_tags"] = serde_json::json!([TAG_A]);
+
+        let rows_both = vec![&with_both];
+        let rows_one = vec![&one_tag];
+        let before = compute(
+            &config(),
+            FeedFormat::Rss,
+            "https://e",
+            "/rss/q.xml",
+            "/blog",
+            None,
+            &rows_both,
+            &meta(None, 10),
+        );
+        let after = compute(
+            &config(),
+            FeedFormat::Rss,
+            "https://e",
+            "/rss/q.xml",
+            "/blog",
+            None,
+            &rows_one,
+            &meta(None, 10),
+        );
+        assert_ne!(before.etag, after.etag);
     }
 
     #[test]

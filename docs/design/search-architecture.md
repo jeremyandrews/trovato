@@ -46,9 +46,9 @@ User types query
 
 **How it works in Trovato:**
 
-- **Change detection (kernel and plugin):** The kernel's item and comment write services set `rebuild_requested = true` in the `pagefind_index_status` signal table after every write that changes what the index may hold, deletes, unpublishes and comments included. The `trovato_search` plugin's `tap_cron` handler also compares `MAX(changed)` of published live-stage items against a stored `last_indexed_at` timestamp, for writes that bypass those services.
-- **Index generation (kernel):** The kernel cron task checks the signal table. When a rebuild is requested, it exports live-stage published items as HTML fragments (title, every text field, published comments, metadata; see [What Goes in the Index](#what-goes-in-the-index)), runs the Pagefind CLI, and atomically deploys the index via rename-swap to `PAGEFIND_OUTPUT_DIR` (`./static/pagefind/` by default), served at `/static/pagefind/`.
-- **Why the split:** WASM plugins run in sandboxed instances with no access to the filesystem or subprocess spawning. The plugin detects *when* a rebuild is needed; the kernel performs the *how*.
+- **Change detection (kernel):** Every write that changes what an item's search page holds queues that item in `search_index_queue`, with a reason. Writes to `item`, `comment` and `url_alias` rows are queued by triggers on those tables, in the write's own transaction, whoever makes them (the services, pathauto, a plugin's raw SQL). The other writers are the content type search switches and field weights (every item of the type), workspace publishing, and plugins changing something no trigger sees, such as data their `tap_field_access` reads, which call `host::search_index_enqueue` ([the rule](../plugin-development.md#the-static-search-index-queue-what-you-change)). Scheduled publishing writes through the item API. Nothing polls. The `pagefind_index_status` table remains the switch that says the site wants the index, and carries an operator's full rebuild request (`trovato search rebuild`).
+- **Index generation (kernel):** Each cron run drains the queue in batches of 200, rewriting only the queued items' fragments, the word chunks their words are in, the meta file and `pagefind-entry.json` (`cron/search_update.rs`; see [incremental-search-index.md](incremental-search-index.md#part-3-as-built)). A full build, which exports live-stage published items as HTML fragments (title, every text field, published comments, metadata; see [What Goes in the Index](#what-goes-in-the-index)), builds the Pagefind 1.3.0 index natively (crate `trovato-search-index`; no `pagefind` binary), and publishes it into `PAGEFIND_OUTPUT_DIR`, entry file last (`./static/pagefind/` by default, served at `/static/pagefind/`), runs only when there is no index yet, when an operator asks, when tombstones pass the compaction threshold, or when a precondition of the update fails (logged at `warn` with the reason).
+- **Why the kernel:** WASM plugins run in sandboxed instances with no access to the filesystem. The kernel writes the index files; the `trovato_search` plugin switches the index on and reports the queue length from `tap_cron`.
 - **Client-side search:** The Pagefind JS library loads in the browser. When the user types, Pagefind searches its local index and returns results. No HTTP request, no database query, no server involvement.
 - **Fallback:** If JavaScript is disabled or Pagefind fails to load, the search form submits to the server-side tsvector endpoint. Progressive enhancement means the server-side search is always available.
 
@@ -164,6 +164,7 @@ Tera's `json_encode` filter.
 | `analytics_enabled` | on | |
 | `analytics_retention_days` | 90 | 1 to 365 |
 | `sentiment_enabled` | off | |
+| `index_compaction_percent` | 5.0 | 0.5 to 50: the share of a language's Pagefind page slots that may be tombstones (left by deleted or unpublished items and not yet reused) before cron compacts the index with one full build that renumbers densely; see [incremental-search-index.md](incremental-search-index.md#compaction) |
 
 ### Which backend applies which signal
 
@@ -290,8 +291,8 @@ channel (256 jobs) and returns. One background worker, owned by `AppState`
 (`search::sentiment::SentimentQueue`), drains it: it re-reads the settings,
 resolves the Chat provider the same way the endpoints do, sends the
 `CLASSIFY_SENTIMENT` prompt (`search/prompts.rs`, resolved through
-`prompts::resolve`) through `api_search::complete` (the one send and parse path
-all four AI search calls now share), and adds the label to the day's counter
+`prompts::resolve`) through `api_search::complete`, which sends it through
+`AiProviderService::chat_once`, the kernel's one send path, and adds the label to the day's counter
 through the analytics aggregator. A reply that is not exactly one of the three
 words counts nothing and logs one warning, without the reply text. A full channel
 drops the job; the number dropped is logged at the next analytics flush. Provider
@@ -327,15 +328,15 @@ The standard AI search architecture generates embeddings for all content, stores
 
 The architecture splits responsibility between the `trovato_search` WASM plugin and the kernel:
 
-- **Plugin (WASM):** Detects content changes via `tap_cron`, signals rebuild needed via the `pagefind_index_status` database table. Cannot access the filesystem or spawn subprocesses due to WASM sandbox constraints.
-- **Kernel (`cron/pagefind.rs`):** Checks the signal table during cron runs. When `rebuild_requested = true`, exports items as HTML, runs the Pagefind CLI, and atomically deploys the index. Only runs when the `trovato_search` plugin is enabled (`pagefind_enabled` flag on `CronService`).
+- **Plugin (WASM):** Its `pagefind_index_status` table switches the index on and carries an operator's full rebuild request. Its `tap_cron` reports how many items are queued. Cannot access the filesystem due to WASM sandbox constraints.
+- **Kernel (`cron/pagefind.rs`, `cron/search_update.rs`):** Each cron run drains `search_index_queue` through the incremental updater, or takes a full build through the page ledger (`cron/search_index.rs`) when one is requested or needed, and publishes entry file last. Only runs when the `trovato_search` plugin is enabled (`pagefind_enabled` flag on `CronService`).
 
 ### `trovato_search` Plugin
 
 | Component | Implementation | Notes |
 |---|---|---|
-| Change detection | `tap_cron` handler | Compares `MAX(changed)` against `last_indexed_at`; sets `rebuild_requested` in signal table |
-| Index generation | Kernel `cron/pagefind.rs` | Exports live-stage items as HTML, runs Pagefind CLI with timeout, atomic rename-swap deploy |
+| Change detection | Table triggers and kernel writers | Item, comment and alias writes are queued by triggers in their own transaction; the type screens and workspace publishing queue their items; plugins call `host::search_index_enqueue` for changes no trigger sees |
+| Index generation | Kernel `cron/pagefind.rs` | Drains the queue through `cron/search_update.rs` (only the queued items' files), or a full build in `cron/search_index.rs`; publishes entry file last |
 | Index serving | Static files in `./static/pagefind/` | Served by web server/CDN, not Trovato app code |
 | Pagefind client JS | Frontend asset bundled with plugin | Loaded on search pages, optional preload on all pages |
 | Query expansion endpoint | `tap_menu` -> `/api/v1/search/expand` | Calls `ai_request(operation: Chat)`, returns expanded terms as JSON |
@@ -414,33 +415,44 @@ Token budgets from Story 31.3 apply to all search-related AI operations.
 ### Index Build Pipeline
 
 ```
+A write (item, comment or alias row, by any writer: a trigger, in the same
+transaction; type switches or weights; workspace publish; a plugin's
+search_index_enqueue)
+    |
+    +-> INSERT INTO search_index_queue (item_id, op, reason)
+          one row per item, the last write wins
+
 Cron interval fires
     |
-    +-> Plugin tap_cron:
-    |     Compare MAX(changed) vs last_indexed_at
-    |     If newer: SET rebuild_requested = true
-    |
-    +-> Kernel cron/pagefind.rs:
-          Check rebuild_requested
-          If true:
+    +-> Kernel cron/pagefind.rs (only when trovato_search is enabled):
+          A full rebuild requested, no index yet, or no entry file?
+              -> full build through the page ledger (cron/search_index.rs)
+          Otherwise, per batch of 200 queued items (cron/search_update.rs):
               |
-              +-> Clear signal (prevent double builds)
+              +-> Export just those items (the same access seam: Live,
+              |     published, viewable by anonymous)
               |
-              +-> Export live-stage published Items as HTML fragments
-              |     (title, every text field, published comments, metadata)
-              |     Items on stages with non-public visibility excluded --
-              |     AI-modified content not indexed until human-promoted
+              +-> Under pg_advisory_xact_lock('search_index'): render,
+              |     tokenize (term cache by fragment hash), free or tombstone
+              |     their page slots, rewrite the word chunks their old and
+              |     new words are in (split past 40,000 locations, drop when
+              |     empty), a new meta file
               |
-              +-> Run Pagefind CLI (with 2-minute timeout)
-              |     (Rust binary, ~2s for 10K pages)
+              +-> Publish: new hashed files, then pagefind-entry.json
+              |     (files no longer referenced deleted after 24 hours)
               |
-              +-> Deploy index files via rename-swap
-              |     (old -> pagefind.old, new -> pagefind, remove backup)
-              |
-              +-> Update last_indexed_at timestamp
+              +-> Record ledger, terms, chunk plan, generation; delete the
+                    queue rows applied; commit
+          Tombstones above the compaction setting (5% of a language's
+          slots by default) -> one full build that renumbers densely
 ```
 
-For a site with thousands of Items, a full re-index takes seconds. Incremental would be nice but isn't critical at this scale. The cron-based approach naturally debounces -- if 50 Items are imported in batch, one re-index fires on the next cron interval, not 50 individual rebuilds.
+An edit or a comment is searchable at the next cron run, and only the files it
+touched are rewritten (see
+[incremental-search-index.md](incremental-search-index.md#part-3-as-built) for
+the measurements). A batch import of 50 items is one update of 50 pages at the
+next cron run. Past 1,000 queued items and a quarter of the index, a full build
+is cheaper and is taken instead.
 
 ### What Goes in the Index
 
@@ -482,18 +494,20 @@ existing site search everything:
 They are stored in the type's `item_type.settings` under `search`
 (`{"include": …, "comments": …}`, only an explicit `false` turns one off), so
 `config export` and `config import` carry them with the type. Saving recomputes
-the type's Postgres vectors at once and requests a Pagefind rebuild, which runs
-at the next cron run.
+the type's Postgres vectors at once and queues every item of the type for the
+Pagefind index, which the next cron run updates.
 
-#### When the index is rebuilt
+#### When the index is updated
 
-The kernel's item and comment write services request a rebuild themselves after
-every write that changes what the index may hold: an item published, edited,
-unpublished, moved off the live stage or deleted; a published comment written,
-edited, unpublished or deleted, or a held one published. The rebuild runs at the
-next cron run, so a new comment is findable one cron interval after it is
-posted. `trovato_search`'s `tap_cron` still compares `MAX(changed)` with
-`last_indexed_at`, for writes that bypass the services (a scheduled publish).
+Every writer queues the items it changed (B218). Triggers on `item`, `comment`
+and `url_alias` queue the item a write changes, in the write's own
+transaction, whoever makes it. The type search switches and the field weights
+queue every item of the type, workspace publishing every item the publish
+moves or deletes, and plugins call `host::search_index_enqueue` for a change no
+trigger sees. Scheduled publishing changes the status through the item API. The
+next cron run applies the queue, so a new comment is findable one cron interval
+after it is posted. A queued item that is not searchable (a draft, an item
+anonymous may not see) is taken out of the index or left out.
 The Postgres vector needs no rebuild: triggers on `item` and `comment` keep it
 current inside the write's own transaction.
 
@@ -563,3 +577,4 @@ The tutorial teaches query expansion first because it's simpler and demonstrates
 - [The Practical Path to AI Search](https://www.tag1.com/how-to/the-practical-path-to-ai-search/) -- Source article. Tag1's production implementation.
 - [Pagefind](https://pagefind.app/) -- Rust/WASM static search library
 - [AI Integration Design](ai-integration.md) -- Full AI design document
+- [Incremental search index](incremental-search-index.md) -- Design for updating the Pagefind index per item instead of rebuilding it (B216)

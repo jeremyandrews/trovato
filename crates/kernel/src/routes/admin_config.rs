@@ -46,6 +46,8 @@ struct SiteConfigFormData {
     notify_admin_on_register: Option<String>,
     #[serde(default)]
     update_check: Option<String>,
+    #[serde(default)]
+    count_content_views: Option<String>,
 }
 
 /// Test email form data (CSRF token only).
@@ -118,12 +120,15 @@ async fn site_config_form(State(state): State<AppState>, session: Session) -> Re
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
+    let count_content_views = crate::content::view_counter::stored_setting(pool).await;
+
     let csrf_token = generate_csrf_token(&session).await;
 
     // Read and clear flash message
-    let flash: Option<String> = session.get(FLASH_KEY).await.ok().flatten();
+    // A plain sentence, or an i18n::UiMessage for a failure.
+    let flash: Option<serde_json::Value> = session.get(FLASH_KEY).await.ok().flatten();
     if flash.is_some()
-        && let Err(e) = session.remove::<String>(FLASH_KEY).await
+        && let Err(e) = session.remove::<serde_json::Value>(FLASH_KEY).await
     {
         tracing::warn!(error = %e, "failed to clear site config flash message");
     }
@@ -140,6 +145,7 @@ async fn site_config_form(State(state): State<AppState>, session: Session) -> Re
     context.insert("cookie_secure", &state.runtime().cookie_secure);
     context.insert("notify_admin_on_register", &notify_admin_on_register);
     context.insert("update_check", &update_check);
+    context.insert("count_content_views", &count_content_views);
     context.insert("update_status", &update_status);
     context.insert("running_version", crate::update_status::running_version());
     context.insert("flash", &flash);
@@ -251,6 +257,7 @@ async fn site_config_submit(
         context.insert("cookie_secure", &state.runtime().cookie_secure);
         context.insert("notify_admin_on_register", &notify_admin_on_register);
         context.insert("update_check", &form.update_check.is_some());
+        context.insert("count_content_views", &form.count_content_views.is_some());
         context.insert(
             "update_status",
             &crate::update_status::stored_status(pool).await,
@@ -303,6 +310,9 @@ async fn site_config_submit(
         tracing::error!(error = %e, "failed to save items_per_page");
         return render_server_error("Failed to save site settings.");
     }
+    // Gathers with no page size of their own page by it (B160): this server
+    // at once, the others on the bump.
+    state.gather().clear_site_settings();
 
     // Saving also clears the boolean this setting supersedes, so a site cannot end
     // up with two registration settings that disagree.
@@ -339,6 +349,19 @@ async fn site_config_submit(
         tracing::error!(error = %e, "failed to save update_check");
     }
 
+    // Count content views (B160) — checkbox: present means on.
+    if let Err(e) = SiteConfig::set(
+        pool,
+        crate::content::view_counter::SETTING_KEY,
+        serde_json::json!(form.count_content_views.is_some()),
+    )
+    .await
+    {
+        tracing::error!(error = %e, "failed to save count_content_views");
+    }
+    // This server counts (or stops) at once, the others on the bump.
+    state.items().view_counter().clear();
+
     let _ = session
         .insert(FLASH_KEY, "Settings saved successfully.")
         .await;
@@ -366,31 +389,44 @@ async fn test_email(
         let _ = session
             .insert(
                 FLASH_KEY,
-                "Cannot send test email: site email is not configured.",
+                crate::i18n::UiMessage::new(
+                    "Cannot send test email: site email is not configured.",
+                )
+                .error(),
             )
             .await;
         return Redirect::to("/admin/config/site").into_response();
     }
 
     if let Some(email_service) = state.email() {
-        match email_service
-            .send(
-                &site_mail,
-                "Trovato test email",
-                "This is a test email from your Trovato site.\n\n\
-                 If you received this, SMTP is configured correctly.",
-            )
-            .await
-        {
-            Ok(()) => {
+        let message = crate::services::email::NewMail::notification(
+            "smtp_test",
+            &site_mail,
+            "Trovato test email",
+            "This is a test email from your Trovato site.\n\n\
+             If you received this, SMTP is configured correctly.",
+        );
+        match email_service.queue_now(message).await {
+            Ok(_) => {
                 let _ = session
-                    .insert(FLASH_KEY, &format!("Test email sent to {site_mail}."))
+                    .insert(
+                        FLASH_KEY,
+                        &format!(
+                            "Test email queued to {site_mail}. Whether it was sent, and any \
+                             error from the mail server, shows in the mail log."
+                        ),
+                    )
                     .await;
             }
             Err(e) => {
-                tracing::error!(error = %e, "test email failed");
+                tracing::error!(error = %e, "test email could not be queued");
                 let _ = session
-                    .insert(FLASH_KEY, &format!("Failed to send test email: {e}"))
+                    .insert(
+                        FLASH_KEY,
+                        crate::i18n::UiMessage::new("Failed to queue the test email: {error}")
+                            .arg("error", e.to_string())
+                            .error(),
+                    )
                     .await;
             }
         }
@@ -398,8 +434,11 @@ async fn test_email(
         let _ = session
             .insert(
                 FLASH_KEY,
-                "Email service is not configured. Set the SMTP_HOST environment \
-                 variable and restart the server.",
+                crate::i18n::UiMessage::new(
+                    "Email service is not configured. Set the SMTP_HOST environment \
+                     variable and restart the server.",
+                )
+                .error(),
             )
             .await;
     }

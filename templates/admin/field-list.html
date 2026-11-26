@@ -1,114 +1,117 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+{% import "admin/macros/form.html" as form %}
+
+{% block page_title %}{{ t(s="Manage fields: {type}", type=content_type.label) }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="The fields every item of this content type has, besides its title. A field's machine name and type are fixed once it is added.") }}</p>{% endblock page_intro %}
+{% block page_actions %}
+{{ list::add_link(url="#add-field-form", label=t(s="Add field")) }}
+<a href="/admin/structure/types/{{ content_type.machine_name }}/search" class="button button--secondary">{{ t(s="Search config") }}</a>
+<a href="/admin/structure/types/{{ content_type.machine_name }}/edit" class="button button--secondary">{{ t(s="Edit content type") }}</a>
+{% endblock page_actions %}
 
 {% block content %}
-<div class="admin-header">
-    <h2>Manage fields: {{ content_type.label }}</h2>
-    <div style="display: flex; gap: 0.5rem;">
-        <a href="#add-field-form" class="button button--primary">Add field</a>
-        <a href="/admin/structure/types/{{ content_type.machine_name }}/search" class="button button--secondary">Search config</a>
-        <a href="/admin/structure/types/{{ content_type.machine_name }}/edit" class="button button--secondary">Edit content type</a>
-    </div>
-</div>
-
-{% if errors is defined and errors %}
-<div class="messages messages--error">
-    <ul>
-        {% for error in errors %}
-        <li>{{ error }}</li>
-        {% endfor %}
-    </ul>
-</div>
-{% endif %}
+{{ form::errors(errors=errors) }}
 
 <div class="admin-card" id="fields-wrapper">
-    <table class="table">
-        <thead>
-            <tr>
-                <th>Label</th>
-                <th>Machine name</th>
-                <th>Field type</th>
-                <th>Required</th>
-                <th>Operations</th>
-            </tr>
-        </thead>
-        <tbody id="fields-tbody">
-            <tr>
-                <td><strong>Title</strong></td>
-                <td><code>title</code></td>
-                <td>Text</td>
-                <td>Yes</td>
-                <td>-</td>
-            </tr>
-            {% for field in fields %}
-            <tr data-field="{{ field.field_name }}">
-                <td>{{ field.label }}</td>
-                <td><code>{{ field.field_name }}</code></td>
-                <td>{{ field.field_type | field_type_label }}</td>
-                <td>{% if field.required %}Yes{% else %}No{% endif %}</td>
-                <td>
-                    <a href="/admin/structure/types/{{ content_type.machine_name }}/fields/{{ field.field_name }}/edit">Edit</a>
-                    &middot;
-                    <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/fields/{{ field.field_name }}/delete"
-                          style="display: inline;"
-                          onsubmit="return confirm('Are you sure you want to delete the {{ field.label }} field?')">
-                        <input type="hidden" name="_token" value="{{ csrf_token }}">
-                        <button type="submit" class="button-link">Delete</button>
-                    </form>
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+    <div class="table-scroll" role="region" aria-labelledby="fields-caption" tabindex="0">
+        <table class="table">
+            <caption id="fields-caption">{{ t(s="Fields of {type}", type=content_type.label) }}</caption>
+            <thead>
+                <tr>
+                    <th scope="col">{{ t(s="Label") }}</th>
+                    <th scope="col">{{ t(s="Machine name") }}</th>
+                    <th scope="col">{{ t(s="Field type") }}</th>
+                    <th scope="col">{{ t(s="Required") }}</th>
+                    <th scope="col">{{ t(s="Operations") }}</th>
+                </tr>
+            </thead>
+            <tbody id="fields-tbody">
+                <tr>
+                    <th scope="row"><strong>{{ t(s="Title") }}</strong></th>
+                    <td><code>{{ "title" }}</code></td>
+                    <td>{{ t(s="Text") }}</td>
+                    <td>{{ t(s="Yes") }}</td>
+                    <td>-</td>
+                </tr>
+                {% for field in fields %}
+                <tr data-field="{{ field.field_name }}">
+                    <th scope="row">{{ field.label }}</th>
+                    <td><code>{{ field.field_name }}</code></td>
+                    <td>{{ t(s=field.field_type | field_type_label) }}</td>
+                    <td>{% if field.required %}{{ t(s="Yes") }}{% else %}{{ t(s="No") }}{% endif %}</td>
+                    <td class="operations">
+                        <a href="/admin/structure/types/{{ content_type.machine_name }}/fields/{{ field.field_name }}/edit">{{ t(s="Edit {name}", name=field.label) }}</a>
+                        {{ list::delete_button(action="/admin/structure/types/" ~ content_type.machine_name ~ "/fields/" ~ field.field_name ~ "/delete", label=t(s="Delete {name}", name=field.label), confirm_text=t(s="Are you sure you want to delete the {name} field?", name=field.label), csrf_token=csrf_token) }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
     {% if not fields %}
-    <p id="no-fields-message">No custom fields defined yet.</p>
+    <p id="no-fields-message">{{ t(s="No custom fields defined yet.") }}</p>
     {% endif %}
 </div>
 
-<div class="admin-card" style="margin-top: 1rem;">
-    <h3 style="margin-top: 0;">Add a new field</h3>
+<section class="admin-card" aria-labelledby="add-field-heading">
+    <h2 id="add-field-heading">{{ t(s="Add a new field") }}</h2>
     <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/fields/add" id="add-field-form">
         <input type="hidden" name="_token" value="{{ csrf_token }}">
         <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
 
-        <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
-            <div class="form-item" style="flex: 1; min-width: 200px;">
-                <label for="new_field_label" class="form-item__label form-item__label--required">Label</label>
+        <div class="inline-fields">
+            <div class="form-item">
+                <label for="new_field_label" class="form-item__label">{{ t(s="Label") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
                 <input type="text" id="new_field_label" name="label" class="form-text" required value="{{ values.label | default(value='') }}" data-machine-name-source="new_field_name" data-machine-name-prefix="field_" data-machine-name-max="32">
             </div>
 
-            <div class="form-item" style="flex: 1; min-width: 200px;">
-                <label for="new_field_name" class="form-item__label form-item__label--required">Machine name</label>
+            <div class="form-item">
+                <label for="new_field_name" class="form-item__label">{{ t(s="Machine name") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
                 <input type="text" id="new_field_name" name="name" class="form-text"
                        value="{{ values.name | default(value='') }}"
                        pattern="[a-z][a-z0-9_]*" required>
             </div>
 
-            <div class="form-item" style="flex: 1; min-width: 200px;">
-                <label for="new_field_type" class="form-item__label form-item__label--required">Type</label>
+            <div class="form-item">
+                <label for="new_field_type" class="form-item__label">{{ t(s="Type") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
                 <select id="new_field_type" name="field_type" class="form-select" required>
-                    <option value="">- Select -</option>
+                    <option value="">{{ t(s="- Select -") }}</option>
                     {% set selected_type = values.field_type | default(value='') %}
-                    <option value="text" {% if selected_type == "text" %}selected{% endif %}>Text (plain)</option>
-                    <option value="text_long" {% if selected_type == "text_long" %}selected{% endif %}>Text (long)</option>
-                    <option value="integer" {% if selected_type == "integer" %}selected{% endif %}>Integer</option>
-                    <option value="float" {% if selected_type == "float" %}selected{% endif %}>Float</option>
-                    <option value="boolean" {% if selected_type == "boolean" %}selected{% endif %}>Boolean</option>
-                    <option value="date" {% if selected_type == "date" %}selected{% endif %}>Date</option>
-                    <option value="email" {% if selected_type == "email" %}selected{% endif %}>Email</option>
-                    <option value="record_reference" {% if selected_type == "record_reference" %}selected{% endif %}>Reference</option>
+                    <option value="text" {% if selected_type == "text" %}selected{% endif %}>{{ t(s="Text (plain)") }}</option>
+                    <option value="text_long" {% if selected_type == "text_long" %}selected{% endif %}>{{ t(s="Text (long)") }}</option>
+                    <option value="integer" {% if selected_type == "integer" %}selected{% endif %}>{{ t(s="Integer") }}</option>
+                    <option value="float" {% if selected_type == "float" %}selected{% endif %}>{{ t(s="Float") }}</option>
+                    <option value="boolean" {% if selected_type == "boolean" %}selected{% endif %}>{{ t(s="Boolean") }}</option>
+                    <option value="date" {% if selected_type == "date" %}selected{% endif %}>{{ t(s="Date") }}</option>
+                    <option value="email" {% if selected_type == "email" %}selected{% endif %}>{{ t(s="Email") }}</option>
+                    <option value="record_reference" {% if selected_type == "record_reference" %}selected{% endif %}>{{ t(s="Reference") }}</option>
+                    <option value="category_reference" {% if selected_type == "category_reference" %}selected{% endif %}>{{ t(s="Category reference (tags)") }}</option>
                 </select>
             </div>
 
-            <div class="form-item" style="display: flex; align-items: flex-end;">
+            <div class="form-item">
+                <label for="new_field_category" class="form-item__label">{{ t(s="Category") }}</label>
+                <select id="new_field_category" name="category" class="form-select" aria-describedby="new_field_category-hint">
+                    <option value="">{{ t(s="- None -") }}</option>
+                    {% set selected_category = values.category | default(value='') %}
+                    {% for category in categories %}
+                    <option value="{{ category.id }}"{% if selected_category == category.id %} selected{% endif %}>{{ category.label }}</option>
+                    {% endfor %}
+                </select>
+                <div class="description" id="new_field_category-hint">{{ t(s="Required for a category reference: the field holds tags of this category.") }}</div>
+            </div>
+
+            <div class="form-item inline-fields__submit">
                 <button type="submit" class="button button--primary"
                         data-ajax-trigger="add_field"
                         data-ajax-wrapper="#fields-wrapper">
-                    Add field
+                    {{ t(s="Add field") }}
                 </button>
             </div>
         </div>
     </form>
-</div>
+</section>
 
 {# Machine name auto-generation handled by admin-helpers.js via data attributes on the label input #}
-{% endblock %}
+{% endblock content %}

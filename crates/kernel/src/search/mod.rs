@@ -8,6 +8,7 @@
 pub const MAX_QUERY_LENGTH: usize = 1000;
 
 pub mod analytics;
+pub mod index_queue;
 pub mod prompts;
 pub mod sentiment;
 pub mod settings;
@@ -125,6 +126,11 @@ pub struct SearchResults {
     pub offset: i64,
     /// Page size limit.
     pub limit: i64,
+    /// The query held no word that can be searched for: only words too common
+    /// to index (`a`, `it's`) or punctuation (`&`). Nothing was searched, and
+    /// the results page says why rather than only "no results".
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub no_terms: bool,
 }
 
 /// Search service for full-text content search.
@@ -226,49 +232,58 @@ impl SearchService {
                 total: 0,
                 offset,
                 limit,
+                no_terms: false,
             });
         }
 
-        // Convert query to tsquery format
-        // Split on whitespace and join with & for AND search
-        let ts_query = query_clean
-            .split_whitespace()
-            .map(|w| format!("{w}:*")) // Prefix matching
-            .collect::<Vec<_>>()
-            .join(" & ");
+        // The visitor's words go to Postgres as they were typed, parsed by
+        // `websearch_to_tsquery`: every word must match, "a quoted phrase"
+        // matches as a phrase, `or` between words matches either and a leading
+        // `-` excludes a word, which is the syntax Drupal's search taught
+        // visitors. It never fails to parse: `&`, `<b>`, quotes and
+        // apostrophes are read as punctuation, where the hand-built
+        // `to_tsquery` text this replaced (each word with `:*` appended) was
+        // tsquery syntax, so `noank & mystic` answered 500 (B160).
+        //
+        // Markup in the query is read as the indexed text is: the document
+        // parser skips a tag, but `websearch_to_tsquery` would read `<b>` as
+        // the word `b` and require it next to the one after, so the query's
+        // text is taken first, with the extractor the snippet uses.
+        let query_text = crate::content::page_meta::text_of(query_clean);
+        let ts_query = query_text.as_str();
 
         debug!(query = %query_clean, ts_query = %ts_query, "executing search");
 
         let (boost_types, boost_values) = settings.type_boost_arrays();
 
         // Get total count
-        let total: i64 = if let Some(uid) = user_id {
-            sqlx::query_scalar(
+        let (total, terms): (i64, i32) = if let Some(uid) = user_id {
+            sqlx::query_as(
                 r#"
-                SELECT COUNT(*)
+                SELECT COUNT(*), numnode(websearch_to_tsquery('english', $1))
                 FROM item
-                WHERE search_vector @@ to_tsquery('english', $1)
+                WHERE search_vector @@ websearch_to_tsquery('english', $1)
                   AND (status = 1 OR author_id = $2)
                   AND stage_id = ANY($3)
                 "#,
             )
-            .bind(&ts_query)
+            .bind(ts_query)
             .bind(uid)
             .bind(stage_ids)
             .fetch_one(&self.pool)
             .await
             .context("failed to count search results")?
         } else {
-            sqlx::query_scalar(
+            sqlx::query_as(
                 r#"
-                SELECT COUNT(*)
+                SELECT COUNT(*), numnode(websearch_to_tsquery('english', $1))
                 FROM item
-                WHERE search_vector @@ to_tsquery('english', $1)
+                WHERE search_vector @@ websearch_to_tsquery('english', $1)
                   AND status = 1
                   AND stage_id = ANY($2)
                 "#,
             )
-            .bind(&ts_query)
+            .bind(ts_query)
             .bind(stage_ids)
             .fetch_one(&self.pool)
             .await
@@ -287,20 +302,20 @@ impl SearchService {
                     id,
                     type,
                     title,
-                    ts_rank(search_vector, to_tsquery('english', $1))
+                    ts_rank(search_vector, websearch_to_tsquery('english', $1))
                         * COALESCE(boost.factor, 1.0::real) AS rank,
                     ts_headline(
                         'english',
                         -- B123: tags stripped from the source before
                         -- highlighting; see crate::search::snippet.
                         {source},
-                        to_tsquery('english', $1),
+                        websearch_to_tsquery('english', $1),
                         '{options}'
                     ) as snippet
                 FROM item
                 LEFT JOIN unnest($6::text[], $7::real[]) AS boost(item_type, factor)
                     ON boost.item_type = item.type
-                WHERE search_vector @@ to_tsquery('english', $1)
+                WHERE search_vector @@ websearch_to_tsquery('english', $1)
                   AND (status = 1 OR author_id = $2)
                   AND stage_id = ANY($3)
                 ORDER BY rank DESC, created DESC
@@ -310,7 +325,7 @@ impl SearchService {
                     options = snippet::HEADLINE_OPTIONS,
                 )),
             )
-            .bind(&ts_query)
+            .bind(ts_query)
             .bind(uid)
             .bind(stage_ids)
             .bind(limit)
@@ -329,20 +344,20 @@ impl SearchService {
                     id,
                     type,
                     title,
-                    ts_rank(search_vector, to_tsquery('english', $1))
+                    ts_rank(search_vector, websearch_to_tsquery('english', $1))
                         * COALESCE(boost.factor, 1.0::real) AS rank,
                     ts_headline(
                         'english',
                         -- B123: tags stripped from the source before
                         -- highlighting; see crate::search::snippet.
                         {source},
-                        to_tsquery('english', $1),
+                        websearch_to_tsquery('english', $1),
                         '{options}'
                     ) as snippet
                 FROM item
                 LEFT JOIN unnest($5::text[], $6::real[]) AS boost(item_type, factor)
                     ON boost.item_type = item.type
-                WHERE search_vector @@ to_tsquery('english', $1)
+                WHERE search_vector @@ websearch_to_tsquery('english', $1)
                   AND status = 1
                   AND stage_id = ANY($2)
                 ORDER BY rank DESC, created DESC
@@ -352,7 +367,7 @@ impl SearchService {
                     options = snippet::HEADLINE_OPTIONS,
                 )),
             )
-            .bind(&ts_query)
+            .bind(ts_query)
             .bind(stage_ids)
             .bind(limit)
             .bind(offset)
@@ -376,6 +391,7 @@ impl SearchService {
             total,
             offset,
             limit,
+            no_terms: terms == 0,
         })
     }
 
@@ -407,6 +423,8 @@ impl SearchService {
         .execute(&self.pool)
         .await
         .context("failed to configure search field")?;
+        // A weight is in every page of the type, as data-pagefind-weight.
+        crate::search::index_queue::enqueue_type(&self.pool, bundle, "field_config").await?;
 
         debug!(bundle = %bundle, field = %field_name, weight = %weight, "search field configured");
         Ok(())
@@ -425,6 +443,9 @@ impl SearchService {
         .execute(&self.pool)
         .await
         .context("failed to remove search field config")?;
+        if result.rows_affected() > 0 {
+            crate::search::index_queue::enqueue_type(&self.pool, bundle, "field_config").await?;
+        }
 
         Ok(result.rows_affected() > 0)
     }
@@ -484,6 +505,8 @@ impl SearchService {
         .await
         .context("failed to reindex bundle")?;
         crate::cache::generation::bump(crate::cache::generation::CacheKind::Items);
+        // And the static index: every page of the type is rebuilt from the item.
+        crate::search::index_queue::enqueue_type(&self.pool, bundle, "reindex").await?;
 
         debug!(bundle = %bundle, count = %result.rows_affected(), "bundle reindexed");
         Ok(result.rows_affected())
@@ -562,6 +585,7 @@ mod tests {
             total: 1,
             offset: 0,
             limit: 10,
+            no_terms: false,
         };
 
         let json = serde_json::to_string(&results).unwrap();

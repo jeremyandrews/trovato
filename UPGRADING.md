@@ -7,7 +7,160 @@ here needs nothing beyond the ordinary upgrade.
 Each entry says what changed, who it affects, and how to find out whether that
 is you **before** you upgrade.
 
-## Unreleased
+## Upgrading with no downtime, and rolling back
+
+These hold for every release from the one that added `trovato migrate` on.
+The design is [docs/design/upgrades-and-probes.md](docs/design/upgrades-and-probes.md);
+the step by step procedure is [docs/deployment/upgrades.md](docs/deployment/upgrades.md).
+
+### Expand, then contract
+
+**Every migration leaves the previous release working.** While the migration
+step runs, the previous release is still serving. After it, the previous
+release is what a rollback redeploys. A migration that breaks it turns an
+upgrade into an outage and a rollback into a restore from backup.
+
+Fine at any time (expand):
+
+- a new table, view or function;
+- a new column that is nullable or has a `DEFAULT`;
+- a non-unique index on an existing table built `CONCURRENTLY`, as the only
+  statement of a kernel migration whose first line is `-- no-transaction`
+  (Postgres runs a file of several statements as one transaction block, where
+  `CONCURRENTLY` fails), and without `IF NOT EXISTS`. A failed or cancelled
+  build leaves an INVALID index under its name; the retry then fails on it
+  loudly, and the fix is `DROP INDEX CONCURRENTLY <name>;` by hand, then
+  `trovato migrate` again. (Plugin migrations always run in one transaction,
+  so a plugin index on an existing table needs a contract marker. A `UNIQUE`
+  index on an existing table is a new constraint and needs one too.)
+- inserting or updating rows the previous release reads the same way.
+
+Only in a later release, after no released code reads or writes the object
+(contract): dropping a table, column, view, function, type, index or constraint
+(the previous release's `ON CONFLICT` writes need its unique ones); renaming a table
+or column; changing a column's type; `SET NOT NULL`; adding a `NOT NULL` column
+without a `DEFAULT`; removing a column's `DEFAULT`; adding a constraint;
+`TRUNCATE`; a plain or unique `CREATE INDEX` on a table that already exists. A
+`DROP INDEX CONCURRENTLY`, like a concurrent build, needs a `-- no-transaction`
+kernel file of its own.
+
+A rename takes three releases:
+
+```sql
+-- 0.108.0: add the new column; 0.108.0's code writes both and reads the old one.
+ALTER TABLE item ADD COLUMN summary TEXT;
+UPDATE item SET summary = teaser WHERE summary IS NULL;   -- if it is small; see below
+
+-- 0.109.0's code reads `summary` only. No migration.
+
+-- 0.110.0: drop the old column, naming the release that stopped using it.
+-- trovato:contract 0.109.0: item.teaser unread since 0.109.0
+ALTER TABLE item DROP COLUMN teaser;
+```
+
+A `NOT NULL` column: add it with a `DEFAULT` (fast on Postgres 11 and later),
+or add it nullable, backfill, and add the constraint in a later release with a
+marker.
+
+**Backfills.** A migration that rewrites rows runs while the site serves.
+Keep it to about one second of row locks on any table the site writes,
+measured on the largest install. Anything bigger goes in batches of at most
+1000 rows, each its own short transaction, from cron or the queue. Add the
+column in one release, backfill, then constrain or drop in a later one.
+
+**The rule is checked.** `cargo test -p trovato-kernel --lib migration_rule`
+(run by `./scripts/pre-commit-check.sh` and CI) refuses a contract statement in
+a new kernel or plugin migration unless the comment lines at the top of the
+file carry `-- trovato:contract <release>: <reason>`, naming a release older
+than the one being built (the checker cannot see tags; whether that release really stopped
+using the object is the reviewer's question).
+
+**When a release cannot keep the previous one working**, name the migration
+`<version>_incompatible_<description>.sql`. Older binaries refuse to start on a
+schema that holds it (with `MIGRATE_ON_START=false`, to become ready), so that
+release needs planned downtime and
+cannot be rolled back by image. Its `UPGRADING.md` entry must say so.
+
+### Rolling back
+
+**Redeploy the previous image or binary. Never roll back the schema.** There
+are no down migrations. The previous release runs on the newer schema: it
+accepts migrations it does not know unless one is marked incompatible.
+
+- Kubernetes: `kubectl rollout undo deployment/trovato`, then
+  `kubectl rollout status deployment/trovato`.
+- One server: reinstall the previous binary and restart it. With the default
+  `MIGRATE_ON_START=true` it finds nothing to apply and starts.
+
+When the newer release is fixed, upgrade again. Its migrations are already
+applied, so `trovato migrate` finds nothing to do.
+
+## v0.105.0 — 2026-11-25
+
+### A `CategoryReference` field kind; `FieldType` is `#[non_exhaustive]`; cardinality is enforced on every write
+
+**Who is affected:** a plugin that matches on `FieldType`; anyone who writes
+items through the item API, a plugin's `save-item` or `config import`; a site
+whose stored items hold more values than a field's `cardinality` allows.
+
+**What changed.** **API change:** `trovato_sdk::types::FieldType` has a new
+variant, `CategoryReference(String)`, naming a category; its value is a JSON
+array of tag uuid strings, whatever the cardinality. `FieldType` is now
+`#[non_exhaustive]`, so that field kinds added later are additive. A plugin
+with an exhaustive `match` on it stops compiling against this SDK until it adds
+a `_` arm; a plugin that only constructs field types, or already has a `_` arm,
+is unaffected. Both changes ship in 0.105.0, with the rest of plugin API
+`(0, 105)`, and change nothing in a released version, so the plugin API version
+does not move again for them. `save-item` has a new error, `ERR_ITEM_INVALID_FIELDS` (-65).
+
+Behaviour changes that follow: every item write (the item forms, the item API,
+`save-item`, revert and `config import`) refuses more values than a field's
+`cardinality` allows (a JSON array counts its elements; anything else counts as
+one) and, for a `CategoryReference` field, any value that is not a tag of its
+category. The item API answers 422 naming each value, `save-item` returns -65,
+and `config import` fails the set before writing anything. Only written values
+are judged: nothing stored is rewritten, and an update that leaves a field as
+it was does not re-check it.
+
+**How to find out.** Items that hold more values than a field now allows (run
+per type and field, `N` being the field's `cardinality`):
+`SELECT id FROM item WHERE type = '<type>' AND jsonb_typeof(fields -> '<field>') = 'array' AND jsonb_array_length(fields -> '<field>') > N;`.
+They stay as they are until someone edits that field. To find matches that
+need a `_` arm: `grep -rn "match .*field_type" plugins/*/src`.
+
+### Migrations can run as their own step; `/health` answers anonymous callers with its status only
+
+**Who is affected:** anyone running more than one server, anyone running on
+Kubernetes, and anyone reading `pool` or `services` from `/health`. A single
+server with the default settings migrates and starts exactly as before.
+
+**What changed.**
+
+- `trovato migrate` applies pending kernel and plugin migrations under one
+  Postgres advisory lock; `--status` and `--dry-run` change nothing. Plugin
+  migrations, which took no lock before, now take the same one wherever they
+  run.
+- `MIGRATE_ON_START` (default `true`). Set to `false`, `serve` never changes
+  the schema: it waits, alive and not ready, until `trovato migrate` has run.
+  The `plugin`, `config` and `user` commands refuse to run on a kernel schema
+  that is behind; once it is current, `plugin install`, `plugin migrate` and
+  `config import` apply the plugin migrations they need, under the lock.
+- An applied migration the binary does not know is accepted unless its name
+  marks it incompatible, where it used to stop the server at boot. This is
+  what makes a rollback by image work.
+- `/health/live` and `/health/ready` are new. `/health` keeps its status code
+  and `status` field. Its `postgres`, `redis`, `pool` and `services` fields now
+  go only to a caller on loopback with no `X-Forwarded-For`, `Forwarded` or
+  `X-Real-IP` header, or to one sending `Authorization: Bearer <HEALTH_TOKEN>`.
+  Probes no longer count against the visitor rate limits.
+- On SIGTERM the server reports not ready at once and keeps serving for
+  `SHUTDOWN_DRAIN_SECS`. That is 5 under Kubernetes and 0 elsewhere, so a
+  single server stops as fast as before.
+- The image's `HEALTHCHECK` uses `/health/live`.
+
+**How to find out.** If a monitor reads `pool` or `services` from `/health`
+from another host, set `HEALTH_TOKEN` and send it as a bearer token. A probe
+that only reads the status code needs nothing.
 
 ### One path per JSON capability; the item API takes `access content`
 
@@ -78,7 +231,7 @@ working, not an old body.
 response. A request to an unversioned path in the server's access log, or a
 `Deprecation` header in the client's, is a call to move.
 
-### A config export never contains a secret; plugin API 0.107
+### A config export never contains a secret; plugin API 0.105
 
 **Who is affected:** anyone who moves a site with `trovato config export` and
 `config import`, and in particular anyone with webhooks, OAuth clients or the
@@ -117,11 +270,12 @@ anyone pinning the plugin API version.
   whatever the target holds. Re-export from the source site, or replace each
   value with the `env:` reference the error names.
 - A plugin names its secret columns beside its config tables (see the plugin
-  development guide). The key is additive; the project version moves to
-  0.107.0, so `KERNEL_API_VERSION` is `(0, 107)` and the bundled manifests
-  declare `api_version = "0.107"`. A config table column whose name says it
-  holds a credential (`secret`, `password`, `api_key`, ...) is treated as a
-  secret even when undeclared, and export warns.
+  development guide). The key is additive and part of plugin API
+  `(0, 105)`: a plugin that declares `secret_columns` should declare
+  `api_version = "0.105"`, which a 0.104 kernel refuses cleanly. A config
+  table column whose name says it holds a credential (`secret`, `password`,
+  `api_key`, ...) is treated as a secret even when undeclared, and export
+  warns.
 
 **How to find out.** `grep -rl 'secret:\|client_secret_hash:' <export dir>`
 on an export made before this release: every file it lists holds a secret in
@@ -254,7 +408,7 @@ to run, more than one server, in the ways
 
 Nothing to configure for a single server.
 
-### Config export carries plugin configuration and leaves runtime state out; plugin API 0.106
+### Config export carries plugin configuration and leaves runtime state out; plugin API 0.105
 
 **Who is affected:** anyone who moves a site with `trovato config export` and
 `config import`; a plugin that stores site configuration in its own tables;
@@ -275,9 +429,9 @@ anyone pinning the plugin API version.
   and `locale_string`. A new `plugin_status.<name>.yml` entity records whether
   each plugin is enabled; import applies it first and runs the enabled
   plugins' migrations before writing their rows. The key is additive: a
-  manifest without it declares nothing. The project version moves to 0.106.0,
-  so `KERNEL_API_VERSION` is `(0, 106)` and the bundled manifests declare
-  `api_version = "0.106"`.
+  manifest without it declares nothing. It is part of plugin API `(0, 105)`:
+  a plugin that declares `[config] tables` should declare
+  `api_version = "0.105"`, which a 0.104 kernel refuses cleanly.
 - `installed`, `update_status`, `update_check` and `queue_runner` are runtime
   state of one deployment. Export no longer writes them, and import ignores
   them with a warning.
@@ -977,6 +1131,57 @@ plugin directory to `PLUGINS_DIR`, or use that repository's own
 `docker-compose.yml`, which runs this kernel's published image unmodified. It is
 the same plugin with the same migration files, so migrations the site has
 already applied are not run again.
+
+### Search asks for `search content`, AI search for `use ai`; both granted on upgrade
+
+**Who is affected:** a site that wants to withhold search, or AI search, from
+some roles, and anyone who keeps roles in `role.*.yml` config sets.
+
+**What changed.** `/search` and `/api/v1/search` had no permission of their
+own, and the AI search endpoints (`/api/v1/search/expand`, `/summarize` and
+`/followup`) had none either. Search now asks for `search content`, and the AI
+search endpoints for `use ai`. Two migrations grant them once, so no site loses
+either on upgrade: `search content` to every role holding `access content`
+(`20261127160001_grant_search_content.sql`), then `use ai` to every role holding
+`search content` (`20261130000001_grant_use_ai_to_searchers.sql`). In a default
+install that is the anonymous and the authenticated role, so anonymous visitors
+keep spending provider tokens on AI search as they did before. `use ai` alone
+reaches nothing else: the chatbot, the writing assistant and the AI Assistant
+also ask for their own permission. Neither grant is a rule: a role granted
+`access content` from now on gets exactly that.
+
+**How to find out.** After upgrading, `SELECT role_id, permission FROM
+role_permissions WHERE permission IN ('search content', 'use ai')` lists who
+holds them. Revoke `use ai` from the anonymous role on the permission grid if
+anonymous visitors should not reach the AI provider. A `role.*.yml` kept in a
+config set from before the upgrade does not name either permission: add them
+where they belong before importing it.
+
+### Content type field definitions are repaired on upgrade; search vectors are rebuilt
+
+**Who is affected:** a site with plugin-declared content types, or a content
+type that was given the same field more than once; a large site, for the time
+the upgrade's migrations take.
+
+**What changed.**
+
+- `20260925000001_normalize_item_type_settings.sql` rewrites every
+  `item_type.settings` stored as a bare array of field definitions, which
+  plugin registration wrote, into the `{"fields": [...]}` object every reader
+  expects, and resets any value that is not an object to `{}`. Plugin-declared
+  types, which loaded with no fields in the admin forms, get their fields back,
+  including types whose plugin is disabled.
+- `20261006000001_dedupe_item_type_fields.sql` drops repeated definitions of a
+  field name from a type's field list, keeping the first, which is the one the
+  type has been running with. No item data is touched.
+- `20261125000001_search_covers_text_fields_and_comments.sql` recomputes the
+  search vector of every item, now covering every text field and every
+  published comment. It runs inside the migration, so on a site with many items
+  the upgrade's migration step takes correspondingly longer.
+
+**How to find out.** `SELECT type FROM item_type WHERE jsonb_typeof(settings)
+<> 'object'` before upgrading lists the types the first migration rewrites.
+Nothing needs doing afterwards.
 
 ## v0.104.0 — 2026-09-24
 

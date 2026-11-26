@@ -1163,7 +1163,67 @@ pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
         )
         .into_anyhow()?;
 
+    // search-index-enqueue(item_ids_json) -> i64 (items queued, or an error)
+    //
+    // The one way a plugin tells the static search index that items changed
+    // behind the item API (a raw write to `item`, `comment` or `url_alias`):
+    // the ids are queued exactly as the kernel's own writers queue theirs, and
+    // cron rewrites their part of the index. Queuing an id that names no item,
+    // or one that is not searchable, is harmless: the drain finds nothing to
+    // index and takes out whatever the index held for it. Needs only the `db`
+    // interface; it reads and writes nothing but the queue.
+    linker
+        .func_wrap_async_traced(
+            "trovato:kernel/db",
+            "search-index-enqueue",
+            |mut caller: wasmtime::Caller<'_, PluginState>, (ids_ptr, ids_len): (i32, i32)| {
+                Box::new(async move {
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return i64::from(host_errors::ERR_MEMORY_MISSING);
+                    };
+                    let Ok(ids_json) = read_string_from_memory(&memory, &caller, ids_ptr, ids_len)
+                    else {
+                        return i64::from(host_errors::ERR_PARAM1_READ);
+                    };
+                    let ids = match parse_enqueue_ids(&ids_json) {
+                        Ok(ids) => ids,
+                        Err(code) => return i64::from(code),
+                    };
+                    let Some(services) = caller.data().request.services() else {
+                        return i64::from(host_errors::ERR_NO_SERVICES);
+                    };
+                    let pool = services.db.clone();
+                    let reason = format!("plugin:{}", caller.data().plugin_name);
+                    let queued: Vec<crate::search::index_queue::Queued> = ids
+                        .into_iter()
+                        .map(crate::search::index_queue::Queued::upsert)
+                        .collect();
+                    match crate::search::index_queue::enqueue(&pool, &queued, &reason).await {
+                        Ok(rows) => i64::try_from(rows).unwrap_or(i64::MAX),
+                        Err(e) => {
+                            warn!(error = %e, plugin = %reason, "search-index-enqueue failed");
+                            i64::from(host_errors::ERR_SQL_FAILED)
+                        }
+                    }
+                })
+            },
+        )
+        .into_anyhow()?;
+
     Ok(())
+}
+
+/// The item ids of a `search-index-enqueue` call: a JSON array of UUID
+/// strings, at most [`crate::search::index_queue::MAX_ENQUEUE`] of them.
+fn parse_enqueue_ids(json: &str) -> std::result::Result<Vec<uuid::Uuid>, i32> {
+    let raw: Vec<String> =
+        serde_json::from_str(json).map_err(|_| host_errors::ERR_PARAM_DESERIALIZE)?;
+    if raw.len() > crate::search::index_queue::MAX_ENQUEUE {
+        return Err(host_errors::ERR_DB_BATCH_TOO_LARGE);
+    }
+    raw.iter()
+        .map(|id| uuid::Uuid::parse_str(id).map_err(|_| host_errors::ERR_PARAM_DESERIALIZE))
+        .collect()
 }
 
 #[cfg(test)]
@@ -1172,6 +1232,28 @@ pub fn register_db_functions(linker: &mut Linker<PluginState>) -> Result<()> {
 mod tests {
     use super::*;
     use wasmtime::Engine;
+
+    #[test]
+    fn search_index_enqueue_takes_an_array_of_item_ids() {
+        let id = uuid::Uuid::now_v7();
+        assert_eq!(parse_enqueue_ids(&format!("[\"{id}\"]")), Ok(vec![id]));
+        assert_eq!(parse_enqueue_ids("[]"), Ok(vec![]));
+        assert_eq!(
+            parse_enqueue_ids("[\"not-a-uuid\"]"),
+            Err(host_errors::ERR_PARAM_DESERIALIZE)
+        );
+        assert_eq!(
+            parse_enqueue_ids("{\"id\": 1}"),
+            Err(host_errors::ERR_PARAM_DESERIALIZE)
+        );
+        let many: Vec<String> = (0..=crate::search::index_queue::MAX_ENQUEUE)
+            .map(|_| uuid::Uuid::nil().to_string())
+            .collect();
+        assert_eq!(
+            parse_enqueue_ids(&serde_json::to_string(&many).unwrap()),
+            Err(host_errors::ERR_DB_BATCH_TOO_LARGE)
+        );
+    }
 
     #[test]
     fn register_db_succeeds() {
@@ -1328,13 +1410,25 @@ mod tests {
         for (plugin, sql) in [
             (
                 "trovato_search",
-                "SELECT COALESCE(MAX(changed), 0) as max_changed \
-                 FROM item WHERE status = 1 AND stage_id = $1::uuid",
+                "SELECT count(*) AS queued FROM search_index_queue",
             ),
             (
-                "trovato_search",
-                "SELECT last_indexed_at, rebuild_requested \
-                 FROM pagefind_index_status WHERE id = 1",
+                "trovato_scheduled_publishing",
+                "SELECT id::text AS id FROM item \
+                 WHERE status = 0 \
+                 AND fields->>'field_publish_on' IS NOT NULL \
+                 AND (fields->>'field_publish_on') ~ '^[0-9]+$' \
+                 AND (fields->>'field_publish_on')::bigint <= $1 \
+                 ORDER BY id LIMIT $2",
+            ),
+            (
+                "trovato_scheduled_publishing",
+                "SELECT id::text AS id FROM item \
+                 WHERE status = 1 \
+                 AND fields->>'field_unpublish_on' IS NOT NULL \
+                 AND (fields->>'field_unpublish_on') ~ '^[0-9]+$' \
+                 AND (fields->>'field_unpublish_on')::bigint <= $1 \
+                 ORDER BY id LIMIT $2",
             ),
             (
                 "trovato_series",
@@ -1378,26 +1472,6 @@ mod tests {
 
         // execute-raw
         for (plugin, sql) in [
-            (
-                "trovato_scheduled_publishing",
-                "UPDATE item SET status = 1, changed = $1 \
-                 WHERE status = 0 \
-                 AND fields->>'field_publish_on' IS NOT NULL \
-                 AND (fields->>'field_publish_on') ~ '^[0-9]+$' \
-                 AND (fields->>'field_publish_on')::bigint <= $1",
-            ),
-            (
-                "trovato_scheduled_publishing",
-                "UPDATE item SET status = 0, changed = $1 \
-                 WHERE status = 1 \
-                 AND fields->>'field_unpublish_on' IS NOT NULL \
-                 AND (fields->>'field_unpublish_on') ~ '^[0-9]+$' \
-                 AND (fields->>'field_unpublish_on')::bigint <= $1",
-            ),
-            (
-                "trovato_search",
-                "UPDATE pagefind_index_status SET rebuild_requested = true WHERE id = 1",
-            ),
             (
                 "trovato_book",
                 "INSERT INTO book_page (item_id, book_id, parent_item_id, weight) \

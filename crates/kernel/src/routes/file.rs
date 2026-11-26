@@ -15,6 +15,7 @@ use uuid::Uuid;
 use crate::content::FileAccess;
 use crate::file::{
     MAX_FILE_SIZE, MAX_UPLOAD_BODY_SIZE, UploadRejected, UploadResult, mime_for_filename,
+    resolve_mime_type,
 };
 use crate::state::AppState;
 
@@ -104,9 +105,7 @@ async fn upload_file(
     // The declared type, or the one the name's extension gives. Size, the
     // allowlist, the content and the extension are all checked once, by the
     // service.
-    let mime_type = content_type
-        .or_else(|| mime_for_filename(&filename).map(str::to_string))
-        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let mime_type = resolve_mime_type(content_type.as_deref(), &filename);
 
     // Upload file
     match state
@@ -360,9 +359,7 @@ async fn block_editor_upload(
     };
 
     // Determine and validate MIME type (images only)
-    let mime_type = content_type
-        .or_else(|| mime_for_filename(&filename).map(str::to_string))
-        .unwrap_or_else(|| "application/octet-stream".to_string());
+    let mime_type = resolve_mime_type(content_type.as_deref(), &filename);
 
     if !BLOCK_EDITOR_IMAGE_TYPES.contains(&mime_type.as_str()) {
         return (
@@ -470,7 +467,11 @@ async fn read_upload_part(
 
 /// The status for an upload the service refused: 413 or 415 for a file at
 /// fault ([`UploadRejected`]), 500 for anything else.
-fn upload_error_status(e: &anyhow::Error) -> StatusCode {
+///
+/// `pub(crate)`: the plugin-api route reuses this for the same decision on a
+/// multipart file part, so the two surfaces answer identically for the same
+/// refusal.
+pub(crate) fn upload_error_status(e: &anyhow::Error) -> StatusCode {
     match e.downcast_ref::<UploadRejected>() {
         Some(UploadRejected::TooLarge(_)) => StatusCode::PAYLOAD_TOO_LARGE,
         Some(UploadRejected::Type(_)) => StatusCode::UNSUPPORTED_MEDIA_TYPE,

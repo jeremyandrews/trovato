@@ -100,7 +100,7 @@ async fn bench_access_filtered_gather_at_volume() {
         ..Default::default()
     };
     let display = QueryDisplay {
-        items_per_page: 25,
+        items_per_page: Some(25),
         ..Default::default()
     };
 

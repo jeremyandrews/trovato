@@ -4,11 +4,13 @@
 //! for plugin taps (register, update, delete, login, logout) and
 //! an in-process cache for `find_by_id` lookups.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Result;
 use moka::sync::Cache;
+use serde::Serialize;
 use sqlx::PgPool;
 use tracing::info;
 use uuid::Uuid;
@@ -16,9 +18,25 @@ use uuid::Uuid;
 use crate::audit::{SecurityEvent, SecurityEventKind};
 use crate::cache::generation::{CacheKind, bump};
 use crate::metrics::{CacheName, Metrics};
+use crate::models::user::ANONYMOUS_USER_ID;
 use crate::models::{CreateUser, UpdateUser, User};
 use crate::services::audit::AuditTrail;
 use crate::tap::{RequestServices, RequestState, TapDispatcher, UserContext};
+
+/// Permission that gates a profile link beside an author's name (item page,
+/// gather row). Declared in [`crate::models::role`]; granted to no role by
+/// any migration, so until a site grants it nobody gets a link — only a name.
+pub const VIEW_PROFILES_PERMISSION: &str = "access user profiles";
+
+/// An item's author as a template may show it: the display name, and a
+/// profile link only when the viewer may see one. Never carries `mail`,
+/// the account's other fields, or anything beyond what this already is.
+#[derive(Debug, Clone, Serialize)]
+pub struct AuthorView {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
 
 /// Maximum entries in the user cache.
 const MAX_CAPACITY: u64 = 10_000;
@@ -141,6 +159,98 @@ impl UserService {
         User::names_by_ids(&self.inner.pool, ids).await
     }
 
+    /// The users among `ids`, through the same cache as [`Self::find_by_id`]:
+    /// every id the cache holds costs no query, and the rest cost one query
+    /// together however many there are. A lone miss takes `find_by_id`'s own
+    /// statement. An id with no row is absent from the map.
+    pub async fn find_many(&self, ids: &[Uuid]) -> Result<HashMap<Uuid, User>> {
+        let mut found = HashMap::with_capacity(ids.len());
+        let mut missing = Vec::new();
+        for &id in ids {
+            if found.contains_key(&id) || missing.contains(&id) {
+                continue;
+            }
+            match self
+                .inner
+                .metrics
+                .cache_lookup(CacheName::User, self.inner.cache.get(&id))
+            {
+                Some(user) => {
+                    found.insert(id, user);
+                }
+                None => missing.push(id),
+            }
+        }
+        let loaded = match missing.as_slice() {
+            [] => Vec::new(),
+            [one] => User::find_by_id(&self.inner.pool, *one)
+                .await?
+                .into_iter()
+                .collect(),
+            many => User::find_by_ids(&self.inner.pool, many).await?,
+        };
+        for user in loaded {
+            self.inner.cache.insert(user.id, user.clone());
+            found.insert(user.id, user);
+        }
+        Ok(found)
+    }
+
+    /// Resolve `ids` to [`AuthorView`]s for a template: the item page and a
+    /// gather row. `/api/item`'s `include=author` resolves the same id
+    /// through the same user cache ([`Self::find_by_id`]).
+    ///
+    /// Every id goes through [`Self::find_many`]: an id the user cache holds
+    /// costs no query, so a warm item page or listing adds none. A cold item
+    /// page pays the one `find_by_id` statement any author lookup would; a
+    /// cold gather pays one query for all of its uncached authors together —
+    /// a 20-row gather never queries once per row.
+    ///
+    /// An id with no row (the kernel's own anonymous account normally has
+    /// one — see `20260212000001_create_users.sql` — so this is a genuinely
+    /// unresolvable id, not the common "author deleted their account" case)
+    /// gets [`crate::models::user::ANONYMOUS_DISPLAY_NAME`] and no link. The
+    /// anonymous account itself, and every id when `viewer` may not hold
+    /// [`VIEW_PROFILES_PERMISSION`], gets a name and no link either: there is
+    /// no profile to send a visitor to, and no permission to send them there.
+    pub async fn author_views(
+        &self,
+        ids: &[Uuid],
+        viewer: &UserContext,
+    ) -> HashMap<Uuid, AuthorView> {
+        let mut unique: Vec<Uuid> = ids.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+
+        let found: HashMap<Uuid, String> = match self.find_many(&unique).await {
+            Ok(users) => users.into_iter().map(|(id, u)| (id, u.name)).collect(),
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load author names");
+                HashMap::new()
+            }
+        };
+
+        let may_link = viewer.can(VIEW_PROFILES_PERMISSION);
+        unique
+            .into_iter()
+            .map(|id| {
+                let view = match found.get(&id) {
+                    Some(name) if id != ANONYMOUS_USER_ID => AuthorView {
+                        name: name.clone(),
+                        url: may_link.then(|| format!("/user/{id}")),
+                    },
+                    other => AuthorView {
+                        name: other.cloned().unwrap_or_else(|| {
+                            crate::models::user::ANONYMOUS_DISPLAY_NAME.to_string()
+                        }),
+                        url: None,
+                    },
+                };
+                (id, view)
+            })
+            .collect()
+    }
+
     /// Find a user by username (not cached — used for uniqueness checks).
     pub async fn find_by_name(&self, name: &str) -> Result<Option<User>> {
         User::find_by_name(&self.inner.pool, name).await
@@ -172,12 +282,46 @@ impl UserService {
         acting_user: &UserContext,
     ) -> Result<User> {
         let user = User::create_with_status(&self.inner.pool, input, status).await?;
+        self.created_with_status(&user, status, acting_user).await;
+        Ok(user)
+    }
+
+    /// [`Self::create_with_status`], queueing the mail `mail` builds for the new
+    /// account in the same transaction as the insert (BG18): a registration
+    /// that rolls back sends nothing, and one that commits always sends.
+    ///
+    /// # Errors
+    ///
+    /// When the insert or queueing a message fails; then neither happened.
+    pub async fn create_with_status_and_mail(
+        &self,
+        input: CreateUser,
+        status: i16,
+        acting_user: &UserContext,
+        email: &crate::services::email::EmailService,
+        mail: impl FnOnce(&User) -> Vec<crate::services::email::NewMail>,
+    ) -> Result<User> {
+        // Hash before BEGIN: Argon2 takes a while, and a pooled connection
+        // must not sit idle in a transaction meanwhile.
+        let pass = crate::models::user::stored_password(&input.password)?;
+        let mut tx = self.inner.pool.begin().await?;
+        let user = User::insert_hashed(&mut *tx, input, &pass, status).await?;
+        for message in mail(&user) {
+            email.queue(&mut *tx, message).await?;
+        }
+        tx.commit().await?;
+        email.wake();
+        self.created_with_status(&user, status, acting_user).await;
+        Ok(user)
+    }
+
+    /// What follows a committed insert: cache, `tap_user_register`, audit.
+    async fn created_with_status(&self, user: &User, status: i16, acting_user: &UserContext) {
         self.inner.cache.insert(user.id, user.clone());
         self.dispatch_tap("tap_user_register", user.id, acting_user)
             .await;
         info!(user_id = %user.id, name = %user.name, status, "user created with status");
-        self.audit_created(&user, acting_user).await;
-        Ok(user)
+        self.audit_created(user, acting_user).await;
     }
 
     /// Update a user with `tap_user_update` invocation.
@@ -506,6 +650,35 @@ mod tests {
         let json = serde_json::json!({ "user_id": id.to_string() });
         let s = json.to_string();
         assert!(s.contains(&id.to_string()));
+    }
+
+    /// Everything an item template's `author` and a gather row's `row.author`
+    /// carry is this serialization: a field added to `AuthorView` (a mail
+    /// address, a login name) reaches every theme, rendered or not, so the
+    /// key set is pinned here.
+    #[test]
+    fn an_author_view_serializes_only_its_name_and_url() {
+        let keys = |view: &AuthorView| -> Vec<String> {
+            let mut keys: Vec<String> = serde_json::to_value(view)
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .keys()
+                .cloned()
+                .collect();
+            keys.sort();
+            keys
+        };
+        let linked = AuthorView {
+            name: "Jeremy".to_string(),
+            url: Some("/user/x".to_string()),
+        };
+        let unlinked = AuthorView {
+            name: "Jeremy".to_string(),
+            url: None,
+        };
+        assert_eq!(keys(&linked), ["name", "url"]);
+        assert_eq!(keys(&unlinked), ["name"]);
     }
 
     fn make_test_user(id: Uuid, name: &str) -> User {

@@ -12,6 +12,14 @@ use uuid::Uuid;
 /// Anonymous user UUID (nil UUID).
 pub const ANONYMOUS_USER_ID: Uuid = Uuid::nil();
 
+/// Display name for authored content with no resolvable account: an id that
+/// matches no row at all (the anonymous sentinel itself has one — see
+/// `20260212000001_create_users.sql` — and resolves to its own `name` without
+/// reaching this constant). The one spelling every author-name call site
+/// uses, so a theme never has to guess between this and a template's own
+/// `default()` fallback.
+pub const ANONYMOUS_DISPLAY_NAME: &str = "anonymous";
+
 /// User record.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct User {
@@ -50,6 +58,8 @@ pub struct User {
 #[derive(Debug, Deserialize)]
 pub struct CreateUser {
     pub name: String,
+    /// The plain password, hashed on insert. Empty for an account with no
+    /// password, which cannot sign in with one until a password is set.
     pub password: String,
     pub mail: String,
     pub is_admin: bool,
@@ -87,6 +97,18 @@ impl User {
             .context("failed to fetch user by id")?;
 
         Ok(user)
+    }
+
+    /// The users among `ids`, in one query. An id with no row is absent.
+    pub async fn find_by_ids(pool: &PgPool, ids: &[Uuid]) -> Result<Vec<Self>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = ANY($1)")
+            .bind(ids)
+            .fetch_all(pool)
+            .await
+            .context("failed to fetch users by id")
     }
 
     /// The names of the users among `ids`, in one query.
@@ -135,7 +157,7 @@ impl User {
     /// Create a new user (active by default).
     pub async fn create(pool: &PgPool, input: CreateUser) -> Result<Self> {
         let id = Uuid::now_v7();
-        let pass = hash_password(&input.password)?;
+        let pass = stored_password(&input.password)?;
 
         let user = sqlx::query_as::<_, User>(
             r#"
@@ -159,10 +181,24 @@ impl User {
     /// Create a new user with a specific status.
     ///
     /// Use `status = 0` for inactive accounts pending email verification.
-    pub async fn create_with_status(pool: &PgPool, input: CreateUser, status: i16) -> Result<Self> {
-        let id = Uuid::now_v7();
-        let pass = hash_password(&input.password)?;
+    pub async fn create_with_status<'e, E: sqlx::PgExecutor<'e>>(
+        executor: E,
+        input: CreateUser,
+        status: i16,
+    ) -> Result<Self> {
+        let pass = stored_password(&input.password)?;
+        Self::insert_hashed(executor, input, &pass, status).await
+    }
 
+    /// [`Self::create_with_status`] with the password already hashed, so a
+    /// caller can hash (slow, by design) before it opens a transaction.
+    pub(crate) async fn insert_hashed<'e, E: sqlx::PgExecutor<'e>>(
+        executor: E,
+        input: CreateUser,
+        pass: &str,
+        status: i16,
+    ) -> Result<Self> {
+        let id = Uuid::now_v7();
         let user = sqlx::query_as::<_, User>(
             r#"
             INSERT INTO users (id, name, pass, mail, is_admin, status)
@@ -172,11 +208,11 @@ impl User {
         )
         .bind(id)
         .bind(&input.name)
-        .bind(&pass)
+        .bind(pass)
         .bind(&input.mail)
         .bind(input.is_admin)
         .bind(status)
-        .fetch_one(pool)
+        .fetch_one(executor)
         .await
         .context("failed to create user")?;
 
@@ -541,6 +577,17 @@ fn argon2_instance() -> Argon2<'static> {
 ///
 /// Also the hash of an OAuth client secret a config import supplies
 /// (`config_storage::plugin_config::hash_secret`).
+/// What `users.pass` holds for a new account's `password`: its hash, or
+/// nothing for an empty one, which is an account with no password (it cannot
+/// sign in with one until a password is set, as after `clear_password`). Not
+/// the hash of the empty string, which an empty password would match.
+pub(crate) fn stored_password(password: &str) -> Result<String> {
+    if password.is_empty() {
+        return Ok(String::new());
+    }
+    hash_password(password)
+}
+
 pub(crate) fn hash_password(password: &str) -> Result<String> {
     let salt = SaltString::generate(&mut OsRng);
     let argon2 = argon2_instance();

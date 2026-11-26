@@ -255,6 +255,13 @@ async fn passkey_start(
         )
         .into_response();
     }
+    let Some(webauthn) = state.webauthn() else {
+        return crate::error::AppError::with_status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Passkeys are not available on this site.",
+        )
+        .into_response();
+    };
 
     let credentials =
         match crate::models::WebauthnCredential::list_for_user(state.db(), user.id).await {
@@ -280,7 +287,7 @@ async fn passkey_start(
         .into_response();
     }
 
-    let (challenge, auth_state) = match state.webauthn().start_passkey_authentication(&passkeys) {
+    let (challenge, auth_state) = match webauthn.start_passkey_authentication(&passkeys) {
         Ok(v) => v,
         Err(e) => {
             warn!(error = %e, user_id = %user.id, "failed to start a deletion step-up");
@@ -365,10 +372,15 @@ async fn passkey_finish(
         .into_response();
     }
 
-    match state
-        .webauthn()
-        .finish_passkey_authentication(&body.credential, &pending.state)
-    {
+    let Some(webauthn) = state.webauthn() else {
+        return crate::error::AppError::with_status(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "Passkeys are not available on this site.",
+        )
+        .into_response();
+    };
+
+    match webauthn.finish_passkey_authentication(&body.credential, &pending.state) {
         Ok(_) => {
             mark_step_up(&session).await;
             Json(serde_json::json!({ "verified": true })).into_response()
@@ -570,17 +582,17 @@ async fn send_farewell(state: &AppState, user: &crate::models::User) {
         .unwrap_or_else(|_| format!("Your account on {site_name} has been deleted, as you asked."));
     let html = tera.render("email/account_deleted.html", &context).ok();
 
-    if let Err(e) = email
-        .send_templated(
-            &user.mail,
-            &format!("Your {site_name} account has been deleted"),
-            &text,
-            html.as_deref(),
-        )
-        .await
-    {
+    let message = crate::services::email::NewMail::account(
+        "account_deleted",
+        &user.mail,
+        &format!("Your {site_name} account has been deleted"),
+        &text,
+    )
+    .html(html)
+    .dedupe(format!("account-deleted:{}", user.id));
+    if let Err(e) = email.queue_now(message).await {
         // Logged and swallowed on purpose: see the call site.
-        warn!(error = %e, "failed to send an account deletion confirmation");
+        warn!(error = %e, "failed to queue an account deletion confirmation");
     }
 }
 

@@ -417,14 +417,42 @@ pub async fn inject_site_context_for(
     }
     context.insert("assistant_scopes", &assistant_scopes);
 
+    // The page's root values: a route rendering page builder content sets
+    // them first (the item route); every other page gets the declared
+    // defaults, so a page, region or tile template can always read
+    // `page_root.<field>`.
+    if !context.contains_key("page_root") {
+        context.insert(
+            "page_root",
+            &crate::content::page_builder::page_root_defaults(state.theme().components()),
+        );
+    }
+    let page_root = context
+        .get("page_root")
+        .cloned()
+        .unwrap_or(serde_json::Value::Null);
+
+    // The translations the route computed for this page, when it knows them
+    // (an item page does, read back out of the context it inserted
+    // `available_translations` into before calling this). `None` for any
+    // route that does not — a language switcher tile falls back to each
+    // language's front page.
+    let translations: Option<Vec<TranslationLink>> = context
+        .get("available_translations")
+        .and_then(|value| serde_json::from_value(value.clone()).ok());
+
     // Load tiles for all regions filtered by request path and user roles, each
-    // rendered for this viewer, in this language, from the menus built above.
+    // rendered for this viewer, in this language, from the menus built above,
+    // with the page's root values.
     let tile_render = crate::services::tile::TileRenderContext {
         state,
         viewer,
         language: &active_language,
         roles: &user_roles,
         menus_by_name: &site_menus.menus_by_name,
+        page_root: &page_root,
+        current_path: &requested_path,
+        translations: translations.as_deref(),
     };
     for region in &["header", "navigation", "sidebar", "footer"] {
         let region_html = state
@@ -451,25 +479,22 @@ pub async fn render_admin_template(
     template: &str,
     mut context: tera::Context,
 ) -> Response {
-    let mut enabled: Vec<String> = state.enabled_plugins().into_iter().collect();
-    enabled.sort();
-    // The sidebar holds only the screens this viewer may open (BL-117).
+    // The sidebar holds only the screens this viewer may open (BL-117), kernel
+    // and plugin-declared alike (BL-162).
     let path = context
         .get("path")
         .and_then(|p| p.as_str())
         .unwrap_or_default()
         .to_string();
-    context.insert(
-        "admin_nav",
-        &super::admin_nav::sidebar(viewer, &enabled, &path),
-    );
-    context.insert("enabled_plugins", &enabled);
+    let shell = super::admin_nav::insert_context(state, viewer, &path, &mut context).await;
     // Ensure "errors" is always available for form templates that use form::errors().
     if context.get("errors").is_none() {
         let empty: Vec<String> = Vec::new();
         context.insert("errors", &empty);
     }
-    match state.theme().tera().render(template, &context) {
+    match crate::telemetry::render("admin", || {
+        shell.render(|| state.theme().tera().render(template, &context))
+    }) {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
             tracing::error!(error = %e, template = %template, "failed to render template");
@@ -585,6 +610,39 @@ pub async fn require_csrf_header_or_field(
     Err(crate::error::AppError::forbidden(format!(
         "Invalid or missing CSRF token. Include an X-CSRF-Token header, \
          or a {CSRF_FORM_FIELD} field in a form-urlencoded body."
+    )))
+}
+
+/// Verify a CSRF token from the `X-CSRF-Token` header, or from a `_token`
+/// value already pulled out of a multipart field.
+///
+/// A multipart body cannot be re-scanned the way [`require_csrf_header_or_field`]
+/// scans a url-encoded one: by the time a caller knows whether there is a
+/// `_token` field, the part carrying it has already been read off the stream.
+/// So this takes the resolved value rather than the body. `None` covers both
+/// "no such field" and "the field appeared more than once" — a repeated
+/// `_token` is refused rather than resolved, the same ambiguity
+/// `single_form_field` refuses for the url-encoded body.
+pub async fn require_csrf_header_or_resolved_field(
+    session: &Session,
+    headers: &axum::http::HeaderMap,
+    token: Option<&str>,
+) -> Result<(), crate::error::AppError> {
+    if require_csrf_header(session, headers).await.is_ok() {
+        return Ok(());
+    }
+
+    if let Some(token) = token
+        && crate::form::csrf::verify_csrf_token(session, token)
+            .await
+            .unwrap_or(false)
+    {
+        return Ok(());
+    }
+
+    Err(crate::error::AppError::forbidden(format!(
+        "Invalid or missing CSRF token. Include an X-CSRF-Token header, \
+         or a {CSRF_FORM_FIELD} field in the multipart body."
     )))
 }
 
@@ -1108,7 +1166,7 @@ pub fn xml_escape(input: &str) -> String {
 /// [`build_hreflang_links`]. The two must not disagree: a switcher offering an
 /// address that the `hreflang` tags do not name is a page telling a person and a
 /// crawler different things.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct TranslationLink {
     /// The language code.
     pub language: String,

@@ -10,7 +10,7 @@ use sqlx::PgPool;
 use tracing::info;
 use uuid::Uuid;
 
-use crate::models::{Comment, CommentStatus, CreateComment, UpdateComment};
+use crate::models::{Comment, CreateComment, UpdateComment};
 use crate::services::audit::AuditTrail;
 use crate::tap::{RequestServices, RequestState, TapDispatcher, UserContext};
 use trovato_sdk::types::AccessResult;
@@ -68,18 +68,6 @@ impl CommentService {
         RequestState::new(user.clone(), self.inner.tap_services.clone())
     }
 
-    /// Ask for a public search index rebuild when a comment write changed what
-    /// the index may hold: the comment was published before, or is now. A
-    /// comment written straight into the moderation queue changes nothing the
-    /// public sees, so it asks for nothing until a moderator publishes it.
-    async fn request_search_rebuild(&self, before: Option<&Comment>, after: Option<&Comment>) {
-        let published =
-            |c: &Comment| CommentStatus::from_i16(c.status).is_some_and(CommentStatus::is_visible);
-        if before.is_some_and(published) || after.is_some_and(published) {
-            crate::cron::request_search_index_rebuild(&self.inner.pool).await;
-        }
-    }
-
     /// Load a comment by ID.
     pub async fn load(&self, id: Uuid) -> Result<Option<Comment>> {
         Comment::find_by_id(&self.inner.pool, id).await
@@ -88,8 +76,38 @@ impl CommentService {
     /// Create a comment with `tap_comment_insert` invocation.
     pub async fn create(&self, input: CreateComment, user: &UserContext) -> Result<Comment> {
         let comment = Comment::create(&self.inner.pool, input).await?;
+        self.created(&comment, user).await?;
+        Ok(comment)
+    }
 
-        let json = serde_json::to_string(&comment).context("serialize comment")?;
+    /// [`Self::create`], queueing the mail `mail` builds for the new comment in
+    /// the same transaction as the insert (BG18), so the notification commits
+    /// or rolls back with the comment.
+    ///
+    /// # Errors
+    ///
+    /// When the insert or queueing fails; then neither happened.
+    pub async fn create_with_mail(
+        &self,
+        input: CreateComment,
+        user: &UserContext,
+        email: &crate::services::email::EmailService,
+        mail: impl FnOnce(&Comment) -> Option<crate::services::email::NewMail>,
+    ) -> Result<Comment> {
+        let mut tx = self.inner.pool.begin().await?;
+        let comment = Comment::create(&mut *tx, input).await?;
+        if let Some(message) = mail(&comment) {
+            email.queue(&mut *tx, message).await?;
+        }
+        tx.commit().await?;
+        email.wake();
+        self.created(&comment, user).await?;
+        Ok(comment)
+    }
+
+    /// What follows a committed insert: `tap_comment_insert`, search, audit.
+    async fn created(&self, comment: &Comment, user: &UserContext) -> Result<()> {
+        let json = serde_json::to_string(comment).context("serialize comment")?;
         let state = self.tap_state(user);
         let _ = self
             .inner
@@ -97,12 +115,10 @@ impl CommentService {
             .dispatch("tap_comment_insert", &json, state)
             .await;
 
-        self.request_search_rebuild(None, Some(&comment)).await;
-
         info!(comment_id = %comment.id, item_id = %comment.item_id, "comment created");
         self.audit("create", comment.id, Some(comment.item_id), user)
             .await;
-        Ok(comment)
+        Ok(())
     }
 
     /// Update a comment with `tap_comment_update` invocation.
@@ -112,11 +128,43 @@ impl CommentService {
         input: UpdateComment,
         user: &UserContext,
     ) -> Result<Option<Comment>> {
-        let before = self.load(id).await?;
         let comment = Comment::update(&self.inner.pool, id, input).await?;
+        self.updated(comment.as_ref(), user).await?;
+        Ok(comment)
+    }
 
-        if let Some(ref c) = comment {
-            self.request_search_rebuild(before.as_ref(), Some(c)).await;
+    /// [`Self::update`], queueing the mail `mail` builds from the comment as it
+    /// was and as it is in the same transaction as the update (BG18).
+    ///
+    /// # Errors
+    ///
+    /// When the update or queueing fails; then neither happened.
+    pub async fn update_with_mail(
+        &self,
+        id: Uuid,
+        input: UpdateComment,
+        user: &UserContext,
+        email: &crate::services::email::EmailService,
+        mail: impl FnOnce(Option<&Comment>, &Comment) -> Option<crate::services::email::NewMail>,
+    ) -> Result<Option<Comment>> {
+        let mut tx = self.inner.pool.begin().await?;
+        let before = Comment::find_by_id(&mut *tx, id).await?;
+        let comment = Comment::update_in(&mut tx, id, input).await?;
+        if let Some(c) = &comment
+            && let Some(message) = mail(before.as_ref(), c)
+        {
+            email.queue(&mut *tx, message).await?;
+        }
+        tx.commit().await?;
+        email.wake();
+        self.updated(comment.as_ref(), user).await?;
+        Ok(comment)
+    }
+
+    /// What follows a committed update: `tap_comment_update`, audit. The
+    /// search index queue row was written with the update, by the database.
+    async fn updated(&self, comment: Option<&Comment>, user: &UserContext) -> Result<()> {
+        if let Some(c) = comment {
             let json = serde_json::to_string(c).context("serialize comment")?;
             let state = self.tap_state(user);
             let _ = self
@@ -125,11 +173,10 @@ impl CommentService {
                 .dispatch("tap_comment_update", &json, state)
                 .await;
 
-            info!(comment_id = %id, "comment updated");
-            self.audit("update", id, Some(c.item_id), user).await;
+            info!(comment_id = %c.id, "comment updated");
+            self.audit("update", c.id, Some(c.item_id), user).await;
         }
-
-        Ok(comment)
+        Ok(())
     }
 
     /// Delete a comment with `tap_comment_delete` invocation (before delete).
@@ -148,7 +195,6 @@ impl CommentService {
 
         let deleted = Comment::delete(&self.inner.pool, id).await?;
         if deleted {
-            self.request_search_rebuild(existing.as_ref(), None).await;
             info!(comment_id = %id, "comment deleted");
             self.audit("delete", id, existing.as_ref().map(|c| c.item_id), user)
                 .await;
@@ -232,27 +278,47 @@ impl CommentService {
             return Ok(true);
         }
 
-        // Permission fallback
-        let is_own = comment.author_id == user.id;
-        match operation {
-            "view" => Ok(user.has_permission("access content")),
-            "create" => Ok(user.has_permission("post comments")),
-            "edit" => {
-                if is_own && user.has_permission("edit own comments") {
-                    Ok(true)
-                } else {
-                    Ok(user.has_permission("edit any comment"))
-                }
-            }
-            "delete" => {
-                if is_own && user.has_permission("delete own comments") {
-                    Ok(true)
-                } else {
-                    Ok(user.has_permission("delete any comment"))
-                }
-            }
-            _ => Ok(false),
+        Ok(permission_allows(comment, operation, user))
+    }
+}
+
+/// The permission rule for one operation on one comment, with no tap asked.
+///
+/// The fallback [`CommentService::check_access`] ends on, and what the comment
+/// thread asks to decide which Edit and Delete links to show, so a link is
+/// offered exactly where the page behind it would let the viewer in (a plugin
+/// grant through `tap_comment_access` aside).
+///
+/// Editing or deleting someone else's comment is `administer comments`, the
+/// permission the moderation screens and the `trovato_comments` plugin
+/// declare. It used to be `edit any comment` and `delete any comment`, which
+/// nothing declares and so no role could be granted from the permissions page:
+/// a moderator holding `administer comments` who was not the site
+/// administrator got 403 from the comment API's PUT and DELETE. Those two
+/// names are still honoured, for a site that granted them by hand.
+///
+/// A comment is the viewer's own only when the viewer is signed in: an
+/// anonymous visitor and an imported anonymous comment can share the nil id.
+pub fn permission_allows(comment: &Comment, operation: &str, user: &UserContext) -> bool {
+    if user.is_admin() {
+        return true;
+    }
+    let is_own = user.authenticated && comment.author_id == user.id;
+    let moderates = user.has_permission("administer comments");
+    match operation {
+        "view" => user.has_permission("access content"),
+        "create" => user.has_permission("post comments"),
+        "edit" => {
+            (is_own && user.has_permission("edit own comments"))
+                || moderates
+                || user.has_permission("edit any comment")
         }
+        "delete" => {
+            (is_own && user.has_permission("delete own comments"))
+                || moderates
+                || user.has_permission("delete any comment")
+        }
+        _ => false,
     }
 }
 
@@ -267,6 +333,7 @@ mod tests {
             item_id: Uuid::now_v7(),
             parent_id: None,
             author_id,
+            subject: None,
             body: "test".to_string(),
             body_format: "plain_text".to_string(),
             status: 1,
@@ -377,5 +444,78 @@ mod tests {
         );
         // Unknown operations should be denied (the match falls through to Ok(false))
         assert!(!user.has_permission("unknown_operation"));
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod permission_tests {
+    use super::*;
+
+    fn comment_by(author_id: Uuid) -> Comment {
+        Comment {
+            id: Uuid::now_v7(),
+            item_id: Uuid::now_v7(),
+            parent_id: None,
+            author_id,
+            subject: None,
+            body: "test".to_string(),
+            body_format: "plain_text".to_string(),
+            status: 1,
+            created: 0,
+            changed: 0,
+            depth: 0,
+        }
+    }
+
+    fn holding(id: Uuid, permissions: &[&str]) -> UserContext {
+        UserContext::authenticated(id, permissions.iter().map(|p| p.to_string()).collect())
+    }
+
+    /// The jibnotes 403: a moderator who is not the site administrator could
+    /// not edit or delete through the API, because the rule asked for two
+    /// permissions nothing declares.
+    #[test]
+    fn administer_comments_edits_and_deletes_any_comment() {
+        let moderator = holding(Uuid::now_v7(), &["administer comments"]);
+        let theirs = comment_by(Uuid::now_v7());
+        assert!(permission_allows(&theirs, "edit", &moderator));
+        assert!(permission_allows(&theirs, "delete", &moderator));
+    }
+
+    /// Own comments, each operation gated by its own permission.
+    #[test]
+    fn own_comments_need_their_own_permission() {
+        let me = Uuid::now_v7();
+        let mine = comment_by(me);
+        let theirs = comment_by(Uuid::now_v7());
+
+        let editor = holding(me, &["edit own comments"]);
+        assert!(permission_allows(&mine, "edit", &editor));
+        assert!(!permission_allows(&mine, "delete", &editor));
+        assert!(!permission_allows(&theirs, "edit", &editor));
+
+        let deleter = holding(me, &["delete own comments"]);
+        assert!(permission_allows(&mine, "delete", &deleter));
+        assert!(!permission_allows(&mine, "edit", &deleter));
+        assert!(!permission_allows(&theirs, "delete", &deleter));
+    }
+
+    /// Anonymous visitors share the nil id with an imported anonymous comment;
+    /// that does not make the comment theirs.
+    #[test]
+    fn an_anonymous_visitor_owns_no_comment() {
+        let mut anonymous = UserContext::anonymous();
+        anonymous.permissions = vec!["edit own comments".into(), "delete own comments".into()];
+        let anonymous_comment = comment_by(Uuid::nil());
+        assert!(!permission_allows(&anonymous_comment, "edit", &anonymous));
+        assert!(!permission_allows(&anonymous_comment, "delete", &anonymous));
+    }
+
+    #[test]
+    fn an_unknown_operation_is_refused() {
+        let me = Uuid::now_v7();
+        let user = holding(me, &["administer comments", "edit own comments"]);
+        assert!(!permission_allows(&comment_by(me), "publish", &user));
     }
 }

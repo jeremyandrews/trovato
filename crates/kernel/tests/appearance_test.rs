@@ -15,6 +15,7 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use common::{TestApp, run_test, shared_app, user_holding};
 use trovato_kernel::models::SiteConfig;
+use trovato_kernel::routes::feed::FeedLink;
 use trovato_kernel::theme::registry::{self, ADMIN_THEME_KEY, DEFAULT_THEME_KEY};
 use trovato_kernel::theme::{ActiveThemes, ThemeEngine, scope_request};
 
@@ -120,6 +121,12 @@ fn restore_stock_on_exit(app: &'static TestApp) {
             let _ = SiteConfig::delete(&app.db, key).await;
         }
         app.state.theme().set_active(ActiveThemes::default());
+        // A theme the test saved bumped the themes cache, and every server
+        // reloads the active theme from the database when it sees the bump,
+        // on its next poll. Seen after the lock is handed on, that reload
+        // read the keys deleted above and put stock back over the theme the
+        // next test had just made active. Let it land while the lock is held.
+        common::settle_cache_generations().await;
     });
 }
 
@@ -218,6 +225,60 @@ fn the_engine_renders_the_active_theme_and_falls_back_to_stock() {
     });
 }
 
+/// B173: lakeside's `base.html` carried only the RSS autodiscovery link, so a
+/// reader whose theme was lakeside never saw the Atom alternative stock pages
+/// advertise. Both `<link rel="alternate">` tags a feed declares must survive
+/// a theme that only overrides `base.html` to add its stylesheet.
+#[test]
+fn a_themes_base_html_carries_both_feed_autodiscovery_links() {
+    run_test(async {
+        let root = common::project_root();
+        let stock_dirs = vec![root.join("templates")];
+        let themes = registry::discover(&[themes_dir()]);
+        let engine = ThemeEngine::new(&stock_dirs, None, Default::default())
+            .unwrap()
+            .with_themes(themes, &stock_dirs, None);
+
+        let render = || {
+            let mut context = tera::Context::new();
+            context.insert("title", "Probe");
+            context.insert("content", "<p>probe</p>");
+            context.insert(
+                "feeds",
+                &vec![FeedLink {
+                    path: "/blog/feed.xml".to_string(),
+                    atom_path: "/blog/feed.atom".to_string(),
+                    title: "Blog".to_string(),
+                }],
+            );
+            engine.tera().render("base.html", &context)
+        };
+
+        // Tera autoescapes `/` in an attribute value, as it does on every page.
+        let rss = r#"<link rel="alternate" type="application/rss+xml" title="Blog" href="&#x2F;blog&#x2F;feed.xml">"#;
+        let atom = r#"<link rel="alternate" type="application/atom+xml" title="Blog" href="&#x2F;blog&#x2F;feed.atom">"#;
+
+        let stock_html = scope_request("/", async { render() }).await.unwrap();
+        assert!(stock_html.contains(rss), "{stock_html}");
+        assert!(stock_html.contains(atom), "{stock_html}");
+
+        engine.set_active(ActiveThemes {
+            default: "lakeside".into(),
+            admin: "stock".into(),
+        });
+        let lakeside_html = scope_request("/", async { render() }).await.unwrap();
+        assert!(lakeside_html.contains(LAKESIDE_CSS), "drawn by lakeside");
+        assert!(
+            lakeside_html.contains(rss),
+            "lakeside's base.html: {lakeside_html}"
+        );
+        assert!(
+            lakeside_html.contains(atom),
+            "lakeside's base.html must carry the Atom link too: {lakeside_html}"
+        );
+    });
+}
+
 /// Every route refuses an anonymous visitor and a signed-in user without
 /// `administer themes`, GET and POST.
 #[test]
@@ -263,7 +324,7 @@ fn the_appearance_screen_refuses_anonymous_and_plain_users() {
 fn switching_the_default_theme_applies_without_a_restart() {
     run_test(async {
         let app = themed_app();
-        let _guard = THEMES.lock().await;
+        common::hold_until_cleanup(THEMES.lock().await);
         restore_stock_on_exit(app);
         let (_, cookies) = user_holding(app, "b108atheme", &["administer themes"]).await;
 
@@ -385,7 +446,7 @@ fn switching_the_default_theme_applies_without_a_restart() {
 fn the_stored_theme_is_read_at_start_and_a_missing_one_is_stock() {
     run_test(async {
         let app = themed_app();
-        let _guard = THEMES.lock().await;
+        common::hold_until_cleanup(THEMES.lock().await);
         restore_stock_on_exit(app);
         SiteConfig::set(&app.db, DEFAULT_THEME_KEY, serde_json::json!("lakeside"))
             .await
@@ -410,12 +471,22 @@ fn the_stored_theme_is_read_at_start_and_a_missing_one_is_stock() {
 fn a_theme_that_does_not_parse_cannot_be_activated() {
     run_test(async {
         let app = themed_app();
-        let _guard = THEMES.lock().await;
+        common::hold_until_cleanup(THEMES.lock().await);
         restore_stock_on_exit(app);
         let (_, cookies) = user_holding(app, "b138cracked", &["administer themes"]).await;
 
         // Lakeside is the default before the attempt, so "the previous theme
-        // stays active" is a real theme and not just the fallback.
+        // stays active" is a real theme and not just the fallback. It is stored
+        // as well as applied. A theme switch made by an earlier test in this
+        // binary bumps the themes generation from a background task, and every
+        // server's watcher answers a bump by reloading the stored choice. With
+        // nothing stored, a late reload would put stock back in the middle of
+        // this test (seen in CI: left "stock", right "lakeside"). With Lakeside
+        // stored, any reload, whenever it lands, restores exactly what the test
+        // expects.
+        SiteConfig::set(&app.db, DEFAULT_THEME_KEY, serde_json::json!("lakeside"))
+            .await
+            .unwrap();
         app.state.theme().set_active(ActiveThemes {
             default: "lakeside".into(),
             admin: "stock".into(),
@@ -456,10 +527,23 @@ fn a_theme_that_does_not_parse_cannot_be_activated() {
             "lakeside",
             "the previous theme stays active"
         );
+        // What a late generation bump does on arrival: reload the stored
+        // choice. Landing now, after the refusal, it must change nothing.
+        registry::load_active(&app.db, app.state.theme()).await;
+        assert_eq!(
+            app.state.theme().active().default,
+            "lakeside",
+            "a reload of the stored choice keeps the previous theme"
+        );
         assert_eq!(
             SiteConfig::get(&app.db, DEFAULT_THEME_KEY).await.unwrap(),
+            Some(serde_json::json!("lakeside")),
+            "the stored default is not replaced by the broken theme"
+        );
+        assert_eq!(
+            SiteConfig::get(&app.db, ADMIN_THEME_KEY).await.unwrap(),
             None,
-            "nothing is stored"
+            "and nothing else is stored"
         );
 
         // The site still renders, on the theme that was active.

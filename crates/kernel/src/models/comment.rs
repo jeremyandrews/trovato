@@ -209,6 +209,13 @@ pub struct Comment {
     /// Author user ID.
     pub author_id: Uuid,
 
+    /// Optional plain text subject, shown as a heading above the body.
+    ///
+    /// Never stored empty (empty and whitespace-only submissions become
+    /// `None`, see [`normalize_subject`]) and never rendered through a text
+    /// format: it is plain text, always escaped where a template prints it.
+    pub subject: Option<String>,
+
     /// Comment body.
     pub body: String,
 
@@ -230,27 +237,69 @@ pub struct Comment {
 }
 
 /// Input for creating a comment.
+///
+/// `subject` is already normalized (trimmed, empty turned into `None`) and
+/// length-checked by the caller — see [`normalize_subject`] and
+/// [`subject_too_long`] — so this layer trusts what it is given, the same way
+/// it already trusts `body_format` and `status`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct CreateComment {
     pub item_id: Uuid,
     pub parent_id: Option<Uuid>,
     pub author_id: Uuid,
+    pub subject: Option<String>,
     pub body: String,
     pub body_format: Option<String>,
     pub status: Option<i16>,
 }
 
 /// Input for updating a comment.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// `subject: None` leaves the stored subject untouched; `Some(None)` clears
+/// it; `Some(Some(s))` replaces it with `s`, already normalized. This is one
+/// level of `Option` deeper than `body`, because unlike the body a subject is
+/// allowed to not exist at all, and an update has to be able to say "no
+/// change" without also being unable to say "no subject".
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct UpdateComment {
     pub body: Option<String>,
     pub body_format: Option<String>,
     pub status: Option<i16>,
+    pub subject: Option<Option<String>>,
+}
+
+/// The limit the `comment_subject_length` CHECK constraint also enforces.
+///
+/// Checked here first so a submission over the limit gets a clean 400 rather
+/// than a database error surfacing as a 500.
+pub const SUBJECT_MAX_CHARS: usize = 255;
+
+/// Trim a submitted subject and turn an empty (or whitespace-only) one into
+/// `None`: "no subject" and "a subject of nothing" are the same thing, and a
+/// template that tested for an empty string rather than absence would print a
+/// heading with nothing in it.
+///
+/// Called once, here, rather than at every call site, so the rule cannot
+/// drift between the create and the edit path.
+pub fn normalize_subject(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+}
+
+/// Whether an already-[`normalize_subject`]d subject is within the stored
+/// length limit. Counts characters, not bytes, so the limit means the same
+/// thing to the person typing as it does to the column.
+pub fn subject_too_long(subject: &str) -> bool {
+    subject.chars().count() > SUBJECT_MAX_CHARS
 }
 
 impl Comment {
     /// Create a new comment.
-    pub async fn create(pool: &PgPool, input: CreateComment) -> Result<Self> {
+    pub async fn create<'e, E: sqlx::PgExecutor<'e>>(
+        executor: E,
+        input: CreateComment,
+    ) -> Result<Self> {
         let id = Uuid::now_v7();
         let now = chrono::Utc::now().timestamp();
         let body_format = input
@@ -262,21 +311,22 @@ impl Comment {
 
         let comment = sqlx::query_as::<_, Comment>(
             r#"
-            INSERT INTO comment (id, item_id, parent_id, author_id, body, body_format, status, created, changed)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            RETURNING id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth
+            INSERT INTO comment (id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            RETURNING id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth
             "#,
         )
         .bind(id)
         .bind(input.item_id)
         .bind(input.parent_id)
         .bind(input.author_id)
+        .bind(&input.subject)
         .bind(&input.body)
         .bind(&body_format)
         .bind(status)
         .bind(now)
         .bind(now)
-        .fetch_one(pool)
+        .fetch_one(executor)
         .await
         .context("failed to create comment")?;
 
@@ -284,12 +334,15 @@ impl Comment {
     }
 
     /// Find a comment by ID.
-    pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Self>> {
+    pub async fn find_by_id<'e, E: sqlx::PgExecutor<'e>>(
+        executor: E,
+        id: Uuid,
+    ) -> Result<Option<Self>> {
         let comment = sqlx::query_as::<_, Comment>(
-            "SELECT id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth FROM comment WHERE id = $1",
+            "SELECT id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth FROM comment WHERE id = $1",
         )
         .bind(id)
-        .fetch_optional(pool)
+        .fetch_optional(executor)
         .await
         .context("failed to fetch comment by id")?;
 
@@ -303,7 +356,7 @@ impl Comment {
             r#"
             WITH RECURSIVE comment_tree AS (
                 -- Base case: top-level comments
-                SELECT id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth,
+                SELECT id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth,
                        ARRAY[created, EXTRACT(EPOCH FROM NOW())::BIGINT - created] AS sort_path
                 FROM comment
                 WHERE item_id = $1 AND parent_id IS NULL AND status = $2
@@ -311,13 +364,13 @@ impl Comment {
                 UNION ALL
 
                 -- Recursive case: replies
-                SELECT c.id, c.item_id, c.parent_id, c.author_id, c.body, c.body_format, c.status, c.created, c.changed, c.depth,
+                SELECT c.id, c.item_id, c.parent_id, c.author_id, c.subject, c.body, c.body_format, c.status, c.created, c.changed, c.depth,
                        ct.sort_path || c.created
                 FROM comment c
                 JOIN comment_tree ct ON c.parent_id = ct.id
                 WHERE c.status = $2
             )
-            SELECT id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth
+            SELECT id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth
             FROM comment_tree
             ORDER BY sort_path
             "#,
@@ -340,7 +393,7 @@ impl Comment {
     ) -> Result<Vec<Self>> {
         let comments = sqlx::query_as::<_, Comment>(
             r#"
-            SELECT id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth
+            SELECT id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth
             FROM comment
             WHERE item_id = $1 AND status = $4
             ORDER BY created DESC
@@ -375,7 +428,7 @@ impl Comment {
     pub async fn list_all(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<Self>> {
         let comments = sqlx::query_as::<_, Comment>(
             r#"
-            SELECT id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth
+            SELECT id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth
             FROM comment
             ORDER BY created DESC
             LIMIT $1 OFFSET $2
@@ -397,7 +450,7 @@ impl Comment {
     /// not be a copy of their data.
     pub async fn list_by_author(pool: &PgPool, author_id: Uuid) -> Result<Vec<Self>> {
         let comments = sqlx::query_as::<_, Comment>(
-            "SELECT id, item_id, parent_id, author_id, body, body_format, status, \
+            "SELECT id, item_id, parent_id, author_id, subject, body, body_format, status, \
              created, changed, depth FROM comment WHERE author_id = $1 ORDER BY created DESC",
         )
         .bind(author_id)
@@ -449,7 +502,7 @@ impl Comment {
     ) -> Result<Vec<Self>> {
         let comments = sqlx::query_as::<_, Comment>(
             r#"
-            SELECT id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth
+            SELECT id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth
             FROM comment
             WHERE status = $1
             ORDER BY created DESC
@@ -478,7 +531,20 @@ impl Comment {
 
     /// Update a comment.
     pub async fn update(pool: &PgPool, id: Uuid, input: UpdateComment) -> Result<Option<Self>> {
-        let Some(existing) = Self::find_by_id(pool, id).await? else {
+        let mut conn = pool
+            .acquire()
+            .await
+            .context("failed to acquire a connection")?;
+        Self::update_in(&mut conn, id, input).await
+    }
+
+    /// [`Self::update`] on `conn`, which may be a transaction.
+    pub async fn update_in(
+        conn: &mut sqlx::PgConnection,
+        id: Uuid,
+        input: UpdateComment,
+    ) -> Result<Option<Self>> {
+        let Some(existing) = Self::find_by_id(&mut *conn, id).await? else {
             return Ok(None);
         };
 
@@ -486,21 +552,25 @@ impl Comment {
         let body = input.body.unwrap_or(existing.body);
         let body_format = input.body_format.unwrap_or(existing.body_format);
         let status = input.status.unwrap_or(existing.status);
+        // `None` (no `subject` key at all) leaves it alone; `Some(_)` replaces
+        // it, including with `Some(None)` to clear it.
+        let subject = input.subject.unwrap_or(existing.subject);
 
         let comment = sqlx::query_as::<_, Comment>(
             r#"
             UPDATE comment
-            SET body = $1, body_format = $2, status = $3, changed = $4
-            WHERE id = $5
-            RETURNING id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth
+            SET body = $1, body_format = $2, status = $3, changed = $4, subject = $5
+            WHERE id = $6
+            RETURNING id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth
             "#,
         )
         .bind(&body)
         .bind(&body_format)
         .bind(status)
         .bind(now)
+        .bind(&subject)
         .bind(id)
-        .fetch_optional(pool)
+        .fetch_optional(&mut *conn)
         .await
         .context("failed to update comment")?;
 
@@ -522,7 +592,7 @@ impl Comment {
     pub async fn get_replies(pool: &PgPool, comment_id: Uuid) -> Result<Vec<Self>> {
         let comments = sqlx::query_as::<_, Comment>(
             r#"
-            SELECT id, item_id, parent_id, author_id, body, body_format, status, created, changed, depth
+            SELECT id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth
             FROM comment
             WHERE parent_id = $1 AND status = $2
             ORDER BY created ASC
@@ -692,5 +762,40 @@ mod tests {
             CommentStatus::Unpublished.css_suffix(),
             CommentStatus::Pending.css_suffix()
         );
+    }
+
+    /// No subject submitted at all.
+    #[test]
+    fn no_subject_normalizes_to_none() {
+        assert_eq!(normalize_subject(None), None);
+    }
+
+    /// Empty and whitespace-only are the same as no subject: a template that
+    /// tested for an empty string rather than `None` would print an empty
+    /// heading.
+    #[test]
+    fn an_empty_or_whitespace_only_subject_normalizes_to_none() {
+        for input in ["", "   ", "\t\n"] {
+            assert_eq!(normalize_subject(Some(input)), None, "{input:?}");
+        }
+    }
+
+    /// Leading and trailing whitespace is trimmed; interior whitespace is not.
+    #[test]
+    fn a_subject_is_trimmed_but_not_otherwise_touched() {
+        assert_eq!(
+            normalize_subject(Some("  Breaking   News  ")),
+            Some("Breaking   News".to_string())
+        );
+    }
+
+    /// The limit counts characters, not bytes, so a 255-character subject
+    /// made entirely of multi-byte characters is not wrongly refused.
+    #[test]
+    fn the_length_limit_is_exactly_two_hundred_fifty_five_characters() {
+        let exactly_at_limit = "é".repeat(255);
+        assert!(!subject_too_long(&exactly_at_limit));
+        let one_over = "é".repeat(256);
+        assert!(subject_too_long(&one_over));
     }
 }

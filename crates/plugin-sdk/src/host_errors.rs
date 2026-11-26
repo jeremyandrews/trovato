@@ -78,7 +78,8 @@
 //!   - `-1`: memory missing, `-2`: ID read failed or not a UUID,
 //!     `-3`: output write failed, `-10`: no services, `-12`: database error,
 //!     `-13`: serialization failed, `-60`: called inside an access decision,
-//!     `-61`: background call without `item_background`
+//!     `-61`: background call without `item_background`, `-64`: no item
+//!     service on this dispatch path
 //!   - `≥ 0`: bytes written: the item's JSON, or `null` when it is missing **or**
 //!     the user may not view it (the two are indistinguishable on purpose)
 //!
@@ -89,21 +90,26 @@
 //!     the site does not have, `-60`: refused (no `edit` access, no
 //!     `create {type} content`, a field the user may not edit, a publish change
 //!     without `publish content`, or called inside an access decision),
-//!     `-61`: background call without `item_background`, `-63`: nested too deep
+//!     `-61`: background call without `item_background`, `-63`: nested too
+//!     deep, `-64`: no item service on this dispatch path, `-65`: a field value
+//!     the field value check refused (too many values for the field's
+//!     cardinality, or not a tag of a category reference's category)
 //!   - `≥ 0`: bytes written: the saved item's JSON, or `null` for an update of
 //!     an id that names no item
 //!
 //! - **`delete-item(id_ptr, id_len) → i32`**
 //!   - `-1`: memory missing, `-2`: ID read failed or not a UUID, `-10`: no
 //!     services, `-12`: database error, `-60`: refused, `-61`: background call
-//!     without `item_background`, `-62`: no such item, `-63`: nested too deep
+//!     without `item_background`, `-62`: no such item, `-63`: nested too deep,
+//!     `-64`: no item service on this dispatch path
 //!   - `0`: deleted
 //!
 //! - **`query-items(query_ptr, query_len, out_ptr, out_max_len) → i32`**
 //!   - `-1`: memory missing, `-2`: query JSON read failed, `-3`: output write
 //!     failed, `-10`: no services, `-12`: database error, `-13`: serialization
 //!     failed, `-14`: not JSON, `-60`: called inside an access decision,
-//!     `-61`: background call without `item_background`
+//!     `-61`: background call without `item_background`, `-64`: no item
+//!     service on this dispatch path
 //!   - `≥ 0`: bytes written (JSON array of the items the user may view)
 //!
 //! ## Request Context (`trovato:request-context/*`)
@@ -417,6 +423,24 @@ pub const ERR_ITEM_NOT_FOUND: i32 = -62;
 /// Added by B68, after 0.104.0.
 pub const ERR_ITEM_WRITE_DEPTH: i32 = -63;
 
+/// An `item-api` call was made on a dispatch path that carries no item service,
+/// so nothing could be decided or written. The kernel logs which plugin and
+/// call. Every server dispatch path carries one; this is a kernel wiring fault
+/// or a test harness that never bound it, not something the plugin did.
+///
+/// Before U40 the same state answered [`ERR_NO_SERVICES`], which `tap_cron`
+/// and `tap_queue_worker` returned for every write because their services
+/// never had the item service bound.
+pub const ERR_ITEM_SERVICE_UNAVAILABLE: i32 = -64;
+
+/// A `save-item` was refused by the field value check every item write runs:
+/// a field holds more values than its `cardinality` allows, or a
+/// `CategoryReference` field holds something that is not a tag of its category
+/// (or is not the list of tag ids that field stores). Nothing was written.
+///
+/// Added by B72, after 0.104.0.
+pub const ERR_ITEM_INVALID_FIELDS: i32 = -65;
+
 // =============================================================================
 // Text format errors (`trovato:kernel/text-format`)
 // =============================================================================
@@ -468,19 +492,19 @@ pub const ERR_QUERY_BOUND: i32 = -81;
 /// `[[vocabulary_owners]]`: a plugin creates and lists vocabularies only for
 /// the owners it declared.
 ///
-/// Added by B108, after 0.106.0.
+/// Added by B108, after 0.104.0.
 pub const ERR_VOCABULARY_OWNER_UNDECLARED: i32 = -90;
 
 /// The vocabulary id is not a machine name (lowercase letters, digits and
 /// underscores, at most 32), the label is empty, or the owner id is empty or
 /// longer than 255.
 ///
-/// Added by B108, after 0.106.0.
+/// Added by B108, after 0.104.0.
 pub const ERR_VOCABULARY_INVALID: i32 = -91;
 
 /// A vocabulary with this id exists, owned or not.
 ///
-/// Added by B108, after 0.106.0.
+/// Added by B108, after 0.104.0.
 pub const ERR_VOCABULARY_EXISTS: i32 = -92;
 
 // =============================================================================
@@ -593,14 +617,17 @@ pub const ERR_MAIL_RECIPIENT_UNAVAILABLE: i32 = -57;
 pub const ERR_MAIL_OPTED_OUT: i32 = -58;
 
 // =============================================================================
-// User directory errors (`trovato:kernel/user-api` `load-users`) — added by B73
+// User directory errors (`trovato:kernel/user-api` `load-users`,
+// `find-user-by-name`, `find-users-by-name-prefix`) — added by B73, extended
+// by B179
 // =============================================================================
 
 /// The plugin did not declare `user_directory = true` under `[capabilities]`.
 ///
-/// `load-users` answers about users the plugin is not serving, so it is a
-/// separate grant from `user-api`, visible in the manifest and reviewable at
-/// install time.
+/// Shared by `load-users`, `find-user-by-name` and `find-users-by-name-prefix`:
+/// all three answer about users the plugin is not serving, so the grant is
+/// separate from `user-api`, visible in the manifest and reviewable at install
+/// time.
 pub const ERR_USER_DIRECTORY_DENIED: i32 = -73;
 
 /// An id was not a user id (a UUID), or the list was not a JSON array of
@@ -609,6 +636,14 @@ pub const ERR_USER_IDS_INVALID: i32 = -74;
 
 /// More than 100 ids in one call. Nothing was looked up; split the batch.
 pub const ERR_USER_IDS_TOO_MANY: i32 = -75;
+
+/// `find-user-by-name`'s name was empty or longer than 255 characters (the
+/// width of `users.name`). Nothing was looked up. Added by B179.
+pub const ERR_USER_NAME_INVALID: i32 = -76;
+
+/// `find-users-by-name-prefix`'s prefix was empty or longer than 255
+/// characters. Nothing was looked up. Added by B179.
+pub const ERR_USER_NAME_PREFIX_INVALID: i32 = -77;
 
 // =============================================================================
 // SDK-side errors (client-side, before/after crossing WASM boundary)

@@ -24,6 +24,13 @@ const TYPE_SEED_LOCK: i64 = 0x_1A46_0000_0002;
 
 const ITEM_TYPE: &str = "language_nav_test";
 
+/// The config menu cache is process-wide and filled by whichever render reads
+/// it first after a write. A render that started reading before a test wrote
+/// its menu link can fill the cache after the write's invalidation, without
+/// the link, for the cache's whole TTL. Every test here writes menu links and then reads them
+/// off a rendered page, so they take turns, each through its cleanup.
+static MENUS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn admin() -> UserContext {
     UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()])
 }
@@ -119,6 +126,11 @@ async fn create_page(app: &TestApp, slug: &str, title: &str) -> Page {
 }
 
 async fn translate(app: &TestApp, item: Uuid, language: &str, title: &str) {
+    // `item_translation` is the translation plugin's table, which the shared
+    // app does not create. Without this the file passed only when an earlier
+    // target in the same database had migrated the plugin, which is shard
+    // order, not a fixture.
+    common::ensure_translation_table(app);
     sqlx::query(
         "INSERT INTO item_translation (item_id, language, title, fields) \
          VALUES ($1, $2, $3, '{}'::jsonb) \
@@ -130,6 +142,9 @@ async fn translate(app: &TestApp, item: Uuid, language: &str, title: &str) {
     .execute(&app.db)
     .await
     .expect("record translation");
+    // Raw SQL, past the model that would invalidate the menu cache, and a
+    // translation changes a menu entry's label and address.
+    trovato_kernel::menu::navigation::invalidate_config_menus();
 }
 
 async fn add_menu_link(app: &TestApp, page: &mut Page, title: &str) {
@@ -167,6 +182,8 @@ async fn cleanup(app: &TestApp, pages: &[Page]) {
             .ok();
         app.state.items().delete(page.id, &admin()).await.ok();
     }
+    // The link deletes above are raw SQL too.
+    trovato_kernel::menu::navigation::invalidate_config_menus();
 }
 
 async fn body_text(response: Response) -> String {
@@ -222,6 +239,7 @@ fn anchor_with_href<'a>(html: &'a str, href: &str) -> &'a str {
 fn a_translated_menu_entry_is_prefixed_labelled_and_current() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
         ensure_item_type(app).await;
 
         let marker = Uuid::now_v7().simple().to_string();
@@ -259,6 +277,7 @@ fn a_translated_menu_entry_is_prefixed_labelled_and_current() {
 fn a_menu_entry_with_no_translation_is_left_alone() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
         ensure_item_type(app).await;
 
         let marker = Uuid::now_v7().simple().to_string();
@@ -295,6 +314,7 @@ fn a_menu_entry_with_no_translation_is_left_alone() {
 fn a_hand_written_menu_label_survives_translation() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
         ensure_item_type(app).await;
 
         let marker = Uuid::now_v7().simple().to_string();
@@ -327,6 +347,7 @@ fn a_hand_written_menu_label_survives_translation() {
 fn available_translations_lists_the_languages_the_page_exists_in() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
         ensure_item_type(app).await;
 
         let marker = Uuid::now_v7().simple().to_string();
@@ -369,6 +390,7 @@ fn available_translations_lists_the_languages_the_page_exists_in() {
 fn hreflang_tags_name_the_translations_and_nothing_else() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
         ensure_item_type(app).await;
 
         let marker = Uuid::now_v7().simple().to_string();
@@ -497,6 +519,7 @@ async fn alias_gather(app: &TestApp, query_id: &str, slug: &str) -> String {
 fn a_gather_page_localizes_its_menus() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
         ensure_item_type(app).await;
 
         let marker = Uuid::now_v7().simple().to_string();
@@ -534,5 +557,263 @@ fn a_gather_page_localizes_its_menus() {
             .ok();
         app.state.gather().delete_query(&query_id).await.ok();
         cleanup(app, &[page]).await;
+    });
+}
+
+/// A main-menu link to any address, outside the page fixtures: a gather alias,
+/// an external URL, a route language negotiation does not serve per language.
+/// Deleted when the test ends, pass or fail.
+async fn add_raw_menu_link(app: &TestApp, path: &str, title: &str) {
+    let link = MenuLink::create(
+        &app.db,
+        CreateMenuLink {
+            menu_name: Some("main".to_string()),
+            path: path.to_string(),
+            title: title.to_string(),
+            parent_id: None,
+            weight: Some(0),
+            hidden: Some(false),
+            plugin: Some("core".to_string()),
+            stage_id: Some(LIVE_STAGE_ID),
+        },
+    )
+    .await
+    .expect("create menu link")
+    .id;
+    let db = app.db.clone();
+    common::defer_cleanup(move || async move {
+        sqlx::query("DELETE FROM menu_link WHERE id = $1")
+            .bind(link)
+            .execute(&db)
+            .await
+            .ok();
+        trovato_kernel::menu::navigation::invalidate_config_menus();
+    });
+}
+
+/// A gather this test owns, aliased in both languages, removed when the test
+/// ends. Returns the alias it is read at.
+async fn owned_gather(app: &TestApp, query_id: &str, slug: &str) -> String {
+    register_gather_query(app, query_id).await;
+    let alias = alias_gather(app, query_id, slug).await;
+    let query_id = query_id.to_string();
+    common::defer_cleanup(move || async move {
+        let app = shared_app().await;
+        sqlx::query("DELETE FROM url_alias WHERE source = $1")
+            .bind(format!("/gather/{query_id}"))
+            .execute(&app.db)
+            .await
+            .ok();
+        app.state.gather().delete_query(&query_id).await.ok();
+    });
+    alias
+}
+
+/// A link to a gather page is a link to a page that exists in every language,
+/// so on a page served in Italian it carries the Italian prefix, and on the
+/// gather's own Italian page it is the active one.
+///
+/// The menu kept `/recipes` on `/it/recipes`: the click left the language, and
+/// `/recipes` never matched the address asked for, so no link was active.
+#[test]
+fn a_gather_menu_link_keeps_the_language_and_is_active() {
+    run_test(async {
+        let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
+        ensure_item_type(app).await;
+
+        let marker = Uuid::now_v7().simple().to_string();
+        let gather_alias = owned_gather(
+            app,
+            &format!("lang_nav_link_{marker}"),
+            &format!("recipes-{marker}"),
+        )
+        .await;
+        add_raw_menu_link(app, &gather_alias, &format!("Recipes {marker}")).await;
+
+        let (status, html) = get(app, &format!("/it{gather_alias}")).await;
+        assert_eq!(status, StatusCode::OK, "body:\n{html}");
+        let tag = anchor_with_href(&html, &format!("/it{gather_alias}"));
+        assert!(
+            tag.contains("aria-current=\"page\""),
+            "the gather's own link must be the active one, tag was:\n{tag}"
+        );
+    });
+}
+
+/// An item with no translation keeps today's unprefixed address, and is still
+/// the active link when its page is read under the Italian prefix: active is
+/// decided on the address without its language, on both sides.
+#[test]
+fn an_untranslated_item_link_is_active_on_its_prefixed_page() {
+    run_test(async {
+        let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
+        ensure_item_type(app).await;
+
+        let marker = Uuid::now_v7().simple().to_string();
+        let title = format!("Plain Active {marker}");
+        let mut page = create_page(app, &format!("plain-active-{marker}"), &title).await;
+        add_menu_link(app, &mut page, &title).await;
+        let (id, alias, link) = (page.id, page.alias.clone(), page.link);
+        common::defer_cleanup(move || async move {
+            cleanup(shared_app().await, &[Page { id, alias, link }]).await;
+        });
+
+        let (status, html) = get(app, &format!("/it{}", page.alias)).await;
+        assert_eq!(status, StatusCode::OK, "body:\n{html}");
+        let tag = anchor_with_href(&html, &page.alias);
+        assert!(
+            tag.contains("aria-current=\"page\""),
+            "the page's own link must be active under the prefix, tag was:\n{tag}"
+        );
+    });
+}
+
+/// What is not served per language keeps its address: an external URL, and a
+/// path language negotiation passes through untouched (`/api`, `/static`).
+#[test]
+fn external_and_language_neutral_links_are_left_unprefixed() {
+    run_test(async {
+        let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
+        ensure_item_type(app).await;
+
+        let marker = Uuid::now_v7().simple().to_string();
+        let gather_alias = owned_gather(
+            app,
+            &format!("lang_nav_neutral_{marker}"),
+            &format!("neutral-{marker}"),
+        )
+        .await;
+
+        let external = format!("https://example.com/{marker}");
+        let api = format!("/api/v1/{marker}");
+        let file = format!("/static/{marker}.pdf");
+        add_raw_menu_link(app, &external, &format!("External {marker}")).await;
+        add_raw_menu_link(app, &api, &format!("Api {marker}")).await;
+        add_raw_menu_link(app, &file, &format!("Static {marker}")).await;
+
+        let (status, html) = get(app, &format!("/it{gather_alias}")).await;
+        assert_eq!(status, StatusCode::OK, "body:\n{html}");
+        for href in [&external, &api, &file] {
+            anchor_with_href(&html, href);
+            assert!(
+                !html.contains(&format!("href=\"/it{href}\"")),
+                "{href} is not served per language and must not be prefixed:\n{html}"
+            );
+        }
+    });
+}
+
+/// The default language is untouched: no prefix, and the gather's link is
+/// active on its own page exactly as before.
+#[test]
+fn default_language_menu_links_are_unchanged() {
+    run_test(async {
+        let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
+        ensure_item_type(app).await;
+
+        let marker = Uuid::now_v7().simple().to_string();
+        let gather_alias = owned_gather(
+            app,
+            &format!("lang_nav_default_{marker}"),
+            &format!("dflt-{marker}"),
+        )
+        .await;
+        let external = format!("https://example.com/{marker}");
+        add_raw_menu_link(app, &gather_alias, &format!("Default {marker}")).await;
+        add_raw_menu_link(app, &external, &format!("External {marker}")).await;
+
+        let (status, html) = get(app, &gather_alias).await;
+        assert_eq!(status, StatusCode::OK, "body:\n{html}");
+        let tag = anchor_with_href(&html, &gather_alias);
+        assert!(
+            tag.contains("aria-current=\"page\""),
+            "the gather's link is active on its page, tag was:\n{tag}"
+        );
+        anchor_with_href(&html, &external);
+        assert!(
+            !html.contains(&format!("href=\"/it{gather_alias}\"")),
+            "a default-language page carries no language prefix:\n{html}"
+        );
+    });
+}
+
+/// A link to an untranslated item with a fragment is still a link to that
+/// item: it keeps today's unprefixed address, fragment and all, rather than
+/// being taken for a page that exists in every language.
+#[test]
+fn an_untranslated_item_link_with_a_fragment_keeps_its_address() {
+    run_test(async {
+        let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
+        ensure_item_type(app).await;
+
+        let marker = Uuid::now_v7().simple().to_string();
+        let page = create_page(app, &format!("frag-{marker}"), &format!("Frag {marker}")).await;
+        let (id, alias) = (page.id, page.alias.clone());
+        common::defer_cleanup(move || async move {
+            cleanup(
+                shared_app().await,
+                &[Page {
+                    id,
+                    alias,
+                    link: None,
+                }],
+            )
+            .await;
+        });
+        let href = format!("{}#details", page.alias);
+        add_raw_menu_link(app, &href, &format!("Frag link {marker}")).await;
+
+        let (status, html) = get(app, &format!("/it{}", page.alias)).await;
+        assert_eq!(status, StatusCode::OK, "body:\n{html}");
+        let tag = anchor_with_href(&html, &href);
+        assert!(
+            tag.contains("aria-current=\"page\""),
+            "the link is still the page being read, tag was:\n{tag}"
+        );
+        assert!(
+            !html.contains(&format!("href=\"/it{href}\"")),
+            "an untranslated item must not be offered under the prefix:\n{html}"
+        );
+    });
+}
+
+/// A link that names another language is a different page. On English
+/// `/recipes`, a menu link to `/it/recipes` is not the current one; only the
+/// link to `/recipes` is.
+#[test]
+fn a_link_into_another_language_is_not_active() {
+    run_test(async {
+        let app = shared_app().await;
+        common::hold_until_cleanup(MENUS.lock().await);
+        ensure_item_type(app).await;
+
+        let marker = Uuid::now_v7().simple().to_string();
+        let gather_alias = owned_gather(
+            app,
+            &format!("lang_nav_other_{marker}"),
+            &format!("other-{marker}"),
+        )
+        .await;
+        let italian = format!("/it{gather_alias}");
+        add_raw_menu_link(app, &gather_alias, &format!("Here {marker}")).await;
+        add_raw_menu_link(app, &italian, &format!("In Italian {marker}")).await;
+
+        let (status, html) = get(app, &gather_alias).await;
+        assert_eq!(status, StatusCode::OK, "body:\n{html}");
+        let here = anchor_with_href(&html, &gather_alias);
+        assert!(
+            here.contains("aria-current=\"page\""),
+            "the page's own link is active, tag was:\n{here}"
+        );
+        let other = anchor_with_href(&html, &italian);
+        assert!(
+            !other.contains("aria-current"),
+            "a link into Italian is not the English page, tag was:\n{other}"
+        );
     });
 }

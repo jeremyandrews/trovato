@@ -5,6 +5,8 @@
 
 mod pagefind;
 mod queue;
+mod search_index;
+mod search_update;
 mod tasks;
 
 /// The Pagefind export seam, for tests that assert which items and which text
@@ -12,8 +14,24 @@ mod tasks;
 /// is private.
 #[doc(hidden)]
 pub use pagefind::{
-    IndexDocument, IndexedField, indexable_documents, render_fragment,
-    request_rebuild as request_search_index_rebuild,
+    IndexDocument, IndexedField, ItemDocuments, indexable_documents, indexable_documents_for,
+    maybe_rebuild_index_with, render_fragment, request_rebuild as request_search_index_rebuild,
+};
+/// The native search index build, for the gate tests: build an index from a
+/// given set of documents through the ledger and publish it.
+#[doc(hidden)]
+pub use search_index::{
+    FullBuildOptions, FullBuildReport, RETENTION_HOURS, RebuildAgain,
+    full_build as search_index_full_build, full_build_with as search_index_full_build_with,
+    generation as search_index_generation,
+};
+/// The incremental search index update and the cron run over it, for the gate
+/// tests.
+#[doc(hidden)]
+pub use search_update::{
+    BATCH_SIZE as SEARCH_INDEX_BATCH_SIZE, DEFAULT_COMPACTION_PERCENT, DocumentSource, RunOptions,
+    RunReport, UpdateOutcome, UpdateReport, incremental_update as search_index_incremental_update,
+    run_index as search_index_run,
 };
 
 pub use tasks::UpdateCheckConfig;
@@ -263,10 +281,15 @@ impl Default for QueueRunnerConfig {
 /// Exponential backoff for a failed attempt: `BASE * 2^(attempts-1)`, capped at
 /// [`QUEUE_BACKOFF_CAP_SECS`]. `attempts` is the post-claim count (>= 1).
 fn backoff_secs(attempts: i32) -> i64 {
+    exponential_backoff_secs(QUEUE_BACKOFF_BASE_SECS, QUEUE_BACKOFF_CAP_SECS, attempts)
+}
+
+/// `base * 2^(attempts-1)`, capped at `cap`. `attempts` is the post-claim count
+/// (>= 1). Shared by the plugin queue and the mail outbox (BG18), which adds
+/// jitter on top.
+pub(crate) fn exponential_backoff_secs(base: i64, cap: i64, attempts: i32) -> i64 {
     let exp = attempts.saturating_sub(1).clamp(0, 16) as u32;
-    QUEUE_BACKOFF_BASE_SECS
-        .saturating_mul(1i64 << exp)
-        .min(QUEUE_BACKOFF_CAP_SECS)
+    base.saturating_mul(1i64 << exp).min(cap)
 }
 
 /// Read the declared `concurrency` of each queue from a `tap_queue_info` result.
@@ -321,6 +344,44 @@ fn parse_queue_concurrency(output: &str) -> BTreeMap<String, usize> {
 /// differently: it is dead-lettered at once, whatever `attempts` says. See
 /// [`mark_job_cpu_exhausted`].
 async fn run_queue_job(
+    pool: PgPool,
+    dispatcher: Arc<TapDispatcher>,
+    services: crate::tap::RequestServices,
+    plugin_name: String,
+    queue_name: String,
+    job: ClaimedJob,
+    invocation_sink: Arc<AtomicU64>,
+) -> Result<JobOutcome> {
+    // Gander's queue choke point: a job is traced like a request. It has no
+    // request profile: nothing would read its counts.
+    let span = tracing::trace_span!(
+        target: crate::telemetry::TARGET,
+        "queue.job",
+        trovato.plugin = %plugin_name,
+        trovato.queue = %queue_name,
+        trovato.queue.attempt = job.attempts,
+        trovato.queue.outcome = tracing::field::Empty,
+    );
+    let outcome = tracing::Instrument::instrument(
+        run_queue_job_inner(
+            pool,
+            dispatcher,
+            services,
+            plugin_name,
+            queue_name,
+            job,
+            invocation_sink,
+        ),
+        span.clone(),
+    )
+    .await;
+    if let Ok(o) = outcome.as_ref() {
+        span.record("trovato.queue.outcome", o.as_str());
+    }
+    outcome
+}
+
+async fn run_queue_job_inner(
     pool: PgPool,
     dispatcher: Arc<TapDispatcher>,
     services: crate::tap::RequestServices,
@@ -637,7 +698,8 @@ async fn run_embed_job(
     // The kernel calls the embedding provider directly (no plugin principal —
     // kernel-initiated embedding is always authorized). `AiProviderService::embed`
     // applies the P11c per-op timeout + circuit breaker internally.
-    match ai.embed(&text).await {
+    let caller = crate::services::ai_provider::AiCaller::kernel(KERNEL_EMBED_PLUGIN, true);
+    match ai.embed(&text, &caller).await {
         Ok(Some(result)) => {
             match vector_store {
                 Some(store) if store.is_available().await => {
@@ -710,10 +772,12 @@ pub struct CronService {
     vector_store: Option<Arc<PgVectorStore>>,
     http: reqwest::Client,
     pagefind_enabled: bool,
-    /// The item-access seam the Pagefind export is filtered through. `None` in a
-    /// harness that builds a `CronService` on its own, where the export is
-    /// skipped rather than written unfiltered — the index is a world-readable
-    /// file, so "no access model available" has to mean "publish nothing".
+    /// The item-access seam the Pagefind export is filtered through, and the
+    /// item service the background dispatch services carry for `item-api`.
+    /// `None` in a harness that builds a `CronService` on its own, where the
+    /// export is skipped rather than written unfiltered — the index is a
+    /// world-readable file, so "no access model available" has to mean "publish
+    /// nothing".
     items: Option<Arc<ItemService>>,
     /// The directory the generated Pagefind index is written to.
     ///
@@ -871,7 +935,8 @@ impl CronService {
         self.vector_store = Some(vector_store);
     }
 
-    /// Set the item-access seam the Pagefind export is filtered through.
+    /// Set the item-access seam the Pagefind export is filtered through, and
+    /// the item service `tap_cron` and `tap_queue_worker` reach `item-api` with.
     ///
     /// Wired from `AppState`, which already owns the one `ItemService` the rest
     /// of the site uses: a second one built here would carry its own
@@ -1059,6 +1124,21 @@ impl CronService {
             _ => {}
         }
 
+        // Mail retention (BG18)
+        match self.tasks.purge_mail_outbox().await {
+            Ok((cleared, deleted)) if cleared + deleted > 0 => {
+                info!(
+                    cleared,
+                    deleted, "mail retention: bodies cleared, old messages deleted"
+                );
+                tasks_run.push(format!(
+                    "purge_mail_outbox: {cleared} cleared, {deleted} deleted"
+                ));
+            }
+            Err(e) => warn!(error = %e, "failed to apply mail retention"),
+            _ => {}
+        }
+
         // Cleanup audit log (periodic)
         match self.tasks.cleanup_audit_log().await {
             Ok(count) if count > 0 => {
@@ -1197,8 +1277,17 @@ impl CronService {
         // Rebuild Pagefind index if the trovato_search plugin is enabled and requested it
         if self.pagefind_enabled {
             if let Some(items) = self.items.clone() {
-                match pagefind::maybe_rebuild_index(&self.pool, &self.pagefind_output_dir, &items)
-                    .await
+                let compaction = match self.search {
+                    Some(ref search) => search.settings().await.index_compaction_percent,
+                    None => DEFAULT_COMPACTION_PERCENT,
+                };
+                match pagefind::maybe_rebuild_index(
+                    &self.pool,
+                    &self.pagefind_output_dir,
+                    &items,
+                    compaction,
+                )
+                .await
                 {
                     Ok(true) => tasks_run.push("pagefind_rebuild".to_string()),
                     Ok(false) => {}
@@ -1837,7 +1926,7 @@ impl CronService {
     ///
     /// One builder for `tap_cron` and `tap_queue_worker` both, so the per-plugin
     /// `mail` bucket and the email service cannot be attached on one background
-    /// path and missing from the other.
+    /// path and missing from the other; the item service likewise.
     fn background_services(&self, dispatcher: &Arc<TapDispatcher>) -> crate::tap::RequestServices {
         let mut services = crate::tap::RequestServices::for_background(
             self.pool.clone(),
@@ -1851,6 +1940,14 @@ impl CronService {
         }
         if let Some(email) = self.email.clone() {
             services = services.with_email(email);
+        }
+        // The `item-api` host functions decide with this. Unbound, every
+        // `save-item` and `delete-item` from `tap_cron` and `tap_queue_worker`
+        // was refused before the plugin's `item_background` mattered. `None`
+        // only in a narrow harness that never wired one; a call then gets
+        // `ERR_ITEM_SERVICE_UNAVAILABLE`.
+        if let Some(items) = &self.items {
+            services.set_item_service(items);
         }
         services
     }

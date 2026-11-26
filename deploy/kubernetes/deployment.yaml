@@ -1,0 +1,100 @@
+# The servers. `MIGRATE_ON_START=false`: a pod never changes the schema; one
+# that starts before its migration Job has finished answers /health/live 200
+# and /health/ready 503 until the schema is there, then becomes ready by itself.
+#
+# Rolling update with maxUnavailable 0: a new pod takes traffic only once
+# ready, and an old pod leaves only after a new one is ready. Rollback is
+# `kubectl rollout undo deployment/trovato` (the previous image on the current
+# schema); never roll back the schema.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: trovato
+  labels:
+    app.kubernetes.io/name: trovato
+    app.kubernetes.io/component: server
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: trovato
+      app.kubernetes.io/component: server
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: trovato
+        app.kubernetes.io/component: server
+    spec:
+      # preStop (5) + SHUTDOWN_DRAIN_SECS (5) + SHUTDOWN_TIMEOUT_SECS (30) + 5
+      # of margin (1.5 s past the budget, and up to 3 s flushing trace export
+      # when TRACING_EXPORT=otlp). Kubernetes sends SIGKILL when this runs out.
+      terminationGracePeriodSeconds: 45
+      containers:
+        - name: trovato
+          image: ghcr.io/jeremyandrews/trovato:0.105.0
+          ports:
+            - name: http
+              containerPort: 3000
+          envFrom:
+            - secretRef:
+                name: trovato
+          env:
+            - name: MIGRATE_ON_START
+              value: "false"
+            - name: SHUTDOWN_DRAIN_SECS
+              value: "5"
+            - name: SHUTDOWN_TIMEOUT_SECS
+              value: "30"
+            # Uploads and the Pagefind index live on the volume every server
+            # shares (docs/deployment/multi-server.md).
+            - name: UPLOADS_DIR
+              value: /shared/uploads
+            - name: PAGEFIND_OUTPUT_DIR
+              value: /shared/pagefind
+          # Liveness checks nothing but the process, so a database blip takes
+          # pods out of rotation (readiness) without restarting them.
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          # Postgres and Redis reachable, schema ready, plugins loaded, not
+          # draining. A pod waiting for its migration Job stays here, not in a
+          # crash loop.
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 2
+          lifecycle:
+            # Endpoint removal takes a moment to reach kube-proxy and the
+            # ingress; keep serving through it before the process hears SIGTERM.
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              memory: 1Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+          volumeMounts:
+            # Mounted one level above the directories Trovato writes.
+            - name: shared
+              mountPath: /shared
+      volumes:
+        - name: shared
+          persistentVolumeClaim:
+            claimName: trovato-shared

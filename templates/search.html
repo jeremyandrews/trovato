@@ -6,53 +6,13 @@
 <div class="search-page">
     <h1>Search</h1>
 
-    {# Scolta search container — scolta.js takes over this element when JS is available #}
+    {# Scolta search container: scolta.js builds its interface here, and only
+       once the Pagefind index has loaded does search-init.js hide the server
+       results below. With JavaScript off, or no index built, the server
+       results are the page. They are written once (B160): there is no second
+       copy in a <noscript>. #}
     <div id="scolta-search"></div>
 
-    {# Server-side fallback — shown when JS is disabled or Pagefind unavailable #}
-    <noscript>
-    <form action="/search" method="get" class="search-form">
-        <input type="search" name="q" value="{{ query }}" placeholder="Search..." class="search-input" aria-label="Search">
-        <button type="submit" class="search-button">Search</button>
-    </form>
-
-    {% if query %}
-        <p class="search-summary" aria-live="polite">Found {{ total }} result{% if total != 1 %}s{% endif %} for "{{ query }}"</p>
-
-        {% if results | length > 0 %}
-            <div class="search-results">
-                {% for result in results %}
-                <article class="search-result">
-                    <h2><a href="/item/{{ result.id }}">{{ result.title }}</a></h2>
-                    <div class="result-meta">{{ result.item_type }}</div>
-                    {% if result.snippet %}
-                        {# SAFE: the one place a search snippet is printed unescaped. crate::search::snippet::render built it: tags stripped from the source before highlighting, the text escaped exactly once, then only its own markers turned into <mark>. Do not escape it again. #}
-                        <div class="result-snippet">{{ result.snippet | safe }}</div>
-                    {% endif %}
-                </article>
-                {% endfor %}
-            </div>
-
-            {% if total_pages > 1 %}
-            <nav class="search-pagination" aria-label="Search results pagination">
-                {% if has_prev %}
-                    <a href="/search?q={{ query | urlencode }}&page={{ prev_page }}">&laquo; Previous</a>
-                {% endif %}
-
-                <span class="page-info">Page {{ page }} of {{ total_pages }}</span>
-
-                {% if has_next %}
-                    <a href="/search?q={{ query | urlencode }}&page={{ next_page }}">Next &raquo;</a>
-                {% endif %}
-            </nav>
-            {% endif %}
-        {% else %}
-            <p class="no-results">No results found. Try a different search term.</p>
-        {% endif %}
-    {% endif %}
-    </noscript>
-
-    {# Also show server-side results for the initial page load (before JS takes over) #}
     <div id="search-fallback" class="search-fallback">
         <form action="/search" method="get" class="search-form">
             <input type="search" name="q" value="{{ query }}" placeholder="Search..." class="search-input" aria-label="Search">
@@ -60,9 +20,13 @@
         </form>
 
         {% if query %}
+            {% if not no_terms %}
             <p class="search-summary" aria-live="polite">Found {{ total }} result{% if total != 1 %}s{% endif %} for "{{ query }}"</p>
+            {% endif %}
 
-            {% if results | length > 0 %}
+            {% if no_terms %}
+                <p class="search-too-short messages error" role="alert">Your search has no word that can be searched for: every word was too short or too common, or punctuation. Use at least one more specific keyword.</p>
+            {% elif results | length > 0 %}
                 <div class="search-results">
                     {% for result in results %}
                     <article class="search-result">

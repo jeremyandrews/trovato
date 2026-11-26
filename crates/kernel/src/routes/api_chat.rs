@@ -5,7 +5,7 @@
 //! and `use ai chat` permissions.
 
 use std::convert::Infallible;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use axum::Json;
 use axum::extract::State;
@@ -19,7 +19,7 @@ use tower_sessions::Session;
 use crate::error::AppError;
 use crate::routes::helpers::require_csrf_header;
 use crate::services::ai_chat::{ChatRole, ChatStreamEvent, ChatTurn};
-use crate::services::ai_token_budget::{BudgetAction, UsageLogEntry};
+use crate::services::ai_provider::{AiCallError, AiCaller};
 use crate::state::AppState;
 
 // =============================================================================
@@ -73,6 +73,9 @@ pub struct ChatInput {
     /// User's chat message.
     pub message: String,
 }
+
+/// What the usage log records the chatbot's calls as.
+const CHAT_USAGE_SOURCE: &str = "kernel_chat";
 
 /// Session key for conversation history.
 const CHAT_HISTORY_KEY: &str = "chat_history";
@@ -160,48 +163,12 @@ async fn chat_handler(
     let resolved = match state.ai_chat().resolve_chat_provider().await {
         Ok(r) => r,
         Err(e) => {
-            return AppError::service_unavailable("AI", format!("Failed to connect: {e}"))
+            tracing::warn!(error = %e, "no chat provider resolved");
+            return AppError::service_unavailable("AI", "No AI provider is configured for chat")
                 .into_response();
         }
     };
     let provider_id = resolved.config.id.clone();
-
-    // Budget enforcement (before streaming starts)
-    match state
-        .ai_budgets()
-        .check_budget(state.db(), uid, &provider_id)
-        .await
-    {
-        Ok(result) if !result.allowed => match result.action {
-            BudgetAction::Deny | BudgetAction::Queue => {
-                tracing::warn!(
-                    user = %uid,
-                    provider = %provider_id,
-                    used = result.used,
-                    limit = result.limit,
-                    "AI chat token budget exceeded"
-                );
-                return (AppError::RateLimited {
-                    retry_after_secs: 3600,
-                    category: "token_budget".to_string(),
-                })
-                .into_response();
-            }
-            BudgetAction::Warn => {
-                tracing::warn!(
-                    user = %uid,
-                    provider = %provider_id,
-                    used = result.used,
-                    limit = result.limit,
-                    "AI chat token budget exceeded (warn mode, allowing)"
-                );
-            }
-        },
-        Err(e) => {
-            tracing::warn!(error = %e, "failed to check AI chat budget, allowing request");
-        }
-        _ => {}
-    }
 
     // Load conversation history from session
     let history: Vec<ChatTurn> = session
@@ -252,15 +219,26 @@ async fn chat_handler(
     }
 
     // Execute streaming request using the same resolved provider used for budget check (no TOCTOU).
-    let (stream, meta) = match state
+    // A failed start shows a sentence: the provider's own text is in the log
+    // (`log_provider_failure`), never in the browser (B55).
+    let caller = AiCaller::user(uid, CHAT_USAGE_SOURCE);
+    let stream = match state
         .ai_chat()
-        .execute_streaming(messages, &config, &resolved)
+        .execute_streaming(messages, &config, &resolved, &caller)
         .await
     {
         Ok(s) => s,
+        // The send path holds the call to the person's budget before it leaves.
+        Err(AiCallError::BudgetExceeded) => {
+            return (AppError::RateLimited {
+                retry_after_secs: 3600,
+                category: "token_budget".to_string(),
+            })
+            .into_response();
+        }
         Err(e) => {
-            return AppError::service_unavailable("AI", format!("Failed to start stream: {e}"))
-                .into_response();
+            tracing::warn!(error = %e, provider = %provider_id, "AI chat stream failed to start");
+            return AppError::service_unavailable("AI", e.user_message()).into_response();
         }
     };
 
@@ -270,11 +248,6 @@ async fn chat_handler(
     // client disconnects, which cascades through async_stream → provider byte
     // stream → reqwest response. The TCP connection to the provider is closed,
     // stopping further token generation. No explicit abort logic is needed.
-    let db = state.ai_chat().db().clone();
-    let ai_budgets = state.ai_budgets().clone();
-    let request_start = Instant::now();
-    let stream_provider_id = meta.provider_id;
-    let model = meta.model;
     let session_for_stream = session.clone();
     let max_history_turns = config.max_history_turns;
 
@@ -327,28 +300,8 @@ async fn chat_handler(
                         }
                     }
 
-                    let latency_ms = request_start.elapsed().as_millis() as i64;
-
-                    // Record usage (with a cost estimate when the model is priced,
-                    // P11c / D-44).
-                    let cost_estimate = ai_budgets
-                        .estimate_cost(&model, i64::from(prompt_tokens), i64::from(completion_tokens))
-                        .await;
-                    let entry = UsageLogEntry {
-                        user_id: Some(uid),
-                        plugin_name: "kernel_chat".to_string(),
-                        provider_id: stream_provider_id.clone(),
-                        operation: "Chat".to_string(),
-                        model: model.clone(),
-                        prompt_tokens: prompt_tokens.min(i32::MAX as u32) as i32,
-                        completion_tokens: completion_tokens.min(i32::MAX as u32) as i32,
-                        total_tokens: total_tokens.min(i32::MAX as u32) as i32,
-                        latency_ms,
-                        cost_estimate,
-                    };
-                    if let Err(e) = ai_budgets.record_usage(&db, entry).await {
-                        tracing::warn!(error = %e, "failed to record chat usage");
-                    }
+                    // The send path recorded the call's usage and cost when
+                    // the provider's stream reported it.
 
                     // F6: Do NOT include assistant_message in the done event — the
                     // client JS already accumulates tokens in its own variable.

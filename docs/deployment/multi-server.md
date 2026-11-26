@@ -29,12 +29,17 @@ directory, if it cannot. A broken mount fails the deploy, not the first
 upload.
 
 The Pagefind index is rebuilt by whichever server's cron run takes the lock.
-It builds beside `PAGEFIND_OUTPUT_DIR`, in the same parent directory, then
-renames the old index aside and the new one into place. Every server serves
-`/static/pagefind/` from that directory. This swap has been tested on a Docker
-volume only; on NFS or EFS, check that a rename within one directory is atomic
-before relying on it, and keep `PAGEFIND_OUTPUT_DIR` below the mount point
-rather than at it, because a mount point cannot be renamed.
+The kernel writes it itself, in Pagefind 1.3.0's format, so no `pagefind`
+binary is needed on any server or in the image. It builds the new index in a
+directory beside `PAGEFIND_OUTPUT_DIR` (the parent must be writable), then
+moves its files into `PAGEFIND_OUTPUT_DIR` one by one: the new index files,
+whose names are content hashes and so never overwrite a file a reader is
+using, then `pagefind-entry.json` last, with a rename. A browser that loaded
+the previous index keeps finding its files, because a file the new index no
+longer uses is deleted only after 24 hours. Every server serves
+`/static/pagefind/` from that directory. Only renames of single files within
+`PAGEFIND_OUTPUT_DIR` need to be atomic; when the build directory is on a
+different filesystem, each file is copied to a temporary name there first.
 
 Everything else every server needs is in the image: plugins, templates and
 static files. Give every server the same image and the same environment.
@@ -49,6 +54,21 @@ Every server reads the hash every 250 ms and clears any cache whose counter
 changed. So a role revoked, a user blocked or an item edited on one server
 holds on every server within about 250 ms, plus the request that was already
 running.
+
+A write that does not go through a server (SQL run by hand, a restore, a
+script) bumps nothing, so servers keep serving their cached copies until each
+cache's time limit (`CACHE_TTL`, and five minutes for users, items and
+categories). To have them serve it at once, without a restart:
+
+```sh
+trovato cache clear                 # every kind
+trovato cache clear --kind items    # or only the ones the write touched
+```
+
+It runs anywhere with the site's `REDIS_URL`, and returns once every server
+has had time to clear (one second) ([command line reference](../cli-reference.md#trovato-cache-clear)).
+`trovato config import` and the other commands that write end with the same
+clear.
 
 If Redis cannot be read, each server logs one warning and its caches fall back
 to their own time limits until Redis answers again. When Redis restarts the
@@ -76,8 +96,8 @@ admin page says so, and marks each plugin whose change is still waiting.
 To apply it, restart every server, one at a time:
 
 1. Make the change on any server.
-2. Restart one server and wait until `/health` answers and the load balancer
-   sends it traffic again.
+2. Restart one server and wait until `/health/ready` answers 200 and the load
+   balancer sends it traffic again.
 3. Repeat for each of the others.
 
 Until the last one restarts, servers disagree about that plugin: its routes,

@@ -11,7 +11,7 @@ use crate::gather::{GatherDenied, GatherQuery};
 use crate::menu::MenuTreeLink;
 use crate::models::tile::{CreateTile, Tile, UpdateTile, gather_tile_items};
 use crate::routes::gather::{ExecuteParams, execute_query_only, query_language};
-use crate::routes::helpers::html_escape;
+use crate::routes::helpers::{TranslationLink, html_escape};
 use crate::services::audit::AuditTrail;
 use crate::state::AppState;
 use crate::tap::UserContext;
@@ -33,6 +33,19 @@ pub struct TileRenderContext<'a> {
     /// Every config menu as a tree for this viewer, by name, as the page
     /// context carries it in `menus_by_name`.
     pub menus_by_name: &'a BTreeMap<String, Vec<MenuTreeLink>>,
+    /// The page's root values, as the page context carries them in
+    /// `page_root` (see `content::page_builder::page_root_values`): every
+    /// tile template receives them, so a tile can follow a page's settings.
+    pub page_root: &'a serde_json::Value,
+    /// The address this page is read at, as asked for: `requested_path` in
+    /// the page context, the language switcher's own address for the active
+    /// language.
+    pub current_path: &'a str,
+    /// Every language this page can be read in and its address there, when
+    /// the route knows (an item page does; most others do not). `None` for a
+    /// tile to fall back to a language's front page, the same way a crawler
+    /// is offered no `hreflang` alternate at all for a page with none.
+    pub translations: Option<&'a [TranslationLink]>,
 }
 
 /// Service for loading and rendering tiles.
@@ -92,19 +105,23 @@ impl TileService {
         Ok(deleted)
     }
 
-    /// Get visible tiles for a region, filtered by path and role visibility rules.
+    /// Get visible tiles for a region, filtered by path, role and audience
+    /// visibility rules. `authenticated` decides an `audience` rule; it is the
+    /// viewer's actual signed-in state, not derived from `user_roles` (every
+    /// viewer, signed in or not, can carry `anonymous user` there).
     pub async fn get_visible_tiles(
         &self,
         region: &str,
         stage_id: uuid::Uuid,
         path: &str,
         user_roles: &[String],
+        authenticated: bool,
     ) -> Result<Vec<Tile>> {
         let tiles = Tile::list_by_region(&self.db, region, stage_id).await?;
 
         Ok(tiles
             .into_iter()
-            .filter(|t| t.is_visible(path, user_roles))
+            .filter(|t| t.is_visible(path, user_roles, authenticated))
             .collect())
     }
 
@@ -117,7 +134,13 @@ impl TileService {
         render: &TileRenderContext<'_>,
     ) -> Result<String> {
         let tiles = self
-            .get_visible_tiles(region, stage_id, path, render.roles)
+            .get_visible_tiles(
+                region,
+                stage_id,
+                path,
+                render.roles,
+                render.viewer.authenticated,
+            )
             .await?;
         let mut html = String::new();
         for tile in &tiles {
@@ -135,9 +158,10 @@ impl TileService {
 /// off the page entirely rather than drawn as an empty box.
 async fn render_tile_html(tile: &Tile, render: &TileRenderContext<'_>) -> Option<String> {
     let body = match tile.tile_type.as_str() {
-        "custom_html" => custom_html_body(tile),
+        "custom_html" => render_custom_html_tile(tile, render)?,
         "menu" => render_menu_tile(tile, render),
         "gather_query" => render_gather_tile(tile, render).await?,
+        "language_switcher" => render_language_switcher_tile(tile, render)?,
         "chat" => chat_widget(&tile.machine_name),
         _ => "<p>Unknown tile type</p>".to_string(),
     };
@@ -231,6 +255,38 @@ fn gather_page_path(query: &GatherQuery) -> String {
         .unwrap_or_else(|| format!("/gather/{}", query.query_id))
 }
 
+/// A `custom_html` tile: its body, through the text format it names, or,
+/// when a template `elements/tile--custom_html--{machine_name}` or
+/// `elements/tile--custom_html` is on the search path, that template's
+/// rendering of it, with `tile`, `body` (the filtered HTML) and `page_root`.
+///
+/// A template is how a sitewide tile follows a page's settings: a footer
+/// call to action that a page's root field hides or replaces. `None`, and so
+/// no tile at all, when the template renders nothing but whitespace.
+fn render_custom_html_tile(tile: &Tile, render: &TileRenderContext<'_>) -> Option<String> {
+    let body = custom_html_body(tile);
+    let suggestions = [
+        format!("elements/tile--custom_html--{}", tile.machine_name),
+        "elements/tile--custom_html".to_string(),
+    ];
+    let refs: Vec<&str> = suggestions.iter().map(String::as_str).collect();
+    let Some(template) = render.state.theme().resolve_template(&refs) else {
+        return Some(body);
+    };
+    let mut context = tera::Context::new();
+    context.insert("tile", tile);
+    context.insert("body", &body);
+    context.insert("page_root", render.page_root);
+    match render.state.theme().tera().render(&template, &context) {
+        Ok(html) if html.trim().is_empty() => None,
+        Ok(html) => Some(html),
+        Err(e) => {
+            tracing::warn!(tile = %tile.machine_name, error = %e, "failed to render tile");
+            Some(String::new())
+        }
+    }
+}
+
 /// A `custom_html` tile's body, through the text format it names.
 fn custom_html_body(tile: &Tile) -> String {
     let body = tile
@@ -244,15 +300,15 @@ fn custom_html_body(tile: &Tile) -> String {
         .and_then(|v| v.as_str())
         .unwrap_or("filtered_html");
 
-    // Tile configs are admin-set (saved via admin forms with "configure site"
-    // permission). for_format_checked with has_full_html=true is appropriate —
-    // admins may use full_html. Unknown format strings fall through to
-    // for_format() which defaults to plain_text (safe).
-    crate::content::FilterPipeline::for_format_checked(format, true).process(body)
+    // The same view path every other body goes through: full_html is cleaned
+    // by TrustedHtmlFilter, so a tile body is sanitized regardless of who
+    // wrote it. An unknown format string falls through to plain_text (safe).
+    crate::content::FilterPipeline::for_format(format).process(body)
 }
 
 /// Render a tile's body through the first template its suggestions resolve to:
-/// `elements/tile--{type}--{machine_name}`, then `elements/tile--{type}`.
+/// `elements/tile--{type}--{machine_name}`, then `elements/tile--{type}`, with
+/// the page's root values added as `page_root`.
 ///
 /// A template that fails to render is logged and leaves the body empty rather
 /// than failing the page around it.
@@ -271,12 +327,89 @@ fn render_tile_template(
         tracing::warn!(tile = %tile.machine_name, "no template for tile");
         return String::new();
     };
-    match theme.tera().render(&template, context) {
+    let mut context = context.clone();
+    context.insert("page_root", render.page_root);
+    match theme.tera().render(&template, &context) {
         Ok(html) => html,
         Err(e) => {
             tracing::warn!(tile = %tile.machine_name, error = %e, "failed to render tile");
             String::new()
         }
+    }
+}
+
+/// A `language_switcher` tile: one link per language the site has enabled, to
+/// this same page in that language when the route knows where that is (an
+/// item page does, through `translations`), else to that language's front
+/// page — the fallback Drupal's own switcher uses for a page with no
+/// translation. No settings beyond the usual title and visibility.
+///
+/// `None`, and so no tile at all, on a site with one enabled language: there
+/// is nothing to switch to.
+fn render_language_switcher_tile(tile: &Tile, render: &TileRenderContext<'_>) -> Option<String> {
+    let links = language_switcher_links(
+        render.state.known_languages(),
+        render.state.default_language(),
+        render.language,
+        render.current_path,
+        render.translations,
+    );
+    if links.is_empty() {
+        return None;
+    }
+    let mut context = tera::Context::new();
+    context.insert("tile", tile);
+    context.insert("links", &links);
+    Some(render_tile_template(tile, render, &context))
+}
+
+/// The links a language switcher tile shows: one per language in
+/// `known_languages`, each `{ language, path, current }`. Empty when there is
+/// one language or fewer — nothing to switch to.
+///
+/// The active language links to `current_path`, whatever page that is. Every
+/// other language links to its address from `translations` when the route
+/// supplied one for it, else to that language's front page: the fallback
+/// Drupal's own switcher block uses for a page with no translation.
+fn language_switcher_links(
+    known_languages: &[String],
+    default_language: &str,
+    active_language: &str,
+    current_path: &str,
+    translations: Option<&[TranslationLink]>,
+) -> Vec<serde_json::Value> {
+    if known_languages.len() <= 1 {
+        return Vec::new();
+    }
+    known_languages
+        .iter()
+        .map(|language| {
+            let current = language == active_language;
+            let path = if current {
+                current_path.to_string()
+            } else {
+                translations
+                    .and_then(|list| list.iter().find(|t| &t.language == language))
+                    .map(|t| t.path.clone())
+                    .unwrap_or_else(|| language_front_page(language, default_language))
+            };
+            serde_json::json!({
+                "language": language,
+                "path": path,
+                "current": current,
+            })
+        })
+        .collect()
+}
+
+/// Where a language's front page is: `/` for the site's default language,
+/// `/{language}` for any other — the same address the front page route reads
+/// a language prefix back from.
+fn language_front_page(language: &str, default_language: &str) -> String {
+    if language == default_language {
+        "/".to_string()
+    } else {
+        format!("/{language}")
     }
 }
 
@@ -365,6 +498,23 @@ mod tests {
         assert!(html.contains("<p>Hello <strong>World</strong></p>"));
     }
 
+    // SECURITY REGRESSION TEST — B151: a custom_html tile in full_html is
+    // sanitized like any other render path, regardless of who wrote it.
+    #[test]
+    fn render_custom_html_tile_in_full_html_strips_script() {
+        let tile = make_tile(
+            "custom_html",
+            serde_json::json!({
+                "body": r#"<p class="lead">Hi</p><script>alert(1)</script><img src=x onerror="alert(1)">"#,
+                "format": "full_html"
+            }),
+        );
+        let html = wrap_tile(&tile, &custom_html_body(&tile));
+        assert!(html.contains(r#"<p class="lead">Hi</p>"#), "{html}");
+        assert!(!html.contains("<script"), "{html}");
+        assert!(!html.contains("onerror"), "{html}");
+    }
+
     #[test]
     fn render_chat_tile() {
         let tile = make_tile("chat", serde_json::json!({}));
@@ -400,5 +550,69 @@ mod tests {
         query.display.canonical_url = None;
         query.display.routes.clear();
         assert_eq!(gather_page_path(&query), "/gather/upcoming");
+    }
+
+    fn lang(code: &str) -> String {
+        code.to_string()
+    }
+
+    #[test]
+    fn a_single_language_site_has_nothing_to_switch_to() {
+        let links = language_switcher_links(&[lang("en")], "en", "en", "/about", None);
+        assert!(links.is_empty());
+    }
+
+    #[test]
+    fn one_link_per_enabled_language_the_current_one_marked() {
+        let known = vec![lang("en"), lang("it"), lang("he")];
+        let links = language_switcher_links(&known, "en", "it", "/it/why", None);
+        assert_eq!(links.len(), 3);
+
+        let en = links.iter().find(|l| l["language"] == "en").unwrap();
+        assert_eq!(en["path"], "/");
+        assert_eq!(en["current"], false);
+
+        let it = links.iter().find(|l| l["language"] == "it").unwrap();
+        assert_eq!(it["path"], "/it/why");
+        assert_eq!(it["current"], true);
+
+        let he = links.iter().find(|l| l["language"] == "he").unwrap();
+        assert_eq!(he["path"], "/he");
+        assert_eq!(he["current"], false);
+    }
+
+    #[test]
+    fn a_translated_page_links_to_its_own_alias_in_each_language() {
+        let known = vec![lang("en"), lang("it")];
+        let translations = vec![
+            TranslationLink {
+                language: "en".to_string(),
+                path: "/test-article".to_string(),
+            },
+            TranslationLink {
+                language: "it".to_string(),
+                path: "/it/articolo-di-prova".to_string(),
+            },
+        ];
+        let links =
+            language_switcher_links(&known, "en", "en", "/test-article", Some(&translations));
+
+        let it = links.iter().find(|l| l["language"] == "it").unwrap();
+        assert_eq!(it["path"], "/it/articolo-di-prova");
+        assert_eq!(it["current"], false);
+    }
+
+    #[test]
+    fn a_language_with_no_translation_falls_back_to_its_front_page() {
+        let known = vec![lang("en"), lang("it"), lang("he")];
+        let translations = vec![TranslationLink {
+            language: "en".to_string(),
+            path: "/test-article".to_string(),
+        }];
+        let links =
+            language_switcher_links(&known, "en", "en", "/test-article", Some(&translations));
+
+        let he = links.iter().find(|l| l["language"] == "he").unwrap();
+        assert_eq!(he["path"], "/he");
     }
 }

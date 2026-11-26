@@ -79,7 +79,7 @@ pub struct PluginInfo {
     pub config: PluginConfigDecl,
 
     /// The kinds of owner this plugin's vocabularies may belong to (added by
-    /// B108, after 0.106.0). See [`VocabularyOwnerDecl`].
+    /// B108, after 0.104.0). See [`VocabularyOwnerDecl`].
     #[serde(default)]
     pub vocabulary_owners: Vec<VocabularyOwnerDecl>,
 }
@@ -136,7 +136,7 @@ pub struct VocabularyOwnerDecl {
 /// queue or anything else that changes while the site runs must not be named.
 /// Additive: a manifest without `[config]` declares no tables, as before.
 ///
-/// `secret_columns` (added by B130, plugin API 0.107) names, per table, the
+/// `secret_columns` (added by B130, plugin API 0.105) names, per table, the
 /// columns that hold a secret, a password, a token, a key or a hash of one:
 ///
 /// ```toml
@@ -467,6 +467,8 @@ pub const KNOWN_TAPS: &[&str] = &[
     // (G-NO-PLUGIN-HTTP; added in KERNEL_API_VERSION (0,99)).
     "tap_api",
     "tap_perm",
+    // Admin sidebar links and dashboard cards (BL-162).
+    "tap_admin_nav",
     // Theme
     "tap_theme",
     "tap_preprocess_item",
@@ -506,7 +508,7 @@ pub const KNOWN_TAPS: &[&str] = &[
     "tap_comment_access",
     // Gather extensions
     "tap_gather_extend",
-    // Owned vocabularies (added by B108, after 0.106.0): resolve an owner
+    // Owned vocabularies (added by B108, after 0.104.0): resolve an owner
     // route's `{owner}` and decide who administers its terms.
     "tap_vocabulary_owner_access",
 ];
@@ -537,7 +539,7 @@ pub const KNOWN_HOST_INTERFACES: &[&str] = &[
     // Run a Gather definition for the request's viewer (added by B80, after
     // 0.105.0; docs/design/plugin-query-surface.md).
     "query",
-    // Create and list owned vocabularies (added by B108, after 0.106.0).
+    // Create and list owned vocabularies (added by B108, after 0.104.0).
     "vocabulary",
 ];
 

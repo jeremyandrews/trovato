@@ -27,6 +27,7 @@ mod common;
 use axum::body::Body;
 use axum::http::{Request, StatusCode, header};
 use common::TestApp;
+use trovato_kernel::file::FileStatus;
 use uuid::Uuid;
 
 const PLUGIN: &str = "test_plugin_api";
@@ -1047,6 +1048,335 @@ fn a_plugin_filters_user_html_through_a_text_format() {
             "full_html without `use full_html` must be refused: {answer}"
         );
 
+        disable_plugin(app).await;
+    });
+}
+
+// =============================================================================
+// B182 — a plugin route's multipart form, end to end (G-FILE-NO-HOST-API,
+// BL-107).
+//
+// Before this, a plugin route's body was UTF-8 text capped at `MAX_REQUEST_BODY`
+// for the trip across the WASM boundary, so a multipart upload was either over
+// the cap or opaque bytes no plugin could store. The kernel now parses
+// `multipart/form-data` for a plugin route itself, stores each file part
+// through `FileService` — the same size limit, MIME allowlist and magic-byte
+// check `/file/upload` gets — and hands the plugin `ApiRequest::files`: ids and
+// metadata, never bytes. `/tpa/upload/echo` and `/tpa/upload` are the real
+// `test_plugin_api` wasm exercising both halves: receiving the upload, and
+// attaching its id to an item through `host::save_item`.
+// =============================================================================
+
+/// A small but real PNG, the shape `FileService::validate_file`'s magic-byte
+/// check needs.
+fn small_png() -> Vec<u8> {
+    let img = image::RgbImage::from_fn(8, 8, |x, y| image::Rgb([x as u8 * 30, y as u8 * 30, 90]));
+    let mut out = std::io::Cursor::new(Vec::new());
+    img.write_to(&mut out, image::ImageFormat::Png).unwrap();
+    out.into_inner()
+}
+
+/// A `multipart/form-data` body: one file part under `file_field`, plus
+/// ordinary text fields, with a fixed boundary for reproducibility.
+fn multipart_body(
+    boundary: &str,
+    file_field: &str,
+    filename: &str,
+    content_type: &str,
+    data: &[u8],
+    text_fields: &[(&str, &str)],
+) -> Vec<u8> {
+    let mut body = Vec::new();
+    for (name, value) in text_fields {
+        body.extend_from_slice(
+            format!(
+                "--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n"
+            )
+            .as_bytes(),
+        );
+    }
+    body.extend_from_slice(
+        format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"{file_field}\"; \
+             filename=\"{filename}\"\r\nContent-Type: {content_type}\r\n\r\n"
+        )
+        .as_bytes(),
+    );
+    body.extend_from_slice(data);
+    body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+    body
+}
+
+/// POST a multipart upload with a fresh CSRF token, returning the status and
+/// parsed JSON body.
+async fn post_upload(
+    app: &TestApp,
+    cookies: &str,
+    path: &str,
+    token: &str,
+    filename: &str,
+    content_type: &str,
+    data: &[u8],
+    text_fields: &[(&str, &str)],
+) -> (StatusCode, serde_json::Value) {
+    let boundary = "----B182PluginUploadBoundary";
+    let body = multipart_body(boundary, "file", filename, content_type, data, text_fields);
+    let response = app
+        .request_with_cookies(
+            Request::post(path)
+                .header(
+                    header::CONTENT_TYPE,
+                    format!("multipart/form-data; boundary={boundary}"),
+                )
+                .header("X-CSRF-Token", token)
+                .body(Body::from(body))
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    (status, json_body(response).await)
+}
+
+/// **The receive half.** A plugin route's multipart POST reaches the plugin
+/// with a stored file's id and metadata, not bytes — and the file really is in
+/// `FileService`, `Temporary`, until something references it. `/tpa/upload/echo`
+/// never calls `save-item`, so this is the control for the next test: nothing
+/// promotes a file just for having been uploaded.
+#[test]
+fn a_multipart_post_hands_the_plugin_a_stored_files_id_and_metadata() {
+    common::run_test(async {
+        let app = app();
+        let cookies = app
+            .create_and_login_admin(
+                "b182upload1",
+                "correct-horse-battery-staple",
+                "b182u1@test.local",
+            )
+            .await;
+        let token = csrf_token(app, &cookies).await;
+
+        let png = small_png();
+        let (status, body) = post_upload(
+            app,
+            &cookies,
+            "/tpa/upload/echo",
+            &token,
+            "logo.png",
+            "image/png",
+            &png,
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["field"], "file", "{body}");
+        assert_eq!(body["filename"], "logo.png", "{body}");
+        assert_eq!(body["mime_type"], "image/png", "{body}");
+        assert_eq!(body["size"], png.len() as i64, "{body}");
+
+        let file_id: Uuid = body["file_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no file_id in {body}"))
+            .parse()
+            .expect("file_id is a uuid");
+        let stored = app
+            .state
+            .files()
+            .get(file_id)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("the kernel must have stored the file"));
+        assert_eq!(stored.filemime, "image/png");
+        assert_eq!(stored.filesize, png.len() as i64);
+        assert_eq!(
+            stored.status,
+            FileStatus::Temporary,
+            "no save referenced it, so it must not be promoted"
+        );
+
+        disable_plugin(app).await;
+    });
+}
+
+/// **The promote half.** The plugin attaches the file id to a `conference`
+/// item's `field_logo` through `host::save_item`; the kernel's existing
+/// item-write path promotes it out of `Temporary`, exactly as it would for a
+/// person's own upload widget — the plugin never touches file storage itself.
+#[test]
+fn saving_an_item_through_the_plugin_promotes_the_uploaded_file() {
+    common::run_test(async {
+        let app = app();
+        app.ensure_conference_type().await;
+        let cookies = app
+            .create_and_login_admin(
+                "b182upload2",
+                "correct-horse-battery-staple",
+                "b182u2@test.local",
+            )
+            .await;
+        let token = csrf_token(app, &cookies).await;
+
+        let png = small_png();
+        let (status, body) = post_upload(
+            app,
+            &cookies,
+            "/tpa/upload",
+            &token,
+            "logo.png",
+            "image/png",
+            &png,
+            &[("title", "Conference with a logo")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body["item_id"].is_string(), "{body}");
+
+        let file_id: Uuid = body["file_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no file_id in {body}"))
+            .parse()
+            .expect("file_id is a uuid");
+        let stored = app.state.files().get(file_id).await.unwrap().unwrap();
+        assert_eq!(
+            stored.status,
+            FileStatus::Permanent,
+            "saving an item referencing the file must promote it"
+        );
+
+        let item_id: Uuid = body["item_id"]
+            .as_str()
+            .unwrap_or_else(|| panic!("no item_id in {body}"))
+            .parse()
+            .expect("item_id is a uuid");
+        sqlx::query("DELETE FROM item WHERE id = $1")
+            .bind(item_id)
+            .execute(&app.db)
+            .await
+            .ok();
+        disable_plugin(app).await;
+    });
+}
+
+/// **The kernel's existing refusal, unchanged.** A file over `MAX_FILE_SIZE` is
+/// a 413 naming the limit; a disallowed type is a 415 — `FileService`'s own
+/// checks, reached through the plugin route exactly as `/file/upload` reaches
+/// them. No second storage path means no second set of rules either.
+#[test]
+fn an_oversized_or_disallowed_upload_is_refused_by_the_kernels_own_checks() {
+    common::run_test(async {
+        let app = app();
+        let cookies = app
+            .create_and_login_admin(
+                "b182upload3",
+                "correct-horse-battery-staple",
+                "b182u3@test.local",
+            )
+            .await;
+
+        let mut huge = small_png();
+        huge.resize(11 * 1024 * 1024, 0);
+        let token = csrf_token(app, &cookies).await;
+        let (status, body) = post_upload(
+            app,
+            &cookies,
+            "/tpa/upload/echo",
+            &token,
+            "huge.png",
+            "image/png",
+            &huge,
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE, "{body}");
+
+        let token = csrf_token(app, &cookies).await;
+        let (status, body) = post_upload(
+            app,
+            &cookies,
+            "/tpa/upload/echo",
+            &token,
+            "virus.exe",
+            "application/x-msdownload",
+            b"not really an executable",
+            &[],
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE, "{body}");
+
+        disable_plugin(app).await;
+    });
+}
+
+/// A multipart POST with no `_token` field and no header is refused exactly as
+/// a form-urlencoded one is — widening the body format must not open a forgery
+/// hole.
+#[test]
+fn a_multipart_post_without_a_csrf_token_is_refused() {
+    common::run_test(async {
+        let app = app();
+        let cookies = app
+            .create_and_login_admin(
+                "b182upload4",
+                "correct-horse-battery-staple",
+                "b182u4@test.local",
+            )
+            .await;
+
+        let boundary = "----B182NoTokenBoundary";
+        let body = multipart_body(boundary, "file", "x.png", "image/png", &small_png(), &[]);
+        let response = app
+            .request_with_cookies(
+                Request::post("/tpa/upload/echo")
+                    .header(
+                        header::CONTENT_TYPE,
+                        format!("multipart/form-data; boundary={boundary}"),
+                    )
+                    .body(Body::from(body))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        disable_plugin(app).await;
+    });
+}
+
+/// **The other half of the contract.** A non-multipart POST is untouched: same
+/// JSON body handling, same CSRF rule, as every test above this section
+/// already proves. This pins that a JSON caller's request carries no `files`
+/// surprise.
+#[test]
+fn a_non_multipart_post_is_unchanged_by_the_multipart_seam() {
+    common::run_test(async {
+        let app = app();
+        let cookies = app
+            .create_and_login_user(
+                "b182nonmp",
+                "correct-horse-battery-staple",
+                "b182nonmp@test.local",
+            )
+            .await;
+        let user = user_id_of(app, "b182nonmp").await;
+        grant_write_permission(app, user).await;
+        cleanup(app, user).await;
+        let token = csrf_token(app, &cookies).await;
+
+        let response = app
+            .request_with_cookies(
+                Request::post("/tpa/note/nonmp")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("X-CSRF-Token", &token)
+                    .body(Body::from(r#"{"text":"still json"}"#))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["written"], true, "{body}");
+
+        cleanup(app, user).await;
         disable_plugin(app).await;
     });
 }

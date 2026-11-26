@@ -1,15 +1,9 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/form.html" as form %}
 
+{% block page_title %}{{ t(s="Site settings") }}{% endblock page_title %}
+
 {% block content %}
-<div class="admin-header">
-    <h2>Site Settings</h2>
-</div>
-
-{% if flash %}
-<div class="message message--info" role="status">{# SAFE: flash is set by kernel with static string, not user input #}{{ flash | safe }}</div>
-{% endif %}
-
 <div class="admin-card">
     <form method="post" action="/admin/config/site">
         {{ form::csrf(csrf_token=csrf_token) }}
@@ -19,41 +13,41 @@
         {% endif %}
 
         <fieldset class="fieldset">
-            <legend>General</legend>
+            <legend>{{ t(s="General") }}</legend>
             <div class="fieldset__content">
                 <div class="form-item">
-                    <label for="site_name" class="form-item__label form-item__label--required">Site name</label>
+                    <label for="site_name" class="form-item__label">{{ t(s="Site name") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
                     <input type="text" id="site_name" name="site_name" class="form-text" value="{{ site_name }}" required>
                 </div>
                 <div class="form-item">
-                    <label for="site_slogan" class="form-item__label">Site slogan</label>
+                    <label for="site_slogan" class="form-item__label">{{ t(s="Site slogan") }}</label>
                     <input type="text" id="site_slogan" name="site_slogan" class="form-text" value="{{ site_slogan }}">
                 </div>
                 <div class="form-item">
-                    <label for="site_mail" class="form-item__label form-item__label--required">Site email</label>
-                    <input type="email" id="site_mail" name="site_mail" class="form-text" value="{{ site_mail }}" required>
-                    <div class="form-item__description">Used as the From address for system emails.</div>
+                    <label for="site_mail" class="form-item__label">{{ t(s="Site email") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
+                    <p class="form-item__description" id="site_mail-hint">{{ t(s="Used as the From address for system emails.") }}</p>
+                    <input type="email" id="site_mail" name="site_mail" class="form-text" value="{{ site_mail }}" aria-describedby="site_mail-hint" required>
                 </div>
             </div>
         </fieldset>
 
         <fieldset class="fieldset">
-            <legend>Front page</legend>
+            <legend>{{ t(s="Front page") }}</legend>
             <div class="fieldset__content">
                 <div class="form-item">
-                    <label for="front_page" class="form-item__label">Default front page</label>
-                    <input type="text" id="front_page" name="front_page" class="form-text" value="{{ front_page }}" placeholder="/">
-                    <div class="form-item__description">Any path on this site: an item, a gather listing, a plugin route, or an alias of one (e.g., /blog or /conferences). / shows exactly what that path shows, with no redirect. The path must resolve when you save. Leave empty for the promoted items listing.</div>
+                    <label for="front_page" class="form-item__label">{{ t(s="Default front page") }}</label>
+                    <p class="form-item__description" id="front_page-hint">{{ t(s="Any path on this site: an item, a gather listing, a plugin route, or an alias of one (e.g., /blog or /conferences). / shows exactly what that path shows, with no redirect. The path must resolve when you save. Leave empty for the promoted items listing.") }}</p>
+                    <input type="text" id="front_page" name="front_page" class="form-text" value="{{ front_page }}" placeholder="/" aria-describedby="front_page-hint">
                 </div>
                 <div class="form-item">
-                    <label for="items_per_page" class="form-item__label">Items per page</label>
+                    <label for="items_per_page" class="form-item__label">{{ t(s="Items per page") }}</label>
                     <input type="number" id="items_per_page" name="items_per_page" class="form-text" value="{{ items_per_page }}" min="1" max="100">
                 </div>
             </div>
         </fieldset>
 
         <fieldset class="fieldset">
-            <legend>User registration</legend>
+            <legend>{{ t(s="User registration") }}</legend>
             <div class="fieldset__content">
                 {# Two modes, not three: "admin only" and "closed" differed in
                    wording only. Both close the public register route, and neither
@@ -61,120 +55,113 @@
                    previously stored "closed" shows as admin only, and its register
                    route behaves exactly as before. #}
                 <div class="form-item">
-                    <div class="form-checkbox-wrapper">
+                    <div class="form-radio-wrapper">
                         <input type="radio" id="reg_open" name="registration_mode" value="open" {% if registration_mode == "open" %}checked{% endif %}>
-                        <label for="reg_open">Open — anyone can register</label>
+                        <label for="reg_open">{{ t(s="Open — anyone can register") }}</label>
                     </div>
-                    <div class="form-checkbox-wrapper">
+                    <div class="form-radio-wrapper">
                         <input type="radio" id="reg_admin" name="registration_mode" value="admin_only" {% if registration_mode != "open" %}checked{% endif %}>
-                        <label for="reg_admin">Admin only — administrators create accounts, and /user/register is closed</label>
+                        <label for="reg_admin">{{ t(s="Admin only — administrators create accounts, and {path} is closed", path="/user/register") }}</label>
                     </div>
                 </div>
             </div>
         </fieldset>
 
         <fieldset class="fieldset">
-            <legend>Email delivery</legend>
+            <legend>{{ t(s="Email delivery") }}</legend>
             <div class="fieldset__content">
                 {# Read only. SMTP is configured in the server environment and
                    nowhere else; this shows what the kernel is using. The
                    username and password say only whether they are set. #}
-                <dl>
-                    <dt>SMTP host</dt>
-                    <dd id="smtp-host">{% if smtp.host %}{{ smtp.host }}{% else %}not configured: mail is not sent{% endif %}</dd>
-                    <dt>Port</dt>
+                <dl class="settings-facts">
+                    <dt>{{ t(s="SMTP host") }}</dt>
+                    <dd id="smtp-host">{% if smtp.host %}{{ smtp.host }}{% else %}{{ t(s="not configured: mail is not sent") }}{% endif %}</dd>
+                    <dt>{{ t(s="Port") }}</dt>
                     <dd id="smtp-port">{{ smtp.port }}</dd>
-                    <dt>Encryption</dt>
+                    <dt>{{ t(s="Encryption") }}</dt>
                     <dd id="smtp-encryption">{{ smtp.encryption }}</dd>
-                    <dt>From address</dt>
+                    <dt>{{ t(s="From address") }}</dt>
                     <dd id="smtp-from">{{ smtp.from }}</dd>
-                    <dt>Username</dt>
-                    <dd id="smtp-username">{% if smtp.username_set %}set{% else %}not set{% endif %}</dd>
-                    <dt>Password</dt>
-                    <dd id="smtp-password">{% if smtp.password_set %}set{% else %}not set{% endif %}</dd>
+                    <dt>{{ t(s="Username") }}</dt>
+                    <dd id="smtp-username">{% if smtp.username_set %}{{ t(s="set") }}{% else %}{{ t(s="not set") }}{% endif %}</dd>
+                    <dt>{{ t(s="Password") }}</dt>
+                    <dd id="smtp-password">{% if smtp.password_set %}{{ t(s="set") }}{% else %}{{ t(s="not set") }}{% endif %}</dd>
                 </dl>
-                <div class="form-item__description">Set in the server environment
-                (<code>SMTP_HOST</code>, <code>SMTP_PORT</code>, <code>SMTP_ENCRYPTION</code>,
-                <code>SMTP_FROM_EMAIL</code>, <code>SMTP_USERNAME</code>,
-                <code>SMTP_PASSWORD</code>) and read at startup; change them there
-                and restart the server.</div>
+                <p class="form-item__description">{{ t(s="Set in the server environment ({variables}) and read at startup; change them there and restart the server.", variables="SMTP_HOST, SMTP_PORT, SMTP_ENCRYPTION, SMTP_FROM_EMAIL, SMTP_USERNAME, SMTP_PASSWORD") }}</p>
             </div>
         </fieldset>
 
         <fieldset class="fieldset">
-            <legend>Session cookie</legend>
+            <legend>{{ t(s="Session cookie") }}</legend>
             <div class="fieldset__content">
                 {# Read only, like Email delivery: COOKIE_SECURE is read at startup. #}
-                <dl>
-                    <dt>Secure flag (<code>COOKIE_SECURE</code>)</dt>
+                <dl class="settings-facts">
+                    <dt>{{ t(s="Secure flag ({setting})", setting="COOKIE_SECURE") }}</dt>
                     <dd id="cookie-secure">{{ cookie_secure }}</dd>
                 </dl>
                 {% if cookie_secure == "never" %}
-                <div class="message message--warning" id="cookie-secure-warning" role="alert">
-                    <strong>The session cookie is not Secure.</strong> <code>COOKIE_SECURE=never</code>
-                    sends the login cookie over plain HTTP, where anyone on the network path can
-                    read it and take over the session. Use it only for a plain HTTP LAN or
-                    development site, never on the internet.
+                <div class="notice notice--warning" id="cookie-secure-warning" role="status">
+                    <strong class="notice__label">{{ t(s="Warning:") }}</strong>
+                    {{ t(s="The session cookie is not Secure.") }}
+                    {{ t(s="{setting} sends the login cookie over plain HTTP, where anyone on the network path can read it and take over the session. Use it only for a plain HTTP LAN or development site, never on the internet.", setting="COOKIE_SECURE=never") }}
                 </div>
                 {% endif %}
-                <div class="form-item__description">Set in the server environment and read
-                at startup; change it there and restart the server.</div>
+                <p class="form-item__description">{{ t(s="Set in the server environment and read at startup; change it there and restart the server.") }}</p>
             </div>
         </fieldset>
 
         <fieldset class="fieldset">
-            <legend>Notifications</legend>
+            <legend>{{ t(s="Notifications") }}</legend>
             <div class="fieldset__content">
-                <div class="form-item form-item--checkbox">
+                <div class="form-item">
                     <div class="form-checkbox-wrapper">
                         <input type="checkbox" id="notify_admin_on_register" name="notify_admin_on_register" value="1" {% if notify_admin_on_register %}checked{% endif %}>
-                        <label for="notify_admin_on_register">Notify admin when new users register</label>
+                        <label for="notify_admin_on_register">{{ t(s="Notify admin when new users register") }}</label>
                     </div>
+                </div>
 
-                    <div class="form-item">
-                        <input type="checkbox" id="update_check" name="update_check" value="1" {% if update_check %}checked{% endif %}>
-                        <label for="update_check">Check for Trovato releases</label>
-                        <p class="form-item__description">One outbound HTTPS request
-                        to <code>api.github.com</code>, at most once a day, carrying
-                        no site data: no URL, no version, no identifier. GitHub
-                        learns that an IP address asked about a public repository.
-                        When a newer release exists an administrator sees a banner on
-                        the dashboard, styled as an alarm if the release announces
-                        itself as a security release. Nobody but an administrator
-                        sees it, and no page render ever makes the request.
-                        {% if update_status %}
-                        Last checked: latest release {{ update_status.latest_version }},
-                        this site runs {{ running_version }}.
-                        {% else %}
-                        No check has completed yet; it runs from cron.
-                        {% endif %}
-                        A deployment that must make no outbound requests at all
-                        should set <code>UPDATE_CHECK=0</code> in the environment
-                        rather than rely on this checkbox.</p>
+                <div class="form-item">
+                    <div class="form-checkbox-wrapper">
+                        <input type="checkbox" id="update_check" name="update_check" value="1" aria-describedby="update_check-hint" {% if update_check %}checked{% endif %}>
+                        <label for="update_check">{{ t(s="Check for Trovato releases") }}</label>
                     </div>
+                    <div class="form-item__description" id="update_check-hint">
+                        <p>{{ t(s="One outbound HTTPS request to {host}, at most once a day, carrying no site data: no URL, no version, no identifier. GitHub learns that an IP address asked about a public repository.", host="api.github.com") }}</p>
+                        <p>{{ t(s="When a newer release exists an administrator sees a banner on the dashboard, styled as an alarm if the release announces itself as a security release. Nobody but an administrator sees it, and no page render ever makes the request.") }}</p>
+                        <p>{% if update_status %}{{ t(s="Last checked: latest release {latest}, this site runs {running}.", latest=update_status.latest_version, running=running_version) }}{% else %}{{ t(s="No check has completed yet; it runs from cron.") }}{% endif %}</p>
+                        <p>{{ t(s="A deployment that must make no outbound requests at all should set {setting} in the environment rather than rely on this checkbox.", setting="UPDATE_CHECK=0") }}</p>
+                    </div>
+                </div>
+
+                <div class="form-item">
+                    <div class="form-checkbox-wrapper">
+                        <input type="checkbox" id="count_content_views" name="count_content_views" value="1" aria-describedby="count_content_views-hint" {% if count_content_views %}checked{% endif %}>
+                        <label for="count_content_views">{{ t(s="Count content views") }}</label>
+                    </div>
+                    <p class="form-item__description" id="count_content_views-hint">{{ t(s='Each view of an item adds one to its count, shown as "N reads" to roles with the {permission} permission. One database write per item view while it is on.', permission="view post access counter") }}</p>
                 </div>
             </div>
         </fieldset>
 
         <div class="form-actions">
-            <button type="submit" class="button button--primary">Save settings</button>
+            <button type="submit" class="button button--primary">{{ t(s="Save settings") }}</button>
         </div>
     </form>
 
-    <form method="post" action="/admin/config/site/test-email" style="margin-top: 1rem;">
+    <form class="site-test-email" method="post" action="/admin/config/site/test-email">
         {{ form::csrf(csrf_token=csrf_token) }}
-        <button type="submit" class="button button--secondary">Send test email</button>
-        <span class="form-item__description">Sends a test email to the site email address.</span>
+        <p class="form-item__description" id="test-email-hint">{{ t(s="Sends a test email to the site email address.") }}</p>
+        <button type="submit" class="button button--secondary" aria-describedby="test-email-hint">{{ t(s="Send test email") }}</button>
     </form>
 </div>
 
 {# Maintenance mode: its own form, through the forms pipeline, so turning the
    site off is never a side effect of saving the settings above. #}
-<div class="admin-card" id="maintenance">
-    <h3 class="report-heading">Maintenance mode</h3>
+<section class="admin-card" id="maintenance" aria-labelledby="maintenance-heading">
+    <h2 id="maintenance-heading">{{ t(s="Maintenance mode") }}</h2>
     {% if maintenance_on %}
-    <div class="message message--warning" role="status">The site is in maintenance mode. Visitors get a 503 and the message below.</div>
+    <div class="notice notice--warning" role="status"><strong class="notice__label">{{ t(s="Warning:") }}</strong> {{ t(s="The site is in maintenance mode. Visitors get a 503 and the message below.") }}</div>
     {% endif %}
     {{ maintenance_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
-</div>
-{% endblock %}
+</section>
+{% endblock content %}

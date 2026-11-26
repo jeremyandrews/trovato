@@ -111,11 +111,12 @@ async fn seed_tutorial_data(app: &'static common::TestApp) {
                         },
                         display: QueryDisplay {
                             format: DisplayFormat::Table,
-                            items_per_page: 25,
+                            items_per_page: Some(25),
                             pager: PagerConfig {
                                 enabled: true,
                                 style: PagerStyle::Full,
                                 show_count: true,
+                                zero_based: false,
                             },
                             empty_text: Some("No conferences found.".to_string()),
                             header: None,
@@ -143,8 +144,8 @@ async fn seed_tutorial_data(app: &'static common::TestApp) {
 
             if !alias_exists {
                 sqlx::query(
-                    r#"INSERT INTO url_alias (id, source, alias, language, stage_id, created)
-                       VALUES (gen_random_uuid(), '/gather/upcoming_conferences', '/conferences', 'en', $1, $2)"#,
+                    r#"INSERT INTO url_alias (id, source, alias, language, stage_id, created, changed)
+                       VALUES (gen_random_uuid(), '/gather/upcoming_conferences', '/conferences', 'en', $1, $2, $2)"#,
                 )
                 .bind(LIVE_STAGE_ID)
                 .bind(now)
@@ -856,7 +857,7 @@ static STEP5_PATHAUTO_LOCK: Mutex<()> = Mutex::const_new(());
 #[test]
 fn test_part01_step05_pathauto_generates_conference_aliases() {
     run_test(async {
-        let _lock = STEP5_PATHAUTO_LOCK.lock().await;
+        common::hold_until_cleanup(STEP5_PATHAUTO_LOCK.lock().await);
         let app = shared_app().await;
         seed_tutorial_data(app).await;
 
@@ -955,7 +956,7 @@ fn test_part01_step05_pathauto_generates_conference_aliases() {
 #[test]
 fn test_part01_step05_aliases_resolvable_by_middleware_lookup() {
     run_test(async {
-        let _lock = STEP5_PATHAUTO_LOCK.lock().await;
+        common::hold_until_cleanup(STEP5_PATHAUTO_LOCK.lock().await);
         let app = shared_app().await;
         seed_tutorial_data(app).await;
 
@@ -1036,7 +1037,7 @@ fn test_part01_step05_aliases_resolvable_by_middleware_lookup() {
 #[test]
 fn test_part01_step05_regenerate_skips_already_matching_alias() {
     run_test(async {
-        let _lock = STEP5_PATHAUTO_LOCK.lock().await;
+        common::hold_until_cleanup(STEP5_PATHAUTO_LOCK.lock().await);
         let app = shared_app().await;
         seed_tutorial_data(app).await;
 

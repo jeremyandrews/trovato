@@ -25,6 +25,10 @@ pub async fn scope_audit_actor(session: Session, req: Request, next: Next) -> Re
         Some(id) => Some(id),
         None => session.get::<Uuid>(SESSION_USER_ID).await.ok().flatten(),
     };
+    // For the timing layer: who may see this request's detailed counts.
+    if let Some(id) = user_id {
+        crate::telemetry::profile::note_user(id);
+    }
     let actor = AuditActor {
         user_id,
         ip: req

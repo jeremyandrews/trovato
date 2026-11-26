@@ -152,8 +152,8 @@ weight = 0  # Lower weight = earlier execution
 | `[migrations].files` | No | Array of SQL migration file paths |
 | `[migrations].depends_on` | No | Plugin names whose migrations run first |
 | `[capabilities]` | No | What the plugin may reach: host interfaces, tables, `raw_sql` and the background grants. Absent means nothing. See [plugin-capabilities.md](plugin-capabilities.md) |
-| `[config].tables` | No | The plugin's own tables that hold site configuration, carried by `config export` and `config import` (API 0.106). See [Configuration Tables](#configuration-tables) |
-| `[config].secret_columns` | No | Per config table, the columns that hold a secret, a password, a token, a key or a hash of one; never exported (API 0.107). See [Secret Columns](#secret-columns) |
+| `[config].tables` | No | The plugin's own tables that hold site configuration, carried by `config export` and `config import` (API 0.105). See [Configuration Tables](#configuration-tables) |
+| `[config].secret_columns` | No | Per config table, the columns that hold a secret, a password, a token, a key or a hash of one; never exported (API 0.105). See [Secret Columns](#secret-columns) |
 
 ### Configuration Tables
 
@@ -330,6 +330,23 @@ no second path to keep unique. Both are advertised on every page with
 `<link rel="alternate">` (the `feeds` template variable: `path`, `atom_path`,
 `title`).
 
+**The channel link.** RSS `<link>` and Atom `<link rel="alternate">` point at
+the page the feed is a feed of — the address a visitor actually uses, not the
+feed's own URL (that is `rel="self"`). It is chosen in this order:
+
+1. For a feed reached with an argument, the `display.routes` path taking that
+   one argument, filled with its value — `/blog/author/{user}/feed.xml` links
+   `/blog/author/jeremy`.
+2. The gather's `canonical_url`, if it has one.
+3. The outbound URL alias of `/gather/{query_id}`, if the `url_alias` table has
+   one — so a gather reachable only through an alias (no `canonical_url`, the
+   way `trovato_blog`'s `blog_listing` ships: `/blog` is a URL alias, not a
+   `canonical_url`, to avoid a redirect from `/gather/blog_listing` back to an
+   alias that already rewrites to it) still links the address visitors use.
+   Resolved per request, cached, and cleared the moment an alias is written —
+   no restart needed, unlike the first two tiers.
+4. `/gather/{query_id}` itself, when none of the above apply.
+
 Every entry carries:
 
 - an id that never changes, `urn:uuid:<item id>` (RSS
@@ -358,15 +375,30 @@ same as its page: an anonymous aggregator gets what an anonymous visitor would
 see, and a gather that requires a permission answers 403 (see the table above).
 Nothing is cached on the server between viewers.
 
-**Polling.** Each response carries an `ETag` and a `Last-Modified`, computed
-from the entries' ids, `changed` timestamps and links plus the feed's config. A
-request whose `If-None-Match` (or, without one, `If-Modified-Since`) still
-matches gets `304 Not Modified` before anything is rendered. The query itself
-still runs, as the viewer, because that is what decides what the viewer may
-see. An anonymous response is `Cache-Control: public, max-age=300`; a response
-to a signed-in session is `private, no-cache`, since it ran with that viewer's
-access. An author's renamed account or a relabelled term reaches readers with
-the entry's next edit, not before, since neither changes the validators.
+**Polling.** Each response carries an `ETag` and a `Last-Modified`. The `ETag`
+hashes the entries' ids, `changed` timestamps, links and author names, the
+terms each entry carries, the resolved channel link, and the feed's config, so
+it moves on any of those. `Last-Modified` is the latest of: the newest entry's
+`changed` (or `created`); the gather's own `changed`, so editing the feed's
+title, description or other config moves it too, not only the `ETag`; and,
+when the channel link resolves through a `url_alias` row rather than a fixed
+path (tier 3 above), that row's own `changed`, so repointing the link moves it
+as well. A request whose `If-None-Match` (or, without one, `If-Modified-Since`)
+still matches gets `304 Not Modified` before terms are loaded or anything is
+rendered. The query itself still runs, as the viewer, because that is what
+decides what the viewer may see. An anonymous response is
+`Cache-Control: public, max-age=300`; a response to a signed-in session is
+`private, no-cache`, since it ran with that viewer's access.
+
+An item's title, summary and body are not hashed directly — they can only
+change through an edit to the item, the same write that bumps `changed` — but
+an author's account name and a term's label are edited on a different row, so
+they are hashed explicitly: the account name actually fetched for the entry
+(already loaded for `dc:creator` / `<author><name>`), and each term the entry
+prints, by id and label. The labels are read in one query for the whole
+response, before the `304` check, never one per entry or per term. So a
+renamed account or a relabelled term invalidates the `ETag` of exactly the
+feeds that print it, at once, rather than waiting for the entry's next edit.
 
 #### A feed per author, per tag, per anything the gather takes
 
@@ -436,6 +468,28 @@ fn tap_cron(_input: serde_json::Value) -> Result<(), String> {
     Ok(())
 }
 ```
+
+### Tap and route size limit
+
+A tap or a plugin-served route (`tap_api`) may send and receive up to
+**8 MiB** each way — the input the kernel hands it and the JSON (or, for
+`tap_api`, the body) it returns. Both directions share one ceiling,
+`trovato_sdk::abi::PLUGIN_IO_MAX_BYTES`. Send or return more than that and the
+kernel refuses the call with a documented error rather than truncating it
+silently.
+
+8 MiB is comfortably above any real page — the motivating case was a 54 KB
+field the kernel's old 64 KB cap already refused to render — and well inside
+the 64 MiB a plugin may use in total for its own code, data and working set in
+one call, so a call that uses the whole ceiling still leaves room to run.
+There is nothing to opt into: every tap and `tap_api` route gets the same
+limit, and a plugin built against the current SDK gets it automatically (see
+`crates/plugin-sdk/src/abi.rs` for plugins built before this limit existed,
+which keep working at the old 64 KB ceiling until rebuilt).
+
+If a tap legitimately needs to send more than 8 MiB — a large export, for
+instance — paginate it across multiple calls rather than asking for a larger
+limit; nothing in the protocol changes to accommodate one call that large.
 
 ### Available Taps
 
@@ -532,6 +586,7 @@ use `tap_form_validate` for that.
 |-----|-------|--------|-------------|
 | `tap_menu` | None | `Vec<MenuDefinition>` | Register routes |
 | `tap_perm` | None | `Vec<PermissionDefinition>` | Define permissions |
+| `tap_admin_nav` | None | `Vec<AdminNavDefinition>` | Admin sidebar links and dashboard cards ([below](#admin-sidebar-links-and-dashboard-cards)) |
 | `tap_cron` | None | `Result<(), String>` | Background tasks |
 | `tap_queue_info` | None | `[{name, concurrency}]` | Declare owned queues + worker concurrency ([queue docs](plugin-queue.md)) |
 | `tap_queue_worker` | Job payload | Any (return) / trap (fail) | Process one queued job — **must be idempotent** ([queue docs](plugin-queue.md)) |
@@ -582,7 +637,8 @@ fn tap_item_info() -> Vec<ContentTypeDefinition> {
 | Date | `FieldType::Date` | Date value |
 | Email | `FieldType::Email` | Email address |
 | File | `FieldType::File` | File upload |
-| Reference | `FieldType::RecordReference(target_type)` | Reference to another record |
+| Reference | `FieldType::RecordReference(target_type)` | Reference to another item, of one content type |
+| Category reference | `FieldType::CategoryReference(category_id)` | Tags of one category: a JSON array of tag uuid strings, whatever the cardinality. Every write refuses a value that is not a tag of that category. Added in B72 (0.105.0). `FieldType` is `#[non_exhaustive]`, so a plugin that matches on it needs a `_` arm |
 
 ### Field Options
 
@@ -592,7 +648,7 @@ these options besides its name, type and label:
 | Option | Default | Meaning |
 |--------|---------|---------|
 | `required` | `false` | The form refuses a save without a value |
-| `cardinality` | `1` | How many values: `1` single, `-1` unlimited, `n` at most `n`. The form shows each stored value plus one empty slot and an "Add another" button, and refuses more than `n` |
+| `cardinality` | `1` | How many values: `1` single, `-1` unlimited, `n` at most `n`. The form shows each stored value plus one empty slot and an "Add another" button. Every write path refuses more than `n` (the item form, the item API, `save-item`, config import): a JSON array counts its elements, any other value counts as one |
 | `settings` | `{}` | Type specific settings, and `visible_when` (below) |
 | `personal_data` | `false` | Included in data exports and anonymised on account deletion |
 
@@ -829,9 +885,37 @@ for user in users.iter().filter(|u| u.status == "active") {
 
 Look a digest's recipients up in batches of 100, not one at a time.
 
-ABI: a new function, `load-users`, in the existing `user-api` interface and a
-new manifest capability, `user_directory` (B73, after 0.104.0). No existing
-signature changed.
+`host::find_user_by_name` and `host::find_users_by_name_prefix` answer the
+same shape, by name instead of by id, so a plugin can resolve a name a person
+typed to the account it names — the groups plugin's "add member by name"
+could not do this before B179: it could only match names it had already seen
+in its own tables, so an account created straight on the site answered "no
+such user". Both need the same capability as `load_users`; no new manifest key.
+
+```rust
+// Exact match, case-insensitive the same way login matches a name.
+match host::find_user_by_name("jsmith") {
+    Ok(Some(user)) => { /* user.id, user.name, ... */ }
+    Ok(None) => { /* no such user */ }
+    Err(code) => { /* refused; see plugin-error-codes.md */ }
+}
+
+// A short, sorted list for an autocomplete widget as the plugin's user
+// types; at most 10 results, not caller-configurable.
+let matches = host::find_users_by_name_prefix("js")?;
+```
+
+Neither call filters a blocked account or the anonymous account out of its
+answer: the visibility rule is the one `load_users` already has — nothing
+beyond the `user_directory` capability gate itself, the same rule the
+kernel's own `/admin/people` listing uses for an administrator. A plugin that
+only wants to offer active accounts checks `user.status == "active"` itself,
+the same way the `load_users` example above does.
+
+ABI: `load-users` is in the existing `user-api` interface, with a new
+manifest capability, `user_directory` (B73, after 0.104.0). `find-user-by-name`
+and `find-users-by-name-prefix` are two more functions in the same interface,
+sharing that capability (B179, after 0.104.0). No existing signature changed.
 
 ### Mailing a Member
 
@@ -1144,6 +1228,156 @@ fn tap_perm() -> Vec<PermissionDefinition> {
 }
 ```
 
+### Admin sidebar links and dashboard cards
+
+A plugin's own `/admin/...` page renders inside the kernel's `page--admin.html`,
+with the same sidebar and dashboard every kernel admin page gets — filtered to
+what the signed-in viewer may actually open. A plugin adds its own entry to
+that sidebar and to the `/admin` dashboard through `tap_admin_nav`, the same
+shape `tap_menu` and `tap_perm` already use: a declaration collected once at
+boot, not queried per request.
+
+```rust
+#[plugin_tap]
+fn tap_admin_nav() -> Vec<AdminNavDefinition> {
+    vec![
+        AdminNavDefinition::new(
+            "Structure",             // section heading — joins an existing
+                                      // one by this name, or starts a new one
+            "Groups",                // link text, and the card's title
+            "/admin/groups",         // must start with /admin
+            "administer groups",     // permission that gates the link and card
+        )
+        .card("Manage user groups."), // optional: also show a dashboard card
+    ]
+}
+```
+
+`permission` is display filtering only, exactly like every kernel sidebar
+link: a viewer who does not hold it does not see the link or the card, but
+the route itself still has to check the permission on every request — the
+sidebar never substitutes for that check. Gate the two on the same
+permission, as above, so they cannot disagree about who may reach the screen.
+
+A disabled plugin contributes no link and no card. The declaration is read
+when the server starts, from the plugins enabled then, so enabling or
+disabling a plugin (from `/admin/plugins` or `trovato plugin enable|disable`)
+changes its link and card at the next restart, the same moment its routes
+appear or go. The permission, by contrast, is checked against the viewer on
+every request, exactly as for the kernel's own links.
+
+`href` must be the plugin's own path below `/admin/` (`/admin/groups`, not
+`/administrator` or `/admin/../groups`: no empty, `.` or `..` segments, encoded or
+not, and no backslash), and distinct from every kernel link, every prefix a
+kernel link already highlights for (Categories owns `/admin/structure/tags`),
+and every other plugin's declared href. A declaration that breaks any of these
+is dropped (logged, not fatal) rather than sending the viewer somewhere else or
+shadowing an existing screen.
+
+For the admin page itself to pick up the kernel's chrome, serve it from a
+`tap_api` route under `/admin` and answer with `ApiResponse::themed(title,
+body)`, the same way any themed plugin page does. Gate the route on the same
+permission the link declares:
+
+```rust
+#[plugin_tap]
+fn tap_menu() -> Vec<MenuRoute> {
+    vec![
+        MenuRoute::api("GET", "/admin/groups", "groups_admin")
+            .title("Groups")
+            .permission("administer groups"),
+    ]
+}
+
+#[plugin_tap]
+fn tap_api(request: ApiRequest) -> ApiResponse {
+    match request.callback.as_str() {
+        "groups_admin" => ApiResponse::themed("Groups", "<p>…manage groups here…</p>"),
+        other => ApiResponse::error(404, &format!("no such callback: {other}")),
+    }
+}
+```
+
+List the tap in the plugin's info file next to the others, or the kernel never
+calls it:
+
+```toml
+[taps]
+implements = ["tap_perm", "tap_menu", "tap_api", "tap_admin_nav"]
+```
+
+A page is an admin page when its path starts with `/admin`
+(`ThemeEngine::is_admin_path`, the rule the kernel already uses to pick
+`page--admin.html` and to theme an admin error page). Any such page, kernel or
+plugin, gets the sidebar; a plugin page elsewhere does not.
+
+---
+
+### Serving a Request Directly (`tap_api`), and Accepting a File
+
+A `MenuRoute` with `handler_type = "api"` and a `callback` is not a page the
+theme renders — it is a request the kernel dispatches straight to your
+plugin's `tap_api`, with the method, path, query, params, body and caller
+already resolved:
+
+```rust
+#[plugin_tap]
+fn tap_menu() -> Vec<MenuRoute> {
+    vec![
+        MenuRoute::api("POST", "/my-plugin/upload", "upload_logo")
+            .title("Upload a logo")
+            .permission("create my_article content"),
+    ]
+}
+
+#[plugin_tap]
+fn tap_api(request: ApiRequest) -> ApiResponse {
+    match request.callback.as_str() {
+        "upload_logo" => upload_logo(&request),
+        other => ApiResponse::error(404, &format!("no such callback: {other}")),
+    }
+}
+```
+
+CSRF is already enforced before your tap runs: a state-changing method needs
+an `X-CSRF-Token` header or a `_token` field (multipart or form-urlencoded),
+unless the caller authenticated with an `Authorization: Bearer` token. The
+body size cap (`MAX_REQUEST_BODY`, the 8 MiB plugin I/O ceiling) applies to
+this case exactly as it always has, because `request.body` still crosses the
+WASM boundary.
+
+**A file in the form is different.** When the request's `Content-Type` is
+`multipart/form-data`, the kernel parses it itself before dispatch: every part
+carrying a filename is stored through the same `FileService` `/file/upload`
+uses — the same size limit, MIME allowlist and magic-byte check — and handed
+to you in `request.files: Vec<UploadedFile>` as an id and metadata, never raw
+bytes. The form's other fields arrive in `request.body`, re-encoded as a JSON
+object, so `request.json::<T>()` works the same whether the caller posted JSON
+or a multipart form.
+
+```rust
+fn upload_logo(request: &ApiRequest) -> ApiResponse {
+    let Some(upload) = request.files.first() else {
+        return ApiResponse::error(400, "no file uploaded");
+    };
+    // The id is what a File field holds. Attaching it through `save-item` is
+    // what promotes the file out of `Temporary` — do not touch file storage
+    // yourself, there is no host call for it and this is why.
+    match host::save_item(&serde_json::json!({
+        "id": request.params.get("id"),
+        "fields": { "field_logo": upload.id },
+    })) {
+        Ok(Some(item)) => ApiResponse::json(&serde_json::json!({ "item_id": item.id })).unwrap(),
+        Ok(None) => ApiResponse::error(404, "item not found"),
+        Err(code) => ApiResponse::error(500, &format!("save failed: {code}")),
+    }
+}
+```
+
+A file your route stores but never references from an item stays `Temporary`
+and is removed by the kernel's temporary-file cleanup — a plugin cannot leak
+storage by accepting an upload nobody attaches.
+
 ---
 
 ## Database Operations
@@ -1222,6 +1456,51 @@ let affected = host::execute_raw(
     &[json!(id)],
 )?;
 ```
+
+### The static search index: queue what you change
+
+The site's static search index (Pagefind, under `/pagefind/`) is updated item by
+item. Each change to what an item's search page is built from queues that item,
+and the next cron run rewrites only the queued items' part of the index.
+Nothing polls for changes, so a change that queues nothing is never seen.
+
+**Writes to items, comments and URL aliases are queued by the database.**
+Triggers on the `item`, `comment` and `url_alias` tables queue the item a write
+changes, in the write's own transaction. That holds for `host::save_item`, the
+kernel's services and a plugin's raw SQL alike. A write that commits is
+queued, and one that rolls back is not.
+
+```rust
+host::execute_raw(
+    "UPDATE item SET fields = jsonb_set(fields, '{field_rating}', $1) WHERE id = $2::uuid",
+    &[json!(rating), json!(id)],
+)?;
+// Queued already: nothing more to do.
+```
+
+**The rule:** when your plugin changes something else that decides what an
+item's search page holds, call `host::search_index_enqueue` afterwards with the
+ids of the items it affects. The usual case is data of your own that your
+`tap_field_access` reads: the index is built as the anonymous visitor, so a
+change to which fields that visitor may see changes the page.
+
+```rust
+host::execute_raw("UPDATE my_plugin_field_embargo SET lifted = true WHERE item_id = $1::uuid", &[json!(id)])?;
+host::search_index_enqueue(&[id.as_str()])?;   // Ok(rows queued)
+```
+
+* Queuing twice is harmless. Queuing an item that is not searchable (a draft, a
+  workspace item, one anonymous visitors cannot see) is also harmless: the
+  updater takes it out of the index or leaves it out.
+* It needs the `db` host interface and takes up to 10,000 ids per call. An id
+  that is not a UUID is `-14` (`ERR_PARAM_DESERIALIZE`), and more than 10,000
+  ids is `-82` (`ERR_DB_BATCH_TOO_LARGE`).
+* The queue row records the reason as `plugin:<your plugin name>`, so an
+  operator can see who queued what.
+
+Without the call, such a change reaches search only at the next full rebuild.
+That happens after compaction or when an operator runs `trovato search
+rebuild`, which may be days away.
 
 ---
 
@@ -1775,7 +2054,142 @@ row) and `FeatureBanner` (a select of tone and image position, an image, a
 title, rich text and a call to action). Its integration test,
 `crates/kernel/tests/page_builder_components_test.rs`, shows the registry
 listing them, a valid page saving and rendering, and an invalid one refused
-with an error at each field.
+with an error at each field. The same plugin declares the two root fields
+above in `components/page.root.toml` and ships the footer call to action tile
+template, and the same test file renders a page in each footer mode.
+
+### Page root fields
+
+A page builder page has one built in page level field, its `title`. A plugin
+can declare more, for settings that belong to the page rather than to any one
+component: whether the site's footer call to action shows on this page, a
+page's accent, a campaign code. They are declared in the same field format as
+component fields, edited in the editor's page settings form, checked on every
+save by the same rules, and handed to page, region and tile templates.
+
+#### The file
+
+Root fields live in `components/<name>.root.toml`, beside the components. A
+plugin may ship more than one such file; they are read in file name order
+after its components. The file holds only what a root field needs: a list of
+`[[fields]]` and, optionally, `classes`.
+
+```toml
+# components/page.root.toml
+classes = ["page--quiet"]        # optional: every class a root select may add
+
+[[fields]]
+name = "footer_cta_mode"
+type = "select"
+label = "Footer call to action"
+help = "Keep the site's call to action, hide it on this page, or replace it."
+default = "default"
+options = [
+  { value = "default", label = "Site default" },
+  { value = "hide", label = "Hide", class = "page--quiet" },
+  { value = "custom", label = "Custom" },
+]
+
+[[fields]]
+name = "footer_cta_content"
+type = "rich_text"
+label = "Custom call to action"
+max_length = 280
+```
+
+It is a file of its own, not a `[page_root]` table in a component file,
+because a root field belongs to no component: it has no type name, template,
+category or stylesheet, a component file must have most of those, and a page
+needs its root fields whether or not that component is on it. The file is the
+component format with everything but the fields taken away, so the parser,
+the field types and their keys, limits and checks are the ones above, and it
+is read with unknown keys refused in the same way.
+
+Every field type is allowed, with the same keys. Three names are reserved:
+`title` (built in), `props` (where current Puck versions nest root values) and
+`variant_classes` (see below). A root field name is unique across the site:
+two enabled plugins declaring the same one stop the server at boot, with an
+error naming both plugins and both files, as a duplicate component type does.
+A `default` the field's own rules refuse (a select default that is not one of
+its options) is an error at boot too.
+
+#### Defaults
+
+Unlike a component field's, a root field's `default` is applied when the page
+renders: a page with no value for the field (absent, `null` or empty text),
+and every page with no page builder content at all, gets the declared default.
+A theme or tile template can therefore rely on `page_root.footer_cta_mode`
+always having a value when the field declares a default. The editor also
+starts a new page's settings at the defaults.
+
+#### Validation
+
+On every create and update through the item service, a page builder field's
+root is checked like a component's props: each declared root field by its
+type and limits, `title` as text. An error is reported at
+`<item field>.root.<field>`, for example
+`field_layout.root.footer_cta_mode: 'blink' is not one of: default, hide, custom`,
+on the item form and as a 422 from the JSON API.
+
+A root key that no enabled plugin declares is refused on save, so a misspelt
+name, or a value meant for a plugin that is now disabled, is not stored
+silently. A stored page is never validated to render: such a key is simply
+not passed to templates, and the page renders as before. The editor drops
+undeclared root keys when it writes the page, since it offers no form in which
+one could be removed.
+
+Puck keeps the root's values under `root.props` in current versions and
+directly under `root` in older ones. The editor stores them flat,
+`{ "root": { "title": "…", "footer_cta_mode": "hide" } }`; the kernel reads
+either shape, and a key in both takes the value under `props`.
+
+#### Templates: `page_root`
+
+Every page template (`page.html` and its suggestions), the item template, and
+every tile template rendered on the same request receive `page_root`:
+
+- `page_root.title`, the root title, when it is text;
+- one key per declared root field: the page's value or the declared default,
+  normalized as a component prop is (a value outside a select's options, an
+  unsafe URL or a value of the wrong type is left out), and for a `rich_text`
+  field `<name>_html`, the kernel's sanitized rendering;
+- `page_root.variant_classes`, the classes the chosen select options add,
+  each one listed in a root file's `classes`. As for components, a root value
+  never becomes inline CSS: a variant is a declared class.
+
+A page with no page builder field, or a request that is not an item at all,
+gets the defaults. Region templates are tiles: a `menu` or `gather_query`
+tile's template gets `page_root` beside its own variables, and a
+`custom_html` tile is rendered through `elements/tile--custom_html--<machine
+name>` or `elements/tile--custom_html` when either template exists, with
+`tile`, `body` (its filtered HTML) and `page_root`. A tile whose template
+renders nothing but whitespace is left off the page, wrapper and all.
+
+A sitewide footer call to action that a page can keep, hide or replace, as a
+custom HTML tile named `pb_footer_cta` in the `footer` region and this
+template in the plugin's `templates/elements/tile--custom_html--pb_footer_cta.html`:
+
+```html+jinja
+{%- set mode = "default" -%}
+{%- if page_root.footer_cta_mode is defined %}{% set mode = page_root.footer_cta_mode %}{% endif -%}
+{%- if mode == "hide" -%}
+{%- elif mode == "custom" and page_root.footer_cta_content_html is defined -%}
+{# SAFE: footer_cta_content_html is the kernel's sanitized Markdown rendering of a rich_text root field. #}
+<div class="footer-cta footer-cta--custom">{{ page_root.footer_cta_content_html | safe }}</div>
+{%- else -%}
+{# SAFE: body is the tile's body, already through its text format's filter pipeline. #}
+<div class="footer-cta footer-cta--default">{{ body | safe }}</div>
+{%- endif -%}
+```
+
+#### In the editor
+
+`GET /api/v1/page-builder/components` serves the root fields beside the
+components, as `root_fields`: each in the component field format plus its
+`source`. The editor builds its page settings form (Puck's root fields, shown
+under "Page" when no component is selected) from them: the title first, then
+each declared root field in load order, with the same control per type as a
+component field.
 
 ---
 

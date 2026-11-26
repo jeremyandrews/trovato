@@ -189,6 +189,10 @@ async fn post_mail(
         .await;
     let status = response.status();
     let text = text_body(response).await;
+    // The plugin's call queues the message (BG18); send it, as a worker would.
+    if app.state.email().is_some() {
+        app.deliver_mail_to(&[SITE_CONTACT]).await;
+    }
     let json = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
     (status, json)
 }
@@ -214,7 +218,7 @@ fn messages_for(sink: &SmtpSink, subject: &str) -> Vec<Envelope> {
 fn a_plugin_sends_mail_to_the_site_contact_address() {
     common::run_test(async {
         let fixture = with_smtp();
-        let _guard = SITE_MAIL_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         SiteConfig::set_site_mail(&fixture.app.db, SITE_CONTACT)
             .await
             .expect("set the site contact address");
@@ -242,7 +246,11 @@ fn a_plugin_sends_mail_to_the_site_contact_address() {
         );
         // And the from address is the transport identity, not the contact address.
         assert!(
-            message.data.contains(&format!("From: {SITE_FROM}")),
+            message
+                .data
+                .lines()
+                .any(|l| l.starts_with("From: ")
+                    && l.trim_end().ends_with(&format!("<{SITE_FROM}>"))),
             "{}",
             message.data
         );
@@ -260,7 +268,7 @@ fn a_plugin_sends_mail_to_the_site_contact_address() {
 fn an_attachment_arrives_as_a_mime_part() {
     common::run_test(async {
         let fixture = with_smtp();
-        let _guard = SITE_MAIL_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         SiteConfig::set_site_mail(&fixture.app.db, SITE_CONTACT)
             .await
             .expect("set the site contact address");
@@ -297,7 +305,7 @@ fn an_attachment_arrives_as_a_mime_part() {
 fn with_no_site_contact_address_the_send_is_refused() {
     common::run_test(async {
         let fixture = with_smtp();
-        let _guard = SITE_MAIL_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         SiteConfig::set_site_mail(&fixture.app.db, "")
             .await
             .expect("clear the site contact address");

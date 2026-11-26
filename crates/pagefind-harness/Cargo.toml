@@ -1,0 +1,52 @@
+[package]
+name = "trovato-pagefind-harness"
+# Not versioned with the project: a dev tool, never published or shipped.
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "Dev tool: decodes Pagefind indexes and proves per page tokenizing matches a full CLI build (B216). Not linked into the kernel."
+
+# Its own workspace, with its own Cargo.lock, excluded from the root one. The
+# `pagefind` crate carries actix-web for `pagefind --serve`, which this tool
+# never calls, and with it two advisories (RUSTSEC-2026-0443, actix-files 0.6;
+# RUSTSEC-2026-0258, h2 0.3) that have no fix inside pagefind 1.3.0's version
+# ranges. Kept here, they are not in the root lockfile the product ships from
+# and audits. See docs/design/incremental-search-index.md.
+[workspace]
+
+# The root workspace's clippy policy, restated: this crate cannot inherit it.
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+manual_let_else = "warn"
+uninlined_format_args = "warn"
+semicolon_if_nothing_returned = "warn"
+
+[[bin]]
+name = "pagefind-harness"
+path = "src/bin/pagefind-harness.rs"
+
+[dependencies]
+# Pinned to the exact release of the `pagefind` CLI the kernel runs today: the
+# Dockerfile downloads pagefind v1.3.0. The two move together, by hand, and the
+# three compatibility gates in docs/design/incremental-search-index.md are rerun
+# on every bump. Default features: the release CLI the Dockerfile downloads is
+# the plain one, not `pagefind_extended`, so no `extended` (charabia) here.
+pagefind = "=1.3.0"
+# The same minor as pagefind 1.3.0's own minicbor, so the derive decodes exactly
+# what its derive encoded.
+minicbor = { version = "0.19", features = ["alloc", "derive"] }
+flate2 = "1"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1", features = ["v7", "serde"] }
+trovato-kernel = { path = "../kernel" }
+# The native codec: its vendored tokenizer, encoder and decoder are what the
+# parity tests now prove against the `pagefind` crate and CLI.
+trovato-search-index = { path = "../search-index" }
+# `measure-native --cold` empties the term cache between runs.
+sqlx = { version = "0.9.1", default-features = false, features = ["runtime-tokio", "postgres"] }

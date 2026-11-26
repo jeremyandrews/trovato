@@ -13,7 +13,9 @@ use sqlx::PgPool;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use super::field_values;
 use super::file_refs::{self, FileReferences};
+use super::moderation;
 use super::reentry::{self, MAX_ITEM_WRITE_DEPTH, WriteTooDeep};
 use crate::cache::generation::{CacheKind, bump};
 use crate::metrics::{CacheName, Metrics};
@@ -197,6 +199,8 @@ struct ItemServiceInner {
     /// What item writes are audited through. Set once by `AppState`; a
     /// service built without it records nothing.
     audit: std::sync::OnceLock<crate::services::audit::AuditTrail>,
+    /// The item view counter (B160), with its cached on/off setting.
+    view_counter: crate::content::view_counter::ViewCounter,
 }
 
 /// A translation record for an item in a specific language.
@@ -370,6 +374,14 @@ pub const PUBLISH_CONTENT: &str = "publish content";
 /// otherwise only ever be an item's author, at the moment they created it.
 pub const ADMINISTER_CONTENT: &str = "administer content";
 
+/// The permission that lets a user who may view an item but not edit it read
+/// its revision history (Drupal's `view revisions`).
+pub const VIEW_REVISIONS: &str = "view revisions";
+
+/// The permission that lets a user delete a past revision of an item they may
+/// delete (Drupal's `delete revisions`).
+pub const DELETE_REVISIONS: &str = "delete revisions";
+
 /// The permission that lets a user read a stage other than Live
 /// (`routes::helpers::read_stages`).
 pub const USE_STAGES: &str = "use stages";
@@ -407,6 +419,14 @@ pub enum WriteDenied {
     /// The write would change the item's author or authored on time, and the
     /// user does not hold [`ADMINISTER_CONTENT`].
     Authoring,
+    /// On a moderated type, the write asked for a state the user may not move
+    /// the item to from the one it is in (`content::moderation`).
+    Transition {
+        /// The state the item is in.
+        from: String,
+        /// The state the write asked for.
+        to: String,
+    },
 }
 
 impl std::fmt::Display for WriteDenied {
@@ -428,6 +448,12 @@ impl std::fmt::Display for WriteDenied {
             Self::Authoring => write!(
                 f,
                 "changing an item's author or authored on time requires `{ADMINISTER_CONTENT}`"
+            ),
+            Self::Transition { from, to } => write!(
+                f,
+                "you may not move this item from {} to {}",
+                moderation::label(from),
+                moderation::label(to)
             ),
         }
     }
@@ -554,6 +580,20 @@ pub enum RevisionAccess {
     Failed(anyhow::Error),
 }
 
+/// Why [`ItemService::delete_revision`] deleted nothing.
+#[derive(Debug)]
+pub enum RevisionDeleted {
+    /// No such item, an item the user may not view, or a revision that is not
+    /// one of this item's.
+    NotFound,
+    /// The user may view the item but not delete its revisions.
+    Forbidden,
+    /// The revision is the item's current one, which is never deleted.
+    Current,
+    /// A load, an access decision or the delete failed.
+    Failed(anyhow::Error),
+}
+
 impl ItemService {
     /// Create a new item service.
     ///
@@ -588,8 +628,23 @@ impl ItemService {
                 vector_store,
                 page_builder_components: std::sync::OnceLock::new(),
                 audit: std::sync::OnceLock::new(),
+                view_counter: crate::content::view_counter::ViewCounter::default(),
             }),
         }
+    }
+
+    /// The item view counter (B160).
+    pub fn view_counter(&self) -> &crate::content::view_counter::ViewCounter {
+        &self.inner.view_counter
+    }
+
+    /// Count one view of `item_id`, returning its total, or `None` when the
+    /// site does not count views (see [`crate::content::view_counter`]).
+    pub async fn record_view(&self, item_id: Uuid) -> anyhow::Result<Option<i64>> {
+        self.inner
+            .view_counter
+            .record(&self.inner.pool, item_id)
+            .await
     }
 
     /// Validate saved pages against `components` (the standard set plus the
@@ -765,8 +820,25 @@ impl ItemService {
     /// [`Self::gate_promotion`].
     pub async fn create_authored(
         &self,
+        input: CreateItem,
+        created: Option<i64>,
+        user: &UserContext,
+    ) -> Result<Item> {
+        self.create_moderated(input, created, None, user).await
+    }
+
+    /// [`Self::create_authored`], asking for a content moderation state.
+    ///
+    /// On a moderated type ([`moderation`]) a new item leaves Draft by a
+    /// transition the user must hold: `moderation_state`, or Draft when it is
+    /// `None` (Published when the input asks for `status: 1`). The state decides
+    /// the published status, so the transition permission is the publish
+    /// permission there. On any other type the state is ignored.
+    pub async fn create_moderated(
+        &self,
         mut input: CreateItem,
         created: Option<i64>,
+        moderation_state: Option<&str>,
         user: &UserContext,
     ) -> Result<Item> {
         Self::refuse_if_too_deep()?;
@@ -791,7 +863,19 @@ impl ItemService {
         // The two write gates, on the client's own submission and before the
         // presave tap: a plugin's presave edits are trusted code, not user
         // input. Both return `WriteDenied`, which every caller maps to 403.
-        input.status = Self::gate_publish(user, input.status, None)?;
+        let moderated_state = if self.is_moderated(&input.item_type).await {
+            let requested = match (moderation_state, input.status) {
+                (Some(name), _) => name,
+                (None, Some(1)) => moderation::PUBLISHED,
+                (None, _) => moderation::DRAFT,
+            };
+            let to = Self::gate_transition(user, moderation::DRAFT, requested)?;
+            input.status = Some(moderation::status_of(to));
+            Some(to)
+        } else {
+            input.status = Self::gate_publish(user, input.status, None)?;
+            None
+        };
         Self::gate_promotion(user, input.promote, input.sticky, None)?;
         // A new item's author is its creator unless they hold the authority to
         // say otherwise, as is its authored on time.
@@ -801,6 +885,14 @@ impl ItemService {
             .gate_field_writes(user, &input.item_type, input.fields.as_ref(), None)
             .await?;
         input.fields = gated_fields;
+        // A create that says nothing about promote or sticky takes the type's
+        // defaults, whoever makes it: the default is the site's decision, not
+        // the user's, so the promotion gate above does not apply to it.
+        if input.promote.is_none() || input.sticky.is_none() {
+            let (promote, sticky) = self.publishing_defaults(&input.item_type).await;
+            input.promote.get_or_insert(promote);
+            input.sticky.get_or_insert(sticky);
+        }
 
         // Invoke tap_item_presave — plugins can modify fields before save.
         // Serialize the input as a JSON object so plugins can read/modify fields.
@@ -839,18 +931,25 @@ impl ItemService {
         self.validate_owned_terms(&input.item_type, input.fields.as_ref(), None)
             .await?;
 
-        // The files the item will reference: any it may not attach refuse the
+        // The field values pass the one check every write runs, then the
+        // files the item will reference: any it may not attach refuse the
         // write, and the rest are indexed and promoted in the item's own
         // transaction.
         let refs = self
-            .file_references(&input.item_type, input.fields.as_ref())
+            .checked_file_references(&input.item_type, input.fields.as_ref(), None)
             .await?;
         self.authorize_new_file_references(None, &refs, user)
             .await?;
 
         // Create the item in the database
-        let item =
-            Item::create_with_file_refs(&self.inner.pool, input, Some(&refs), created).await?;
+        let item = Item::create_with_file_refs(
+            &self.inner.pool,
+            input,
+            Some(&refs),
+            created,
+            moderated_state,
+        )
+        .await?;
 
         self.write_alias(&item, true).await;
 
@@ -864,25 +963,124 @@ impl ItemService {
         // new item is searchable via the SemanticSimilarity gather operator.
         self.index_item(&item, user).await;
 
-        self.request_search_rebuild(None, Some(&item)).await;
-
         info!(item_id = %item.id, item_type = %item.item_type, "item created");
         self.audit("create", item.id, Some(user), Self::audit_details(&item))
             .await;
         Ok(item)
     }
 
-    /// Ask for a public search index rebuild when a write changed what it may
-    /// hold: the item was in it before (published on the live stage), or is
-    /// now. That covers a publish, an edit to a public item, an unpublish, a
-    /// move off the live stage and a delete, the last three of which no
-    /// `MAX(changed)` poll over published items can see. A write to an item
-    /// that was never public asks for nothing.
-    async fn request_search_rebuild(&self, before: Option<&Item>, after: Option<&Item>) {
-        let public = |item: &Item| item.is_published() && item.stage_id == LIVE_STAGE_ID;
-        if before.is_some_and(public) || after.is_some_and(public) {
-            crate::cron::request_search_index_rebuild(&self.inner.pool).await;
+    /// Whether items of `item_type` are moderated: its `moderation` setting
+    /// ([`moderation::is_moderated`]). Asked on the write path and by the
+    /// forms, never on a read; a type that cannot be read is not moderated.
+    pub async fn is_moderated(&self, item_type: &str) -> bool {
+        match crate::models::ItemType::find_by_type(&self.inner.pool, item_type).await {
+            Ok(Some(row)) => moderation::is_moderated(&row.settings),
+            Ok(None) => false,
+            Err(e) => {
+                warn!(error = %e, item_type, "reading whether the type is moderated failed");
+                false
+            }
         }
+    }
+
+    /// The moderation state of `item`: the state of its latest revision
+    /// (`latest`, which may be ahead of the current one), read from its
+    /// status when the revision has none.
+    pub fn moderation_state_of(item: &Item, latest: Option<&ItemRevision>) -> &'static str {
+        match latest {
+            Some(r) if Some(r.id) != item.current_revision_id => {
+                moderation::state_of(r.moderation_state.as_deref(), r.status)
+            }
+            Some(r) => moderation::state_of(r.moderation_state.as_deref(), item.status),
+            None => moderation::state_of(None, item.status),
+        }
+    }
+
+    /// The item's moderation state and the item as an editor works on it: the
+    /// title and fields of a draft ahead of the published revision, over the
+    /// item row. `None` for an item whose type is not moderated. One query
+    /// more than a load, on the edit form only.
+    pub async fn load_for_moderation(&self, item: &Item) -> Result<Option<(&'static str, Item)>> {
+        if !self.is_moderated(&item.item_type).await {
+            return Ok(None);
+        }
+        let latest = Item::latest_revision(&self.inner.pool, item.id).await?;
+        let state = Self::moderation_state_of(item, latest.as_ref());
+        let mut working = item.clone();
+        if let Some(latest) = latest.filter(|r| Some(r.id) != item.current_revision_id) {
+            working.title = latest.title;
+            working.fields = latest.fields;
+        }
+        Ok(Some((state, working)))
+    }
+
+    /// The latest revision of `item` when it is a draft ahead of the published
+    /// one, for a user who may view the item and holds edit access, `view
+    /// latest version` or `view revisions`. `Ok(None)` when there is no such
+    /// revision or the user may not read it.
+    pub async fn latest_version(
+        &self,
+        item: &Item,
+        user: &UserContext,
+    ) -> Result<Option<ItemRevision>> {
+        if !self.check_access(item, "view", user).await? {
+            return Ok(None);
+        }
+        if !(user.can(moderation::VIEW_LATEST_VERSION)
+            || self.may_read_revisions(item, user).await?)
+        {
+            return Ok(None);
+        }
+        Ok(Item::latest_revision(&self.inner.pool, item.id)
+            .await?
+            .filter(|r| Some(r.id) != item.current_revision_id))
+    }
+
+    /// Decide a moderation transition: `to` must be a state, and the user
+    /// must hold the transition from `from` to it.
+    fn gate_transition(
+        user: &UserContext,
+        from: &str,
+        to: &str,
+    ) -> Result<&'static str, WriteDenied> {
+        let Some(to) = moderation::state(to) else {
+            return Err(WriteDenied::Transition {
+                from: from.to_string(),
+                to: to.to_string(),
+            });
+        };
+        if moderation::may(from, to, user) {
+            Ok(to)
+        } else {
+            Err(WriteDenied::Transition {
+                from: from.to_string(),
+                to: to.to_string(),
+            })
+        }
+    }
+
+    /// A content type's promote and sticky defaults for a new item, from its
+    /// `promote_default` and `sticky_default` settings: off when unset, or
+    /// when the type cannot be read.
+    pub async fn publishing_defaults(&self, item_type: &str) -> (i16, i16) {
+        let settings =
+            match crate::models::ItemType::find_by_type(&self.inner.pool, item_type).await {
+                Ok(Some(row)) => row.settings,
+                Ok(None) => return (0, 0),
+                Err(e) => {
+                    warn!(error = %e, item_type, "reading the type's publishing defaults failed");
+                    return (0, 0);
+                }
+            };
+        let flag = |key: &str| {
+            i16::from(
+                settings
+                    .get(key)
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false),
+            )
+        };
+        (flag("promote_default"), flag("sticky_default"))
     }
 
     /// Give `item` the alias its type's pathauto pattern asks for, on its
@@ -1349,7 +1547,28 @@ impl ItemService {
     pub async fn update(
         &self,
         id: Uuid,
+        input: UpdateItem,
+        user: &UserContext,
+    ) -> Result<Option<Item>> {
+        self.update_moderated(id, input, None, user).await
+    }
+
+    /// [`Self::update`], asking for a content moderation state.
+    ///
+    /// On a moderated type ([`moderation`]) the save is a transition from the
+    /// state of the item's latest revision to `moderation_state`; with `None`,
+    /// to the state a changed `status` implies, or else to the current state if
+    /// the user may stay there and the first state they may reach if not. The
+    /// state decides the published status. A Draft saved over a published item
+    /// is a forward revision: recorded, and the item row (what visitors see)
+    /// left as it is. Any other save starts from the latest revision, so a
+    /// transition that names no title or fields publishes or archives the
+    /// draft ahead of the published one, not the published one again.
+    pub async fn update_moderated(
+        &self,
+        id: Uuid,
         mut input: UpdateItem,
+        moderation_state: Option<&str>,
         user: &UserContext,
     ) -> Result<Option<Item>> {
         Self::refuse_if_too_deep()?;
@@ -1380,7 +1599,42 @@ impl ItemService {
         // Field-level and publish gates, after item-level access and before the
         // presave tap. A denied field the submission left out is copied back
         // here, so a partial `fields` object cannot erase it.
-        input.status = Self::gate_publish(user, input.status, Some(existing.status))?;
+        let mut moderated_state = None;
+        let mut forward = false;
+        if self.is_moderated(&existing.item_type).await {
+            let latest = Item::latest_revision(&self.inner.pool, id).await?;
+            let from = Self::moderation_state_of(&existing, latest.as_ref());
+            let requested = match (moderation_state, input.status) {
+                (Some(name), _) => Some(name),
+                (None, Some(status)) if status != existing.status => Some(if status == 1 {
+                    moderation::PUBLISHED
+                } else if from == moderation::PUBLISHED {
+                    moderation::ARCHIVED
+                } else {
+                    moderation::DRAFT
+                }),
+                (None, _) => moderation::default_target(from, user),
+            };
+            let to = Self::gate_transition(user, from, requested.unwrap_or(from))?;
+            // A save starts from the latest revision: a draft ahead of the
+            // published one is what the user is working on.
+            if let Some(latest) = latest
+                .as_ref()
+                .filter(|r| Some(r.id) != existing.current_revision_id)
+            {
+                input.title.get_or_insert_with(|| latest.title.clone());
+                input.fields.get_or_insert_with(|| latest.fields.clone());
+            }
+            forward = to == moderation::DRAFT && existing.is_published();
+            input.status = Some(if forward {
+                existing.status
+            } else {
+                moderation::status_of(to)
+            });
+            moderated_state = Some(to);
+        } else {
+            input.status = Self::gate_publish(user, input.status, Some(existing.status))?;
+        }
         Self::gate_promotion(
             user,
             input.promote,
@@ -1443,12 +1697,17 @@ impl ItemService {
         )
         .await?;
 
-        // A write that replaces `fields` replaces the item's file references,
-        // in the same transaction; one that leaves `fields` alone leaves them.
+        // A write that replaces `fields` has its changed values checked and
+        // replaces the item's file references, in the same transaction; one
+        // that leaves `fields` alone leaves them.
         let refs = match input.fields.as_ref() {
             Some(fields) => {
                 let refs = self
-                    .file_references(&existing.item_type, Some(fields))
+                    .checked_file_references(
+                        &existing.item_type,
+                        Some(fields),
+                        Some(&existing.fields),
+                    )
                     .await?;
                 self.authorize_new_file_references(Some(id), &refs, user)
                     .await?;
@@ -1457,9 +1716,39 @@ impl ItemService {
             None => None,
         };
 
-        // Update the item
-        let item = Item::update_with_file_refs(&self.inner.pool, id, user.id, input, refs.as_ref())
+        // A draft over a published item: a revision, and nothing else. The
+        // item row, its alias, its file references and the search index keep
+        // the published revision; the taps that announce a change to the item
+        // do not fire, because visitors see none.
+        if forward {
+            let revision_id = Item::insert_forward_revision(
+                &self.inner.pool,
+                id,
+                user.id,
+                input.title.as_deref().unwrap_or(&existing.title),
+                input.fields.as_ref().unwrap_or(&existing.fields),
+                input.log.as_deref(),
+                moderation::DRAFT,
+            )
             .await?;
+            info!(item_id = %id, revision_id = %revision_id, "draft saved ahead of the published revision");
+            let mut details = Self::audit_details(&existing);
+            details["moderation_state"] = serde_json::Value::from(moderation::DRAFT);
+            details["revision_id"] = serde_json::Value::from(revision_id.to_string());
+            self.audit("update", id, Some(user), details).await;
+            return Ok(Some(existing));
+        }
+
+        // Update the item
+        let item = Item::update_with_file_refs(
+            &self.inner.pool,
+            id,
+            user.id,
+            input,
+            refs.as_ref(),
+            moderated_state,
+        )
+        .await?;
 
         if let Some(ref i) = item {
             self.write_alias(i, false).await;
@@ -1472,8 +1761,6 @@ impl ItemService {
             // Fire tap_item_update_index and regenerate the kernel embedding so
             // the updated item's searchable vector reflects the new content.
             self.index_item(i, user).await;
-
-            self.request_search_rebuild(Some(&existing), Some(i)).await;
 
             // Invalidate cache
             self.invalidate(id);
@@ -1591,7 +1878,16 @@ impl ItemService {
             );
         }
 
-        match ai.embed(text).await {
+        match ai
+            .embed(
+                text,
+                &crate::services::ai_provider::AiCaller::kernel(
+                    crate::services::embed_index::KERNEL_EMBED_PLUGIN,
+                    false,
+                ),
+            )
+            .await
+        {
             Ok(Some(result)) => {
                 if let Err(e) = store
                     .store_embedding(item.id, KERNEL_INDEX_FIELD, &result.model, &result.vector)
@@ -1644,7 +1940,6 @@ impl ItemService {
         if deleted {
             // Invalidate cache
             self.invalidate(id);
-            self.request_search_rebuild(Some(&item), None).await;
             info!(item_id = %id, "item deleted");
             self.audit("delete", id, Some(user), Self::audit_details(&item))
                 .await;
@@ -1655,18 +1950,24 @@ impl ItemService {
         Ok(deleted)
     }
 
-    /// The files `fields` references, for an item of `item_type`. See
-    /// [`file_refs`].
-    async fn file_references(
+    /// The files `fields` references, for an item of `item_type`, after its
+    /// values pass the one field value check ([`field_values`]): `Err` carrying
+    /// [`field_values::InvalidFieldValues`] when they do not. `previous` is the stored field
+    /// map on an update or revert; a field the write leaves as it was is not
+    /// judged again. One read of the type's field definitions serves both, and
+    /// the tags the write names are looked up in one query. See [`file_refs`].
+    async fn checked_file_references(
         &self,
         item_type: &str,
         fields: Option<&serde_json::Value>,
+        previous: Option<&serde_json::Value>,
     ) -> Result<FileReferences> {
         let Some(fields) = fields else {
             return Ok(FileReferences::default());
         };
         let mut conn = self.inner.pool.acquire().await?;
         let definitions = file_refs::load_field_definitions(&mut conn, item_type).await?;
+        field_values::validate_field_values(&mut conn, &definitions, fields, previous).await?;
         Ok(file_refs::extract_file_references(fields, &definitions))
     }
 
@@ -1838,6 +2139,96 @@ impl ItemService {
                             "mime": f.filemime,
                             "alt": f.alt_text,
                         })
+                    })
+                    .collect();
+                (!entries.is_empty()).then(|| (name.to_string(), entries))
+            })
+            .collect())
+    }
+
+    /// The `CategoryReference` field values of `item`, resolved to their tags,
+    /// keyed by field name: `{id, label, slug, url, ancestors}` each, in the
+    /// field's order, `ancestors` root first as `{id, label, slug, url}`. One
+    /// query for every tag the item names and one recursive query for all
+    /// their ancestors, however many tags and levels there are. `url` is
+    /// `tag_url(category, slug)` ([`crate::gather::GatherService::tag_url`] on
+    /// the item route), null for a tag without a slug or a category no route
+    /// lists. A uuid naming no tag is left out, and so is a tag whose category
+    /// `visible_category` refuses: the item route passes the category read
+    /// rule (`owned_vocabulary::visible_category`), so an owner's category the
+    /// viewer may not read shows nothing. Ancestors share their tag's category.
+    pub async fn referenced_tags(
+        &self,
+        item: &Item,
+        definitions: &[trovato_sdk::types::FieldDefinition],
+        visible_category: impl Fn(&str) -> bool,
+        tag_url: impl Fn(&str, &str) -> Option<String>,
+    ) -> Result<HashMap<String, Vec<serde_json::Value>>> {
+        let tag_fields: Vec<(&str, Vec<Uuid>)> = definitions
+            .iter()
+            .filter(|d| {
+                matches!(
+                    d.field_type,
+                    trovato_sdk::types::FieldType::CategoryReference(_)
+                )
+            })
+            .map(|d| {
+                let mut ids: Vec<Uuid> = Vec::new();
+                for id in item
+                    .fields
+                    .get(&d.field_name)
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|v| v.as_str()?.trim().parse::<Uuid>().ok())
+                {
+                    if !ids.contains(&id) {
+                        ids.push(id);
+                    }
+                }
+                (d.field_name.as_str(), ids)
+            })
+            .filter(|(_, ids)| !ids.is_empty())
+            .collect();
+        let ids: Vec<Uuid> = tag_fields
+            .iter()
+            .flat_map(|(_, ids)| ids.iter().copied())
+            .collect();
+        if ids.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let tags: HashMap<Uuid, crate::models::Tag> =
+            crate::models::Tag::find_by_ids(&self.inner.pool, &ids)
+                .await?
+                .into_iter()
+                .filter(|t| visible_category(&t.category_id))
+                .map(|t| (t.id, t))
+                .collect();
+        let found: Vec<Uuid> = tags.keys().copied().collect();
+        let ancestors = crate::models::Tag::get_ancestors_of(&self.inner.pool, &found).await?;
+
+        let entry = |tag: &crate::models::Tag| {
+            serde_json::json!({
+                "id": tag.id,
+                "label": tag.label,
+                "slug": tag.slug,
+                "url": tag.slug.as_deref().and_then(|slug| tag_url(&tag.category_id, slug)),
+            })
+        };
+        Ok(tag_fields
+            .into_iter()
+            .filter_map(|(name, ids)| {
+                let entries: Vec<serde_json::Value> = ids
+                    .iter()
+                    .filter_map(|id| tags.get(id))
+                    .map(|tag| {
+                        let mut value = entry(tag);
+                        value["ancestors"] = ancestors
+                            .get(&tag.id)
+                            .map(|list| list.iter().map(|a| entry(&a.tag)).collect())
+                            .unwrap_or_else(|| serde_json::Value::Array(Vec::new()));
+                        value
                     })
                     .collect();
                 (!entries.is_empty()).then(|| (name.to_string(), entries))
@@ -2712,7 +3103,7 @@ impl ItemService {
             return Err(RevisionAccess::NotFound);
         }
         if !self
-            .check_access(&item, "edit", user)
+            .may_read_revisions(&item, user)
             .await
             .map_err(RevisionAccess::Failed)?
         {
@@ -2755,6 +3146,82 @@ impl ItemService {
         }
 
         Ok(ItemRevisions { item, revisions })
+    }
+
+    /// Whether `user`, who may view `item`, may read its revision history: an
+    /// editor of the item through their edit access, anyone else through
+    /// [`VIEW_REVISIONS`]. The view check is the caller's, asked first, so an
+    /// item the user may not see stays a 404.
+    pub async fn may_read_revisions(&self, item: &Item, user: &UserContext) -> Result<bool> {
+        if user.can(VIEW_REVISIONS) {
+            return Ok(true);
+        }
+        self.check_access(item, "edit", user).await
+    }
+
+    /// Whether `user` may delete past revisions of `item`: [`DELETE_REVISIONS`]
+    /// and delete access to the item itself, as Drupal asks.
+    pub async fn may_delete_revisions(&self, item: &Item, user: &UserContext) -> Result<bool> {
+        if !user.can(DELETE_REVISIONS) {
+            return Ok(false);
+        }
+        self.check_access(item, "delete", user).await
+    }
+
+    /// Delete one past revision of an item.
+    ///
+    /// The item's current revision is never deleted: it is what the item row
+    /// holds, and the row points at it. Access is [`Self::may_delete_revisions`]
+    /// after the item is visible to the user at all; a revision id that is not
+    /// one of this item's is not found.
+    pub async fn delete_revision(
+        &self,
+        item_id: Uuid,
+        revision_id: Uuid,
+        user: &UserContext,
+    ) -> std::result::Result<(), RevisionDeleted> {
+        let item = self
+            .load(item_id)
+            .await
+            .map_err(RevisionDeleted::Failed)?
+            .ok_or(RevisionDeleted::NotFound)?;
+        if !self
+            .check_access(&item, "view", user)
+            .await
+            .map_err(RevisionDeleted::Failed)?
+        {
+            return Err(RevisionDeleted::NotFound);
+        }
+        if !self
+            .may_delete_revisions(&item, user)
+            .await
+            .map_err(RevisionDeleted::Failed)?
+        {
+            return Err(RevisionDeleted::Forbidden);
+        }
+        if item.current_revision_id == Some(revision_id) {
+            return Err(RevisionDeleted::Current);
+        }
+        let deleted = Item::delete_revision(&self.inner.pool, item_id, revision_id)
+            .await
+            .map_err(RevisionDeleted::Failed)?;
+        if !deleted {
+            return Err(RevisionDeleted::NotFound);
+        }
+        // The item row itself did not change, but `item_revision` is part of
+        // what `CacheKind::Items` covers (`cache::generation::CacheKind::for_table`),
+        // so every server bumps its generation here too, the same as any other
+        // write that touches this item.
+        self.invalidate(item_id);
+        info!(item_id = %item_id, revision_id = %revision_id, "revision deleted");
+        self.audit(
+            "delete_revision",
+            item_id,
+            Some(user),
+            serde_json::json!({ "revision_id": revision_id, "title": item.title }),
+        )
+        .await;
+        Ok(())
     }
 
     /// Revert an item to a previous revision.

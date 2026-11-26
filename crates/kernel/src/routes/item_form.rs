@@ -15,6 +15,7 @@ use tower_sessions::Session;
 use trovato_sdk::types::{ContentTypeDefinition, FieldType};
 use uuid::Uuid;
 
+use crate::content::preview::{self, PreviewMode};
 use crate::content::submission::{PostedForm, build_item_fields, permitted_text_formats};
 use crate::content::{FieldMode, FormBuilder, PUBLISH_CONTENT};
 use crate::form::{ElementType, Form, FormElement, FormState, ProcessError, ValidationError};
@@ -30,6 +31,10 @@ pub(crate) fn tap_state(state: &AppState, user: &UserContext) -> RequestState {
 
 /// Build the item form for `item` (or a new item of `content_type`), with the
 /// route's own `extra` elements, through `FormService::build`.
+///
+/// `previewed` says the form is shown again under a preview of what was
+/// submitted, which is what lets a type whose preview is required offer Save.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn build(
     state: &AppState,
     session: &Session,
@@ -38,29 +43,61 @@ pub(crate) async fn build(
     item: Option<&Item>,
     action: &str,
     extra: Vec<(String, FormElement)>,
+    previewed: bool,
 ) -> anyhow::Result<Form> {
     let type_name = &content_type.machine_name;
+    // On a moderated type the form edits the latest revision, which can be a
+    // draft ahead of the published one, and a state select replaces the
+    // published checkbox.
+    let moderation = moderation_context(state, type_name, item).await;
+    let working = moderation.as_ref().and_then(|m| m.working.as_ref());
+    let item = working.or(item);
     let modes =
         super::item::field_modes_for(state, user, type_name, content_type, item.is_none()).await;
     let titles = match item {
         Some(item) => reference_titles(state, user, content_type, item, &modes).await,
         None => HashMap::new(),
     };
+    let language = active_language(state, session).await;
     let builder = FormBuilder::new(content_type.clone())
         .with_permitted_formats(permitted_text_formats(user))
         .with_reference_titles(titles)
         .with_item_id(item.map(|i| i.id))
+        .with_placeholders(record_reference_placeholders(
+            state,
+            content_type,
+            &language,
+        ))
+        .with_default_placeholder(translate(state, "Search...", &language))
+        .with_owner_hint(translate(state, "Choose the owner first", &language))
         .with_field_modes(modes)
-        .with_publish_allowed(user.can(PUBLISH_CONTENT));
+        .with_publish_allowed(user.can(PUBLISH_CONTENT) && moderation.is_none());
     let mut extra = extra;
-    extra.extend(publishing_element(state, user, item).await);
-    let form = match item {
+    if let Some(moderation) = &moderation {
+        extra.push(moderation_element(user, moderation.state));
+    }
+    extra.extend(publishing_element(state, user, type_name, item).await);
+    let mode = preview_mode(state, type_name).await;
+    if mode != PreviewMode::Disabled {
+        let text = super::admin_nav::AdminText::for_page(state, user, action).await;
+        extra.push(preview_button(&text.html("Preview", &[])));
+    }
+    let mut form = match item {
         Some(item) => builder.build_edit_form(item, action),
         None => builder.build_add_form(action),
     }
     .elements(extra);
+    // A type that must be previewed offers Save only under a preview.
+    if mode == PreviewMode::Required && !previewed {
+        form.elements.remove("op");
+    }
 
     let mut form_state = FormState::new(form.form_id.clone(), form.form_build_id.clone());
+    if previewed {
+        form_state
+            .extra
+            .insert(preview::PREVIEWED.to_string(), Value::Bool(true));
+    }
     form_state.user_id = Some(user.id);
     form_state.item_id = item.map(|i| i.id);
     form_state.item_type = Some(type_name.clone());
@@ -70,13 +107,89 @@ pub(crate) async fn build(
         .await
 }
 
+/// The preview mode of `type_name`: its `preview_mode` setting, or the
+/// default when the type cannot be read.
+pub(crate) async fn preview_mode(state: &AppState, type_name: &str) -> PreviewMode {
+    match crate::models::ItemType::find_by_type(state.db(), type_name).await {
+        Ok(row) => PreviewMode::of(row.as_ref().map(|r| &r.settings)),
+        Err(e) => {
+            tracing::warn!(error = %e, type_name, "reading the type's preview mode failed");
+            PreviewMode::default()
+        }
+    }
+}
+
+/// The Preview button. A `<button>` the form submits like Save, by name: the
+/// routes see `preview` in the submission and render it instead of saving.
+///
+/// `label` is the button's text, escaped: "Preview" in the viewer's admin
+/// language on an admin page, the English source elsewhere.
+fn preview_button(label: &str) -> (String, FormElement) {
+    (
+        preview::BUTTON.to_string(),
+        FormElement::markup(format!(
+            r#"<div class="form-actions form-actions--preview"><button name="{}" value="1" class="button button--secondary">{label}</button></div>"#,
+            preview::BUTTON
+        ))
+        .weight(crate::content::SUBMIT_WEIGHT),
+    )
+}
+
+/// Whether a submission asks for a preview rather than a save.
+pub(crate) fn wants_preview(posted: &PostedForm) -> bool {
+    posted.contains(preview::BUTTON)
+}
+
+/// The preview of a submission: its title and fields rendered as the item
+/// page renders them, above the form shown again. Nothing is saved.
+pub(crate) async fn render_preview(
+    state: &AppState,
+    user: &UserContext,
+    content_type: &ContentTypeDefinition,
+    title: &str,
+    fields: &Map<String, Value>,
+    page_path: &str,
+) -> String {
+    let (fields_html, _stylesheets, _page_root) = super::item::render_item_fields(
+        state,
+        user,
+        &Value::Object(fields.clone()),
+        &content_type.fields,
+    )
+    .await;
+    // The preview's own words in the admin language on an admin page
+    // (`page_path`), the English source on the front end.
+    let text = super::admin_nav::AdminText::for_page(state, user, page_path).await;
+    // An admin page already has its one h1 (the shell's "Create …" or
+    // "Edit …"), so there the previewed title is a level below it. The front
+    // end's form page keeps the h1 it always had.
+    let heading = if page_path == "/admin" || page_path.starts_with("/admin/") {
+        "h2"
+    } else {
+        "h1"
+    };
+    format!(
+        r#"<section class="item-preview" aria-label="{}"><p class="item-preview__notice">{}</p><article class="item item--preview item--{}"><{heading} class="item__title">{}</{heading}>{}</article></section>"#,
+        text.html("Preview", &[]),
+        text.html("This is a preview. It has not been saved.", &[]),
+        super::helpers::html_escape(&content_type.machine_name),
+        if crate::i18n::markers_enabled() {
+            crate::i18n::data_html(title)
+        } else {
+            super::helpers::html_escape(title)
+        },
+        fields_html
+    )
+}
+
 /// The display title of every `RecordReference` target the item points at,
 /// for a target this user may view: one query for all of them, multi value
 /// fields included. A target they may not see keeps its id and no title.
 ///
 /// A `category_term` field points at a term, not an item, and shows the
 /// term's name: the editor may edit this item, which already holds it, and
-/// term names are what every term page shows.
+/// term names are what every term page shows. So does every tag a
+/// `CategoryReference` field holds.
 async fn reference_titles(
     state: &AppState,
     user: &UserContext,
@@ -87,12 +200,14 @@ async fn reference_titles(
     let mut ids: Vec<Uuid> = Vec::new();
     let mut term_ids: Vec<Uuid> = Vec::new();
     for field in &content_type.fields {
-        let FieldType::RecordReference(target) = &field.field_type else {
-            continue;
-        };
         if modes.get(&field.field_name) == Some(&FieldMode::Hidden) {
             continue;
         }
+        let target = match &field.field_type {
+            FieldType::RecordReference(target) => target.as_str(),
+            FieldType::CategoryReference(_) => "category_term",
+            _ => continue,
+        };
         let values: Vec<&Value> = match item.fields.get(&field.field_name) {
             Some(Value::Array(values)) => values.iter().collect(),
             Some(value) => vec![value],
@@ -135,6 +250,155 @@ async fn reference_titles(
         }
     }
     titles
+}
+
+/// The language a `RecordReference` placeholder or hint is translated into:
+/// the session's override, the same one `negotiate_language` reads, else the
+/// site default. A form is built well after that middleware has run, and
+/// nothing here carries its resolved [`ResolvedLanguage`] forward, so this
+/// reads the same session key directly rather than widen every route handler
+/// between it and here to thread the extension through.
+///
+/// [`ResolvedLanguage`]: crate::middleware::language::ResolvedLanguage
+async fn active_language(state: &AppState, session: &Session) -> String {
+    session
+        .get::<Option<String>>(crate::middleware::language::SESSION_ACTIVE_LANGUAGE)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
+        .unwrap_or_else(|| state.default_language().to_string())
+}
+
+/// Translate an interface string the way every other one in the locale table
+/// will, once something else uses it too: unchanged when no locale service is
+/// configured.
+fn translate(state: &AppState, source: &str, language: &str) -> String {
+    match state.locale() {
+        Some(locale) => locale.translate(source, "form", language),
+        None => source.to_string(),
+    }
+}
+
+/// The `RecordReference` placeholder for each target type `content_type`'s
+/// fields point at, keyed by target type: a human label, never the machine
+/// name. `category_term` always means "terms"; any other target type is
+/// another content type, whose own label this reads from the registry. A
+/// target type nothing can name (a stale field pointing at a removed type)
+/// is left out, so the widget falls back to the builder's default
+/// placeholder.
+///
+/// The label itself is not translated — it is the site's own data, the same
+/// as a menu title or a tile's text, not an interface string — only the
+/// surrounding "Search %s..." phrase is, through [`translate`].
+fn record_reference_placeholders(
+    state: &AppState,
+    content_type: &ContentTypeDefinition,
+    language: &str,
+) -> HashMap<String, String> {
+    let template = translate(state, "Search %s...", language);
+    let mut placeholders = HashMap::new();
+    for field in &content_type.fields {
+        let FieldType::RecordReference(target) = &field.field_type else {
+            continue;
+        };
+        if placeholders.contains_key(target) {
+            continue;
+        }
+        let label = if target == "category_term" {
+            Some(translate(state, "terms", language))
+        } else {
+            state.content_types().get(target).map(|ct| ct.label)
+        };
+        if let Some(label) = label.filter(|l| !l.trim().is_empty()) {
+            placeholders.insert(target.clone(), template.replacen("%s", &label, 1));
+        }
+    }
+    placeholders
+}
+
+/// What the item form needs of content moderation, on a moderated type.
+pub(crate) struct ModerationContext {
+    /// The state the item is in: Draft for a new item.
+    pub state: &'static str,
+    /// The item as an editor works on it ([`ItemService::load_for_moderation`]);
+    /// `None` for a new item.
+    ///
+    /// [`ItemService::load_for_moderation`]: crate::content::ItemService::load_for_moderation
+    pub working: Option<Item>,
+}
+
+/// The moderation context of the form for `item` (or a new item) of
+/// `type_name`: `None` when the type is not moderated.
+pub(crate) async fn moderation_context(
+    state: &AppState,
+    type_name: &str,
+    item: Option<&Item>,
+) -> Option<ModerationContext> {
+    match item {
+        None => state
+            .items()
+            .is_moderated(type_name)
+            .await
+            .then_some(ModerationContext {
+                state: crate::content::moderation::DRAFT,
+                working: None,
+            }),
+        Some(item) => match state.items().load_for_moderation(item).await {
+            Ok(found) => found.map(|(state, working)| ModerationContext {
+                state,
+                working: Some(working),
+            }),
+            Err(e) => {
+                tracing::warn!(error = %e, item_id = %item.id, "loading the latest revision failed");
+                None
+            }
+        },
+    }
+}
+
+/// The moderation control: the current state, and a `moderation_state`
+/// select of the states this user may move the item to, defaulting to the
+/// current one when they may stay. The service decides the transition again.
+fn moderation_element(user: &UserContext, current: &'static str) -> (String, FormElement) {
+    use crate::content::moderation;
+
+    let targets = moderation::targets(current, user);
+    let current_label = moderation::label(current);
+    let mut fieldset = FormElement::fieldset()
+        .title("Moderation state")
+        .weight(crate::content::STATUS_WEIGHT)
+        .attribute("id", "moderation-state")
+        .child(
+            "_moderation_current",
+            FormElement::markup(format!(
+                r#"<p class="moderation-current">Current state: <strong>{current_label}</strong></p>"#
+            ))
+            .weight(0),
+        );
+    if targets.is_empty() {
+        fieldset = fieldset.child(
+            "_moderation_none",
+            FormElement::markup(
+                r#"<p class="moderation-none">You may not change the state of this item.</p>"#,
+            )
+            .weight(1),
+        );
+    } else {
+        let options: Vec<(String, String)> = targets
+            .iter()
+            .map(|s| ((*s).to_string(), moderation::label(s).to_string()))
+            .collect();
+        let default = moderation::default_target(current, user).unwrap_or(current);
+        let mut select = FormElement::select(options)
+            .title("Change to")
+            .default_value(default)
+            .weight(1);
+        // Required, so the template offers no empty "- Select -" of its own.
+        select.required = true;
+        fieldset = fieldset.child("moderation_state", select);
+    }
+    ("moderation".to_string(), fieldset)
 }
 
 /// The stage selector: the stages this user may move `item` to by the
@@ -184,6 +448,19 @@ pub(crate) async fn process(
 ) -> Result<(FormState, Map<String, Value>), ProcessError> {
     let build_id = posted.get("_form_build_id").unwrap_or("").to_string();
     let formats = permitted_text_formats(user);
+    // A save builds on what the form showed: on a moderated type, the latest
+    // revision.
+    let working = match item {
+        Some(stored) => moderation_context(state, &content_type.machine_name, Some(stored))
+            .await
+            .and_then(|m| m.working),
+        None => None,
+    };
+    let item = working.as_ref().or(item);
+    // A save of a type that must be previewed needs a form built under a
+    // preview. A preview itself is always allowed.
+    let must_preview = !wants_preview(posted)
+        && preview_mode(state, &content_type.machine_name).await == PreviewMode::Required;
     state
         .forms()
         .process(
@@ -198,6 +475,11 @@ pub(crate) async fn process(
                     return Err(vec![ValidationError::form(crate::form::FORM_EXPIRED)]);
                 }
                 let mut errors = Vec::new();
+                if must_preview
+                    && form_state.extra.get(preview::PREVIEWED) != Some(&Value::Bool(true))
+                {
+                    errors.push(ValidationError::form("Preview this item before saving it."));
+                }
                 if posted.get("title").is_none_or(|t| t.trim().is_empty()) {
                     errors.push(ValidationError::field("title", "Title is required."));
                 }
@@ -329,7 +611,8 @@ pub(crate) async fn ajax(
 
     let response = match request.trigger.strip_prefix("add_") {
         Some(field) if form_state.rendered_fields.iter().any(|f| f == field) => {
-            add_another(state, &mut form_state, field)
+            let language = active_language(state, session).await;
+            add_another(state, &mut form_state, field, &language)
         }
         _ => {
             state
@@ -379,6 +662,7 @@ fn add_another(
     state: &AppState,
     form_state: &mut FormState,
     field: &str,
+    language: &str,
 ) -> crate::form::AjaxResponse {
     use crate::form::AjaxResponse;
 
@@ -389,7 +673,7 @@ fn add_another(
         .and_then(|ct| {
             ct.fields
                 .iter()
-                .find(|f| f.field_name == field && f.cardinality != 1)
+                .find(|f| f.field_name == field && crate::content::field_values::stores_a_list(f))
                 .cloned()
                 .map(|f| (ct, f))
         })
@@ -412,8 +696,12 @@ fn add_another(
         ));
     }
 
+    let placeholders = record_reference_placeholders(state, &content_type, language);
     let mut widget = FormBuilder::new(content_type)
         .with_item_id(form_state.item_id)
+        .with_placeholders(placeholders)
+        .with_default_placeholder(translate(state, "Search...", language))
+        .with_owner_hint(translate(state, "Choose the owner first", language))
         .widget(&definition, None, FieldMode::Editable);
     widget.title = None;
     widget.required = false;
@@ -460,6 +748,7 @@ const AUTHORED_ON_SECONDS_FORMAT: &str = "%Y-%m-%dT%H:%M:%S";
 pub(crate) async fn publishing_element(
     state: &AppState,
     user: &UserContext,
+    item_type: &str,
     item: Option<&Item>,
 ) -> Vec<(String, FormElement)> {
     use crate::content::ADMINISTER_CONTENT;
@@ -470,6 +759,16 @@ pub(crate) async fn publishing_element(
         return Vec::new();
     }
 
+    // A new item starts from its type's defaults, an existing one from what
+    // it holds.
+    let (promoted, sticky) = match item {
+        Some(item) => (item.is_promoted(), item.is_sticky()),
+        None => {
+            let (promote, sticky) = state.items().publishing_defaults(item_type).await;
+            (promote == 1, sticky == 1)
+        }
+    };
+
     let mut fieldset = FormElement::fieldset()
         .title("Publishing options")
         .weight(crate::content::STATUS_WEIGHT + 5)
@@ -478,14 +777,14 @@ pub(crate) async fn publishing_element(
             "promote",
             FormElement::checkbox()
                 .title("Promoted to front page")
-                .default_value(item.is_some_and(Item::is_promoted))
+                .default_value(promoted)
                 .weight(0),
         )
         .child(
             "sticky",
             FormElement::checkbox()
                 .title("Sticky at top of lists")
-                .default_value(item.is_some_and(Item::is_sticky))
+                .default_value(sticky)
                 .weight(1),
         )
         .child(

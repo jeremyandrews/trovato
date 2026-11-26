@@ -21,6 +21,8 @@ pub mod email_templates;
 pub mod embed_index;
 pub mod image_style;
 pub mod locale;
+pub mod mail_transport;
+pub mod mail_worker;
 pub mod menu_link;
 pub mod oauth;
 pub mod pathauto;

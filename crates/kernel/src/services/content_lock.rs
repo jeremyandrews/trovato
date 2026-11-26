@@ -7,8 +7,12 @@ use sqlx::PgPool;
 use tracing::debug;
 use uuid::Uuid;
 
-/// Default lock duration in seconds (15 minutes).
-const DEFAULT_LOCK_DURATION_SECS: i64 = 900;
+/// Default lock duration in seconds (3 minutes: three missed heartbeats).
+///
+/// The edit form heartbeats once a minute (`static/js/content-lock.js`), so
+/// this is the longest an abandoned form (closed tab, navigated away, crashed
+/// browser) holds the item before another editor can take it over.
+const DEFAULT_LOCK_DURATION_SECS: i64 = 180;
 
 /// Maximum absolute lock lifetime in seconds (24 hours).
 /// Prevents indefinite lock extension via repeated heartbeats.
@@ -200,8 +204,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn lock_duration_is_15_minutes() {
-        assert_eq!(DEFAULT_LOCK_DURATION_SECS, 900);
+    fn lock_duration_is_3_minutes() {
+        assert_eq!(DEFAULT_LOCK_DURATION_SECS, 180);
     }
 
     #[test]

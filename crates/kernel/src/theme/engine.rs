@@ -15,6 +15,34 @@ use crate::services::locale::LocaleService;
 
 use super::render::RenderTreeConsumer;
 
+/// The `text_format` Tera filter: `{{ value | text_format(format=fmt) }}`.
+///
+/// A struct rather than a closure so it can report [`tera::Filter::is_safe`]
+/// as `true`: every pipeline [`FilterPipeline::for_format`] builds, including
+/// `full_html`'s, is sanitized before it is returned, so Tera does not need to
+/// HTML-escape the result and a template does not need `| safe`.
+struct TextFormatFilter;
+
+impl tera::Filter for TextFormatFilter {
+    fn filter(
+        &self,
+        value: &tera::Value,
+        args: &std::collections::HashMap<String, tera::Value>,
+    ) -> tera::Result<tera::Value> {
+        let text = tera::try_get_value!("text_format", "value", String, value);
+        let format = args
+            .get("format")
+            .and_then(|v| v.as_str())
+            .unwrap_or("plain_text");
+        let pipeline = FilterPipeline::for_format(format);
+        Ok(tera::Value::String(pipeline.process(&text)))
+    }
+
+    fn is_safe(&self) -> bool {
+        true
+    }
+}
+
 tokio::task_local! {
     /// Whether the request being handled is for an `/admin` path, set by
     /// [`scope_request`]; outside a request (a background task) it is unset,
@@ -676,20 +704,10 @@ impl ThemeEngine {
             },
         );
 
-        // Filter for text format processing
-        tera.register_filter(
-            "text_format",
-            |value: &tera::Value, args: &std::collections::HashMap<String, tera::Value>| {
-                let text = tera::try_get_value!("text_format", "value", String, value);
-                let format = args
-                    .get("format")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("plain_text");
-
-                let pipeline = FilterPipeline::for_format_safe(format);
-                Ok(tera::Value::String(pipeline.process(&text)))
-            },
-        );
+        // Filter for text format processing: a struct, not a closure, so it
+        // can report `is_safe() == true` (its output is sanitized by
+        // construction — see `TextFormatFilter`) — needs no `| safe`.
+        tera.register_filter("text_format", TextFormatFilter);
 
         // Filter for formatting Unix timestamps as human-readable dates.
         //
@@ -877,6 +895,30 @@ impl ThemeEngine {
                 }
             },
         );
+
+        // `t`: the interface translation function, on every engine whether or
+        // not `trovato_locale` is enabled (see `crate::i18n`). Without a locale
+        // service it returns the source with its placeholders filled.
+        tera.register_function("t", crate::i18n::TranslateFunction::new(locale.clone()));
+        tera.register_function(
+            "t_message",
+            crate::i18n::TranslateMessageFunction::new(locale.clone()),
+        );
+        // `admin_render()`: whether this render is an admin page's (inside the
+        // admin shell's translation scope). For a template the front end
+        // shares, to fix something on admin pages while leaving front end
+        // output exactly as it was.
+        tera.register_function(
+            "admin_render",
+            |_: &std::collections::HashMap<String, tera::Value>| {
+                Ok(tera::Value::Bool(crate::i18n::current_language().is_some()))
+            },
+        );
+        // Marker mode (tests only): every printed value is wrapped so a test
+        // can tell interface text that skipped `t` from data.
+        if crate::i18n::markers_enabled() {
+            tera.set_escape_fn(crate::i18n::marker_escape);
+        }
 
         // Filter for translating interface strings via LocaleService.
         // Usage: {{ "Subscribe" | trans(lang=active_language) }}
@@ -1093,11 +1135,17 @@ impl ThemeEngine {
         element: &RenderElement,
         context: &mut tera::Context,
     ) -> Result<String> {
-        self.render_consumer.render(self.tera(), element, context)
+        crate::telemetry::render("element", || {
+            self.render_consumer.render(self.tera(), element, context)
+        })
     }
 
     /// Render an item using template suggestions.
     pub fn render_item(&self, item: &Item, element: &RenderElement) -> Result<String> {
+        crate::telemetry::render("item", || self.render_item_inner(item, element))
+    }
+
+    fn render_item_inner(&self, item: &Item, element: &RenderElement) -> Result<String> {
         let suggestions = Self::item_suggestions(item);
         let suggestion_refs: Vec<&str> = suggestions.iter().map(|s| s.as_str()).collect();
 
@@ -1329,9 +1377,11 @@ impl ThemeEngine {
         context.insert("path", path);
         context.insert("is_admin", &Self::is_admin_path(path));
 
-        self.tera()
-            .render(&template, context)
-            .context("failed to render page template")
+        crate::telemetry::render("page", || {
+            self.tera()
+                .render(&template, context)
+                .context("failed to render page template")
+        })
     }
 
     /// Use `components` as the page builder registry, after checking that
@@ -1435,6 +1485,31 @@ mod tests {
         assert!(html.contains(r#"<option value="a">A</option>"#), "{html}");
         assert!(!html.contains("selected"), "{html}");
         assert!(!html.contains("checked"), "{html}");
+    }
+
+    /// The tile admin form's "Show to" select must not error when `values` has
+    /// no `audience` key — the add-tile form's case, where `values` carries
+    /// only the gather default item count (B174; same class of bug as
+    /// [`a_choice_element_without_a_default_renders`]: a template comparing a
+    /// value that may not be in the context has to check `is defined` first).
+    #[test]
+    fn the_tile_forms_audience_select_renders_without_a_stored_value() {
+        let templates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
+        let engine = ThemeEngine::new(&[templates], None, Default::default()).unwrap();
+        let mut context = tera::Context::new();
+        context.insert("action", "/admin/structure/tiles/add");
+        context.insert("csrf_token", "token");
+        context.insert("editing", &false);
+        context.insert("values", &serde_json::json!({ "items": 5 }));
+        context.insert("path", "/admin/structure/tiles/add");
+        let html = engine
+            .tera()
+            .render("admin/tile-form.html", &context)
+            .expect("the form must render with no audience in `values`");
+        assert!(
+            html.contains(r#"<option value="" selected>Everyone</option>"#),
+            "{html}"
+        );
     }
 
     #[test]
@@ -1548,6 +1623,35 @@ mod tests {
         let result = tera.render("test", &ctx).unwrap();
         // Japanese CLDR format
         assert_eq!(result, "2025年2月15日", "Japanese format: {result}");
+    }
+
+    // SECURITY REGRESSION TEST — B151: the `text_format` filter sanitizes
+    // full_html without needing `| safe`, and its output is never re-escaped.
+    #[test]
+    fn test_text_format_filter_cleans_full_html_without_safe() {
+        let mut tera = Tera::default();
+        ThemeEngine::register_filters(&mut tera, None);
+
+        tera.add_raw_template("test", r#"{{ value | text_format(format="full_html") }}"#)
+            .unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert(
+            "value",
+            r#"<p class="lead">Hi</p><script>alert(1)</script>"#,
+        );
+        let result = tera.render("test", &ctx).unwrap();
+        assert!(result.contains(r#"<p class="lead">Hi</p>"#), "{result}");
+        assert!(
+            !result.contains("&lt;p"),
+            "escaped despite is_safe: {result}"
+        );
+        assert!(!result.contains("script"), "{result}");
+    }
+
+    #[test]
+    fn test_text_format_filter_is_safe() {
+        use tera::Filter;
+        assert!(TextFormatFilter.is_safe());
     }
 
     #[test]

@@ -73,7 +73,7 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 | `TEMPLATES_DIR` | `./templates` | Tera template search path. Several directories may be given, separated by `:`; later ones override templates of the same name. |
 | `THEMES_DIR` | `./themes` | Where themes are found, one directory per theme holding `theme.toml` (`name`, `description`, optional `screenshot`), `templates/` laid over the stock templates, and `static/` served at `/static/themes/<name>/`. Several directories may be given, separated by `:`; a later one's theme replaces an earlier one of the same name. Chosen at `/admin/appearance`. |
 | `STATIC_DIR` | `./static` | Static asset search path, served under `/static`. Several directories may be given, separated by `:`; later ones override assets of the same path. The generated Pagefind index is written to the first directory unless `PAGEFIND_OUTPUT_DIR` says otherwise. |
-| `PAGEFIND_OUTPUT_DIR` | `pagefind` under the first `STATIC_DIR` | Where the Pagefind index is built and served from; its URL stays `/static/pagefind/`. Each rebuild is made beside it and renamed into place, so its parent must be writable and on the same filesystem. On several servers, point it into the shared volume. |
+| `PAGEFIND_OUTPUT_DIR` | `pagefind` under the first `STATIC_DIR` | Where the Pagefind index is built and served from; its URL stays `/static/pagefind/`. The kernel builds the index itself; no `pagefind` binary is needed. Each rebuild is made in a directory beside it and its files moved in, so its parent must be writable. On several servers, point it into the shared volume. |
 | `CORS_ALLOWED_ORIGINS` | `*` | Comma-separated allowed origins |
 | `COOKIE_SAME_SITE` | `strict` | Cookie SameSite policy (`strict`, `lax`, `none`) |
 | `COOKIE_SECURE` | `always` | Whether the session cookie is `Secure`: `always` or `never`. Leave it at `always` for any site reached over HTTPS. `never` is for a plain HTTP LAN or development site only. See "Serving over plain HTTP" below. |
@@ -242,6 +242,7 @@ compiled default stands.
 | `search_expand` | 30 / minute | `POST /api/v1/search/expand` |
 | `search_summarize` | 10 / minute | `POST /api/v1/search/summarize` |
 | `search_followup` | 5 / minute | `POST /api/v1/search/followup` |
+| `ai_assist` | 10 / minute | `POST /api/v1/ai/assist`, the writing assistant |
 | `login` | 5 / minute | `POST /user/login` |
 | `register` | 3 / hour | `POST /user/register` |
 | `uploads` | 10 / minute | `/file/upload` and `POST /api/v1/block-editor/upload` |
@@ -259,8 +260,9 @@ a named bucket, listed with it in the `SENSITIVE_ROUTES` test in
 itself rather than by path: password reset (`recovery` per client and
 `reset_mail` per address), account recovery, profile updates, the data export,
 and the AI chat and assistant, whose hourly limits are set on their admin
-pages. `POST /api/v1/ai/assist` is still counted in `api` and bounded by the AI
-token budget.
+pages. Every AI call is also held to the AI token budget (`/admin/system/ai-budgets`),
+where the `anonymous user` role's limit is one site-level cap shared by every
+anonymous visitor.
 
 For example, to serve a site whose pages carry an unusual number of assets:
 
@@ -453,7 +455,7 @@ visit your site or the admin dashboard.
 After installation, confirm everything is running:
 
 ```bash
-# Health check
+# Health check (`/health/live` and `/health/ready` are the probes)
 curl http://localhost:3000/health
 
 # Admin dashboard (requires login)
@@ -469,14 +471,19 @@ cargo run --release
 ```
 
 The installer will not run again. Any new database or plugin migrations
-are applied automatically on startup.
+are applied automatically on startup. To see them first, run
+`trovato migrate --dry-run`; to roll a release back, start the previous binary
+(see [docs/deployment/upgrades.md](docs/deployment/upgrades.md) and the
+[command line reference](docs/cli-reference.md)).
 
 ## More Than One Server
 
 Several servers can run one site behind a load balancer, with no sticky
 sessions and no extra setting, if they share one Postgres, one Redis and one
 read-write volume for `UPLOADS_DIR` and `PAGEFIND_OUTPUT_DIR`. See
-[docs/deployment/multi-server.md](docs/deployment/multi-server.md).
+[docs/deployment/multi-server.md](docs/deployment/multi-server.md). On
+Kubernetes, migrations run as their own step; see
+[docs/deployment/upgrades.md](docs/deployment/upgrades.md).
 
 ## Configuration Export/Import
 

@@ -98,6 +98,7 @@ struct CommentExport {
     id: String,
     item_id: String,
     parent_id: Option<String>,
+    subject: Option<String>,
     body: String,
     status: String,
     created: i64,
@@ -176,6 +177,7 @@ pub async fn export_my_data(State(state): State<AppState>, session: Session) -> 
                 id: comment.id.to_string(),
                 item_id: comment.item_id.to_string(),
                 parent_id: comment.parent_id.map(|p| p.to_string()),
+                subject: comment.subject,
                 body: comment.body,
                 // The label, not the raw number, and an unknown value says so
                 // rather than being silently reported as one of the known ones.

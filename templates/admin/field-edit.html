@@ -1,20 +1,12 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
+
+{% block page_title %}{{ t(s="Edit field: {name}", name=field.label) }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="Change how this field is labelled, whether it must be filled in, and how many values it holds.") }}</p>{% endblock page_intro %}
+{% block page_actions %}<a href="/admin/structure/types/{{ type_name }}/fields" class="button button--secondary">{{ t(s="Back to fields") }}</a>{% endblock page_actions %}
 
 {% block content %}
-<div class="admin-header">
-    <h2>Edit field: {{ field.label }}</h2>
-    <a href="/admin/structure/types/{{ type_name }}/fields" class="button button--secondary">Back to fields</a>
-</div>
-
-{% if errors is defined and errors %}
-<div class="messages messages--error">
-    <ul>
-        {% for error in errors %}
-        <li>{{ error }}</li>
-        {% endfor %}
-    </ul>
-</div>
-{% endif %}
+{{ form::errors(errors=errors) }}
 
 <div class="admin-card">
     <form method="post" action="/admin/structure/types/{{ type_name }}/fields/{{ field.field_name }}/edit">
@@ -22,43 +14,54 @@
         <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
 
         <div class="form-item">
-            <label for="edit_field_label" class="form-item__label form-item__label--required">Label</label>
+            <label for="edit_field_label" class="form-item__label">{{ t(s="Label") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
             <input type="text" id="edit_field_label" name="label" class="form-text"
                    value="{{ field.label }}" required>
         </div>
 
+        <dl class="field-facts">
+            <div class="form-item">
+                <dt class="form-item__label">{{ t(s="Machine name") }}</dt>
+                <dd><code>{{ field.field_name }}</code></dd>
+                <dd class="form-item__description">{{ t(s="Machine names cannot be changed after creation.") }}</dd>
+            </div>
+
+            <div class="form-item">
+                <dt class="form-item__label">{{ t(s="Field type") }}</dt>
+                <dd><code>{{ t(s=field.field_type | field_type_label) }}</code></dd>
+                <dd class="form-item__description">{{ t(s="Field types cannot be changed after creation.") }}</dd>
+            </div>
+        </dl>
+
+        {% if field_category %}
         <div class="form-item">
-            <label class="form-item__label">Machine name</label>
-            <code>{{ field.field_name }}</code>
-            <div class="description">Machine names cannot be changed after creation.</div>
+            <label for="edit_field_category" class="form-item__label">{{ t(s="Category") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
+            <p class="form-item__description" id="edit_field_category-hint">{{ t(s="The field holds tags of this category. Values already saved are not changed; the next save of the field is checked against the category chosen here.") }}</p>
+            <select id="edit_field_category" name="category" class="form-select" required aria-describedby="edit_field_category-hint">
+                {% for category in categories %}
+                <option value="{{ category.id }}"{% if field_category == category.id %} selected{% endif %}>{{ category.label }}</option>
+                {% endfor %}
+            </select>
         </div>
+        {% endif %}
 
         <div class="form-item">
-            <label class="form-item__label">Field type</label>
-            <code>{{ field.field_type | field_type_label }}</code>
-            <div class="description">Field types cannot be changed after creation.</div>
-        </div>
-
-        <div class="form-item">
-            <label class="form-item__label">
-                <input type="checkbox" name="required" value="1"
+            <div class="form-checkbox-wrapper">
+                <input type="checkbox" id="edit_field_required" name="required" value="1" aria-describedby="edit_field_required-hint"
                        {% if field.required %}checked{% endif %}>
-                Required
-            </label>
-            <div class="description">If checked, this field must be filled in when creating or editing content.</div>
+                <label for="edit_field_required">{{ t(s="Required") }}</label>
+            </div>
+            <p class="form-item__description" id="edit_field_required-hint">{{ t(s="If checked, this field must be filled in when creating or editing content.") }}</p>
         </div>
 
         <div class="form-item">
-            <label for="edit_field_cardinality" class="form-item__label">Number of values</label>
-            <input type="number" id="edit_field_cardinality" name="cardinality" class="form-text"
-                   value="{{ field.cardinality }}" min="-1" style="max-width: 8rem;">
-            <div class="description">Maximum number of values. Use 1 for a single value, -1 for unlimited.</div>
+            <label for="edit_field_cardinality" class="form-item__label">{{ t(s="Number of values") }}</label>
+            <p class="form-item__description" id="edit_field_cardinality-hint">{{ t(s="Maximum number of values. Use 1 for a single value, -1 for unlimited.") }}</p>
+            <input type="number" id="edit_field_cardinality" name="cardinality" class="form-text form-text--compact"
+                   value="{{ field.cardinality }}" min="-1" aria-describedby="edit_field_cardinality-hint">
         </div>
 
-        <div style="margin-top: 1rem;">
-            <button type="submit" class="button button--primary">Save</button>
-            <a href="/admin/structure/types/{{ type_name }}/fields" class="button">Cancel</a>
-        </div>
+        {{ form::actions(submit_label=t(s="Save"), cancel_url="/admin/structure/types/" ~ type_name ~ "/fields") }}
     </form>
 </div>
-{% endblock %}
+{% endblock content %}

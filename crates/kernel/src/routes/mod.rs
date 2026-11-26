@@ -12,6 +12,8 @@ pub mod admin_audit;
 pub mod admin_config;
 pub mod admin_content;
 pub mod admin_content_type;
+#[cfg(test)]
+mod admin_design_tests;
 pub mod admin_embed;
 pub mod admin_form;
 pub mod admin_menu;
@@ -19,9 +21,11 @@ pub mod admin_nav;
 pub mod admin_pathauto;
 pub mod admin_queue;
 pub mod admin_record_type;
+pub mod admin_redirect;
 pub mod admin_reports;
 pub mod admin_search;
 pub mod admin_search_report;
+pub mod admin_shell;
 pub mod admin_stage;
 pub mod admin_taxonomy;
 pub mod admin_text_format;
@@ -102,6 +106,7 @@ plugin_gate!(gate_content_translation, "trovato_content_translation");
 plugin_gate!(gate_image_styles, "trovato_image_styles");
 plugin_gate!(gate_oauth2, "trovato_oauth2");
 plugin_gate!(gate_audit_log, "trovato_audit_log");
+plugin_gate!(gate_redirects, "trovato_redirects");
 
 /// Plugin names that are runtime-gated in [`gated_plugin_routes`], or, for
 /// their JSON routes, by [`api::ApiRoutes::plugin`].
@@ -117,6 +122,7 @@ pub(crate) const RUNTIME_GATED_NAMES: &[&str] = &[
     "trovato_oauth2",
     "trovato_block_editor",
     "trovato_audit_log",
+    "trovato_redirects",
 ];
 
 /// Build the router fragment for plugin-gated routes.
@@ -140,10 +146,12 @@ pub fn gated_plugin_routes(state: &AppState) -> Router<AppState> {
                 )),
         )
         .merge(
-            admin::comment_admin_router().route_layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                gate_comments,
-            )),
+            admin::comment_admin_router()
+                .merge(comment::router())
+                .route_layer(axum::middleware::from_fn_with_state(
+                    state.clone(),
+                    gate_comments,
+                )),
         )
         .merge(
             admin_translation::router().route_layer(axum::middleware::from_fn_with_state(
@@ -167,6 +175,12 @@ pub fn gated_plugin_routes(state: &AppState) -> Router<AppState> {
             admin_audit::router().route_layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 gate_audit_log,
+            )),
+        )
+        .merge(
+            admin_redirect::router().route_layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                gate_redirects,
             )),
         )
 }

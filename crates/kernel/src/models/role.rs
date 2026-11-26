@@ -50,6 +50,11 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     // permission.
     "access administration pages",
     "access content",
+    // `/search` and the JSON search (B160). Drupal's permission of the same
+    // name, so a migrated site can withhold search from a role. A migration
+    // grants it to every role that held `access content`, so an existing site
+    // searches as before.
+    "search content",
     "create content",
     "edit own content",
     "edit any content",
@@ -71,6 +76,29 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     // the same name). Granted by no migration; an administrator holds it
     // implicitly. See `content::item_service::VIEW_OWN_UNPUBLISHED`.
     "view own unpublished content",
+    // An item's revision history, its past revisions and a comparison of two,
+    // for a user who may view the item but not edit it (an editor sees the
+    // history through their edit access already). Drupal's permission of the
+    // same name, so a migrated role keeps it. Granted by no migration.
+    "view revisions",
+    // Delete a past revision of an item the user may delete. The current
+    // revision is never deleted. Granted by no migration.
+    "delete revisions",
+    // See an item's view count ("N reads") when the site counts views
+    // (B160, `content::view_counter`). Drupal's statistics permission of the
+    // same name. Granted by no migration.
+    "view post access counter",
+    // Content moderation (B158, `content::moderation`): one permission per
+    // transition of the Editorial workflow, named as Drupal names them, and
+    // the latest (draft) revision of an item ahead of its published one, with
+    // the moderated content list. Granted by no migration; an administrator
+    // holds them implicitly.
+    "use editorial transition create_new_draft",
+    "use editorial transition publish",
+    "use editorial transition archive",
+    "use editorial transition archived_draft",
+    "use editorial transition archived_published",
+    "view latest version",
     // Read a stage other than Live: switch the session's active stage, and see
     // it (with Live beneath it) in search, gathers and aliases. Granted to no
     // role by any migration; an administrator holds it implicitly. See

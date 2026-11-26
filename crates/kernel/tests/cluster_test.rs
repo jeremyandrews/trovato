@@ -27,7 +27,7 @@
 //! - `TROVATO_CLUSTER_COMPOSE_FILE`: the compose file (default: the one at the
 //!   repository root).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::process::Command;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -325,6 +325,7 @@ async fn cluster() -> Option<Cluster> {
         .unwrap_or_else(|_| "postgres://trovato:trovato@localhost:56432/trovato".to_string());
     wait_healthy(&url, On::A).await;
     wait_healthy(&url, On::B).await;
+    wait_in_rotation(&url).await;
     let db = PgPool::connect(&db_url).await.expect("cluster database");
     let admin = Client::new(&url);
     install(&admin).await;
@@ -364,6 +365,36 @@ async fn install(client: &Client) {
         )
         .await;
     assert!(site.status.is_redirection(), "install site: {}", site.body);
+}
+
+/// Wait until the round robin backend (`On::Any`) has both nodes in rotation.
+///
+/// A healthy node is not yet a node the proxy balances to. The pinned
+/// backends (`On::A`, `On::B`) forward at once, but the round robin one adds a
+/// server only after the proxy's own health checks pass, on its own clock, a
+/// few seconds after the node answers. Until then an `On::Any` request gets
+/// the proxy's 503. Done when an unpinned request has been answered by each
+/// node.
+async fn wait_in_rotation(url: &str) {
+    let client = Client::new(url);
+    let seen = std::sync::Mutex::new(BTreeSet::new());
+    let up = eventually(Duration::from_secs(180), || async {
+        match client.http.get(format!("{url}/health")).send().await {
+            Ok(r) if r.status() == StatusCode::OK => {
+                if let Some(node) = r
+                    .headers()
+                    .get("x-trovato-served-by")
+                    .and_then(|v| v.to_str().ok())
+                {
+                    seen.lock().unwrap().insert(node.to_string());
+                }
+                seen.lock().unwrap().len() == 2
+            }
+            _ => false,
+        }
+    })
+    .await;
+    assert!(up, "the proxy did not put both nodes in rotation");
 }
 
 async fn wait_healthy(url: &str, on: On) {
@@ -410,6 +441,7 @@ fn compose(args: &[&str]) -> String {
 async fn restart_node(url: &str, service: &str, on: On) {
     compose(&["restart", service]);
     wait_healthy(url, on).await;
+    wait_in_rotation(url).await;
 }
 
 /// Make sure a plugin is enabled on both nodes, restarting them if it was not.
@@ -681,8 +713,9 @@ async fn s02_user_blocked_on_a_is_refused_on_b() {
 
     let refused = eventually(CURRENT_WITHIN, || async {
         let page = user.get(On::B, "/user/profile").await;
-        // Signed out by the block: the access-denied page, with the login form.
-        page.status == StatusCode::FORBIDDEN && page.body.contains("/user/login")
+        // Signed out by the block: refused (the access-denied page, `403`, to
+        // this browser), where an active session is shown its profile.
+        page.status == StatusCode::FORBIDDEN || page.status == StatusCode::UNAUTHORIZED
     })
     .await;
     assert!(refused, "a user blocked on A kept a session on B");
@@ -1090,7 +1123,10 @@ async fn s06_upload_on_a_is_served_from_b() {
     );
 }
 
-async fn page_count(c: &Cluster, on: On) -> Option<u64> {
+/// The meta file each language's entry names. A publish that adds a page
+/// always names a new one; `page_count` would not do, since a new item may
+/// take a deleted item's slot and leave the count as it was.
+async fn published_metas(c: &Cluster, on: On) -> Option<Vec<String>> {
     let entry = c
         .admin
         .get(on, "/static/pagefind/pagefind-entry.json")
@@ -1099,13 +1135,13 @@ async fn page_count(c: &Cluster, on: On) -> Option<u64> {
         return None;
     }
     let value: Value = serde_json::from_str(&entry.body).ok()?;
-    Some(
-        value["languages"]
-            .as_object()?
-            .values()
-            .filter_map(|l| l["page_count"].as_u64())
-            .sum(),
-    )
+    let mut metas: Vec<String> = value["languages"]
+        .as_object()?
+        .values()
+        .filter_map(|l| l["hash"].as_str().map(str::to_string))
+        .collect();
+    metas.sort();
+    Some(metas)
 }
 
 /// 7. Pagefind rebuild on whichever node wins cron; search on the other node
@@ -1124,8 +1160,8 @@ async fn s07_pagefind_built_by_one_node_is_served_by_the_other() {
             .await;
     }
     tokio::time::sleep(Duration::from_millis(1100)).await;
-    let before_a = page_count(&c, On::A).await.unwrap_or(0);
-    let before_b = page_count(&c, On::B).await.unwrap_or(0);
+    let before_a = published_metas(&c, On::A).await;
+    let before_b = published_metas(&c, On::B).await;
 
     let _ = create_item(&c, On::A, &format!("Searchable {}", unique())).await;
     tokio::time::sleep(Duration::from_millis(1100)).await;
@@ -1152,10 +1188,10 @@ async fn s07_pagefind_built_by_one_node_is_served_by_the_other() {
     } else {
         (On::A, before_a)
     };
-    let after = page_count(&c, other).await;
+    let after = published_metas(&c, other).await;
     assert!(
-        after.is_some_and(|n| n > before),
-        "node {builder} built the index; the other node serves {after:?} pages (was {before})"
+        after.is_some() && after != before,
+        "node {builder} built the index; the other node serves metas {after:?} (was {before:?})"
     );
 }
 

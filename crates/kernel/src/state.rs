@@ -31,9 +31,7 @@ use crate::menu::MenuRegistry;
 use crate::metrics::Metrics;
 use crate::middleware::{RateLimitConfig, RateLimiter};
 use crate::permissions::PermissionService;
-use crate::plugin::{
-    PluginConfig, PluginRuntime, migration as plugin_migration, status as plugin_status,
-};
+use crate::plugin::{PluginConfig, PluginRuntime, status as plugin_status};
 use crate::search::SearchService;
 use crate::search::sentiment::SentimentQueue;
 use crate::services;
@@ -63,6 +61,8 @@ struct AppStateInner {
 
     /// Maximum database connections configured for the pool.
     db_pool_max_connections: u32,
+    /// Readiness and draining state for the health probes.
+    probes: Arc<crate::routes::health::Probes>,
 
     /// Plugin search path on disk.
     plugins_dirs: Vec<PathBuf>,
@@ -127,6 +127,10 @@ struct AppStateInner {
     assistant_scopes: Arc<AssistantRegistry>,
     /// Permissions plugins declared through `tap_perm`, collected once at boot.
     plugin_permissions: Arc<crate::plugin::permission_registry::PluginPermissionRegistry>,
+
+    /// Admin sidebar links and dashboard cards plugins declared through
+    /// `tap_admin_nav`, collected once at boot.
+    plugin_admin_nav: Arc<crate::plugin::admin_nav_registry::AdminNavRegistry>,
 
     /// Content type registry.
     content_types: Arc<ContentTypeRegistry>,
@@ -237,9 +241,13 @@ struct AppStateInner {
 
     /// The WebAuthn relying party (FR-7a / D-34).
     ///
-    /// Non-optional: auth is core infrastructure, and a WASM plugin can neither
-    /// hold ceremony state nor speak the browser WebAuthn API.
-    webauthn: Arc<webauthn_rs::Webauthn>,
+    /// Kernel infrastructure, not a plugin concern: a WASM plugin can neither
+    /// hold ceremony state nor speak the browser WebAuthn API. `None` when
+    /// `SITE_URL` cannot be a WebAuthn relying party (a bare IP address, most
+    /// commonly — browsers refuse WebAuthn on an IP origin anyway) — passkeys
+    /// are disabled rather than refusing to start. See
+    /// [`services::webauthn::build_webauthn`].
+    webauthn: Option<Arc<webauthn_rs::Webauthn>>,
 
     /// The per-user session index backing multi-device session management
     /// (FR-7b / D-36). Extends tower-sessions; does not fork it.
@@ -337,10 +345,13 @@ impl AppState {
             .await
             .context("failed to create database pool")?;
 
-        // Run migrations
-        db::run_migrations(&db)
-            .await
-            .context("failed to run migrations")?;
+        // Run migrations, unless they run as their own step (`trovato migrate`);
+        // then `serve` has already waited until the schema is ready.
+        if config.migrate_on_start {
+            db::run_migrations(&db)
+                .await
+                .context("failed to run migrations")?;
+        }
 
         // Create Redis client
         let redis = RedisClient::open(config.redis_url.as_str())
@@ -551,16 +562,10 @@ impl AppState {
             .into_iter()
             .filter(|(name, _)| enabled_set.contains(name))
             .collect();
-        let migration_results =
-            plugin_migration::run_all_pending_migrations(&db, &enabled_discovered)
-                .await
-                .context("failed to run plugin migrations")?;
-        for (plugin_name, applied) in &migration_results {
-            info!(
-                plugin = %plugin_name,
-                count = applied.len(),
-                "applied plugin migrations"
-            );
+        if config.migrate_on_start {
+            let mut lock = crate::migrate::MigrationLock::acquire(&db).await?;
+            crate::migrate::run_plugins(&mut lock, &enabled_discovered).await?;
+            lock.release().await?;
         }
 
         let plugin_runtime = Arc::new(plugin_runtime);
@@ -582,18 +587,22 @@ impl AppState {
         // the same SMTP transport, `from` address and circuit breaker the
         // kernel's own mail uses, on every dispatch path.
         let email = config.smtp_host.as_ref().and_then(|host| {
-            match services::email::EmailService::new(
+            match services::mail_transport::SmtpTransport::new(
                 host,
                 config.smtp_port,
                 config.smtp_username.as_deref(),
                 config.smtp_password.as_deref(),
                 &config.smtp_encryption,
-                config.smtp_from_email.clone(),
-                config.site_url.clone(),
             ) {
-                Ok(svc) => {
+                Ok(transport) => {
                     info!(host = %host, port = config.smtp_port, "SMTP email service configured");
-                    Some(Arc::new(svc))
+                    Some(Arc::new(services::email::EmailService::new(
+                        db.clone(),
+                        Arc::new(transport),
+                        config.smtp_from_email.clone(),
+                        config.site_url.clone(),
+                        config.mail.clone(),
+                    )))
                 }
                 Err(e) => {
                     tracing::error!(error = %e, "failed to initialize email service");
@@ -614,13 +623,31 @@ impl AppState {
         let pending = plugin_status::get_pending_tap_install(&db)
             .await
             .context("failed to query pending tap_install")?;
+        // The item service is built further down. The install task waits for
+        // it, so `item-api` calls from `tap_install` are decided rather than
+        // refused for want of one.
+        let mut tap_install_items: Option<tokio::sync::oneshot::Sender<Arc<ItemService>>> = None;
         if !pending.is_empty() {
+            let (items_tx, items_rx) = tokio::sync::oneshot::channel();
+            tap_install_items = Some(items_tx);
             let tap_install_db = db.clone();
             let tap_install_dispatcher = tap_dispatcher.clone();
             let tap_install_limiter = rate_limiter.clone();
             let tap_install_email = email.clone();
             tokio::spawn(async move {
                 let http = crate::host::http::build_outbound_client();
+                // The sender drops only when `AppState::new` failed before
+                // building the item service. Claim nothing then: a claim
+                // stands even when its dispatch fails, so dispatching from a
+                // server that is not starting would spend each hook the next
+                // healthy start should run.
+                let Ok(items) = items_rx.await else {
+                    warn!(
+                        pending = pending.len(),
+                        "startup failed; tap_install left pending for the next start"
+                    );
+                    return;
+                };
                 for plugin_name in &pending {
                     // Claim before dispatching: with several servers starting
                     // together, only the one whose claim lands runs it.
@@ -650,6 +677,7 @@ impl AppState {
                     if let Some(ref email) = tap_install_email {
                         install_services = install_services.with_email(email.clone());
                     }
+                    install_services.set_item_service(&items);
                     let install_state =
                         RequestState::new(UserContext::anonymous(), install_services);
                     // dispatch_to_plugin returns None when the plugin does not
@@ -734,6 +762,28 @@ impl AppState {
             // did before this existed.
             if let Err(e) = crate::plugin::permission_registry::persist(&db, &registry).await {
                 error!(error = %e, "failed to store declared plugin permissions");
+            }
+            Arc::new(registry)
+        };
+
+        // Admin sidebar links and dashboard cards, collected the same way and
+        // for the same reason: a declaration is a constant, so it is gathered
+        // once here rather than asked for during a request. Dispatched
+        // without services, like `tap_menu` and `tap_perm` — a plugin names a
+        // path and a permission, it does not need a DB handle to do that.
+        let plugin_admin_nav = {
+            let admin_nav_state = RequestState::without_services(UserContext::anonymous());
+            let results = tap_dispatcher
+                .dispatch("tap_admin_nav", "{}", admin_nav_state)
+                .await;
+            let registry = crate::plugin::admin_nav_registry::AdminNavRegistry::from_tap_results(
+                results
+                    .into_iter()
+                    .map(|r| (r.plugin_name, r.output))
+                    .collect(),
+            );
+            if !registry.is_empty() {
+                info!(count = registry.len(), "registered plugin admin nav links");
             }
             Arc::new(registry)
         };
@@ -1040,6 +1090,9 @@ impl AppState {
         // lines above sees this binding, and neither side keeps the other
         // alive.
         tap_services.set_item_service(&items);
+        if let Some(tx) = tap_install_items.take() {
+            let _ = tx.send(items.clone());
+        }
         // And the gather service, for the `query` host interface, by the same
         // shared, weak cell.
         tap_services.set_gather_service(&gather);
@@ -1079,6 +1132,11 @@ impl AppState {
             metrics.clone(),
             audit_trail.clone(),
         ));
+
+        // Late-bind the user service into gather (B166): gather is constructed
+        // before UserService, so it holds a OnceLock this fills, same as the
+        // item-access seam above.
+        gather.set_user_service(users.clone());
 
         // Create role service (depends on permission service for cache invalidation)
         let roles = Arc::new(services::role::RoleService::new(
@@ -1120,14 +1178,26 @@ impl AppState {
 
         // The WebAuthn relying party, derived from SITE_URL so the RP ID and the
         // origin can never drift apart (a mismatch silently invalidates every
-        // registered credential).
+        // registered credential). A SITE_URL that cannot be a relying party — a
+        // bare IP address is the common case, since webauthn-rs refuses an IP as
+        // an effective domain and no browser allows WebAuthn on an IP origin
+        // anyway — disables passkeys for this run rather than failing startup.
         let site_name = crate::models::SiteConfig::site_name(&db)
             .await
             .unwrap_or_else(|_| "Trovato".to_string());
-        let webauthn = Arc::new(
-            services::webauthn::build_webauthn(&config.site_url, &site_name)
-                .context("failed to initialize the WebAuthn relying party")?,
-        );
+        let webauthn = match services::webauthn::build_webauthn(&config.site_url, &site_name) {
+            Ok(w) => Some(Arc::new(w)),
+            Err(e) => {
+                tracing::warn!(
+                    site_url = %config.site_url,
+                    error = %e,
+                    "SITE_URL cannot be a WebAuthn relying party; passkeys are disabled for \
+                     this site. Browsers do not support WebAuthn on an IP address — use a \
+                     hostname in SITE_URL to enable passkeys."
+                );
+                None
+            }
+        };
 
         // The per-user session index. Its TTL matches the session's own
         // inactivity expiry so the registry and the sessions it describes
@@ -1282,6 +1352,9 @@ impl AppState {
                 runtime: config.runtime.clone(),
                 db,
                 db_pool_max_connections: config.database_max_connections,
+                probes: Arc::new(crate::routes::health::Probes::new(
+                    config.health_token.clone(),
+                )),
                 plugins_dirs: config.plugins_dirs.clone(),
                 page_builder_components,
                 plugin_static_dirs,
@@ -1299,6 +1372,7 @@ impl AppState {
                 menu_registry,
                 openapi,
                 plugin_permissions,
+                plugin_admin_nav,
                 assistant_scopes,
                 content_types,
                 record_types,
@@ -1371,6 +1445,14 @@ impl AppState {
         Ok(state)
     }
 
+    /// Clear every in-process cache of this server, without bumping: what a
+    /// bump of every kind does here. The performance tests' "cold" start.
+    pub async fn clear_local_caches(&self) {
+        for kind in crate::cache::generation::CacheKind::ALL {
+            self.clear_local_cache(kind).await;
+        }
+    }
+
     /// Clear this server's cache of `kind`, without bumping: what a bump from
     /// any server, this one included, does here.
     async fn clear_local_cache(&self, kind: crate::cache::generation::CacheKind) {
@@ -1403,8 +1485,15 @@ impl AppState {
                     warn!(error = %e, "failed to reload locale strings after a bump");
                 }
             }
-            CacheKind::Menus => crate::menu::clear_local_config_menus(),
-            CacheKind::SiteConfig => self.front_page().clear(),
+            CacheKind::Menus => {
+                crate::menu::clear_local_config_menus();
+                self.gather().clear_outbound_alias_cache();
+            }
+            CacheKind::SiteConfig => {
+                self.front_page().clear();
+                self.gather().clear_site_settings();
+                self.items().view_counter().clear();
+            }
             CacheKind::Themes => {
                 crate::theme::registry::load_active(self.db(), self.theme()).await;
             }
@@ -1428,6 +1517,11 @@ impl AppState {
     /// Get the database pool.
     pub fn db(&self) -> &PgPool {
         &self.inner.db
+    }
+
+    /// The health probes' readiness and draining state.
+    pub fn probes(&self) -> &Arc<crate::routes::health::Probes> {
+        &self.inner.probes
     }
 
     /// Get the configured maximum database pool connections.
@@ -1544,6 +1638,17 @@ impl AppState {
         &self,
     ) -> &Arc<crate::plugin::permission_registry::PluginPermissionRegistry> {
         &self.inner.plugin_permissions
+    }
+
+    /// The admin pages plugins declared through `tap_admin_nav`.
+    ///
+    /// Read by [`crate::routes::admin_nav::sidebar`],
+    /// [`crate::routes::admin_nav::dashboard`] and the other readers of the
+    /// admin registry, merged with the kernel's own
+    /// [`crate::routes::admin_nav::LINKS`] under the same permission and
+    /// plugin-enablement filter.
+    pub fn plugin_admin_nav(&self) -> &Arc<crate::plugin::admin_nav_registry::AdminNavRegistry> {
+        &self.inner.plugin_admin_nav
     }
 
     /// Get the content type registry.
@@ -1721,9 +1826,11 @@ impl AppState {
         &self.inner.security_audit
     }
 
-    /// The WebAuthn relying party (FR-7a / D-34).
-    pub fn webauthn(&self) -> &Arc<webauthn_rs::Webauthn> {
-        &self.inner.webauthn
+    /// The WebAuthn relying party (FR-7a / D-34), or `None` when `SITE_URL`
+    /// cannot be a relying party (a bare IP address) and passkeys are disabled
+    /// for this run.
+    pub fn webauthn(&self) -> Option<&Arc<webauthn_rs::Webauthn>> {
+        self.inner.webauthn.as_ref()
     }
 
     /// The per-user session index (FR-7b / D-36).
@@ -1912,11 +2019,16 @@ impl AppState {
             },
         )];
 
-        if let Some(ref email) = self.inner.email {
+        if let Some(state) = self
+            .inner
+            .email
+            .as_ref()
+            .and_then(|email| email.transport().breaker_state())
+        {
             circuit_breakers.push((
                 "email_smtp".to_string(),
                 CircuitBreakerHealth {
-                    state: email.circuit_breaker().state_name().to_string(),
+                    state: state.to_string(),
                 },
             ));
         }

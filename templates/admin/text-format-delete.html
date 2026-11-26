@@ -1,12 +1,12 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/list.html" as list %}
+
+{% block page_title %}{{ t(s="Delete text format {name}", name=name) }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="Text already saved in a deleted format is shown as plain text from then on.") }}</p>{% endblock page_intro %}
 
 {% block content %}
-{{ list::header(title="Delete text format") }}
-
 <div class="admin-card">
-    <p>Delete the {{ name }} text format (<code>{{ format }}</code>)? Every role loses its <code>use {{ format }}</code> permission. Text already saved in it is shown as plain text from then on. This cannot be undone.</p>
+    <p>{{ t(s="Delete the {name} text format ({format})? Every role loses its {permission} permission. Text already saved in it is shown as plain text from then on. This cannot be undone.", name=name, format=format, permission="use " ~ format) }}</p>
     {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
-    <p><a href="/admin/config/formats">Cancel</a></p>
+    <p><a href="/admin/config/formats">{{ t(s="Cancel") }}</a></p>
 </div>
-{% endblock %}
+{% endblock content %}

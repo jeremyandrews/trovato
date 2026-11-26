@@ -171,7 +171,12 @@ async fn dashboard(State(state): State<AppState>, session: Session) -> Response 
     let enabled: Vec<String> = state.enabled_plugins().into_iter().collect();
     context.insert(
         "dashboard_cards",
-        &super::admin_nav::dashboard(&viewer, &enabled),
+        &super::admin_nav::dashboard(
+            &viewer,
+            &enabled,
+            state.plugin_admin_nav().links(),
+            state.plugin_admin_nav().cards(),
+        ),
     );
     context.insert("path", "/admin");
     context.insert("user", &user);
@@ -497,18 +502,22 @@ async fn ajax_callback(
 ) -> Response {
     // Who is asking comes before whether the request is forged, so nobody
     // gets the 401 the refusal rule promises rather than a CSRF 403.
-    if request.trigger == "add_field"
-        && let Err(refusal) =
-            super::helpers::require_permission_json(&state, &session, "administer site").await
-    {
-        return refusal.into_response();
+    let mut admin_lang = state.default_language().to_string();
+    if request.trigger == "add_field" {
+        match super::helpers::require_permission_json(&state, &session, "administer site").await {
+            Ok(user) => {
+                let prefs = super::admin_nav::Preferences::load(state.db(), user.id).await;
+                admin_lang = super::admin_nav::admin_language(&state, &prefs);
+            }
+            Err(refusal) => return refusal.into_response(),
+        }
     }
     if let Err(refusal) = super::helpers::require_csrf_header(&session, &headers).await {
         return refusal.into_response();
     }
 
     let mut response = if request.trigger == "add_field" {
-        super::admin_content_type::handle_ajax_add_field(&state, &request).await
+        super::admin_content_type::handle_ajax_add_field(&state, &request, &admin_lang).await
     } else {
         super::item_form::ajax(&state, &session, &request).await
     };
@@ -538,6 +547,10 @@ struct EditCommentForm {
     token: String,
     body: String,
     status: i16,
+    /// Optional plain text subject. The form always carries the field's full,
+    /// current value, so empty clears it rather than meaning "unchanged".
+    #[serde(default)]
+    subject: String,
 }
 
 /// Form data for the moderation default setting.
@@ -775,28 +788,25 @@ async fn edit_comment_submit(
         return render_server_error("Unknown comment status");
     }
 
+    let Ok(subject) = crate::routes::comment::validate_subject(Some(&form.subject)) else {
+        return render_server_error(&format!(
+            "Subject cannot exceed {} characters",
+            crate::models::comment::SUBJECT_MAX_CHARS
+        ));
+    };
+
     let user_ctx = admin_user_context(&state, &user).await;
     let input = UpdateComment {
         body: Some(form.body),
         body_format: None,
         status: Some(form.status),
+        subject: Some(subject),
     };
 
-    // The status before the edit, so approving out of the queue notifies the
-    // content author and re-saving an already published comment does not.
-    let previous = state
-        .comments()
-        .load(id)
-        .await
-        .ok()
-        .flatten()
-        .map(|c| c.status);
-
-    match state.comments().update(id, input, &user_ctx).await {
-        Ok(Some(comment)) => {
-            notify_author_if_published(&state, &comment, previous).await;
-            Redirect::to("/admin/content/comments").into_response()
-        }
+    // Approving out of the queue notifies the content author; re-saving an
+    // already published comment does not.
+    match update_comment_notifying(&state, id, input, &user_ctx).await {
+        Ok(Some(_)) => Redirect::to("/admin/content/comments").into_response(),
         Ok(None) => render_not_found(),
         Err(e) => {
             tracing::error!(error = %e, "failed to update comment");
@@ -805,36 +815,56 @@ async fn edit_comment_submit(
     }
 }
 
-/// Mail the content author when a moderation action has just made a comment
-/// visible.
+/// Update a comment, queueing the content author's notification in the same
+/// transaction when the update makes the comment visible (BG18).
 ///
 /// The notification used to fire when a comment was created, which under a
 /// hold-for-review default would have mailed the author the full text of every
 /// comment the queue exists to catch. It belongs on the transition into
-/// published, which is here and in the create route.
-async fn notify_author_if_published(state: &AppState, comment: &Comment, previous: Option<i16>) {
-    // One rule, in one place: `notify_if_published` decides. This loads the item
-    // unconditionally rather than pre-filtering on a placeholder author id,
-    // which would wrongly suppress the mail whenever the comment author happened
-    // to equal the placeholder. A moderation action can afford one query.
-    let Ok(Some(item)) = state.items().load(comment.item_id).await else {
-        return;
+/// published, which is here and in the create route. One rule, in one place:
+/// `should_notify_on_publish` decides, against the comment as it was inside the
+/// transaction.
+async fn update_comment_notifying(
+    state: &AppState,
+    id: uuid::Uuid,
+    input: UpdateComment,
+    user_ctx: &crate::tap::UserContext,
+) -> anyhow::Result<Option<Comment>> {
+    use crate::routes::comment::{
+        comment_mail_context, comment_notification, should_notify_on_publish,
     };
-    let commenter = state
-        .users()
-        .find_by_id(comment.author_id)
-        .await
-        .ok()
-        .flatten()
-        .map(|u| u.name);
-
-    crate::routes::comment::notify_if_published(
-        state,
-        comment,
-        previous,
-        &item,
-        commenter.as_deref(),
-    );
+    let before = state.comments().load(id).await.ok().flatten();
+    let mut ctx = None;
+    if let (Some(before), Some(status), Some(_)) = (&before, input.status, state.email())
+        && let Ok(Some(item)) = state.items().load(before.item_id).await
+        && should_notify_on_publish(
+            Some(before.status),
+            status,
+            before.author_id,
+            item.author_id,
+        )
+    {
+        let commenter = state
+            .users()
+            .find_by_id(before.author_id)
+            .await
+            .ok()
+            .flatten()
+            .map(|u| u.name);
+        ctx = comment_mail_context(state, &item, commenter.as_deref()).await;
+    }
+    match (state.email(), ctx) {
+        (Some(email), Some(ctx)) => {
+            let tera = state.theme().tera();
+            state
+                .comments()
+                .update_with_mail(id, input, user_ctx, email, |before, c| {
+                    comment_notification(tera, &ctx, c, before.map(|b| b.status))
+                })
+                .await
+        }
+        _ => state.comments().update(id, input, user_ctx).await,
+    }
 }
 
 /// Set a comment's publication status (shared by approve/unpublish).
@@ -860,21 +890,11 @@ async fn set_comment_status(
         body: None,
         body_format: None,
         status: Some(status),
+        subject: None,
     };
 
-    let previous = state
-        .comments()
-        .load(id)
-        .await
-        .ok()
-        .flatten()
-        .map(|c| c.status);
-
-    match state.comments().update(id, input, &user_ctx).await {
-        Ok(Some(comment)) => {
-            notify_author_if_published(state, &comment, previous).await;
-            Redirect::to("/admin/content/comments").into_response()
-        }
+    match update_comment_notifying(state, id, input, &user_ctx).await {
+        Ok(Some(_)) => Redirect::to("/admin/content/comments").into_response(),
         Ok(None) => render_not_found(),
         Err(e) => {
             tracing::error!(error = %e, "failed to {} comment", action);
@@ -1081,6 +1101,7 @@ pub fn router() -> Router<AppState> {
         .merge(super::admin_config::router())
         // Search settings and the search report
         .merge(super::admin_search::router())
+        .merge(super::admin_shell::router())
         .merge(super::admin_search_report::router())
         // The cron report and the site log (B107)
         .merge(super::admin_reports::router())

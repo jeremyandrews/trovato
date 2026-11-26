@@ -1,0 +1,16 @@
+# The servers behind one cluster address. Only ready pods receive traffic.
+apiVersion: v1
+kind: Service
+metadata:
+  name: trovato
+  labels:
+    app.kubernetes.io/name: trovato
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: trovato
+    app.kubernetes.io/component: server
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

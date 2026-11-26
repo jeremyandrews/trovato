@@ -208,6 +208,37 @@ this way. It is user input, so print it with autoescape on, never with `| safe`.
 It is set wherever `user_authenticated` is, which is every page template rendered
 through `inject_site_context`; an item template gets neither.
 
+### The Author on the Item Template, and on a Gather Row
+
+An item template gets `author`, resolved through `UserService::author_views`,
+which reads the same user cache `/api/item`'s `include=author` uses, so a theme
+prints who wrote the page without hardcoding a name or printing
+`item.author_id`. The shipped `elements/item.html` and `elements/item--blog.html`
+print it:
+
+| Key | What it holds |
+|---|---|
+| `author.name` | The author's display name (`users.name`). A deleted account's content is reattributed to the kernel's anonymous sentinel account, which has its own row and its own name; an id matching no user row at all gets the kernel's anonymous display name. Never empty. |
+| `author.url` | `/user/{id}`, present only when this viewer holds `access user profiles`. Absent — not an empty string — otherwise, and always absent for the anonymous sentinel: there is no profile to send a visitor to. |
+
+```jinja
+{% if author %}
+  <span class="item__author">by
+    {% if author.url %}<a href="{{ author.url }}">{{ author.name }}</a>
+    {% else %}{{ author.name }}{% endif %}
+  </span>
+{% endif %}
+```
+
+A gather row carries the same shape under `row.author`. Authors the user cache
+holds cost no query; the rest of the page's authors load in one query together
+(never one per row), the way `resolve_row_urls` already resolves `row.url`. See
+`gather/row.html` and `gather/query--blog_listing.html`. A gather that defines its own include named
+`author` keeps it: the byline never replaces a key the gather already set. Only the display name and this
+access-checked URL ever reach either template: no mail address, no other
+`User` field, and no distinction between a login name and a display name (the
+kernel has one name, not two).
+
 ### Plugin Output on the Item Template
 
 An item template gets two strings of rendered HTML:
@@ -224,6 +255,27 @@ sanitized, so both are printed with `| safe` and a `{# SAFE: ... #}` comment.
 
 A text field's format, stored beside it as `<name>_format`, is part of that field
 and is not printed as a field of its own when the type declares `<name>` as text.
+
+### The Comment Thread in the Render Context
+
+`routes::comment::render_thread` builds `elements/comments.html`'s context; the
+reply, edit and delete pages (`comment-page.html`) build the same shape for one
+comment through `comment_for_page`. Each comment in `comments` (and the single
+`comment` the other pages carry) is:
+
+| Key | What it holds |
+|---|---|
+| `comment.id` | The comment's id. |
+| `comment.depth` | Thread depth, for indentation; absent on the single-comment pages. |
+| `comment.created` | Unix timestamp. |
+| `comment.author_name` | The author's account name, or absent for one the kernel could not look up. |
+| `comment.subject` | The comment's optional plain text subject, or absent when it has none. It is user input and is never passed through a text format, so it is printed with autoescape on (`{{ comment.subject }}`), never `| safe` — the one field here that is the exception `body_html` already is for the opposite reason. |
+| `comment.body_html` | The body, already rendered and sanitized by its text format. Printed with `| safe`. |
+| `comment.can_edit` / `comment.can_delete` | Whether an Edit/Delete link should be shown; absent on the single-comment pages. |
+
+```jinja
+{% if comment.subject %}<h3 class="comment__subject">{{ comment.subject }}</h3>{% endif %}
+```
 
 ### Menus in the Render Context
 
@@ -254,6 +306,19 @@ entries and children go through the same rule.
 matches, and the menus already built), so a tile never reloads what the page
 has.
 
+**Tile visibility** (`Tile::is_visible`) combines `paths`/`paths_exclude`,
+`roles` and `audience` rules in a tile's `visibility` JSON; a tile with none of
+these, or `{}`, is visible to everyone. `audience` (`"anonymous"` or
+`"authenticated"`) is the login-tile case — shown only to a signed-out visitor,
+or only to a signed-in one — decided from the viewer's actual signed-in state,
+not from `user_roles`: every viewer, signed in or not, can carry the
+`anonymous user` role there (`routes::helpers::inject_site_context` seeds it
+unconditionally, then adds `authenticated user` and `administrator` as they
+apply), so a role rule alone cannot mean "anonymous only". The tile admin form
+exposes `audience` as a "Show to" field, merged into the tile's stored
+`visibility` so an existing `paths` or `roles` rule (set through `config
+import`, which the form has no control for) survives an edit.
+
 ### Gather Tiles
 
 **A gather tile** (`tile_type: gather_query`) lists the first rows of the
@@ -279,6 +344,62 @@ alias when it has one), `empty_text` and `more_url`, the gather's own page
 A tile with nothing it may show is left off the page, not drawn empty: when
 the viewer may not run the gather, silently; when the gather does not exist,
 the config is invalid or the query fails, with a warning naming the tile.
+
+### Item Template Variables
+
+An item page (`/item/{id}`, and every alias of one) renders its `item--{type}`
+template with the item and, beside it, the things its fields point at, already
+resolved. A template never needs a route of its own to turn a stored uuid into
+a link.
+
+| Variable | Shape | Filled from |
+|---|---|---|
+| `item` | the item: `id`, `title`, `type`, `fields`, `status`, `created`, … | the row |
+| `children` | the rendered field HTML and plugin render output | the field pipeline |
+| `referenced_items` | `{field_name: [{id, title, type}]}` | `RecordReference` fields: the items the viewer may view |
+| `referenced_files` | `{field_name: [{id, url, filename, mime, alt}]}` | `File` fields: the files the viewer may be served. `url` is the file's `/files/{path}` address; there is no download route by id |
+| `referenced_tags` | `{field_name: [{id, label, slug, url, ancestors: [{id, label, slug, url}]}]}` | `CategoryReference` fields: the tags, each with its ancestors root first |
+| `reverse_references` | `{type_name: [{id, title}]}` | items whose `RecordReference` fields point at this one |
+
+Each list keeps the field's order and leaves out a value that names nothing (a
+deleted file, a deleted tag) or that the viewer may not see. A field with
+nothing to show has no key, so `{% if referenced_tags.field_topics %}` is the
+test.
+
+A tag's `url` is the path of the gather route that lists its category: the
+route in a query's `display.routes` whose one parameter maps its path segment
+through `tag_category`, with the tag's slug in place of the segment
+(`/topics/{slug}` gives `/topics/rust`). It is null for a tag without a slug,
+or in a category no route lists. A tag of an owned vocabulary the viewer may
+not read is left out, by the rule every category read applies
+(`content::owned_vocabulary::visible_terms`). The whole map costs two queries,
+one for the tags and one recursive query for all their ancestors, however many
+tags the item holds or how deep they sit, plus the vocabulary visibility
+decision.
+
+Topic pills, each with a breadcrumb of its ancestors, and the conference's
+programme PDF:
+
+```html
+{% if referenced_tags.field_topics %}
+<ul class="topics">
+  {% for topic in referenced_tags.field_topics %}
+  <li class="topic">
+    <nav class="topic__trail" aria-label="{{ topic.label }}">
+      {% for parent in topic.ancestors %}
+        {% if parent.url %}<a href="{{ parent.url }}">{{ parent.label }}</a>{% else %}{{ parent.label }}{% endif %} &rsaquo;
+      {% endfor %}
+    </nav>
+    {% if topic.url %}<a class="pill" href="{{ topic.url }}">{{ topic.label }}</a>{% else %}<span class="pill">{{ topic.label }}</span>{% endif %}
+  </li>
+  {% endfor %}
+</ul>
+{% endif %}
+
+{% for file in referenced_files.field_programme | default(value=[]) %}
+<a href="{{ file.url }}" type="{{ file.mime }}">{{ file.filename }}</a>
+{% endfor %}
+```
 
 ### Language-Aware Menus
 

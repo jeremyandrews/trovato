@@ -44,6 +44,13 @@ const TYPE: &str = "blog";
 
 static DISPATCHER: OnceLock<Arc<TapDispatcher>> = OnceLock::new();
 
+/// Every test here but the legacy-row one reads or rewrites the one shared
+/// `blog` type, and three of them change its settings and put them back. Run
+/// together they read each other's half-made changes, and a restore taken from
+/// a snapshot of another test's edit puts that edit back. So the tests that
+/// touch `blog` take turns, holding the turn through their cleanups.
+static BLOG: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 fn plugins_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -106,6 +113,7 @@ fn input_value(html: &str, name: &str) -> Option<String> {
 fn plugin_registration_writes_the_canonical_settings_shape() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(BLOG.lock().await);
         register_through_the_real_writer(app).await;
 
         let settings: serde_json::Value =
@@ -138,6 +146,7 @@ fn plugin_registration_writes_the_canonical_settings_shape() {
 fn a_database_round_trip_keeps_the_declared_fields() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(BLOG.lock().await);
         register_through_the_real_writer(app).await;
 
         // Drop anything the cache is holding, so this reads the database.
@@ -173,6 +182,7 @@ fn a_database_round_trip_keeps_the_declared_fields() {
 fn the_admin_add_form_renders_the_declared_fields() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(BLOG.lock().await);
         register_through_the_real_writer(app).await;
         app.state.content_types().invalidate(TYPE);
         app.state
@@ -221,6 +231,7 @@ fn the_admin_add_form_renders_the_declared_fields() {
 fn a_save_missing_a_required_field_is_refused() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(BLOG.lock().await);
         register_through_the_real_writer(app).await;
         app.state.content_types().invalidate(TYPE);
         app.state
@@ -410,6 +421,7 @@ async fn blog_from_a_fresh_registry(app: &TestApp) -> trovato_sdk::types::Conten
 fn plugin_registration_keeps_admin_settings_and_fields_across_boots() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(BLOG.lock().await);
         app.restore_content_type_on_exit(TYPE).await;
 
         // Boot once.
@@ -495,6 +507,7 @@ fn plugin_registration_keeps_admin_settings_and_fields_across_boots() {
 fn plugin_registration_wins_on_its_own_field_names() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(BLOG.lock().await);
         app.restore_content_type_on_exit(TYPE).await;
 
         register_through_the_real_writer(app).await;
@@ -554,6 +567,7 @@ fn plugin_registration_wins_on_its_own_field_names() {
 fn plugin_registration_keeps_an_admin_title_label() {
     run_test(async {
         let app = shared_app().await;
+        common::hold_until_cleanup(BLOG.lock().await);
         app.restore_content_type_on_exit(TYPE).await;
 
         register_through_the_real_writer(app).await;

@@ -1,0 +1,95 @@
+{
+  "label": "bg14-tracing-3, tracing off, 20,000,000 posts, Mac Studio",
+  "requests": 2000,
+  "concurrency": 8,
+  "pages": {
+    "category": {
+      "path": "/blog/tag/topic-1",
+      "median_ms": 214.47525000000002,
+      "p99_ms": 412.227458,
+      "runs": [
+        {
+          "median_ms": 208.458,
+          "p99_ms": 251.2125,
+          "errors": 0
+        },
+        {
+          "median_ms": 214.47525000000002,
+          "p99_ms": 412.227458,
+          "errors": 0
+        },
+        {
+          "median_ms": 247.08137499999998,
+          "p99_ms": 497.273333,
+          "errors": 0
+        }
+      ]
+    },
+    "feed": {
+      "path": "/blog/feed.xml",
+      "median_ms": 41.285917,
+      "p99_ms": 54.438583,
+      "runs": [
+        {
+          "median_ms": 40.906791,
+          "p99_ms": 52.184291,
+          "errors": 0
+        },
+        {
+          "median_ms": 41.285917,
+          "p99_ms": 61.389125,
+          "errors": 0
+        },
+        {
+          "median_ms": 42.435834,
+          "p99_ms": 54.438583,
+          "errors": 0
+        }
+      ]
+    },
+    "front": {
+      "path": "/",
+      "median_ms": 41.796375,
+      "p99_ms": 118.371166,
+      "runs": [
+        {
+          "median_ms": 41.796375,
+          "p99_ms": 118.371166,
+          "errors": 0
+        },
+        {
+          "median_ms": 42.590208,
+          "p99_ms": 206.292708,
+          "errors": 0
+        },
+        {
+          "median_ms": 41.426209,
+          "p99_ms": 60.900999999999996,
+          "errors": 0
+        }
+      ]
+    },
+    "item": {
+      "path": "/item/a591c6c4-50e5-480f-1005-e982d8a76703",
+      "median_ms": 10.3635,
+      "p99_ms": 14.327958,
+      "runs": [
+        {
+          "median_ms": 10.3635,
+          "p99_ms": 13.974416999999999,
+          "errors": 0
+        },
+        {
+          "median_ms": 10.494542000000001,
+          "p99_ms": 38.783417,
+          "errors": 0
+        },
+        {
+          "median_ms": 10.240584,
+          "p99_ms": 14.327958,
+          "errors": 0
+        }
+      ]
+    }
+  }
+}

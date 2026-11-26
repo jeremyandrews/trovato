@@ -11,6 +11,11 @@ use crate::config::Config;
 // Embed migrations at compile time
 static MIGRATOR: Migrator = sqlx::migrate!("./migrations");
 
+/// The kernel migrations this binary embeds.
+pub fn migrator() -> &'static Migrator {
+    &MIGRATOR
+}
+
 /// Create a PostgreSQL connection pool.
 ///
 /// Configures idle timeout, max lifetime, and acquire timeout to prevent
@@ -29,14 +34,17 @@ pub async fn create_pool(config: &Config) -> Result<PgPool> {
     Ok(pool)
 }
 
-/// Run database migrations.
+/// Run the kernel's pending migrations, under the migration lock.
+///
+/// Accepts applied migrations this binary does not know unless one is marked
+/// incompatible (`crate::migrate::run_kernel`), so an older binary starts on a
+/// schema a newer release migrated.
 pub async fn run_migrations(pool: &PgPool) -> Result<()> {
-    MIGRATOR
-        .run(pool)
+    let mut lock = crate::migrate::MigrationLock::acquire(pool).await?;
+    crate::migrate::run_kernel(&mut lock, &MIGRATOR)
         .await
         .context("failed to run database migrations")?;
-
-    Ok(())
+    lock.release().await
 }
 
 /// Check if the database connection is healthy.

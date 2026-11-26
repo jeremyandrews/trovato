@@ -10,8 +10,8 @@ const fixture = (name: string) =>
   );
 
 describe("stored page ↔ Puck data", () => {
-  it("round-trips a page saved by v0.106 without changing it", () => {
-    const page = fixture("standard-page-v0.106.json");
+  it("round-trips a page saved before the component registry without changing it", () => {
+    const page = fixture("standard-page-pre-registry.json");
     expect(puckToStored(storedToPuck(page))).toEqual(page);
   });
 
@@ -35,6 +35,27 @@ describe("stored page ↔ Puck data", () => {
   it("gives a component stored without an id one Puck can track", () => {
     const data = storedToPuck({ content: [{ type: "Hero", props: { title: "x" } }] });
     expect(data.content[0].props.id).toMatch(/^Hero-/);
+  });
+
+  it("stores the page root flat, from either shape, keeping declared root fields only", () => {
+    // Puck 0.20 keeps root values under root.props.
+    const data = storedToPuck({ root: { title: "T", footer_cta_mode: "hide", stale: 1 }, content: [] });
+    expect(data.root).toEqual({ props: { title: "T", footer_cta_mode: "hide", stale: 1 } });
+    expect(puckToStored(data, ["footer_cta_mode"]).root).toEqual({ title: "T", footer_cta_mode: "hide" });
+    // Without the declared names nothing is dropped.
+    expect(puckToStored(data).root).toEqual({ title: "T", footer_cta_mode: "hide", stale: 1 });
+    // An older Puck's flat root, and a page stored with root.props, read the same.
+    expect(
+      puckToStored({ root: { title: "Old", footer_cta_mode: "custom" }, content: [] }, ["footer_cta_mode"]).root,
+    ).toEqual({ title: "Old", footer_cta_mode: "custom" });
+    expect(storedToPuck({ root: { props: { title: "N", footer_cta_mode: "hide" } } }).root).toEqual({
+      props: { title: "N", footer_cta_mode: "hide" },
+    });
+  });
+
+  it("round-trips the pre-registry page with root fields declared", () => {
+    const page = fixture("standard-page-pre-registry.json");
+    expect(puckToStored(storedToPuck(page), ["footer_cta_mode"])).toEqual(page);
   });
 
   it("reads an empty or broken hidden input as an empty page", () => {

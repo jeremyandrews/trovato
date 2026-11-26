@@ -34,6 +34,82 @@ struct ContentTypeFormData {
     title_label: Option<String>,
     published_default: Option<String>,
     revision_default: Option<String>,
+    promote_default: Option<String>,
+    sticky_default: Option<String>,
+    moderation: Option<String>,
+    preview_mode: Option<String>,
+}
+
+/// The per-type defaults the content type form edits, by settings key. Each
+/// is a checkbox, stored as a boolean in the type's `settings`.
+const DEFAULT_SWITCHES: &[&str] = &[
+    "published_default",
+    "revision_default",
+    "promote_default",
+    "sticky_default",
+    // Content moderation (`content::moderation`): Draft, Published and
+    // Archived, with a permission per transition.
+    "moderation",
+];
+
+impl ContentTypeFormData {
+    /// Whether the checkbox for settings key `key` was checked.
+    fn switch(&self, key: &str) -> bool {
+        match key {
+            "published_default" => self.published_default.is_some(),
+            "revision_default" => self.revision_default.is_some(),
+            "promote_default" => self.promote_default.is_some(),
+            "sticky_default" => self.sticky_default.is_some(),
+            "moderation" => self.moderation.is_some(),
+            _ => false,
+        }
+    }
+
+    /// The settings this submission stores, merged into what the type holds.
+    fn settings(&self) -> serde_json::Value {
+        let mut settings = serde_json::Map::new();
+        settings.insert(
+            "title_label".to_string(),
+            serde_json::Value::from(
+                self.title_label
+                    .clone()
+                    .unwrap_or_else(|| "Title".to_string()),
+            ),
+        );
+        for key in DEFAULT_SWITCHES {
+            settings.insert(
+                (*key).to_string(),
+                serde_json::Value::Bool(self.switch(key)),
+            );
+        }
+        settings.insert(
+            crate::content::preview::SETTING.to_string(),
+            serde_json::Value::from(self.preview_mode().as_str()),
+        );
+        serde_json::Value::Object(settings)
+    }
+
+    /// The preview mode this submission asks for; an unknown value is the
+    /// default.
+    fn preview_mode(&self) -> crate::content::preview::PreviewMode {
+        crate::content::preview::PreviewMode::parse(self.preview_mode.as_deref())
+    }
+
+    /// The values to show this submission again with.
+    fn values(&self) -> serde_json::Value {
+        let mut values = serde_json::json!({
+            "label": self.label,
+            "machine_name": self.machine_name,
+            "description": self.description,
+            "title_label": self.title_label,
+        });
+        for key in DEFAULT_SWITCHES {
+            values[*key] = serde_json::Value::Bool(self.switch(key));
+        }
+        values[crate::content::preview::SETTING] =
+            serde_json::Value::from(self.preview_mode().as_str());
+        values
+    }
 }
 
 /// Field form data.
@@ -46,6 +122,9 @@ struct FieldFormData {
     label: String,
     name: String,
     field_type: String,
+    /// The category a `category_reference` field holds tags of.
+    #[serde(default)]
+    category: Option<String>,
 }
 
 /// Search field configuration form data.
@@ -160,11 +239,7 @@ async fn add_content_type_submit(
     }
 
     // Create the content type
-    let settings = serde_json::json!({
-        "title_label": form.title_label.clone().unwrap_or_else(|| "Title".to_string()),
-        "published_default": form.published_default.is_some(),
-        "revision_default": form.revision_default.is_some(),
-    });
+    let settings = form.settings();
 
     match state
         .content_types()
@@ -207,17 +282,7 @@ async fn render_add_form_with_errors(
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &false);
     context.insert("errors", &errors);
-    context.insert(
-        "values",
-        &serde_json::json!({
-            "label": form.label,
-            "machine_name": form.machine_name,
-            "description": form.description,
-            "title_label": form.title_label,
-            "published_default": form.published_default.is_some(),
-            "revision_default": form.revision_default.is_some(),
-        }),
-    );
+    context.insert("values", &form.values());
     context.insert("path", "/admin/structure/types/add");
 
     render_admin_template(
@@ -261,32 +326,29 @@ async fn edit_content_type_form(
         .await
         .ok()
         .flatten();
-    let (title_label, published_default, revision_default) = match &db_type {
-        Some(it) => (
-            it.title_label.as_deref().unwrap_or("Title"),
-            it.settings
-                .get("published_default")
-                .and_then(|v| v.as_bool())
+    let title_label = db_type
+        .as_ref()
+        .and_then(|it| it.title_label.as_deref())
+        .unwrap_or("Title");
+    let mut values = serde_json::json!({
+        "label": content_type.label,
+        "machine_name": content_type.machine_name,
+        "description": content_type.description,
+        "title_label": title_label,
+    });
+    for key in DEFAULT_SWITCHES {
+        values[*key] = serde_json::Value::Bool(
+            db_type
+                .as_ref()
+                .and_then(|it| it.settings.get(*key))
+                .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false),
-            it.settings
-                .get("revision_default")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(false),
-        ),
-        None => ("Title", false, false),
-    };
-
-    context.insert(
-        "values",
-        &serde_json::json!({
-            "label": content_type.label,
-            "machine_name": content_type.machine_name,
-            "description": content_type.description,
-            "title_label": title_label,
-            "published_default": published_default,
-            "revision_default": revision_default,
-        }),
+        );
+    }
+    values[crate::content::preview::SETTING] = serde_json::Value::from(
+        crate::content::preview::PreviewMode::of(db_type.as_ref().map(|it| &it.settings)).as_str(),
     );
+    context.insert("values", &values);
     context.insert("path", &format!("/admin/structure/types/{type_name}/edit"));
 
     render_admin_template(
@@ -340,17 +402,7 @@ async fn edit_content_type_submit(
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &true);
         context.insert("errors", &errors);
-        context.insert(
-            "values",
-            &serde_json::json!({
-                "label": form.label,
-                "machine_name": form.machine_name,
-                "description": form.description,
-                "title_label": form.title_label,
-                "published_default": form.published_default.is_some(),
-                "revision_default": form.revision_default.is_some(),
-            }),
-        );
+        context.insert("values", &form.values());
         context.insert("path", &format!("/admin/structure/types/{type_name}/edit"));
 
         return render_admin_template(
@@ -363,11 +415,7 @@ async fn edit_content_type_submit(
     }
 
     // Update the content type
-    let settings = serde_json::json!({
-        "title_label": form.title_label.unwrap_or_else(|| "Title".to_string()),
-        "published_default": form.published_default.is_some(),
-        "revision_default": form.revision_default.is_some(),
-    });
+    let settings = form.settings();
 
     match state
         .content_types()
@@ -421,6 +469,7 @@ async fn manage_fields(
     let mut context = tera::Context::new();
     context.insert("content_type", &content_type);
     context.insert("fields", &content_type.fields);
+    context.insert("categories", &categories(&state).await);
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert(
@@ -435,6 +484,18 @@ async fn manage_fields(
         context,
     )
     .await
+}
+
+/// Every category, for the category select a category reference field needs.
+async fn categories(state: &AppState) -> Vec<crate::models::Category> {
+    state
+        .categories()
+        .list_categories()
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "failed to list categories for the field screens");
+            Vec::new()
+        })
 }
 
 /// Add a field to a content type.
@@ -483,7 +544,13 @@ async fn add_field(
     // Add the field
     match state
         .content_types()
-        .add_field(&type_name, &form.name, &form.label, &form.field_type)
+        .add_field_in_category(
+            &type_name,
+            &form.name,
+            &form.label,
+            &form.field_type,
+            form.category.as_deref(),
+        )
         .await
     {
         Ok(_) => {
@@ -494,10 +561,13 @@ async fn add_field(
             );
             Redirect::to(&format!("/admin/structure/types/{type_name}/fields")).into_response()
         }
-        // The two the person at the screen can fix are shown to them. The
+        // The ones the person at the screen can fix are shown to them. The
         // registry owns the wording, so it is not written out again here.
         Err(
-            e @ (AddFieldError::DuplicateFieldName { .. } | AddFieldError::UnknownFieldType { .. }),
+            e @ (AddFieldError::DuplicateFieldName { .. }
+            | AddFieldError::UnknownFieldType { .. }
+            | AddFieldError::CategoryRequired
+            | AddFieldError::UnknownCategory { .. }),
         ) => rerender_field_list(&state, &session, &type_name, &form, vec![e.to_string()]).await,
         Err(e) => {
             tracing::error!(error = %e, "failed to add field");
@@ -531,6 +601,7 @@ async fn rerender_field_list(
     let mut context = tera::Context::new();
     context.insert("content_type", &content_type);
     context.insert("fields", &content_type.fields);
+    context.insert("categories", &categories(state).await);
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("errors", &errors);
@@ -540,6 +611,7 @@ async fn rerender_field_list(
             "label": form.label,
             "name": form.name,
             "field_type": form.field_type,
+            "category": form.category,
         }),
     );
     context.insert(
@@ -570,6 +642,17 @@ struct FieldEditFormData {
     label: String,
     required: Option<String>,
     cardinality: Option<i32>,
+    /// A category reference field's category.
+    #[serde(default)]
+    category: Option<String>,
+}
+
+/// The category a field holds tags of, when it is a category reference.
+fn field_category(field: &trovato_sdk::types::FieldDefinition) -> Option<&str> {
+    match &field.field_type {
+        trovato_sdk::types::FieldType::CategoryReference(category) => Some(category),
+        _ => None,
+    }
 }
 
 /// Show field edit form.
@@ -602,6 +685,8 @@ async fn edit_field_form(
     let mut context = tera::Context::new();
     context.insert("type_name", &type_name);
     context.insert("field", field);
+    context.insert("field_category", &field_category(field));
+    context.insert("categories", &categories(&state).await);
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert(
@@ -659,6 +744,25 @@ async fn edit_field_submit(
         errors.push("Number of values must be 1 or more, or -1 for unlimited.".to_string());
     }
 
+    // A category reference keeps a category: the one chosen, which must exist.
+    let category = match field_category(field) {
+        Some(current) => {
+            let chosen = form.category.as_deref().map(str::trim).unwrap_or(current);
+            if chosen.is_empty() {
+                errors.push(AddFieldError::CategoryRequired.to_string());
+            } else if !categories(&state).await.iter().any(|c| c.id == chosen) {
+                errors.push(
+                    AddFieldError::UnknownCategory {
+                        category: chosen.to_string(),
+                    }
+                    .to_string(),
+                );
+            }
+            Some(chosen.to_string())
+        }
+        None => None,
+    };
+
     if !errors.is_empty() {
         let csrf_token = generate_csrf_token(&session).await;
         let form_build_id = uuid::Uuid::new_v4().to_string();
@@ -672,6 +776,8 @@ async fn edit_field_submit(
         let mut context = tera::Context::new();
         context.insert("type_name", &type_name);
         context.insert("field", &edited_field);
+        context.insert("field_category", &category);
+        context.insert("categories", &categories(&state).await);
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("errors", &errors);
@@ -690,6 +796,16 @@ async fn edit_field_submit(
     }
 
     let required = form.required.is_some();
+
+    if let Some(category) = category.as_deref()
+        && let Err(e) = state
+            .content_types()
+            .set_field_category(&type_name, &field_name, category)
+            .await
+    {
+        tracing::error!(error = %e, "failed to change the field's category");
+        return render_server_error("Failed to update field.");
+    }
 
     match state
         .content_types()
@@ -899,7 +1015,8 @@ const SEARCH_SWITCHES_FLASH: &str = "search_switches_flash";
 ///
 /// Stores them in the type's `settings` (merged, so nothing else there
 /// changes), recomputes the type's full text vectors so `/search` follows at
-/// once, and asks for a Pagefind rebuild at the next cron run.
+/// once, and queues every item of the type for the Pagefind index, which the
+/// next cron run updates.
 async fn save_search_switches(
     State(state): State<AppState>,
     session: Session,
@@ -953,7 +1070,12 @@ async fn save_search_switches(
     if let Err(e) = state.search().reindex_bundle(&type_name).await {
         tracing::error!(error = %e, content_type = %type_name, "failed to reindex after search switches");
     }
-    crate::cron::request_search_index_rebuild(state.db()).await;
+    // Every page of the type may change, or leave the index: queue them all.
+    if let Err(e) =
+        crate::search::index_queue::enqueue_type(state.db(), &type_name, "type_settings").await
+    {
+        tracing::error!(error = %e, content_type = %type_name, "failed to queue the type for the search index");
+    }
 
     tracing::info!(
         log_type = "config",
@@ -1108,6 +1230,7 @@ async fn reindex_content_type(
 pub(crate) async fn handle_ajax_add_field(
     state: &AppState,
     request: &crate::form::AjaxRequest,
+    lang: &str,
 ) -> Response {
     use crate::form::{AjaxCommand, AjaxResponse};
 
@@ -1152,6 +1275,7 @@ pub(crate) async fn handle_ajax_add_field(
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .trim();
+    let category = request.values.get("category").and_then(|v| v.as_str());
 
     // Validate
     if label.is_empty() {
@@ -1170,14 +1294,17 @@ pub(crate) async fn handle_ajax_add_field(
     // Add the field
     match state
         .content_types()
-        .add_field(type_name, name, label, field_type)
+        .add_field_in_category(type_name, name, label, field_type, category)
         .await
     {
         Ok(()) => {}
-        // Same two user-fixable refusals as the form post, same wording: the
+        // Same user-fixable refusals as the form post, same wording: the
         // registry owns the message.
         Err(
-            e @ (AddFieldError::DuplicateFieldName { .. } | AddFieldError::UnknownFieldType { .. }),
+            e @ (AddFieldError::DuplicateFieldName { .. }
+            | AddFieldError::UnknownFieldType { .. }
+            | AddFieldError::CategoryRequired
+            | AddFieldError::UnknownCategory { .. }),
         ) => {
             return Json(AjaxResponse::new().alert(e.to_string())).into_response();
         }
@@ -1189,21 +1316,39 @@ pub(crate) async fn handle_ajax_add_field(
 
     tracing::info!(content_type = %type_name, field = %name, "field added via AJAX");
 
-    // Build the new row HTML
+    // The new row, as `admin/field-list.html` draws one, in the viewer's
+    // admin language. Strings are stripped of i18n markers: this HTML never
+    // passes through a template.
+    if let Some(locale) = state.locale() {
+        locale.ensure_loaded(lang).await;
+    }
+    let tr = |source: &str, args: &[(String, String)]| {
+        crate::i18n::strip_markers(&crate::i18n::translate(
+            state.locale().map(|l| l.as_ref()),
+            lang,
+            &crate::i18n::Message::new(source),
+            args,
+        ))
+    };
     let row_html = format!(
         r#"<tr data-field="{name_esc}">
-            <td>{label_esc}</td>
+            <th scope="row">{label_esc}</th>
             <td><code>{name_esc}</code></td>
             <td>{type_esc}</td>
-            <td>No</td>
-            <td>
-                <a href="/admin/structure/types/{ct_esc}/fields/{name_esc}/edit">Edit</a>
+            <td>{no}</td>
+            <td class="operations">
+                <a href="/admin/structure/types/{ct_esc}/fields/{name_esc}/edit">{edit}</a>
             </td>
         </tr>"#,
         name_esc = html_escape(name),
         label_esc = html_escape(label),
         type_esc = html_escape(field_type),
         ct_esc = html_escape(type_name),
+        no = html_escape(&tr("No", &[])),
+        edit = html_escape(&tr(
+            "Edit {name}",
+            &[("name".to_string(), label.to_string())]
+        )),
     );
 
     // Return AJAX response to append row and reset form

@@ -44,6 +44,7 @@ async fn json_body(response: axum::response::Response) -> serde_json::Value {
 fn rp_origin(app: &TestApp) -> url::Url {
     app.state
         .webauthn()
+        .expect("this app's SITE_URL is a hostname, so WebAuthn must be configured")
         .get_allowed_origins()
         .first()
         .expect("the relying party must have an origin")

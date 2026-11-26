@@ -17,6 +17,14 @@ pub struct HttpLabels {
     pub status: u16,
 }
 
+/// AI circuit breaker labels: which breaker a state belongs to.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct AiBreakerLabels {
+    /// An AI operation's key (`chat`, `embedding`, ...), or `connection_test`
+    /// for the breaker the admin connection test uses.
+    pub operation: &'static str,
+}
+
 /// Cache labels: which kernel cache a hit or miss belongs to.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct CacheLabels {
@@ -100,6 +108,12 @@ impl CacheName {
     }
 }
 
+/// Route labels: the matched route template only.
+#[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
+pub struct RouteLabels {
+    pub route: String,
+}
+
 /// TAP invocation labels.
 #[derive(Clone, Debug, Hash, PartialEq, Eq, EncodeLabelSet)]
 pub struct TapLabels {
@@ -129,6 +143,12 @@ pub struct Metrics {
     /// Cache misses by cache name.
     pub cache_misses: Family<CacheLabels, Counter>,
 
+    /// Values written to the Redis cache, by cache name.
+    pub cache_sets: Family<CacheLabels, Counter>,
+
+    /// Database statements per request, by route template.
+    pub http_request_db_queries: Family<RouteLabels, Histogram>,
+
     /// The `cache_hits` series, one per [`CacheName`], indexed by its
     /// position in [`CacheName::ALL`]: counting a lookup is one atomic add,
     /// with no label hashing or family lock on the read path.
@@ -136,6 +156,9 @@ pub struct Metrics {
 
     /// The `cache_misses` series, indexed like `hit_series`.
     miss_series: [Counter; CacheName::ALL.len()],
+
+    /// The `cache_sets` series, indexed like `hit_series`.
+    set_series: [Counter; CacheName::ALL.len()],
 
     /// Active HTTP connections gauge.
     pub active_connections: Gauge,
@@ -171,8 +194,9 @@ pub struct Metrics {
     /// did not actually have (none), so it should alert.
     pub permission_load_failures: Counter,
 
-    /// AI provider circuit breaker state (0=closed, 1=open, 2=half_open).
-    pub ai_circuit_breaker_state: Gauge,
+    /// AI provider circuit breaker state (0=closed, 1=open, 2=half_open), one
+    /// series per breaker: every operation's, and the connection test's.
+    pub ai_circuit_breaker_state: Family<AiBreakerLabels, Gauge>,
 
     /// Email SMTP circuit breaker state (0=closed, 1=open, 2=half_open).
     pub email_circuit_breaker_state: Gauge,
@@ -209,14 +233,14 @@ impl Metrics {
         });
         registry.register(
             "tap_duration_seconds",
-            "TAP invocation duration in seconds",
+            "TAP invocation duration while serving a request, in seconds",
             tap_duration_seconds.clone(),
         );
 
         let db_query_duration_seconds = Histogram::new(exponential_buckets(0.0001, 2.0, 14));
         registry.register(
             "db_query_duration_seconds",
-            "Database query duration in seconds",
+            "Database statement duration while serving a request, in seconds",
             db_query_duration_seconds.clone(),
         );
 
@@ -234,6 +258,23 @@ impl Metrics {
             cache_misses.clone(),
         );
 
+        let cache_sets = Family::<CacheLabels, Counter>::default();
+        registry.register(
+            "cache_sets",
+            "Values written to the Redis cache, by cache",
+            cache_sets.clone(),
+        );
+
+        let http_request_db_queries =
+            Family::<RouteLabels, Histogram>::new_with_constructor(|| {
+                Histogram::new(exponential_buckets(1.0, 2.0, 10))
+            });
+        registry.register(
+            "http_request_db_queries",
+            "Database statements per request, by route template",
+            http_request_db_queries.clone(),
+        );
+
         let series = |family: &Family<CacheLabels, Counter>| {
             CacheName::ALL.map(|name| {
                 family
@@ -245,6 +286,7 @@ impl Metrics {
         };
         let hit_series = series(&cache_hits);
         let miss_series = series(&cache_misses);
+        let set_series = series(&cache_sets);
 
         let active_connections = Gauge::default();
         registry.register(
@@ -305,10 +347,10 @@ impl Metrics {
             permission_load_failures.clone(),
         );
 
-        let ai_circuit_breaker_state = Gauge::default();
+        let ai_circuit_breaker_state = Family::<AiBreakerLabels, Gauge>::default();
         registry.register(
             "trovato_circuit_breaker_ai",
-            "AI provider circuit breaker state (0=closed, 1=open, 2=half_open)",
+            "AI provider circuit breaker state by operation (0=closed, 1=open, 2=half_open)",
             ai_circuit_breaker_state.clone(),
         );
 
@@ -327,8 +369,11 @@ impl Metrics {
             db_query_duration_seconds,
             cache_hits,
             cache_misses,
+            cache_sets,
+            http_request_db_queries,
             hit_series,
             miss_series,
+            set_series,
             active_connections,
             db_pool_size,
             db_pool_idle,
@@ -387,6 +432,23 @@ impl Metrics {
         lookup
     }
 
+    /// Count the statements one request made, under its route template.
+    pub fn record_request_queries(&self, route: &str, queries: u32) {
+        self.http_request_db_queries
+            .get_or_create(&RouteLabels {
+                route: route.to_string(),
+            })
+            .observe(f64::from(queries));
+    }
+
+    /// Count one value written to the Redis cache.
+    pub fn count_cache_set(&self, cache: CacheName) {
+        if let Some(counter) = self.set_series.get(cache as usize) {
+            counter.inc();
+        }
+        crate::telemetry::profile::count_cache_set();
+    }
+
     /// Count a hit (`hit = true`) or a miss in `cache`.
     ///
     /// For a read whose result is not an `Option`; prefer
@@ -401,6 +463,21 @@ impl Metrics {
         // is the index (pinned by `cache_names_index_their_own_series`).
         if let Some(counter) = series.get(cache as usize) {
             counter.inc();
+        }
+        // The same choke point counts the lookup into the request in scope
+        // and, for an in-process cache, marks it on the enclosing span (an
+        // event, not a span: a lookup takes well under a microsecond).
+        crate::telemetry::profile::count_cache_get(hit);
+        if cache != CacheName::LayerL2 {
+            let bin = cache.as_str();
+            tracing::event!(
+                target: crate::telemetry::TARGET,
+                tracing::Level::TRACE,
+                cache.tier = "memory",
+                cache.bin = bin,
+                cache.hit = hit,
+                "cache.get"
+            );
         }
     }
 

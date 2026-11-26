@@ -20,7 +20,9 @@ RUN rustup component add clippy rustfmt \
 # Install cargo tools used in CI and development
 RUN cargo install cargo-audit --locked 2>/dev/null || true
 
-# Install Pagefind CLI for search index generation
+# Pagefind CLI, pinned: Trovato builds its index natively and needs no
+# binary, but the index gate tests and the pagefind-harness compare against it
+# (PAGEFIND_BIN or `pagefind` on PATH).
 RUN ARCH=$(dpkg --print-architecture) && \
     if [ "$ARCH" = "amd64" ]; then PF_ARCH="x86_64"; else PF_ARCH="aarch64"; fi && \
     curl -sL "https://github.com/CloudCannon/pagefind/releases/download/v1.3.0/pagefind-v1.3.0-${PF_ARCH}-unknown-linux-musl.tar.gz" \

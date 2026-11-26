@@ -141,25 +141,55 @@ pub fn is_stale(payload_hash: &str, current_hash: &str) -> bool {
 ///
 /// The job runs under the background AI principal via the native drain arm and
 /// inherits queue-v2 retry/backoff/DLQ.
-pub async fn enqueue_embed_job(pool: &PgPool, item_id: Uuid, content_hash: &str) -> Result<()> {
+///
+/// Returns `false`, enqueuing nothing, when the item no longer exists. The
+/// check holds `FOR KEY SHARE` on the item row until the job is committed, so
+/// it cannot race an item delete ([`crate::models::Item::delete_in`]): a
+/// delete already in flight makes this wait and then find no item, and a
+/// delete that starts after the lock waits for this commit and then removes
+/// the job with the item's other embed jobs.
+pub async fn enqueue_embed_job(pool: &PgPool, item_id: Uuid, content_hash: &str) -> Result<bool> {
     let payload = serde_json::to_value(EmbedJobPayload {
         item_id,
         content_hash: content_hash.to_string(),
     })
     .context("serialize embed job payload")?;
 
-    crate::host::enqueue_kernel_job(pool, KERNEL_EMBED_PLUGIN, EMBED_QUEUE_NAME, &payload, 0, 0)
+    let mut tx = pool.begin().await.context("begin embed enqueue")?;
+    let exists = sqlx::query_scalar::<_, i32>("SELECT 1 FROM item WHERE id = $1 FOR KEY SHARE")
+        .bind(item_id)
+        .fetch_optional(&mut *tx)
         .await
-        .context("enqueue embed job")?;
+        .context("lock item for embed enqueue")?
+        .is_some();
+    if !exists {
+        return Ok(false);
+    }
 
-    mark_pending(pool, item_id, content_hash).await
+    crate::host::enqueue_kernel_job(
+        &mut *tx,
+        KERNEL_EMBED_PLUGIN,
+        EMBED_QUEUE_NAME,
+        &payload,
+        0,
+        0,
+    )
+    .await
+    .context("enqueue embed job")?;
+    mark_pending(&mut *tx, item_id, content_hash).await?;
+    tx.commit().await.context("commit embed enqueue")?;
+    Ok(true)
 }
 
 /// Record that an item's embedding is queued but not yet landed. Keeps any
 /// previously-`indexed` model/timestamp (the old embedding stays findable until
 /// the new one lands) while flipping state to `pending` and clearing any prior
 /// error.
-pub async fn mark_pending(pool: &PgPool, item_id: Uuid, content_hash: &str) -> Result<()> {
+pub async fn mark_pending<'e>(
+    db: impl sqlx::PgExecutor<'e>,
+    item_id: Uuid,
+    content_hash: &str,
+) -> Result<()> {
     let now = chrono::Utc::now().timestamp();
     sqlx::query(
         r#"
@@ -175,7 +205,7 @@ pub async fn mark_pending(pool: &PgPool, item_id: Uuid, content_hash: &str) -> R
     .bind(item_id)
     .bind(content_hash)
     .bind(now)
-    .execute(pool)
+    .execute(db)
     .await
     .context("mark embed status pending")?;
     Ok(())
@@ -323,10 +353,7 @@ pub async fn enqueue_backfill(pool: &PgPool, active_model: &str, limit: i64) -> 
         if text.trim().is_empty() {
             continue;
         }
-        if enqueue_embed_job(pool, id, &embed_content_hash(&text))
-            .await
-            .is_ok()
-        {
+        if let Ok(true) = enqueue_embed_job(pool, id, &embed_content_hash(&text)).await {
             enqueued += 1;
         }
     }

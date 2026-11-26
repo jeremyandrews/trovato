@@ -22,11 +22,11 @@
                 <line x1="12" y1="3" x2="12" y2="15"/>
             </svg>
             <p class="file-upload__text">
-                <span class="file-upload__browse">Click to browse</span> or drag and drop
+                <span class="file-upload__browse">{{ t(s="Click to browse") }}</span> {{ t(s="or drag and drop") }}
             </p>
             <p class="file-upload__hint">
-                {% if element.accept %}{{ element.accept }}{% else %}Images, documents, and media{% endif %}
-                &middot; Max {{ max_size | default(value="10MB") }}
+                {% if element.accept %}{{ element.accept }}{% else %}{{ t(s="Images, documents, and media") }}{% endif %}
+                &middot; {{ t(s="Max {size}", size=max_size | default(value="10MB")) }}
             </p>
         </div>
         <div class="file-upload__dragover">
@@ -35,7 +35,7 @@
                 <polyline points="17 8 12 3 7 8"/>
                 <line x1="12" y1="3" x2="12" y2="15"/>
             </svg>
-            <p>Drop files here</p>
+            <p>{{ t(s="Drop files here") }}</p>
         </div>
     </div>
 
@@ -43,7 +43,7 @@
         <div class="file-upload__progress-bar">
             <div class="file-upload__progress-fill"></div>
         </div>
-        <span class="file-upload__progress-text">Uploading...</span>
+        <span class="file-upload__progress-text">{{ t(s="Uploading...") }}</span>
     </div>
 
     <div class="file-upload__files" data-field="{{ name }}">
@@ -66,9 +66,9 @@
             {% endif %}
             <div class="file-upload__file-info">
                 <span class="file-upload__file-name">{{ file.filename }}</span>
-                <span class="file-upload__file-size">{{ (file.filesize / 1024) | round(precision=1) }} KB</span>
+                <span class="file-upload__file-size">{{ (file.filesize / 1024) | round(precision=1) }} {{ t(s="KB") }}</span>
             </div>
-            <button type="button" class="file-upload__remove" data-file-id="{{ file.id }}" title="Remove file">&times;</button>
+            <button type="button" class="file-upload__remove" data-file-id="{{ file.id }}" title="{{ t(s='Remove file') }}">&times;</button>
         </div>
         {% endfor %}
         {% endif %}

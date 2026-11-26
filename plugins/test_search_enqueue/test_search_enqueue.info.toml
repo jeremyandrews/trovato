@@ -1,0 +1,17 @@
+name = "test_search_enqueue"
+description = "B218 fixture: a raw item write from tap_cron, then search-index-enqueue"
+version = "0.105.0"
+api_version = "0.105"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_cron"]
+weight = 0
+
+# `db` + `raw_sql` for the raw write and `search-index-enqueue`; `variables`
+# carries the step tap_cron runs and its answer; `logging` because the
+# #[plugin_tap] macro references the logging import on its error paths.
+[capabilities]
+host_interfaces = ["db", "logging", "variables"]
+raw_sql = true

@@ -25,6 +25,12 @@ const GENERATION_KEY: &str = "cache:gen";
 /// How often each server reads the counters.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
 
+/// How long a process that bumped waits before it says the servers have
+/// cleared: four polls, so a server whose poll runs a little late under load
+/// has still read the new counters. A bound, not a handshake: a server whose
+/// poller is stalled (Redis unreachable from it) still falls back to its TTLs.
+pub const SETTLE: Duration = POLL_INTERVAL.saturating_mul(4);
+
 /// The Redis this process bumps, set once when the server's state is built.
 static REDIS: OnceLock<redis::Client> = OnceLock::new();
 
@@ -97,6 +103,12 @@ impl CacheKind {
         }
     }
 
+    /// The kind named `name`, as [`as_str`](Self::as_str) spells it: how an
+    /// operator names one (`trovato cache clear --kind items`).
+    pub fn from_name(name: &str) -> Option<CacheKind> {
+        Self::ALL.into_iter().find(|k| k.as_str() == name)
+    }
+
     /// The kind whose cache holds rows of `table`, if any.
     pub fn for_table(table: &str) -> Option<CacheKind> {
         let table = table.trim_matches('"').rsplit('.').next().unwrap_or(table);
@@ -152,6 +164,17 @@ pub fn bump_all(kinds: &[CacheKind]) {
 /// which exits as soon as it is done.
 pub async fn bump_now(redis: &redis::Client, kinds: &[CacheKind]) -> anyhow::Result<()> {
     increment(redis, kinds).await
+}
+
+/// `kind`'s current counter, for a caller that wants a cheap stand-in for "has
+/// anything of this kind changed" without reading the rows themselves — a
+/// feed's `ETag` folds in the categories counter rather than re-querying every
+/// tag's label on every poll. `None` when Redis cannot be reached or the
+/// counter has never been bumped; a caller that cannot tell those apart from
+/// "unchanged" is already relying on `changed` timestamps for its exactness.
+pub async fn current(redis: &redis::Client, kind: CacheKind) -> Option<i64> {
+    let mut conn = redis.get_multiplexed_async_connection().await.ok()?;
+    conn.hget(GENERATION_KEY, kind.as_str()).await.ok()
 }
 
 async fn increment(redis: &redis::Client, kinds: &[CacheKind]) -> anyhow::Result<()> {
@@ -232,6 +255,15 @@ mod tests {
         let names: std::collections::HashSet<_> =
             CacheKind::ALL.iter().map(|k| k.as_str()).collect();
         assert_eq!(names.len(), CacheKind::ALL.len());
+    }
+
+    #[test]
+    fn every_kind_is_found_by_its_name() {
+        for kind in CacheKind::ALL {
+            assert_eq!(CacheKind::from_name(kind.as_str()), Some(kind));
+        }
+        assert_eq!(CacheKind::from_name("Items"), None);
+        assert_eq!(CacheKind::from_name(""), None);
     }
 
     #[test]

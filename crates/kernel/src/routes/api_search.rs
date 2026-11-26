@@ -4,8 +4,8 @@
 //! `POST /api/v1/search/summarize` — AI summary of search results (SSE stream).
 //! `POST /api/v1/search/followup` — Follow-up conversation (SSE stream).
 //!
-//! All endpoints require the `trovato_ai` plugin to be enabled and an AI
-//! provider configured for Chat operations.
+//! All endpoints ask for the `use ai` permission, and require the `trovato_ai`
+//! plugin to be enabled and an AI provider configured for Chat operations.
 //!
 //! Each one first reads its stage switch from the search settings
 //! ([`SearchSettings`]) and answers 404 when the stage is off, before any cache
@@ -13,22 +13,19 @@
 //! the stock page's use of it. The follow-up endpoint also enforces the turn cap
 //! there.
 
-use std::convert::Infallible;
-use std::time::Duration;
-
 use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
-use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
+use tower_sessions::Session;
 
 use crate::error::AppError;
 use crate::models::SiteConfig;
 use crate::search::analytics::Counter;
 use crate::search::{SearchSettings, normalize_query, prompts};
 use crate::services::ai_provider::{
-    AiOperationType, AiProviderService, ProviderProtocol, ResolvedProvider,
+    AiCallError, AiCaller, AiOperationType, AiProviderService, ChatRequest, ResolvedProvider,
 };
 use crate::state::AppState;
 
@@ -125,11 +122,19 @@ struct Message {
 /// Expansions are cached. `docs/design/search-architecture.md` specified a cache
 /// and none was built, so every call — including the same query typed twice —
 /// spent provider tokens.
-async fn expand_query(State(state): State<AppState>, Json(body): Json<ExpandRequest>) -> Response {
+async fn expand_query(
+    State(state): State<AppState>,
+    session: Session,
+    Json(body): Json<ExpandRequest>,
+) -> Response {
     let settings = SearchSettings::load(state.db(), state.cache()).await;
     if !settings.expand {
         return stage_off("Query expansion");
     }
+    let caller = match ai_caller(&state, &session).await {
+        Ok(caller) => caller,
+        Err(refusal) => return refusal,
+    };
 
     if body.query.trim().is_empty() {
         return AppError::bad_request("Query cannot be empty").into_response();
@@ -175,16 +180,17 @@ async fn expand_query(State(state): State<AppState>, Json(body): Json<ExpandRequ
     let system_prompt = prompts::resolve(prompts::EXPAND_QUERY, &site_name, &site_slogan);
 
     // Make the AI request
-    let Some(content) = complete(
+    let content = match complete(
         ai_providers,
         &resolved,
+        &caller,
         &system_prompt,
         &body.query,
-        Duration::from_secs(15),
     )
     .await
-    else {
-        return AppError::service_unavailable("AI", "AI request failed").into_response();
+    {
+        Ok(content) => content,
+        Err(refusal) => return refusal,
     };
 
     // Parse the expansion terms from the AI response
@@ -256,11 +262,19 @@ pub fn expansion_cache_key(query: &str, site_name: &str, site_slogan: &str) -> S
 /// Summarize search results via AI with SSE streaming.
 ///
 /// No CSRF required — read-only search enhancement.
-async fn summarize(State(state): State<AppState>, Json(body): Json<SummarizeRequest>) -> Response {
+async fn summarize(
+    State(state): State<AppState>,
+    session: Session,
+    Json(body): Json<SummarizeRequest>,
+) -> Response {
     let settings = SearchSettings::load(state.db(), state.cache()).await;
     if !settings.summarize {
         return stage_off("The search summary");
     }
+    let caller = match ai_caller(&state, &session).await {
+        Ok(caller) => caller,
+        Err(refusal) => return refusal,
+    };
 
     // Accept either structured excerpts or plain text context from scolta.js
     let context_text = if let Some(ref ctx) = body.context {
@@ -280,17 +294,25 @@ async fn summarize(State(state): State<AppState>, Json(body): Json<SummarizeRequ
         body.query, context_text
     );
 
-    json_ai_response(&state, prompts::SUMMARIZE, &user_prompt).await
+    json_ai_response(&state, &caller, prompts::SUMMARIZE, &user_prompt).await
 }
 
 /// Handle follow-up conversation via AI with SSE streaming.
 ///
 /// No CSRF required — read-only search enhancement.
-async fn followup(State(state): State<AppState>, Json(body): Json<FollowupRequest>) -> Response {
+async fn followup(
+    State(state): State<AppState>,
+    session: Session,
+    Json(body): Json<FollowupRequest>,
+) -> Response {
     let settings = SearchSettings::load(state.db(), state.cache()).await;
     if !settings.followup {
         return stage_off("Follow-up");
     }
+    let caller = match ai_caller(&state, &session).await {
+        Ok(caller) => caller,
+        Err(refusal) => return refusal,
+    };
     // The opening question plus `max_followups` follow-ups.
     if user_turns(&body) > settings.max_followups as usize + 1 {
         return AppError::bad_request(format!(
@@ -324,8 +346,14 @@ async fn followup(State(state): State<AppState>, Json(body): Json<FollowupReques
         return AppError::bad_request("Query or messages required").into_response();
     };
 
-    let response =
-        json_ai_response_with_key(&state, prompts::FOLLOW_UP, &user_prompt, "response").await;
+    let response = json_ai_response_with_key(
+        &state,
+        &caller,
+        prompts::FOLLOW_UP,
+        &user_prompt,
+        "response",
+    )
+    .await;
 
     // Classify the follow-up off the request path: queued, never awaited.
     if response.status().is_success()
@@ -398,13 +426,19 @@ fn build_excerpt_context(excerpts: &[Excerpt]) -> String {
 }
 
 /// Return an AI response as JSON with `{ summary: "..." }`.
-async fn json_ai_response(state: &AppState, prompt_template: &str, user_prompt: &str) -> Response {
-    json_ai_response_with_key(state, prompt_template, user_prompt, "summary").await
+async fn json_ai_response(
+    state: &AppState,
+    caller: &AiCaller,
+    prompt_template: &str,
+    user_prompt: &str,
+) -> Response {
+    json_ai_response_with_key(state, caller, prompt_template, user_prompt, "summary").await
 }
 
 /// Return an AI response as JSON with a custom key.
 async fn json_ai_response_with_key(
     state: &AppState,
+    caller: &AiCaller,
     prompt_template: &str,
     user_prompt: &str,
     key: &str,
@@ -425,16 +459,10 @@ async fn json_ai_response_with_key(
         .unwrap_or_default();
     let system_prompt = prompts::resolve(prompt_template, &site_name, &site_slogan);
 
-    let Some(content) = complete(
-        ai_providers,
-        &resolved,
-        &system_prompt,
-        user_prompt,
-        Duration::from_secs(30),
-    )
-    .await
-    else {
-        return AppError::service_unavailable("AI", "AI request failed").into_response();
+    let content = match complete(ai_providers, &resolved, caller, &system_prompt, user_prompt).await
+    {
+        Ok(content) => content,
+        Err(refusal) => return refusal,
     };
 
     let mut result = serde_json::Map::new();
@@ -442,191 +470,83 @@ async fn json_ai_response_with_key(
     Json(serde_json::Value::Object(result)).into_response()
 }
 
-/// Stream an AI response as SSE events (kept for future use).
-#[allow(dead_code)]
-async fn stream_ai_response(
-    state: &AppState,
-    prompt_template: &str,
-    user_prompt: &str,
-) -> Response {
-    let ai_providers = state.ai_providers();
-    let Ok(Some(resolved)) = ai_providers
-        .resolve_provider(AiOperationType::Chat, None)
-        .await
-    else {
-        return AppError::service_unavailable("AI", "AI provider not configured").into_response();
-    };
+/// The most tokens a search answer may use.
+const SEARCH_MAX_TOKENS: u32 = 500;
 
-    let site_name = SiteConfig::site_name(state.db())
-        .await
-        .unwrap_or_else(|_| "Trovato".to_string());
-    let site_slogan = SiteConfig::site_slogan(state.db())
-        .await
-        .unwrap_or_default();
-    let system_prompt = prompts::resolve(prompt_template, &site_name, &site_slogan);
+/// What the usage log records the search endpoints' calls as.
+pub(crate) const SEARCH_USAGE_SOURCE: &str = "kernel_search";
 
-    // Non-streaming request for simplicity (scolta.js handles the display)
-    let Some(content) = complete(
-        ai_providers,
-        &resolved,
-        &system_prompt,
-        user_prompt,
-        Duration::from_secs(30),
-    )
-    .await
-    else {
-        return AppError::service_unavailable("AI", "AI request failed").into_response();
-    };
-
-    // Return as SSE event (single chunk for non-streaming providers)
-    let stream = async_stream::stream! {
-        yield Ok::<_, Infallible>(
-            Event::default()
-                .event("message")
-                .data(serde_json::json!({"summary": content}).to_string()),
-        );
-    };
-
-    Sse::new(stream)
-        .keep_alive(KeepAlive::default())
-        .into_response()
+/// Who an AI search call is made for, or the refusal for a visitor who may
+/// not make one.
+///
+/// The three endpoints ask for `use ai`, as every other AI route does. A
+/// default install grants it to every role that may search (migration
+/// `20261130000001_grant_use_ai_to_searchers`), so an ordinary visitor still
+/// gets expansion, summaries and follow-ups. A signed-in person's calls count
+/// against their token budget; an anonymous visitor's against the site-level
+/// anonymous cap.
+async fn ai_caller(state: &AppState, session: &Session) -> Result<AiCaller, Response> {
+    let viewer = crate::routes::item::get_user_context(session, state).await;
+    if !viewer.can(USE_AI_PERMISSION) {
+        return Err(super::helpers::refusal_for(
+            &viewer,
+            format!("Permission required: {USE_AI_PERMISSION}"),
+        )
+        .into_response());
+    }
+    Ok(if viewer.authenticated {
+        AiCaller::user(viewer.id, SEARCH_USAGE_SOURCE)
+    } else {
+        AiCaller::anonymous(SEARCH_USAGE_SOURCE)
+    })
 }
 
-/// Send one chat completion to `resolved` and return its text.
+/// The permission the AI search endpoints ask for.
+const USE_AI_PERMISSION: &str = "use ai";
+
+/// Send one search prompt through the send path and return the answer's text,
+/// or the response the endpoint answers with instead.
 ///
-/// The one send and parse path for every AI search call: the three endpoints
-/// and the sentiment classifier. A provider error is logged through
-/// [`log_provider_failure`](crate::services::ai_provider::log_provider_failure)
-/// and a transport error at warn; both return `None`.
-pub(crate) async fn complete(
+/// For the three endpoints. A spent budget is a 429; any other failure is
+/// logged by the send path, the provider's own words included, and is a
+/// generic 503.
+async fn complete(
     ai_providers: &AiProviderService,
     resolved: &ResolvedProvider,
+    caller: &AiCaller,
     system_prompt: &str,
     user_prompt: &str,
-    timeout: Duration,
-) -> Option<String> {
-    let (url, request_body, auth_headers) =
-        build_chat_request(resolved, system_prompt, user_prompt);
-
-    let response = match ai_providers
-        .http()
-        .post(&url)
-        .timeout(timeout)
-        .header("content-type", "application/json")
-        .body(request_body)
-        .headers_from_vec(&auth_headers)
-        .send()
+) -> Result<String, Response> {
+    send_prompt(ai_providers, resolved, caller, system_prompt, user_prompt)
         .await
-    {
-        Ok(r) if r.status().is_success() => r,
-        Ok(r) => {
-            let status = r.status().as_u16();
-            let body = r.text().await.unwrap_or_default();
-            crate::services::ai_provider::log_provider_failure("search", resolved, status, &body);
-            return None;
-        }
-        Err(e) => {
-            tracing::warn!(error = %e, "AI search request failed");
-            return None;
-        }
-    };
-
-    let response_text = response.text().await.unwrap_or_default();
-    let (content, _tokens) = match resolved.config.protocol {
-        ProviderProtocol::OpenAiCompatible => parse_openai_response(&response_text),
-        ProviderProtocol::Anthropic => parse_anthropic_response(&response_text),
-    };
-    Some(content)
+        .map_err(|e| match e {
+            AiCallError::BudgetExceeded => AppError::RateLimited {
+                retry_after_secs: 3600,
+                category: "token_budget".to_string(),
+            }
+            .into_response(),
+            _ => AppError::service_unavailable("AI", e.user_message()).into_response(),
+        })
 }
 
-/// Build a non-streaming chat request for the given provider.
-///
-/// No `temperature`: nothing configures one for search, and Anthropic models
-/// newer than `claude-sonnet-4-6` answer 400 to a request that carries it.
-fn build_chat_request(
+/// Send one search prompt through the kernel's one send path, which checks the
+/// base URL and the caller's budget, applies the configured timeout and the
+/// chat breaker, and records the call's usage. For the endpoints and the
+/// sentiment classifier.
+pub(crate) async fn send_prompt(
+    ai_providers: &AiProviderService,
     resolved: &ResolvedProvider,
+    caller: &AiCaller,
     system_prompt: &str,
     user_prompt: &str,
-) -> (String, String, Vec<(String, String)>) {
-    let mut headers = Vec::new();
-
-    match resolved.config.protocol {
-        ProviderProtocol::OpenAiCompatible => {
-            let url = format!("{}/chat/completions", resolved.config.base_url);
-            if let Some(ref key) = resolved.api_key {
-                headers.push(("Authorization".to_string(), format!("Bearer {key}")));
-            }
-            let body = serde_json::json!({
-                "model": resolved.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "max_tokens": 500
-            });
-            (url, body.to_string(), headers)
+) -> Result<String, AiCallError> {
+    let request = ChatRequest::system_and_user(system_prompt, user_prompt, SEARCH_MAX_TOKENS);
+    match ai_providers.chat_once(resolved, caller, &request).await {
+        Ok(completion) => Ok(completion.text.unwrap_or_default()),
+        Err(e) => {
+            tracing::warn!(error = %e, source = %caller.source, "AI search request failed");
+            Err(e)
         }
-        ProviderProtocol::Anthropic => {
-            let url = format!("{}/messages", resolved.config.base_url);
-            if let Some(ref key) = resolved.api_key {
-                headers.push(("x-api-key".to_string(), key.clone()));
-            }
-            headers.push(("anthropic-version".to_string(), "2023-06-01".to_string()));
-            let body = serde_json::json!({
-                "model": resolved.model,
-                "system": system_prompt,
-                "messages": [
-                    {"role": "user", "content": user_prompt}
-                ],
-                "max_tokens": 500
-            });
-            (url, body.to_string(), headers)
-        }
-    }
-}
-
-/// Parse an OpenAI-compatible chat completion response.
-fn parse_openai_response(body: &str) -> (String, u32) {
-    let json: serde_json::Value = match serde_json::from_str(body) {
-        Ok(v) => v,
-        Err(_) => return (String::new(), 0),
-    };
-    let content = json["choices"]
-        .get(0)
-        .and_then(|c| c["message"]["content"].as_str())
-        .unwrap_or("")
-        .to_string();
-    let tokens = json["usage"]["total_tokens"].as_u64().unwrap_or(0) as u32;
-    (content, tokens)
-}
-
-/// Parse an Anthropic Messages API response.
-fn parse_anthropic_response(body: &str) -> (String, u32) {
-    let json: serde_json::Value = match serde_json::from_str(body) {
-        Ok(v) => v,
-        Err(_) => return (String::new(), 0),
-    };
-    let content = json["content"]
-        .get(0)
-        .and_then(|c| c["text"].as_str())
-        .unwrap_or("")
-        .to_string();
-    let input = json["usage"]["input_tokens"].as_u64().unwrap_or(0);
-    let output = json["usage"]["output_tokens"].as_u64().unwrap_or(0);
-    (content, (input + output) as u32)
-}
-
-/// Extension trait to add headers from a Vec to a reqwest RequestBuilder.
-trait RequestBuilderExt {
-    fn headers_from_vec(self, headers: &[(String, String)]) -> Self;
-}
-
-impl RequestBuilderExt for reqwest::RequestBuilder {
-    fn headers_from_vec(mut self, headers: &[(String, String)]) -> Self {
-        for (key, value) in headers {
-            self = self.header(key.as_str(), value.as_str());
-        }
-        self
     }
 }
 
@@ -635,6 +555,7 @@ impl RequestBuilderExt for reqwest::RequestBuilder {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+    use crate::services::ai_provider::ProviderProtocol;
 
     fn resolved(protocol: ProviderProtocol) -> crate::services::ai_provider::ResolvedProvider {
         crate::services::ai_provider::ResolvedProvider {
@@ -661,8 +582,9 @@ mod tests {
             ProviderProtocol::Anthropic,
             ProviderProtocol::OpenAiCompatible,
         ] {
-            let (_, body, _) = build_chat_request(&resolved(protocol), "sys", "user");
-            let body: serde_json::Value = serde_json::from_str(&body).unwrap();
+            let request = ChatRequest::system_and_user("sys", "user", SEARCH_MAX_TOKENS);
+            let (_, body, _) =
+                crate::services::ai_tools::build_chat_request(&resolved(protocol), &request, false);
             assert!(body.get("temperature").is_none(), "{protocol:?}: {body}");
         }
     }

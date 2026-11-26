@@ -22,6 +22,15 @@
 //! uses (`routes::owned_vocabulary`), and refuses an item reference field
 //! limited to the item's owner (a field setting, [`OwnerLimit`]) a term from
 //! any other vocabulary ([`TermsNotOwned`]).
+//!
+//! Reading is narrower than it was (B189). The category read paths (the
+//! category and tag API, the MCP category tools, a gather term page or feed
+//! argument, a gather's category filter, `/topics`) show an owned vocabulary
+//! and its terms only to someone [`visibility`] admits: a holder of
+//! `administer categories` or the site administrator, a holder of the owner's
+//! declared permission, or a user the owner's plugin answers `grant` for the
+//! [`VIEW`] operation. Anyone else gets what a missing vocabulary gives, a 404
+//! or nothing. A site-wide vocabulary reads exactly as before.
 
 use std::collections::{HashMap, HashSet};
 
@@ -40,6 +49,17 @@ pub const ACCESS_TAP: &str = "tap_vocabulary_owner_access";
 /// The operation [`AccessRequest::operation`] names: everything the owner
 /// route does (list the vocabularies, list, add, edit and delete terms).
 pub const ADMINISTER_TERMS: &str = "administer terms";
+
+/// The read operation (B189): may this user read the owner's vocabularies
+/// and their terms on the category read routes. For it,
+/// [`AccessRequest::owner_key`] is the stored owner id, not a route segment,
+/// and only an answer of `grant` naming that same id admits; a plugin that
+/// does not answer, or answers anything else, leaves the vocabulary hidden
+/// (see [`decide_view`]).
+pub const VIEW: &str = "view";
+
+/// The site permission whose holders administer, and read, every vocabulary.
+pub const ADMINISTER_CATEGORIES: &str = "administer categories";
 
 /// The path segment the owner fills in an owner route.
 pub const OWNER_SEGMENT: &str = "{owner}";
@@ -331,7 +351,7 @@ pub struct AccessRequest {
     pub owner_type: String,
     /// The `{owner}` path segment as requested.
     pub owner_key: String,
-    /// [`ADMINISTER_TERMS`].
+    /// [`ADMINISTER_TERMS`] on an owner route, or [`VIEW`] on a read route.
     pub operation: String,
     pub user_id: Uuid,
     pub authenticated: bool,
@@ -409,42 +429,274 @@ pub async fn check_access(
     if !user.authenticated {
         return OwnerAccess::Denied;
     }
+    match ask_owner_plugin(state, owner, owner_key, ADMINISTER_TERMS, user).await {
+        Ok(answer) => decide(owner, user, answer, owner_key),
+        Err(()) => OwnerAccess::Denied,
+    }
+}
+
+/// Ask the plugin that declared `owner` its `tap_vocabulary_owner_access`
+/// answer for `operation`. `Ok(None)` when it does not implement the tap;
+/// `Err` when the call failed or the answer did not parse, which every caller
+/// treats as a refusal.
+async fn ask_owner_plugin(
+    state: &crate::state::AppState,
+    owner: &RegisteredOwner,
+    owner_key: &str,
+    operation: &str,
+    user: &UserContext,
+) -> Result<Option<AccessAnswer>, ()> {
     let request = AccessRequest {
         owner_type: owner.decl.owner_type.clone(),
         owner_key: owner_key.to_string(),
-        operation: ADMINISTER_TERMS.to_string(),
+        operation: operation.to_string(),
         user_id: user.id,
         authenticated: user.authenticated,
     };
-    let Ok(payload) = serde_json::to_string(&request) else {
-        return OwnerAccess::Denied;
-    };
+    let payload = serde_json::to_string(&request).map_err(|_| ())?;
     let tap_state = crate::tap::RequestState::new(user.clone(), state.tap_services().clone());
-    let answer = match state
+    match state
         .tap_dispatcher()
         .dispatch_to_plugin_outcome(ACCESS_TAP, &payload, &owner.plugin, tap_state)
         .await
     {
         crate::tap::DispatchOutcome::Ok(result) => {
             match serde_json::from_str::<AccessAnswer>(&result.output) {
-                Ok(answer) => Some(answer),
+                Ok(answer) => Ok(Some(answer)),
                 Err(e) => {
                     tracing::warn!(
                         plugin = %owner.plugin,
                         error = %e,
                         "tap_vocabulary_owner_access returned an unparseable answer"
                     );
-                    return OwnerAccess::Denied;
+                    Err(())
                 }
             }
         }
-        crate::tap::DispatchOutcome::NoHandler => None,
+        crate::tap::DispatchOutcome::NoHandler => Ok(None),
         _ => {
             tracing::warn!(plugin = %owner.plugin, "tap_vocabulary_owner_access failed");
-            return OwnerAccess::Denied;
+            Err(())
         }
+    }
+}
+
+// -------------------------------------------------------------------------
+// Who may read an owned vocabulary (B189)
+// -------------------------------------------------------------------------
+
+/// Whether `user` may read every vocabulary, owned or not, without asking
+/// any plugin: a site administrator or a holder of `administer categories`.
+pub fn sees_every_vocabulary(user: &UserContext) -> bool {
+    user.can(ADMINISTER_CATEGORIES)
+}
+
+/// The read rule for one owned vocabulary, given the owner's declaration
+/// (`None` when no loaded plugin declares its owner type) and the plugin's
+/// answer to a [`VIEW`] request (`None` when it gave none).
+///
+/// Visible to whoever [`sees_every_vocabulary`], to a holder of the owner's
+/// declared permission (they administer every owner's terms), and to a user
+/// the owner's plugin answers `grant` for this very owner id. Anything else
+/// refuses: no answer, `neutral`, `deny`, an answer naming another owner, an
+/// owner type nobody declares. Unlike [`decide`], an anonymous user is not
+/// refused outright: a plugin may grant a public group's vocabulary to
+/// everyone.
+pub fn decide_view(
+    owner: Option<&RegisteredOwner>,
+    user: &UserContext,
+    answer: Option<AccessAnswer>,
+    owner_id: &str,
+) -> bool {
+    if sees_every_vocabulary(user) {
+        return true;
+    }
+    let Some(owner) = owner else {
+        return false;
     };
-    decide(owner, user, answer, owner_key)
+    if declared_permission_held(owner, user) {
+        return true;
+    }
+    answer.is_some_and(|a| a.access == "grant" && a.owner_id.as_deref() == Some(owner_id))
+}
+
+/// Whether `user` holds the permission `owner`'s declaration names.
+fn declared_permission_held(owner: &RegisteredOwner, user: &UserContext) -> bool {
+    owner
+        .decl
+        .permission
+        .as_deref()
+        .is_some_and(|p| user.has_permission(p))
+}
+
+/// Which owners' vocabularies one user may read, decided once per owner.
+///
+/// A site-wide vocabulary (no owner) is always visible, to everyone who may
+/// read categories at all, exactly as before owners existed.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VocabularyVisibility {
+    every_owner: bool,
+    owners: HashSet<(String, String)>,
+}
+
+impl VocabularyVisibility {
+    /// Every vocabulary is visible.
+    pub fn everything() -> Self {
+        Self {
+            every_owner: true,
+            owners: HashSet::new(),
+        }
+    }
+
+    /// Whether every owned vocabulary is visible.
+    pub fn sees_every_owner(&self) -> bool {
+        self.every_owner
+    }
+
+    /// Whether a vocabulary with this owner (`Category::owner`) is visible.
+    pub fn sees(&self, owner: Option<(&str, &str)>) -> bool {
+        match owner {
+            None => true,
+            Some((owner_type, owner_id)) => {
+                self.every_owner
+                    || self
+                        .owners
+                        .contains(&(owner_type.to_string(), owner_id.to_string()))
+            }
+        }
+    }
+
+    /// Whether `category` is visible.
+    pub fn sees_category(&self, category: &Category) -> bool {
+        self.sees(category.owner())
+    }
+
+    /// The visible owners as two parallel arrays, owner types and owner ids,
+    /// for an `unnest($1::text[], $2::text[])` filter.
+    pub fn owner_arrays(&self) -> (Vec<String>, Vec<String>) {
+        self.owners.iter().cloned().unzip()
+    }
+}
+
+/// Decide which of `candidates` (`(owner_type, owner_id)` pairs) `user` may
+/// read: no plugin call at all for someone who [`sees_every_vocabulary`] or
+/// for a holder of an owner's declared permission, and otherwise one
+/// `tap_vocabulary_owner_access` call per distinct owner, never per row.
+pub async fn visibility(
+    state: &crate::state::AppState,
+    user: &UserContext,
+    candidates: impl IntoIterator<Item = (String, String)>,
+) -> VocabularyVisibility {
+    if sees_every_vocabulary(user) {
+        return VocabularyVisibility::everything();
+    }
+    let candidates: HashSet<(String, String)> = candidates.into_iter().collect();
+    if candidates.is_empty() {
+        return VocabularyVisibility::default();
+    }
+    let registered = owners_of(state.plugin_runtime());
+    let mut owners = HashSet::new();
+    for (owner_type, owner_id) in candidates {
+        let owner = registered.iter().find(|o| o.decl.owner_type == owner_type);
+        let visible = match owner {
+            None => decide_view(None, user, None, &owner_id),
+            Some(owner) if declared_permission_held(owner, user) => true,
+            Some(owner) => match ask_owner_plugin(state, owner, &owner_id, VIEW, user).await {
+                Ok(answer) => decide_view(Some(owner), user, answer, &owner_id),
+                Err(()) => false,
+            },
+        };
+        if visible {
+            owners.insert((owner_type, owner_id));
+        }
+    }
+    VocabularyVisibility {
+        every_owner: false,
+        owners,
+    }
+}
+
+/// Whether `user` may read `category` and its terms: the rule every category
+/// read path applies, a site-wide vocabulary always, an owned one by
+/// [`visibility`].
+pub async fn may_view(
+    state: &crate::state::AppState,
+    user: &UserContext,
+    category: &Category,
+) -> bool {
+    match category.owner() {
+        None => true,
+        Some((owner_type, owner_id)) => visibility(
+            state,
+            user,
+            [(owner_type.to_string(), owner_id.to_string())],
+        )
+        .await
+        .sees(category.owner()),
+    }
+}
+
+/// The vocabularies `user` may read, in the order `Category::list` gives:
+/// everything for someone who [`sees_every_vocabulary`] (the same query as
+/// before), otherwise the site-wide vocabularies and the visible owners',
+/// filtered in SQL so a pager over the result counts what the user sees.
+pub async fn visible_categories(
+    state: &crate::state::AppState,
+    user: &UserContext,
+) -> Result<Vec<Category>> {
+    if sees_every_vocabulary(user) {
+        return state.categories().list_categories().await;
+    }
+    let owners = Category::owners(state.db()).await?;
+    let visible = visibility(state, user, owners).await;
+    let (owner_types, owner_ids) = visible.owner_arrays();
+    Category::list_visible(state.db(), &owner_types, &owner_ids).await
+}
+
+/// The vocabulary `id` if it exists and `user` may read it; `None` for both
+/// a missing vocabulary and a hidden one, so a caller answers both alike.
+pub async fn visible_category(
+    state: &crate::state::AppState,
+    user: &UserContext,
+    id: &str,
+) -> Result<Option<Category>> {
+    let Some(category) = state.categories().get_category(id).await? else {
+        return Ok(None);
+    };
+    Ok(may_view(state, user, &category).await.then_some(category))
+}
+
+/// Keep the terms of `tags` whose vocabulary `user` may read: one category
+/// lookup per distinct vocabulary and one [`visibility`] decision for them
+/// all.
+pub async fn visible_terms<T>(
+    state: &crate::state::AppState,
+    user: &UserContext,
+    tags: Vec<T>,
+    category_of: impl Fn(&T) -> &str,
+) -> Result<Vec<T>> {
+    if sees_every_vocabulary(user) || tags.is_empty() {
+        return Ok(tags);
+    }
+    let ids: HashSet<String> = tags.iter().map(|t| category_of(t).to_string()).collect();
+    let mut owner_of: HashMap<String, Option<(String, String)>> = HashMap::new();
+    for id in ids {
+        let owner = state
+            .categories()
+            .get_category(&id)
+            .await?
+            .and_then(|c| c.owner().map(|(t, o)| (t.to_string(), o.to_string())));
+        owner_of.insert(id, owner);
+    }
+    let visible = visibility(state, user, owner_of.values().flatten().cloned()).await;
+    Ok(tags
+        .into_iter()
+        .filter(|t| {
+            owner_of.get(category_of(t)).is_some_and(|owner| {
+                visible.sees(owner.as_ref().map(|(t, o)| (t.as_str(), o.as_str())))
+            })
+        })
+        .collect())
 }
 
 /// An item reference field limited to vocabularies its item's owner owns,
@@ -746,6 +998,57 @@ mod tests {
             granted,
             "no tap: the key is the id"
         );
+    }
+
+    #[test]
+    fn reading_an_owned_vocabulary_needs_a_grant_for_that_owner() {
+        let owner = RegisteredOwner {
+            plugin: "p".into(),
+            decl: decl(
+                "group",
+                "/group/{owner}/categories",
+                Some("administer group terms"),
+            ),
+        };
+        let anon = UserContext::anonymous();
+        let plain = UserContext::authenticated(Uuid::now_v7(), vec![]);
+        let holder =
+            UserContext::authenticated(Uuid::now_v7(), vec!["administer group terms".into()]);
+        let categories =
+            UserContext::authenticated(Uuid::now_v7(), vec![ADMINISTER_CATEGORIES.into()]);
+        let answer = |id: &str, access: &str| {
+            Some(AccessAnswer {
+                owner_id: Some(id.to_string()),
+                access: access.to_string(),
+            })
+        };
+        let o = Some(&owner);
+
+        // The safe default: no answer, neutral or deny hides it.
+        assert!(
+            !decide_view(o, &plain, None, "g1"),
+            "a plugin that does not answer"
+        );
+        assert!(!decide_view(o, &plain, answer("g1", "neutral"), "g1"));
+        assert!(!decide_view(o, &plain, answer("g1", "deny"), "g1"));
+        assert!(!decide_view(o, &anon, None, "g1"));
+        // A grant admits, anonymous included, but only for the owner asked.
+        assert!(decide_view(o, &plain, answer("g1", "grant"), "g1"));
+        assert!(decide_view(o, &anon, answer("g1", "grant"), "g1"));
+        assert!(!decide_view(o, &plain, answer("g2", "grant"), "g1"));
+        // The declared permission and administer categories see every owner's.
+        assert!(decide_view(o, &holder, None, "g1"));
+        assert!(decide_view(o, &categories, answer("g1", "deny"), "g1"));
+        // An owner type nobody declares: only administer categories.
+        assert!(!decide_view(None, &holder, answer("g1", "grant"), "g1"));
+        assert!(decide_view(None, &categories, None, "g1"));
+
+        let mut visible = VocabularyVisibility::default();
+        visible.owners.insert(("group".into(), "g1".into()));
+        assert!(visible.sees(None), "a site-wide vocabulary");
+        assert!(visible.sees(Some(("group", "g1"))));
+        assert!(!visible.sees(Some(("group", "g2"))));
+        assert!(VocabularyVisibility::everything().sees(Some(("group", "g2"))));
     }
 
     #[test]

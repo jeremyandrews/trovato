@@ -1,26 +1,29 @@
+{# Links come from the kernel (pager.links, pager.prev_url, pager.next_url):
+   only it knows whether this gather's pager counts ?page= from 0 the way the
+   Drupal listing it replaces did, or from 1. #}
 <nav class="pager" aria-label="Pagination">
     <ul class="pager__items">
-        {% if pager.current_page > 1 %}
+        {% if pager.prev_url %}
         <li class="pager__item pager__item--previous">
-            <a href="{{ pager.page_url_prefix }}page={{ pager.current_page - 1 }}">Previous</a>
+            <a href="{{ pager.prev_url }}" rel="prev">Previous</a>
         </li>
         {% endif %}
 
-        {% for page in pager.pages %}
-        <li class="pager__item{% if page == pager.current_page %} pager__item--active{% endif %}">
-            {% if page == pager.current_page %}
-            <span aria-current="page">{{ page }}</span>
-            {% elif page == "..." %}
+        {% for link in pager.links %}
+        <li class="pager__item{% if link.current %} pager__item--active{% endif %}">
+            {% if link.current %}
+            <span aria-current="page">{{ link.page }}</span>
+            {% elif link.ellipsis %}
             <span class="pager__ellipsis">...</span>
             {% else %}
-            <a href="{{ pager.page_url_prefix }}page={{ page }}">{{ page }}</a>
+            <a href="{{ link.url }}">{{ link.page }}</a>
             {% endif %}
         </li>
         {% endfor %}
 
-        {% if pager.current_page < pager.total_pages %}
+        {% if pager.next_url %}
         <li class="pager__item pager__item--next">
-            <a href="{{ pager.page_url_prefix }}page={{ pager.current_page + 1 }}">Next</a>
+            <a href="{{ pager.next_url }}" rel="next">Next</a>
         </li>
         {% endif %}
     </ul>

@@ -146,7 +146,26 @@ async fn mail_user_query(app: &TestApp, query: &str) -> (serde_json::Value, Stri
     assert_eq!(response.status(), StatusCode::OK);
     let text = text_body(response).await;
     let json = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
+    deliver_queued(app).await;
     (json, text)
+}
+
+/// Send what this plugin queued (BG18: plugin mail is queued, and a worker
+/// sends it). The plugin's category names its rows, and its recipients are
+/// this binary's own members.
+async fn deliver_queued(app: &TestApp) {
+    if app.state.email().is_none() {
+        return;
+    }
+    let recipients: Vec<String> = sqlx::query_scalar(
+        "SELECT DISTINCT recipient FROM mail_outbox WHERE category = $1 AND status = 'queued'",
+    )
+    .bind(format!("plugin:{PLUGIN}"))
+    .fetch_all(&app.db)
+    .await
+    .unwrap();
+    let recipients: Vec<&str> = recipients.iter().map(String::as_str).collect();
+    app.deliver_mail_to(&recipients).await;
 }
 
 fn messages_for(sink: &SmtpSink, subject: &str) -> Vec<Envelope> {
@@ -235,7 +254,7 @@ fn a_member_is_mailed_with_an_unsubscribe_link_and_headers() {
     common::run_test(async {
         let fixture = capable();
         let app = &fixture.app;
-        let _guard = BUCKET_LOCK.lock().await;
+        common::hold_until_cleanup(BUCKET_LOCK.lock().await);
         let (user, address) = member(app, "bl94-send").await;
         reset_buckets(app, user).await;
         let subject = subject("MemberNotice");
@@ -252,7 +271,12 @@ fn a_member_is_mailed_with_an_unsubscribe_link_and_headers() {
         let message = &messages[0];
         assert_eq!(message.recipients, vec![address.clone()]);
         let data = unfolded(message);
-        assert!(data.contains(&format!("From: {SITE_FROM}")), "{data}");
+        assert!(
+            data.lines()
+                .any(|l| l.starts_with("From: ")
+                    && l.trim_end().ends_with(&format!("<{SITE_FROM}>"))),
+            "{data}"
+        );
         assert!(data.contains("Hello member"), "{data}");
         let path = unsubscribe_path(message);
         let header_line = data
@@ -277,6 +301,10 @@ fn without_the_capability_the_send_is_denied() {
     common::run_test(async {
         let fixture = without_capability();
         let app = &fixture.app;
+        // Held although this test queues nothing: its call still drains what
+        // this plugin queued, and must not send another test's row to this
+        // fixture's sink.
+        common::hold_until_cleanup(BUCKET_LOCK.lock().await);
         let (user, _) = member(app, "bl94-denied").await;
         let subject = subject("Denied");
 
@@ -294,7 +322,7 @@ fn an_unknown_blocked_or_addressless_user_is_unavailable() {
     common::run_test(async {
         let fixture = capable();
         let app = &fixture.app;
-        let _guard = BUCKET_LOCK.lock().await;
+        common::hold_until_cleanup(BUCKET_LOCK.lock().await);
         let (blocked, _) = member(app, "bl94-blocked").await;
         sqlx::query("UPDATE users SET status = 0 WHERE id = $1")
             .bind(blocked)
@@ -336,7 +364,7 @@ fn a_malformed_message_is_refused_as_send_to_site_contacts_refuses_it() {
     common::run_test(async {
         let fixture = capable();
         let app = &fixture.app;
-        let _guard = BUCKET_LOCK.lock().await;
+        common::hold_until_cleanup(BUCKET_LOCK.lock().await);
         let (user, _) = member(app, "bl94-invalid").await;
         reset_buckets(app, user).await;
 
@@ -388,7 +416,7 @@ fn the_per_recipient_and_per_plugin_buckets_refuse_past_their_limits() {
     common::run_test(async {
         let fixture = capable();
         let app = &fixture.app;
-        let _guard = BUCKET_LOCK.lock().await;
+        common::hold_until_cleanup(BUCKET_LOCK.lock().await);
         let limiter = app.state.rate_limiter();
         let (user, _) = member(app, "bl94-bucket").await;
         reset_buckets(app, user).await;
@@ -434,7 +462,7 @@ fn the_unsubscribe_link_confirms_on_get_and_opts_out_on_post() {
     common::run_test(async {
         let fixture = capable();
         let app = &fixture.app;
-        let _guard = BUCKET_LOCK.lock().await;
+        common::hold_until_cleanup(BUCKET_LOCK.lock().await);
         let (user, _) = member(app, "bl94-unsub").await;
         reset_buckets(app, user).await;
         let first = subject("BeforeOptOut");
@@ -537,7 +565,7 @@ fn the_profile_page_lists_opt_outs_and_resubscribes() {
     common::run_test(async {
         let fixture = capable();
         let app = &fixture.app;
-        let _guard = BUCKET_LOCK.lock().await;
+        common::hold_until_cleanup(BUCKET_LOCK.lock().await);
         let name = common::username("bl94-profile");
         let mail = format!("{name}@member.bl94.example.test");
         let cookies = app
@@ -632,7 +660,7 @@ fn deleting_the_user_deletes_their_rows() {
     common::run_test(async {
         let fixture = capable();
         let app = &fixture.app;
-        let _guard = BUCKET_LOCK.lock().await;
+        common::hold_until_cleanup(BUCKET_LOCK.lock().await);
         let (user, _) = member(app, "bl94-delete").await;
         reset_buckets(app, user).await;
         let (json, _) = mail_user(app, &user.to_string(), &subject("Delete"), "body").await;

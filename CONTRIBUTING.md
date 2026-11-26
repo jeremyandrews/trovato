@@ -1,7 +1,7 @@
 # Contributing to Trovato
 
 <!-- version:begin -->
-Trovato is at 0.107.0 and the work between here and 1.0 is happening in public.
+Trovato is at 0.105.0 and the work between here and 1.0 is happening in public.
 <!-- version:end -->
 [ROADMAP.md](ROADMAP.md) says what that work is, and the admin screens listed
 there are the most approachable place to start.
@@ -120,6 +120,16 @@ CI's `Changelog Fragment` job fails a pull request that changes anything under
 `changelog.d/README.md` has the full format, including the optional `Category:`
 header, and `scripts/changelog-fold.sh` is what the release runs.
 
+## Performance tests
+
+A change that makes a page run more statements, cache lookups or plugin calls
+fails `performance_test` until the expected counts change in the same commit.
+[docs/performance-tests.md](docs/performance-tests.md) covers writing one,
+reading a failure and recording new counts. To see where in a request the
+work happens, [Reading a trace](docs/tracing.md#reading-a-trace) in
+`docs/tracing.md` shows how to run the local trace viewer and read a page's
+trace.
+
 ## Coding standards
 
 The full reference is [docs/coding-standards.md](docs/coding-standards.md). The
@@ -168,6 +178,14 @@ Trovato has one version number, and everything carries it: the kernel, the SDK,
 every plugin, every manifest, and the plugin API tuple. Do not bump one of them
 on its own. [docs/design/version-map.md](docs/design/version-map.md) lists every
 place that moves together.
+
+The version in `Cargo.toml` is the next release, not a count of changes. A
+pull request raises it only when it still equals the newest `v*` tag, which
+makes that pull request the first change after a release; once raised it is
+never raised again before it is tagged. A new host function or manifest key
+belongs to the version `main` already heads for. A change that would need a
+MAJOR while `main` heads for a MINOR is a stop for the maintainer, not a second
+bump. `scripts/version-check.sh` enforces this in CI.
 
 ## Releases
 

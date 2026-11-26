@@ -18,6 +18,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "320119579fcad9c21884f5c4861d16174d0e06250625266f50fe6898340abefa"
 
 [[package]]
+name = "ahash"
+version = "0.8.13"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0fca89247609239eeb6915e6991111866b92d7b31025e69302bbf430cc4d2c38"
+dependencies = [
+ "cfg-if",
+ "getrandom 0.4.3",
+ "once_cell",
+ "version_check",
+ "zerocopy",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -56,7 +69,7 @@ version = "4.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b34ca49e407c06daac53f0c4debe8ff5df9cc2a4e9369d164a5d86ef8c219319"
 dependencies = [
- "cssparser",
+ "cssparser 0.38.0",
  "html5ever",
  "maplit",
  "url",
@@ -363,7 +376,7 @@ dependencies = [
  "http-body-util",
  "hyper",
  "hyper-util",
- "itoa",
+ "itoa 1.0.19",
  "matchit",
  "memchr",
  "mime",
@@ -742,10 +755,25 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be95d4a884358a21a199689323c29e9256b4a1b315e22f183d155422041d3a9a"
 
 [[package]]
-name = "cookie"
-version = "0.18.2"
+name = "convert_case"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1a373e3602691c3cdea496d2f0ee5935151e6168fe87739483c463db1b2f2f87"
+checksum = "6245d59a3e82a7fc217c5828a6692dbc6dfb63a0c8c90495621f7b9d79704a0e"
+
+[[package]]
+name = "convert_case"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ec182b0ca2f35d8fc196cf3404988fd8b8c739a4d270ff118a398feb0cbec1ca"
+dependencies = [
+ "unicode-segmentation",
+]
+
+[[package]]
+name = "cookie"
+version = "0.18.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d55f2d6c30eeec7d5c6f98bd4395d4abb1895629eab97ee6522d340623615f8a"
 dependencies = [
  "percent-encoding",
  "time",
@@ -1063,13 +1091,40 @@ dependencies = [
 
 [[package]]
 name = "cssparser"
+version = "0.27.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "754b69d351cdc2d8ee09ae203db831e005560fc6030da058f86ad60c92a9cb0a"
+dependencies = [
+ "cssparser-macros",
+ "dtoa-short",
+ "itoa 0.4.8",
+ "matches",
+ "phf 0.8.0",
+ "proc-macro2",
+ "quote",
+ "smallvec",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "cssparser"
 version = "0.38.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11119743ad110e8c1bdccd930d7f5c30c99e5fc76a7b63ec9807e84eef0c5f59"
 dependencies = [
  "dtoa-short",
- "itoa",
+ "itoa 1.0.19",
  "smallvec",
+]
+
+[[package]]
+name = "cssparser-macros"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13b588ba4ac1a99f7f2964d24b3d896ddc6bf847ee3855dbd4366f058cfcd331"
+dependencies = [
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -1202,6 +1257,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "derive_more"
+version = "0.99.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6edb4b64a43d977b8e99788fe3a04d483834fba1215a7e02caa415b626497f7f"
+dependencies = [
+ "convert_case 0.4.0",
+ "proc-macro2",
+ "quote",
+ "rustc_version",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "deunicode"
 version = "1.6.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1325,6 +1393,15 @@ name = "embedded-io"
 version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
+
+[[package]]
+name = "emojis"
+version = "0.6.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "99e1f1df1f181f2539bac8bf027d31ca5ffbf9e559e3f2d09413b9107b5c02f4"
+dependencies = [
+ "phf 0.11.3",
+]
 
 [[package]]
 name = "encoding_rs"
@@ -1455,7 +1532,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
- "siphasher",
+ "siphasher 1.0.4",
  "url",
  "uuid",
 ]
@@ -1676,6 +1753,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "fxhash"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c31b6d751ae2c7f11320402d34e41349dd1016f8d5d45e48c4312bc8625af50c"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "fxprof-processed-profile"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1701,6 +1787,17 @@ dependencies = [
 
 [[package]]
 name = "getrandom"
+version = "0.1.16"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8fc3cb4d91f53b50155bdcfd23f6a4c39ae1969c2ae85982b135750cccaf5fce"
+dependencies = [
+ "cfg-if",
+ "libc",
+ "wasi 0.9.0+wasi-snapshot-preview1",
+]
+
+[[package]]
+name = "getrandom"
 version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
@@ -1708,7 +1805,7 @@ dependencies = [
  "cfg-if",
  "js-sys",
  "libc",
- "wasi",
+ "wasi 0.11.1+wasi-snapshot-preview1",
  "wasm-bindgen",
 ]
 
@@ -1731,9 +1828,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 6.0.0",
  "rand_core 0.10.1",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1784,7 +1883,7 @@ dependencies = [
 
 [[package]]
 name = "goose"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -1819,6 +1918,15 @@ dependencies = [
  "cfg-if",
  "crunchy",
  "zerocopy",
+]
+
+[[package]]
+name = "hashbrown"
+version = "0.13.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "43a3c133739dddd0d2990f9a4bdf8eb4b21ef50e4851ca85ab661199821d510e"
+dependencies = [
+ "ahash",
 ]
 
 [[package]]
@@ -1915,6 +2023,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "html-escape"
+version = "0.2.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c9356095b4b41197bba32173600e1582792cda618f65d12f68e2e77d273413c5"
+
+[[package]]
 name = "html5ever"
 version = "0.40.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1932,7 +2046,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "918d3568bebf352712bc2ef3d46a8bcf1a75b373be6539de198e9105cbbf9ce0"
 dependencies = [
  "bytes",
- "itoa",
+ "itoa 1.0.19",
 ]
 
 [[package]]
@@ -2003,7 +2117,7 @@ dependencies = [
  "http-body",
  "httparse",
  "httpdate",
- "itoa",
+ "itoa 1.0.19",
  "pin-project-lite",
  "smallvec",
  "tokio",
@@ -2338,6 +2452,12 @@ dependencies = [
 
 [[package]]
 name = "itoa"
+version = "0.4.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b71991ff56294aa922b450139ee08b3bfc70982c6b2c7562771375cf73542dd4"
+
+[[package]]
+name = "itoa"
 version = "1.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
@@ -2403,6 +2523,12 @@ name = "lazy_static"
 version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20870f649af7073d53e38067b2a84312175d56ea15217e1b15bc83506ec50afb"
+
+[[package]]
+name = "lazycell"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
 
 [[package]]
 name = "leb128fmt"
@@ -2529,6 +2655,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5d15f86d12da44cd8d4ec3c73984537eb7f4cadcb9776a575a0a8a05ca11005c"
 
 [[package]]
+name = "lol_html"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1610d7994d67a05bb35861cd733b069b1171de8693bc8452849c59361a1bb87b"
+dependencies = [
+ "bitflags 2.13.2",
+ "cfg-if",
+ "cssparser 0.27.2",
+ "encoding_rs",
+ "hashbrown 0.13.2",
+ "lazy_static",
+ "lazycell",
+ "memchr",
+ "mime",
+ "safemem",
+ "selectors",
+ "thiserror 1.0.69",
+]
+
+[[package]]
 name = "loop9"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2568,6 +2714,12 @@ checksum = "d1525a2a28c7f4fa0fc98bb91ae755d1e2d1505079e05539e35bc876b5d65ae9"
 dependencies = [
  "regex-automata",
 ]
+
+[[package]]
+name = "matches"
+version = "0.1.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2532096657941c2fea9c289d370a250971c689d4f143798ff67113ec042024a5"
 
 [[package]]
 name = "matchit"
@@ -2626,6 +2778,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d5848f5a9e8117cf94f2f90faac24a87ff81600ff8628c1e3deaab572e76bfa1"
 
 [[package]]
+name = "minicbor"
+version = "0.19.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d7005aaf257a59ff4de471a9d5538ec868a21586534fff7f85dd97d4043a6139"
+dependencies = [
+ "minicbor-derive",
+]
+
+[[package]]
+name = "minicbor-derive"
+version = "0.13.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1154809406efdb7982841adb6311b3d095b46f78342dd646736122fe6b19e267"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2658,7 +2830,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20521a903f02b0a573cd6840e9d0a5a0cc043d361fe924092cd70f8556cc9c4a"
 dependencies = [
  "libc",
- "wasi",
+ "wasi 0.11.1+wasi-snapshot-preview1",
  "windows-sys 0.61.2",
 ]
 
@@ -2768,6 +2940,12 @@ checksum = "418abd1b6d34fbf6cae440dc874771b0525a604428704c76e48b29a5e67b8003"
 dependencies = [
  "memchr",
 ]
+
+[[package]]
+name = "nodrop"
+version = "0.1.14"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72ef4a56884ca558e5ddb05a1d1e7e1bfd9a68d9ed024c21704cc98872dae1bb"
 
 [[package]]
 name = "nom"
@@ -2985,6 +3163,83 @@ dependencies = [
 ]
 
 [[package]]
+name = "opentelemetry"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c1f1a6ac9c875a4941e4c7c085b61e8f4daa326de03b4701768c3491a6ad9ee"
+dependencies = [
+ "futures-core",
+ "futures-sink",
+ "js-sys",
+ "pin-project-lite",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "opentelemetry-http"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "302249bd8ee804789faaa7b5b2cbf79bc61cb864714079c644e3828af5b7e811"
+dependencies = [
+ "async-trait",
+ "bytes",
+ "http",
+ "opentelemetry",
+ "reqwest 0.13.5",
+]
+
+[[package]]
+name = "opentelemetry-otlp"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0756af24841e367128ef31c831999937b8b5c5197d47914590d8f4e2e88c2e1a"
+dependencies = [
+ "http",
+ "httpdate",
+ "opentelemetry",
+ "opentelemetry-http",
+ "opentelemetry-proto",
+ "opentelemetry_sdk",
+ "prost",
+ "reqwest 0.13.5",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "opentelemetry-proto"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d576f5dddc3299341bcd85a04be17b2564844c0c9563214f02d85f2524d1afae"
+dependencies = [
+ "opentelemetry",
+ "opentelemetry_sdk",
+ "prost",
+]
+
+[[package]]
+name = "opentelemetry_sdk"
+version = "0.33.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "372a912db2974d1990207006fd0e3aa0ef3fd4ad3be43c65cfaadf2206866061"
+dependencies = [
+ "futures-channel",
+ "futures-executor",
+ "futures-util",
+ "opentelemetry",
+ "percent-encoding",
+ "portable-atomic",
+ "rand 0.9.5",
+ "thiserror 2.0.21",
+ "tokio",
+]
+
+[[package]]
+name = "pagefind_stem"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "70b9cf5d3cd867dd32e54385d85ecfda45c6f2f896a9d464426ab564e7391467"
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3132,6 +3387,17 @@ dependencies = [
 
 [[package]]
 name = "phf"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3dfb61232e34fcb633f43d12c58f83c1df82962dcdfa565a4e866ffc17dafe12"
+dependencies = [
+ "phf_macros",
+ "phf_shared 0.8.0",
+ "proc-macro-hack",
+]
+
+[[package]]
+name = "phf"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fd6780a80ae0c52cc120a26a1a42c1ae51b247a253e4e06113d23d2c2edd078"
@@ -3147,6 +3413,16 @@ checksum = "010378780309880b08997fae13be7834dba947d36393bd372f2b1556deb2a2f6"
 dependencies = [
  "phf_shared 0.14.0",
  "serde",
+]
+
+[[package]]
+name = "phf_codegen"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cbffee61585b0411840d3ece935cce9cb6321f01c45477d30066498cd5e1a815"
+dependencies = [
+ "phf_generator 0.8.0",
+ "phf_shared 0.8.0",
 ]
 
 [[package]]
@@ -3171,6 +3447,16 @@ dependencies = [
 
 [[package]]
 name = "phf_generator"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "17367f0cc86f2d25802b2c26ee58a7b23faeccf78a396094c13dced0d0182526"
+dependencies = [
+ "phf_shared 0.8.0",
+ "rand 0.7.3",
+]
+
+[[package]]
+name = "phf_generator"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
@@ -3190,12 +3476,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "phf_macros"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f6fde18ff429ffc8fe78e2bf7f8b7a5a5a6e2a8b58bc5a9ac69198bbda9189c"
+dependencies = [
+ "phf_generator 0.8.0",
+ "phf_shared 0.8.0",
+ "proc-macro-hack",
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
+name = "phf_shared"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c00cf8b9eafe68dde5e9eaa2cef8ee84a9336a47d566ec55ca16589633b65af7"
+dependencies = [
+ "siphasher 0.3.11",
+]
+
+[[package]]
 name = "phf_shared"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67eabc2ef2a60eb7faa00097bd1ffdb5bd28e62bf39990626a582201b7a754e5"
 dependencies = [
- "siphasher",
+ "siphasher 1.0.4",
 ]
 
 [[package]]
@@ -3204,7 +3513,7 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c6fd9027e2d9319be6349febd1db4e8d02aa544921200c9b777720ac34a3aa89"
 dependencies = [
- "siphasher",
+ "siphasher 1.0.4",
 ]
 
 [[package]]
@@ -3294,6 +3603,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
 
 [[package]]
+name = "proc-macro-hack"
+version = "0.5.20+deprecated"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc375e1527247fe1a97d8b7156678dfe7c1af2fc075c9a4db3690ecd2a148068"
+
+[[package]]
 name = "proc-macro2"
 version = "1.0.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3328,7 +3643,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "504ee9ff529add891127c4827eb481bd69dc0ebc72e9a682e187db4caa60c3ca"
 dependencies = [
  "dtoa",
- "itoa",
+ "itoa 1.0.19",
  "parking_lot",
  "prometheus-client-derive-encode",
 ]
@@ -3339,6 +3654,29 @@ version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "440f724eba9f6996b75d63681b0a92b06947f1457076d503a4d2e2c8f56442b8"
 dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
+
+[[package]]
+name = "prost"
+version = "0.14.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3ef0b569d1d907ab3a28596aee62cf1f61dacb0529a4bedcd8e7460e2d5228b4"
+dependencies = [
+ "bytes",
+ "prost-derive",
+]
+
+[[package]]
+name = "prost-derive"
+version = "0.14.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ad9c5423459fa2f729b8d9235fab810aa29628b171467744fc86d21460ad70d"
+dependencies = [
+ "anyhow",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -3464,6 +3802,20 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rand"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6a6b1679d49b24bbfe0c803429aa1874472f50d9b363131f0e89fc356b544d03"
+dependencies = [
+ "getrandom 0.1.16",
+ "libc",
+ "rand_chacha 0.2.2",
+ "rand_core 0.5.1",
+ "rand_hc",
+ "rand_pcg",
+]
+
+[[package]]
+name = "rand"
 version = "0.8.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e058c7de0b26af77780c769414d6257830bb240f3c38477dbc2c16e5f54d6d4c"
@@ -3496,6 +3848,16 @@ dependencies = [
 
 [[package]]
 name = "rand_chacha"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f4c8ed856279c9737206bf725bf36935d8666ead7aa69b52be55af369d193402"
+dependencies = [
+ "ppv-lite86",
+ "rand_core 0.5.1",
+]
+
+[[package]]
+name = "rand_chacha"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6c10a63a0fa32252be49d21e7709d4d4baf8d231c2dbce1eaa8141b9b127d88"
@@ -3512,6 +3874,15 @@ checksum = "d3022b5f1df60f26e1ffddd6c66e8aa15de382ae63b3a0c1bfc0e4d3e3f325cb"
 dependencies = [
  "ppv-lite86",
  "rand_core 0.9.5",
+]
+
+[[package]]
+name = "rand_core"
+version = "0.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "90bde5296fc891b0cef12a6d03ddccc162ce7b2aff54160af9338f8d40df6d19"
+dependencies = [
+ "getrandom 0.1.16",
 ]
 
 [[package]]
@@ -3537,6 +3908,24 @@ name = "rand_core"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+
+[[package]]
+name = "rand_hc"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca3129af7b92a17112d59ad498c6f81eaf463253766b90396d39ea7a39d6613c"
+dependencies = [
+ "rand_core 0.5.1",
+]
+
+[[package]]
+name = "rand_pcg"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16abd0c1b639e9eb4d7c50c0b8100b0d0f849be2349829c740fe8e6eb4816429"
+dependencies = [
+ "rand_core 0.5.1",
+]
 
 [[package]]
 name = "rav1e"
@@ -3642,7 +4031,7 @@ dependencies = [
  "futures",
  "futures-util",
  "itertools 0.13.0",
- "itoa",
+ "itoa 1.0.19",
  "log",
  "num-bigint",
  "percent-encoding",
@@ -3798,6 +4187,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "reqwest"
+version = "0.13.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "16a1cfa75cc186dd73d5818e510e042e40927bccc9c236b061cea97e1eb08029"
+dependencies = [
+ "base64 0.23.1",
+ "bytes",
+ "futures-channel",
+ "futures-core",
+ "futures-util",
+ "http",
+ "http-body",
+ "http-body-util",
+ "hyper",
+ "hyper-tls",
+ "hyper-util",
+ "js-sys",
+ "log",
+ "native-tls",
+ "percent-encoding",
+ "pin-project-lite",
+ "rustls-pki-types",
+ "sync_wrapper",
+ "tokio",
+ "tokio-native-tls",
+ "tower",
+ "tower-http",
+ "tower-service",
+ "url",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+]
+
+[[package]]
 name = "rgb"
 version = "0.8.53"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3887,6 +4311,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 
 [[package]]
+name = "rustc_version"
+version = "0.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cfcb3a22ef46e85b45de6ee7e79d063319ebb6594faafcf1c225ea92ab6e9b92"
+dependencies = [
+ "semver",
+]
+
+[[package]]
 name = "rusticata-macros"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3954,6 +4387,12 @@ name = "ryu"
 version = "1.0.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9774ba4a74de5f7b1c1451ed6cd5285a32eddb5cccb8cc655a4e50009e06477f"
+
+[[package]]
+name = "safemem"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef703b7cb59335eae2eb93ceb664c0eb7ea6bf567079d843e09420219668e072"
 
 [[package]]
 name = "same-file"
@@ -4054,6 +4493,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "selectors"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "df320f1889ac4ba6bc0cdc9c9af7af4bd64bb927bccdf32d81140dc1f9be12fe"
+dependencies = [
+ "bitflags 1.3.2",
+ "cssparser 0.27.2",
+ "derive_more",
+ "fxhash",
+ "log",
+ "matches",
+ "phf 0.8.0",
+ "phf_codegen 0.8.0",
+ "precomputed-hash",
+ "servo_arc",
+ "smallvec",
+ "thin-slice",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4130,7 +4589,7 @@ version = "1.0.154"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7e9cc8b1b85264074fbcc02a88680c4096b1e47df8f739dceb03bf482f04bd6"
 dependencies = [
- "itoa",
+ "itoa 1.0.19",
  "memchr",
  "serde",
  "serde_core",
@@ -4143,7 +4602,7 @@ version = "0.1.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "10a9ff822e371bb5403e391ecd83e182e0e77ba7f6fe0160b795797109d1b457"
 dependencies = [
- "itoa",
+ "itoa 1.0.19",
  "serde",
  "serde_core",
 ]
@@ -4173,7 +4632,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
 dependencies = [
  "form_urlencoded",
- "itoa",
+ "itoa 1.0.19",
  "ryu",
  "serde",
 ]
@@ -4185,12 +4644,22 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "59e2dd588bf1597a252c3b920e0143eb99b0f76e4e082f4c92ce34fbc9e71ddd"
 dependencies = [
  "indexmap",
- "itoa",
+ "itoa 1.0.19",
  "libyml",
  "memchr",
  "ryu",
  "serde",
  "version_check",
+]
+
+[[package]]
+name = "servo_arc"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d98238b800e0d1576d8b6e3de32827c2d74bee68bb97748dcf5071fb53965432"
+dependencies = [
+ "nodrop",
+ "stable_deref_trait",
 ]
 
 [[package]]
@@ -4298,6 +4767,12 @@ dependencies = [
  "thiserror 2.0.21",
  "time",
 ]
+
+[[package]]
+name = "siphasher"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "38b58827f4464d87d377d175e90bf58eb00fd8716ff0a62f80356b5e61555d0d"
 
 [[package]]
 name = "siphasher"
@@ -4517,7 +4992,7 @@ dependencies = [
  "hex",
  "hkdf",
  "hmac 0.13.0",
- "itoa",
+ "itoa 1.0.19",
  "log",
  "md-5",
  "memchr",
@@ -4625,6 +5100,17 @@ name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
+
+[[package]]
+name = "syn"
+version = "1.0.109"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "unicode-ident",
+]
 
 [[package]]
 name = "syn"
@@ -4794,7 +5280,7 @@ dependencies = [
 
 [[package]]
 name = "test_ai_background"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4803,7 +5289,7 @@ dependencies = [
 
 [[package]]
 name = "test_assistant_scope"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde_json",
  "trovato-sdk",
@@ -4811,14 +5297,14 @@ dependencies = [
 
 [[package]]
 name = "test_e2e_bystander"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "trovato-sdk",
 ]
 
 [[package]]
 name = "test_e2e_callee"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4827,7 +5313,7 @@ dependencies = [
 
 [[package]]
 name = "test_e2e_caller"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4836,14 +5322,14 @@ dependencies = [
 
 [[package]]
 name = "test_e2e_nocaps"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "trovato-sdk",
 ]
 
 [[package]]
 name = "test_form_taps"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde_json",
  "trovato-sdk",
@@ -4851,22 +5337,31 @@ dependencies = [
 
 [[package]]
 name = "test_form_taps_b"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde_json",
  "trovato-sdk",
 ]
 
 [[package]]
+name = "test_item_background"
+version = "0.105.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "test_item_deny"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "trovato-sdk",
 ]
 
 [[package]]
 name = "test_item_writer"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4875,7 +5370,7 @@ dependencies = [
 
 [[package]]
 name = "test_members"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4884,7 +5379,7 @@ dependencies = [
 
 [[package]]
 name = "test_menu_entries"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4893,7 +5388,7 @@ dependencies = [
 
 [[package]]
 name = "test_owned_vocabulary"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4902,7 +5397,7 @@ dependencies = [
 
 [[package]]
 name = "test_page_builder_components"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4911,7 +5406,7 @@ dependencies = [
 
 [[package]]
 name = "test_plugin_api"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4920,7 +5415,7 @@ dependencies = [
 
 [[package]]
 name = "test_queue_worker"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4929,7 +5424,16 @@ dependencies = [
 
 [[package]]
 name = "test_recovery_bystander"
-version = "0.107.0"
+version = "0.105.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "test_search_enqueue"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -4938,12 +5442,18 @@ dependencies = [
 
 [[package]]
 name = "test_site_queries"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
  "trovato-sdk",
 ]
+
+[[package]]
+name = "thin-slice"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8eaa81235c7058867fa8c0e7314f33dcce9c215f535d1913822a2b3f5e289f3c"
 
 [[package]]
 name = "thiserror"
@@ -5386,6 +5896,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tracing-opentelemetry"
+version = "0.34.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a904802a1b902f43638b677ff2a650847e3b4404101b6c586d648e8c1e3e8fe"
+dependencies = [
+ "js-sys",
+ "opentelemetry",
+ "tracing",
+ "tracing-core",
+ "tracing-subscriber",
+ "web-time",
+]
+
+[[package]]
 name = "tracing-subscriber"
 version = "0.3.23"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5405,7 +5929,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-kernel"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "ammonia",
  "anyhow",
@@ -5430,13 +5954,18 @@ dependencies = [
  "jsonwebtoken",
  "lettre",
  "moka",
+ "opentelemetry",
+ "opentelemetry-otlp",
+ "opentelemetry_sdk",
  "parking_lot",
  "prometheus-client",
  "pulldown-cmark",
  "rand 0.8.8",
  "redis",
  "regex",
- "reqwest",
+ "reqwest 0.12.28",
+ "reqwest 0.13.5",
+ "rustix",
  "sea-query",
  "serde",
  "serde_json",
@@ -5458,8 +5987,10 @@ dependencies = [
  "tower-sessions",
  "tower-sessions-redis-store",
  "tracing",
+ "tracing-opentelemetry",
  "tracing-subscriber",
  "trovato-sdk",
+ "trovato-search-index",
  "trovato-test-utils",
  "url",
  "urlencoding",
@@ -5471,13 +6002,13 @@ dependencies = [
 
 [[package]]
 name = "trovato-loadtest"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "chrono",
  "clap",
  "futures",
  "rand 0.8.8",
- "reqwest",
+ "reqwest 0.12.28",
  "serde",
  "serde_json",
  "tokio",
@@ -5485,7 +6016,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-mcp"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -5507,7 +6038,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-phase0"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -5522,7 +6053,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-sdk"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5532,7 +6063,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-sdk-macros"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -5540,8 +6071,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "trovato-search-index"
+version = "0.105.0"
+dependencies = [
+ "anyhow",
+ "convert_case 0.6.0",
+ "either",
+ "emojis",
+ "flate2",
+ "html-escape",
+ "lazy_static",
+ "lol_html",
+ "minicbor",
+ "pagefind_stem",
+ "regex",
+ "serde",
+ "serde_json",
+ "sha1",
+ "tempfile",
+ "unicode-segmentation",
+]
+
+[[package]]
 name = "trovato-test-utils"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "dotenvy",
  "parking_lot",
@@ -5553,7 +6106,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_ai"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5562,7 +6115,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_audit_log"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5571,7 +6124,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_block_editor"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5580,7 +6133,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_blog"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5589,7 +6142,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_book"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5598,7 +6151,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_captcha"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5607,7 +6160,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_categories"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5616,7 +6169,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_comments"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5625,7 +6178,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_config_translation"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5634,7 +6187,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_contact"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5643,7 +6196,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_content_locking"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5652,7 +6205,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_content_translation"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5661,7 +6214,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_field_access_ref"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5671,7 +6224,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_image_styles"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5680,7 +6233,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_locale"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5689,7 +6242,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_media"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5698,7 +6251,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_oauth2"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5707,7 +6260,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_page_builder"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5716,7 +6269,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_record_ref"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5726,7 +6279,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_recovery_ref"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5735,7 +6288,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_redirects"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5744,7 +6297,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_scheduled_publishing"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5753,7 +6306,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_search"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5762,7 +6315,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_seo"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5771,7 +6324,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_series"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5780,7 +6333,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_spam"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5789,7 +6342,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_webhooks"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5964,6 +6517,12 @@ checksum = "ec4cdd0dd910afe868b7ef477227d8d538b46b3075031afee8a9f2acb0a2ed0b"
 dependencies = [
  "try-lock",
 ]
+
+[[package]]
+name = "wasi"
+version = "0.9.0+wasi-snapshot-preview1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cccddf32554fecc6acb585f82a32a72e28b48f8c4c1883ddfeeeaa96f7d8e519"
 
 [[package]]
 name = "wasi"
@@ -6395,6 +6954,16 @@ name = "web-sys"
 version = "0.3.107"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7d179596ff5ec0f6de4db64d54011bde6289cc49603d3a6e4ce3f329207ab88"
+dependencies = [
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
+name = "web-time"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a6580f308b1fad9207618087a65c04e7a10bc77e02c8e84e9b00dd4b12fa0bb"
 dependencies = [
  "js-sys",
  "wasm-bindgen",

@@ -10,6 +10,15 @@
 //! using them saves, an invalid one is refused with an error at each field,
 //! and the page renders to the committed snapshot with their stylesheets.
 //!
+//! A20: the same plugin declares page root fields in
+//! `components/page.root.toml` (`footer_cta_mode`, a select of default, hide
+//! and custom; `footer_cta_content`, rich text) and ships
+//! `templates/elements/tile--custom_html--pb_footer_cta.html`, a sitewide
+//! footer call to action that follows them. The tests below check that the
+//! registry serves the root fields, each mode saves and renders the right
+//! footer, an invalid root value is refused at its field, and a page saved
+//! before root fields existed validates and renders the same HTML.
+//!
 //! Requires Postgres, Redis and the `test_page_builder_components` fixture
 //! `.wasm` (built by CI before the test job).
 
@@ -530,5 +539,284 @@ fn previewing_does_not_spend_the_forms_csrf_token() {
             status.is_success() || status.is_redirection(),
             "the save after the previews was refused: {status} {body}"
         );
+    });
+}
+
+// =============================================================================
+// Page root fields (A20)
+// =============================================================================
+
+/// The sitewide footer call to action the test plugin's tile template renders
+/// unless a page says otherwise.
+const FOOTER_TILE: &str = "pb_footer_cta";
+const FOOTER_DEFAULT: &str = "Talk to our team about your next project.";
+
+fn page_with_root(root: Value) -> Value {
+    let mut page = landing_page();
+    page["root"] = root;
+    page
+}
+
+#[test]
+fn the_registry_serves_the_page_root_fields() {
+    run_test(async {
+        let app = app();
+        let response = app
+            .request(
+                Request::get("/api/v1/page-builder/components")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let body: Value = serde_json::from_str(&body_string(response).await).unwrap();
+        let root = body["root_fields"].as_array().unwrap_or_else(|| {
+            panic!("no root_fields in {body}");
+        });
+        let names: Vec<&str> = root.iter().map(|f| f["name"].as_str().unwrap()).collect();
+        assert_eq!(names, vec!["footer_cta_mode", "footer_cta_content"]);
+
+        let mode = &root[0];
+        assert_eq!(mode["type"], "select");
+        assert_eq!(mode["default"], "default");
+        assert_eq!(mode["label"], "Footer call to action");
+        assert_eq!(mode["source"], json!({ "kind": "plugin", "name": PLUGIN }));
+        let values: Vec<&str> = mode["options"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|o| o["value"].as_str().unwrap())
+            .collect();
+        assert_eq!(values, vec!["default", "hide", "custom"]);
+
+        let content = &root[1];
+        assert_eq!(content["type"], "rich_text");
+        assert_eq!(content["max_length"], 280);
+    });
+}
+
+#[test]
+fn each_footer_mode_saves_and_renders_its_footer() {
+    run_test(async {
+        let app = app();
+        let no_choice = create(page_with_root(json!({ "title": "No choice" })))
+            .await
+            .expect("a page without root values saves");
+        let default = create(page_with_root(
+            json!({ "title": "Default", "footer_cta_mode": "default" }),
+        ))
+        .await
+        .expect("default saves");
+        let hidden = create(page_with_root(
+            json!({ "title": "Hidden", "footer_cta_mode": "hide" }),
+        ))
+        .await
+        .expect("hide saves");
+        // Current Puck keeps root values under `root.props`; that shape saves
+        // and renders the same.
+        let custom = create(page_with_root(json!({ "props": {
+            "title": "Custom",
+            "footer_cta_mode": "custom",
+            "footer_cta_content": "Book a **free** call.\n\n<script>alert(1)</script>"
+        } })))
+        .await
+        .expect("custom saves");
+
+        // The sitewide tile, shown on these pages and one page with no page
+        // builder content at all.
+        sqlx::query("DELETE FROM tile WHERE machine_name = $1")
+            .bind(FOOTER_TILE)
+            .execute(&app.db)
+            .await
+            .expect("clear a tile a failed run left");
+        let paths: Vec<String> = [no_choice, default, hidden, custom]
+            .iter()
+            .map(|id| format!("/item/{id}"))
+            .chain(std::iter::once("/user/login".to_string()))
+            .collect();
+        let tile = app
+            .state
+            .tiles()
+            .create(
+                serde_json::from_value(json!({
+                    "machine_name": FOOTER_TILE,
+                    "label": "Work with us",
+                    "region": "footer",
+                    "tile_type": "custom_html",
+                    "config": { "body": format!("<p>{FOOTER_DEFAULT}</p>"), "format": "filtered_html" },
+                    "visibility": { "paths": paths },
+                }))
+                .unwrap(),
+            )
+            .await
+            .expect("create the footer tile");
+        let pool = app.db.clone();
+        let tile_id = tile.id;
+        common::defer_cleanup(move || async move {
+            sqlx::query("DELETE FROM tile WHERE id = $1")
+                .bind(tile_id)
+                .execute(&pool)
+                .await
+                .ok();
+        });
+
+        let user = common::username("pbc-root");
+        let cookies = app
+            .create_and_login_admin(&user, "password123", &format!("{user}@example.com"))
+            .await;
+        let view = |path: String| {
+            let cookies = cookies.clone();
+            async move {
+                let response = app
+                    .request_with_cookies(
+                        Request::get(&path).body(Body::empty()).unwrap(),
+                        &cookies,
+                    )
+                    .await;
+                assert_eq!(response.status(), StatusCode::OK, "{path}");
+                body_string(response).await
+            }
+        };
+
+        for id in [no_choice, default] {
+            let page = view(format!("/item/{id}")).await;
+            assert!(
+                page.contains(&format!(
+                    r#"<div class="footer-cta footer-cta--default"><p>{FOOTER_DEFAULT}</p></div>"#
+                )),
+                "the default footer on {id}: {page}"
+            );
+            assert!(page.contains("tile--pb_footer_cta"), "{page}");
+            assert!(!page.contains("footer-cta--custom"), "{page}");
+        }
+
+        let page = view(format!("/item/{hidden}")).await;
+        assert!(!page.contains("footer-cta"), "hidden: {page}");
+        assert!(
+            !page.contains("tile--pb_footer_cta"),
+            "a hidden call to action leaves no empty tile: {page}"
+        );
+        assert!(!page.contains(FOOTER_DEFAULT), "{page}");
+
+        let page = view(format!("/item/{custom}")).await;
+        assert!(
+            page.contains(
+                r#"<div class="footer-cta footer-cta--custom"><p>Book a <strong>free</strong> call.</p>"#
+            ),
+            "custom: {page}"
+        );
+        assert!(!page.contains(FOOTER_DEFAULT), "{page}");
+        assert!(!page.contains("<script>alert"), "{page}");
+
+        // A page with no page builder field gets the declared default.
+        let page = view("/user/login".to_string()).await;
+        assert!(page.contains("footer-cta--default"), "login: {page}");
+    });
+}
+
+#[test]
+fn an_invalid_root_value_is_refused_at_its_field() {
+    run_test(async {
+        for (root, field, needle) in [
+            (
+                json!({ "title": "x", "footer_cta_mode": "blink" }),
+                "footer_cta_mode",
+                "'blink' is not one of: default, hide, custom",
+            ),
+            (
+                json!({ "props": { "footer_cta_mode": "custom", "footer_cta_content": "x".repeat(281) } }),
+                "footer_cta_content",
+                "at most 280 characters",
+            ),
+            (
+                json!({ "title": "x", "footer_colour": "red" }),
+                "footer_colour",
+                "not a page root field any enabled plugin declares",
+            ),
+        ] {
+            let err = create(page_with_root(root.clone()))
+                .await
+                .expect_err("an invalid root is refused");
+            let invalid = err
+                .downcast_ref::<PageBuilderInvalid>()
+                .unwrap_or_else(|| panic!("not a field level refusal: {err:#}"));
+            assert_eq!(invalid.0.len(), 1, "{root}: {:#?}", invalid.0);
+            let (item_field, error) = &invalid.0[0];
+            assert_eq!(item_field, "field_layout");
+            assert_eq!(error.location, "root");
+            assert_eq!(error.field, field);
+            assert!(error.message.contains(needle), "{error:?}");
+        }
+
+        // Over HTTP the refusal is a 422 at `field_layout.root.<field>`.
+        let app = app();
+        let user = common::username("pbc-root-json");
+        let cookies = app
+            .create_and_login_admin(&user, "password123", &format!("{user}@example.com"))
+            .await;
+        let form = app
+            .request_with_cookies(
+                Request::get(format!("/item/add/{TYPE}"))
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        let html = body_string(form).await;
+        let marker = r#"name="_token" value=""#;
+        let start = html.find(marker).expect("the form carries a CSRF token") + marker.len();
+        let csrf = &html[start..start + html[start..].find('"').unwrap()];
+        let page = page_with_root(json!({ "footer_cta_mode": "blink" }));
+        let response = app
+            .request_with_cookies(
+                Request::post(format!("/item/add/{TYPE}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("X-CSRF-Token", csrf)
+                    .body(Body::from(
+                        json!({ "title": "Refused", "fields": { "field_layout": page } })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        let status = response.status();
+        let body = body_string(response).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert!(body.contains("field_layout.root.footer_cta_mode"), "{body}");
+        assert!(body.contains("blink"), "{body}");
+    });
+}
+
+/// A page saved before page root fields existed, with the plugin that
+/// declares them enabled: it validates, saves, and renders byte for byte the
+/// HTML it rendered then, and its templates get the declared defaults.
+#[test]
+fn a_page_saved_before_root_fields_validates_and_renders_the_same_html() {
+    run_test(async {
+        let app = app();
+        let page: Value = serde_json::from_str(
+            &std::fs::read_to_string(fixture_path("standard-page-pre-registry.json")).unwrap(),
+        )
+        .unwrap();
+        let errors = app.state.page_builder_components().validate_page(&page);
+        assert!(errors.is_empty(), "{errors:?}");
+        let rendered = app
+            .state
+            .theme()
+            .render_page_builder_content(&page, &ResolvedReferences::default())
+            .expect("render");
+        let expected =
+            std::fs::read_to_string(fixture_path("standard-page-pre-registry.html")).unwrap();
+        assert_eq!(rendered.html, expected);
+        assert_eq!(
+            Value::Object(rendered.root),
+            json!({
+                "title": "A page saved before the component registry",
+                "footer_cta_mode": "default",
+                "variant_classes": ""
+            })
+        );
+        create(page).await.expect("the old page saves");
     });
 }

@@ -1,21 +1,22 @@
 name = "test_plugin_api"
 description = "K1 e2e fixture: plugin-served HTTP requests (G-NO-PLUGIN-HTTP)"
-version = "0.107.0"
-api_version = "0.107"
+version = "0.105.0"
+api_version = "0.105"
 default_enabled = false
 dependencies = []
 
 [taps]
-implements = ["tap_menu", "tap_perm", "tap_api"]
+implements = ["tap_menu", "tap_perm", "tap_api", "tap_admin_nav"]
 weight = 0
 
 # `mail` so the send_mail callback can reach the site contact address (0.101).
 # `db` + `raw_sql` so the tap can write its own table — the whole point of the
 # finding this fixture exercises. `user-api` is not needed: the authenticated
 # user's id arrives in the ApiRequest payload. `text-format` for the
-# filter_text callback (B71).
+# filter_text callback (B71). `item-api` for upload_attachment, which attaches
+# the stored file to an item through `host::save_item` (B182).
 [capabilities]
-host_interfaces = ["logging", "db", "mail", "text-format"]
+host_interfaces = ["logging", "db", "mail", "text-format", "item-api"]
 db_tables = ["tpa_notes"]
 raw_sql = true
 

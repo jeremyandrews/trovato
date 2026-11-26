@@ -708,6 +708,39 @@ async fn the_app_binds_an_item_service_into_its_tap_services() {
     );
 }
 
+/// Services with no item service bound refuse with their own code, not with
+/// `ERR_NO_SERVICES`, which is what `tap_cron` and `tap_queue_worker` answered
+/// for every write while their services lacked the binding (U40).
+#[tokio::test]
+async fn an_unbound_item_service_is_its_own_refusal() {
+    let pool = probe_pool().await;
+    let engine = Engine::new(&wasmtime::Config::new()).unwrap();
+    let mut linker: Linker<PluginState> = Linker::new(&engine);
+    host::register_all(&mut linker).expect("register host functions");
+    let payload = json!({ "type": "page", "title": "unbound" }).to_string();
+    let module = Module::new(&engine, item_probe("save-item", &payload, true))
+        .expect("compile item-api probe WAT");
+    let services =
+        RequestServices::for_background(pool.clone(), None, None, reqwest::Client::new());
+    let state = PluginState::with_db_policy(
+        RequestState::new(UserContext::background(), services),
+        "item_probe".to_string(),
+        Arc::new(DbPolicy::default()),
+        ResourceLimits::default(),
+    )
+    .with_item_background(true);
+    let mut store = Store::new(&engine, state);
+    let instance = linker
+        .instantiate_async(&mut store, &module)
+        .await
+        .expect("module instantiates against the kernel linker");
+    let run = instance
+        .get_typed_func::<(), i32>(&mut store, "run")
+        .expect("module exports run");
+    let code = run.call_async(&mut store, ()).await.expect("run completes");
+    assert_eq!(code, host_errors::ERR_ITEM_SERVICE_UNAVAILABLE);
+}
+
 // =============================================================================
 // Writes go through `ItemService` (B68 Part 2)
 //
@@ -1358,4 +1391,127 @@ async fn a_revert_fires_presave_and_reindexes() {
         vec!["presave", "update", "update_index"],
         "a revert must fire the taps an edit does"
     );
+}
+
+// =============================================================================
+// Field values (B72)
+// =============================================================================
+
+/// `save-item` runs the same field value check as every other write path:
+/// more values than a field's cardinality allows, or a value that is not a tag
+/// of a `CategoryReference` field's category, is refused with
+/// `ERR_ITEM_INVALID_FIELDS` (-65) and writes nothing; values within the
+/// limits save as the array they were given.
+#[tokio::test]
+async fn save_item_runs_the_field_value_check() {
+    // `host_errors::ERR_ITEM_INVALID_FIELDS`.
+    const ERR_ITEM_INVALID_FIELDS: i32 = -65;
+    const TYPE: &str = "b72_plugin_tags";
+    let pool = probe_pool().await;
+
+    sqlx::query(
+        "INSERT INTO category (id, label, description, hierarchy, weight) \
+         VALUES ('b72_plugin_topics', 'Plugin topics', NULL, 0, 0) ON CONFLICT (id) DO NOTHING",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
+    let topics: Vec<Uuid> = (1..=4)
+        .map(|n| {
+            format!("0193b72b-0000-7000-8000-00000000000{n}")
+                .parse()
+                .unwrap()
+        })
+        .collect();
+    for (n, id) in topics.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO category_tag (id, category_id, label, description, slug, weight, created, changed) \
+             VALUES ($1, 'b72_plugin_topics', $2, NULL, NULL, 0, 1, 1) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(id)
+        .bind(format!("Plugin topic {n}"))
+        .execute(&pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "INSERT INTO item_type (type, label, description, has_title, title_label, plugin, settings) \
+         VALUES ($1, $1, 'save-item field value fixture', true, 'Title', 'core', $2) \
+         ON CONFLICT (type) DO UPDATE SET settings = EXCLUDED.settings",
+    )
+    .bind(TYPE)
+    .bind(json!({ "fields": [
+        { "field_name": "field_topics", "field_type": { "CategoryReference": "b72_plugin_topics" },
+          "label": "Topics", "cardinality": 3 },
+        { "field_name": "field_lead", "field_type": { "CategoryReference": "b72_plugin_topics" },
+          "label": "Lead" }
+    ]}))
+    .execute(&pool)
+    .await
+    .unwrap();
+    let items = items_for(&pool);
+
+    let marker = Uuid::now_v7().simple().to_string();
+    let save = |title: String, fields: serde_json::Value| {
+        json!({ "type": TYPE, "title": title, "status": 1, "fields": fields }).to_string()
+    };
+    let count = |title: String| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM item WHERE title = $1")
+                .bind(title)
+                .fetch_one(&pool)
+                .await
+                .unwrap()
+        }
+    };
+
+    let refused = [
+        ("four topics", json!({ "field_topics": topics })),
+        ("two leads", json!({ "field_lead": [topics[0], topics[1]] })),
+        ("not a tag", json!({ "field_topics": [Uuid::now_v7()] })),
+    ];
+    for (case, fields) in refused {
+        let title = format!("b72 plugin {case} {marker}");
+        let answer = run(
+            &pool,
+            admin(),
+            &items,
+            "save-item",
+            &save(title.clone(), fields),
+            true,
+            false,
+        )
+        .await;
+        assert_eq!(
+            answer.code, ERR_ITEM_INVALID_FIELDS,
+            "{case}: {}",
+            answer.body
+        );
+        assert_eq!(count(title).await, 0, "{case}: nothing is written");
+    }
+
+    let title = format!("b72 plugin saved {marker}");
+    let answer = run(
+        &pool,
+        admin(),
+        &items,
+        "save-item",
+        &save(title.clone(), json!({ "field_topics": &topics[..3] })),
+        true,
+        false,
+    )
+    .await;
+    assert!(answer.code > 0, "three topics save: {}", answer.code);
+    let fields: serde_json::Value = sqlx::query_scalar("SELECT fields FROM item WHERE title = $1")
+        .bind(&title)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(fields["field_topics"], json!(&topics[..3]));
+    sqlx::query("DELETE FROM item WHERE type = $1")
+        .bind(TYPE)
+        .execute(&pool)
+        .await
+        .ok();
 }

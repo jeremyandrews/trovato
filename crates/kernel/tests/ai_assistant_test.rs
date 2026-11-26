@@ -9,10 +9,12 @@
 //! model calls `read_widget`, then answers with text" and watch what the kernel
 //! does about it.
 //!
-//! That the provider's `base_url` is a loopback address is deliberate and is the
-//! seam these tests use: the admin form refuses a loopback URL as SSRF
-//! prevention, and the chat paths do not re-validate at call time, so writing
-//! the config row directly reaches the same code a real provider would.
+//! The provider's `base_url` is a loopback address, which both the admin form
+//! and the send path refuse as SSRF prevention. The scripted provider allows its
+//! own exact URL through the send path's test seam
+//! (`allow_loopback_provider_for_tests`), so writing the config row directly
+//! reaches the same code a real provider would; any other loopback URL is still
+//! refused, which `the_tools_path_refuses_a_private_ip_literal_base_url` pins.
 //!
 //! `test_assistant_scope` is `default_enabled = false`, so this file installs it
 //! and builds its **own** `TestApp`: `AppState` resolves the enabled plugin set,
@@ -144,9 +146,9 @@ static SITE_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
 /// Point the site at a fresh scripted provider and return its recorder.
 ///
 /// The `base_url` is a loopback address, which the admin form refuses as SSRF
-/// prevention and the chat paths do not re-validate at call time. Writing the
-/// config row directly is therefore the seam that lets a test drive the real
-/// outbound path.
+/// prevention; the scripted provider allows its exact URL past the send path's
+/// own check. Writing the config row directly is therefore the seam that lets a
+/// test drive the real outbound path.
 async fn use_provider(app: &TestApp, protocol: &str) -> Recorder {
     let (base_url, recorder) = start().await;
     let providers = serde_json::json!([{
@@ -466,7 +468,7 @@ async fn clear_widget_color(app: &TestApp) {
 fn an_anonymous_visitor_is_sent_to_the_login_form() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
 
         let response = app
@@ -499,7 +501,7 @@ fn an_anonymous_visitor_is_sent_to_the_login_form() {
 fn a_user_without_the_permission_is_refused_and_an_admin_is_not() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         clear_widget_color(app).await;
 
@@ -553,7 +555,7 @@ fn a_user_without_the_permission_is_refused_and_an_admin_is_not() {
 fn a_reader_granted_all_three_permissions_gets_in() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
 
         let cookies = app
@@ -584,7 +586,7 @@ fn a_reader_granted_all_three_permissions_gets_in() {
 fn an_unknown_scope_a_stray_id_and_a_disabled_assistant_are_all_404() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         let admin = app
             .create_and_login_admin("asst_404", "Password123!", "asst_404@test.local")
@@ -652,7 +654,7 @@ fn an_unknown_scope_a_stray_id_and_a_disabled_assistant_are_all_404() {
 fn a_scope_id_on_a_site_wide_scope_is_a_404() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         let admin = app
             .create_and_login_admin("asst_noneid", "Password123!", "asst_noneid@test.local")
@@ -682,7 +684,7 @@ fn a_scope_id_on_a_site_wide_scope_is_a_404() {
 fn opening_the_same_scope_twice_returns_the_same_conversation() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         let admin = app
             .create_and_login_admin("asst_twice", "Password123!", "asst_twice@test.local")
@@ -736,7 +738,7 @@ fn opening_the_same_scope_twice_returns_the_same_conversation() {
 fn a_message_needs_a_csrf_header_and_a_sane_length() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         use_provider(app, "open_ai_compatible").await;
         let admin = app
@@ -780,7 +782,7 @@ fn a_message_needs_a_csrf_header_and_a_sane_length() {
 fn a_read_only_conversation_refuses_a_message() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         let admin = app
             .create_and_login_admin("asst_ro", "Password123!", "asst_ro@test.local")
@@ -815,7 +817,7 @@ fn a_read_only_conversation_refuses_a_message() {
 fn a_text_only_turn_lands_in_the_transcript_and_the_usage_log() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         // The widget colour is one site-wide variable every test in this file
         // shares, and the snapshot asserted below names it. Clearing it here is
@@ -856,6 +858,27 @@ fn a_text_only_turn_lands_in_the_transcript_and_the_usage_log() {
         .unwrap();
         assert_eq!(after, before + 1, "one model call, one usage row");
 
+        // The row carries the tokens the provider reported (B89): the send
+        // path records them, not the assistant.
+        let (operation, prompt, completion, total, model): (String, i32, i32, i32, String) =
+            sqlx::query_as(
+                "SELECT operation, prompt_tokens, completion_tokens, total_tokens, model \
+                 FROM ai_usage_log WHERE user_id = $1 AND plugin_name = 'kernel_assistant' \
+                 ORDER BY created DESC LIMIT 1",
+            )
+            .bind(user)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        println!(
+            "\nai_usage_log, AI Assistant turn:\nkernel_assistant  {operation}  {user}  \
+             prompt {prompt}  completion {completion}  total {total}  {model}"
+        );
+        assert_eq!(
+            (operation.as_str(), prompt, completion, total),
+            ("Chat", 10, 4, 14)
+        );
+
         // The system message carried the plugin's snapshot, which is the whole
         // reason tap_assistant_context exists.
         let sent = &recorder.requests()[0];
@@ -872,7 +895,7 @@ fn a_text_only_turn_lands_in_the_transcript_and_the_usage_log() {
 fn a_read_tool_runs_and_its_result_reaches_the_next_request() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         clear_widget_color(app).await;
         let recorder = use_provider(app, "open_ai_compatible").await;
@@ -932,7 +955,7 @@ fn a_read_tool_runs_and_its_result_reaches_the_next_request() {
 fn an_administrator_alone_passes_the_plugins_own_check() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         clear_widget_color(app).await;
         let recorder = use_provider(app, "open_ai_compatible").await;
@@ -965,7 +988,7 @@ fn an_administrator_alone_passes_the_plugins_own_check() {
 fn a_write_tool_proposes_and_changes_nothing() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         clear_widget_color(app).await;
         let recorder = use_provider(app, "open_ai_compatible").await;
@@ -1019,7 +1042,7 @@ fn a_write_tool_proposes_and_changes_nothing() {
 fn applying_a_proposal_is_what_makes_the_change() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         clear_widget_color(app).await;
         let recorder = use_provider(app, "open_ai_compatible").await;
@@ -1091,7 +1114,7 @@ fn applying_a_proposal_is_what_makes_the_change() {
 fn the_no_javascript_paths_redirect_and_discard_executes_nothing() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         clear_widget_color(app).await;
         let recorder = use_provider(app, "open_ai_compatible").await;
@@ -1146,7 +1169,7 @@ fn the_no_javascript_paths_redirect_and_discard_executes_nothing() {
 fn somebody_elses_proposal_is_a_404() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         clear_widget_color(app).await;
         let recorder = use_provider(app, "open_ai_compatible").await;
@@ -1189,7 +1212,7 @@ fn somebody_elses_proposal_is_a_404() {
 fn a_bad_call_becomes_a_failed_result_and_the_loop_carries_on() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         let recorder = use_provider(app, "open_ai_compatible").await;
         // Three ways to get it wrong, then an answer.
@@ -1242,7 +1265,7 @@ fn a_bad_call_becomes_a_failed_result_and_the_loop_carries_on() {
 fn the_tool_call_limit_stops_the_loop_and_says_so() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(
             app,
             AssistantConfig {
@@ -1284,7 +1307,7 @@ fn the_tool_call_limit_stops_the_loop_and_says_so() {
 fn history_bounding_drops_old_exchanges_and_says_it_did() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(
             app,
             AssistantConfig {
@@ -1331,7 +1354,7 @@ fn history_bounding_drops_old_exchanges_and_says_it_did() {
 fn starting_over_closes_the_old_conversation_and_takes_a_fresh_snapshot() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         clear_widget_color(app).await;
         let recorder = use_provider(app, "open_ai_compatible").await;
@@ -1390,7 +1413,7 @@ fn starting_over_closes_the_old_conversation_and_takes_a_fresh_snapshot() {
 fn the_message_and_token_caps_each_make_the_page_read_only() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
 
         // One message allowed, so the second open is already read-only.
         set_config(
@@ -1469,7 +1492,7 @@ fn the_message_and_token_caps_each_make_the_page_read_only() {
 fn a_denying_budget_refuses_the_turn_before_the_provider_is_called() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         let recorder = use_provider(app, "open_ai_compatible").await;
         recorder.push(says("this must never be reached"));
@@ -1541,7 +1564,7 @@ fn a_denying_budget_refuses_the_turn_before_the_provider_is_called() {
 fn the_rate_limit_refuses_a_second_message_in_the_hour() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         trovato_kernel::routes::assistant::clear_assistant_rate_limits(&app.state).await;
         set_config(
             app,
@@ -1580,7 +1603,7 @@ fn the_rate_limit_refuses_a_second_message_in_the_hour() {
 fn the_conversation_reads_back_as_json_for_its_owner_only() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         let recorder = use_provider(app, "open_ai_compatible").await;
         recorder.push(says("hello"));
@@ -1629,7 +1652,7 @@ fn the_conversation_reads_back_as_json_for_its_owner_only() {
 fn the_whole_happy_path_works_in_the_anthropic_shape_too() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         clear_widget_color(app).await;
         let recorder = use_provider(app, "anthropic").await;
@@ -1697,7 +1720,7 @@ fn the_whole_happy_path_works_in_the_anthropic_shape_too() {
 fn the_admin_page_lists_scopes_and_saves_an_override() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         let admin = app
             .create_and_login_admin("asst_adminpg", "Password123!", "asst_adminpg@test.local")
@@ -1811,7 +1834,7 @@ fn the_admin_page_lists_scopes_and_saves_an_override() {
 fn the_launcher_appears_on_an_item_of_a_named_type_and_nowhere_else() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         app.ensure_conference_type().await;
 
@@ -1906,7 +1929,7 @@ fn the_launcher_appears_on_an_item_of_a_named_type_and_nowhere_else() {
 fn an_item_scope_id_the_caller_cannot_view_is_a_404() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         app.ensure_conference_type().await;
 
@@ -1993,7 +2016,7 @@ async fn stored_temperature(app: &TestApp) -> serde_json::Value {
 fn an_unset_temperature_is_left_out_of_the_request() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         for protocol in ["open_ai_compatible", "anthropic"] {
             let recorder = use_provider(app, protocol).await;
@@ -2025,7 +2048,7 @@ fn an_unset_temperature_is_left_out_of_the_request() {
 fn a_stored_temperature_still_loads_and_is_sent() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         let mut stored = serde_json::to_value(base_config()).unwrap();
         stored["temperature"] = serde_json::json!(0.5);
@@ -2054,7 +2077,7 @@ fn a_stored_temperature_still_loads_and_is_sent() {
 fn a_blank_temperature_on_the_admin_form_saves_as_unset() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         let mut stored = serde_json::to_value(base_config()).unwrap();
         stored["temperature"] = serde_json::json!(0.7);
         SiteConfig::set(&app.db, "ai_assistant_config", stored)
@@ -2134,7 +2157,7 @@ fn a_blank_temperature_on_the_admin_form_saves_as_unset() {
 fn done_reports_the_usage_the_conversation_records() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         clear_widget_color(app).await;
         let recorder = use_provider(app, "open_ai_compatible").await;
@@ -2228,7 +2251,7 @@ fn a_provider_refusal_is_logged_with_its_status_and_body() {
     let logs = captured_logs();
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         let recorder = use_provider(app, "anthropic").await;
         recorder.push(Scripted {
@@ -2276,7 +2299,7 @@ fn a_provider_refusal_is_logged_with_its_status_and_body() {
 fn every_post_returns_a_fresh_token_that_the_next_post_can_use() {
     common::run_test(async {
         let app = app();
-        let _guard = SITE_LOCK.lock().await;
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
         set_config(app, base_config()).await;
         clear_widget_color(app).await;
         let recorder = use_provider(app, "open_ai_compatible").await;
@@ -2370,5 +2393,84 @@ fn every_post_returns_a_fresh_token_that_the_next_post_can_use() {
             )
             .await;
         assert_eq!(response.status(), StatusCode::OK);
+    });
+}
+
+// =============================================================================
+// The send path checks the base URL (B89, B50)
+// =============================================================================
+
+/// **B50, tools.** A provider row naming a private IP literal, written past the
+/// admin form, is refused when the assistant's tool-calling call sends: the
+/// provider is never contacted and the person gets a sentence, not the
+/// provider's words.
+#[test]
+fn the_tools_path_refuses_a_private_ip_literal_base_url() {
+    common::run_test(async {
+        let app = app();
+        common::hold_until_cleanup(SITE_LOCK.lock().await);
+        set_config(app, base_config()).await;
+
+        // A loopback listener that counts what reaches it. Not the scripted
+        // provider: nothing here allows its address.
+        let hits = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&hits);
+        let stub = axum::Router::new().route(
+            "/chat/completions",
+            axum::routing::post(move || {
+                let counter = std::sync::Arc::clone(&counter);
+                async move {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    axum::Json(serde_json::json!({
+                        "model": "test-model",
+                        "choices": [{"message": {"role": "assistant", "content": "reached"},
+                                     "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                    }))
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, stub).await;
+        });
+        SiteConfig::set(
+            &app.db,
+            "ai_providers",
+            serde_json::json!([{
+                "id": "scripted",
+                "label": "Private literal",
+                "protocol": "open_ai_compatible",
+                "base_url": format!("http://{addr}"),
+                "api_key_env": "",
+                "models": [{"operation": "chat", "model": "test-model"}],
+                "rate_limit_rpm": 0,
+                "enabled": true,
+            }]),
+        )
+        .await
+        .expect("write ai_providers");
+        SiteConfig::set(
+            &app.db,
+            "ai_defaults",
+            serde_json::json!({"chat": "scripted"}),
+        )
+        .await
+        .expect("write ai_defaults");
+
+        let cookies = admin_who_may_configure(app, &common::username("b50_tools")).await;
+        let conversation = open_conversation(app, &cookies, "b50-tools").await;
+        let sse = send_message(app, &cookies, conversation, "hello").await;
+
+        assert_eq!(
+            hits.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the tools path must not connect to a private address: {sse}"
+        );
+        assert!(
+            event_types(&sse).iter().any(|t| t == "error"),
+            "the person is told the call failed: {sse}"
+        );
     });
 }

@@ -739,7 +739,7 @@ impl DirectConfigStorage {
             .map_err(|e| anyhow::anyhow!("invalid url_alias ID '{id}': {e}"))?;
 
         let alias = sqlx::query_as::<_, UrlAlias>(
-            "SELECT id, source, alias, language, stage_id, created \
+            "SELECT id, source, alias, language, stage_id, created, changed \
              FROM url_alias WHERE id = $1",
         )
         .bind(uuid)
@@ -757,12 +757,13 @@ impl DirectConfigStorage {
     async fn save_url_alias(&self, alias: &UrlAlias) -> Result<()> {
         sqlx::query(
             r#"
-            INSERT INTO url_alias (id, source, alias, language, stage_id, created)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO url_alias (id, source, alias, language, stage_id, created, changed)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
             ON CONFLICT (alias, language, stage_id) DO UPDATE SET
                 id = EXCLUDED.id,
                 source = EXCLUDED.source,
-                created = EXCLUDED.created
+                created = EXCLUDED.created,
+                changed = EXCLUDED.changed
             "#,
         )
         .bind(alias.id)
@@ -771,6 +772,7 @@ impl DirectConfigStorage {
         .bind(&alias.language)
         .bind(alias.stage_id)
         .bind(alias.created)
+        .bind(alias.changed)
         .execute(&self.pool)
         .await
         .context("failed to save url alias")?;
@@ -794,7 +796,7 @@ impl DirectConfigStorage {
 
     async fn list_url_aliases(&self, filter: Option<&ConfigFilter>) -> Result<Vec<ConfigEntity>> {
         let aliases = sqlx::query_as::<_, UrlAlias>(
-            "SELECT id, source, alias, language, stage_id, created \
+            "SELECT id, source, alias, language, stage_id, created, changed \
              FROM url_alias WHERE stage_id = $1 ORDER BY alias",
         )
         .bind(LIVE_STAGE_ID)

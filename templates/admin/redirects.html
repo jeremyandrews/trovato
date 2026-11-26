@@ -1,0 +1,43 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+{% import "admin/macros/pager.html" as pager %}
+
+{% block page_actions %}{{ list::add_link(url="/admin/config/redirects/add", label=t(s="Add redirect")) }}{% endblock page_actions %}
+
+{% block content %}
+{% if redirects %}
+<div class="table-scroll" role="region" aria-labelledby="redirects-caption" tabindex="0">
+    <table class="table">
+        <caption id="redirects-caption">{{ t(s="Redirects, {count} in all", count=total) }}</caption>
+        <thead>
+            <tr>
+                <th scope="col">{{ t(s="Source") }}</th>
+                <th scope="col">{{ t(s="Destination") }}</th>
+                <th scope="col">{{ t(s="Status") }}</th>
+                <th scope="col">{{ t(s="Language") }}</th>
+                <th scope="col">{{ t(s="Created") }}</th>
+                <th scope="col">{{ t(s="Operations") }}</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for redirect in redirects %}
+            <tr>
+                <th scope="row"><code>{{ redirect.source }}</code></th>
+                <td><code>{{ redirect.destination }}</code></td>
+                <td>{{ redirect.status_code }}</td>
+                <td>{% if redirect.language %}{{ redirect.language }}{% else %}{{ t(s="Any") }}{% endif %}</td>
+                <td>{{ redirect.created_display }}</td>
+                <td class="operations">
+                    <a href="/admin/config/redirects/{{ redirect.id }}/edit">{{ t(s="Edit the redirect from {source}", source=redirect.source) }}</a>
+                    {{ list::delete_button(action="/admin/config/redirects/" ~ redirect.id ~ "/delete", label=t(s="Delete the redirect from {source}", source=redirect.source), confirm_text=t(s="Delete the redirect from {source}?", source=redirect.source), csrf_token=csrf_token) }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{{ pager::pager(current_page=page, total_pages=total_pages, base_url="/admin/config/redirects") }}
+{% else %}
+{{ list::empty(message=t(s="No redirects yet."), add_url="/admin/config/redirects/add", add_label=t(s="Add a redirect")) }}
+{% endif %}
+{% endblock content %}

@@ -24,7 +24,7 @@ use trovato_kernel::gather::types::{
     GatherQuery, QueryDefinition, QueryDisplay, QuerySort, SortDirection,
 };
 use trovato_kernel::models::stage::LIVE_STAGE_ID;
-use trovato_kernel::models::{CreateItem, CreateUrlAlias, UrlAlias};
+use trovato_kernel::models::{CreateItem, CreateUrlAlias, UpdateUrlAlias, UrlAlias};
 use trovato_kernel::routes::feed::{build_feed_router, feed_links};
 use trovato_kernel::tap::UserContext;
 use uuid::Uuid;
@@ -93,7 +93,7 @@ fn feed_query(query_id: &str, path: &str) -> GatherQuery {
             ..Default::default()
         },
         display: QueryDisplay {
-            items_per_page: 10,
+            items_per_page: Some(10),
             // Built from JSON, the shape a `gather_query.display` row holds.
             feed: Some(
                 serde_json::from_value(serde_json::json!({
@@ -928,6 +928,209 @@ fn a_repeat_request_with_the_etag_is_not_modified() {
     });
 }
 
+/// The defect: `Last-Modified` followed only the entries, so a reader polling
+/// with `If-Modified-Since` alone (no `If-None-Match`, which a real aggregator
+/// may not send) kept the feed's old title and description after an edit to
+/// either, even though the `ETag` had already moved.
+#[test]
+fn a_title_or_description_edit_moves_last_modified_too() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_item_type(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let path = format!("/rss/feed-channel-{stamp}.xml");
+        let mut query = feed_query(&format!("feed_channel_{stamp}"), &path);
+        isolate(&mut query, &stamp);
+        let id = create_item(
+            app,
+            &format!("Channel Post {stamp}"),
+            1,
+            chrono::Utc::now().timestamp(),
+        )
+        .await;
+        register(app, &query).await;
+
+        let (status, headers, _) = send(
+            app,
+            &query,
+            Request::get(&path).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let last_modified = headers
+            .get("last-modified")
+            .expect("a Last-Modified")
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        // Nothing changed yet: the conditional GET is still 304.
+        let (status, _, _) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-modified-since", &last_modified)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED, "nothing changed yet");
+
+        // `Last-Modified` is second-precision, so a bump before the next edit
+        // must land in a later second to be visible.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+        // A title edit is a config edit: `query.changed` moves with it, the
+        // way an admin save always sets it to the time of the save.
+        query.display.feed.as_mut().unwrap().title = Some(format!("New Title {stamp}"));
+        query.changed = chrono::Utc::now().timestamp();
+
+        let (status, headers, body) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-modified-since", &last_modified)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "a title edit must not be 304");
+        assert!(body.contains(&format!("New Title {stamp}")), "{body}");
+        let last_modified = headers
+            .get("last-modified")
+            .expect("a Last-Modified")
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+        query.display.feed.as_mut().unwrap().description = Some(format!("New Description {stamp}"));
+        query.changed = chrono::Utc::now().timestamp();
+
+        let (status, _, body) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-modified-since", &last_modified)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "a description edit must not be 304");
+        assert!(body.contains(&format!("New Description {stamp}")), "{body}");
+
+        delete_items(app, &[id]).await;
+        unregister(app, &query).await;
+    });
+}
+
+/// The defect: the channel link's alias has no reliable change time, so an
+/// alias edit also left `Last-Modified` where it was, even though the `ETag`
+/// (which hashes the resolved link) had already moved.
+#[test]
+fn an_alias_edit_on_the_channel_link_moves_last_modified_too() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_item_type(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let path = format!("/rss/feed-alias-{stamp}.xml");
+        let query_id = format!("feed_alias_{stamp}");
+        // No `canonical_url` and no argument: the channel link resolves
+        // through the outbound alias of `/gather/{query_id}`.
+        let mut query = feed_query(&query_id, &path);
+        isolate(&mut query, &stamp);
+        let id = create_item(
+            app,
+            &format!("Alias Post {stamp}"),
+            1,
+            chrono::Utc::now().timestamp(),
+        )
+        .await;
+        register(app, &query).await;
+
+        let alias = UrlAlias::create(
+            &app.db,
+            CreateUrlAlias {
+                source: format!("/gather/{query_id}"),
+                alias: format!("/original-{stamp}"),
+                language: None,
+                stage_id: None,
+            },
+        )
+        .await
+        .expect("create outbound alias");
+
+        let (status, headers, body) = send(
+            app,
+            &query,
+            Request::get(&path).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(body.contains(&format!("/original-{stamp}")), "{body}");
+        let last_modified = headers
+            .get("last-modified")
+            .expect("a Last-Modified")
+            .to_str()
+            .unwrap()
+            .to_string();
+
+        let (status, _, _) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-modified-since", &last_modified)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED, "nothing changed yet");
+
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+        UrlAlias::update(
+            &app.db,
+            alias.id,
+            UpdateUrlAlias {
+                source: None,
+                alias: Some(format!("/renewed-{stamp}")),
+                language: None,
+                stage_id: None,
+            },
+        )
+        .await
+        .expect("update outbound alias")
+        .expect("the alias existed");
+        // The real invalidation path is a Redis bump this server would also
+        // receive, asynchronously; called directly here so the next request
+        // is deterministically warm with the new alias.
+        app.state.gather().clear_outbound_alias_cache();
+
+        let (status, headers, body) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-modified-since", &last_modified)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "an alias edit must not be 304");
+        assert!(body.contains(&format!("/renewed-{stamp}")), "{body}");
+        assert_ne!(
+            headers.get("last-modified").unwrap().to_str().unwrap(),
+            last_modified
+        );
+
+        delete_items(app, &[id]).await;
+        UrlAlias::delete(&app.db, alias.id).await.ok();
+        unregister(app, &query).await;
+    });
+}
+
 /// Atom is the same execution as RSS: an unpublished item is in neither, and a
 /// gather the viewer may not run is refused in both.
 #[test]
@@ -996,6 +1199,192 @@ fn isolate(query: &mut GatherQuery, stamp: &str) {
         }))
         .expect("title filter"),
     );
+}
+
+// ---------------------------------------------------------------------------
+// B172: the ETag covers every printed value, not only entry ids and dates.
+// ---------------------------------------------------------------------------
+
+/// The defect: an account rename left every entry's id, `changed` and link
+/// untouched, so a cached `ETag` kept matching and a conditional poll never
+/// saw the new `dc:creator` the feed now prints.
+#[test]
+fn renaming_the_author_invalidates_a_cached_etag() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_item_type(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let path = format!("/rss/feed-rename-{stamp}.xml");
+        let mut query = feed_query(&format!("feed_rename_{stamp}"), &path);
+        isolate(&mut query, &stamp);
+
+        let before_name = format!("before_{}", &stamp[stamp.len() - 12..]);
+        let after_name = format!("after_{}", &stamp[stamp.len() - 12..]);
+        let author = create_user(app, &before_name).await;
+        let id = create_item_with(
+            app,
+            &format!("Byline {stamp}"),
+            1,
+            chrono::Utc::now().timestamp(),
+            author,
+            serde_json::json!({}),
+        )
+        .await;
+        register(app, &query).await;
+
+        let (status, headers, body) = send(
+            app,
+            &query,
+            Request::get(&path).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains(&before_name), "{body}");
+        let etag = headers.get("etag").unwrap().to_str().unwrap().to_string();
+
+        // Sanity: the same byline still matches the cached ETag.
+        let (status, _, _) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-none-match", &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED, "before the rename");
+
+        sqlx::query("UPDATE users SET name = $1 WHERE id = $2")
+            .bind(&after_name)
+            .bind(author)
+            .execute(&app.db)
+            .await
+            .expect("rename author");
+
+        let (status, headers, body) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-none-match", &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a renamed author must not be served as 304: {body}"
+        );
+        assert!(
+            body.contains(&after_name),
+            "the new name must be in the body: {body}"
+        );
+        assert!(!body.contains(&before_name), "{body}");
+        assert_ne!(headers.get("etag").unwrap().to_str().unwrap(), etag);
+
+        delete_items(app, &[id]).await;
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(author)
+            .execute(&app.db)
+            .await
+            .ok();
+        unregister(app, &query).await;
+    });
+}
+
+/// The defect: relabelling a tag left every entry's id, `changed` and link
+/// untouched too, so a cached `ETag` kept matching a document whose
+/// `<category>` now reads differently.
+#[test]
+fn relabelling_a_tag_invalidates_a_cached_etag() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_item_type(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let path = format!("/rss/feed-relabel-{stamp}.xml");
+        let mut query = feed_query(&format!("feed_relabel_{stamp}"), &path);
+        isolate(&mut query, &stamp);
+
+        let (category, terms) = create_terms(app, &stamp, ["Before", "Unused"]).await;
+        let tag = terms[0];
+        let id = create_item_with(
+            app,
+            &format!("Tagged {stamp}"),
+            1,
+            chrono::Utc::now().timestamp(),
+            Uuid::nil(),
+            serde_json::json!({ "field_tags": [tag.to_string()] }),
+        )
+        .await;
+        register(app, &query).await;
+
+        let (status, headers, body) = send(
+            app,
+            &query,
+            Request::get(&path).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(body.contains("<category>Before</category>"), "{body}");
+        let etag = headers.get("etag").unwrap().to_str().unwrap().to_string();
+
+        // Sanity: the same label still matches the cached ETag.
+        let (status, _, _) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-none-match", &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_MODIFIED, "before the relabel");
+
+        sqlx::query("UPDATE category_tag SET label = 'After' WHERE id = $1")
+            .bind(tag)
+            .execute(&app.db)
+            .await
+            .expect("relabel tag");
+        // No cache bump and no change to the item: the label on
+        // `category_tag` is the only thing that moved, and it alone has to
+        // move the `ETag`.
+
+        let (status, headers, body) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-none-match", &etag)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "a relabelled tag must not be served as 304: {body}"
+        );
+        assert!(
+            body.contains("<category>After</category>"),
+            "the new label must be in the body: {body}"
+        );
+        assert!(!body.contains("Before</category>"), "{body}");
+        assert_ne!(headers.get("etag").unwrap().to_str().unwrap(), etag);
+
+        delete_items(app, &[id]).await;
+        sqlx::query("DELETE FROM category_tag WHERE id = ANY($1)")
+            .bind(&terms)
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM category WHERE id = $1")
+            .bind(&category)
+            .execute(&app.db)
+            .await
+            .ok();
+        unregister(app, &query).await;
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -1321,7 +1710,7 @@ fn a_feed_carries_its_own_item_count_not_the_page_size() {
         let path = format!("/rss/feed-count-{stamp}.xml");
         let mut query = feed_query(&format!("feed_count_{stamp}"), &path);
         isolate(&mut query, &stamp);
-        query.display.items_per_page = 2;
+        query.display.items_per_page = Some(2);
         query.display.feed =
             Some(serde_json::from_value(serde_json::json!({"path": path, "items": 3})).unwrap());
         let base = chrono::Utc::now().timestamp();
@@ -1336,6 +1725,372 @@ fn a_feed_carries_its_own_item_count_not_the_page_size() {
         assert_eq!(body.matches("<item>").count(), 3, "{body}");
 
         delete_items(app, &ids).await;
+        unregister(app, &query).await;
+    });
+}
+
+// ---------------------------------------------------------------------------
+// B171: the channel link is the address a visitor actually uses, so a gather
+// reachable only through a URL alias (no `canonical_url`, the way the stock
+// blog ships) still links that alias rather than `/gather/{query_id}`.
+// ---------------------------------------------------------------------------
+
+/// Step 2's evidence: a `canonical_url` that names the same address a URL
+/// alias already rewrites to a gather's `/gather/{id}` does not loop.
+///
+/// `check_redirect` (`crate::middleware::redirect`) is driven by
+/// `RedirectCache::find`, and `path_alias_fallback`
+/// (`crate::middleware::path_alias`) is driven by
+/// `UrlAlias::find_by_alias_with_context`: this exercises the exact pair of
+/// lookups each middleware runs, straight against the database rather than
+/// through a mock. A request for `/gather/{id}` finds the redirect row and is
+/// sent to the alias (one 301 hop, asserted below); a request for the alias
+/// finds no redirect row at all, so `check_redirect` never fires for it a
+/// second time, and the alias rewrite alone finishes the request.
+///
+/// That the alias rewrite's own internal re-dispatch cannot invoke
+/// `check_redirect` again is a fact of how both `main.rs` and the `TestApp`
+/// harness are wired, not something this test can exercise directly:
+/// `path_alias_fallback`'s inner router (`shared_router` in both) is cloned
+/// from `inner_router` *before* `.layer(check_redirect)` is added to the outer
+/// one, so the fallback's re-dispatch runs none of the outer middleware,
+/// `check_redirect` included. A real loop needs two redirect rows pointing at
+/// each other; nothing here, or `sync_canonical_redirect`, writes that.
+#[test]
+fn a_canonical_url_duplicating_an_alias_does_not_loop() {
+    run_test(async {
+        let app = shared_app().await;
+        common::ensure_plugin_tables(app, "trovato_redirects");
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let gather_path = format!("/gather/loop_{stamp}");
+        let alias_path = format!("/loop-{stamp}");
+
+        // What `sync_canonical_redirect` would write for `canonical_url: alias_path`.
+        trovato_kernel::services::redirect::Redirect::create(
+            &app.db,
+            &gather_path,
+            &alias_path,
+            301,
+            "en",
+        )
+        .await
+        .expect("create redirect");
+
+        // The alias already seeded for the gather, the one `canonical_url`
+        // would duplicate.
+        UrlAlias::create(
+            &app.db,
+            CreateUrlAlias {
+                source: gather_path.clone(),
+                alias: alias_path.clone(),
+                language: Some("en".to_string()),
+                stage_id: Some(LIVE_STAGE_ID),
+            },
+        )
+        .await
+        .expect("create alias");
+
+        let cache = trovato_kernel::services::redirect::RedirectCache::new();
+
+        let redirect = cache
+            .find(&app.db, &gather_path, "en")
+            .await
+            .expect("lookup")
+            .expect("the raw gather path redirects once");
+        assert_eq!(redirect.destination, alias_path, "redirects to the alias");
+
+        let second_hop = cache
+            .find(&app.db, &alias_path, "en")
+            .await
+            .expect("lookup");
+        assert!(
+            second_hop.is_none(),
+            "the alias itself must carry no redirect, or the hop would repeat: {second_hop:?}"
+        );
+
+        let resolved =
+            UrlAlias::find_by_alias_with_context(&app.db, &alias_path, LIVE_STAGE_ID, "en")
+                .await
+                .expect("lookup")
+                .expect("the alias resolves");
+        assert_eq!(
+            resolved.source, gather_path,
+            "the alias rewrites back to the gather path, internally, with no further redirect"
+        );
+
+        sqlx::query("DELETE FROM redirect WHERE source = $1")
+            .bind(&gather_path)
+            .execute(&app.db)
+            .await
+            .ok();
+        sqlx::query("DELETE FROM url_alias WHERE alias = $1")
+            .bind(&alias_path)
+            .execute(&app.db)
+            .await
+            .ok();
+    });
+}
+
+/// The stock blog has no `canonical_url`, only a URL alias (`/blog` to
+/// `/gather/blog_listing`): the defect being that the channel link was
+/// `/gather/blog_listing`, the address nobody visiting the site ever uses.
+#[test]
+fn the_blog_gather_links_its_url_alias_not_the_raw_gather_path() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_blog_type(app).await;
+        let blog = shipped_blog_listing(app).await;
+
+        let site_url = app
+            .state
+            .runtime()
+            .site_url
+            .trim_end_matches('/')
+            .to_string();
+
+        for path in ["/blog/feed.xml", "/blog/feed.atom"] {
+            let (status, body) = get(app, &blog, path).await;
+            assert_eq!(status, StatusCode::OK, "{path}: {body}");
+            // The channel's own link, exactly: `{site_url}/blog` alone is a
+            // prefix of the feed's self link (`/blog/feed.xml`), so it would
+            // be found whatever the channel link said.
+            let channel_link = if path.ends_with(".atom") {
+                format!(r#"<link rel="alternate" type="text/html" href="{site_url}/blog"/>"#)
+            } else {
+                format!("<link>{site_url}/blog</link>")
+            };
+            assert!(
+                body.contains(&channel_link),
+                "{path}: the channel link must be the alias, was:\n{body}"
+            );
+            assert!(
+                !body.contains("/gather/blog_listing"),
+                "{path}: the raw gather path must not leak into the channel, was:\n{body}"
+            );
+        }
+    });
+}
+
+/// `canonical_url` still wins over an alias, when a query has both: the
+/// address the query itself declares as canonical is not second-guessed.
+#[test]
+fn a_canonical_url_still_wins_over_an_alias() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_item_type(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let path = format!("/rss/feed-canon-{stamp}.xml");
+        let mut query = feed_query(&format!("feed_canon_{stamp}"), &path);
+        query.display.canonical_url = Some(format!("/canon-{stamp}"));
+        register(app, &query).await;
+
+        // An alias for the gather's default path, which must lose to
+        // `canonical_url`.
+        let gather_path = format!("/gather/feed_canon_{stamp}");
+        let alias_path = format!("/alias-{stamp}");
+        UrlAlias::create(
+            &app.db,
+            CreateUrlAlias {
+                source: gather_path,
+                alias: alias_path.clone(),
+                language: Some("en".to_string()),
+                stage_id: Some(LIVE_STAGE_ID),
+            },
+        )
+        .await
+        .expect("create alias");
+
+        let site_url = app
+            .state
+            .runtime()
+            .site_url
+            .trim_end_matches('/')
+            .to_string();
+        let (status, body) = get(app, &query, &path).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            body.contains(&format!(
+                "<link>{site_url}{}",
+                query.display.canonical_url.clone().unwrap()
+            )),
+            "canonical_url must win over the alias: {body}"
+        );
+        assert!(!body.contains(&alias_path), "{body}");
+
+        sqlx::query("DELETE FROM url_alias WHERE alias = $1")
+            .bind(&alias_path)
+            .execute(&app.db)
+            .await
+            .ok();
+        unregister(app, &query).await;
+    });
+}
+
+/// With neither an alias nor a `canonical_url`, the channel link is still
+/// `/gather/{query_id}`: this feature must not change a gather with no address
+/// of its own.
+#[test]
+fn with_no_alias_and_no_canonical_the_channel_link_is_the_gather_path() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_item_type(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let path = format!("/rss/feed-bare-{stamp}.xml");
+        let query = feed_query(&format!("feed_bare_{stamp}"), &path);
+        register(app, &query).await;
+
+        let site_url = app
+            .state
+            .runtime()
+            .site_url
+            .trim_end_matches('/')
+            .to_string();
+        let (status, body) = get(app, &query, &path).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            body.contains(&format!("<link>{site_url}/gather/feed_bare_{stamp}</link>")),
+            "{body}"
+        );
+
+        unregister(app, &query).await;
+    });
+}
+
+/// Per author and per tag feeds keep their argument home paths: this feature
+/// only changes the tier below `canonical_url`, which an argument route never
+/// reaches.
+#[test]
+fn an_argument_feeds_home_path_is_unaffected_by_the_alias() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_blog_type(app).await;
+        let blog = shipped_blog_listing(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let name = format!("dana{}", &stamp[stamp.len() - 12..]);
+        let dana = create_user(app, &name).await;
+
+        let site_url = app
+            .state
+            .runtime()
+            .site_url
+            .trim_end_matches('/')
+            .to_string();
+        let (status, body) = get(app, &blog, &format!("/blog/author/{name}/feed.xml")).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert!(
+            body.contains(&format!("<link>{site_url}/blog/author/{name}</link>")),
+            "an argument feed's channel link is its own route, not the alias: {body}"
+        );
+
+        sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(dana)
+            .execute(&app.db)
+            .await
+            .ok();
+    });
+}
+
+/// An alias written after the gather is registered still reaches the feed: the
+/// channel link is resolved per request (cached), not baked in at startup like
+/// `canonical_url` and `display.routes` are. The ETag must change with it,
+/// since the channel link is part of the document.
+#[test]
+fn an_alias_written_after_startup_reaches_the_feed_and_changes_the_etag() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_item_type(app).await;
+
+        let stamp = Uuid::now_v7().simple().to_string();
+        let path = format!("/rss/feed-late-alias-{stamp}.xml");
+        let query = feed_query(&format!("feed_late_{stamp}"), &path);
+        register(app, &query).await;
+
+        let site_url = app
+            .state
+            .runtime()
+            .site_url
+            .trim_end_matches('/')
+            .to_string();
+        let gather_path = format!("/gather/feed_late_{stamp}");
+        let (status, headers, before) = send(
+            app,
+            &query,
+            Request::get(&path).body(Body::empty()).unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{before}");
+        assert!(
+            before.contains(&format!("<link>{site_url}{gather_path}</link>")),
+            "no alias yet: {before}"
+        );
+        let etag_before = headers.get("etag").unwrap().to_str().unwrap().to_string();
+
+        let alias_path = format!("/late-alias-{stamp}");
+        UrlAlias::create(
+            &app.db,
+            CreateUrlAlias {
+                source: gather_path.clone(),
+                alias: alias_path.clone(),
+                language: Some("en".to_string()),
+                stage_id: Some(LIVE_STAGE_ID),
+            },
+        )
+        .await
+        .expect("create alias");
+
+        // `UrlAlias::create` bumps `CacheKind::Menus`, which every server
+        // (including this one) picks up on its 250ms poll
+        // (`cache::generation::spawn_watcher`), the same propagation delay
+        // `cache_test.rs` already waits out for other kinds. The poll bounds
+        // nothing on a loaded runner, so ask until the alias shows or a
+        // generous deadline passes, rather than once after a fixed sleep.
+        let alias_link = format!("<link>{site_url}{alias_path}</link>");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let (status, headers, after) = loop {
+            let (status, headers, body) = send(
+                app,
+                &query,
+                Request::get(&path).body(Body::empty()).unwrap(),
+            )
+            .await;
+            if body.contains(&alias_link) || std::time::Instant::now() >= deadline {
+                break (status, headers, body);
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
+        assert_eq!(status, StatusCode::OK, "{after}");
+        assert!(
+            after.contains(&alias_link),
+            "the alias must reach the feed without a restart: {after}"
+        );
+        let etag_after = headers.get("etag").unwrap().to_str().unwrap().to_string();
+        assert_ne!(
+            etag_before, etag_after,
+            "the channel link changed, so the etag must too"
+        );
+
+        // The old etag must not satisfy a conditional request against the new
+        // document: a real reader with the stale etag must see the new link.
+        let (status, _, body) = send(
+            app,
+            &query,
+            Request::get(&path)
+                .header("if-none-match", &etag_before)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        sqlx::query("DELETE FROM url_alias WHERE alias = $1")
+            .bind(&alias_path)
+            .execute(&app.db)
+            .await
+            .ok();
         unregister(app, &query).await;
     });
 }

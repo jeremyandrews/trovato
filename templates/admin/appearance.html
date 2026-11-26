@@ -1,31 +1,28 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/list.html" as list %}
+
+{% block page_title %}{{ t(s="Themes") }}{% endblock page_title %}
 
 {% block content %}
-{{ list::header(title="Appearance") }}
+<p>{{ t(s="A theme is a set of templates and styles laid over the stock theme: a page the theme does not provide a template for is drawn by the stock one. Themes are directories under {dir}, each with a {file}.", dir="THEMES_DIR", file="theme.toml") }}</p>
 
-{% if flash %}
-<div class="messages"><div class="message message--success" role="status">{{ flash }}</div></div>
-{% endif %}
-
-<div class="admin-card">
-    <p>A theme is a set of templates and styles laid over the stock theme: a page the theme does not provide a template for is drawn by the stock one. Themes are directories under <code>THEMES_DIR</code>, each with a <code>theme.toml</code>.</p>
+<section class="admin-card" aria-labelledby="installed-themes-heading">
+    <h2 id="installed-themes-heading">{{ t(s="Installed themes") }}</h2>
     <ul class="theme-list">
         {% for theme in themes %}
         <li class="theme-card{% if theme.is_default %} theme-card--default{% endif %}">
             {% if theme.has_screenshot %}
-            <img class="theme-card__screenshot" src="/admin/appearance/{{ theme.machine_name }}/screenshot" alt="Screenshot of the {{ theme.name }} theme">
+            <img class="theme-card__screenshot" src="/admin/appearance/{{ theme.machine_name }}/screenshot" alt="{{ t(s='Screenshot of the {name} theme', name=theme.name) }}">
             {% else %}
             <div class="theme-card__screenshot theme-card__screenshot--none" aria-hidden="true">{{ theme.name }}</div>
             {% endif %}
             <div class="theme-card__body">
                 <h3 class="theme-card__name">{{ theme.name }} <code class="theme-card__machine">{{ theme.machine_name }}</code></h3>
-                {% if theme.is_default %}<span class="theme-card__badge">Default theme</span>{% endif %}
-                {% if theme.is_admin %}<span class="theme-card__badge theme-card__badge--admin">Administration theme</span>{% endif %}
+                {% if theme.is_default %}<span class="theme-card__badge">{{ t(s="Default theme") }}</span>{% endif %}
+                {% if theme.is_admin %}<span class="theme-card__badge theme-card__badge--admin">{{ t(s="Administration theme") }}</span>{% endif %}
                 <p>{{ theme.description }}</p>
                 {% if theme.refused %}
-                <div class="message message--error" role="status">
-                    <p>This theme cannot be activated: its templates do not load. The site uses the stock theme in its place until they are fixed and the server is restarted.</p>
+                <div class="notice notice--error" role="status">
+                    <p><strong class="notice__label">{{ t(s="Error:") }}</strong> {{ t(s="This theme cannot be activated: its templates do not load. The site uses the stock theme in its place until they are fixed and the server is restarted.") }}</p>
                     <pre class="theme-card__refusal">{{ theme.refused }}</pre>
                 </div>
                 {% endif %}
@@ -33,10 +30,10 @@
         </li>
         {% endfor %}
     </ul>
-</div>
+</section>
 
-<div class="admin-card">
-    <h3 class="report-heading">Choose themes</h3>
+<section class="admin-card" aria-labelledby="choose-themes-heading">
+    <h2 id="choose-themes-heading">{{ t(s="Choose themes") }}</h2>
     {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
-</div>
-{% endblock %}
+</section>
+{% endblock content %}

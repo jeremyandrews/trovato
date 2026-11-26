@@ -3,11 +3,15 @@
 //! REST endpoints for managing categories and tags, plus an HTML browse page
 //! for the "topics" category that renders tags as a link grid.
 
+use crate::content::owned_vocabulary;
 use crate::error::AppError;
-use crate::models::{CreateCategory, CreateTag, UpdateCategory, UpdateTag};
+use crate::models::{Category, CreateCategory, CreateTag, Tag, UpdateCategory, UpdateTag};
 use crate::pagination::{Page, PageParams};
-use crate::routes::helpers::{inject_site_context, require_csrf_header, require_permission_json};
+use crate::routes::helpers::{
+    get_user_context, inject_site_context, require_csrf_header, require_permission_json,
+};
 use crate::state::AppState;
+use crate::tap::UserContext;
 use axum::{
     Router,
     extract::{Path, Query, State},
@@ -21,7 +25,7 @@ use uuid::Uuid;
 
 /// Permission required to mutate the taxonomy (create/update/delete/reparent
 /// categories and tags).
-const ADMINISTER_CATEGORIES: &str = "administer categories";
+const ADMINISTER_CATEGORIES: &str = owned_vocabulary::ADMINISTER_CATEGORIES;
 
 /// Default page size of a category or tag list.
 const LIST_DEFAULT: i64 = 100;
@@ -169,16 +173,52 @@ struct SetParentsRequest {
 }
 
 // -------------------------------------------------------------------------
+// Read access (B189)
+// -------------------------------------------------------------------------
+
+/// The vocabulary `id`, if `viewer` may read it
+/// ([`owned_vocabulary::may_view`]). A missing vocabulary and one the viewer
+/// may not read are the same 404, so the answer says nothing about whether an
+/// owner's vocabulary exists.
+async fn readable_category(
+    state: &AppState,
+    viewer: &UserContext,
+    id: &str,
+) -> Result<Category, AppError> {
+    owned_vocabulary::visible_category(state, viewer, id)
+        .await
+        .map_err(AppError::internal)?
+        .ok_or_else(|| AppError::with_status(StatusCode::NOT_FOUND, "category not found"))
+}
+
+/// The term `id`, if `viewer` may read its vocabulary; otherwise, missing or
+/// not, the same 404.
+async fn readable_tag(state: &AppState, viewer: &UserContext, id: Uuid) -> Result<Tag, AppError> {
+    let not_found = || AppError::with_status(StatusCode::NOT_FOUND, "tag not found");
+    let tag = state
+        .categories()
+        .get_tag(id)
+        .await
+        .map_err(AppError::internal)?
+        .ok_or_else(not_found)?;
+    owned_vocabulary::visible_category(state, viewer, &tag.category_id)
+        .await
+        .map_err(AppError::internal)?
+        .ok_or_else(not_found)?;
+    Ok(tag)
+}
+
+// -------------------------------------------------------------------------
 // Category handlers
 // -------------------------------------------------------------------------
 
 async fn list_categories(
     State(state): State<AppState>,
+    session: Session,
     Query(paging): Query<PageParams>,
 ) -> Result<Json<Page<CategoryResponse>>, AppError> {
-    let categories = state
-        .categories()
-        .list_categories()
+    let viewer = get_user_context(&session, &state).await;
+    let categories = owned_vocabulary::visible_categories(&state, &viewer)
         .await
         .map_err(AppError::internal)?;
 
@@ -199,14 +239,11 @@ async fn list_categories(
 
 async fn get_category(
     State(state): State<AppState>,
+    session: Session,
     Path(id): Path<String>,
 ) -> Result<Json<CategoryResponse>, AppError> {
-    let category = state
-        .categories()
-        .get_category(&id)
-        .await
-        .map_err(AppError::internal)?
-        .ok_or_else(|| AppError::with_status(StatusCode::NOT_FOUND, "category not found"))?;
+    let viewer = get_user_context(&session, &state).await;
+    let category = readable_category(&state, &viewer, &id).await?;
 
     Ok(Json(CategoryResponse {
         id: category.id,
@@ -298,9 +335,12 @@ async fn delete_category(
 
 async fn list_tags(
     State(state): State<AppState>,
+    session: Session,
     Path(category_id): Path<String>,
     Query(paging): Query<PageParams>,
 ) -> Result<Json<Page<TagResponse>>, AppError> {
+    let viewer = get_user_context(&session, &state).await;
+    readable_category(&state, &viewer, &category_id).await?;
     let tags = state
         .categories()
         .list_tags(&category_id)
@@ -325,9 +365,12 @@ async fn list_tags(
 
 async fn get_root_tags(
     State(state): State<AppState>,
+    session: Session,
     Path(category_id): Path<String>,
     Query(paging): Query<PageParams>,
 ) -> Result<Json<Page<TagResponse>>, AppError> {
+    let viewer = get_user_context(&session, &state).await;
+    readable_category(&state, &viewer, &category_id).await?;
     let tags = state
         .categories()
         .get_root_tags(&category_id)
@@ -352,14 +395,11 @@ async fn get_root_tags(
 
 async fn get_tag(
     State(state): State<AppState>,
+    session: Session,
     Path(id): Path<Uuid>,
 ) -> Result<Json<TagResponse>, AppError> {
-    let tag = state
-        .categories()
-        .get_tag(id)
-        .await
-        .map_err(AppError::internal)?
-        .ok_or_else(|| AppError::with_status(StatusCode::NOT_FOUND, "tag not found"))?;
+    let viewer = get_user_context(&session, &state).await;
+    let tag = readable_tag(&state, &viewer, id).await?;
 
     Ok(Json(TagResponse {
         id: tag.id,
@@ -457,14 +497,21 @@ async fn delete_tag(
 
 async fn get_parents(
     State(state): State<AppState>,
+    session: Session,
     Path(id): Path<Uuid>,
     Query(paging): Query<PageParams>,
 ) -> Result<Json<Page<TagResponse>>, AppError> {
+    let viewer = get_user_context(&session, &state).await;
+    readable_tag(&state, &viewer, id).await?;
     let parents = state
         .categories()
         .get_parents(id)
         .await
         .map_err(AppError::internal)?;
+    let parents =
+        owned_vocabulary::visible_terms(&state, &viewer, parents, |t| t.category_id.as_str())
+            .await
+            .map_err(AppError::internal)?;
 
     Ok(Json(Page::slice(
         parents
@@ -503,14 +550,21 @@ async fn set_parents(
 
 async fn get_children(
     State(state): State<AppState>,
+    session: Session,
     Path(id): Path<Uuid>,
     Query(paging): Query<PageParams>,
 ) -> Result<Json<Page<TagResponse>>, AppError> {
+    let viewer = get_user_context(&session, &state).await;
+    readable_tag(&state, &viewer, id).await?;
     let children = state
         .categories()
         .get_children(id)
         .await
         .map_err(AppError::internal)?;
+    let children =
+        owned_vocabulary::visible_terms(&state, &viewer, children, |t| t.category_id.as_str())
+            .await
+            .map_err(AppError::internal)?;
 
     Ok(Json(Page::slice(
         children
@@ -531,14 +585,21 @@ async fn get_children(
 
 async fn get_ancestors(
     State(state): State<AppState>,
+    session: Session,
     Path(id): Path<Uuid>,
     Query(paging): Query<PageParams>,
 ) -> Result<Json<Page<TagWithDepthResponse>>, AppError> {
+    let viewer = get_user_context(&session, &state).await;
+    readable_tag(&state, &viewer, id).await?;
     let ancestors = state
         .categories()
         .get_ancestors(id)
         .await
         .map_err(AppError::internal)?;
+    let ancestors =
+        owned_vocabulary::visible_terms(&state, &viewer, ancestors, |t| t.tag.category_id.as_str())
+            .await
+            .map_err(AppError::internal)?;
 
     Ok(Json(Page::slice(
         ancestors
@@ -562,14 +623,22 @@ async fn get_ancestors(
 
 async fn get_descendants(
     State(state): State<AppState>,
+    session: Session,
     Path(id): Path<Uuid>,
     Query(paging): Query<PageParams>,
 ) -> Result<Json<Page<TagWithDepthResponse>>, AppError> {
+    let viewer = get_user_context(&session, &state).await;
+    readable_tag(&state, &viewer, id).await?;
     let descendants = state
         .categories()
         .get_descendants(id)
         .await
         .map_err(AppError::internal)?;
+    let descendants = owned_vocabulary::visible_terms(&state, &viewer, descendants, |t| {
+        t.tag.category_id.as_str()
+    })
+    .await
+    .map_err(AppError::internal)?;
 
     Ok(Json(Page::slice(
         descendants
@@ -593,14 +662,21 @@ async fn get_descendants(
 
 async fn get_breadcrumb(
     State(state): State<AppState>,
+    session: Session,
     Path(id): Path<Uuid>,
     Query(paging): Query<PageParams>,
 ) -> Result<Json<Page<TagResponse>>, AppError> {
+    let viewer = get_user_context(&session, &state).await;
+    readable_tag(&state, &viewer, id).await?;
     let breadcrumb = state
         .categories()
         .get_breadcrumb(id)
         .await
         .map_err(AppError::internal)?;
+    let breadcrumb =
+        owned_vocabulary::visible_terms(&state, &viewer, breadcrumb, |t| t.category_id.as_str())
+            .await
+            .map_err(AppError::internal)?;
 
     Ok(Json(Page::slice(
         breadcrumb
@@ -631,11 +707,23 @@ async fn browse_topics(
     State(state): State<AppState>,
     session: Session,
 ) -> axum::response::Response {
-    let mut tags = state
-        .categories()
-        .list_tags("topics")
+    // Only if the viewer may read the `topics` vocabulary (B189); a site-wide
+    // one, which it is unless a plugin made it an owner's, always.
+    let viewer = get_user_context(&session, &state).await;
+    let readable = owned_vocabulary::visible_category(&state, &viewer, "topics")
         .await
-        .unwrap_or_default();
+        .ok()
+        .flatten()
+        .is_some();
+    let mut tags = if readable {
+        state
+            .categories()
+            .list_tags("topics")
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
     // Re-sort case-insensitively for the browse page. list_tags returns
     // weight-based order; alphabetical is more intuitive for a directory.
     tags.sort_by_key(|a| a.label.to_lowercase());

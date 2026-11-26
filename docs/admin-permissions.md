@@ -97,6 +97,32 @@ Field-level edit access is enforced on the same writes. A field a
 changed by them, the forms do not render it as an input, and a submission that
 leaves it out keeps the stored value rather than erasing it.
 
+### Revisions
+
+These routes are under `/item/*` rather than `/admin/*`, like the rest of the
+revision history (`/item/{id}/revisions` and its preview and compare), but
+belong in this table for the same reason the publishing permissions above do:
+they are permission-gated rather than `require_admin`-gated.
+
+| Route | Method | Permission |
+|---|---|---|
+| `/item/{id}/revisions/{rev}/delete` | GET, POST | `delete revisions`, and delete access to the item |
+
+The GET is a confirm page, not an immediate delete: it checks the same two
+things the POST does and answers the same way, so a user who cannot delete
+never sees a form offering to. Both refuse the item's current revision with
+**409**, a user who holds the permission but not delete access on this item
+with **403**, and a revision that does not belong to the item (or does not
+exist) with **404**. `ItemService::delete_revision` is the one path, whether
+reached from this route or from `trovato item revision-delete <item>
+<revision>` (`docs/cli-reference.md`), and it is never the item's current
+revision: the item row points at it, and the foreign key from
+`item.current_revision_id` to `item_revision.id` refuses that delete at the
+database even if the service check above it did not.
+
+`view revisions` and `delete revisions` are granted by no migration; an
+administrator holds both implicitly, as every permission here.
+
 ## Comments, files and media
 
 | Route | Method | Permission |
@@ -239,6 +265,20 @@ neither.
 While maintenance mode is on, a signed-in user without `bypass maintenance mode`
 gets the maintenance page like an anonymous visitor. Administrators hold it
 implicitly; grant it to a role whose members must keep working during the window.
+
+## Redirects
+
+| Route | Method | Permission |
+|---|---|---|
+| `/admin/config/redirects` | GET | `view redirects` |
+| `/admin/config/redirects/add`, `/{id}/edit` and `/{id}/delete` | GET, POST | `administer redirects` |
+
+Both are declared by `trovato_redirects`, so neither is grantable on a site
+where that plugin is disabled (the routes themselves 404 there too). The JSON
+API mirrors this: `GET /api/v1/redirects` and `GET /api/v1/redirect/{id}` take
+`view redirects`; `POST /api/v1/redirect`, `PUT /api/v1/redirect/{id}` and
+`DELETE /api/v1/redirect/{id}` take `administer redirects` and the
+`X-CSRF-Token` header.
 
 ## Appearance
 

@@ -23,9 +23,9 @@ The authoritative source is `crates/plugin-sdk/src/host_errors.rs`.
 | -13 | `ERR_SERIALIZE_FAILED` | Result serialization to JSON failed | Kernel bug — file issue |
 | -14 | `ERR_PARAM_DESERIALIZE` | JSON parameter deserialization failed | Check parameter JSON format |
 | -15 | `ERR_INVALID_IDENTIFIER` | Invalid table or column name | Names must match `[a-zA-Z_][a-zA-Z0-9_]*` |
-| -82 | `ERR_DB_BATCH_TOO_LARGE` | `insert-many` was given more than 500 rows; nothing was written (added by B80) | Split the batch |
+| -82 | `ERR_DB_BATCH_TOO_LARGE` | `insert-many` was given more than 500 rows, or `search-index-enqueue` more than 10,000 ids; nothing was written (added by B80; B218) | Split the batch |
 
-An array `where` on `update` or `delete` that is empty, names an unknown op, or has an empty `in` list is `-14`, as are `insert-many` rows that disagree on their columns.
+An array `where` on `update` or `delete` that is empty, names an unknown op, or has an empty `in` list is `-14`, as are `insert-many` rows that disagree on their columns, and a `search-index-enqueue` argument that is not a JSON array of UUIDs.
 
 ## AI API Errors
 
@@ -87,6 +87,8 @@ returns `-14` for a language the site does not have, or the item's own, and
 | -61 | `ERR_ITEM_BACKGROUND_DENIED` | Called from cron or a queue worker without the `item_background` capability | Declare `item_background = true` in `[capabilities]` if the plugin needs kernel authority there |
 | -62 | `ERR_ITEM_NOT_FOUND` | `delete-item` was given an id that names no item | Treat as already deleted if that is what you meant |
 | -63 | `ERR_ITEM_WRITE_DEPTH` | A write made from inside item write taps nested 4 deep | A tap that writes items should not depend on a chain of other plugins' taps writing in turn |
+| -64 | `ERR_ITEM_SERVICE_UNAVAILABLE` | The dispatch path carries no item service, so nothing was decided or written; the server log names the plugin and the call | A kernel wiring fault or a test harness that never bound one, not a plugin error: report it |
+| -65 | `ERR_ITEM_INVALID_FIELDS` | `save-item` was refused by the field value check every item write runs: a field holds more values than its `cardinality` allows, or a `CategoryReference` field holds something that is not a tag of its category. Nothing was written | Send no more values than the field's cardinality, and only tag ids of the field's category, as a list |
 
 ## Text Format Errors
 
@@ -124,14 +126,18 @@ write or read fails and `-14` for a request that is not valid JSON.
 
 ## User Directory Errors
 
-Returned by `host::load_users` (`trovato:kernel/user-api` `load-users`, added by
-B73).
+Returned by `host::load_users`, `host::find_user_by_name` and
+`host::find_users_by_name_prefix` (`trovato:kernel/user-api` `load-users`,
+`find-user-by-name` and `find-users-by-name-prefix`; the first added by B73,
+the other two by B179).
 
 | Code | Constant | Meaning | Recovery |
 |------|----------|---------|----------|
 | -73 | `ERR_USER_DIRECTORY_DENIED` | The plugin does not declare `user_directory = true` under `[capabilities]` | Declare it, if the plugin needs to read about users it is not serving |
 | -74 | `ERR_USER_IDS_INVALID` | An id is not a user id (a UUID) | Pass user ids as the kernel gave them |
 | -75 | `ERR_USER_IDS_TOO_MANY` | More than 100 ids in one call | Split the batch |
+| -76 | `ERR_USER_NAME_INVALID` | `find-user-by-name`'s name was empty or longer than 255 characters | Pass a name within that range |
+| -77 | `ERR_USER_NAME_PREFIX_INVALID` | `find-users-by-name-prefix`'s prefix was empty or longer than 255 characters | Pass a prefix within that range |
 
 ## Mail to Member Errors
 

@@ -67,6 +67,14 @@ echo ""
 
 run_check "Unit tests" cargo test --all --lib
 run_check "Doc tests" cargo test --all --doc
+# The expand-then-contract rule for migrations (docs/design/upgrades-and-probes.md
+# §3), named on its own so a failure says what it is. Mirrors CI.
+run_check "Migration compatibility rule" cargo test --all --lib migration_rule
+# The CI timing scripts and the test budget (mirrors CI: the Test job's
+# "Test the timing scripts" step). No database, no build.
+run_check "CI timing scripts" ./scripts/ci-scripts-test.sh
+# The version and changelog gates (mirrors CI: the Version Step job).
+run_check "Release gate scripts" ./scripts/release-scripts-test.sh
 
 # SQL custom-expr guard (PF-5 durable convention, mirrors CI: SQL Custom-Expr
 # Guard job). Ratchets bare `Expr::cust(` sites; a new one must be confirmed
@@ -92,7 +100,7 @@ if [[ "$MODE" == "full" ]]; then
     echo "=== WASM plugin build ==="
     if cargo build -p trovato_blog -p trovato_search \
         -p test_e2e_caller -p test_e2e_callee -p test_e2e_bystander -p test_e2e_nocaps \
-        -p test_ai_background -p test_queue_worker -p test_item_writer -p test_site_queries -p test_item_deny -p test_members -p test_menu_entries -p test_page_builder_components \
+        -p test_ai_background -p test_queue_worker -p test_item_writer -p test_site_queries -p test_item_deny -p test_item_background -p test_members -p test_menu_entries -p test_page_builder_components \
         -p trovato_field_access_ref \
         -p trovato_recovery_ref -p test_recovery_bystander \
         -p trovato_record_ref \

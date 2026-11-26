@@ -10,7 +10,7 @@ use super::access;
 use super::access::GatherAccessConfig;
 use super::category_service::CategoryService;
 use super::extension::GatherExtensionRegistry;
-use super::query_builder::GatherQueryBuilder;
+use super::query_builder::{GatherQueryBuilder, field_value_text_sql};
 use super::types::{
     AggregateFunction, ContextualValue, FilterOperator, FilterValue, GatherQuery, GatherResult,
     MAX_GROUP_DEPTH, QueryContext, QueryDefinition, QueryDisplay, QueryFilter,
@@ -20,6 +20,7 @@ use crate::content::{ItemService, RecordTypeRegistry};
 use crate::metrics::{CacheName, Metrics};
 use crate::models::UrlAlias;
 use crate::services::ai_provider::AiProviderService;
+use crate::services::user::UserService;
 use crate::services::vector_store::{PgVectorStore, VectorStore};
 use crate::tap::UserContext;
 use anyhow::{Context, Result};
@@ -47,8 +48,25 @@ const MAX_CAPACITY: u64 = 1_000;
 /// TTL for the distinct-values cache (5 minutes).
 const DISTINCT_VALUES_TTL: Duration = Duration::from_secs(300);
 
+/// How long the site's items per page is kept before it is read again, on a
+/// server that missed the cache generation bump a save makes.
+const SITE_PAGE_SIZE_TTL: Duration = Duration::from_secs(60);
+
+/// Items per page for a gather that names none, on a site that set none.
+const DEFAULT_SITE_PAGE_SIZE: u32 = 10;
+
 /// Maximum entries in the distinct-values cache.
 const DISTINCT_VALUES_CAPACITY: u64 = 500;
+
+/// TTL for [`GatherService::outbound_alias_cache`], a safety net: the cache is
+/// also cleared at once when a `url_alias` write bumps `CacheKind::Menus`
+/// (`AppState::clear_local_cache`), so this only matters if a bump is missed.
+const OUTBOUND_ALIAS_TTL: Duration = Duration::from_secs(300);
+
+/// Maximum entries in [`GatherService::outbound_alias_cache`]: one per gather
+/// query that declares a feed and has neither `canonical_url` nor an
+/// argument's own route.
+const OUTBOUND_ALIAS_CAPACITY: u64 = 500;
 
 // The semantic candidate pool size is `GatherAccessConfig::semantic_search_max` (Story 3.4 /
 // D-26 over-fetch): the top-N nearest embeddings become the `id IN (...)`
@@ -65,6 +83,19 @@ pub struct GatherService {
     queries: Cache<String, GatherQuery>,
     /// Cache of distinct field values per `"item_type::source_field"`.
     distinct_values_cache: Cache<String, Vec<String>>,
+    /// The outbound URL alias of `/gather/{query_id}`, with the alias row's
+    /// own `changed`, per query id, for a feed with no argument home path and
+    /// no `canonical_url` ([`Self::outbound_alias_for_gather`]). `None` is
+    /// cached too: a query with no alias must not cost a lookup on every
+    /// request to its feed. Cleared at once on a `url_alias` write
+    /// ([`Self::clear_outbound_alias_cache`]), same as
+    /// [`crate::menu::clear_local_config_menus`].
+    outbound_alias_cache: Cache<String, Option<(String, i64)>>,
+    /// Moves on every clear of `outbound_alias_cache`. A lookup notes it before
+    /// reading `url_alias` and drops what it stored if it moved meanwhile, so a
+    /// read that started before an alias write cannot put the old answer back
+    /// after the write cleared the cache.
+    outbound_alias_generation: std::sync::atomic::AtomicU64,
     /// Maximum per_page for query execution (from `GATHER_MAX_PAGE_SIZE`).
     max_page_size: u32,
     /// D-26 over-fetch and backfill bounds for access-filtered pages. Was a set
@@ -92,12 +123,23 @@ pub struct GatherService {
     /// [`Self::item_access`]. When unset or a gather names no `record_type`, every
     /// gather is an Item gather and this is never consulted.
     record_types: OnceLock<Arc<RecordTypeRegistry>>,
+    /// The user service (B166), late-bound like [`Self::item_access`]: author
+    /// resolution needs its cache and its batched `find_many`, and
+    /// `UserService` is constructed after `GatherService` in `AppState`. When
+    /// unset (a narrow test harness), rows get no `author` key at all, same as
+    /// an unwired `item_access` skips the access pass rather than failing.
+    users: OnceLock<Arc<UserService>>,
     /// Serializes this server's query writes with its reloads. A write holds it
     /// from its database write until `queries` is updated; a reload holds it
     /// from reading the rows until it has applied them. Without it a reload
     /// could read the rows just before a write, then put the old query back
     /// over the new one, or drop a query registered meanwhile.
     writes: tokio::sync::Mutex<()>,
+    /// The site's items per page (`site_config.items_per_page`, set at
+    /// `/admin/config/site`), for a gather that names no page size of its own.
+    /// Read once and kept until the `SiteConfig` cache generation moves or
+    /// [`SITE_PAGE_SIZE_TTL`] passes, so a listing costs no query to learn it.
+    site_page_size: parking_lot::RwLock<Option<(u32, std::time::Instant)>>,
     /// Counts hits and misses in `queries` and `distinct_values_cache`.
     metrics: Arc<Metrics>,
 }
@@ -210,15 +252,58 @@ impl GatherService {
                 .max_capacity(DISTINCT_VALUES_CAPACITY)
                 .time_to_live(DISTINCT_VALUES_TTL)
                 .build(),
+            outbound_alias_cache: Cache::builder()
+                .max_capacity(OUTBOUND_ALIAS_CAPACITY)
+                .time_to_live(OUTBOUND_ALIAS_TTL)
+                .build(),
+            outbound_alias_generation: std::sync::atomic::AtomicU64::new(0),
             max_page_size: config.max_page_size,
             access: config.access,
             ai_providers,
             vector_store,
             item_access: OnceLock::new(),
             writes: tokio::sync::Mutex::new(()),
+            site_page_size: parking_lot::RwLock::new(None),
             record_types: OnceLock::new(),
+            users: OnceLock::new(),
             metrics,
         })
+    }
+
+    /// The site's items per page, for a gather that names none of its own.
+    ///
+    /// From the cache this service keeps (see `site_page_size`): a database
+    /// read at most once per `SITE_PAGE_SIZE_TTL`, and none while it is warm.
+    /// A value that is missing, unreadable or zero is the long-standing
+    /// default of 10.
+    pub async fn site_items_per_page(&self) -> u32 {
+        if let Some((size, loaded)) = *self.site_page_size.read()
+            && loaded.elapsed() < SITE_PAGE_SIZE_TTL
+        {
+            return size;
+        }
+        let stored = crate::models::SiteConfig::get(&self.pool, "items_per_page")
+            .await
+            .ok()
+            .flatten();
+        let size = stored
+            .as_ref()
+            .and_then(|v| match v {
+                serde_json::Value::Number(n) => n.as_u64().and_then(|n| u32::try_from(n).ok()),
+                serde_json::Value::String(s) => s.trim().parse::<u32>().ok(),
+                _ => None,
+            })
+            .filter(|n| *n > 0)
+            .unwrap_or(DEFAULT_SITE_PAGE_SIZE);
+        *self.site_page_size.write() = Some((size, std::time::Instant::now()));
+        size
+    }
+
+    /// Forget the site's items per page, so the next listing reads it again.
+    /// Called on a `SiteConfig` cache generation bump and when the site
+    /// settings form saves.
+    pub fn clear_site_settings(&self) {
+        *self.site_page_size.write() = None;
     }
 
     /// Late-bind the shared item-access seam (Story 3.4). Called once by
@@ -232,6 +317,14 @@ impl GatherService {
     /// by `AppState::new` after the registry is built. Idempotent (first wins).
     pub fn set_record_types(&self, record_types: Arc<RecordTypeRegistry>) {
         let _ = self.record_types.set(record_types);
+    }
+
+    /// Late-bind the user service (B166), so a row's `author_id` resolves to
+    /// a name (and a profile link) through the one cached lookup the item page
+    /// and `/api/item` also use. Called once by `AppState::new` after
+    /// `UserService` is constructed. Idempotent (first wins).
+    pub fn set_user_service(&self, users: Arc<UserService>) {
+        let _ = self.users.set(users);
     }
 
     /// Register a query definition.
@@ -303,6 +396,75 @@ impl GatherService {
         self.queries.iter().map(|(_k, v)| v).collect()
     }
 
+    /// The outbound URL alias of `/gather/{query_id}`, with its row's
+    /// `changed`, if one exists: the address a visitor to that gather's page
+    /// actually uses, when it has neither an argument home path nor a
+    /// `canonical_url` ([`crate::routes::feed`]'s channel link), and the time
+    /// to fold into that feed's `Last-Modified` so repointing the link moves
+    /// it too.
+    ///
+    /// Served from the private `outbound_alias_cache` once warm, so a feed request
+    /// costs no query beyond the first; a `url_alias` write clears the cache at
+    /// once ([`Self::clear_outbound_alias_cache`]), so an alias written after
+    /// startup reaches the feed without a restart.
+    ///
+    /// A lookup that fails answers `None` for this request only and is not
+    /// cached: the next request asks the database again rather than serving
+    /// the raw gather path until the TTL runs out.
+    pub async fn outbound_alias_for_gather(&self, query_id: &str) -> Option<(String, i64)> {
+        if let Some(cached) = self.outbound_alias_cache.get(query_id) {
+            return cached;
+        }
+        let generation = self.outbound_alias_generation();
+        let source = format!("/gather/{query_id}");
+        match UrlAlias::get_canonical_alias_and_changed(&self.pool, &source).await {
+            Ok(alias) => {
+                self.remember_outbound_alias(query_id, generation, alias.clone());
+                alias
+            }
+            Err(e) => {
+                tracing::warn!(
+                    query_id,
+                    error = %e,
+                    "failed to resolve the outbound alias of a gather's default URL"
+                );
+                None
+            }
+        }
+    }
+
+    fn outbound_alias_generation(&self) -> u64 {
+        self.outbound_alias_generation
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    /// Cache `alias` for `query_id`, as read from `url_alias` by a lookup that
+    /// started at `generation`. Stored first and checked after: if the cache
+    /// was cleared since the lookup started, the answer may predate the write
+    /// that cleared it, so it is dropped again. A clear that comes after the
+    /// check removes it anyway.
+    fn remember_outbound_alias(
+        &self,
+        query_id: &str,
+        generation: u64,
+        alias: Option<(String, i64)>,
+    ) {
+        self.outbound_alias_cache
+            .insert(query_id.to_string(), alias);
+        if self.outbound_alias_generation() != generation {
+            self.outbound_alias_cache.invalidate(query_id);
+        }
+    }
+
+    /// Drop this server's cache of [`Self::outbound_alias_for_gather`]: what a
+    /// `url_alias` write's `CacheKind::Menus` bump does here, alongside
+    /// [`crate::menu::clear_local_config_menus`].
+    pub fn clear_outbound_alias_cache(&self) {
+        self.outbound_alias_generation
+            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        self.outbound_alias_cache.invalidate_all();
+    }
+
     /// The registered gather a request path serves, if any.
     ///
     /// Covers every address the kernel serves a gather at by itself:
@@ -330,6 +492,38 @@ impl GatherService {
                     .iter()
                     .any(|route| route_pattern_matches(&route.path, path))
         })
+    }
+
+    /// The URL of the page that lists items tagged `slug` in `category`: the
+    /// path of a gather route whose one parameter maps its path segment through
+    /// `tag_category = category` (`/topics/{slug}`), with the slug in place of
+    /// the segment. `None` when no route maps the category that way.
+    ///
+    /// When several routes map one category, the one of the query with the
+    /// smallest id, then the shortest path, wins, so the answer does not depend
+    /// on the order of the in-memory query cache.
+    pub fn tag_url(&self, category: &str, slug: &str) -> Option<String> {
+        self.queries
+            .iter()
+            .flat_map(|(_k, query)| {
+                query
+                    .display
+                    .routes
+                    .iter()
+                    .filter_map(|route| {
+                        let [param] = route.params.as_slice() else {
+                            return None;
+                        };
+                        let placeholder = format!("{{{}}}", param.segment);
+                        (param.tag_category.as_deref() == Some(category)
+                            && route.path.matches('{').count() == 1
+                            && route.path.contains(&placeholder))
+                        .then(|| (query.query_id.clone(), route.path.clone(), placeholder))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .min_by(|a, b| (&a.0, a.1.len(), &a.1).cmp(&(&b.0, b.1.len(), &b.1)))
+            .map(|(_, path, placeholder)| path.replace(&placeholder, slug))
     }
 
     /// Maximum number of distinct values returned by [`Self::fetch_distinct_values`].
@@ -380,22 +574,24 @@ impl GatherService {
             return Ok(Vec::new());
         }
 
-        let values: Vec<String> = sqlx::query_scalar(
-            "SELECT DISTINCT fields->>$1 \
+        let reader = field_value_text_sql("fields", "$1");
+        let sql = format!(
+            "SELECT DISTINCT {reader} \
              FROM item \
              WHERE type = $2 \
                AND status = 1 \
-               AND fields->>$1 IS NOT NULL \
-               AND fields->>$1 <> '' \
+               AND {reader} IS NOT NULL \
+               AND {reader} <> '' \
              ORDER BY 1 \
-             LIMIT $3",
-        )
-        .bind(jsonb_key)
-        .bind(item_type)
-        .bind(Self::DISTINCT_VALUES_LIMIT)
-        .fetch_all(&self.pool)
-        .await
-        .context("failed to fetch distinct field values")?;
+             LIMIT $3"
+        );
+        let values: Vec<String> = sqlx::query_scalar(AssertSqlSafe(sql))
+            .bind(jsonb_key)
+            .bind(item_type)
+            .bind(Self::DISTINCT_VALUES_LIMIT)
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to fetch distinct field values")?;
 
         self.distinct_values_cache.insert(cache_key, values.clone());
 
@@ -494,17 +690,20 @@ impl GatherService {
         }
 
         // Build SQL with validated scope conditions interpolated as key names.
-        let mut sql = "SELECT DISTINCT fields->>$1 \
+        let reader = field_value_text_sql("fields", "$1");
+        let mut sql = format!(
+            "SELECT DISTINCT {reader} \
              FROM item \
              WHERE type = $2 \
                AND status = 1 \
-               AND fields->>$1 IS NOT NULL \
-               AND fields->>$1 <> ''"
-            .to_string();
+               AND {reader} IS NOT NULL \
+               AND {reader} <> ''"
+        );
         let mut param_idx = 3i32;
         for (key, _) in &eq_scope {
             // key validated by is_valid_field_name above
-            sql.push_str(&format!(" AND fields->>'{key}' = ${param_idx}"));
+            let eq_reader = field_value_text_sql("fields", &format!("'{key}'"));
+            sql.push_str(&format!(" AND {eq_reader} = ${param_idx}"));
             param_idx += 1;
         }
         for (key, _) in &tag_scope {
@@ -579,7 +778,8 @@ impl GatherService {
         let mut param_idx = 2i32;
         for (key, _) in &eq_scope {
             // key validated by is_valid_field_name above
-            sql.push_str(&format!(" AND fields->>'{key}' = ${param_idx}"));
+            let eq_reader = field_value_text_sql("fields", &format!("'{key}'"));
+            sql.push_str(&format!(" AND {eq_reader} = ${param_idx}"));
             param_idx += 1;
         }
         for (key, _) in &tag_scope {
@@ -846,7 +1046,7 @@ impl GatherService {
         scope: &PluginScope,
     ) -> Result<GatherResult> {
         let display = QueryDisplay {
-            items_per_page: per_page,
+            items_per_page: Some(per_page),
             ..QueryDisplay::default()
         };
         let run = RunScope {
@@ -877,6 +1077,40 @@ impl GatherService {
         context: &QueryContext,
         scope: &RunScope<'_>,
     ) -> Result<GatherResult> {
+        // Gander's gather choke point: every `execute*` lands here.
+        crate::telemetry::profile::count_gather();
+        let span = tracing::trace_span!(
+            target: crate::telemetry::TARGET,
+            "gather.execute",
+            trovato.gather.base_table = %definition.base_table,
+            trovato.gather.item_type = definition.item_type.as_deref().unwrap_or(""),
+        );
+        tracing::Instrument::instrument(
+            self.run_definition_inner(
+                definition,
+                display,
+                page,
+                exposed_filters,
+                stage_ids,
+                context,
+                scope,
+            ),
+            span,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn run_definition_inner(
+        &self,
+        definition: &QueryDefinition,
+        display: &QueryDisplay,
+        page: u32,
+        exposed_filters: HashMap<String, FilterValue>,
+        stage_ids: &[Uuid],
+        context: &QueryContext,
+        scope: &RunScope<'_>,
+    ) -> Result<GatherResult> {
         // Performance guardrails: validate definition before execution
         let validation_errors = Self::validate_definition_with(definition, scope.own_tables);
         if !validation_errors.is_empty() {
@@ -886,22 +1120,20 @@ impl GatherService {
             self.check_base_table(definition)?;
         }
 
-        // Cap items_per_page to the configured maximum (GATHER_MAX_PAGE_SIZE).
+        // The gather's own page size, or the site's when it names none
+        // (B160), capped to the configured maximum (GATHER_MAX_PAGE_SIZE).
         let max_page = self.max_page_size;
-        let resolved_display = if display.items_per_page > max_page {
-            let requested = display.items_per_page;
+        let requested = match display.items_per_page {
+            Some(own) => own,
+            None => self.site_items_per_page().await,
+        };
+        if requested > max_page {
             tracing::warn!(
                 requested = requested,
                 capped = max_page,
                 "items_per_page exceeds maximum, capping"
             );
-            let mut capped = display.clone();
-            capped.items_per_page = max_page;
-            capped
-        } else {
-            display.clone()
-        };
-        let display = &resolved_display;
+        }
 
         // Apply exposed filters
         let resolved_definition = self
@@ -966,8 +1198,8 @@ impl GatherService {
             ..final_definition
         };
 
-        // Build and execute queries (per_page already clamped in resolved_display above)
-        let per_page = display.items_per_page;
+        // Build and execute queries (per_page clamped to the maximum above)
+        let per_page = requested.min(max_page);
         let builder = GatherQueryBuilder::new_with_stages(builder_def, stage_ids.to_vec())
             .with_extensions(self.extensions.clone())
             .with_language(context.language.clone())
@@ -1064,6 +1296,7 @@ impl GatherService {
         // Item gathers only.
         if record_ctx.is_none() && !scope.own_base {
             self.resolve_row_urls(&mut rows, stage_ids, context).await;
+            self.resolve_row_authors(&mut rows, &viewer).await;
         }
 
         let total = visible_total.or(sql_total).unwrap_or(0);
@@ -1125,6 +1358,53 @@ impl GatherService {
             let url = aliases.get(&source).cloned().unwrap_or(source);
             if let Some(object) = row.as_object_mut() {
                 object.insert("url".to_string(), serde_json::Value::String(url));
+            }
+        }
+    }
+
+    /// Give each row that carries an `author_id` an `author`: the display
+    /// name, and a profile link only when `viewer` may see one (B166).
+    ///
+    /// **One query for the whole result set**, through the same `UserService`
+    /// lookup the item page and `/api/item` resolve an author through — never
+    /// one per row. A `SELECT item.*` row always carries `author_id` (every
+    /// base-table column survives field filtering); an explicit-field gather
+    /// needs it in its own output fields, exactly as `url` needs `id` — a row
+    /// without one gets no `author` rather than a wrong one.
+    ///
+    /// A row that already has an `author` key keeps it: a gather may define
+    /// an include by that name, and its result is not this byline's to
+    /// replace. Such a gather's templates read the include instead.
+    async fn resolve_row_authors(&self, rows: &mut [serde_json::Value], viewer: &UserContext) {
+        if rows.is_empty() {
+            return;
+        }
+        let Some(users) = self.users.get() else {
+            return;
+        };
+
+        let ids: Vec<Uuid> = rows.iter().filter_map(row_author_id).collect();
+        if ids.is_empty() {
+            return;
+        }
+
+        let views = users.author_views(&ids, viewer).await;
+        for row in rows.iter_mut() {
+            let Some(id) = row_author_id(row) else {
+                continue;
+            };
+            let Some(view) = views.get(&id) else {
+                continue;
+            };
+            // A gather's own `author` (an include of that name, which has
+            // already run) is what its author asked for: never replace it.
+            if let Some(object) = row.as_object_mut()
+                && !object.contains_key("author")
+            {
+                object.insert(
+                    "author".to_string(),
+                    serde_json::to_value(view).unwrap_or(serde_json::Value::Null),
+                );
             }
         }
     }
@@ -1731,6 +2011,9 @@ impl GatherService {
         Ok(definition)
     }
 
+    /// What the usage log records a semantic filter's query embedding as.
+    const SEMANTIC_SEARCH_USAGE_SOURCE: &'static str = "kernel_semantic_search";
+
     /// Embed a semantic filter's query text and return the ranked candidate
     /// item ids from pgvector, or `None` on any degradation path.
     ///
@@ -1753,7 +2036,11 @@ impl GatherService {
             return None;
         }
 
-        let embedding = match ai.embed(query_text).await {
+        let caller = crate::services::ai_provider::AiCaller::kernel(
+            Self::SEMANTIC_SEARCH_USAGE_SOURCE,
+            false,
+        );
+        let embedding = match ai.embed(query_text, &caller).await {
             Ok(Some(result)) => result,
             Ok(None) => return None,
             Err(e) => {
@@ -1944,7 +2231,7 @@ impl GatherService {
                 // Default limit for child queries; warn if results may be truncated
                 let default_child_limit: u32 = 1000;
                 let child_display = include_def.display.clone().unwrap_or(QueryDisplay {
-                    items_per_page: default_child_limit,
+                    items_per_page: Some(default_child_limit),
                     ..Default::default()
                 });
 
@@ -2089,11 +2376,12 @@ impl GatherService {
                 },
                 display: QueryDisplay {
                     format: DisplayFormat::Table,
-                    items_per_page: 25,
+                    items_per_page: Some(25),
                     pager: PagerConfig {
                         enabled: true,
                         style: PagerStyle::Full,
                         show_count: true,
+                        zero_based: false,
                     },
                     empty_text: Some("No published content.".to_string()),
                     ..Default::default()
@@ -2134,11 +2422,12 @@ impl GatherService {
                 },
                 display: QueryDisplay {
                     format: DisplayFormat::Table,
-                    items_per_page: 25,
+                    items_per_page: Some(25),
                     pager: PagerConfig {
                         enabled: true,
                         style: PagerStyle::Full,
                         show_count: true,
+                        zero_based: false,
                     },
                     empty_text: Some("No items of this type.".to_string()),
                     ..Default::default()
@@ -2179,7 +2468,7 @@ impl GatherService {
                 },
                 display: QueryDisplay {
                     format: DisplayFormat::Table,
-                    items_per_page: 25,
+                    items_per_page: Some(25),
                     empty_text: Some("No items by this author.".to_string()),
                     ..Default::default()
                 },
@@ -2201,11 +2490,12 @@ impl GatherService {
                 },
                 display: QueryDisplay {
                     format: DisplayFormat::Table,
-                    items_per_page: 50,
+                    items_per_page: Some(50),
                     pager: PagerConfig {
                         enabled: true,
                         style: PagerStyle::Full,
                         show_count: true,
+                        zero_based: false,
                     },
                     empty_text: Some("No content items.".to_string()),
                     ..Default::default()
@@ -2230,7 +2520,7 @@ impl GatherService {
                 },
                 display: QueryDisplay {
                     format: DisplayFormat::Table,
-                    items_per_page: 50,
+                    items_per_page: Some(50),
                     empty_text: Some("No comments.".to_string()),
                     ..Default::default()
                 },
@@ -2261,7 +2551,7 @@ impl GatherService {
                 },
                 display: QueryDisplay {
                     format: DisplayFormat::Table,
-                    items_per_page: 50,
+                    items_per_page: Some(50),
                     empty_text: Some("No URL aliases.".to_string()),
                     ..Default::default()
                 },
@@ -2284,7 +2574,7 @@ impl GatherService {
                 },
                 display: QueryDisplay {
                     format: DisplayFormat::Table,
-                    items_per_page: 50,
+                    items_per_page: Some(50),
                     empty_text: Some("No roles defined.".to_string()),
                     ..Default::default()
                 },
@@ -2307,7 +2597,7 @@ impl GatherService {
                 },
                 display: QueryDisplay {
                     format: DisplayFormat::Table,
-                    items_per_page: 50,
+                    items_per_page: Some(50),
                     empty_text: Some("No content types defined.".to_string()),
                     ..Default::default()
                 },
@@ -2857,6 +3147,13 @@ fn row_id(row: &serde_json::Value) -> Option<String> {
     }
 }
 
+/// The `author_id` of a gather row, when it carries one and it parses as a
+/// `Uuid`. A gather may project an explicit field list that omits it, same as
+/// [`row_id`] for `id`.
+fn row_author_id(row: &serde_json::Value) -> Option<Uuid> {
+    row.get("author_id")?.as_str()?.parse().ok()
+}
+
 #[cfg(test)]
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]
@@ -2969,11 +3266,12 @@ mod tests {
                 ..Default::default()
             },
             display: QueryDisplay {
-                items_per_page: 10,
+                items_per_page: Some(10),
                 pager: PagerConfig {
                     enabled: true,
                     style: PagerStyle::Full,
                     show_count: true,
+                    zero_based: false,
                 },
                 ..Default::default()
             },
@@ -3748,5 +4046,67 @@ mod tests {
             local_field: "author_id".to_string(),
             foreign_field: "id".to_string(),
         }
+    }
+
+    /// A service whose database is unreachable: every query fails fast.
+    fn service_without_a_database() -> Arc<GatherService> {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(200))
+            .connect_lazy("postgres://nobody@127.0.0.1:1/none")
+            .expect("a lazy pool");
+        let metrics = Arc::new(Metrics::new());
+        GatherService::new(
+            pool.clone(),
+            CategoryService::new(pool, Duration::from_secs(60), metrics.clone()),
+            Arc::new(GatherExtensionRegistry::new()),
+            GatherConfig {
+                ttl: Duration::from_secs(60),
+                max_page_size: 100,
+                access: GatherAccessConfig::default(),
+            },
+            None,
+            None,
+            metrics,
+        )
+    }
+
+    /// A failed alias lookup is not cached as "no alias": once the database
+    /// answers again, the next feed request must find the alias, not keep
+    /// publishing the raw gather path until the TTL runs out.
+    #[tokio::test]
+    async fn a_failed_outbound_alias_lookup_is_not_cached() {
+        let service = service_without_a_database();
+        assert_eq!(
+            service.outbound_alias_for_gather("blog_listing").await,
+            None
+        );
+        assert!(
+            service.outbound_alias_cache.get("blog_listing").is_none(),
+            "a lookup that failed must leave nothing cached"
+        );
+    }
+
+    /// A lookup that read `url_alias` before a clear must not put its answer
+    /// back after the clear, or the old alias outlives the write that
+    /// replaced it for the full TTL. A lookup with no clear in between is
+    /// cached as before.
+    #[tokio::test]
+    async fn an_outbound_alias_read_before_a_clear_is_not_cached_after_it() {
+        let service = service_without_a_database();
+
+        let started = service.outbound_alias_generation();
+        service.clear_outbound_alias_cache();
+        service.remember_outbound_alias("blog_listing", started, Some(("/old".to_string(), 1)));
+        assert!(
+            service.outbound_alias_cache.get("blog_listing").is_none(),
+            "an answer read before the clear must not be cached after it"
+        );
+
+        let started = service.outbound_alias_generation();
+        service.remember_outbound_alias("blog_listing", started, Some(("/blog".to_string(), 2)));
+        assert_eq!(
+            service.outbound_alias_cache.get("blog_listing"),
+            Some(Some(("/blog".to_string(), 2)))
+        );
     }
 }

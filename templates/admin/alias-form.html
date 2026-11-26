@@ -1,11 +1,10 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/form.html" as form %}
 
-{% block content %}
-<div class="admin-header">
-    <h2>{% if editing %}Edit URL alias{% else %}Add URL alias{% endif %}</h2>
-</div>
+{% block page_title %}{% if editing %}{{ t(s="Edit URL alias {alias}", alias=values.alias | default(value="")) }}{% else %}{{ t(s="Add URL alias") }}{% endif %}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="A URL alias gives an item or page a readable address that visitors can use in place of its internal path.") }}</p>{% endblock page_intro %}
 
+{% block content %}
 <div class="admin-card">
     <form id="alias-form" method="post" action="{{ action }}">
         {{ form::csrf(csrf_token=csrf_token) }}
@@ -13,36 +12,39 @@
         {{ form::errors(errors=errors) }}
 
         <div class="form-item">
-            <label for="source" class="form-item__label form-item__label--required">Source path</label>
+            <label for="source" class="form-item__label">{{ t(s="Source path") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
+            <p class="form-item__description" id="source-hint">{{ t(s="The internal path (e.g., /item/uuid)") }}</p>
             <input type="text" id="source" name="source" class="form-text"
                    value="{{ values.source | default(value='') }}"
-                   placeholder="/item/550e8400-e29b-41d4-a716-446655440000"
+                   placeholder="{{ '/item/550e8400-e29b-41d4-a716-446655440000' }}"
+                   aria-describedby="source-hint"
                    required>
-            <p class="form-item__description">The internal path (e.g., /item/uuid)</p>
         </div>
 
         <div class="form-item">
-            <label for="alias" class="form-item__label form-item__label--required">Alias path</label>
+            <label for="alias" class="form-item__label">{{ t(s="Alias path") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
+            <p class="form-item__description" id="alias-hint">{{ t(s="The human-readable URL (e.g., /about-us)") }}</p>
             <input type="text" id="alias" name="alias" class="form-text"
                    value="{{ values.alias | default(value='') }}"
-                   placeholder="/about-us"
+                   placeholder="{{ '/about-us' }}"
+                   aria-describedby="alias-hint"
                    required>
-            <p class="form-item__description">The human-readable URL (e.g., /about-us)</p>
         </div>
 
         <div class="form-item">
-            <label for="language" class="form-item__label">Language</label>
-            <input type="text" id="language" name="language" class="form-text"
+            <label for="language" class="form-item__label">{{ t(s="Language") }}</label>
+            <p class="form-item__description" id="language-hint">{{ t(s="Language code for this alias (e.g., en, es, fr)") }}</p>
+            <input type="text" id="language" name="language" class="form-text form-text--compact"
                    value="{{ values.language | default(value='en') }}"
-                   placeholder="en">
-            <p class="form-item__description">Language code for this alias (e.g., en, es, fr)</p>
+                   placeholder="{{ 'en' }}"
+                   aria-describedby="language-hint">
         </div>
 
         {% if editing %}
-        {{ form::actions(submit_label="Save changes", cancel_url="/admin/structure/aliases") }}
+        {{ form::actions(submit_label=t(s="Save changes"), cancel_url="/admin/structure/aliases") }}
         {% else %}
-        {{ form::actions(submit_label="Create alias", cancel_url="/admin/structure/aliases") }}
+        {{ form::actions(submit_label=t(s="Create alias"), cancel_url="/admin/structure/aliases") }}
         {% endif %}
     </form>
 </div>
-{% endblock %}
+{% endblock content %}

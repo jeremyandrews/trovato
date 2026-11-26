@@ -332,6 +332,121 @@ fn an_owner_limited_field_offers_only_the_owners_terms() {
     });
 }
 
+/// Changing the owner field on the open form changes what an owner-limited
+/// field offers, before the item is saved: the new owner's terms, none of the
+/// stored owner's. Clearing it offers nothing — not the stored owner's terms
+/// either, which is what made the save refuse the item (no owner) or the term
+/// (`TermsNotOwned`, wrong owner) after the box had offered it (B190).
+#[test]
+fn changing_the_owner_on_the_form_changes_what_is_offered() {
+    common::run_test(async {
+        let app = common::shared_app().await;
+        let club = unique("club");
+        let other = unique("club");
+        let own_vocabulary = owned_vocabulary(app, &club).await;
+        let other_vocabulary = owned_vocabulary(app, &other).await;
+        let own = term(app, &own_vocabulary, "Sailboat").await;
+        let foreign = term(app, &other_vocabulary, "Sailboard").await;
+        let item_type = content_type(app).await;
+        let cookies = admin(app).await;
+
+        let ids =
+            |got: &[(String, String)]| got.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>();
+
+        let item = app
+            .state
+            .items()
+            .create(
+                CreateItem {
+                    item_type: item_type.clone(),
+                    title: "A club post".to_string(),
+                    author_id: Uuid::nil(),
+                    status: Some(1),
+                    promote: None,
+                    sticky: None,
+                    fields: Some(serde_json::json!({ "field_club": club })),
+                    stage_id: None,
+                    language: None,
+                    log: None,
+                },
+                &admin_context(),
+            )
+            .await
+            .unwrap();
+
+        // The form still shows the stored club: the stored club's terms.
+        let got = suggest(
+            app,
+            &cookies,
+            &format!(
+                "q=sail&limit=50&item_type={item_type}&field=field_boats&item={}&owner={club}",
+                item.id
+            ),
+        )
+        .await;
+        assert_eq!(ids(&got), vec![own.id.to_string()], "{got:?}");
+
+        // The editor changes the club field to the other club, without
+        // saving: the other club's terms, not the stored club's.
+        let got = suggest(
+            app,
+            &cookies,
+            &format!(
+                "q=sail&limit=50&item_type={item_type}&field=field_boats&item={}&owner={other}",
+                item.id
+            ),
+        )
+        .await;
+        assert_eq!(ids(&got), vec![foreign.id.to_string()], "{got:?}");
+        assert!(!ids(&got).contains(&own.id.to_string()), "{got:?}");
+
+        // The editor clears the club field: nothing, not the stored club's
+        // terms either — the save would refuse them once there is no owner.
+        let got = suggest(
+            app,
+            &cookies,
+            &format!(
+                "q=sail&limit=50&item_type={item_type}&field=field_boats&item={}&owner=",
+                item.id
+            ),
+        )
+        .await;
+        assert!(got.is_empty(), "owner cleared on the form: {got:?}");
+    });
+}
+
+/// An owner named on the form with no vocabulary of its own offers nothing:
+/// there is nothing of that owner's to see, whether or not the item exists.
+#[test]
+fn a_caller_naming_an_owner_with_no_vocabulary_gets_nothing() {
+    common::run_test(async {
+        let app = common::shared_app().await;
+        let club = unique("club");
+        let no_vocabulary_club = unique("club");
+        let own_vocabulary = owned_vocabulary(app, &club).await;
+        let own = term(app, &own_vocabulary, "Sailboat").await;
+        let item_type = content_type(app).await;
+        let cookies = admin(app).await;
+
+        let got = suggest(
+            app,
+            &cookies,
+            &format!(
+                "q=sail&limit=50&item_type={item_type}&field=field_boats&owner={no_vocabulary_club}"
+            ),
+        )
+        .await;
+        assert!(
+            got.is_empty(),
+            "an owner with no vocabulary offers nothing: {got:?}"
+        );
+        assert!(
+            !got.iter().any(|(id, _)| *id == own.id.to_string()),
+            "never another club's terms: {got:?}"
+        );
+    });
+}
+
 /// A caller who may not edit the field is offered nothing: an anonymous
 /// caller, a signed-in user without the type's create permission, and a
 /// request that names no field at all.

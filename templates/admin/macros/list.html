@@ -1,26 +1,31 @@
-{#- Admin list macros — shared structure for admin list pages. -#}
+{#- Admin list macros — shared structure for admin list pages.
 
-{#- Admin page header with title and optional add button. -#}
-{% macro header(title, add_url="", add_label="") %}
-<div class="admin-header">
-    <h2>{{ title }}</h2>
-    {% if add_url %}
-    <a href="{{ add_url }}" class="button button--primary">{{ add_label }}</a>
-    {% endif %}
+    Every argument a macro shows is already translated by the caller with
+    `t()`: a macro cannot know which words are interface text and which are
+    data. -#}
+
+{#- The primary action beside a page's heading, for `{% block page_actions %}`. -#}
+{% macro add_link(url, label) %}
+<a href="{{ url }}" class="button button--primary">{{ label }}</a>
+{% endmacro add_link %}
+
+{#- A helpful empty state: what is missing, and the next thing to do. -#}
+{% macro empty(message, add_url="", add_label="") %}
+<div class="empty-state">
+    <p>{{ message }}</p>
+    {% if add_url %}<p><a class="button button--primary" href="{{ add_url }}">{{ add_label }}</a></p>{% endif %}
 </div>
-{% endmacro header %}
-
-{#- Empty state message with optional link. -#}
-{% macro empty(message, add_url="", add_label="Create one now") %}
-<p>{{ message }}{% if add_url %} <a href="{{ add_url }}">{{ add_label }}</a>.{% endif %}</p>
 {% endmacro empty %}
 
 {#- Inline delete button with confirmation dialog.
-    Uses a data-confirm attribute so Tera's HTML autoescape keeps the value safe.
-    A delegated JS handler on the document reads the attribute at click time. -#}
-{% macro delete_button(action, confirm_text="Are you sure?", btn_class="link-button", csrf_token="") %}
-<form method="post" action="{{ action }}" style="display: inline;">
+
+    `label` is the button's visible text and accessible name; it names the
+    object ("Delete About us"), so a screen reader's list of buttons is not a
+    column of identical "Delete"s. `confirm_text` is shown in the browser's
+    confirm dialog before the form is sent. Both arrive translated. -#}
+{% macro delete_button(action, label, confirm_text, btn_class="link-button link-button--danger", csrf_token="") %}
+<form method="post" action="{{ action }}" class="inline-form">
     <input type="hidden" name="_token" value="{{ csrf_token }}">
-    <button type="submit" class="{{ btn_class }}" data-confirm="{{ confirm_text }}">Delete</button>
+    <button type="submit" class="{{ btn_class }}" data-confirm="{{ confirm_text }}">{{ label }}</button>
 </form>
 {% endmacro delete_button %}

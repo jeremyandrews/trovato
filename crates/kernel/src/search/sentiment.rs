@@ -3,8 +3,9 @@
 //! When sentiment and analytics are both switched on, the follow-up endpoint
 //! hands the visitor's message and the answer before it to [`SentimentQueue`]
 //! and returns. One background worker drains the queue, asks the configured
-//! Chat provider for one word through the same send and parse path the search
-//! endpoints use (`routes::api_search::complete`), and adds
+//! Chat provider for one word through the kernel's one send path
+//! (`AiProviderService::chat_once`, by way of `routes::api_search::send_prompt`),
+//! and adds
 //! the label to the day's analytics counters. Nothing else is kept: the text
 //! goes to the provider and is dropped.
 //!
@@ -12,7 +13,6 @@
 //! the number dropped is logged at the next analytics flush.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use sqlx::PgPool;
 use tokio::sync::mpsc;
@@ -21,7 +21,7 @@ use super::SearchService;
 use super::analytics::Counter;
 use super::prompts;
 use crate::models::SiteConfig;
-use crate::services::ai_provider::{AiOperationType, AiProviderService};
+use crate::services::ai_provider::{AiCaller, AiOperationType, AiProviderService};
 
 /// Jobs that may wait for the worker.
 pub const QUEUE_CAPACITY: usize = 256;
@@ -29,8 +29,14 @@ pub const QUEUE_CAPACITY: usize = 256;
 /// Most characters of each message sent to the classifier.
 const MAX_MESSAGE_CHARS: usize = 2000;
 
-/// How long one classification may take.
-const CLASSIFY_TIMEOUT: Duration = Duration::from_secs(15);
+/// What the usage log records the classifier's calls as.
+pub const SENTIMENT_USAGE_SOURCE: &str = "kernel_search_sentiment";
+
+/// Who a classification is made for: the anonymous search traffic that
+/// produced it, off the request path (so it takes the background timeout).
+fn classifier_caller() -> AiCaller {
+    AiCaller::anonymous(SENTIMENT_USAGE_SOURCE).in_background()
+}
 
 /// One follow-up to classify.
 struct Job {
@@ -116,12 +122,14 @@ async fn classify(job: Job, search: &SearchService, ai: &AiProviderService, pool
         job.previous_answer, job.question
     );
 
-    let Some(reply) = crate::routes::api_search::complete(
+    // Through the send path, so the classification is held to the anonymous
+    // cap and recorded in `ai_usage_log` like any other call.
+    let Ok(reply) = crate::routes::api_search::send_prompt(
         ai,
         &resolved,
+        &classifier_caller(),
         &system_prompt,
         &user_prompt,
-        CLASSIFY_TIMEOUT,
     )
     .await
     else {

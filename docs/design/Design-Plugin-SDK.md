@@ -259,6 +259,7 @@ impl FieldDefinition {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive] // a new kind is additive; match it with a `_` arm
 pub enum FieldType {
     Text { max_length: Option<usize> },
     TextLong,                          // no length limit, has format
@@ -269,6 +270,8 @@ pub enum FieldType {
     File,
     Date,
     Email,
+    // … Compound, Blocks, PageBuilder
+    CategoryReference(String),         // category id; an array of tag uuids (B72)
 }
 ```
 
@@ -611,6 +614,7 @@ world plugin {
     // Routing & permissions
     export tap-menu: func() -> string;
     export tap-perm: func() -> string;
+    export tap-admin-nav: func() -> string;
 
     // Theme
     export tap-theme: func() -> string;

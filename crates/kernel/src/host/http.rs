@@ -684,7 +684,7 @@ async fn execute_http_request(
         req = req.body(body.clone());
     }
 
-    let response = req.send().await.map_err(|e| {
+    let response = crate::telemetry::send(req).await.map_err(|e| {
         if is_ssrf_block(&e) {
             // A rebinding resolution or a redirect hop to a private target was
             // denied by the client-level SSRF layers; report it as the same
@@ -934,7 +934,7 @@ async fn fetch_stream(
     }
 
     // Bound the initial-response (connect + headers) phase by the per-read timeout.
-    let response = match tokio::time::timeout(per_read_timeout, req.send()).await {
+    let response = match tokio::time::timeout(per_read_timeout, crate::telemetry::send(req)).await {
         Err(_) => {
             warn!(plugin = %plugin_name, url = %request.url, "streaming HTTP open timed out");
             return Err(host_errors::ERR_HTTP_TIMEOUT);

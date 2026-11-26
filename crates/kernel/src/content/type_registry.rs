@@ -16,7 +16,7 @@ use tracing::{info, warn};
 use crate::metrics::{CacheName, Metrics};
 use crate::models::{CreateItemType, ItemType};
 use crate::tap::TapDispatcher;
-use trovato_sdk::types::{ContentTypeDefinition, FieldDefinition};
+use trovato_sdk::types::{ContentTypeDefinition, FieldDefinition, FieldType};
 
 /// Maximum entries in the content type cache.
 const MAX_CAPACITY: u64 = 500;
@@ -71,6 +71,17 @@ pub enum AddFieldError {
     UnknownFieldType {
         /// The unrecognised type string, as submitted.
         field_type: String,
+    },
+
+    /// A category reference field was asked for without naming its category.
+    #[error("Category is required for a category reference field.")]
+    CategoryRequired,
+
+    /// A category reference field named a category that does not exist.
+    #[error("Unknown category: {category}")]
+    UnknownCategory {
+        /// The category machine name, as submitted.
+        category: String,
     },
 
     /// Loading the content type, or writing the new field list, failed.
@@ -169,8 +180,6 @@ fn merge_declared_fields_sql(declared_param: &str) -> String {
 /// The strings are the `value` attributes of the Type select in
 /// `templates/admin/field-list.html`.
 fn parse_field_type(field_type: &str) -> Option<trovato_sdk::types::FieldType> {
-    use trovato_sdk::types::FieldType;
-
     Some(match field_type {
         "text" => FieldType::Text { max_length: None },
         "text_long" => FieldType::TextLong,
@@ -180,6 +189,9 @@ fn parse_field_type(field_type: &str) -> Option<trovato_sdk::types::FieldType> {
         "date" => FieldType::Date,
         "email" => FieldType::Email,
         "record_reference" => FieldType::RecordReference(String::new()),
+        // The category is filled in by `add_field_in_category`, which refuses
+        // the field without one.
+        "category_reference" => FieldType::CategoryReference(String::new()),
         "compound" => FieldType::Compound {
             allowed_types: vec![],
             min_items: None,
@@ -612,6 +624,22 @@ impl ContentTypeRegistry {
         field_label: &str,
         field_type: &str,
     ) -> Result<(), AddFieldError> {
+        self.add_field_in_category(type_name, field_name, field_label, field_type, None)
+            .await
+    }
+
+    /// [`Self::add_field`], with the category a `category_reference` field
+    /// holds tags of. That kind needs one, and it must exist
+    /// ([`AddFieldError::CategoryRequired`], [`AddFieldError::UnknownCategory`]);
+    /// every other kind ignores it.
+    pub async fn add_field_in_category(
+        &self,
+        type_name: &str,
+        field_name: &str,
+        field_label: &str,
+        field_type: &str,
+        category: Option<&str>,
+    ) -> Result<(), AddFieldError> {
         let mut def = self
             .get_or_load(type_name)
             .await?
@@ -631,6 +659,16 @@ impl ContentTypeRegistry {
             parse_field_type(field_type).ok_or_else(|| AddFieldError::UnknownFieldType {
                 field_type: field_type.to_string(),
             })?;
+        let field_type = match field_type {
+            FieldType::CategoryReference(_) => {
+                let category = category
+                    .map(str::trim)
+                    .filter(|c| !c.is_empty())
+                    .ok_or(AddFieldError::CategoryRequired)?;
+                FieldType::CategoryReference(self.existing_category(category).await?)
+            }
+            other => other,
+        };
 
         def.fields.push(FieldDefinition {
             field_name: field_name.to_string(),
@@ -710,6 +748,57 @@ impl ContentTypeRegistry {
         self.persist_fields(type_name, &def).await?;
         info!(type_name = %type_name, field = %field_name, "field updated");
         Ok(())
+    }
+
+    /// Point a `CategoryReference` field at another category, which must
+    /// exist. Values already stored are not rewritten; the next write of the
+    /// field is checked against the new category.
+    pub async fn set_field_category(
+        &self,
+        type_name: &str,
+        field_name: &str,
+        category: &str,
+    ) -> Result<(), AddFieldError> {
+        let category = self.existing_category(category.trim()).await?;
+        let mut def = self
+            .get_or_load(type_name)
+            .await?
+            .context("content type not found")?;
+        let field = def
+            .fields
+            .iter_mut()
+            .find(|f| f.field_name == field_name)
+            .context("field not found")?;
+        let FieldType::CategoryReference(current) = &mut field.field_type else {
+            return Err(anyhow::anyhow!("field '{field_name}' is not a category reference").into());
+        };
+        if *current == category {
+            return Ok(());
+        }
+        *current = category;
+        self.persist_fields(type_name, &def).await?;
+        info!(type_name = %type_name, field = %field_name, "field category changed");
+        Ok(())
+    }
+
+    /// `category` if a category with that machine name exists.
+    async fn existing_category(&self, category: &str) -> Result<String, AddFieldError> {
+        if category.is_empty() {
+            return Err(AddFieldError::CategoryRequired);
+        }
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM category WHERE id = $1)")
+                .bind(category)
+                .fetch_one(&self.inner.pool)
+                .await
+                .context("failed to look the category up")?;
+        if exists {
+            Ok(category.to_string())
+        } else {
+            Err(AddFieldError::UnknownCategory {
+                category: category.to_string(),
+            })
+        }
     }
 
     /// Remove a field from a content type.

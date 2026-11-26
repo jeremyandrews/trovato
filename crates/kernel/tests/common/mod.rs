@@ -17,7 +17,9 @@
 
 #![allow(dead_code)]
 
+pub mod perf;
 pub mod plugin_copy;
+pub mod search_index;
 pub mod smtp_sink;
 
 use axum::Router;
@@ -148,6 +150,25 @@ where
     Fut: std::future::Future<Output = ()> + Send + 'static,
 {
     DEFERRED_CLEANUPS.with(|pending| pending.borrow_mut().push(Box::new(move || Box::pin(f()))));
+}
+
+/// Hold `guard` until the running test's cleanups have run, then release it.
+///
+/// For the file-level locks (`static FRONT_PAGE: Mutex<()>` and the like) that
+/// make a test's turn with some site-wide state exclusive. Bound as
+/// `let _guard = LOCK.lock().await`, the guard is dropped when the test body
+/// returns, which is BEFORE [`run_test`] awaits the cleanups the body
+/// registered. So the cleanup that puts the shared state back ran after the
+/// lock was released, in the middle of whichever test took it next: one test
+/// restoring the stock theme while another asserted on the theme it had just
+/// set. The race was always there and `--test-threads=1` hid it; tests inside
+/// a target run in parallel now.
+///
+/// Call it before registering any cleanup that touches the guarded state:
+/// cleanups run last-registered-first, so a guard registered first is released
+/// last.
+pub fn hold_until_cleanup<G: Send + 'static>(guard: G) {
+    defer_cleanup(move || async move { drop(guard) });
 }
 
 /// Drain and await every cleanup the finished test registered.
@@ -287,7 +308,15 @@ impl TestApp {
     /// nothing else — where a `set_var` steers every other test thread in the
     /// binary too, and cannot be undone once another thread may have read it.
     pub async fn with_config(customize: impl FnOnce(&mut Config)) -> Self {
-        Self::build(customize, false).await
+        Self::build(customize, false, false).await
+    }
+
+    /// Build a test app for a whole site, the performance tests' (`perf`): the
+    /// router also serves the gathers' own routes, as `main.rs` does, and
+    /// answers the `x-perf-extra-query` header with one more statement, which
+    /// is how a test proves the page counts catch an added query.
+    pub async fn for_site(customize: impl FnOnce(&mut Config)) -> Self {
+        Self::build(customize, false, true).await
     }
 
     /// Build a test app whose router also runs the two rate-limit layers, in the
@@ -305,10 +334,10 @@ impl TestApp {
     /// `AppState` reads its limits once, at construction, so a test that
     /// configures `rate_limit.*` keys writes them before calling this.
     pub async fn with_rate_limits(customize: impl FnOnce(&mut Config)) -> Self {
-        Self::build(customize, true).await
+        Self::build(customize, true, false).await
     }
 
-    async fn build(customize: impl FnOnce(&mut Config), rate_limited: bool) -> Self {
+    async fn build(customize: impl FnOnce(&mut Config), rate_limited: bool, site: bool) -> Self {
         // `dotenvy::dotenv` calls `set_var` for every line it applies, so it goes
         // through the workspace env lock like any other mutation. It is also the
         // last environment *mutation* left in this fixture: everything below is a
@@ -334,6 +363,15 @@ impl TestApp {
         }
         if std::env::var_os("STATIC_DIR").is_none() {
             config.runtime.static_dirs = vec![project_root.join("static")];
+        }
+        // Cron builds a real search index now (no `pagefind` binary needed),
+        // so a test that runs cron would otherwise write one into the
+        // repository's `static/pagefind`. One directory per test process, in
+        // the system temporary directory.
+        if std::env::var_os("PAGEFIND_OUTPUT_DIR").is_none() {
+            config.runtime.pagefind_output_dir = std::env::temp_dir()
+                .join(format!("trovato-test-pagefind-{}", std::process::id()))
+                .join("pagefind");
         }
 
         // Trust the mocked loopback peer (see MockConnectInfo below) so the
@@ -385,6 +423,13 @@ impl TestApp {
         // rewrites in middleware cannot change which route is matched. The
         // fallback receives all unmatched requests, resolves any URL alias, and
         // re-dispatches to the inner router with the rewritten URI.
+        let gather_routes = if site {
+            trovato_kernel::routes::gather_routes::build_gather_route_router(
+                &state.gather().list_queries(),
+            )
+        } else {
+            Router::new()
+        };
         let inner_router: Router<trovato_kernel::state::AppState> = Router::new()
             .merge(trovato_kernel::routes::front::router())
             .merge(trovato_kernel::routes::install::router())
@@ -413,6 +458,7 @@ impl TestApp {
             // Plugin-gated routes — runtime middleware returns 404 when disabled
             .merge(trovato_kernel::routes::gated_plugin_routes(&state))
             // RSS feeds declared by gather query display configs.
+            .merge(gather_routes)
             .merge(trovato_kernel::routes::feed::build_feed_router(
                 &state.gather().list_queries(),
             ))
@@ -426,6 +472,7 @@ impl TestApp {
         let inner_with_state: Router = inner_router.clone().with_state(state.clone());
         let shared_router = std::sync::Arc::new(inner_with_state);
 
+        let probe_state = state.clone();
         let router = inner_router
             .fallback({
                 let router = shared_router.clone();
@@ -444,7 +491,20 @@ impl TestApp {
             // Middleware layers (must match main.rs ordering):
             // MockConnectInfo → resolve_client_ip → TraceLayer → session →
             // bearer_auth → api_token → negotiate_language → routes
-            // The audit actor, innermost as in `main.rs`.
+            // The performance site's probe (`for_site` only): one more
+            // statement inside the request when the test asks for it.
+            .layer(axum::middleware::from_fn(
+                move |req: axum::extract::Request, next: axum::middleware::Next| {
+                    let state = probe_state.clone();
+                    async move {
+                        if site && req.headers().contains_key("x-perf-extra-query") {
+                            let _ = sqlx::query("SELECT 1").execute(state.db()).await;
+                        }
+                        next.run(req).await
+                    }
+                },
+            ))
+            // The audit actor, innermost as in `main.rs` (only the probe is inside it).
             .layer(axum::middleware::from_fn(
                 trovato_kernel::middleware::scope_audit_actor,
             ))
@@ -537,7 +597,7 @@ impl TestApp {
                 state.clone(),
                 trovato_kernel::middleware::track_request_timing,
             ))
-            .layer(tower_http::trace::TraceLayer::new_for_http())
+            .layer(trovato_kernel::telemetry::trace_layer())
             // Supply a loopback peer (outermost, runs first) so
             // `resolve_client_ip` has a trusted socket address — mirroring
             // `into_make_service_with_connect_info` in production. Inserted
@@ -1181,6 +1241,31 @@ pub async fn grant_via_role(app: &TestApp, user_id: Uuid, permissions: &[&str]) 
     app.state.permissions().invalidate_user(user_id);
 }
 
+/// Make a scoped subscriber (`.with_subscriber(..)` on one request) see every
+/// event that request emits, while other tests run requests at the same time.
+///
+/// Call it before creating the scoped subscriber.
+///
+/// tracing-core caches each callsite's interest the first time the callsite
+/// fires. When exactly one dispatcher is alive, it asks the default subscriber
+/// *of the thread the callsite fired on*, not the live one. A binary with no
+/// global subscriber and one scoped capture is in that state. A concurrent
+/// test's request on another thread then fixes `never` on `sqlx::query`, the
+/// response trace or a warning, and the capture misses them for the rest of
+/// the run. It sees no statements and no warnings, and only when the tests
+/// run in parallel.
+///
+/// A global no-op subscriber is never dropped. With it there are always two
+/// dispatchers while a capture is alive, and every interest is asked of all
+/// of them. It enables nothing, so the binary logs nothing it did not
+/// before.
+pub fn scoped_subscribers_see_every_callsite() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(tracing::subscriber::NoSubscriber::new());
+    });
+}
+
 /// Wait until the cache generations bumped by this test's writes so far have
 /// been seen and cleared.
 ///
@@ -1290,4 +1375,34 @@ pub fn item_service_with_ref_plugin(pool: PgPool) -> trovato_kernel::content::It
         None,
         Default::default(),
     )
+}
+
+impl TestApp {
+    /// Send the mail queued for `recipients` now, through this app's transport
+    /// (BG18). Mail is queued in `mail_outbox` and sent by workers; a test app
+    /// runs none, because the outbox is shared by every test using the
+    /// database and a worker would send their messages through this app's
+    /// sink. Draining by recipient touches this test's messages only.
+    ///
+    /// Panics when the app has no mail configured.
+    pub async fn deliver_mail_to(
+        &self,
+        recipients: &[&str],
+    ) -> trovato_kernel::services::mail_worker::DrainStats {
+        use trovato_kernel::services::mail_worker::{DrainScope, Lane, MailWorker};
+        let email = self.state.email().expect("this app has mail configured");
+        let scope = DrainScope::Recipients(recipients.iter().map(|r| r.to_string()).collect());
+        let stats = MailWorker::new(email, Lane::Any, scope)
+            .drain()
+            .await
+            .expect("drain the outbox");
+        // Held means the blog's hourly limit was reached, which on a
+        // long-lived local database can follow many suite runs in one hour.
+        // Say so here rather than as a confusing sink assertion later.
+        assert_eq!(
+            stats.held, 0,
+            "test mail was held by a sending limit (a long-lived database? recreate it): {stats:?}"
+        );
+        stats
+    }
 }

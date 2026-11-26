@@ -231,7 +231,7 @@ async fn public_comment_count(app: &TestApp, item_id: Uuid) -> i64 {
 fn a_new_comment_is_held_when_the_site_holds_comments() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = DEFAULT_STATUS.lock().await;
+        common::hold_until_cleanup(DEFAULT_STATUS.lock().await);
         ensure_item_type(app).await;
         set_default_status(app, Some("pending")).await;
 
@@ -262,7 +262,7 @@ fn a_new_comment_is_held_when_the_site_holds_comments() {
 fn skip_comment_approval_bypasses_the_queue() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = DEFAULT_STATUS.lock().await;
+        common::hold_until_cleanup(DEFAULT_STATUS.lock().await);
         ensure_item_type(app).await;
         set_default_status(app, Some("pending")).await;
 
@@ -296,7 +296,7 @@ fn skip_comment_approval_bypasses_the_queue() {
 fn an_unset_default_publishes_immediately() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = DEFAULT_STATUS.lock().await;
+        common::hold_until_cleanup(DEFAULT_STATUS.lock().await);
         ensure_item_type(app).await;
         set_default_status(app, None).await;
 
@@ -321,7 +321,7 @@ fn an_unset_default_publishes_immediately() {
 fn an_unrecognised_default_fails_closed_into_the_queue() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = DEFAULT_STATUS.lock().await;
+        common::hold_until_cleanup(DEFAULT_STATUS.lock().await);
         ensure_item_type(app).await;
         set_default_status(app, Some("publsihed")).await;
 
@@ -345,7 +345,7 @@ fn an_unrecognised_default_fails_closed_into_the_queue() {
 fn approving_a_held_comment_publishes_it() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = DEFAULT_STATUS.lock().await;
+        common::hold_until_cleanup(DEFAULT_STATUS.lock().await);
         ensure_item_type(app).await;
         set_default_status(app, Some("pending")).await;
 
@@ -364,6 +364,7 @@ fn approving_a_held_comment_publishes_it() {
                     body: None,
                     body_format: None,
                     status: Some(CommentStatus::Published.as_i16()),
+                    subject: None,
                 },
                 &admin(),
             )
@@ -388,7 +389,7 @@ fn approving_a_held_comment_publishes_it() {
 fn a_comment_marked_spam_is_retained_and_invisible() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = DEFAULT_STATUS.lock().await;
+        common::hold_until_cleanup(DEFAULT_STATUS.lock().await);
         ensure_item_type(app).await;
         set_default_status(app, None).await;
 
@@ -406,6 +407,7 @@ fn a_comment_marked_spam_is_retained_and_invisible() {
                     body: None,
                     body_format: None,
                     status: Some(CommentStatus::Spam.as_i16()),
+                    subject: None,
                 },
                 &admin(),
             )
@@ -435,7 +437,7 @@ fn a_comment_marked_spam_is_retained_and_invisible() {
 fn pending_comments_are_listable_by_status() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = DEFAULT_STATUS.lock().await;
+        common::hold_until_cleanup(DEFAULT_STATUS.lock().await);
         ensure_item_type(app).await;
         set_default_status(app, Some("pending")).await;
 
@@ -475,7 +477,7 @@ fn pending_comments_are_listable_by_status() {
 fn a_held_comment_is_not_readable_by_id() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = DEFAULT_STATUS.lock().await;
+        common::hold_until_cleanup(DEFAULT_STATUS.lock().await);
         ensure_item_type(app).await;
         set_default_status(app, Some("pending")).await;
 
@@ -562,7 +564,7 @@ fn a_held_comment_is_not_readable_by_id() {
 fn a_published_comment_is_still_readable_by_id() {
     run_test(async {
         let app = shared_app().await;
-        let _guard = DEFAULT_STATUS.lock().await;
+        common::hold_until_cleanup(DEFAULT_STATUS.lock().await);
         ensure_item_type(app).await;
         set_default_status(app, Some("published")).await;
 

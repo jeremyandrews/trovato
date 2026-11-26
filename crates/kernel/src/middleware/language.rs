@@ -238,6 +238,21 @@ impl LanguageNegotiator for AcceptLanguageNegotiator {
     }
 }
 
+/// Whether a local path is served under every language's prefix.
+///
+/// Everything [`negotiate_language`] handles is: it strips `/{lang}` off the
+/// request, and the alias fallback serves what is left in that language, so
+/// `/it/recipes` is `/recipes` read in Italian. The system paths it passes
+/// through untouched (static files, the API, health probes, the installer) are
+/// not, and `/it/static/...` is not an address. The menu asks this too, so a
+/// link is prefixed exactly when the prefixed address is one the site serves.
+pub fn is_served_per_language(path: &str) -> bool {
+    !(path.starts_with("/static")
+        || path.starts_with("/api")
+        || crate::routes::health::is_probe_path(path)
+        || path.starts_with("/install"))
+}
+
 /// Middleware to negotiate the active language for each request.
 ///
 /// Resolution order:
@@ -282,11 +297,7 @@ pub async fn negotiate_language(
     //   strip URL language prefixes (e.g., /en/admin → /admin) and resolve
     //   the language for those routes.
     // - path_alias skips them because they never need alias-to-source rewriting.
-    if path.starts_with("/static")
-        || path.starts_with("/api")
-        || path == "/health"
-        || path.starts_with("/install")
-    {
+    if !is_served_per_language(path) {
         request
             .extensions_mut()
             .insert(ResolvedLanguage(default_language.to_string()));

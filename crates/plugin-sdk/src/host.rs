@@ -30,6 +30,9 @@ unsafe extern "C" {
     #[link_name = "execute-raw"]
     fn __db_execute_raw(sql_ptr: i32, sql_len: i32, params_ptr: i32, params_len: i32) -> i64;
 
+    #[link_name = "search-index-enqueue"]
+    fn __db_search_index_enqueue(ids_ptr: i32, ids_len: i32) -> i64;
+
     #[link_name = "query-raw"]
     fn __db_query_raw(
         sql_ptr: i32,
@@ -163,6 +166,17 @@ unsafe extern "C" {
 
     #[link_name = "load-users"]
     fn __load_users(ids_ptr: i32, ids_len: i32, out_ptr: i32, out_max_len: i32) -> i32;
+
+    #[link_name = "find-user-by-name"]
+    fn __find_user_by_name(name_ptr: i32, name_len: i32, out_ptr: i32, out_max_len: i32) -> i32;
+
+    #[link_name = "find-users-by-name-prefix"]
+    fn __find_users_by_name_prefix(
+        prefix_ptr: i32,
+        prefix_len: i32,
+        out_ptr: i32,
+        out_max_len: i32,
+    ) -> i32;
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -434,6 +448,50 @@ pub fn execute_raw(sql: &str, params: &[serde_json::Value]) -> Result<u64, i32> 
     } else {
         Ok(result as u64)
     }
+}
+
+/// Queue items for the static search index.
+///
+/// A write to the `item`, `comment` or `url_alias` tables, raw SQL included,
+/// is queued by the database in the write's own transaction, and needs no
+/// call. **The rule for plugins:** call this, after the change, when your
+/// plugin changes something else that decides what an item's search page
+/// holds, typically data of its own that its `tap_field_access` reads (the
+/// index is built as the anonymous visitor). Cron then rewrites only those
+/// items' part of the index, within one cron pass. Queuing twice is harmless,
+/// and so is queuing an id that is not, or is no longer, searchable (it is
+/// simply taken out of the index).
+///
+/// Without this call such a change is invisible to search until the next full
+/// rebuild.
+///
+/// Needs the `db` host interface. At most 10,000 ids per call. Returns how
+/// many were queued.
+///
+/// # Errors
+///
+/// [`ERR_PARAM_DESERIALIZE`](crate::host_errors::ERR_PARAM_DESERIALIZE) when
+/// an id is not a UUID,
+/// [`ERR_DB_BATCH_TOO_LARGE`](crate::host_errors::ERR_DB_BATCH_TOO_LARGE)
+/// past 10,000, [`ERR_SQL_FAILED`](crate::host_errors::ERR_SQL_FAILED) when
+/// the queue cannot be written.
+#[cfg(target_arch = "wasm32")]
+pub fn search_index_enqueue(item_ids: &[&str]) -> Result<u64, i32> {
+    let json =
+        serde_json::to_string(item_ids).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)?;
+    let result = unsafe { __db_search_index_enqueue(json.as_ptr() as i32, json.len() as i32) };
+    if result < 0 {
+        Err(result as i32)
+    } else {
+        Ok(result as u64)
+    }
+}
+
+/// Queue items for the static search index (stub for native testing: queues
+/// nothing and reports every id queued).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn search_index_enqueue(item_ids: &[&str]) -> Result<u64, i32> {
+    Ok(item_ids.len() as u64)
 }
 
 /// Execute a SELECT query, return JSON result string.
@@ -1027,6 +1085,85 @@ pub fn load_users(user_ids: &[&str]) -> Result<Vec<crate::types::UserSummary>, i
 /// ask, so no user is found).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_users(_user_ids: &[&str]) -> Result<Vec<crate::types::UserSummary>, i32> {
+    Ok(Vec::new())
+}
+
+/// The one account named `name`: the same public facts [`load_users`]
+/// answers, or `None` when no account has that name.
+///
+/// Matches case-insensitively, the same way the kernel's own login matches a
+/// name. Requires `user_directory = true` under `[capabilities]`, the same
+/// grant `load_users` needs. No status or identity filter beyond that grant:
+/// a blocked account or the anonymous account answers like any other.
+///
+/// # Errors
+///
+/// [`ERR_USER_DIRECTORY_DENIED`](crate::host_errors::ERR_USER_DIRECTORY_DENIED)
+/// without the capability,
+/// [`ERR_USER_NAME_INVALID`](crate::host_errors::ERR_USER_NAME_INVALID) when
+/// `name` is empty or longer than 255 characters, and the standard negative
+/// codes for a failed read.
+#[cfg(target_arch = "wasm32")]
+pub fn find_user_by_name(name: &str) -> Result<Option<crate::types::UserSummary>, i32> {
+    let mut buf = vec![0u8; MAX_OUTPUT_BUFFER];
+    let result = unsafe {
+        __find_user_by_name(
+            name.as_ptr() as i32,
+            name.len() as i32,
+            buf.as_mut_ptr() as i32,
+            buf.len() as i32,
+        )
+    };
+    if result < 0 {
+        return Err(result);
+    }
+    buf.truncate(result as usize);
+    serde_json::from_slice(&buf).map_err(|_| crate::host_errors::ERR_SDK_DESERIALIZE)
+}
+
+/// Look a user up by name (stub for native testing; there is no directory to
+/// ask, so no user is found).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn find_user_by_name(_name: &str) -> Result<Option<crate::types::UserSummary>, i32> {
+    Ok(None)
+}
+
+/// Up to 10 accounts whose name starts with `prefix`, sorted by name: a short
+/// list an autocomplete widget can offer as a person types.
+///
+/// Matches case-insensitively. Requires `user_directory = true` under
+/// `[capabilities]`, the same grant [`load_users`] needs, and the same
+/// visibility rule as [`find_user_by_name`] applies.
+///
+/// # Errors
+///
+/// [`ERR_USER_DIRECTORY_DENIED`](crate::host_errors::ERR_USER_DIRECTORY_DENIED)
+/// without the capability,
+/// [`ERR_USER_NAME_PREFIX_INVALID`](crate::host_errors::ERR_USER_NAME_PREFIX_INVALID)
+/// when `prefix` is empty or longer than 255 characters, and the standard
+/// negative codes for a failed read.
+#[cfg(target_arch = "wasm32")]
+pub fn find_users_by_name_prefix(prefix: &str) -> Result<Vec<crate::types::UserSummary>, i32> {
+    let mut buf = vec![0u8; MAX_OUTPUT_BUFFER];
+    let result = unsafe {
+        __find_users_by_name_prefix(
+            prefix.as_ptr() as i32,
+            prefix.len() as i32,
+            buf.as_mut_ptr() as i32,
+            buf.len() as i32,
+        )
+    };
+    if result < 0 {
+        return Err(result);
+    }
+    buf.truncate(result as usize);
+    serde_json::from_slice(&buf).map_err(|_| crate::host_errors::ERR_SDK_DESERIALIZE)
+}
+
+/// Look users up by name prefix (stub for native testing; there is no
+/// directory to ask, so no user is found).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn find_users_by_name_prefix(_prefix: &str) -> Result<Vec<crate::types::UserSummary>, i32> {
     Ok(Vec::new())
 }
 

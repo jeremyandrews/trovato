@@ -39,13 +39,21 @@ pub(crate) const HEADLINE_OPTIONS: &str =
 /// long text field goes by two names (BL-21): `field_body` where a content type
 /// declared it, `body` on the kernel's own `page`; both, in that order, or a
 /// `page` matched only on its title gets a snippet with no body text in it.
+///
+/// The bare field is read as text only when it is a JSON string, the same
+/// rule `item_search_vector` indexes by. A page builder field is a JSON
+/// object (`{"root": …, "content": […]}`) with no `value` key, and `->>` on
+/// an object returns its JSON text, so every page builder item's snippet
+/// was that document printed raw.
 pub(crate) const SOURCE_SQL: &str = r#"translate(
         regexp_replace(
             COALESCE(title, '') || ' ' || COALESCE(
                 fields->'field_body'->>'value',
-                fields->>'field_body',
+                CASE WHEN jsonb_typeof(fields->'field_body') = 'string'
+                     THEN fields->>'field_body' END,
                 fields->'body'->>'value',
-                fields->>'body',
+                CASE WHEN jsonb_typeof(fields->'body') = 'string'
+                     THEN fields->>'body' END,
                 ''
             ),
             '<[A-Za-z/!?][^>]*>', ' ', 'g'

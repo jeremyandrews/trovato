@@ -77,6 +77,10 @@ fn a_bump_clears_this_servers_cache() {
     run_test(async {
         let app = shared_app().await;
         let (id, _) = user_holding(app, "genbump", &[]).await;
+        // Creating the user bumped the user cache's generation from a
+        // background task; let that clear land now, not between the read
+        // below and the assertion that the cache still holds the old row.
+        common::settle_cache_generations().await;
         let users = app.state.users();
         let before = users.find_by_id(id).await.unwrap().unwrap().name;
 

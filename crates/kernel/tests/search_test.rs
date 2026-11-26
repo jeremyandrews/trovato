@@ -32,6 +32,7 @@ fn test_search_results_serde() {
         total: 2,
         offset: 0,
         limit: 10,
+        no_terms: false,
     };
 
     let json = serde_json::to_string(&results).unwrap();
@@ -92,6 +93,7 @@ fn test_empty_search_results() {
         total: 0,
         offset: 0,
         limit: 10,
+        no_terms: false,
     };
 
     assert!(results.results.is_empty());
@@ -108,6 +110,7 @@ fn test_pagination_values() {
         total: 100,
         offset: 20,
         limit: 10,
+        no_terms: false,
     };
 
     // Page 3 (offset 20, limit 10)

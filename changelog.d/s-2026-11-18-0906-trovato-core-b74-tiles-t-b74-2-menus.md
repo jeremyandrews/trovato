@@ -1,8 +1,0 @@
-Every config menu reaches templates as `menus_by_name` (menu name to a weight-ordered tree of `{title, path, active, children}`), filtered and localized for the viewer; `main_menu`, `footer_menu`, `main_menu_owned` and `menus` keep their shapes and values.
-Plugin entries registered with a parent reach templates as `menus_by_parent` (parent path to trees), by the same permission rule as root entries; the root entries also arrive as a tree, `menus_tree`.
-A `{uid}` path segment in a plugin entry becomes the signed-in viewer's id; an entry with `{uid}` for an anonymous viewer, or any other `{...}` segment, is left out, `menus` included.
-`active` is set in Rust by one rule: the requested path is the link's path or under it, and `/` is active only on `/`.
-Fixed B62, a `menu_link` and a `url_alias` query per menu per render: all config menus of a stage load in one query and their alias sources in one more, cached by stage and language and cleared by every menu link, alias, item, item translation, config import and stage publish write.
-A `menu` tile renders its menu server side through `elements/tile--menu.html`, overridable per tile machine name; tile rendering takes one `TileRenderContext`.
-**Behaviour change:** the stock `page.html` draws the main menu as nested lists (children in a dropdown on wide screens), the account area adds `menus_by_parent["/user"]` and the `user` menu, active links match pages under them, and below 768 px a menu button from the new `static/js/site-nav.js` shows and hides the nav.
-**Behaviour change:** a `menu` tile renders its links instead of an empty `<nav class="tile-menu" data-menu>`.

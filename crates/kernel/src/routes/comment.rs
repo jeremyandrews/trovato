@@ -3,7 +3,7 @@
 //! Provides endpoints for viewing, creating, and moderating comments on content items.
 
 use axum::{
-    Json,
+    Json, Router,
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
 };
@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::content::FilterPipeline;
 use crate::error::AppError;
+use crate::models::comment::{SUBJECT_MAX_CHARS, normalize_subject, subject_too_long};
 use crate::models::{Comment, CommentStatus, CreateComment, UpdateComment};
 use crate::pagination::{Page, PageParams};
 use crate::routes::helpers::{require_csrf_header, require_login_json, user_context_for};
@@ -20,7 +21,25 @@ use crate::state::AppState;
 
 /// Render a comment body to HTML with safe format whitelisting.
 fn render_comment_body(comment: &Comment) -> String {
-    FilterPipeline::for_format_safe(&comment.body_format).process(&comment.body)
+    FilterPipeline::for_format(&comment.body_format).process(&comment.body)
+}
+
+/// Normalize and length-check a submitted subject, or the 400 it earns.
+///
+/// Shared by every route that accepts one (the JSON API here and the
+/// moderation form in [`super::admin`]), so the limit and the "empty means no
+/// subject" rule cannot drift between them.
+pub(crate) fn validate_subject(raw: Option<&str>) -> Result<Option<String>, AppError> {
+    let subject = normalize_subject(raw);
+    if let Some(ref s) = subject
+        && subject_too_long(s)
+    {
+        return Err(AppError::with_status(
+            StatusCode::BAD_REQUEST,
+            format!("Comment subject cannot exceed {SUBJECT_MAX_CHARS} characters"),
+        ));
+    }
+    Ok(subject)
 }
 
 // =============================================================================
@@ -35,6 +54,10 @@ pub struct CommentResponse {
     pub author_id: Uuid,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub author: Option<AuthorInfo>,
+    /// Absent when the comment has none, so a client that never sends a
+    /// subject never sees the key at all.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
     pub body: String,
     pub body_html: String,
     pub status: i16,
@@ -57,12 +80,19 @@ pub struct AuthorInfo {
 pub struct CreateCommentRequest {
     pub body: String,
     pub parent_id: Option<Uuid>,
+    #[serde(default)]
+    pub subject: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 pub struct UpdateCommentRequest {
     pub body: Option<String>,
     pub status: Option<i16>,
+    /// Absent (no `subject` key at all) means unchanged; present — including
+    /// an empty string — replaces it, the same shape [`UpdateComment::subject`]
+    /// takes once this is validated.
+    #[serde(default)]
+    pub subject: Option<String>,
 }
 
 /// One comment submission, however it arrived.
@@ -85,6 +115,8 @@ pub struct UpdateCommentRequest {
 pub struct CommentSubmission {
     /// Comment text.
     pub body: String,
+    /// Optional plain text subject, from whichever encoding carried it.
+    pub subject: Option<String>,
     /// Parent comment, for a threaded reply.
     pub parent_id: Option<Uuid>,
     /// CSRF token from the form body; `None` when the request is JSON and the
@@ -110,6 +142,7 @@ impl CommentSubmission {
     fn from_form(form: std::collections::HashMap<String, String>) -> Self {
         Self {
             body: form.get("body").cloned().unwrap_or_default(),
+            subject: form.get("subject").cloned(),
             // An empty hidden input posts "", which is "no parent" rather than a
             // malformed UUID.
             parent_id: form
@@ -150,6 +183,7 @@ impl<S: Send + Sync> axum::extract::FromRequest<S> for CommentSubmission {
             .map_err(|e| bad_request(format!("invalid JSON body: {e}")))?;
         Ok(Self {
             body: request.body,
+            subject: request.subject,
             parent_id: request.parent_id,
             body_csrf: None,
             wants_redirect: false,
@@ -246,6 +280,7 @@ async fn list_item_comments(
             parent_id: comment.parent_id,
             author_id: comment.author_id,
             author,
+            subject: comment.subject,
             body: comment.body,
             body_html,
             status: comment.status,
@@ -393,6 +428,8 @@ async fn create_comment_inner(
         ));
     }
 
+    let subject = validate_subject(request.subject.as_deref())?;
+
     // Build UserContext with real permissions for access check
     // One loader, one context shape: the same one every read handler in this
     // module gets from `get_user_context`, reached from an already-loaded user.
@@ -439,22 +476,11 @@ async fn create_comment_inner(
         item_id,
         parent_id: request.parent_id,
         author_id: user_id,
+        subject,
         body: request.body.clone(),
         body_format: Some("filtered_html".to_string()),
         status: Some(status.as_i16()),
     };
-    let comment = state
-        .comments()
-        .create(input, &user_ctx)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "failed to create comment");
-            AppError::with_status(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Failed to create comment",
-            )
-        })?;
-
     // Get commenter info
     let commenter = state
         .users()
@@ -470,14 +496,32 @@ async fn create_comment_inner(
     // Notify the content author, but only if this comment is visible. A comment
     // created into the review queue must not mail its full text to the author:
     // that would deliver every held comment, including the ones moderation
-    // exists to catch.
-    notify_if_published(
-        state,
-        &comment,
-        None,
-        &item,
-        commenter.as_ref().map(|a| a.name.as_str()),
-    );
+    // exists to catch. The notification is queued in the comment's own
+    // transaction (BG18).
+    let mail_ctx = if should_notify_on_publish(None, status.as_i16(), user_id, item.author_id) {
+        comment_mail_context(state, &item, commenter.as_ref().map(|a| a.name.as_str())).await
+    } else {
+        None
+    };
+    let created = match (state.email(), mail_ctx) {
+        (Some(email), Some(ctx)) => {
+            let tera = state.theme().tera();
+            state
+                .comments()
+                .create_with_mail(input, &user_ctx, email, |c| {
+                    comment_notification(tera, &ctx, c, None)
+                })
+                .await
+        }
+        _ => state.comments().create(input, &user_ctx).await,
+    };
+    let comment = created.map_err(|e| {
+        tracing::error!(error = %e, "failed to create comment");
+        AppError::with_status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to create comment",
+        )
+    })?;
 
     let body_html = render_comment_body(&comment);
 
@@ -487,6 +531,7 @@ async fn create_comment_inner(
         parent_id: comment.parent_id,
         author_id: comment.author_id,
         author: commenter,
+        subject: comment.subject,
         body: comment.body,
         body_html,
         status: comment.status,
@@ -569,6 +614,7 @@ async fn get_comment(
         parent_id: comment.parent_id,
         author_id: comment.author_id,
         author,
+        subject: comment.subject,
         body: comment.body,
         body_html,
         status: comment.status,
@@ -634,10 +680,19 @@ async fn update_comment(
         ));
     }
 
+    // `request.subject` is `None` when the JSON carried no `subject` key at
+    // all (leave it alone); `Some(raw)` is validated and becomes the new
+    // value, including `Some(None)` when `raw` was empty (clear it).
+    let subject = match request.subject.as_deref() {
+        None => None,
+        Some(raw) => Some(validate_subject(Some(raw))?),
+    };
+
     let input = UpdateComment {
         body: request.body,
         body_format: None,
         status: request.status,
+        subject,
     };
 
     let comment = state
@@ -672,6 +727,7 @@ async fn update_comment(
         parent_id: comment.parent_id,
         author_id: comment.author_id,
         author,
+        subject: comment.subject,
         body: comment.body,
         body_html,
         status: comment.status,
@@ -780,6 +836,8 @@ pub(crate) async fn render_thread(
         }
     }
 
+    // Edit and Delete links where the pages behind them would let the viewer
+    // in, decided from the permissions already loaded: no query per comment.
     let rendered: Vec<serde_json::Value> = thread
         .iter()
         .map(|comment| {
@@ -788,7 +846,12 @@ pub(crate) async fn render_thread(
                 "depth": comment.depth,
                 "created": comment.created,
                 "author_name": names.get(&comment.author_id),
+                // Plain text: the template prints it with autoescape on, never
+                // `| safe`, the same rule `body_html` is the one exception to.
+                "subject": comment.subject,
                 "body_html": render_comment_body(comment),
+                "can_edit": crate::services::comment::permission_allows(comment, "edit", viewer),
+                "can_delete": crate::services::comment::permission_allows(comment, "delete", viewer),
             })
         })
         .collect();
@@ -829,6 +892,468 @@ pub(crate) async fn render_thread(
 }
 
 // =============================================================================
+// Comment pages: reply, edit own, delete own
+// =============================================================================
+
+/// The form body of the edit and delete pages.
+#[derive(Debug, Deserialize)]
+pub struct CommentPageForm {
+    /// CSRF token, from the hidden `_csrf` input.
+    #[serde(rename = "_csrf", default)]
+    pub csrf: String,
+    /// The new comment text (the edit page only).
+    #[serde(default)]
+    pub body: String,
+    /// The new subject (the edit page only). Empty clears it, since the form
+    /// always carries the field's full, current value rather than a partial
+    /// change.
+    #[serde(default)]
+    pub subject: String,
+}
+
+/// What a comment page is about: the item, and the address it is read at.
+struct PageTarget {
+    item: crate::models::Item,
+    item_path: String,
+}
+
+/// Load an item the viewer may see, or the 404 a missing one gets.
+///
+/// Denied and missing answer alike, as the item page does, so a comment page
+/// cannot be used to learn that an unpublished item exists.
+async fn viewable_item(
+    state: &AppState,
+    viewer: &crate::tap::UserContext,
+    item_id: Uuid,
+) -> Result<PageTarget, axum::response::Response> {
+    use crate::routes::helpers::{render_not_found, render_server_error};
+    let item = match state.items().load(item_id).await {
+        Ok(Some(item)) => item,
+        Ok(None) => return Err(render_not_found()),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load item for a comment page");
+            return Err(render_server_error("Failed to load the item"));
+        }
+    };
+    if !state
+        .items()
+        .check_access(&item, "view", viewer)
+        .await
+        .unwrap_or(false)
+    {
+        return Err(render_not_found());
+    }
+    let item_path = item_path_for(state, item.id).await;
+    Ok(PageTarget { item, item_path })
+}
+
+/// Load a comment the viewer may see on an item they may see.
+///
+/// A comment that is not published is seen only by its author and a
+/// moderator, the rule [`get_comment`] applies.
+async fn viewable_comment(
+    state: &AppState,
+    viewer: &crate::tap::UserContext,
+    id: Uuid,
+) -> Result<(Comment, PageTarget), axum::response::Response> {
+    use crate::routes::helpers::{render_not_found, render_server_error};
+    let comment = match state.comments().load(id).await {
+        Ok(Some(comment)) => comment,
+        Ok(None) => return Err(render_not_found()),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load comment for a comment page");
+            return Err(render_server_error("Failed to load the comment"));
+        }
+    };
+    let target = viewable_item(state, viewer, comment.item_id).await?;
+    if comment.status != CommentStatus::Published.as_i16() {
+        let is_author = viewer.authenticated && viewer.id == comment.author_id;
+        if !is_author && !viewer.can("administer comments") {
+            return Err(render_not_found());
+        }
+    }
+    Ok((comment, target))
+}
+
+/// A comment as the comment pages show it: author, date and rendered body.
+async fn comment_for_page(state: &AppState, comment: &Comment) -> serde_json::Value {
+    let author_name = state
+        .users()
+        .find_by_id(comment.author_id)
+        .await
+        .ok()
+        .flatten()
+        .map(|u| u.name);
+    serde_json::json!({
+        "id": comment.id,
+        "created": comment.created,
+        "author_name": author_name,
+        "subject": comment.subject,
+        "body_html": render_comment_body(comment),
+    })
+}
+
+/// Render `comment-page.html` inside the site theme.
+///
+/// One template for the three pages, switched on `mode`, so a theme overrides
+/// all three in one place.
+async fn render_comment_page(
+    state: &AppState,
+    session: &Session,
+    path: &str,
+    status: StatusCode,
+    mut context: tera::Context,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    crate::routes::helpers::inject_site_context(state, session, &mut context, path).await;
+    let template = state
+        .theme()
+        .resolve_template(&["comment-page"])
+        .unwrap_or_else(|| "comment-page.html".to_string());
+    match state.theme().tera().render(&template, &context) {
+        Ok(html) => (status, axum::response::Html(html)).into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to render a comment page");
+            crate::routes::helpers::render_server_error("Failed to render the page")
+        }
+    }
+}
+
+/// The refusal a signed-in viewer gets for a comment page they may not use.
+fn comment_page_forbidden(message: &str) -> axum::response::Response {
+    crate::routes::helpers::render_forbidden(message)
+}
+
+/// The reply form for an item, or for one comment on it.
+///
+/// GET /comment/reply/{item_id} and GET /comment/reply/{item_id}/{parent_id}
+///
+/// A page of its own, as Drupal's `comment/reply/<nid>` is: the item page's
+/// Reply link leads here, so replying works without JavaScript and an old
+/// link to the reply form still has somewhere to go. The form posts to the
+/// comment route, which redirects back to the item.
+async fn reply_page(
+    state: &AppState,
+    session: &Session,
+    item_id: Uuid,
+    parent_id: Option<Uuid>,
+) -> axum::response::Response {
+    let viewer = crate::routes::item::get_user_context(session, state).await;
+    let path = match parent_id {
+        Some(parent) => format!("/comment/reply/{item_id}/{parent}"),
+        None => format!("/comment/reply/{item_id}"),
+    };
+    if !viewer.authenticated {
+        // Signed out: the login form, which brings the visitor back here.
+        return axum::response::IntoResponse::into_response(axum::response::Redirect::to(
+            &format!("/user/login?destination={}", urlencoding::encode(&path)),
+        ));
+    }
+    let target = match viewable_item(state, &viewer, item_id).await {
+        Ok(target) => target,
+        Err(refusal) => return refusal,
+    };
+    if !viewer.can("post comments") {
+        return comment_page_forbidden("You are not authorized to post comments.");
+    }
+    let parent = match parent_id {
+        Some(parent_id) => match viewable_comment(state, &viewer, parent_id).await {
+            Ok((parent, _)) if parent.item_id == item_id => Some(parent),
+            Ok(_) => return crate::routes::helpers::render_not_found(),
+            Err(refusal) => return refusal,
+        },
+        None => None,
+    };
+
+    let mut context = tera::Context::new();
+    context.insert("mode", "reply");
+    context.insert(
+        "page_title",
+        if parent.is_some() {
+            "Reply to comment"
+        } else {
+            "Add new comment"
+        },
+    );
+    if let Some(parent) = &parent {
+        context.insert("comment", &comment_for_page(state, parent).await);
+    }
+    if let Some(parent_id) = parent_id {
+        context.insert("parent_id", &parent_id);
+    }
+    context.insert("item_id", &item_id);
+    context.insert("item_title", &target.item.title);
+    context.insert("item_path", &target.item_path);
+    context.insert(
+        "csrf_token",
+        &crate::form::csrf::generate_csrf_token(session).await,
+    );
+    render_comment_page(state, session, &path, StatusCode::OK, context).await
+}
+
+async fn reply_to_item(
+    State(state): State<AppState>,
+    session: Session,
+    Path(item_id): Path<Uuid>,
+) -> axum::response::Response {
+    reply_page(&state, &session, item_id, None).await
+}
+
+async fn reply_to_comment(
+    State(state): State<AppState>,
+    session: Session,
+    Path((item_id, parent_id)): Path<(Uuid, Uuid)>,
+) -> axum::response::Response {
+    reply_page(&state, &session, item_id, Some(parent_id)).await
+}
+
+/// The signed-in viewer and a comment they may perform `operation` on, or the
+/// page that refuses them.
+async fn comment_for_operation(
+    state: &AppState,
+    session: &Session,
+    id: Uuid,
+    operation: &str,
+) -> Result<(crate::tap::UserContext, Comment, PageTarget), axum::response::Response> {
+    let user = crate::routes::helpers::require_login(state, session).await?;
+    let viewer = user_context_for(state, &user).await;
+    let (comment, target) = viewable_comment(state, &viewer, id).await?;
+    let allowed = state
+        .comments()
+        .check_access(&comment, operation, &viewer)
+        .await
+        .unwrap_or(false);
+    if !allowed {
+        return Err(comment_page_forbidden(match operation {
+            "edit" => "You are not authorized to edit this comment.",
+            _ => "You are not authorized to delete this comment.",
+        }));
+    }
+    Ok((viewer, comment, target))
+}
+
+/// The edit page context, showing `body` and `subject` in the form.
+async fn edit_context(
+    state: &AppState,
+    session: &Session,
+    comment: &Comment,
+    target: &PageTarget,
+    body: &str,
+    subject: &str,
+    errors: &[&str],
+) -> tera::Context {
+    let mut context = tera::Context::new();
+    context.insert("mode", "edit");
+    context.insert("page_title", "Edit comment");
+    context.insert("comment", &comment_for_page(state, comment).await);
+    context.insert("body", body);
+    context.insert("subject", subject);
+    context.insert("errors", errors);
+    context.insert("item_title", &target.item.title);
+    context.insert("item_path", &target.item_path);
+    context.insert(
+        "csrf_token",
+        &crate::form::csrf::generate_csrf_token(session).await,
+    );
+    context
+}
+
+/// The edit form for a comment.
+///
+/// GET /comment/{id}/edit
+///
+/// For the comment's author with `edit own comments`, and for anyone with
+/// `administer comments`. The moderation screen's edit form, with its status
+/// control, stays the administrator's; this one edits the text only.
+async fn edit_page(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<Uuid>,
+) -> axum::response::Response {
+    let (_, comment, target) = match comment_for_operation(&state, &session, id, "edit").await {
+        Ok(found) => found,
+        Err(refusal) => return refusal,
+    };
+    let context = edit_context(
+        &state,
+        &session,
+        &comment,
+        &target,
+        &comment.body,
+        comment.subject.as_deref().unwrap_or(""),
+        &[],
+    )
+    .await;
+    render_comment_page(
+        &state,
+        &session,
+        &format!("/comment/{id}/edit"),
+        StatusCode::OK,
+        context,
+    )
+    .await
+}
+
+/// Save an edited comment.
+///
+/// POST /comment/{id}/edit
+async fn edit_submit(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<Uuid>,
+    axum::Form(form): axum::Form<CommentPageForm>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let (viewer, comment, target) = match comment_for_operation(&state, &session, id, "edit").await
+    {
+        Ok(found) => found,
+        Err(refusal) => return refusal,
+    };
+    if let Err(refusal) = crate::routes::helpers::require_csrf(&session, &form.csrf).await {
+        return refusal;
+    }
+    if form.body.trim().is_empty() {
+        let context = edit_context(
+            &state,
+            &session,
+            &comment,
+            &target,
+            &form.body,
+            &form.subject,
+            &["Comment body cannot be empty."],
+        )
+        .await;
+        return render_comment_page(
+            &state,
+            &session,
+            &format!("/comment/{id}/edit"),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            context,
+        )
+        .await;
+    }
+    let Ok(subject) = validate_subject(Some(&form.subject)) else {
+        let context = edit_context(
+            &state,
+            &session,
+            &comment,
+            &target,
+            &form.body,
+            &form.subject,
+            &[&format!(
+                "Subject cannot exceed {SUBJECT_MAX_CHARS} characters."
+            )],
+        )
+        .await;
+        return render_comment_page(
+            &state,
+            &session,
+            &format!("/comment/{id}/edit"),
+            StatusCode::UNPROCESSABLE_ENTITY,
+            context,
+        )
+        .await;
+    };
+    let input = UpdateComment {
+        body: Some(form.body),
+        body_format: None,
+        status: None,
+        subject: Some(subject),
+    };
+    match state.comments().update(id, input, &viewer).await {
+        Ok(Some(_)) => axum::response::Redirect::to(&format!(
+            "{}?comment=updated#comment-{id}",
+            target.item_path
+        ))
+        .into_response(),
+        Ok(None) => crate::routes::helpers::render_not_found(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to update comment");
+            crate::routes::helpers::render_server_error("Failed to update the comment")
+        }
+    }
+}
+
+/// The confirmation page before a comment is deleted.
+///
+/// GET /comment/{id}/delete
+///
+/// For the comment's author with `delete own comments`, and for anyone with
+/// `administer comments`. Deleting takes the comment's replies with it, as
+/// Drupal's does, and the page says so.
+async fn delete_page(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<Uuid>,
+) -> axum::response::Response {
+    let (_, comment, target) = match comment_for_operation(&state, &session, id, "delete").await {
+        Ok(found) => found,
+        Err(refusal) => return refusal,
+    };
+    let mut context = tera::Context::new();
+    context.insert("mode", "delete");
+    context.insert("page_title", "Delete comment");
+    context.insert("comment", &comment_for_page(&state, &comment).await);
+    context.insert("item_title", &target.item.title);
+    context.insert("item_path", &target.item_path);
+    context.insert(
+        "csrf_token",
+        &crate::form::csrf::generate_csrf_token(&session).await,
+    );
+    render_comment_page(
+        &state,
+        &session,
+        &format!("/comment/{id}/delete"),
+        StatusCode::OK,
+        context,
+    )
+    .await
+}
+
+/// Delete a comment, once confirmed.
+///
+/// POST /comment/{id}/delete
+async fn delete_submit(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<Uuid>,
+    axum::Form(form): axum::Form<CommentPageForm>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let (viewer, _, target) = match comment_for_operation(&state, &session, id, "delete").await {
+        Ok(found) => found,
+        Err(refusal) => return refusal,
+    };
+    if let Err(refusal) = crate::routes::helpers::require_csrf(&session, &form.csrf).await {
+        return refusal;
+    }
+    match state.comments().delete(id, &viewer).await {
+        Ok(true) => {
+            axum::response::Redirect::to(&format!("{}?comment=deleted#comments", target.item_path))
+                .into_response()
+        }
+        Ok(false) => crate::routes::helpers::render_not_found(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to delete comment");
+            crate::routes::helpers::render_server_error("Failed to delete the comment")
+        }
+    }
+}
+
+/// The comment pages, served while `trovato_comments` is enabled.
+pub fn router() -> Router<AppState> {
+    use axum::routing::get;
+    Router::new()
+        .route("/comment/reply/{item_id}", get(reply_to_item))
+        .route(
+            "/comment/reply/{item_id}/{parent_id}",
+            get(reply_to_comment),
+        )
+        .route("/comment/{id}/edit", get(edit_page).post(edit_submit))
+        .route("/comment/{id}/delete", get(delete_page).post(delete_submit))
+}
+
+// =============================================================================
 // Notification helpers
 // =============================================================================
 
@@ -856,88 +1381,86 @@ pub(crate) fn should_notify_on_publish(
     becomes_visible && !was_visible && comment_author != item_author
 }
 
-/// Mail the content author if this comment has just become visible.
-///
-/// `previous` is the status before the change, or `None` for a comment that has
-/// just been created. Spawns the send, so a slow or dead SMTP server cannot hold
-/// up the response.
-pub(crate) fn notify_if_published(
-    state: &AppState,
-    comment: &Comment,
-    previous: Option<i16>,
-    item: &crate::models::Item,
-    commenter_name: Option<&str>,
-) {
-    if !should_notify_on_publish(previous, comment.status, comment.author_id, item.author_id) {
-        return;
-    }
-
-    let Some(email_service) = state.email() else {
-        return;
-    };
-
-    let notification_state = state.clone();
-    let email = email_service.clone();
-    let comment_body = comment.body.clone();
-    let item_title = item.title.clone();
-    let item_author_id = item.author_id;
-    let item_id = item.id;
-    let commenter_name = commenter_name.unwrap_or("Someone").to_string();
-
-    tokio::spawn(async move {
-        send_comment_notification(
-            &notification_state,
-            &email,
-            item_author_id,
-            &commenter_name,
-            &item_title,
-            &comment_body,
-            item_id,
-        )
-        .await;
-    });
+/// What a comment notification needs besides the comment: loaded before the
+/// write, so the message can be queued inside the write's transaction (BG18).
+pub(crate) struct CommentMail {
+    to: String,
+    site_name: String,
+    action_url: String,
+    item_title: String,
+    item_author_id: uuid::Uuid,
+    commenter_name: String,
 }
 
-/// Send a comment notification email to the content author.
-///
-/// This is called in a background task and must not panic. All errors
-/// are logged but silently swallowed.
-async fn send_comment_notification(
+/// Load what [`comment_notification`] needs to mail `item`'s author, or `None`
+/// when there is no mail to send: mail is not configured, or the author is
+/// gone or has no address.
+pub(crate) async fn comment_mail_context(
     state: &AppState,
-    email_service: &std::sync::Arc<crate::services::email::EmailService>,
-    item_author_id: uuid::Uuid,
-    commenter_name: &str,
-    item_title: &str,
-    comment_text: &str,
-    item_id: uuid::Uuid,
-) {
-    // Load the content author's email
-    let author = match state.users().find_by_id(item_author_id).await {
+    item: &crate::models::Item,
+    commenter_name: Option<&str>,
+) -> Option<CommentMail> {
+    let email_service = state.email()?;
+    let author = match state.users().find_by_id(item.author_id).await {
         Ok(Some(u)) => u,
         Ok(None) => {
             tracing::debug!("comment notification: author not found");
-            return;
+            return None;
         }
         Err(e) => {
             tracing::warn!(error = %e, "comment notification: failed to load author");
-            return;
+            return None;
         }
     };
-
     if author.mail.is_empty() {
-        return;
+        return None;
     }
-
     let site_name = crate::models::SiteConfig::site_name(state.db())
         .await
         .unwrap_or_else(|_| "Trovato".to_string());
-    let site_url = email_service.site_url();
-    let action_url = format!("{site_url}/item/{item_id}");
-    let subject = format!("New comment on \"{item_title}\" at {site_name}");
+    Some(CommentMail {
+        to: author.mail,
+        site_name,
+        action_url: format!("{}/item/{}", email_service.site_url(), item.id),
+        item_title: item.title.clone(),
+        item_author_id: item.author_id,
+        commenter_name: commenter_name.unwrap_or("Someone").to_string(),
+    })
+}
+
+/// The notification mailing the content author that `comment` has just become
+/// visible, or `None` when [`should_notify_on_publish`] says it has not.
+/// `previous` is the status before the change, `None` for a new comment.
+///
+/// One message per comment: the dedupe key makes a second approval, or a
+/// retried request, queue nothing.
+pub(crate) fn comment_notification(
+    tera: &tera::Tera,
+    ctx: &CommentMail,
+    comment: &Comment,
+    previous: Option<i16>,
+) -> Option<crate::services::email::NewMail> {
+    if !should_notify_on_publish(
+        previous,
+        comment.status,
+        comment.author_id,
+        ctx.item_author_id,
+    ) {
+        return None;
+    }
+    // The comment's own subject when it has one; otherwise the mail's own
+    // subject text, as it has always read.
+    let subject = comment
+        .subject
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| format!("New comment on \"{}\" at {}", ctx.item_title, ctx.site_name));
 
     // Truncate comment preview for email. Walks back to a char boundary: a
-    // multi-byte character straddling byte 500 would panic a bare slice, and
-    // this runs in a spawned task where that takes the task down silently.
+    // multi-byte character straddling byte 500 would panic a bare slice.
+    let comment_text = comment.body.as_str();
     let preview: &str = if comment_text.len() > 500 {
         let mut end = 500;
         while end > 0 && !comment_text.is_char_boundary(end) {
@@ -949,25 +1472,36 @@ async fn send_comment_notification(
     };
 
     let mut context = tera::Context::new();
-    context.insert("site_name", &site_name);
-    context.insert("commenter_name", commenter_name);
-    context.insert("content_title", item_title);
+    context.insert("site_name", &ctx.site_name);
+    context.insert("commenter_name", &ctx.commenter_name);
+    context.insert("content_title", &ctx.item_title);
     context.insert("comment_text", preview);
-    context.insert("action_url", &action_url);
+    context.insert("action_url", &ctx.action_url);
     context.insert("subject", &subject);
 
-    let tera = state.theme().tera();
     match crate::services::email_templates::render(tera, "comment_notification", &context) {
         Ok((html, text)) => {
-            if let Err(e) = email_service
-                .send_templated(&author.mail, &subject, &text, html.as_deref())
-                .await
-            {
-                tracing::warn!(error = %e, "comment notification: failed to send email");
+            let message = crate::services::email::NewMail::notification(
+                "comment_notification",
+                &ctx.to,
+                &subject,
+                &text,
+            )
+            .html(html)
+            .dedupe(format!("comment-published:{}", comment.id));
+            // A notification that cannot be sent (an author address the mail
+            // library will not parse) must not cost the commenter their comment.
+            match message.validate() {
+                Ok(()) => Some(message),
+                Err(e) => {
+                    tracing::warn!(error = %e, comment_id = %comment.id, "comment notification cannot be sent; comment kept");
+                    None
+                }
             }
         }
         Err(e) => {
             tracing::warn!(error = %e, "comment notification: failed to render template");
+            None
         }
     }
 }

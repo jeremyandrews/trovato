@@ -2022,6 +2022,51 @@ async fn a_gather_tile_item_count_survives_import_and_export() {
     db.cleanup().await;
 }
 
+/// A tile's `audience` visibility rule (anonymous-only or signed-in-only)
+/// arrives with its import and leaves with its export, same as any other
+/// `visibility` key (B174).
+#[tokio::test]
+async fn a_tile_audience_rule_survives_import_and_export() {
+    let db = ScratchDb::new("tileaudience").await;
+    let storage = db.storage();
+
+    let dir = TempConfigDir::new("tileaudience");
+    let tile_id = "0193a5a0-0003-7000-8000-0000000000d1";
+    dir.write(
+        &format!("tile.{tile_id}.yml"),
+        &format!(
+            "id: {tile_id}\nmachine_name: login_tile_rt\nlabel: Login\nregion: sidebar\n\
+             tile_type: custom_html\nconfig: {{}}\nvisibility:\n  audience: anonymous\n\
+             weight: 0\nstatus: 1\nplugin: core\n\
+             stage_id: 0193a5a0-0000-7000-8000-000000000001\ncreated: 1767225600\nchanged: 1767225600\n"
+        ),
+    );
+    if let Err(e) = import_config(&storage, db.pool(), dir.path(), false).await {
+        db.cleanup().await;
+        panic!("the tile must import clean: {e:#}");
+    }
+    let visibility: serde_json::Value =
+        sqlx::query_scalar("SELECT visibility FROM tile WHERE machine_name = 'login_tile_rt'")
+            .fetch_one(db.pool())
+            .await
+            .expect("the imported tile");
+    assert_eq!(visibility["audience"], serde_json::json!("anonymous"));
+
+    let export = TempConfigDir::new("tileaudience_export");
+    if let Err(e) = export_config(&storage, db.pool(), export.path(), false).await {
+        db.cleanup().await;
+        panic!("export must succeed: {e:#}");
+    }
+    let exported = std::fs::read_to_string(export.path().join(format!("tile.{tile_id}.yml")))
+        .expect("the tile must be exported");
+    assert!(
+        yaml_declares(&exported, "audience", "anonymous"),
+        "{exported}"
+    );
+
+    db.cleanup().await;
+}
+
 /// An item count outside 1 to 50 is refused with the file named, and nothing
 /// is written: the same rule the tile form applies.
 #[tokio::test]

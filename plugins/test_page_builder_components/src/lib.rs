@@ -2,7 +2,10 @@
 //!
 //! The two components are declared in `components/`, rendered by
 //! `templates/pb/` and styled by `static/`, and none of that is code: a plugin
-//! ships page builder components without touching the kernel. This module
+//! ships page builder components without touching the kernel. The same goes
+//! for `components/page.root.toml`, the page root fields a page uses to keep,
+//! hide or replace the footer call to action that
+//! `templates/elements/tile--custom_html--pb_footer_cta.html` renders. This module
 //! only declares `pb_landing`, a content type whose `field_layout` is a page
 //! builder field, so there is a page to compose them on.
 

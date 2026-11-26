@@ -102,6 +102,7 @@ async fn create_comment(app: &common::TestApp, item_id: Uuid, body: &str, status
                 item_id,
                 parent_id: None,
                 author_id: Uuid::nil(),
+                subject: None,
                 body: body.to_string(),
                 body_format: Some("filtered_html".to_string()),
                 status: Some(status),
@@ -229,6 +230,7 @@ async fn build_fixture(app: &common::TestApp) -> Fixture {
                 item_id: story,
                 parent_id: Some(top),
                 author_id: Uuid::nil(),
+                subject: None,
                 body: format!("Replying with {}", words.reply),
                 body_format: None,
                 status: Some(CommentStatus::Published.as_i16()),
@@ -435,6 +437,7 @@ fn the_postgres_search_covers_every_text_field_and_published_comments() {
                     body: Some(format!("edited to say {later}")),
                     body_format: None,
                     status: None,
+                    subject: None,
                 },
                 &admin(),
             )
@@ -453,6 +456,7 @@ fn the_postgres_search_covers_every_text_field_and_published_comments() {
                     body: None,
                     body_format: None,
                     status: Some(CommentStatus::Unpublished.as_i16()),
+                    subject: None,
                 },
                 &admin(),
             )
@@ -470,32 +474,36 @@ fn the_postgres_search_covers_every_text_field_and_published_comments() {
     });
 }
 
-/// Whether a Pagefind rebuild is pending.
-async fn rebuild_requested(app: &common::TestApp) -> bool {
-    sqlx::query_scalar("SELECT rebuild_requested FROM pagefind_index_status WHERE id = 1")
+/// Whether `item` is queued for the static search index.
+async fn queued(app: &common::TestApp, item: Uuid) -> bool {
+    sqlx::query_scalar("SELECT EXISTS (SELECT 1 FROM search_index_queue WHERE item_id = $1)")
+        .bind(item)
         .fetch_one(&app.db)
         .await
-        .expect("read the rebuild flag")
+        .expect("read the search index queue")
 }
 
-async fn clear_rebuild_flag(app: &common::TestApp) {
-    sqlx::query("UPDATE pagefind_index_status SET rebuild_requested = false WHERE id = 1")
+/// Take `item` off the queue, as a drain would.
+async fn clear_queued(app: &common::TestApp, item: Uuid) {
+    sqlx::query("DELETE FROM search_index_queue WHERE item_id = $1")
+        .bind(item)
         .execute(&app.db)
         .await
-        .expect("clear the rebuild flag");
+        .expect("clear the search index queue");
 }
 
-/// The five writes a `MAX(changed)` poll never saw each ask for a rebuild, from
-/// the kernel's own write services.
+/// The writes a `MAX(changed)` poll never saw (deletes, unpublishes, every
+/// comment write) each queue their item for the static index, from the
+/// kernel's own write services.
 #[test]
-fn deletes_unpublishes_and_comment_writes_request_a_rebuild() {
+fn deletes_unpublishes_and_comment_writes_queue_their_item() {
     run_test(async {
         let app = shared_app().await;
         common::ensure_plugin_tables(app, "trovato_search");
         let f = build_fixture(app).await;
 
         // An item unpublished.
-        clear_rebuild_flag(app).await;
+        clear_queued(app, f.note).await;
         app.state
             .items()
             .update(
@@ -515,13 +523,9 @@ fn deletes_unpublishes_and_comment_writes_request_a_rebuild() {
             )
             .await
             .expect("unpublish");
-        assert!(
-            rebuild_requested(app).await,
-            "unpublishing an item requests a rebuild"
-        );
+        assert!(queued(app, f.note).await, "unpublishing an item queues it");
 
         // An item deleted.
-        clear_rebuild_flag(app).await;
         let doomed = create_item(
             app,
             NOTE_TYPE,
@@ -531,7 +535,7 @@ fn deletes_unpublishes_and_comment_writes_request_a_rebuild() {
             LIVE_STAGE_ID,
         )
         .await;
-        clear_rebuild_flag(app).await;
+        clear_queued(app, doomed).await;
         assert!(
             app.state
                 .items()
@@ -539,25 +543,20 @@ fn deletes_unpublishes_and_comment_writes_request_a_rebuild() {
                 .await
                 .expect("delete")
         );
-        assert!(
-            rebuild_requested(app).await,
-            "deleting an item requests a rebuild"
-        );
+        assert!(queued(app, doomed).await, "deleting an item queues it");
 
         // A comment created.
-        clear_rebuild_flag(app).await;
+        clear_queued(app, f.story).await;
         let id = create_comment(app, f.story, "new", CommentStatus::Published.as_i16()).await;
-        assert!(
-            rebuild_requested(app).await,
-            "a new comment requests a rebuild"
-        );
+        assert!(queued(app, f.story).await, "a new comment queues its item");
 
         // A comment edited.
-        clear_rebuild_flag(app).await;
+        clear_queued(app, f.story).await;
         let edit = |body: Option<String>, status: Option<i16>| UpdateComment {
             body,
             body_format: None,
             status,
+            subject: None,
         };
         app.state
             .comments()
@@ -565,12 +564,12 @@ fn deletes_unpublishes_and_comment_writes_request_a_rebuild() {
             .await
             .expect("edit");
         assert!(
-            rebuild_requested(app).await,
-            "an edited comment requests a rebuild"
+            queued(app, f.story).await,
+            "an edited comment queues its item"
         );
 
         // A comment unpublished.
-        clear_rebuild_flag(app).await;
+        clear_queued(app, f.story).await;
         app.state
             .comments()
             .update(
@@ -581,12 +580,12 @@ fn deletes_unpublishes_and_comment_writes_request_a_rebuild() {
             .await
             .expect("unpublish");
         assert!(
-            rebuild_requested(app).await,
-            "unpublishing a comment requests a rebuild"
+            queued(app, f.story).await,
+            "unpublishing a comment queues its item"
         );
 
         // A comment published.
-        clear_rebuild_flag(app).await;
+        clear_queued(app, f.story).await;
         app.state
             .comments()
             .update(
@@ -597,12 +596,12 @@ fn deletes_unpublishes_and_comment_writes_request_a_rebuild() {
             .await
             .expect("publish");
         assert!(
-            rebuild_requested(app).await,
-            "publishing a comment requests a rebuild"
+            queued(app, f.story).await,
+            "publishing a comment queues its item"
         );
 
         // A comment deleted.
-        clear_rebuild_flag(app).await;
+        clear_queued(app, f.story).await;
         assert!(
             app.state
                 .comments()
@@ -611,8 +610,8 @@ fn deletes_unpublishes_and_comment_writes_request_a_rebuild() {
                 .expect("delete")
         );
         assert!(
-            rebuild_requested(app).await,
-            "deleting a comment requests a rebuild"
+            queued(app, f.story).await,
+            "deleting a comment queues its item"
         );
     });
 }

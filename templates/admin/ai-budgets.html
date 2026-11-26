@@ -1,131 +1,134 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/form.html" as form %}
 
+{% block page_title %}{{ t(s="AI Token Budgets") }}{% endblock page_title %}
+
 {% block content %}
-
-<div class="admin-header">
-    <h2>AI Token Budgets</h2>
-</div>
-
-{% if flash %}
-<div class="message message--info" role="status">{{ flash }}</div>
-{% endif %}
-
-<div class="admin-card">
-    <h3>Usage — {{ period_label }}</h3>
+<section class="admin-card" aria-labelledby="budget-usage-heading">
+    <h2 id="budget-usage-heading">{{ t(s="Usage — {period}", period=t(s=period_label)) }}</h2>
 
     {% if provider_usage | length > 0 %}
-    <table class="table">
-        <thead>
-            <tr>
-                <th>Provider</th>
-                <th>Total Tokens</th>
-                <th>Requests</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for u in provider_usage %}
-            <tr>
-                <td>{{ u.label }}</td>
-                <td>{{ u.total_tokens }}</td>
-                <td>{{ u.request_count }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+    <div class="table-scroll" role="region" aria-labelledby="budget-usage-caption" tabindex="0">
+        <table class="table">
+            <caption id="budget-usage-caption">{{ t(s="Token use by provider") }}</caption>
+            <thead>
+                <tr>
+                    <th scope="col">{{ t(s="Provider") }}</th>
+                    <th scope="col">{{ t(s="Total Tokens") }}</th>
+                    <th scope="col">{{ t(s="Requests") }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for u in provider_usage %}
+                <tr>
+                    <th scope="row">{{ u.label }}</th>
+                    <td>{{ u.total_tokens }}</td>
+                    <td>{{ u.request_count }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
     {% else %}
-    <p>No usage recorded for the current period.</p>
+    <p>{{ t(s="No usage recorded for the current period.") }}</p>
     {% endif %}
-</div>
+</section>
 
 {% if user_usage | length > 0 %}
-<div class="admin-card" style="margin-top: 1rem;">
-    <h3>Top Users — {{ period_label }}</h3>
-    <table class="table">
-        <thead>
-            <tr>
-                <th>User</th>
-                <th>Provider</th>
-                <th>Total Tokens</th>
-                <th>Requests</th>
-                <th>Actions</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for u in user_usage %}
-            <tr>
-                <td>{{ u.user_name }}</td>
-                <td>{{ u.provider_label }}</td>
-                <td>{{ u.total_tokens }}</td>
-                <td>{{ u.request_count }}</td>
-                <td><a href="/admin/system/ai-budgets/user/{{ u.user_id }}">Details</a></td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-</div>
+<section class="admin-card" aria-labelledby="budget-users-heading">
+    <h2 id="budget-users-heading">{{ t(s="Top Users — {period}", period=t(s=period_label)) }}</h2>
+    <div class="table-scroll" role="region" aria-labelledby="budget-users-caption" tabindex="0">
+        <table class="table">
+            <caption id="budget-users-caption">{{ t(s="Token use by person and provider") }}</caption>
+            <thead>
+                <tr>
+                    <th scope="col">{{ t(s="User") }}</th>
+                    <th scope="col">{{ t(s="Provider") }}</th>
+                    <th scope="col">{{ t(s="Total Tokens") }}</th>
+                    <th scope="col">{{ t(s="Requests") }}</th>
+                    <th scope="col">{{ t(s="Actions") }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for u in user_usage %}
+                <tr>
+                    <th scope="row">{{ u.user_name }}</th>
+                    <td>{{ u.provider_label }}</td>
+                    <td>{{ u.total_tokens }}</td>
+                    <td>{{ u.request_count }}</td>
+                    <td><a href="/admin/system/ai-budgets/user/{{ u.user_id }}">{{ t(s="Details for {name}", name=u.user_name) }}</a></td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</section>
 {% endif %}
 
-<div class="admin-card" style="margin-top: 2rem;">
-    <h3>Budget Configuration</h3>
+<section class="admin-card" aria-labelledby="budget-config-heading">
+    <h2 id="budget-config-heading">{{ t(s="Budget Configuration") }}</h2>
 
     <form method="post" action="/admin/system/ai-budgets">
         {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
 
         <div class="form-item">
-            <label for="period">Budget Period</label>
+            <label for="period" class="form-item__label">{{ t(s="Budget Period") }}</label>
             <select name="period" id="period">
-                <option value="daily" {% if config_period == "daily" %}selected{% endif %}>Daily</option>
-                <option value="weekly" {% if config_period == "weekly" %}selected{% endif %}>Weekly</option>
-                <option value="monthly" {% if config_period == "monthly" %}selected{% endif %}>Monthly</option>
+                <option value="daily" {% if config_period == "daily" %}selected{% endif %}>{{ t(s="Daily") }}</option>
+                <option value="weekly" {% if config_period == "weekly" %}selected{% endif %}>{{ t(s="Weekly") }}</option>
+                <option value="monthly" {% if config_period == "monthly" %}selected{% endif %}>{{ t(s="Monthly") }}</option>
             </select>
         </div>
 
         <div class="form-item">
-            <label for="action_on_limit">Action When Limit Exceeded</label>
+            <label for="action_on_limit" class="form-item__label">{{ t(s="Action When Limit Exceeded") }}</label>
             <select name="action_on_limit" id="action_on_limit">
-                <option value="deny" {% if config_action == "deny" %}selected{% endif %}>Deny request</option>
-                <option value="warn" {% if config_action == "warn" %}selected{% endif %}>Allow with warning</option>
+                <option value="deny" {% if config_action == "deny" %}selected{% endif %}>{{ t(s="Deny request") }}</option>
+                <option value="warn" {% if config_action == "warn" %}selected{% endif %}>{{ t(s="Allow with warning") }}</option>
             </select>
         </div>
 
         {% if providers | length > 0 and roles | length > 0 %}
-        <h4>Per-Provider, Per-Role Token Limits</h4>
-        <p>Set the maximum tokens per period for each role. Enter 0 for unlimited. Leave blank for no budget.</p>
+        <h3 id="budget-limits-heading">{{ t(s="Per-Provider, Per-Role Token Limits") }}</h3>
+        <p id="budget-limits-hint">{{ t(s="Set the maximum tokens per period for each role. Enter 0 for unlimited. Leave blank for no budget.") }}</p>
 
-        <table class="table">
-            <thead>
-                <tr>
-                    <th>Provider</th>
-                    {% for role in roles %}
-                    <th>{{ role.name }}</th>
+        <div class="table-scroll" role="region" aria-labelledby="budget-limits-caption" tabindex="0">
+            <table class="table">
+                <caption id="budget-limits-caption">{{ t(s="Token limit per period for each provider and role") }}</caption>
+                <thead>
+                    <tr>
+                        <th scope="col">{{ t(s="Provider") }}</th>
+                        {% for role in roles %}
+                        <th scope="col">{{ role.name }}</th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for provider in providers %}
+                    {% set provider_index = loop.index %}
+                    <tr>
+                        <th scope="row">{{ provider.label }}</th>
+                        {% for role in roles %}
+                        <td>
+                            {# Look up current default: defaults_grid[provider.id][role.name] #}
+                            {% set current_val = "" %}
+                            {% if defaults_grid[provider.id] is defined and defaults_grid[provider.id][role.name] is defined %}
+                                {% set current_val = defaults_grid[provider.id][role.name] %}
+                            {% endif %}
+                            <label class="visually-hidden" for="budget-limit-{{ provider_index }}-{{ loop.index }}">{{ t(s="Token limit for {role} on {provider}", role=role.name, provider=provider.label) }}</label>
+                            <input type="number" id="budget-limit-{{ provider_index }}-{{ loop.index }}" name="limit_{{ provider.id }}_{{ role.name }}" value="{{ current_val }}" min="0" class="ai-budget-limit" placeholder="—" aria-describedby="budget-limits-hint">
+                        </td>
+                        {% endfor %}
+                    </tr>
                     {% endfor %}
-                </tr>
-            </thead>
-            <tbody>
-                {% for provider in providers %}
-                <tr>
-                    <td>{{ provider.label }}</td>
-                    {% for role in roles %}
-                    <td>
-                        {# Look up current default: defaults_grid[provider.id][role.name] #}
-                        {% set current_val = "" %}
-                        {% if defaults_grid[provider.id] is defined and defaults_grid[provider.id][role.name] is defined %}
-                            {% set current_val = defaults_grid[provider.id][role.name] %}
-                        {% endif %}
-                        <input type="number" name="limit_{{ provider.id }}_{{ role.name }}" value="{{ current_val }}" min="0" style="width: 100px;" placeholder="—">
-                    </td>
-                    {% endfor %}
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+                </tbody>
+            </table>
+        </div>
         {% else %}
-        <p>Configure <a href="/admin/system/ai-providers">AI providers</a> first, then set per-role budgets here.</p>
+        <p>{{ t(s="Configure AI providers first, then set per-role budgets here.") }} <a href="/admin/system/ai-providers">{{ t(s="Manage AI providers") }}</a></p>
         {% endif %}
 
-        {{ form::actions(submit_label="Save configuration", cancel_url="/admin/system/ai-budgets") }}
+        {{ form::actions(submit_label=t(s="Save configuration"), cancel_url="/admin/system/ai-budgets") }}
     </form>
-</div>
-
-{% endblock %}
+</section>
+{% endblock content %}

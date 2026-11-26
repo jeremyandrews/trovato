@@ -363,6 +363,7 @@ async fn events_for(
     use tracing::instrument::WithSubscriber;
     use tracing_subscriber::layer::SubscriberExt;
 
+    common::scoped_subscribers_see_every_callsite();
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let subscriber = tracing_subscriber::registry().with(Events(seen.clone()));
     get(app, path, cookies).with_subscriber(subscriber).await;

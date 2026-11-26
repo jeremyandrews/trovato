@@ -75,7 +75,7 @@ pub async fn resolve_path_alias(
         || path.starts_with("/install")
         || path.starts_with("/user")
         || path.starts_with("/item")
-        || path == "/health"
+        || crate::routes::health::is_probe_path(path)
         || path == "/"
     {
         return next.run(request).await;
@@ -280,7 +280,7 @@ pub async fn path_alias_fallback(
 ///
 /// Returns `(stripped_path, Some(language_code))` if a prefix was found,
 /// or `(original_path, None)` if no prefix matches.
-fn strip_language_prefix(
+pub(crate) fn strip_language_prefix(
     path: &str,
     known_languages: &[String],
     default_language: &str,

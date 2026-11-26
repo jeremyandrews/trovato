@@ -46,7 +46,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::PgPool;
-use tracing::{debug, warn};
+use tracing::warn;
 use trovato_sdk::types::{
     AssistantContext, AssistantContextRequest, AssistantToolCall, AssistantToolKind,
     AssistantToolMode, AssistantToolResult,
@@ -58,9 +58,8 @@ use crate::models::SiteConfig;
 use crate::models::assistant::{
     Conversation, PROPOSAL_PROPOSED, Proposal, TranscriptEntry, now as epoch_now,
 };
-use crate::services::ai_provider::{AiOperationType, ResolvedProvider};
-use crate::services::ai_token_budget::UsageLogEntry;
-use crate::services::ai_tools::{ChatCompletion, ChatMessage, ToolCall, ToolSpec, chat_complete};
+use crate::services::ai_provider::{AiCaller, ChatRequest, ResolvedProvider};
+use crate::services::ai_tools::{ChatCompletion, ChatMessage, ToolCall, ToolSpec};
 use crate::state::AppState;
 use crate::tap::{RequestState, UserContext};
 
@@ -796,16 +795,20 @@ pub fn run_turn(
             );
             let specs = tool_specs(&scope);
 
-            let completion: ChatCompletion = match chat_complete(
-                state.ai_providers(),
-                &resolved,
-                &messages,
-                &specs,
-                config.temperature,
-                config.max_response_tokens,
-                config.call_timeout(),
-            )
-            .await
+            let request = ChatRequest {
+                messages,
+                tools: specs,
+                temperature: config.temperature,
+                max_tokens: Some(config.max_response_tokens),
+                // The assistant's own per-call timeout, which its settings
+                // screen configures.
+                timeout: Some(config.call_timeout()),
+                ..ChatRequest::default()
+            };
+            let completion: ChatCompletion = match state
+                .ai_providers()
+                .chat_once(&resolved, &AiCaller::user(user.id, USAGE_PLUGIN), &request)
+                .await
             {
                 Ok(completion) => completion,
                 Err(e) => {
@@ -827,7 +830,7 @@ pub fn run_turn(
             turn_completion_tokens =
                 turn_completion_tokens.saturating_add(u64::from(completion.usage.1));
             turn_total_tokens = turn_total_tokens.saturating_add(u64::from(completion.usage.2));
-            record_usage(&state, &db, &user, &resolved, &completion).await;
+            // The send path recorded this call's usage and cost.
 
             if let Some(text) = completion.text.as_ref().filter(|t| !t.trim().is_empty()) {
                 entries.push(TranscriptEntry::Assistant {
@@ -1056,46 +1059,6 @@ fn refuse_call(entries: &mut Vec<TranscriptEntry>, call: &ToolCall, reason: Stri
             json!({"call_id": call.id, "tool": call.name, "ok": false, "summary": reason}),
         ),
     ]
-}
-
-/// Record one model call against the caller's budget and the usage log.
-async fn record_usage(
-    state: &AppState,
-    db: &PgPool,
-    user: &UserContext,
-    resolved: &ResolvedProvider,
-    completion: &ChatCompletion,
-) {
-    let (prompt, completion_tokens, total) = completion.usage;
-    // Priced on the model this request asked for, not on `completion.model`,
-    // which is whatever string the provider reported serving. A provider that
-    // resolves an alias server side answers with a dated variant that matches
-    // no row in an operator-keyed pricing table, and the call logs unpriced.
-    let cost_estimate = state
-        .ai_budgets()
-        .estimate_call_cost(
-            &resolved.model,
-            &completion.model,
-            i64::from(prompt),
-            i64::from(completion_tokens),
-        )
-        .await;
-    let entry = UsageLogEntry {
-        user_id: Some(user.id),
-        plugin_name: USAGE_PLUGIN.to_string(),
-        provider_id: resolved.config.id.clone(),
-        operation: AiOperationType::Chat.to_string(),
-        model: completion.model.clone(),
-        prompt_tokens: prompt.min(i32::MAX as u32) as i32,
-        completion_tokens: completion_tokens.min(i32::MAX as u32) as i32,
-        total_tokens: total.min(i32::MAX as u32) as i32,
-        latency_ms: completion.latency_ms.min(i64::MAX as u64) as i64,
-        cost_estimate,
-    };
-    if let Err(e) = state.ai_budgets().record_usage(db, entry).await {
-        warn!(error = %e, "failed to record assistant usage");
-    }
-    debug!(tokens = total, "assistant model call complete");
 }
 
 /// A one-line stand-in for a result the plugin did not summarize.

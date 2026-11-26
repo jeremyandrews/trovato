@@ -1,94 +1,56 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
+
+{% block page_title %}{{ t(s="Edit Comment") }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="Correct a comment's subject or text, or change whether it is shown on the site.") }}</p>{% endblock page_intro %}
 
 {% block content %}
-<div class="admin-header">
-    <h2>Edit Comment</h2>
-</div>
-
 <div class="admin-card">
     <form method="post" action="/admin/content/comments/{{ comment.id }}/edit">
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
-        <div class="form-group">
-            <label for="body">Comment Body</label>
-            <textarea id="body" name="body" rows="6" class="form-control" required>{{ comment.body }}</textarea>
+        {{ form::csrf(csrf_token=csrf_token) }}
+
+        <div class="form-item">
+            <label for="subject" class="form-item__label">{{ t(s="Subject (optional)") }}</label>
+            <input type="text" id="subject" name="subject" class="form-text" maxlength="255" value="{{ comment.subject | default(value='') }}">
         </div>
 
-        <div class="form-group">
-            <label for="status">Status</label>
-            <select id="status" name="status" class="form-control">
+        <div class="form-item">
+            <label for="body" class="form-item__label">{{ t(s="Comment Body") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
+            <textarea id="body" name="body" rows="6" class="form-textarea" required>{{ comment.body }}</textarea>
+        </div>
+
+        <div class="form-item">
+            <label for="status" class="form-item__label">{{ t(s="Status") }}</label>
+            <select id="status" name="status" class="form-select">
                 {# Options come from CommentStatus (see status_options), so this
                    form offers every status the model stores and labels each one
                    the way the moderation list does. #}
                 {% for option in status_options %}
-                <option value="{{ option.value }}" {% if comment.status == option.value | int %}selected{% endif %}>{{ option.label }}</option>
+                <option value="{{ option.value }}" {% if comment.status == option.value | int %}selected{% endif %}>{{ t(s=option.label) }}</option>
                 {% endfor %}
             </select>
         </div>
 
-        <div class="form-meta">
-            <div class="meta-item">
-                <strong>Author:</strong> {{ author_name | default(value="Unknown") }}
-            </div>
-            <div class="meta-item">
-                <strong>Content:</strong>
+        <dl class="comment-meta">
+            <dt>{{ t(s="Author") }}</dt>
+            <dd>{% if author_name %}{{ author_name }}{% else %}{{ t(s="Unknown") }}{% endif %}</dd>
+            <dt>{{ t(s="Content") }}</dt>
+            <dd>
                 {% if item_title %}
                 <a href="/admin/content/{{ comment.item_id }}/edit">{{ item_title }}</a>
                 {% else %}
-                Unknown
+                {{ t(s="Unknown") }}
                 {% endif %}
-            </div>
-            <div class="meta-item">
-                <strong>Posted:</strong> {{ comment.created | date(format="%Y-%m-%d %H:%M") }}
-            </div>
+            </dd>
+            <dt>{{ t(s="Posted") }}</dt>
+            <dd>{{ comment.created | date(format="%Y-%m-%d %H:%M") }}</dd>
             {% if comment.parent_id %}
-            <div class="meta-item">
-                <strong>Reply to:</strong> Comment #{{ comment.parent_id }}
-            </div>
+            <dt>{{ t(s="Reply to") }}</dt>
+            <dd>{{ t(s="Comment #{id}", id=comment.parent_id) }}</dd>
             {% endif %}
-        </div>
+        </dl>
 
-        <div class="form-actions">
-            <button type="submit" class="button button--primary">Save</button>
-            <a href="/admin/content/comments" class="button button--secondary">Cancel</a>
-        </div>
+        {{ form::actions(submit_label=t(s="Save"), cancel_url="/admin/content/comments") }}
     </form>
 </div>
-
-<style>
-    .form-group {
-        margin-bottom: 1.5rem;
-    }
-    .form-group label {
-        display: block;
-        margin-bottom: 0.5rem;
-        font-weight: 500;
-    }
-    .form-control {
-        width: 100%;
-        padding: 0.5rem;
-        border: 1px solid #ccc;
-        border-radius: 0.25rem;
-        font-size: 1rem;
-        font-family: inherit;
-    }
-    textarea.form-control {
-        resize: vertical;
-    }
-    .form-meta {
-        background: var(--gray-100);
-        padding: 1rem;
-        border-radius: 0.25rem;
-        margin-bottom: 1.5rem;
-    }
-    .meta-item {
-        margin-bottom: 0.5rem;
-    }
-    .meta-item:last-child {
-        margin-bottom: 0;
-    }
-    .form-actions {
-        display: flex;
-        gap: 1rem;
-    }
-</style>
-{% endblock %}
+{% endblock content %}

@@ -680,6 +680,7 @@ async fn queries_for(app: &common::TestApp, path: &str, cookies: &str, bucket: &
     use tracing::instrument::WithSubscriber;
     use tracing_subscriber::layer::SubscriberExt;
 
+    common::scoped_subscribers_see_every_callsite();
     common::settle_cache_generations().await;
     let (status, html) = get_as(app, path, cookies, bucket).await;
     assert_eq!(status, StatusCode::OK, "{path} must render, got {html}");

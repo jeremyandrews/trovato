@@ -1,0 +1,24 @@
+# Page root fields: page level settings for every page builder page, shown
+# in the editor's page settings form after the title. The site's footer call
+# to action (the `pb_footer_cta` custom HTML tile, rendered through
+# templates/elements/tile--custom_html--pb_footer_cta.html) is sitewide; a
+# page keeps it, hides it, or replaces it with its own text.
+
+[[fields]]
+name = "footer_cta_mode"
+type = "select"
+label = "Footer call to action"
+help = "Keep the site's call to action, hide it on this page, or replace it."
+default = "default"
+options = [
+  { value = "default", label = "Site default" },
+  { value = "hide", label = "Hide" },
+  { value = "custom", label = "Custom" },
+]
+
+[[fields]]
+name = "footer_cta_content"
+type = "rich_text"
+label = "Custom call to action"
+help = "Used only when the footer call to action is Custom."
+max_length = 280

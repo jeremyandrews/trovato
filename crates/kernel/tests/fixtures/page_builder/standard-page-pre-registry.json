@@ -1,0 +1,167 @@
+{
+  "root": { "title": "A page saved before the component registry" },
+  "content": [
+    {
+      "type": "Hero",
+      "props": {
+        "id": "Hero-1",
+        "title": "Build better websites",
+        "subtitle": "Enterprise expertise, open source",
+        "ctaText": "Get started",
+        "ctaUrl": "/contact",
+        "variant": "standard",
+        "headingLevel": 2,
+        "lang": "en"
+      }
+    },
+    {
+      "type": "Hero",
+      "props": {
+        "id": "Hero-2",
+        "title": "Split hero",
+        "backgroundImage": "/files/hero.jpg",
+        "imageAlt": "A team at work",
+        "variant": "split",
+        "headingLevel": 2
+      }
+    },
+    {
+      "type": "TextBlock",
+      "props": {
+        "id": "TextBlock-1",
+        "content": "# Promoted to H2\n\nSome **bold** text and a [link](/about).\n\n- one\n- two"
+      }
+    },
+    {
+      "type": "Columns",
+      "props": { "id": "Columns-1", "layout": "2/3+1/3" },
+      "zones": {
+        "zone-0": [
+          {
+            "type": "Cta",
+            "props": {
+              "id": "Cta-1",
+              "heading": "Talk to us",
+              "body": "We answer within a day.",
+              "buttonText": "Contact",
+              "buttonUrl": "/contact",
+              "variant": "callout",
+              "headingLevel": 3
+            }
+          }
+        ],
+        "zone-1": [
+          {
+            "type": "SummaryBox",
+            "props": {
+              "id": "SummaryBox-1",
+              "title": "In short",
+              "content": "Three things to know.",
+              "variant": "warning",
+              "headingLevel": 3
+            }
+          }
+        ]
+      }
+    },
+    {
+      "type": "CardGrid",
+      "props": {
+        "id": "CardGrid-1",
+        "columns": 3,
+        "variant": "standard",
+        "cardHeadingLevel": 3,
+        "cards": [
+          {
+            "title": "Strategy",
+            "body": "Plan the work.",
+            "image_url": "/files/a.png",
+            "image_alt": "A plan",
+            "link_url": "/strategy",
+            "link_text": "Read more"
+          },
+          { "title": "Delivery", "body": "Do the work." }
+        ]
+      }
+    },
+    {
+      "type": "ContentFeature",
+      "props": {
+        "id": "ContentFeature-1",
+        "title": "Feature",
+        "body": "Body text",
+        "imageUrl": "/files/feature.jpg",
+        "imageAlt": "Screenshot",
+        "imagePosition": "right",
+        "linkUrl": "/feature",
+        "linkText": "See it",
+        "headingLevel": 2
+      }
+    },
+    {
+      "type": "Accordion",
+      "props": {
+        "id": "Accordion-1",
+        "allowMultiple": false,
+        "headingLevel": 3,
+        "items": [
+          { "title": "Question one", "content": "Answer one." },
+          { "title": "Question two", "content": "Answer two." }
+        ]
+      }
+    },
+    {
+      "type": "BlockquoteExtended",
+      "props": {
+        "id": "BlockquoteExtended-1",
+        "text": "It just works.",
+        "attribution": "A. Customer",
+        "role": "CTO",
+        "sourceUrl": "https://example.com/quote"
+      }
+    },
+    {
+      "type": "LogoRow",
+      "props": {
+        "id": "LogoRow-1",
+        "title": "Trusted by",
+        "headingLevel": 2,
+        "logos": [
+          { "image_url": "/files/logo1.svg", "alt": "Logo one", "link_url": "https://one.example" },
+          { "image_url": "/files/logo2.svg", "alt": "Logo two" }
+        ]
+      }
+    },
+    {
+      "type": "YouTubeEmbed",
+      "props": {
+        "id": "YouTubeEmbed-1",
+        "videoId": "dQw4w9WgXcQ",
+        "title": "Product tour",
+        "aspectRatio": "4:3",
+        "transcriptUrl": "/transcript"
+      }
+    },
+    {
+      "type": "SectionWrapper",
+      "props": {
+        "id": "SectionWrapper-1",
+        "padding": "large",
+        "maxWidth": "wide",
+        "ariaLabel": "Closing section"
+      },
+      "zones": {
+        "content": [
+          {
+            "type": "TextBlock",
+            "props": { "id": "TextBlock-2", "content": "Closing words." }
+          }
+        ]
+      }
+    },
+    {
+      "type": "TableOfContents",
+      "props": { "id": "TableOfContents-1", "maxDepth": 3 }
+    }
+  ]
+}

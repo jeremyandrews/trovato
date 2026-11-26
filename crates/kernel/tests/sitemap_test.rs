@@ -112,6 +112,11 @@ async fn create_aliased_item(app: &TestApp, slug: &str) -> (Uuid, String) {
 }
 
 async fn translate(app: &TestApp, item: Uuid, language: &str) {
+    // `item_translation` is the translation plugin's table, which the shared
+    // app does not create. Without this the file passed only when an earlier
+    // target in the same database had migrated the plugin, which is shard
+    // order, not a fixture.
+    common::ensure_translation_table(app);
     sqlx::query(
         "INSERT INTO item_translation (item_id, language, title, fields) \
          VALUES ($1, $2, 'Tradotto', '{}'::jsonb) \

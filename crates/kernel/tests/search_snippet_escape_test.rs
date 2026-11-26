@@ -30,6 +30,15 @@ fn unique_term(prefix: &str) -> String {
 
 /// Create a published conference item with this title and body.
 async fn publish(title: &str, body: &str) {
+    publish_fields(
+        title,
+        serde_json::json!({ "field_body": { "value": body } }),
+    )
+    .await;
+}
+
+/// Create a published conference item with this title and these fields.
+async fn publish_fields(title: &str, fields: serde_json::Value) {
     let app = shared_app().await;
     app.ensure_conference_type().await;
     let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
@@ -43,7 +52,7 @@ async fn publish(title: &str, body: &str) {
                 status: Some(1),
                 promote: Some(0),
                 sticky: Some(0),
-                fields: Some(serde_json::json!({ "field_body": { "value": body } })),
+                fields: Some(fields),
                 stage_id: Some(LIVE_STAGE_ID),
                 language: Some("en".to_string()),
                 log: Some("b123 snippet test".to_string()),
@@ -67,9 +76,8 @@ async fn rendered_snippet(query: &str) -> String {
         .expect("read body");
     let html = String::from_utf8_lossy(&bytes).into_owned();
 
-    // The page renders the results twice (the <noscript> list and the fallback
-    // list shown before scolta.js takes over): every copy must be the same one
-    // snippet, which also proves the unique term matched a single item.
+    // The page writes its results once (B160): exactly one snippet, which also
+    // proves the unique term matched a single item.
     let open = "<div class=\"result-snippet\">";
     let snippets: Vec<&str> = html
         .match_indices(open)
@@ -84,7 +92,7 @@ async fn rendered_snippet(query: &str) -> String {
         "no snippet on the results page for {query:?}:\n{html}"
     );
     assert!(
-        snippets.iter().all(|s| *s == snippets[0]),
+        snippets.len() == 1,
         "the query {query:?} should match exactly one item: {snippets:?}"
     );
     snippets[0].to_string()
@@ -214,5 +222,60 @@ fn every_term_of_a_multi_word_query_is_highlighted() {
             "got: {snippet}"
         );
         assert!(!snippet.contains("&lt;p"), "got: {snippet}");
+    });
+}
+
+/// A page builder body is a JSON document, not text: the snippet never prints
+/// it. `fields->>'field_body'` on that object returned its JSON text, so every
+/// page builder item's snippet read `{"root": {"props": {}}, "content": …`.
+#[test]
+fn page_builder_body_is_not_printed_as_json() {
+    run_test(async {
+        let term = unique_term("zqpagebuilder");
+        publish_fields(
+            &format!("Composed {term} page"),
+            serde_json::json!({
+                "field_body": {
+                    "root": { "props": {} },
+                    "content": [
+                        { "type": "TextBlock", "props": { "content": "Body words here." } }
+                    ]
+                }
+            }),
+        )
+        .await;
+
+        let snippet = rendered_snippet(&term).await;
+
+        assert!(
+            snippet.contains(&format!("<mark>{term}</mark>")),
+            "the title term is highlighted; got: {snippet}"
+        );
+        for wrong in ["root", "props", "content", "TextBlock", "{", "&quot;"] {
+            assert!(
+                !snippet.contains(wrong),
+                "{wrong:?} from the page builder JSON must not appear; got: {snippet}"
+            );
+        }
+    });
+}
+
+/// A body stored as a bare JSON string is still text, as before.
+#[test]
+fn bare_string_body_is_still_text() {
+    run_test(async {
+        let term = unique_term("zqbare");
+        publish_fields(
+            "Bare holder",
+            serde_json::json!({ "field_body": format!("<p>Stored bare {term} words.</p>") }),
+        )
+        .await;
+
+        let snippet = rendered_snippet(&term).await;
+
+        assert!(
+            snippet.contains(&format!("Stored bare <mark>{term}</mark> words.")),
+            "got: {snippet}"
+        );
     });
 }

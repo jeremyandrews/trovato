@@ -10,8 +10,9 @@
 //! Reads go through the kernel's two tier cache ([`CacheLayer`]) under
 //! [`SETTINGS_CACHE_KEY`], so a search request costs no database round trip;
 //! [`SearchSettings::save`] drops the cached copy. A value written behind the
-//! form's back (a config import, a hand edit) is picked up when the cached copy
-//! expires, within [`SETTINGS_CACHE_TTL_SECS`].
+//! form's back is picked up when the cached copy expires, within
+//! [`SETTINGS_CACHE_TTL_SECS`], or at once after `trovato config import` or
+//! `trovato cache clear`, which drop it ([`crate::cache::clear_everywhere`]).
 //!
 //! Defaults are the literal values `templates/search.html` carried before this
 //! model existed, so a site that never opens the screen ranks exactly as before.
@@ -104,6 +105,12 @@ pub struct SearchSettings {
     pub analytics_retention_days: u32,
     /// Whether follow-up messages are classified by the AI provider.
     pub sentiment_enabled: bool,
+    /// The static search index is rebuilt densely (compacted) once freed page
+    /// slots, tombstones left by deleted or unpublished items that no new item
+    /// has reused, are more than this percentage of a language's slots.
+    /// Tombstones shift ranking slightly (`docs/design/incremental-search-index.md`,
+    /// "What tombstones do to ranking"); a compaction rewrites every index file.
+    pub index_compaction_percent: f64,
 }
 
 impl Default for SearchSettings {
@@ -131,6 +138,7 @@ impl Default for SearchSettings {
             analytics_enabled: true,
             analytics_retention_days: 90,
             sentiment_enabled: false,
+            index_compaction_percent: 5.0,
         }
     }
 }
@@ -200,6 +208,12 @@ pub const NUMBER_RANGES: &[NumberRange] = &[
         "Keep analytics for (days)",
         1.0,
         365.0,
+    ),
+    range(
+        "index_compaction_percent",
+        "Compact the search index above this percentage of freed slots",
+        0.5,
+        50.0,
     ),
 ];
 
@@ -416,7 +430,7 @@ impl SearchSettings {
 
     /// Every numeric setting by field name, as `f64`, for range checks and for
     /// the form, in [`NUMBER_RANGES`] order.
-    pub fn numbers(&self) -> [(&'static str, f64); 15] {
+    pub fn numbers(&self) -> [(&'static str, f64); 16] {
         [
             ("recency_boost_max", self.recency_boost_max),
             ("recency_half_life_days", self.recency_half_life_days),
@@ -442,6 +456,7 @@ impl SearchSettings {
                 "analytics_retention_days",
                 f64::from(self.analytics_retention_days),
             ),
+            ("index_compaction_percent", self.index_compaction_percent),
         ]
     }
 
