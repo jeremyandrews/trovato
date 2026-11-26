@@ -13,7 +13,7 @@ Columns: the path as registered; its methods; its group; the handler and where i
 - People: 17 routes
 - Extend: 13 routes
 - Configuration: 22 routes
-- Reports: 5 routes
+- Reports: 6 routes
 
 <!-- kernel routes -->
 
@@ -146,8 +146,9 @@ Columns: the path as registered; its methods; its group; the handler and where i
 | `/admin/structure/stages/{id}/edit` | GET,POST | Configuration | `GET: edit_stage_form \| POST: edit_stage_submit` (GET: crates/kernel/src/routes/admin_stage.rs:368 \| POST: crates/kernel/src/routes/admin_stage.rs:401) | GET: admin/stage-form.html \| POST: redirect (re-renders admin/stage-form.html on error) | require_permission("administer site") |
 | `/admin/structure/stages/add` | GET,POST | Configuration | `GET: add_stage_form \| POST: add_stage_submit` (GET: crates/kernel/src/routes/admin_stage.rs:224 \| POST: crates/kernel/src/routes/admin_stage.rs:253) | GET: admin/stage-form.html \| POST: redirect (re-renders admin/stage-form.html on error) | require_permission("administer site") |
 | `/admin/reports/audit` | GET | Reports | `audit_report` (crates/kernel/src/routes/admin_audit.rs:50) | admin/reports/audit.html | require_permission("view audit log"); plugin trovato_audit_log enabled |
-| `/admin/reports/cron` | GET,POST | Reports | `GET: cron_report \| POST: run_cron_now` (GET: crates/kernel/src/routes/admin_reports.rs:67 \| POST: crates/kernel/src/routes/admin_reports.rs:121) | GET: admin/reports/cron.html \| POST: redirect | require_permission("administer site") |
-| `/admin/reports/log` | GET | Reports | `log_report` (crates/kernel/src/routes/admin_reports.rs:193) | admin/reports/log.html | require_permission("administer site") |
+| `/admin/reports/cron` | GET,POST | Reports | `GET: cron_report \| POST: run_cron_now` (GET: crates/kernel/src/routes/admin_reports.rs:105 \| POST: crates/kernel/src/routes/admin_reports.rs:185) | GET: admin/reports/cron.html \| POST: redirect | require_permission("administer site") |
+| `/admin/reports/cron/scheduler` | POST | Reports | `save_scheduler_settings` (crates/kernel/src/routes/admin_reports.rs:245) | redirect | require_permission("administer site") |
+| `/admin/reports/log` | GET | Reports | `log_report` (crates/kernel/src/routes/admin_reports.rs:336) | admin/reports/log.html | require_permission("administer site") |
 | `/admin/reports/overview` | GET | Reports | `landing` (crates/kernel/src/routes/admin_shell.rs) | admin/landing.html | require_permission("access administration pages"); lists only pages whose own gate admits the viewer; 404 when none |
 | `/admin/reports/search` | GET | Reports | `report` (crates/kernel/src/routes/admin_search_report.rs:64) | admin/reports/search.html | require_permission("administer site") |
 

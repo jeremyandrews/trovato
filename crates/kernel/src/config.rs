@@ -424,6 +424,15 @@ pub struct RuntimeConfig {
     /// Lives here rather than in [`CacheConfig`] because request handling reads it
     /// per call; the TTLs there are held by long-lived services instead.
     pub search_expand_cache_ttl: u64,
+
+    /// Process-level override of the built-in cron scheduler's interval
+    /// (`CRON_SCHEDULER_INTERVAL_SECS`), seconds. Unset: the `cron_scheduler`
+    /// `site_config` key decides, as `queue_runner` already does for the
+    /// resident queue runner. Set (including to `0`, which turns the scheduler
+    /// off): this wins outright, the same precedence `UPDATE_CHECK` gives the
+    /// environment over the site setting — the switch an air-gapped or
+    /// single-shot deployment needs without a database row being right.
+    pub cron_scheduler_interval_override: Option<u64>,
 }
 
 /// The SMTP configuration mail is sent with, as an administrator may see it.
@@ -951,6 +960,10 @@ impl Config {
                 "UPDATE_CHECK_INTERVAL_SECS",
                 crate::update_status::DEFAULT_CHECK_INTERVAL_SECS,
             ),
+            cron_scheduler_interval_override: get("CRON_SCHEDULER_INTERVAL_SECS")
+                .map(|raw| raw.trim().parse::<u64>())
+                .transpose()
+                .context("CRON_SCHEDULER_INTERVAL_SECS must be a valid non-negative integer")?,
         };
 
         Ok(Self {

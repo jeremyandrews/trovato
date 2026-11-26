@@ -40,4 +40,14 @@
     <p>{{ t(s="Runs every cron task in this server's process, now, and records the run here.") }}</p>
     {{ run_now_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </section>
+
+<section class="admin-card" aria-labelledby="cron-scheduler">
+    <h2 id="cron-scheduler" class="report-heading">{{ t(s="Built-in scheduler") }}</h2>
+    {% if scheduler_enabled %}
+    <p>{{ t(s="On: this server calls cron on its own every {secs} seconds, with no external caller needed.", secs=scheduler_interval_secs) }}</p>
+    {% else %}
+    <p>{{ t(s="Off: cron only runs from an external caller to /cron/{key}, or from the button above.") }}</p>
+    {% endif %}
+    {{ scheduler_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+</section>
 {% endblock content %}

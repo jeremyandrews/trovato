@@ -278,6 +278,60 @@ impl Default for QueueRunnerConfig {
     }
 }
 
+/// `site_config` key for the built-in scheduler (B178).
+pub(crate) const CRON_SCHEDULER_CONFIG_KEY: &str = "cron_scheduler";
+
+/// Default built-in scheduler interval, seconds: matches [`LOCK_TTL_SECS`], a
+/// cadence a single lock can comfortably cover end to end.
+///
+/// Non-zero on purpose: Jeremy's mandate is that a freshly installed site
+/// publishes scheduled content, rebuilds its search index and cleans up after
+/// itself with no external caller configured, and a `0` default would leave a
+/// fresh install exactly as silent as it is today. Sites that already run an
+/// external cron caller are unaffected either way: `/cron/{key}` keeps
+/// answering, and `CronService::run`'s lock makes a scheduled run and an
+/// external poke that land in the same window skip one another rather than
+/// double-run.
+const DEFAULT_CRON_SCHEDULER_INTERVAL_SECS: u64 = 300;
+
+fn default_cron_scheduler_interval_secs() -> u64 {
+    DEFAULT_CRON_SCHEDULER_INTERVAL_SECS
+}
+
+/// Built-in scheduler configuration (B178), read from the `cron_scheduler`
+/// `site_config` key (or [`RuntimeConfig::cron_scheduler_interval_override`],
+/// which wins outright when set).
+///
+/// `interval_secs == 0` turns the built-in scheduler off: the kernel calls
+/// `CronService::run` on nothing but a request to `/cron/{key}` or the admin
+/// "Run now" control, exactly as before this existed. Any other value is how
+/// often [`CronService::run_scheduler`] calls `run` on its own, re-read every
+/// loop so a change here — including turning it off — applies without a
+/// restart.
+///
+/// [`RuntimeConfig::cron_scheduler_interval_override`]: crate::config::RuntimeConfig::cron_scheduler_interval_override
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
+pub struct CronSchedulerConfig {
+    /// Seconds between scheduled runs. Default [`DEFAULT_CRON_SCHEDULER_INTERVAL_SECS`].
+    #[serde(default = "default_cron_scheduler_interval_secs")]
+    pub interval_secs: u64,
+}
+
+impl Default for CronSchedulerConfig {
+    fn default() -> Self {
+        Self {
+            interval_secs: DEFAULT_CRON_SCHEDULER_INTERVAL_SECS,
+        }
+    }
+}
+
+impl CronSchedulerConfig {
+    /// Whether the built-in scheduler calls `run` at all.
+    pub fn enabled(&self) -> bool {
+        self.interval_secs > 0
+    }
+}
+
 /// Exponential backoff for a failed attempt: `BASE * 2^(attempts-1)`, capped at
 /// [`QUEUE_BACKOFF_CAP_SECS`]. `attempts` is the post-claim count (>= 1).
 fn backoff_secs(attempts: i32) -> i64 {
@@ -806,6 +860,10 @@ pub struct CronService {
     /// Search, whose analytics tables cron prunes once a day. `None` in a
     /// harness that builds a `CronService` on its own.
     search: Option<Arc<crate::search::SearchService>>,
+    /// Process-level override of the built-in scheduler's interval
+    /// (`CRON_SCHEDULER_INTERVAL_SECS`), set by `apply_runtime_config`. `None`
+    /// in a harness that never calls it, where `site_config` alone decides.
+    scheduler_interval_override: Option<u64>,
 }
 
 impl CronService {
@@ -832,6 +890,7 @@ impl CronService {
             abandon_slack: JOB_ABANDON_SLACK,
             job_ceiling: None,
             search: None,
+            scheduler_interval_override: None,
         }
     }
 
@@ -858,6 +917,7 @@ impl CronService {
             abandon_slack: JOB_ABANDON_SLACK,
             job_ceiling: None,
             search: None,
+            scheduler_interval_override: None,
         }
     }
 
@@ -982,6 +1042,7 @@ impl CronService {
                 }
             }));
         self.pagefind_output_dir = runtime.pagefind_output_dir.clone();
+        self.scheduler_interval_override = runtime.cron_scheduler_interval_override;
     }
 
     /// Set optional plugin services for cron tasks.
@@ -2027,6 +2088,90 @@ impl CronService {
         }
     }
 
+    /// Load the built-in scheduler config (B178).
+    ///
+    /// `scheduler_interval_override` (`CRON_SCHEDULER_INTERVAL_SECS`), when
+    /// set, wins outright — the process-level switch an air-gapped or
+    /// single-shot deployment needs without a database row being right.
+    /// Otherwise read `site_config`, re-read every call so a runtime change
+    /// (including disabling it) takes effect without a restart. Absent or
+    /// unparseable falls back to the default interval rather than off: unlike
+    /// [`queue_runner_config`](Self::queue_runner_config), whose safe default
+    /// is off, this scheduler's safe default is on — a broken config must not
+    /// silently turn a fresh install back into one with no scheduled cron.
+    pub async fn scheduler_config(&self) -> CronSchedulerConfig {
+        if let Some(interval_secs) = self.scheduler_interval_override {
+            return CronSchedulerConfig { interval_secs };
+        }
+        match crate::models::SiteConfig::get(&self.pool, CRON_SCHEDULER_CONFIG_KEY).await {
+            Ok(Some(value)) => serde_json::from_value(value).unwrap_or_default(),
+            Ok(None) => CronSchedulerConfig::default(),
+            Err(e) => {
+                warn!(error = %e, "failed to read cron_scheduler config; using the default interval");
+                CronSchedulerConfig::default()
+            }
+        }
+    }
+
+    /// Run the built-in scheduler loop until `shutdown` fires (B178).
+    ///
+    /// Calls [`run`](Self::run) on its own cadence so a freshly installed site
+    /// publishes scheduled content, rebuilds its search index and cleans up
+    /// after itself with no external caller configured — core must be fully
+    /// functional without a site's own cron sidecar. This drives the exact
+    /// same `run`, and therefore the exact same Redis lock, as `/cron/{key}`
+    /// and the admin "Run now" control: whichever of them lands first in a
+    /// given window runs cron, and the other gets
+    /// [`CronResult::Skipped`](CronResult::Skipped), never both.
+    ///
+    /// Re-reads [`scheduler_config`](Self::scheduler_config) every loop, before
+    /// deciding how long to sleep, so a config change — including turning the
+    /// scheduler off — applies on the next tick without a restart. While off,
+    /// it still polls (on the default interval) so turning it back on is
+    /// noticed the same way, without a restart either. A failed run is logged
+    /// and the loop continues: a periodic background task has to survive a bad
+    /// cycle, not take the next one down with it.
+    pub async fn run_scheduler(self: Arc<Self>, shutdown: tokio_util::sync::CancellationToken) {
+        info!("built-in cron scheduler started");
+        loop {
+            let cfg = self.scheduler_config().await;
+            let poll = Duration::from_secs(if cfg.enabled() {
+                cfg.interval_secs
+            } else {
+                DEFAULT_CRON_SCHEDULER_INTERVAL_SECS
+            });
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    info!("built-in cron scheduler shutting down");
+                    return;
+                }
+                _ = tokio::time::sleep(poll) => {}
+            }
+            if !cfg.enabled() {
+                debug!("built-in cron scheduler disabled; skipping this tick");
+                continue;
+            }
+            match self.run().await {
+                CronResult::Completed {
+                    tasks_run,
+                    duration_ms,
+                } => {
+                    info!(
+                        duration_ms,
+                        tasks = ?tasks_run,
+                        "scheduled cron run completed"
+                    );
+                }
+                CronResult::Skipped => {
+                    debug!("scheduled cron run skipped: another instance is running cron");
+                }
+                CronResult::Failed(e) => {
+                    warn!(error = %e, "scheduled cron run failed");
+                }
+            }
+        }
+    }
+
     /// Claim a once-a-day task across every kernel process: true for the first
     /// caller in a 24 hour window, false for the rest.
     async fn claim_daily(&self, key: &str) -> Result<bool> {
@@ -2405,6 +2550,27 @@ mod tests {
         let from_empty: QueueRunnerConfig = serde_json::from_str("{}").unwrap();
         assert!(!from_empty.enabled);
         assert_eq!(from_empty.poll_interval_secs, 5);
+    }
+
+    // ── B178: the built-in scheduler's config is on by default ───────────────
+
+    #[test]
+    fn cron_scheduler_config_defaults_to_on() {
+        // Opposite of the queue runner's safe default: a fresh install must run
+        // scheduled cron with no external caller, so the safe reading of a
+        // missing or broken config is the default interval, not off.
+        let cfg = CronSchedulerConfig::default();
+        assert!(cfg.enabled());
+        assert_eq!(cfg.interval_secs, DEFAULT_CRON_SCHEDULER_INTERVAL_SECS);
+        // A bare `{}` from site_config deserializes to the same default.
+        let from_empty: CronSchedulerConfig = serde_json::from_str("{}").unwrap();
+        assert_eq!(from_empty, cfg);
+    }
+
+    #[test]
+    fn cron_scheduler_config_zero_means_off() {
+        let cfg = CronSchedulerConfig { interval_secs: 0 };
+        assert!(!cfg.enabled());
     }
 
     #[test]
