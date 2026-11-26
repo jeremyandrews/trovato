@@ -700,35 +700,26 @@ fn referenced_tags_resolve_label_slug_url_and_ancestors() {
     });
 }
 
-/// Counts `sqlx::query` events: one per statement sqlx runs.
-struct QueryCounter(std::sync::Arc<std::sync::atomic::AtomicUsize>);
-
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for QueryCounter {
-    fn on_event(
-        &self,
-        event: &tracing::Event<'_>,
-        _ctx: tracing_subscriber::layer::Context<'_, S>,
-    ) {
-        if event.metadata().target() == "sqlx::query" {
-            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        }
-    }
-}
-
-/// How many statements one GET runs, after a warm-up GET has filled the caches.
-async fn queries_for(app: &TestApp, path: &str) -> usize {
-    use tracing::instrument::WithSubscriber;
-    use tracing_subscriber::layer::SubscriberExt;
-
+/// How many statements one GET runs, after a warm-up GET has filled the caches:
+/// the count the request profiler leaves in the response
+/// (`RequestProfileSnapshot`), which is every statement the request ran.
+async fn queries_for(app: &TestApp, path: &str) -> u32 {
     let (status, html) = get_as(app, path, "", "b72_tag_count").await;
     assert_eq!(status, StatusCode::OK, "{path}: {html}");
-    let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let subscriber = tracing_subscriber::registry().with(QueryCounter(count.clone()));
-    let (status, _) = get_as(app, path, "", "b72_tag_count")
-        .with_subscriber(subscriber)
+    let response = app
+        .request(
+            Request::get(path)
+                .header("x-forwarded-for", test_ip_for("b72_tag_count"))
+                .body(Body::empty())
+                .unwrap(),
+        )
         .await;
-    assert_eq!(status, StatusCode::OK);
-    count.load(std::sync::atomic::Ordering::SeqCst)
+    assert_eq!(response.status(), StatusCode::OK);
+    response
+        .extensions()
+        .get::<trovato_kernel::telemetry::RequestProfileSnapshot>()
+        .expect("the profile is in the response")
+        .queries
 }
 
 /// Resolving tags costs the same number of queries for one shallow tag as for
