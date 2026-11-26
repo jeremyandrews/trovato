@@ -320,7 +320,7 @@ count = 1
 sql = "set local statement_timeout = ?"
 
 ["comment.admin.post"]
-queries = 8
+queries = 9
 cache_gets = 6
 cache_misses = 1
 cache_sets = 0
@@ -344,6 +344,10 @@ sql = "insert into mail_outbox (tenant_id, kind, priority, category, recipient, 
 ["comment.admin.post".statements."select:item:39a39bd6"]
 count = 1
 sql = "select id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days from item where id = $?"
+
+["comment.admin.post".statements."select:item_type:4deef075"]
+count = 1
+sql = "select type as type_name, label, description, has_title, title_label, plugin, settings from item_type where type = $?"
 
 ["comment.admin.post".statements."select:site_config:897f0424"]
 count = 3
@@ -690,7 +694,7 @@ count = 1
 sql = "set local statement_timeout = ?"
 
 ["item.anonymous.cold"]
-queries = 21
+queries = 22
 cache_gets = 17
 cache_misses = 14
 cache_sets = 0
@@ -710,6 +714,10 @@ sql = "select id, current_revision_id, type, title, author_id, status, created, 
 ["item.anonymous.cold".statements."select:item_translation:fc36d24f"]
 count = 1
 sql = "select language from item_translation where item_id = $? order by language"
+
+["item.anonymous.cold".statements."select:item_type:4deef075"]
+count = 1
+sql = "select type as type_name, label, description, has_title, title_label, plugin, settings from item_type where type = $?"
 
 ["item.anonymous.cold".statements."select:menu_link:17337ab4"]
 count = 1
@@ -739,12 +747,12 @@ sql = "select alias from url_alias where source = $? and stage_id = $? order by 
 count = 5
 sql = "select * from users where id = $?"
 
-["item.anonymous.cold".statements."with:now:66deae0e"]
+["item.anonymous.cold".statements."with:comment:6483e3db"]
 count = 1
-sql = "with recursive comment_tree as ( select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth, array[created, extract(epoch from now())::bigint - created] as sort_path from comment where item_id = $? and parent_id is null and status = $? union all select c.id, c.item_id, c.parent_id, c.author_id, c.subject, c.body, c.body_format, c.status, c.created, c.changed, c.depth, ct.sort_path || c.created from comment c join comment_tree ct on c.parent_id = ct.id where c.status = $? ) select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth from comment_tree order by sort_path"
+sql = 'with recursive comment_tree as ( select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth, array[lpad((case when $? then ? - created else created end)::text, ?) || id::text] as sort_path from comment where item_id = $? and parent_id is null and status = $? union all select c.id, c.item_id, c.parent_id, c.author_id, c.subject, c.body, c.body_format, c.status, c.created, c.changed, c.depth, ct.sort_path || (lpad(c.created::text, ?) || c.id::text) from comment c join comment_tree ct on c.parent_id = ct.id where c.status = $? ) select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth from comment_tree order by sort_path collate "C"'
 
 ["item.anonymous.warm"]
-queries = 13
+queries = 14
 cache_gets = 17
 cache_misses = 2
 cache_sets = 0
@@ -764,6 +772,10 @@ sql = "select id, current_revision_id, type, title, author_id, status, created, 
 ["item.anonymous.warm".statements."select:item_translation:fc36d24f"]
 count = 1
 sql = "select language from item_translation where item_id = $? order by language"
+
+["item.anonymous.warm".statements."select:item_type:4deef075"]
+count = 1
+sql = "select type as type_name, label, description, has_title, title_label, plugin, settings from item_type where type = $?"
 
 ["item.anonymous.warm".statements."select:site_config:51f89970"]
 count = 1
@@ -785,12 +797,12 @@ sql = "select alias from url_alias where source = $? and stage_id = $? order by 
 count = 1
 sql = "select * from users where id = $?"
 
-["item.anonymous.warm".statements."with:now:66deae0e"]
+["item.anonymous.warm".statements."with:comment:6483e3db"]
 count = 1
-sql = "with recursive comment_tree as ( select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth, array[created, extract(epoch from now())::bigint - created] as sort_path from comment where item_id = $? and parent_id is null and status = $? union all select c.id, c.item_id, c.parent_id, c.author_id, c.subject, c.body, c.body_format, c.status, c.created, c.changed, c.depth, ct.sort_path || c.created from comment c join comment_tree ct on c.parent_id = ct.id where c.status = $? ) select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth from comment_tree order by sort_path"
+sql = 'with recursive comment_tree as ( select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth, array[lpad((case when $? then ? - created else created end)::text, ?) || id::text] as sort_path from comment where item_id = $? and parent_id is null and status = $? union all select c.id, c.item_id, c.parent_id, c.author_id, c.subject, c.body, c.body_format, c.status, c.created, c.changed, c.depth, ct.sort_path || (lpad(c.created::text, ?) || c.id::text) from comment c join comment_tree ct on c.parent_id = ct.id where c.status = $? ) select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth from comment_tree order by sort_path collate "C"'
 
 ["item.user.cold"]
-queries = 23
+queries = 24
 cache_gets = 17
 cache_misses = 14
 cache_sets = 0
@@ -810,6 +822,10 @@ sql = "select id, current_revision_id, type, title, author_id, status, created, 
 ["item.user.cold".statements."select:item_translation:fc36d24f"]
 count = 1
 sql = "select language from item_translation where item_id = $? order by language"
+
+["item.user.cold".statements."select:item_type:4deef075"]
+count = 1
+sql = "select type as type_name, label, description, has_title, title_label, plugin, settings from item_type where type = $?"
 
 ["item.user.cold".statements."select:menu_link:17337ab4"]
 count = 1
@@ -847,12 +863,12 @@ sql = "select alias from url_alias where source = $? and stage_id = $? order by 
 count = 5
 sql = "select * from users where id = $?"
 
-["item.user.cold".statements."with:now:66deae0e"]
+["item.user.cold".statements."with:comment:6483e3db"]
 count = 1
-sql = "with recursive comment_tree as ( select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth, array[created, extract(epoch from now())::bigint - created] as sort_path from comment where item_id = $? and parent_id is null and status = $? union all select c.id, c.item_id, c.parent_id, c.author_id, c.subject, c.body, c.body_format, c.status, c.created, c.changed, c.depth, ct.sort_path || c.created from comment c join comment_tree ct on c.parent_id = ct.id where c.status = $? ) select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth from comment_tree order by sort_path"
+sql = 'with recursive comment_tree as ( select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth, array[lpad((case when $? then ? - created else created end)::text, ?) || id::text] as sort_path from comment where item_id = $? and parent_id is null and status = $? union all select c.id, c.item_id, c.parent_id, c.author_id, c.subject, c.body, c.body_format, c.status, c.created, c.changed, c.depth, ct.sort_path || (lpad(c.created::text, ?) || c.id::text) from comment c join comment_tree ct on c.parent_id = ct.id where c.status = $? ) select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth from comment_tree order by sort_path collate "C"'
 
 ["item.user.warm"]
-queries = 13
+queries = 14
 cache_gets = 17
 cache_misses = 2
 cache_sets = 0
@@ -872,6 +888,10 @@ sql = "select id, current_revision_id, type, title, author_id, status, created, 
 ["item.user.warm".statements."select:item_translation:fc36d24f"]
 count = 1
 sql = "select language from item_translation where item_id = $? order by language"
+
+["item.user.warm".statements."select:item_type:4deef075"]
+count = 1
+sql = "select type as type_name, label, description, has_title, title_label, plugin, settings from item_type where type = $?"
 
 ["item.user.warm".statements."select:site_config:51f89970"]
 count = 1
@@ -893,9 +913,9 @@ sql = "select alias from url_alias where source = $? and stage_id = $? order by 
 count = 1
 sql = "select * from users where id = $?"
 
-["item.user.warm".statements."with:now:66deae0e"]
+["item.user.warm".statements."with:comment:6483e3db"]
 count = 1
-sql = "with recursive comment_tree as ( select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth, array[created, extract(epoch from now())::bigint - created] as sort_path from comment where item_id = $? and parent_id is null and status = $? union all select c.id, c.item_id, c.parent_id, c.author_id, c.subject, c.body, c.body_format, c.status, c.created, c.changed, c.depth, ct.sort_path || c.created from comment c join comment_tree ct on c.parent_id = ct.id where c.status = $? ) select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth from comment_tree order by sort_path"
+sql = 'with recursive comment_tree as ( select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth, array[lpad((case when $? then ? - created else created end)::text, ?) || id::text] as sort_path from comment where item_id = $? and parent_id is null and status = $? union all select c.id, c.item_id, c.parent_id, c.author_id, c.subject, c.body, c.body_format, c.status, c.created, c.changed, c.depth, ct.sort_path || (lpad(c.created::text, ?) || c.id::text) from comment c join comment_tree ct on c.parent_id = ct.id where c.status = $? ) select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth from comment_tree order by sort_path collate "C"'
 
 ["login.anonymous.cold"]
 queries = 8
