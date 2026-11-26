@@ -75,6 +75,7 @@ pub mod static_files;
 pub mod tile_admin;
 pub mod user_data_export;
 pub mod user_delete;
+pub mod user_profile;
 pub mod webauthn;
 
 use axum::Router;

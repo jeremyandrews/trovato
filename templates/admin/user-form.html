@@ -24,6 +24,9 @@
         {{ form::fieldset_start(legend=t(s="Status and permissions")) }}
             {{ form::checkbox(name="status", label=t(s="Active"), checked=values.status | default(value=false), hint=t(s="Blocked users cannot log in."), errors=errs) }}
             {{ form::checkbox(name="is_admin", label=t(s="Administrator"), checked=values.is_admin | default(value=false), hint=t(s="Administrators have full access to the site. Only an administrator can grant or remove this."), errors=errs) }}
+            {% if not editing %}
+            {{ form::checkbox(name="notify", label=t(s="Notify user of new account"), checked=values.notify | default(value=false), hint=t(s="Mails the new user a welcome message with a one-time link to sign in and choose their own password."), errors=errs) }}
+            {% endif %}
         {{ form::fieldset_end() }}
 
         {#- Role membership. The checkbox key carries the role id, because
@@ -42,6 +45,7 @@
 
         {% if editing %}
         {{ form::actions(submit_label=t(s="Save changes"), cancel_url="/admin/people") }}
+        <p class="user-form__cancel-account"><a href="/user/{{ user_id }}/cancel">{{ t(s="Cancel account") }}</a></p>
         {% else %}
         {{ form::actions(submit_label=t(s="Create user"), cancel_url="/admin/people") }}
         {% endif %}
