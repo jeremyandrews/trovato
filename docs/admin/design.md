@@ -356,13 +356,60 @@ one short, factual sentence above Save, led by "What this changes:"
 - Words that scripts show come from a translated table the admin shell
   renders (`<template id="admin-text">`, read through `window.trovatoText`).
 
-## 9. Table pattern (Part 3)
+## 9. Table pattern
 
-`caption`, `scope` on headers, sortable columns as buttons in `th` with
-`aria-sort` on the sorted one, a polite live result count after filtering,
-pagination as a labelled `nav` with the current page marked, a helpful empty
-state, a GET filter form, bulk actions with named row checkboxes, and row
-action names that include the object ("Edit About us").
+Every admin listing is drawn the same way. `routes::admin_list` reads the
+query and `templates/admin/macros/list.html` draws it:
+
+- **Table.** A `caption` (it may be visually hidden), `scope="col"` on each
+  column header, and the row's name as a `th scope="row"`. A test fails on
+  any admin table without them.
+- **Filter.** A GET form named "Filter …", in a `search` landmark. It has a
+  text field `q` and the listing's own selects. Because it is GET, it works
+  without JavaScript and every filtered address can be shared. A "Clear
+  filter" link appears once a filter is applied.
+- **Sort.** A sortable column's header holds a button. Pressing it sorts by
+  that column, ascending first, then the other way. The sorted header
+  carries `aria-sort`. The buttons submit a small GET form that keeps the
+  filters, and the filter form keeps the sort. The address names the column
+  (`sort=title`, `sort=-title`). The SQL comes only from each listing's own
+  list of allowed columns.
+- **Count.** "N results" (and "page P of Q" when there are several) sits
+  above the table. After a filter or sort the same words are put into a
+  polite live region, so a screen reader hears what the filter found.
+- **Pages.** The pager is a `nav` labelled for what it pages ("Pages of
+  content"). The current page carries `aria-current="page"`, and every link
+  keeps the filter and the sort. Fifty rows a page.
+- **Empty.** With nothing at all: what is missing and the next action ("Add
+  content"). With a filter that matches nothing: say so and offer the way
+  back ("Clear filter").
+- **Bulk actions.** Each row checkbox is named by its row ("Select About
+  us"). A select-all box checks every row and shows "mixed" when some are
+  checked. A polite live region counts the selection ("Selected: 3"). The
+  action is a labelled select with an Apply button.
+- **Row actions.** Visible text links and buttons whose names include the
+  object: "Edit About us", "Delete About us", never a column of bare
+  "Edit".
+- **Asking first.** A destructive action asks on a page of its own
+  (`routes::admin_confirm`), the same with JavaScript on or off. Its form
+  posts to its usual address with `?confirm`; the layer keeps the fields in
+  the session and shows `/admin/confirm`. That page names what will happen
+  ("Delete About us? This cannot be undone.", or "Delete 3 selected items?"
+  for a bulk delete) and offers the real button and Cancel. Cancel goes back
+  to the page the form was on. The real button posts the same fields to the
+  same address, so the handler, with its own permission and token checks, is
+  unchanged. A post whose form token does not verify is never shown on the
+  page; it goes to the handler, which refuses it.
+
+  We chose a page over a script-driven dialog because the page works
+  without JavaScript, is one pattern instead of two, and is reached and left
+  like any other page. A modal dialog would still need the page for anyone
+  without scripts.
+- **Narrow screens.** Below 40rem a listing table lays each row out as a
+  block. Each cell is shown under its column's name, and the sort buttons
+  stay in a row above. `admin-lists.js` copies the column names onto the
+  cells. Without it, the table keeps its own labelled scroll region, which
+  WCAG 1.4.10 allows for data tables.
 
 ## 10. Search pattern
 

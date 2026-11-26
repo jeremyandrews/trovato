@@ -65,8 +65,10 @@
 {% if translation %}
 <div class="admin-card">
     <form method="post"
-          action="/admin/content/{{ item_id }}/translate/{{ language }}/delete" novalidate>
+          action="/admin/content/{{ item_id }}/translate/{{ language }}/delete?confirm" novalidate>
         <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <input type="hidden" name="_confirm" value="{{ t(s='Remove the {language} translation? This cannot be undone.', language=language) }}">
+        <input type="hidden" name="_confirm_label" value="{{ t(s='Remove the {language} translation', language=language) }}">
         <button type="submit" class="button button--danger">{{ t(s="Remove this translation") }}</button>
     </form>
 </div>

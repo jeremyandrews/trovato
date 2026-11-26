@@ -8,6 +8,7 @@
     <h2 id="cron-last-run" class="report-heading">{{ t(s="Last run") }}</h2>
     {% if last_run %}
     <table class="table report-facts">
+        <caption class="visually-hidden">{{ t(s="Last run") }}</caption>
         <tbody>
             <tr><th scope="row">{{ t(s="When") }}</th><td>{{ t(s="{time} UTC", time=last_run.timestamp | format_date(format="%Y-%m-%d %H:%M:%S")) }}</td></tr>
             <tr><th scope="row">{{ t(s="Server") }}</th><td>{{ last_run.hostname }}</td></tr>

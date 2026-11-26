@@ -158,12 +158,26 @@ impl TileFormData {
 /// List all tiles.
 ///
 /// GET /admin/structure/tiles
-async fn list_tiles(State(state): State<AppState>, session: Session) -> Response {
+async fn list_tiles(
+    State(state): State<AppState>,
+    session: Session,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
     if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
-    let tiles = Tile::list_all(state.db()).await.unwrap_or_default();
+    // Tiles keep their render order (region, then weight), so the listing
+    // is filtered and paged but has no sort.
+    let query = super::admin_list::ListQuery::from_params(&params);
+    let tiles: Vec<Tile> = Tile::list_all(state.db())
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| query.matches(&[&t.label, &t.machine_name, &t.tile_type, &t.region]))
+        .collect();
+    let total = i64::try_from(tiles.len()).unwrap_or(i64::MAX);
+    let tiles = super::admin_list::page_of(&tiles, &query);
     let csrf_token = generate_csrf_token(&session).await;
 
     // Group tiles by region
@@ -174,6 +188,7 @@ async fn list_tiles(State(state): State<AppState>, session: Session) -> Response
     }
 
     let mut context = tera::Context::new();
+    context.insert("list", &query.view(total, tiles.len(), None));
     context.insert("tiles", &tiles);
     context.insert("by_region", &by_region);
     context.insert("csrf_token", &csrf_token);
@@ -419,4 +434,5 @@ pub fn router() -> Router<AppState> {
             get(edit_tile_form).post(edit_tile_submit),
         )
         .route("/admin/structure/tiles/{id}/delete", post(delete_tile))
+        .layer(axum::middleware::from_fn(super::admin_confirm::ask_first))
 }

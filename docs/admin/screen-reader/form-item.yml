@@ -184,26 +184,18 @@
       - listitem:
         - link "Add content":
           - /url: /admin/content/add
-      - listitem: Create Media
-  - heading "Create Media" [level=1]
+      - listitem: Create Basic Page
+  - heading "Create Basic Page" [level=1]
   - paragraph: Fill in the fields and save to create the item.
   - text: Title (required)
   - textbox "Title (required)"
-  - text: File *
-  - button "File *"
-  - button "Browse media"
-  - paragraph: "Max 10 MB. Allowed: images, PDFs, documents, archives."
-  - text: Alt Text
-  - textbox "Alt Text"
-  - text: Caption
-  - textbox "Caption"
+  - text: Body
+  - textbox "Body"
   - text: Text format (required)
   - combobox "Text format (required)":
     - option "Filtered HTML" [selected]
     - option "Full HTML"
     - option "Plain Text"
-  - text: Credit
-  - textbox "Credit"
   - checkbox "Published" [checked]
   - text: Published
   - group "Publishing options":

@@ -3,7 +3,8 @@
 {% import "admin/macros/list.html" as list %}
 
 {#- The content list. The shell renders `flash` (set by the create, update,
-    delete and bulk handlers in routes::admin_content) as a status message. -#}
+    delete and bulk handlers in routes::admin_content) as a status message.
+    `list` is the listing's filter, sort and page (routes::admin_list). -#}
 
 {% block page_title %}{{ t(s="Content") }}{% endblock page_title %}
 {% block page_actions %}
@@ -13,20 +14,18 @@
 
 {% block content %}
 <div class="admin-card">
-    <form class="filter-form" method="get" action="/admin/content">
-        <div class="filter-row">
-            {{ form::select(name="type", label=t(s="Type"), options=type_options, value=type_filter, empty=t(s="- Any -"), wrapper="filter-item") }}
-            {{ form::select(name="status", label=t(s="Status"), options=status_options, value=status_filter, empty=t(s="- Any -"), translate_options=true, wrapper="filter-item") }}
-            <div class="filter-item">
-                <button type="submit" class="button button--secondary">{{ t(s="Filter") }}</button>
-            </div>
-        </div>
-    </form>
+    {{ list::filter_start(action="/admin/content", label=t(s="Filter content")) }}
+        {{ form::field(name="q", type="search", label=t(s="Title contains"), value=list.q, width="20", wrapper="filter-item") }}
+        {{ form::select(name="type", label=t(s="Type"), options=type_options, value=type_filter, empty=t(s="- Any -"), wrapper="filter-item") }}
+        {{ form::select(name="status", label=t(s="Status"), options=status_options, value=status_filter, empty=t(s="- Any -"), translate_options=true, wrapper="filter-item") }}
+    {{ list::filter_end(list=list, action="/admin/content") }}
 </div>
+{{ list::sort_form(list=list, action="/admin/content") }}
 
 {% if items %}
 <div class="admin-card">
-    <form method="post" action="/admin/content/bulk" id="bulk-form" novalidate>
+    {{ list::count(list=list) }}
+    <form method="post" action="/admin/content/bulk?confirm=delete" id="bulk-form" novalidate>
         <input type="hidden" name="_token" value="{{ csrf_token }}">
         <div class="bulk-actions">
             {{ form::select(name="action", id="bulk-action", label=t(s="Bulk action"), options=bulk_options, empty=t(s="- Bulk action -"), translate_options=true, wrapper="bulk-actions__field") }}
@@ -36,26 +35,27 @@
             {{ form::select(name="stage", id="bulk-stage", label=t(s="Target stage"), options=stage_options, empty=t(s="- Target stage -"), wrapper="bulk-actions__field") }}
             {% endif %}
             <button type="submit" class="button button--secondary button--small">{{ t(s="Apply") }}</button>
+            <p class="bulk-actions__count" data-selected-count role="status" aria-live="polite"></p>
         </div>
         <div class="table-scroll" role="region" aria-labelledby="content-caption" tabindex="0">
-            <table class="table">
+            <table class="table table--stack">
                 <caption id="content-caption">{{ t(s="Content items") }}</caption>
                 <thead>
                     <tr>
-                        <th scope="col" class="th-check"><input type="checkbox" id="select-all"><label class="visually-hidden" for="select-all">{{ t(s="Select all items") }}</label></th>
-                        <th scope="col">{{ t(s="Title") }}</th>
-                        <th scope="col">{{ t(s="Type") }}</th>
+                        <th scope="col" class="th-check"><input type="checkbox" id="select-all" data-select-all><label class="visually-hidden" for="select-all">{{ t(s="Select all items") }}</label></th>
+                        {{ list::sort_th(label=t(s="Title"), key="title", list=list) }}
+                        {{ list::sort_th(label=t(s="Type"), key="type", list=list) }}
                         <th scope="col">{{ t(s="Author") }}</th>
-                        <th scope="col">{{ t(s="Status") }}</th>
-                        <th scope="col">{{ t(s="Updated") }}</th>
-                        <th scope="col">{{ t(s="Operations") }}</th>
+                        {{ list::sort_th(label=t(s="Status"), key="status", list=list) }}
+                        {{ list::sort_th(label=t(s="Updated"), key="changed", list=list) }}
+                        <th scope="col" class="operations">{{ t(s="Operations") }}</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for item in items %}
                     {% set author = authors[item.author_id] | default(value="") %}
                     <tr>
-                        <td><input type="checkbox" name="ids[]" value="{{ item.id }}" id="select-{{ item.id }}"><label class="visually-hidden" for="select-{{ item.id }}">{{ t(s="Select {title}", title=item.title) }}</label></td>
+                        <td class="th-check"><input type="checkbox" name="ids[]" value="{{ item.id }}" id="select-{{ item.id }}" data-select-row><label class="visually-hidden" for="select-{{ item.id }}">{{ t(s="Select {title}", title=item.title) }}</label></td>
                         <th scope="row">
                             <a href="/admin/content/{{ item.id }}/edit">{{ item.title }}</a>
                         </th>
@@ -72,7 +72,7 @@
                         <td class="operations">
                             <a href="/admin/content/{{ item.id }}/edit">{{ t(s="Edit {title}", title=item.title) }}</a>
                             <a href="/item/{{ item.id }}/revisions">{{ t(s="Revisions of {title}", title=item.title) }}</a>
-                            <button type="submit" form="delete-{{ item.id }}" class="link-button link-button--danger" data-confirm="{{ t(s='Are you sure you want to delete this content?') }}">{{ t(s="Delete {title}", title=item.title) }}</button>
+                            <button type="submit" form="delete-{{ item.id }}" class="link-button link-button--danger">{{ t(s="Delete {title}", title=item.title) }}</button>
                         </td>
                     </tr>
                     {% endfor %}
@@ -82,15 +82,20 @@
     </form>
     {# Each row's Delete button submits one of these through its form
        attribute. A form nested in #bulk-form would close it early and add a
-       second _token to every bulk submission. #}
+       second _token to every bulk submission. Each asks first on the
+       confirmation page (routes::admin_confirm). #}
     {% for item in items %}
-    <form id="delete-{{ item.id }}" method="post" action="/admin/content/{{ item.id }}/delete" novalidate hidden>
+    <form id="delete-{{ item.id }}" method="post" action="/admin/content/{{ item.id }}/delete?confirm" novalidate hidden>
         <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <input type="hidden" name="_confirm" value="{{ t(s='Delete {title}? This cannot be undone.', title=item.title) }}">
+        <input type="hidden" name="_confirm_label" value="{{ t(s='Delete {title}', title=item.title) }}">
     </form>
     {% endfor %}
+    {{ list::pager(list=list, action="/admin/content", label=t(s="Pages of content")) }}
 </div>
+{% elif list.filtered %}
+{{ list::empty(message=t(s="No content matches this filter."), add_url="/admin/content", add_label=t(s="Clear filter")) }}
 {% else %}
-{{ list::empty(message=t(s="No content found."), add_url="/admin/content/add", add_label=t(s="Add content")) }}
+{{ list::empty(message=t(s="No content yet."), add_url="/admin/content/add", add_label=t(s="Add content")) }}
 {% endif %}
-{# Bulk actions handled by admin-helpers.js #}
 {% endblock content %}

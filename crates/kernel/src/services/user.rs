@@ -514,6 +514,18 @@ impl UserService {
         User::list(&self.inner.pool).await
     }
 
+    /// One page of the admin people listing, and how many accounts match
+    /// (see [`User::admin_page`]).
+    pub async fn admin_page(
+        &self,
+        like: Option<&str>,
+        order_by: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<User>, i64)> {
+        User::admin_page(&self.inner.pool, like, order_by, limit, offset).await
+    }
+
     /// List users with pagination.
     pub async fn list_paginated(&self, limit: i64, offset: i64) -> Result<Vec<User>> {
         User::list_paginated(&self.inner.pool, limit, offset).await

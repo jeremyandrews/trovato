@@ -1,5 +1,10 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
+
+{#- A menu's links, in tree order. `list` is the filter and page
+    (routes::admin_list); the tree's order is the render order, so it has
+    no sort. -#}
 
 {% block page_title %}{{ t(s="Menu: {name}", name=menu_name) }}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="The links in this menu, in the order they render: depth first, by weight then title.") }}</p>{% endblock page_intro %}
@@ -9,11 +14,21 @@
 {% endblock page_actions %}
 
 {% block content %}
+{% set action = "/admin/structure/menus/" ~ menu_name %}
+{% if rows or list.filtered %}
+<div class="admin-card">
+    {{ list::filter_start(action=action, label=t(s="Filter links")) }}
+        {{ form::field(name="q", type="search", label=t(s="Title or path contains"), value=list.q, width="20", wrapper="filter-item") }}
+    {{ list::filter_end(list=list, action=action) }}
+</div>
+{% endif %}
 {% if rows %}
 <p>{{ t(s="Change a link's weight to reorder it among its siblings. Deleting a link with children promotes those children to its own parent; it does not delete them.") }}</p>
 
+<div class="admin-card">
+{{ list::count(list=list) }}
 <div class="table-scroll" role="region" aria-labelledby="menu-links-caption" tabindex="0">
-    <table class="table">
+    <table class="table table--stack">
         <caption id="menu-links-caption">{{ t(s="Links in the {name} menu", name=menu_name) }}</caption>
         <thead>
             <tr>
@@ -22,7 +37,7 @@
                 <th scope="col">{{ t(s="Weight") }}</th>
                 <th scope="col">{{ t(s="Visibility") }}</th>
                 <th scope="col">{{ t(s="Owner") }}</th>
-                <th scope="col">{{ t(s="Operations") }}</th>
+                <th scope="col" class="operations">{{ t(s="Operations") }}</th>
             </tr>
         </thead>
         <tbody>
@@ -60,6 +75,10 @@
         </tbody>
     </table>
 </div>
+{{ list::pager(list=list, action=action, label=t(s="Pages of links")) }}
+</div>
+{% elif list.filtered %}
+{{ list::empty(message=t(s="No link in this menu matches this filter."), add_url=action, add_label=t(s="Clear filter")) }}
 {% else %}
 {{ list::empty(message=t(s="This menu has no links."), add_url="/admin/structure/menus/" ~ menu_name ~ "/add", add_label=t(s="Add the first one")) }}
 {% endif %}

@@ -310,11 +310,11 @@
     - heading "Create" [level=3]
     - list:
       - listitem:
-        - link "Add Media":
-          - /url: /item/add/media
-      - listitem:
         - link "Add Basic Page":
           - /url: /item/add/page
+      - listitem:
+        - link "Add Media":
+          - /url: /item/add/media
       - listitem:
         - link "Add Blog Post":
           - /url: /item/add/blog

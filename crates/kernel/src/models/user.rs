@@ -358,6 +358,58 @@ impl User {
         Ok(users)
     }
 
+    /// One page of the admin people listing, and how many accounts match.
+    ///
+    /// `like` is an `ILIKE` pattern matched against the name and the email
+    /// address, bound as a parameter. `order_by` must come from the listing's
+    /// own list of sortable columns (see `routes::admin_list`), never from the
+    /// request.
+    pub async fn admin_page(
+        pool: &PgPool,
+        like: Option<&str>,
+        order_by: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<Self>, i64)> {
+        let condition = if like.is_some() {
+            " WHERE (name ILIKE $1 OR mail ILIKE $1)"
+        } else {
+            ""
+        };
+        let n = usize::from(like.is_some());
+        // Ties: by name, then the id; a sort by name needs only the id.
+        let ties = if order_by.starts_with("lower(name) ") {
+            "id"
+        } else {
+            "lower(name), id"
+        };
+        let list_sql = format!(
+            "SELECT * FROM users{condition} ORDER BY {order_by}, {ties} \
+             LIMIT ${} OFFSET ${}",
+            n + 1,
+            n + 2
+        );
+        let count_sql = format!("SELECT COUNT(*) FROM users{condition}");
+
+        let mut list = sqlx::query_as::<_, User>(AssertSqlSafe(list_sql));
+        let mut count = sqlx::query_scalar::<_, i64>(AssertSqlSafe(count_sql));
+        if let Some(l) = like {
+            list = list.bind(l);
+            count = count.bind(l);
+        }
+        let users = list
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(pool)
+            .await
+            .context("failed to list the admin people page")?;
+        let total = count
+            .fetch_one(pool)
+            .await
+            .context("failed to count the admin people page")?;
+        Ok((users, total))
+    }
+
     /// List users with pagination.
     pub async fn list_paginated(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<Self>> {
         let users =

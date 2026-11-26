@@ -11,6 +11,7 @@ use crate::form::csrf::generate_csrf_token;
 use crate::models::CreateItem;
 use crate::state::AppState;
 
+use super::admin_list::{ListQuery, PER_PAGE};
 use super::helpers::{
     CsrfOnlyForm, admin_user_context, build_local_tasks, render_admin_template, render_error,
     render_forbidden, render_not_found, render_server_error, require_csrf, require_permission,
@@ -23,6 +24,14 @@ const CONTENT_FLASH_KEY: &str = "content_admin_flash";
 /// List all content.
 ///
 /// GET /admin/content
+/// The content listing's sortable columns: key and SQL.
+const CONTENT_SORTS: &[(&str, &str)] = &[
+    ("title", "lower(title)"),
+    ("type", "type"),
+    ("status", "status"),
+    ("changed", "changed"),
+];
+
 async fn list_content(
     State(state): State<AppState>,
     session: Session,
@@ -32,15 +41,28 @@ async fn list_content(
         return redirect;
     }
 
-    let type_filter = params.get("type").map(|s| s.as_str());
+    let type_filter = params
+        .get("type")
+        .map(|s| s.as_str())
+        .filter(|s| !s.is_empty());
     let status_filter = params.get("status").and_then(|s| s.parse::<i16>().ok());
+    let query = ListQuery::from_params(&params);
+    let sort = query.sort(CONTENT_SORTS, ("changed", true));
+    let like = query.like();
 
-    let items = match state
+    let (items, total) = match state
         .items()
-        .list_filtered(type_filter, status_filter, None, 100, 0)
+        .admin_page(
+            type_filter,
+            status_filter,
+            like.as_deref(),
+            &sort.order_by(),
+            PER_PAGE,
+            query.offset(),
+        )
         .await
     {
-        Ok((items, _total)) => items,
+        Ok(page) => page,
         Err(e) => {
             tracing::error!(error = %e, "failed to list content");
             return render_server_error("Failed to load content.");
@@ -121,6 +143,7 @@ async fn list_content(
     );
     context.insert("csrf_token", &csrf_token);
     context.insert("flash", &flash);
+    context.insert("list", &query.view(total, items.len(), Some(&sort)));
     context.insert("path", "/admin/content");
 
     render_admin_template(
