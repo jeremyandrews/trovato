@@ -236,6 +236,11 @@ pub struct Link {
     /// Its own icon, one of [`ICONS`]; `None` takes its group's, and a page
     /// in no group has none.
     pub icon: Option<&'static str>,
+    /// The state its landing tile shows ([`status_line`]), if any.
+    pub status: Option<Status>,
+    /// Whether it is its group's main action: a filled button beside the
+    /// landing page's heading and on the dashboard card. At most one a group.
+    pub primary: bool,
 }
 
 impl Link {
@@ -267,6 +272,8 @@ const fn page(
         synonyms: &[],
         sidebar: true,
         icon: None,
+        status: None,
+        primary: false,
     }
 }
 
@@ -307,6 +314,8 @@ pub const LINKS: &[Link] = &[
         synonyms: &["home", "start", "overview"],
         sidebar: true,
         icon: None,
+        status: None,
+        primary: false,
     },
     Link {
         group: None,
@@ -319,6 +328,8 @@ pub const LINKS: &[Link] = &[
         synonyms: &["dark mode", "light mode", "theme", "language", "display"],
         sidebar: false,
         icon: None,
+        status: None,
+        primary: false,
     },
     Link {
         group: None,
@@ -331,9 +342,12 @@ pub const LINKS: &[Link] = &[
         synonyms: &["find"],
         sidebar: false,
         icon: None,
+        status: None,
+        primary: false,
     },
     // --- Content ---
     Link {
+        status: Some(Status::Unpublished),
         also: &["/admin/content/bulk"],
         synonyms: &[
             "items",
@@ -353,6 +367,7 @@ pub const LINKS: &[Link] = &[
         )
     },
     Link {
+        primary: true,
         synonyms: &["new", "create", "write"],
         ..page(
             Content,
@@ -373,6 +388,7 @@ pub const LINKS: &[Link] = &[
         )
     },
     Link {
+        status: Some(Status::CommentsWaiting),
         icon: Some("speech"),
         plugin: Some(COMMENTS),
         synonyms: &["moderation", "spam", "replies"],
@@ -415,6 +431,18 @@ pub const LINKS: &[Link] = &[
             "/admin/structure/types",
             Permission("administer site"),
             "The kinds of content the site holds, and the fields each one has.",
+        )
+    },
+    Link {
+        primary: true,
+        sidebar: false,
+        synonyms: &["new type", "create type", "bundle"],
+        ..page(
+            Structure,
+            "Add content type",
+            "/admin/structure/types/add",
+            Permission("administer site"),
+            "Create a new kind of content, then give it its fields.",
         )
     },
     Link {
@@ -507,6 +535,7 @@ pub const LINKS: &[Link] = &[
     },
     // --- People ---
     Link {
+        status: Some(Status::BlockedAccounts),
         icon: Some("users"),
         also: &["/admin/users"],
         synonyms: &["accounts", "members", "sessions", "devices", "block"],
@@ -519,6 +548,7 @@ pub const LINKS: &[Link] = &[
         )
     },
     Link {
+        primary: true,
         sidebar: false,
         synonyms: &["new user", "create account", "invite"],
         ..page(
@@ -735,6 +765,7 @@ pub const LINKS: &[Link] = &[
     },
     // --- Reports ---
     Link {
+        status: Some(Status::LogErrors),
         icon: Some("log"),
         synonyms: &["errors", "watchdog", "messages", "logs", "warnings"],
         ..page(
@@ -773,6 +804,7 @@ pub const LINKS: &[Link] = &[
         )
     },
     Link {
+        status: Some(Status::CronLastRun),
         icon: Some("hourglass"),
         synonyms: &["scheduled tasks", "jobs", "queue", "background"],
         ..page(
@@ -811,6 +843,157 @@ pub const LINKS: &[Link] = &[
     },
 ];
 
+/// A state a landing tile or dashboard card shows in one sentence: what
+/// waits, or how something last went. Each is carried by exactly one
+/// [`LINKS`] entry and computed by [`status_line`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+pub enum Status {
+    /// Content: items not published.
+    Unpublished,
+    /// Comments: comments waiting for moderation.
+    CommentsWaiting,
+    /// Users: blocked accounts, which include registrations awaiting
+    /// verification or approval.
+    BlockedAccounts,
+    /// Recent log messages: errors in the last 24 hours.
+    LogErrors,
+    /// Cron: when it last ran.
+    CronLastRun,
+}
+
+impl Status {
+    /// Every status, once each.
+    pub const ALL: &'static [Status] = &[
+        Status::Unpublished,
+        Status::CommentsWaiting,
+        Status::BlockedAccounts,
+        Status::LogErrors,
+        Status::CronLastRun,
+    ];
+}
+
+/// The statuses a Dashboard panel already reports (`admin_dashboard`):
+/// "Waiting for you" counts the comments, "Recent errors" the errors, and
+/// "Scheduled tasks" says how cron last went. The Dashboard's cards skip
+/// them, so no state is said twice on one page.
+pub const DASHBOARD_PANEL_STATUSES: &[Status] = &[
+    Status::CommentsWaiting,
+    Status::LogErrors,
+    Status::CronLastRun,
+];
+
+/// One status, as a template draws it (`admin/macros/status.html`): a
+/// sentence with at most one plural count, and whether it marks work
+/// waiting, which draws the line itself as a badge.
+#[derive(Debug, Clone, Serialize)]
+pub struct StatusLine {
+    pub message: crate::i18n::UiMessage,
+    pub waiting: bool,
+}
+
+/// Whether `viewer` may see `status`: they pass the gate of the page that
+/// carries it. A count must never reveal what the viewer may not open.
+fn may_see(status: Status, viewer: &UserContext) -> bool {
+    LINKS
+        .iter()
+        .find(|l| l.status == Some(status))
+        .is_some_and(|l| l.gate.admits(viewer))
+}
+
+/// The line `status` shows `viewer` now, or `None` when they may not see it
+/// or it cannot be read. Each count is one indexed statement, run in the
+/// request's own task so the request profile counts it, and never cached:
+/// a cleared queue shows as cleared at once. Cron's is one Redis read.
+pub async fn status_line(
+    status: Status,
+    viewer: &UserContext,
+    state: &crate::state::AppState,
+) -> Option<StatusLine> {
+    use crate::i18n::UiMessage;
+    if !may_see(status, viewer) {
+        return None;
+    }
+    let count = |sql: &'static str| sqlx::query_scalar::<_, i64>(sql);
+    let failed = |e: sqlx::Error| {
+        tracing::warn!(error = %e, ?status, "failed to count an admin status");
+    };
+    match status {
+        Status::Unpublished => {
+            // For anyone else the content list filters row by row, so a
+            // total would count items they cannot open.
+            if !viewer.can(super::admin_content::EDIT_ANY_CONTENT) {
+                return None;
+            }
+            let n = count("SELECT COUNT(*) FROM item WHERE status = 0")
+                .fetch_one(state.db())
+                .await
+                .map_err(failed)
+                .ok()?;
+            Some(StatusLine {
+                message: UiMessage::new("{count} unpublished item")
+                    .plural("{count} unpublished items", n),
+                waiting: false,
+            })
+        }
+        Status::CommentsWaiting => {
+            let n = count("SELECT COUNT(*) FROM comment WHERE status = $1")
+                .bind(crate::models::comment::CommentStatus::Pending.as_i16())
+                .fetch_one(state.db())
+                .await
+                .map_err(failed)
+                .ok()?;
+            Some(StatusLine {
+                message: UiMessage::new("{count} comment waiting for moderation")
+                    .plural("{count} comments waiting for moderation", n),
+                waiting: n > 0,
+            })
+        }
+        Status::BlockedAccounts => {
+            let n = count("SELECT COUNT(*) FROM users WHERE status = 0")
+                .fetch_one(state.db())
+                .await
+                .map_err(failed)
+                .ok()?;
+            Some(StatusLine {
+                message: UiMessage::new("{count} blocked account")
+                    .plural("{count} blocked accounts", n),
+                waiting: false,
+            })
+        }
+        Status::LogErrors => {
+            let since = chrono::Utc::now().timestamp() - 24 * 60 * 60;
+            let n =
+                count("SELECT COUNT(*) FROM system_log WHERE level = 'error' AND created >= $1")
+                    .bind(since)
+                    .fetch_one(state.db())
+                    .await
+                    .map_err(failed)
+                    .ok()?;
+            Some(StatusLine {
+                message: UiMessage::new("{count} error in the last 24 hours")
+                    .plural("{count} errors in the last 24 hours", n),
+                waiting: n > 0,
+            })
+        }
+        Status::CronLastRun => match state.cron().last_run().await {
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to read the last cron run");
+                None
+            }
+            // `cron:last_run` expires a day after the run it records.
+            Ok(None) => Some(StatusLine {
+                message: UiMessage::new("No run in the last 24 hours"),
+                waiting: true,
+            }),
+            Ok(Some(run)) => Some(StatusLine {
+                message: UiMessage::new("Last run {when} UTC")
+                    .arg("when", super::admin_dashboard::when(run.timestamp)),
+                waiting: false,
+            }),
+        },
+    }
+}
+
 /// Whether `href` is a kernel page's own address, one of its `also`
 /// prefixes, or a landing page: a plugin link there would tie with the
 /// kernel's for the highlight, or shadow a page.
@@ -821,16 +1004,39 @@ pub fn kernel_claims(href: &str) -> bool {
         || GROUPS.iter().any(|g| g.group.landing_href() == href)
 }
 
-/// A dashboard card as the template draws it.
+/// A group's main action, drawn as a filled button beside a landing page's
+/// heading and on its dashboard card.
+#[derive(Debug, Clone, Serialize)]
+pub struct PrimaryAction {
+    pub label: String,
+    pub href: String,
+    /// Its resolved icon ([`Link::resolved_icon`]).
+    pub icon: String,
+}
+
+/// A dashboard card as the template draws it: a group's chip, its title
+/// linking to its landing page, its status lines and its main action; or a
+/// plugin's card, with the Extend chip, its title linking to its page, and
+/// its description.
 #[derive(Debug, Clone, Serialize)]
 pub struct DashboardCard {
     pub title: String,
+    /// A plugin card's line; empty for a group card, whose landing page
+    /// says what the group is for.
     pub description: String,
     /// The group's icon, or Extend's for a plugin card.
     pub icon: String,
-    /// The group's landing page, for a group card; `None` for a plugin card.
-    pub href: Option<String>,
-    pub links: Vec<NavLink>,
+    /// The group's landing page, or the plugin card's page.
+    pub href: String,
+    /// The group, for a group card; `None` for a plugin card.
+    #[serde(skip)]
+    pub group: Option<Group>,
+    /// One line per status of the group's offered pages, except those a
+    /// Dashboard panel reports ([`DASHBOARD_PANEL_STATUSES`]); filled by
+    /// the handler, which awaits them.
+    pub status_lines: Vec<StatusLine>,
+    /// The group's main action, when the viewer may open it.
+    pub primary: Option<PrimaryAction>,
 }
 
 /// Whether `link`'s page exists on this site and `viewer` may open it: the
@@ -866,6 +1072,12 @@ pub struct PageEntry {
     pub plugin: Option<String>,
     /// Its icon: its own or its group's, resolved once here.
     pub icon: String,
+    /// The state its tile shows; `None` for a plugin page.
+    #[serde(skip)]
+    pub status: Option<Status>,
+    /// Whether it is its group's main action.
+    #[serde(skip)]
+    pub primary: bool,
 }
 
 /// Every page `viewer` may open: the kernel's, then the plugins', in
@@ -889,6 +1101,8 @@ pub fn offered_pages(
             sidebar: l.sidebar,
             plugin: None,
             icon: l.resolved_icon().to_string(),
+            status: l.status,
+            primary: l.primary,
         })
         .collect();
     pages.extend(
@@ -909,15 +1123,30 @@ pub fn offered_pages(
                 sidebar: true,
                 plugin: Some(l.plugin.clone()),
                 icon: group_for_section(&l.section).info().icon.to_string(),
+                status: None,
+                primary: false,
             }),
     );
     pages
 }
 
-/// The dashboard cards `viewer` may use: one per group with at least one page
-/// the viewer may open, listing those pages, then one per plugin-declared
-/// card, under the same rule, so the dashboard never offers a page that
-/// answers 403 or 404.
+/// The main action of `group` among `pages`, if the viewer may open it.
+fn primary_of(pages: &[PageEntry], group: Group) -> Option<PrimaryAction> {
+    pages
+        .iter()
+        .find(|p| p.group == Some(group) && p.primary)
+        .map(|p| PrimaryAction {
+            label: p.label.clone(),
+            href: p.href.clone(),
+            icon: p.icon.clone(),
+        })
+}
+
+/// The dashboard cards `viewer` may use: one per group with at least one
+/// sidebar page the viewer may open, leading to its landing page, then one
+/// per plugin-declared card, under the same rule, so the dashboard never
+/// offers a page that answers 403 or 404. A group card no longer lists its
+/// pages: its landing page does.
 pub fn dashboard(
     viewer: &UserContext,
     enabled_plugins: &[String],
@@ -928,23 +1157,15 @@ pub fn dashboard(
     let pages: Vec<PageEntry> = offered_pages(viewer, enabled_plugins, &[], &[]);
     let mut cards: Vec<DashboardCard> = GROUPS
         .iter()
-        .filter_map(|g| {
-            let links: Vec<NavLink> = pages
-                .iter()
-                .filter(|p| p.group == Some(g.group) && p.sidebar)
-                .map(|p| NavLink {
-                    label: p.label.clone(),
-                    href: p.href.clone(),
-                    active: false,
-                })
-                .collect();
-            (!links.is_empty()).then(|| DashboardCard {
-                title: g.title.to_string(),
-                description: g.description.to_string(),
-                icon: g.icon.to_string(),
-                href: Some(g.group.landing_href()),
-                links,
-            })
+        .filter(|g| pages.iter().any(|p| p.group == Some(g.group) && p.sidebar))
+        .map(|g| DashboardCard {
+            title: g.title.to_string(),
+            description: String::new(),
+            icon: g.icon.to_string(),
+            href: g.group.landing_href(),
+            group: Some(g.group),
+            status_lines: Vec::new(),
+            primary: primary_of(&pages, g.group),
         })
         .collect();
 
@@ -958,12 +1179,10 @@ pub fn dashboard(
                 title: card.title.clone(),
                 description: card.description.clone(),
                 icon: Group::Extend.info().icon.to_string(),
-                href: None,
-                links: vec![NavLink {
-                    label: card.title.clone(),
-                    href: card.href.clone(),
-                    active: false,
-                }],
+                href: card.href.clone(),
+                group: None,
+                status_lines: Vec::new(),
+                primary: None,
             });
         }
     }
@@ -1112,35 +1331,63 @@ pub fn sidebar(
     sections
 }
 
-/// One line of a group's landing page.
+/// One tile of a group's landing page.
 #[derive(Debug, Clone, Serialize)]
 pub struct LandingItem {
     pub label: String,
     pub description: String,
     pub href: String,
     pub icon: String,
+    /// The state the tile shows, if its page carries one.
+    #[serde(skip)]
+    pub status: Option<Status>,
+    /// That state now, filled by the handler, which awaits it.
+    pub status_line: Option<StatusLine>,
 }
 
-/// Every page in `group` that `viewer` may open, sidebar or not, kernel and
-/// plugin, for the group's landing page. Empty when there is none, which the
-/// route answers with 404.
+/// A group's landing page: a tile for every page in the group the viewer
+/// may open, sidebar or not, kernel and plugin, except the group's main
+/// action, which sits beside the heading as a button.
+#[derive(Debug, Clone, Serialize)]
+pub struct Landing {
+    pub items: Vec<LandingItem>,
+    pub primary: Option<PrimaryAction>,
+}
+
+impl Landing {
+    /// Whether the viewer may open nothing in the group, which the route
+    /// answers with 404.
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty() && self.primary.is_none()
+    }
+}
+
+/// The landing page of `group` for `viewer`.
 pub fn landing(
     viewer: &UserContext,
     enabled_plugins: &[String],
     group: Group,
     plugin_links: &[PluginNavLink],
     plugin_cards: &[PluginNavCard],
-) -> Vec<LandingItem> {
-    offered_pages(viewer, enabled_plugins, plugin_links, plugin_cards)
+) -> Landing {
+    let pages: Vec<PageEntry> = offered_pages(viewer, enabled_plugins, plugin_links, plugin_cards)
         .into_iter()
         .filter(|e| e.group == Some(group))
+        .collect();
+    let primary = primary_of(&pages, group);
+    let items = pages
+        .into_iter()
+        .filter(|e| !e.primary)
         .map(|e| LandingItem {
             label: e.label,
             description: e.description,
             href: e.href,
             icon: e.icon,
+            status: e.status,
+            status_line: None,
         })
-        .collect()
+        .collect();
+    Landing { items, primary }
 }
 
 /// One breadcrumb.
@@ -1850,31 +2097,29 @@ mod tests {
     }
 
     fn card_hrefs(cards: &[DashboardCard]) -> Vec<String> {
-        cards
-            .iter()
-            .flat_map(|c| c.links.iter().map(|l| l.href.clone()))
-            .collect()
+        cards.iter().map(|c| c.href.clone()).collect()
+    }
+
+    fn card_titles(cards: &[DashboardCard]) -> Vec<String> {
+        cards.iter().map(|c| c.title.clone()).collect()
     }
 
     #[test]
     fn the_dashboard_offers_only_what_the_viewer_may_open() {
         let editor = viewer(&["access administration pages", "edit any content"]);
         let cards = dashboard(&editor, &[gated("_comments")], &[], &[]);
-        assert_eq!(
-            cards.iter().map(|c| c.title.clone()).collect::<Vec<_>>(),
-            vec!["Content"]
-        );
-        assert_eq!(
-            card_hrefs(&cards),
-            vec!["/admin/content", "/admin/content/moderated"]
+        assert_eq!(card_titles(&cards), vec!["Content"]);
+        assert_eq!(card_hrefs(&cards), vec!["/admin/content/overview"]);
+        assert!(
+            cards[0].primary.is_none(),
+            "an editor who may create nothing is not offered Add content"
         );
 
         let moderator = viewer(&["access administration pages", "administer comments"]);
         assert!(dashboard(&moderator, &[], &[], &[]).is_empty());
-        assert_eq!(
-            card_hrefs(&dashboard(&moderator, &[gated("_comments")], &[], &[])),
-            vec!["/admin/content/comments"]
-        );
+        let cards = dashboard(&moderator, &[gated("_comments")], &[], &[]);
+        assert_eq!(card_titles(&cards), vec!["Content"]);
+        assert_eq!(card_hrefs(&cards), vec!["/admin/content/overview"]);
 
         let admin = UserContext::administrator(Uuid::now_v7(), vec![]);
         let all = dashboard(
@@ -1888,10 +2133,21 @@ mod tests {
             &[],
         );
         assert_eq!(
-            all.len(),
-            GROUPS.len(),
+            card_titles(&all),
+            GROUPS.iter().map(|g| g.title).collect::<Vec<_>>(),
             "the administrator sees every group"
         );
+        assert_eq!(
+            card_hrefs(&all),
+            GROUPS
+                .iter()
+                .map(|g| g.group.landing_href())
+                .collect::<Vec<_>>()
+        );
+        for card in &all {
+            assert_eq!(card.group.map(|g| g.info().icon), Some(card.icon.as_str()));
+            assert!(card.description.is_empty(), "a group card lists nothing");
+        }
     }
 
     // --- the registry (B199) ---
@@ -1933,22 +2189,40 @@ mod tests {
     #[test]
     fn a_landing_page_lists_every_page_of_its_group_the_viewer_may_open() {
         let admin = UserContext::administrator(Uuid::now_v7(), vec![]);
-        let items = landing(&admin, &[], Group::People, &[], &[]);
-        let hrefs: Vec<&str> = items.iter().map(|i| i.href.as_str()).collect();
+        let people = landing(&admin, &[], Group::People, &[], &[]);
+        let hrefs: Vec<&str> = people.items.iter().map(|i| i.href.as_str()).collect();
         assert_eq!(
             hrefs,
             vec![
                 "/admin/people",
-                "/admin/people/add",
                 "/admin/people/roles",
                 "/admin/people/permissions",
                 "/admin/people/who-can",
                 "/admin/people/rules"
             ],
-            "sidebar or not"
+            "sidebar or not, and not the main action, which is no tile"
         );
+        let primary = people.primary.expect("People's main action");
+        assert_eq!(
+            (primary.label.as_str(), primary.href.as_str()),
+            ("Add user", "/admin/people/add"),
+            "beside the heading"
+        );
+        assert_eq!(primary.icon, Group::People.info().icon);
+        let users = &people.items[0];
+        assert_eq!(users.icon, "users");
+        assert_eq!(users.status, Some(Status::BlockedAccounts));
+        assert!(users.status_line.is_none(), "filled by the handler");
+
         let editor = viewer(&["access administration pages", "edit any content"]);
         assert!(landing(&editor, &[], Group::People, &[], &[]).is_empty());
+
+        // Someone who may only create content has a landing page holding
+        // only the main action.
+        let writer = viewer(&["access administration pages", "create article content"]);
+        let content = landing(&writer, &[], Group::Content, &[], &[]);
+        assert!(content.items.is_empty());
+        assert!(!content.is_empty());
     }
 
     #[test]
@@ -2173,6 +2447,8 @@ mod tests {
         assert_eq!(card_hrefs(&cards), vec!["/admin/groups"]);
         assert_eq!(cards[0].title, "Groups");
         assert_eq!(cards[0].description, "Manage user groups.");
+        assert_eq!(cards[0].group, None);
+        assert!(cards[0].primary.is_none() && cards[0].status_lines.is_empty());
 
         assert!(
             dashboard(&granted, &[], &[groups_link()], &[groups_card()]).is_empty(),
@@ -2274,5 +2550,115 @@ mod tests {
             assert!(used, "{name} is drawn but no group or page uses it");
         }
         assert_eq!(render_icon("no-such-icon").trim(), "");
+    }
+
+    // --- status lines and main actions (B245) ---
+
+    #[test]
+    fn every_status_is_carried_by_exactly_one_page() {
+        for status in Status::ALL {
+            let carriers: Vec<&str> = LINKS
+                .iter()
+                .filter(|l| l.status == Some(*status))
+                .map(|l| l.href)
+                .collect();
+            assert_eq!(carriers.len(), 1, "{status:?} is on {carriers:?}");
+        }
+        for l in LINKS {
+            if let Some(status) = l.status {
+                assert!(Status::ALL.contains(&status), "{}: {status:?}", l.href);
+            }
+        }
+    }
+
+    /// A new `Status` fails to compile here until it is placed, and then
+    /// fails until `Status::ALL` lists it, once.
+    #[test]
+    fn status_all_lists_every_variant_once() {
+        let index = |s: Status| -> usize {
+            match s {
+                Status::Unpublished => 0,
+                Status::CommentsWaiting => 1,
+                Status::BlockedAccounts => 2,
+                Status::LogErrors => 3,
+                Status::CronLastRun => 4,
+            }
+        };
+        let mut seen = [0usize; 5];
+        for s in Status::ALL {
+            seen[index(*s)] += 1;
+        }
+        assert_eq!(seen, [1; 5], "{:?}", Status::ALL);
+        for s in DASHBOARD_PANEL_STATUSES {
+            assert!(Status::ALL.contains(s));
+        }
+    }
+
+    #[test]
+    fn a_status_is_seen_only_by_whoever_may_open_its_page() {
+        let editor = viewer(&["access administration pages", "edit any content"]);
+        assert!(may_see(Status::Unpublished, &editor));
+        assert!(!may_see(Status::CommentsWaiting, &editor));
+        assert!(!may_see(Status::BlockedAccounts, &editor));
+        assert!(!may_see(Status::LogErrors, &editor));
+        assert!(!may_see(Status::CronLastRun, &editor));
+        let reporter = viewer(&["access administration pages", "access site reports"]);
+        assert!(may_see(Status::LogErrors, &reporter));
+        assert!(!may_see(Status::CronLastRun, &reporter));
+        let admin = UserContext::administrator(Uuid::now_v7(), vec![]);
+        for s in Status::ALL {
+            assert!(may_see(*s, &admin), "{s:?}");
+        }
+    }
+
+    #[test]
+    fn a_group_has_at_most_one_main_action() {
+        for g in GROUPS {
+            let primaries: Vec<&str> = LINKS
+                .iter()
+                .filter(|l| l.group == Some(g.group) && l.primary)
+                .map(|l| l.href)
+                .collect();
+            assert!(primaries.len() <= 1, "{:?}: {primaries:?}", g.group);
+        }
+        assert!(
+            LINKS
+                .iter()
+                .filter(|l| l.primary)
+                .all(|l| l.group.is_some()),
+            "a main action belongs to a group"
+        );
+        assert!(
+            !LINKS
+                .iter()
+                .any(|l| l.group == Some(Group::Extend) && l.primary),
+            "plugins are switched on from the Plugins page"
+        );
+    }
+
+    #[test]
+    fn each_main_action_asks_for_what_its_page_asks_for() {
+        let gate = |href: &str| {
+            LINKS
+                .iter()
+                .find(|l| l.href == href && l.primary)
+                .unwrap_or_else(|| panic!("{href} is a main action"))
+                .gate
+        };
+        assert!(matches!(gate("/admin/content/add"), Gate::CreatesContent));
+        assert!(matches!(
+            gate("/admin/people/add"),
+            Gate::Permission("administer users")
+        ));
+        assert!(matches!(
+            gate("/admin/structure/types/add"),
+            Gate::Permission("administer site")
+        ));
+        let add_type = LINKS
+            .iter()
+            .find(|l| l.href == "/admin/structure/types/add")
+            .unwrap();
+        assert_eq!(add_type.group, Some(Group::Structure));
+        assert!(!add_type.sidebar);
     }
 }

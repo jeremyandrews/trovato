@@ -88,17 +88,26 @@ async fn landing(
     let mut enabled: Vec<String> = state.enabled_plugins().into_iter().collect();
     enabled.sort();
     let nav = state.plugin_admin_nav();
-    let items = admin_nav::landing(&viewer, &enabled, group, nav.links(), nav.cards());
+    let mut landing = admin_nav::landing(&viewer, &enabled, group, nav.links(), nav.cards());
     // A group with nothing the viewer may open does not exist for them, as a
     // page they may not open does not.
-    if items.is_empty() {
+    if landing.is_empty() {
         return render_not_found();
+    }
+    // Each tile's state, one after another in this request's own task, so
+    // the request profile counts every statement. Only offered tiles carry
+    // a status, and `status_line` applies its own visibility rules.
+    for item in &mut landing.items {
+        if let Some(status) = item.status {
+            item.status_line = admin_nav::status_line(status, &viewer, &state).await;
+        }
     }
 
     let mut context = tera::Context::new();
     context.insert("group", group.info().title);
     context.insert("group_description", group.info().description);
-    context.insert("items", &items);
+    context.insert("items", &landing.items);
+    context.insert("primary", &landing.primary);
     context.insert("path", &path);
     render_admin_template(&state, &viewer, "admin/landing.html", context).await
 }
