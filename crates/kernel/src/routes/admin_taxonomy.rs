@@ -18,8 +18,8 @@ use crate::state::AppState;
 use super::admin_list::{ListQuery, page_of, sort_rows};
 use super::helpers::{
     CsrfOnlyForm, MACHINE_NAME_ERROR, SLUG_FORMAT_ERROR, is_valid_machine_name, is_valid_slug,
-    render_admin_template, render_error, render_not_found, render_server_error, require_csrf,
-    require_permission,
+    render_admin_template, render_error, render_forbidden, render_not_found, render_server_error,
+    require_any_permission, require_csrf, require_permission,
 };
 
 // =============================================================================
@@ -54,6 +54,78 @@ pub(crate) struct TagFormData {
 }
 
 // =============================================================================
+// Who may reach the terms
+// =============================================================================
+
+/// Administers every category, its terms included.
+const ADMINISTER: &str = "administer categories";
+/// The term permissions: Drupal's "create terms in X" and the like, held
+/// without `administer categories` (B156).
+const CREATE_TERMS: &str = "create category terms";
+const EDIT_TERMS: &str = "edit category terms";
+const DELETE_TERMS: &str = "delete category terms";
+
+/// What opens the category list and a term list: any term permission.
+const TERM_LIST: &[&str] = &[ADMINISTER, CREATE_TERMS, EDIT_TERMS, DELETE_TERMS];
+/// The category whose tags are the workflow stages (`models::stage`).
+const STAGES_CATEGORY: &str = "stages";
+/// What opens the add-term form.
+const TERM_CREATE: &[&str] = &[ADMINISTER, CREATE_TERMS];
+/// What opens the edit-term form.
+const TERM_EDIT: &[&str] = &[ADMINISTER, EDIT_TERMS];
+/// What deletes a term.
+const TERM_DELETE: &[&str] = &[ADMINISTER, DELETE_TERMS];
+
+/// Whether `user`, past one of the gates above, reaches `category` here.
+///
+/// A term permission reaches the site's own vocabularies. A plugin's
+/// category is managed under its owner's route, by whoever the owner lets
+/// in (`routes::owned_vocabulary`); here it stays with `administer
+/// categories`, so no term permission opens a category it did not before.
+/// The workflow stages are tags too, in [`STAGES_CATEGORY`]; they are the
+/// stage screens' to change, so no term permission reaches them either.
+async fn reaches(state: &AppState, user: &crate::models::User, category: &Category) -> bool {
+    (category.owner_type.is_none() && category.id != STAGES_CATEGORY)
+        || state
+            .permissions()
+            .user_has_permission(user, ADMINISTER)
+            .await
+            .unwrap_or(false)
+}
+
+/// Whether `user` holds one of `permissions`.
+async fn holds_any(state: &AppState, user: &crate::models::User, permissions: &[&str]) -> bool {
+    for permission in permissions {
+        if state
+            .permissions()
+            .user_has_permission(user, permission)
+            .await
+            .unwrap_or(false)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// The site screens of `category_id`, offering `user` what they may do.
+async fn site_urls(state: &AppState, user: &crate::models::User, category_id: &str) -> TermUrls {
+    TermUrls {
+        offer: TermOffer {
+            create: holds_any(state, user, TERM_CREATE).await,
+            edit: holds_any(state, user, TERM_EDIT).await,
+            delete: holds_any(state, user, TERM_DELETE).await,
+        },
+        ..TermUrls::site(category_id)
+    }
+}
+
+/// The refusal for a category this user does not reach.
+fn not_yours() -> Response {
+    render_forbidden("You do not have permission to manage the terms of this category.")
+}
+
+// =============================================================================
 // Category handlers
 // =============================================================================
 
@@ -75,18 +147,26 @@ async fn list_categories(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
-        return redirect;
-    }
+    let user = match require_any_permission(&state, &session, TERM_LIST).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
 
     let query = ListQuery::from_params(&params);
     let sort = query.sort(CATEGORY_SORTS, ("weight", false));
 
     let mut categories: Vec<Category> = match state.categories().list_categories().await {
-        Ok(categories) => categories
-            .into_iter()
-            .filter(|c| query.matches(&[&c.label, &c.id]))
-            .collect(),
+        Ok(categories) => {
+            let mut shown = Vec::with_capacity(categories.len());
+            for category in categories {
+                if query.matches(&[&category.label, &category.id])
+                    && reaches(&state, &user, &category).await
+                {
+                    shown.push(category);
+                }
+            }
+            shown
+        }
         Err(e) => {
             tracing::error!(error = %e, "failed to list categories");
             return render_server_error("Failed to load categories.");
@@ -129,6 +209,12 @@ async fn list_categories(
     context.insert("list", &query.view(total, categories.len(), Some(&sort)));
     context.insert("categories", &categories);
     context.insert("tag_counts", &tag_counts);
+    // Adding, editing and deleting a category are offered to whoever
+    // administers categories; a holder of a term permission sees the list.
+    context.insert(
+        "administers",
+        &holds_any(&state, &user, &[ADMINISTER]).await,
+    );
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/structure/categories");
 
@@ -471,6 +557,26 @@ pub(crate) struct TermUrls {
     pub add: String,
     /// The base a term's `/{id}/edit` and `/{id}/delete` hang off.
     pub term_base: String,
+    /// What the term list offers: Add, Edit and Delete only to whoever may
+    /// use them. Everything, unless a handler says less.
+    pub offer: TermOffer,
+}
+
+/// The term actions a list offers its viewer.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub(crate) struct TermOffer {
+    pub create: bool,
+    pub edit: bool,
+    pub delete: bool,
+}
+
+impl TermOffer {
+    /// Every action, for a viewer the route already admitted to all of them.
+    pub(crate) const ALL: Self = Self {
+        create: true,
+        edit: true,
+        delete: true,
+    };
 }
 
 impl TermUrls {
@@ -482,6 +588,7 @@ impl TermUrls {
             list: format!("/admin/structure/categories/{category_id}/tags"),
             add: format!("/admin/structure/categories/{category_id}/tags/add"),
             term_base: "/admin/structure/tags".to_string(),
+            offer: TermOffer::ALL,
         }
     }
 
@@ -500,9 +607,10 @@ async fn list_tags(
     Path(category_id): Path<String>,
     axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
-        return redirect;
-    }
+    let user = match require_any_permission(&state, &session, TERM_LIST).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
     let Some(category) = state
         .categories()
         .get_category(&category_id)
@@ -512,11 +620,14 @@ async fn list_tags(
     else {
         return render_not_found();
     };
+    if !reaches(&state, &user, &category).await {
+        return not_yours();
+    }
     term_list(
         &state,
         &session,
         &category,
-        &TermUrls::site(&category_id),
+        &site_urls(&state, &user, &category_id).await,
         &params,
     )
     .await
@@ -528,9 +639,10 @@ async fn add_tag_form(
     session: Session,
     Path(category_id): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
-        return redirect;
-    }
+    let user = match require_any_permission(&state, &session, TERM_CREATE).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
     let Some(category) = state
         .categories()
         .get_category(&category_id)
@@ -540,6 +652,9 @@ async fn add_tag_form(
     else {
         return render_not_found();
     };
+    if !reaches(&state, &user, &category).await {
+        return not_yours();
+    }
     term_add_form(&state, &session, &category, &TermUrls::site(&category_id)).await
 }
 
@@ -550,9 +665,10 @@ async fn add_tag_submit(
     Path(category_id): Path<String>,
     Form(form): Form<TagFormData>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
-        return redirect;
-    }
+    let user = match require_any_permission(&state, &session, TERM_CREATE).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
     let Some(category) = state
         .categories()
         .get_category(&category_id)
@@ -562,6 +678,9 @@ async fn add_tag_submit(
     else {
         return render_not_found();
     };
+    if !reaches(&state, &user, &category).await {
+        return not_yours();
+    }
     term_add_submit(
         &state,
         &session,
@@ -578,9 +697,10 @@ async fn edit_tag_form(
     session: Session,
     Path(tag_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
-        return redirect;
-    }
+    let user = match require_any_permission(&state, &session, TERM_EDIT).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
     let Some(tag) = state.categories().get_tag(tag_id).await.ok().flatten() else {
         return render_not_found();
     };
@@ -593,7 +713,10 @@ async fn edit_tag_form(
     else {
         return render_error("Category not found.");
     };
-    let urls = TermUrls::site(&category.id);
+    if !reaches(&state, &user, &category).await {
+        return not_yours();
+    }
+    let urls = site_urls(&state, &user, &category.id).await;
     term_edit_form(&state, &session, &category, &tag, &urls).await
 }
 
@@ -604,9 +727,10 @@ async fn edit_tag_submit(
     Path(tag_id): Path<uuid::Uuid>,
     Form(form): Form<TagFormData>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
-        return redirect;
-    }
+    let user = match require_any_permission(&state, &session, TERM_EDIT).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
     let Some(tag) = state.categories().get_tag(tag_id).await.ok().flatten() else {
         return render_not_found();
     };
@@ -619,7 +743,10 @@ async fn edit_tag_submit(
     else {
         return render_error("Category not found.");
     };
-    let urls = TermUrls::site(&category.id);
+    if !reaches(&state, &user, &category).await {
+        return not_yours();
+    }
+    let urls = site_urls(&state, &user, &category.id).await;
     term_edit_submit(&state, &session, &category, &tag, form, &urls).await
 }
 
@@ -630,12 +757,25 @@ async fn delete_tag(
     Path(tag_id): Path<uuid::Uuid>,
     Form(form): Form<CsrfOnlyForm>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
-        return redirect;
-    }
+    let user = match require_any_permission(&state, &session, TERM_DELETE).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
     let Some(tag) = state.categories().get_tag(tag_id).await.ok().flatten() else {
         return render_not_found();
     };
+    let Some(category) = state
+        .categories()
+        .get_category(&tag.category_id)
+        .await
+        .ok()
+        .flatten()
+    else {
+        return render_error("Category not found.");
+    };
+    if !reaches(&state, &user, &category).await {
+        return not_yours();
+    }
     let urls = TermUrls::site(&tag.category_id);
     term_delete(&state, &session, &tag, &form.token, &urls).await
 }

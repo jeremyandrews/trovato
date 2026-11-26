@@ -27,6 +27,7 @@
     {{ list::count(list=list) }}
     <form method="post" action="/admin/content/bulk?confirm=delete" id="bulk-form" novalidate>
         <input type="hidden" name="_token" value="{{ csrf_token }}">
+        {% if bulk_options %}
         <div class="bulk-actions">
             {{ form::select(name="action", id="bulk-action", label=t(s="Bulk action"), options=bulk_options, empty=t(s="- Bulk action -"), translate_options=true, wrapper="bulk-actions__field") }}
             {% if stages %}
@@ -37,6 +38,7 @@
             <button type="submit" class="button button--secondary button--small">{{ t(s="Apply") }}</button>
             <p class="bulk-actions__count" data-selected-count role="status" aria-live="polite"></p>
         </div>
+        {% endif %}
         <div class="table-scroll" role="region" aria-labelledby="content-caption" tabindex="0">
             <table class="table table--stack">
                 <caption id="content-caption">{{ t(s="Content items") }}</caption>
@@ -54,10 +56,11 @@
                 <tbody>
                     {% for item in items %}
                     {% set author = authors[item.author_id] | default(value="") %}
+                    {% set ops = operations[item.id] %}
                     <tr>
                         <td class="th-check"><input type="checkbox" name="ids[]" value="{{ item.id }}" id="select-{{ item.id }}" data-select-row><label class="visually-hidden" for="select-{{ item.id }}">{{ t(s="Select {title}", title=item.title) }}</label></td>
                         <th scope="row">
-                            <a href="/admin/content/{{ item.id }}/edit">{{ item.title }}</a>
+                            <a href="{% if ops.edit == "admin" %}/admin/content/{{ item.id }}/edit{% elif ops.edit == "item" %}/item/{{ item.id }}/edit{% else %}/item/{{ item.id }}{% endif %}">{{ item.title }}</a>
                         </th>
                         <td>{{ item.type }}</td>
                         <td>{% if author %}{{ author }}{% else %}{{ t(s="Unknown") }}{% endif %}</td>
@@ -70,9 +73,13 @@
                         </td>
                         <td>{{ item.changed | date(format="%Y-%m-%d %H:%M") }}</td>
                         <td class="operations">
-                            <a href="/admin/content/{{ item.id }}/edit">{{ t(s="Edit {title}", title=item.title) }}</a>
+                            {% if ops.edit %}
+                            <a href="{% if ops.edit == "admin" %}/admin/content/{{ item.id }}/edit{% else %}/item/{{ item.id }}/edit{% endif %}">{{ t(s="Edit {title}", title=item.title) }}</a>
                             <a href="/item/{{ item.id }}/revisions">{{ t(s="Revisions of {title}", title=item.title) }}</a>
+                            {% endif %}
+                            {% if ops.delete %}
                             <button type="submit" form="delete-{{ item.id }}" class="link-button link-button--danger">{{ t(s="Delete {title}", title=item.title) }}</button>
+                            {% endif %}
                         </td>
                     </tr>
                     {% endfor %}
@@ -84,13 +91,13 @@
        attribute. A form nested in #bulk-form would close it early and add a
        second _token to every bulk submission. Each asks first on the
        confirmation page (routes::admin_confirm). #}
-    {% for item in items %}
+    {% for item in items %}{% if operations[item.id].delete %}
     <form id="delete-{{ item.id }}" method="post" action="/admin/content/{{ item.id }}/delete?confirm" novalidate hidden>
         <input type="hidden" name="_token" value="{{ csrf_token }}">
         <input type="hidden" name="_confirm" value="{{ t(s='Delete {title}? This cannot be undone.', title=item.title) }}">
         <input type="hidden" name="_confirm_label" value="{{ t(s='Delete {title}', title=item.title) }}">
     </form>
-    {% endfor %}
+    {% endif %}{% endfor %}
     {{ list::pager(list=list, action="/admin/content", label=t(s="Pages of content")) }}
 </div>
 {% elif list.filtered %}

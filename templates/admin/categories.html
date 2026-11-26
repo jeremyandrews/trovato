@@ -7,7 +7,7 @@
     no sort keeps the stored order (weight, then name). -#}
 
 {% block page_title %}{{ t(s="Categories") }}{% endblock page_title %}
-{% block page_actions %}{{ list::add_link(url="/admin/structure/categories/add", label=t(s="Add category")) }}{% endblock page_actions %}
+{% block page_actions %}{% if administers %}{{ list::add_link(url="/admin/structure/categories/add", label=t(s="Add category")) }}{% endif %}{% endblock page_actions %}
 
 {% block content %}
 <div class="admin-card">
@@ -48,8 +48,10 @@
                 <td>{{ tag_counts[cat.id] | default(value=0) }}</td>
                 <td class="operations">
                     <a href="/admin/structure/categories/{{ cat.id }}/tags">{{ t(s="List tags in {name}", name=cat.label) }}</a>
+                    {% if administers %}
                     <a href="/admin/structure/categories/{{ cat.id }}/edit">{{ t(s="Edit {name}", name=cat.label) }}</a>
                     {{ list::delete_button(action="/admin/structure/categories/" ~ cat.id ~ "/delete", label=t(s="Delete {name}", name=cat.label), confirm_text=t(s="Are you sure you want to delete this category and all its tags?"), csrf_token=csrf_token) }}
+                    {% endif %}
                 </td>
             </tr>
             {% endfor %}
@@ -61,6 +63,10 @@
 {% elif list.filtered %}
 {{ list::empty(message=t(s="No category matches this filter."), add_url="/admin/structure/categories", add_label=t(s="Clear filter")) }}
 {% else %}
+{% if administers %}
 {{ list::empty(message=t(s="No categories found."), add_url="/admin/structure/categories/add", add_label=t(s="Add category")) }}
+{% else %}
+{{ list::empty(message=t(s="No categories found.")) }}
+{% endif %}
 {% endif %}
 {% endblock content %}

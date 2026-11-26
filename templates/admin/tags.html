@@ -9,7 +9,7 @@
 {% block page_title %}{{ t(s="{category} - Tags", category=category.label) }}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="The tags in this category, which content can be classified with.") }}</p>{% endblock page_intro %}
 {% block page_actions %}
-{{ list::add_link(url=urls.add, label=t(s="Add tag")) }}
+{% if urls.offer.create %}{{ list::add_link(url=urls.add, label=t(s="Add tag")) }}{% endif %}
 <a href="{{ urls.index }}" class="button button--secondary">{{ t(s=urls.index_label) }}</a>
 {% endblock page_actions %}
 
@@ -40,8 +40,12 @@
                 <th scope="row">{{ tag.label }}</th>
                 <td>{{ tag.weight }}</td>
                 <td class="operations">
+                    {% if urls.offer.edit %}
                     <a href="{{ urls.term_base }}/{{ tag.id }}/edit">{{ t(s="Edit {name}", name=tag.label) }}</a>
+                    {% endif %}
+                    {% if urls.offer.delete %}
                     {{ list::delete_button(action=urls.term_base ~ "/" ~ tag.id ~ "/delete", label=t(s="Delete {name}", name=tag.label), confirm_text=t(s="Are you sure you want to delete this tag?"), csrf_token=csrf_token) }}
+                    {% endif %}
                 </td>
             </tr>
             {% endfor %}
@@ -53,6 +57,10 @@
 {% elif list.filtered %}
 {{ list::empty(message=t(s="No tag matches this filter."), add_url=urls.list, add_label=t(s="Clear filter")) }}
 {% else %}
+{% if urls.offer.create %}
 {{ list::empty(message=t(s="No tags in this category."), add_url=urls.add, add_label=t(s="Add one now")) }}
+{% else %}
+{{ list::empty(message=t(s="No tags in this category.")) }}
+{% endif %}
 {% endif %}
 {% endblock content %}
