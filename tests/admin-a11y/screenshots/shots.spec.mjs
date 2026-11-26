@@ -5,7 +5,7 @@ import { test } from '@playwright/test';
 import { setLanguage } from '../specs/helpers.mjs';
 
 const OUT = '../../docs/images/b199';
-// SHOTS picks the set: the shell's page types (default), or "forms".
+// SHOTS picks the set: the shell's page types (default), "forms" or "lists".
 const SETS = {
   shell: {
     dashboard: '/admin',
@@ -29,6 +29,17 @@ const SETS = {
       await page.goto('/admin/people/add');
       await page.locator('#mail').fill('not-an-address');
       await Promise.all([page.waitForLoadState('load'), page.locator('form#user-form [type=submit]').click()]);
+    },
+  },
+  lists: {
+    // The listing pattern: a filtered, sorted listing; people; the site
+    // log; and the page a Delete asks on.
+    'lists-content': '/admin/content?status=1&sort=title',
+    'lists-people': '/admin/people',
+    'lists-log': '/admin/reports/log',
+    'lists-confirm': async (page) => {
+      await page.goto('/admin/content');
+      await Promise.all([page.waitForURL('**/admin/confirm'), page.locator('tbody tr').first().locator('button.link-button--danger').click()]);
     },
   },
 };

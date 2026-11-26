@@ -1,0 +1,187 @@
+- link "Skip to main content":
+  - /url: "#main"
+- banner:
+  - link "Trovato Administration":
+    - /url: /admin
+    - img "Trovato"
+    - text: Administration
+  - search:
+    - text: Search the administration
+    - searchbox "Search the administration"
+    - button "Search"
+  - list:
+    - listitem:
+      - link "View site":
+        - /url: /
+    - listitem:
+      - link "Your preferences":
+        - /url: /admin/preferences
+- navigation "Administration":
+  - list:
+    - listitem:
+      - link "Dashboard":
+        - /url: /admin
+    - listitem:
+      - heading "Content" [level=2]:
+        - button "Content" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/content/overview
+        - listitem:
+          - link "Content":
+            - /url: /admin/content
+        - listitem:
+          - link "Add content":
+            - /url: /admin/content/add
+        - listitem:
+          - link "Moderated content":
+            - /url: /admin/content/moderated
+        - listitem:
+          - link "Comments":
+            - /url: /admin/content/comments
+        - listitem:
+          - link "Files":
+            - /url: /admin/content/files
+        - listitem:
+          - link "Media":
+            - /url: /admin/media
+    - listitem:
+      - heading "Structure" [level=2]:
+        - button "Structure" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/structure/overview
+        - listitem:
+          - link "Content types":
+            - /url: /admin/structure/types
+        - listitem:
+          - link "Record types":
+            - /url: /admin/structure/records
+        - listitem:
+          - link "Gathers":
+            - /url: /admin/gather
+        - listitem:
+          - link "Menus":
+            - /url: /admin/structure/menus
+        - listitem:
+          - link "Tiles":
+            - /url: /admin/structure/tiles
+        - listitem:
+          - link "Categories":
+            - /url: /admin/structure/categories
+        - listitem:
+          - link "URL aliases":
+            - /url: /admin/structure/aliases
+        - listitem:
+          - link "URL alias patterns":
+            - /url: /admin/config/pathauto
+    - listitem:
+      - heading "Appearance" [level=2]:
+        - button "Appearance" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/appearance/overview
+        - listitem:
+          - link "Themes":
+            - /url: /admin/appearance
+    - listitem:
+      - heading "People" [level=2]:
+        - button "People" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/people/overview
+        - listitem:
+          - link "Users":
+            - /url: /admin/people
+        - listitem:
+          - link "Roles":
+            - /url: /admin/people/roles
+        - listitem:
+          - link "Permissions":
+            - /url: /admin/people/permissions
+        - listitem:
+          - link "Access rules":
+            - /url: /admin/people/rules
+    - listitem:
+      - heading "Extend" [level=2]:
+        - button "Extend" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/extend/overview
+        - listitem:
+          - link "Plugins":
+            - /url: /admin/plugins
+        - listitem:
+          - link "AI providers":
+            - /url: /admin/system/ai-providers
+        - listitem:
+          - link "AI budgets":
+            - /url: /admin/system/ai-budgets
+        - listitem:
+          - link "AI chat":
+            - /url: /admin/system/ai-chat
+        - listitem:
+          - link "AI assistant":
+            - /url: /admin/system/ai-assistant
+    - listitem:
+      - heading "Configuration" [level=2]:
+        - button "Configuration" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/config/overview
+        - listitem:
+          - link "Site settings":
+            - /url: /admin/config/site
+        - listitem:
+          - link "Text formats":
+            - /url: /admin/config/formats
+        - listitem:
+          - link "Search settings":
+            - /url: /admin/config/search
+        - listitem:
+          - link "Stages":
+            - /url: /admin/structure/stages
+        - listitem:
+          - link "Redirects":
+            - /url: /admin/config/redirects
+        - listitem:
+          - link "Account recovery":
+            - /url: /admin/recovery
+    - listitem:
+      - heading "Reports" [level=2]:
+        - button "Reports" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/reports/overview
+        - listitem:
+          - link "Recent log messages":
+            - /url: /admin/reports/log
+        - listitem:
+          - link "Audit log":
+            - /url: /admin/reports/audit
+        - listitem:
+          - link "Cron":
+            - /url: /admin/reports/cron
+        - listitem:
+          - link "Search report":
+            - /url: /admin/reports/search
+- main:
+  - navigation "Breadcrumb":
+    - list:
+      - listitem:
+        - link "Administration":
+          - /url: /admin
+      - listitem: "Delete Post 1: signal glacier beacon"
+  - 'heading "Delete Post 1: signal glacier beacon" [level=1]'
+  - paragraph: Check what will happen before going on.
+  - paragraph: "Delete Post 1: signal glacier beacon? This cannot be undone."
+  - 'button "Delete Post 1: signal glacier beacon"'
+  - link "Cancel":
+    - /url: /admin/content

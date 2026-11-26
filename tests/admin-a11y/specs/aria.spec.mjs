@@ -27,6 +27,13 @@ const PAGE_TYPES = {
     await page.goto('/admin/people/roles/add');
     await Promise.all([page.waitForLoadState('load'), page.locator('form#role-form [type=submit]').click()]);
   },
+  // The listing pattern: filtered and sorted, and the confirmation page a
+  // Delete leads to.
+  'list-filtered': '/admin/content?status=1&sort=title',
+  confirm: async (page) => {
+    await page.goto('/admin/content');
+    await Promise.all([page.waitForURL('**/admin/confirm'), page.locator('tbody tr').first().locator('button.link-button--danger').click()]);
+  },
 };
 
 for (const [type, path] of Object.entries(PAGE_TYPES)) {
