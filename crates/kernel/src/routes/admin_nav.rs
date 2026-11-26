@@ -52,7 +52,32 @@ pub struct GroupInfo {
     /// One sentence on what the group is for: its landing page intro and its
     /// dashboard card line.
     pub description: &'static str,
+    /// Its icon, one of [`ICONS`]: on its sidebar heading, its dashboard
+    /// card, and every page in it that has none of its own.
+    pub icon: &'static str,
 }
+
+/// Every icon `templates/admin/macros/icons.html` draws, by the object it
+/// shows. A group or page names one of these; a test renders each and holds
+/// each to being used.
+pub const ICONS: &[&str] = &[
+    "document",
+    "blocks",
+    "eye",
+    "people",
+    "layers",
+    "sliders",
+    "clipboard",
+    "users",
+    "badge",
+    "lock",
+    "image",
+    "archive",
+    "speech",
+    "plug",
+    "log",
+    "hourglass",
+];
 
 /// The groups, in sidebar order.
 pub const GROUPS: &[GroupInfo] = &[
@@ -61,42 +86,49 @@ pub const GROUPS: &[GroupInfo] = &[
         slug: "content",
         title: "Content",
         description: "Write, find, review and publish what the site says, and the files it uses.",
+        icon: "document",
     },
     GroupInfo {
         group: Group::Structure,
         slug: "structure",
         title: "Structure",
         description: "Shape the site: content types and fields, listings, menus, regions, categories and addresses.",
+        icon: "blocks",
     },
     GroupInfo {
         group: Group::Appearance,
         slug: "appearance",
         title: "Appearance",
         description: "Choose how the site and this administration look.",
+        icon: "eye",
     },
     GroupInfo {
         group: Group::People,
         slug: "people",
         title: "People",
         description: "Accounts, roles, what each role may do, and who may register.",
+        icon: "people",
     },
     GroupInfo {
         group: Group::Extend,
         slug: "extend",
         title: "Extend",
         description: "Plugins, the pages they add, and the AI services the site may call.",
+        icon: "layers",
     },
     GroupInfo {
         group: Group::Configuration,
         slug: "config",
         title: "Configuration",
         description: "Site wide settings: identity, text formats, search, editorial stages and account recovery.",
+        icon: "sliders",
     },
     GroupInfo {
         group: Group::Reports,
         slug: "reports",
         title: "Reports",
         description: "What the site has been doing: its log, audit trail, scheduled tasks and searches.",
+        icon: "clipboard",
     },
 ];
 
@@ -201,6 +233,20 @@ pub struct Link {
     /// Whether the sidebar lists it. Every entry is on its landing page and
     /// in search either way.
     pub sidebar: bool,
+    /// Its own icon, one of [`ICONS`]; `None` takes its group's, and a page
+    /// in no group has none.
+    pub icon: Option<&'static str>,
+}
+
+impl Link {
+    /// The icon this page shows: its own, else its group's, else none.
+    pub fn resolved_icon(&self) -> &'static str {
+        match (self.icon, self.group) {
+            (Some(icon), _) => icon,
+            (None, Some(group)) => group.info().icon,
+            (None, None) => "",
+        }
+    }
 }
 
 const fn page(
@@ -220,6 +266,7 @@ const fn page(
         also: &[],
         synonyms: &[],
         sidebar: true,
+        icon: None,
     }
 }
 
@@ -259,6 +306,7 @@ pub const LINKS: &[Link] = &[
         also: &[],
         synonyms: &["home", "start", "overview"],
         sidebar: true,
+        icon: None,
     },
     Link {
         group: None,
@@ -270,6 +318,7 @@ pub const LINKS: &[Link] = &[
         also: &[],
         synonyms: &["dark mode", "light mode", "theme", "language", "display"],
         sidebar: false,
+        icon: None,
     },
     Link {
         group: None,
@@ -281,6 +330,7 @@ pub const LINKS: &[Link] = &[
         also: &[],
         synonyms: &["find"],
         sidebar: false,
+        icon: None,
     },
     // --- Content ---
     Link {
@@ -323,6 +373,7 @@ pub const LINKS: &[Link] = &[
         )
     },
     Link {
+        icon: Some("speech"),
         plugin: Some(COMMENTS),
         synonyms: &["moderation", "spam", "replies"],
         ..page(
@@ -334,6 +385,7 @@ pub const LINKS: &[Link] = &[
         )
     },
     Link {
+        icon: Some("archive"),
         synonyms: &["uploads", "attachments", "alt text"],
         ..page(
             Content,
@@ -344,6 +396,7 @@ pub const LINKS: &[Link] = &[
         )
     },
     Link {
+        icon: Some("image"),
         synonyms: &["images", "pictures", "library"],
         ..page(
             Content,
@@ -454,6 +507,7 @@ pub const LINKS: &[Link] = &[
     },
     // --- People ---
     Link {
+        icon: Some("users"),
         also: &["/admin/users"],
         synonyms: &["accounts", "members", "sessions", "devices", "block"],
         ..page(
@@ -476,6 +530,7 @@ pub const LINKS: &[Link] = &[
         )
     },
     Link {
+        icon: Some("badge"),
         synonyms: &["groups"],
         ..page(
             People,
@@ -486,6 +541,7 @@ pub const LINKS: &[Link] = &[
         )
     },
     Link {
+        icon: Some("lock"),
         synonyms: &["access", "rights", "grants", "who can"],
         ..page(
             People,
@@ -518,6 +574,7 @@ pub const LINKS: &[Link] = &[
     },
     // --- Extend ---
     Link {
+        icon: Some("plug"),
         also: &["/admin/plugins"],
         synonyms: &["modules", "extensions", "add-ons", "enable", "disable"],
         ..page(
@@ -678,6 +735,7 @@ pub const LINKS: &[Link] = &[
     },
     // --- Reports ---
     Link {
+        icon: Some("log"),
         synonyms: &["errors", "watchdog", "messages", "logs", "warnings"],
         ..page(
             Reports,
@@ -715,6 +773,7 @@ pub const LINKS: &[Link] = &[
         )
     },
     Link {
+        icon: Some("hourglass"),
         synonyms: &["scheduled tasks", "jobs", "queue", "background"],
         ..page(
             Reports,
@@ -767,6 +826,8 @@ pub fn kernel_claims(href: &str) -> bool {
 pub struct DashboardCard {
     pub title: String,
     pub description: String,
+    /// The group's icon, or Extend's for a plugin card.
+    pub icon: String,
     /// The group's landing page, for a group card; `None` for a plugin card.
     pub href: Option<String>,
     pub links: Vec<NavLink>,
@@ -803,6 +864,8 @@ pub struct PageEntry {
     pub sidebar: bool,
     /// The plugin that declared it, for a plugin page.
     pub plugin: Option<String>,
+    /// Its icon: its own or its group's, resolved once here.
+    pub icon: String,
 }
 
 /// Every page `viewer` may open: the kernel's, then the plugins', in
@@ -825,6 +888,7 @@ pub fn offered_pages(
             synonyms: l.synonyms.iter().map(|s| s.to_string()).collect(),
             sidebar: l.sidebar,
             plugin: None,
+            icon: l.resolved_icon().to_string(),
         })
         .collect();
     pages.extend(
@@ -844,6 +908,7 @@ pub fn offered_pages(
                 synonyms: vec![l.section.clone()],
                 sidebar: true,
                 plugin: Some(l.plugin.clone()),
+                icon: group_for_section(&l.section).info().icon.to_string(),
             }),
     );
     pages
@@ -876,6 +941,7 @@ pub fn dashboard(
             (!links.is_empty()).then(|| DashboardCard {
                 title: g.title.to_string(),
                 description: g.description.to_string(),
+                icon: g.icon.to_string(),
                 href: Some(g.group.landing_href()),
                 links,
             })
@@ -891,6 +957,7 @@ pub fn dashboard(
             cards.push(DashboardCard {
                 title: card.title.clone(),
                 description: card.description.clone(),
+                icon: Group::Extend.info().icon.to_string(),
                 href: None,
                 links: vec![NavLink {
                     label: card.title.clone(),
@@ -926,6 +993,8 @@ pub struct NavSection {
     pub landing_active: bool,
     /// Whether the current page is in this group, which keeps it open.
     pub current: bool,
+    /// The group's icon; empty for the links above the first group.
+    pub icon: String,
     pub links: Vec<NavLink>,
 }
 
@@ -1008,6 +1077,7 @@ pub fn sidebar(
             href: None,
             landing_active: false,
             current: false,
+            icon: String::new(),
             links: personal,
         });
     }
@@ -1028,6 +1098,7 @@ pub fn sidebar(
             href: Some(g.group.landing_href()),
             landing_active: landing == Some(g.group),
             current: current_group == Some(g.group),
+            icon: g.icon.to_string(),
             links,
         });
     }
@@ -1040,6 +1111,7 @@ pub struct LandingItem {
     pub label: String,
     pub description: String,
     pub href: String,
+    pub icon: String,
 }
 
 /// Every page in `group` that `viewer` may open, sidebar or not, kernel and
@@ -1059,6 +1131,7 @@ pub fn landing(
             label: e.label,
             description: e.description,
             href: e.href,
+            icon: e.icon,
         })
         .collect()
 }
@@ -2058,5 +2131,101 @@ mod tests {
             dashboard(&granted, &[], &[groups_link()], &[groups_card()]).is_empty(),
             "disabling the plugin drops the card too"
         );
+    }
+
+    // --- icons (B245) ---
+
+    #[test]
+    fn every_group_and_page_icon_is_one_the_icon_set_draws() {
+        for g in GROUPS {
+            assert!(ICONS.contains(&g.icon), "{:?}: {}", g.group, g.icon);
+        }
+        for l in LINKS {
+            if let Some(icon) = l.icon {
+                assert!(ICONS.contains(&icon), "{}: {icon}", l.href);
+            }
+        }
+    }
+
+    #[test]
+    fn a_page_without_its_own_icon_takes_its_groups_and_a_personal_page_none() {
+        let add = LINKS
+            .iter()
+            .find(|l| l.href == "/admin/content/add")
+            .unwrap();
+        assert_eq!(add.resolved_icon(), Group::Content.info().icon);
+        let users = LINKS.iter().find(|l| l.href == "/admin/people").unwrap();
+        assert_eq!(users.resolved_icon(), "users");
+        let dashboard = LINKS.iter().find(|l| l.href == DASHBOARD).unwrap();
+        assert_eq!(dashboard.resolved_icon(), "");
+        let admin = UserContext::administrator(Uuid::now_v7(), vec![]);
+        let nav = sidebar(&admin, &["groups".to_string()], "/admin", &[groups_link()]);
+        let pages = offered_pages(&admin, &["groups".to_string()], &[groups_link()], &[]);
+        let plugin = pages.iter().find(|p| p.href == "/admin/groups").unwrap();
+        assert_eq!(plugin.icon, Group::Structure.info().icon, "its group's");
+        for section in &nav {
+            match &section.slug {
+                Some(slug) => assert_eq!(section.icon, Group::from_slug(slug).unwrap().info().icon),
+                None => assert!(section.icon.is_empty()),
+            }
+        }
+    }
+
+    #[test]
+    fn a_plugin_card_shows_the_extend_icon() {
+        let granted = viewer(&["access administration pages", "administer groups"]);
+        let cards = dashboard(
+            &granted,
+            &["groups".to_string()],
+            &[groups_link()],
+            &[groups_card()],
+        );
+        assert_eq!(cards.len(), 1);
+        assert_eq!(cards[0].icon, Group::Extend.info().icon);
+    }
+
+    fn render_icon(name: &str) -> String {
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../templates/admin/macros/icons.html"),
+        )
+        .unwrap();
+        let mut tera = tera::Tera::default();
+        tera.add_raw_templates(vec![
+            ("admin/macros/icons.html", source.as_str()),
+            (
+                "probe.html",
+                "{% import \"admin/macros/icons.html\" as icons %}{{ icons::icon(name=name) }}",
+            ),
+        ])
+        .unwrap();
+        let mut context = tera::Context::new();
+        context.insert("name", name);
+        tera.render("probe.html", &context).unwrap()
+    }
+
+    #[test]
+    fn every_icon_renders_decorative_and_is_used_and_an_unknown_one_renders_nothing() {
+        for name in ICONS {
+            let svg = render_icon(name);
+            assert!(
+                svg.starts_with(
+                    "<svg aria-hidden=\"true\" focusable=\"false\" class=\"admin-icon\""
+                ),
+                "{name}: {svg}"
+            );
+            assert!(
+                ["<path", "<rect", "<circle"]
+                    .iter()
+                    .any(|s| svg.contains(s)),
+                "{name} draws nothing: {svg}"
+            );
+            assert!(!svg.contains("<text"), "{name}: no text");
+            assert!(!svg.contains("fill=\"currentColor\""), "{name}: no fill");
+            let used = GROUPS.iter().any(|g| g.icon == *name)
+                || LINKS.iter().any(|l| l.icon == Some(*name));
+            assert!(used, "{name} is drawn but no group or page uses it");
+        }
+        assert_eq!(render_icon("no-such-icon").trim(), "");
     }
 }
