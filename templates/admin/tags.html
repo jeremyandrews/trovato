@@ -1,5 +1,10 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
+
+{#- A category's tags, in weight order. `list` is the filter and page
+    (routes::admin_list); the order is the tags' weights, so it has no
+    sort. -#}
 
 {% block page_title %}{{ t(s="{category} - Tags", category=category.label) }}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="The tags in this category, which content can be classified with.") }}</p>{% endblock page_intro %}
@@ -9,15 +14,24 @@
 {% endblock page_actions %}
 
 {% block content %}
+{% if tags or list.filtered %}
+<div class="admin-card">
+    {{ list::filter_start(action=urls.list, label=t(s="Filter tags")) }}
+        {{ form::field(name="q", type="search", label=t(s="Name or slug contains"), value=list.q, width="20", wrapper="filter-item") }}
+    {{ list::filter_end(list=list, action=urls.list) }}
+</div>
+{% endif %}
 {% if tags %}
+<div class="admin-card">
+{{ list::count(list=list) }}
 <div class="table-scroll" role="region" aria-labelledby="tags-caption" tabindex="0">
-    <table class="table">
+    <table class="table table--stack">
         <caption id="tags-caption">{{ t(s="Tags in {category}", category=category.label) }}</caption>
         <thead>
             <tr>
                 <th scope="col">{{ t(s="Name") }}</th>
                 <th scope="col">{{ t(s="Weight") }}</th>
-                <th scope="col">{{ t(s="Operations") }}</th>
+                <th scope="col" class="operations">{{ t(s="Operations") }}</th>
             </tr>
         </thead>
         <tbody>
@@ -34,6 +48,10 @@
         </tbody>
     </table>
 </div>
+{{ list::pager(list=list, action=urls.list, label=t(s="Pages of tags")) }}
+</div>
+{% elif list.filtered %}
+{{ list::empty(message=t(s="No tag matches this filter."), add_url=urls.list, add_label=t(s="Clear filter")) }}
 {% else %}
 {{ list::empty(message=t(s="No tags in this category."), add_url=urls.add, add_label=t(s="Add one now")) }}
 {% endif %}

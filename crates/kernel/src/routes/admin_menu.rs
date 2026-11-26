@@ -38,10 +38,15 @@ use crate::models::{CreateMenuLink, MenuLink, UpdateMenuLink};
 use crate::routes::admin_form::FieldError;
 use crate::state::AppState;
 
+use super::admin_list::{ListQuery, page_of, sort_rows};
 use super::helpers::{
     CsrfOnlyForm, render_admin_template, render_not_found, render_server_error, require_csrf,
     require_permission,
 };
+
+/// The menu listing's sortable columns. The list is sorted in memory, so the
+/// second value is only the key's name.
+const MENU_SORTS: &[(&str, &str)] = &[("name", "name"), ("links", "links")];
 
 /// The plugin name a link this form owns carries.
 ///
@@ -89,7 +94,7 @@ struct MenuLinkFormData {
 // =============================================================================
 
 /// One menu on the index.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct MenuSummary {
     name: String,
     links: usize,
@@ -100,7 +105,7 @@ struct MenuSummary {
 }
 
 /// One row of the indented tree.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 struct TreeRow {
     id: Uuid,
     title: String,
@@ -411,7 +416,11 @@ fn plugin_entries(state: &AppState) -> Vec<PluginEntry> {
 /// List the site's menus.
 ///
 /// GET /admin/structure/menus
-async fn list_menus(State(state): State<AppState>, session: Session) -> Response {
+async fn list_menus(
+    State(state): State<AppState>,
+    session: Session,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
     if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
@@ -453,9 +462,24 @@ async fn list_menus(State(state): State<AppState>, session: Session) -> Response
             });
         }
     }
+    // A short list held in memory: filtered, sorted and paged here.
+    let query = ListQuery::from_params(&params);
+    let sort = query.sort(MENU_SORTS, ("name", false));
+    menus.retain(|m| query.matches(&[&m.name]));
     menus.sort_by(|a, b| a.name.cmp(&b.name));
+    sort_rows(
+        &mut menus,
+        &sort,
+        &[
+            ("name", |m: &MenuSummary| m.name.clone()),
+            ("links", |m: &MenuSummary| format!("{:020}", m.links)),
+        ],
+    );
+    let total = i64::try_from(menus.len()).unwrap_or(i64::MAX);
+    let menus = page_of(&menus, &query);
 
     let mut context = tera::Context::new();
+    context.insert("list", &query.view(total, menus.len(), Some(&sort)));
     context.insert("menus", &menus);
     context.insert("plugin_entries", &plugin_entries(&state));
     context.insert("path", "/admin/structure/menus");
@@ -476,6 +500,7 @@ async fn show_menu(
     State(state): State<AppState>,
     session: Session,
     Path(menu_name): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
     if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
@@ -491,9 +516,20 @@ async fn show_menu(
 
     let csrf_token = generate_csrf_token(&session).await;
 
+    // The links keep their tree order (depth first, by weight): filtered,
+    // never sorted.
+    let query = ListQuery::from_params(&params);
+    let rows: Vec<TreeRow> = build_tree(&links)
+        .into_iter()
+        .filter(|r| query.matches(&[&r.title, &r.path]))
+        .collect();
+    let total = i64::try_from(rows.len()).unwrap_or(i64::MAX);
+    let rows = page_of(&rows, &query);
+
     let mut context = tera::Context::new();
+    context.insert("list", &query.view(total, rows.len(), None));
     context.insert("menu_name", &menu_name);
-    context.insert("rows", &build_tree(&links));
+    context.insert("rows", &rows);
     context.insert("csrf_token", &csrf_token);
     context.insert("path", &format!("/admin/structure/menus/{menu_name}"));
 

@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use uuid::Uuid;
 
 use super::stage::LIVE_STAGE_ID;
@@ -478,6 +478,53 @@ impl UrlAlias {
             .context("failed to count all url aliases")?;
 
         Ok(count)
+    }
+
+    /// One page of the admin alias listing, and how many aliases match.
+    ///
+    /// `like` is an escaped `ILIKE` pattern matched against the alias and its
+    /// source, bound as a parameter. `order_by` must come from the listing's
+    /// own allowed columns (`routes::admin_list::Sort::order_by`), never
+    /// from a request.
+    pub async fn admin_page(
+        pool: &PgPool,
+        like: Option<&str>,
+        order_by: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<Self>, i64)> {
+        let condition = if like.is_some() {
+            " WHERE (alias ILIKE $1 OR source ILIKE $1)"
+        } else {
+            ""
+        };
+        let n = usize::from(like.is_some());
+        let list_sql = format!(
+            "SELECT id, source, alias, language, stage_id, created, changed \
+             FROM url_alias{condition} ORDER BY {order_by}, created DESC, id DESC \
+             LIMIT ${} OFFSET ${}",
+            n + 1,
+            n + 2
+        );
+        let count_sql = format!("SELECT COUNT(*) FROM url_alias{condition}");
+
+        let mut list = sqlx::query_as::<_, UrlAlias>(AssertSqlSafe(list_sql));
+        let mut count = sqlx::query_scalar::<_, i64>(AssertSqlSafe(count_sql));
+        if let Some(like) = like {
+            list = list.bind(like);
+            count = count.bind(like);
+        }
+        let aliases = list
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(pool)
+            .await
+            .context("failed to list the admin alias page")?;
+        let total = count
+            .fetch_one(pool)
+            .await
+            .context("failed to count the admin alias page")?;
+        Ok((aliases, total))
     }
 
     /// Find aliases that conflict with a given alias path across stages.
