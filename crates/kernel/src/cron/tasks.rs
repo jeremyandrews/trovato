@@ -106,6 +106,11 @@ impl CronTasks {
         }
     }
 
+    /// Replace the Redis queue `process_queues` pops from.
+    pub fn set_queue(&mut self, queue: Arc<RedisQueue>) {
+        self.queue = queue;
+    }
+
     /// Set optional plugin services for cron.
     pub fn set_plugin_services(
         &mut self,
