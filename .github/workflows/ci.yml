@@ -1444,4 +1444,7 @@ jobs:
           fetch-depth: 0
           fetch-tags: true
       - name: Require the version to be at most one release step past the newest tag
-        run: ./scripts/version-check.sh
+        run: ./scripts/version-check.sh "${{ github.event.pull_request.base.sha }}"
+      # This gate and the changelog gate, each against throwaway repositories.
+      - name: Test the release gates
+        run: ./scripts/release-scripts-test.sh

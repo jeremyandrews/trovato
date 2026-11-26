@@ -14,6 +14,16 @@ A large release: everything merged since v0.104.0, about a hundred and sixty
 entries. Read as a whole it is one long pass over a single question, whether a
 decision the kernel makes is made in one place and made as the person asking.
 
+Each entry was written when its change merged and says what was true then, and
+the entries are not in date order, so a few describe a state that another entry
+in this section moved past. Two matter to an operator. The lock file refresh
+says two advisories remain, in rmcp 0.16.0 and libsqlite3-sys 0.30.1; the rmcp 3
+and sqlx 0.9 entries close both, and this release locks rmcp 3.10.0 and
+libsqlite3-sys 0.40.0. The incremental search index design says the `pagefind`
+CLI still rebuilds the index after every change; the entries that build the
+index in the kernel and then update it item by item replace that, and no server
+or image of this release needs a `pagefind` binary.
+
 Access control comes first. Item reads on every path, item writes from forms and
 from plugins, field edit access, files, gathers, the ad hoc gather endpoint,
 outbound HTTP and plugin SQL now decide through the same seams, as the viewer.

@@ -66,6 +66,10 @@ is_release_fold() {
     [ -n "$deleted" ] || return 1
     deleted_count="$(printf '%s\n' "$deleted" | wc -l | tr -d ' ')"
 
+    # Holding nothing but its README means the README is still there: a fold
+    # leaves the directory's instructions behind, and deleting the whole
+    # directory is not a fold.
+    git cat-file -e HEAD:changelog.d/README.md 2> /dev/null || return 1
     remaining="$(git ls-tree --name-only HEAD changelog.d/ |
         grep -v '^changelog\.d/README\.md$' || true)"
     [ -z "$remaining" ] || return 1

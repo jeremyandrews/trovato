@@ -144,18 +144,24 @@ Every image is built for amd64 and arm64.
 - **Nightly builds** (every push to `main`): tagged `nightly`, `nightly-<sha>`,
   and a version derived from the newest release tag
 
-Before the release `main` heads for is tagged, a nightly is a SemVer
-prerelease of it, so it sorts below the release:
+While no `vMAJOR.MINOR.*` tag exists, which is the case whenever `main` heads
+for a new minor or major, a nightly is a SemVer prerelease of `MAJOR.MINOR.0`,
+so it sorts below that release whichever is published first:
 
 ```
 version = MAJOR.MINOR.0-nightly.<commits since the previous v* tag>
 ```
 
-After a `vMAJOR.MINOR.*` tag exists, a nightly is numbered from it:
+Once a `vMAJOR.MINOR.*` tag exists, a nightly is numbered from it:
 
 ```
 version = MAJOR.MINOR.(PATCH + commits since that tag)
 ```
+
+That second form carries no such guarantee. After `v0.105.0`, the first commit
+on `main` publishes `0.105.1` and the second `0.105.2`, so while `main` heads
+for a patch release a nightly can take that release's number, or pass it,
+before the tag is pushed. Heading for a new minor avoids it.
 
 `MAJOR.MINOR` is read from `[workspace.package] version` in `Cargo.toml` by
 `.github/workflows/docker-publish.yml`; the workflow carries no copy of it. See

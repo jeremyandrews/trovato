@@ -103,10 +103,14 @@ git push origin v0.105.0
 and arm64. Both platforms build on every run, nightly and release alike, each on
 a native runner.
 
-Until the tag exists, a push to `main` publishes `X.Y.0-nightly.N`, `nightly`
-and `nightly-<sha>`, where `N` counts commits since the previous release tag. A
-SemVer prerelease sorts below its release, so no nightly outranks the tag,
-whichever order the merge and the tag push happen in.
+Until a `vX.Y.*` tag exists, a push to `main` publishes `X.Y.0-nightly.N`,
+`nightly` and `nightly-<sha>`, where `N` counts commits since the previous
+release tag. A SemVer prerelease sorts below its release, so for a minor or a
+major release no nightly outranks the tag, whichever order the merge and the
+tag push happen in. A patch release has no such guarantee: once `vX.Y.0` exists,
+nightlies are numbered `X.Y.<patch + commits since that tag>`, and one can take
+or pass `X.Y.1` before its tag is pushed (see
+[design/Versioning.md](design/Versioning.md#docker-images)).
 
 That workflow carries `paths-ignore: ['**/*.md']`, which does **not** apply to a
 tag push: GitHub evaluates path filters for branch pushes only. Measured at
