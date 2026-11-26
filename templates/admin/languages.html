@@ -1,0 +1,47 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+{#- The languages page (routes::admin_language): the site's languages in
+    order, and the default language prefix setting. Context: languages (id,
+    label, direction, weight, is_default, prefix), settings_form. -#}
+
+{% block page_title %}{{ t(s="Languages") }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="The languages content can be written and read in. Each is served under its own address prefix.") }}</p>{% endblock page_intro %}
+{% block page_actions %}{{ list::add_link(url="/admin/config/languages/add", label=t(s="Add language")) }}{% endblock page_actions %}
+
+{% block content %}
+<div class="table-scroll" role="region" aria-labelledby="languages-caption" tabindex="0">
+    <table class="table">
+        <caption id="languages-caption">{{ t(s="Languages") }}</caption>
+        <thead>
+            <tr>
+                <th scope="col">{{ t(s="Name") }}</th>
+                <th scope="col">{{ t(s="Code") }}</th>
+                <th scope="col">{{ t(s="Address prefix") }}</th>
+                <th scope="col">{{ t(s="Direction") }}</th>
+                <th scope="col">{{ t(s="Weight") }}</th>
+                <th scope="col">{{ t(s="Operations") }}</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for language in languages %}
+            <tr>
+                <th scope="row" lang="{{ language.id }}">{{ language.label }}{% if language.is_default %} <span class="badge badge--success">{{ t(s="Default") }}</span>{% endif %}</th>
+                <td><code>{{ language.id }}</code></td>
+                <td>{% if language.prefix %}<a href="{{ language.prefix }}"><code>{{ language.prefix }}/</code></a>{% else %}{{ t(s="None") }}{% endif %}</td>
+                <td>{% if language.direction == "rtl" %}{{ t(s="Right to left") }}{% else %}{{ t(s="Left to right") }}{% endif %}</td>
+                <td>{{ language.weight }}</td>
+                <td class="operations">
+                    <a href="/admin/config/languages/{{ language.id }}/edit">{{ t(s="Edit {name}", name=language.label) }}</a>
+                    {% if not language.is_default %}<a href="/admin/config/languages/{{ language.id }}/delete">{{ t(s="Delete {name}", name=language.label) }}</a>{% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<section class="admin-card" aria-labelledby="language-settings-heading">
+    <h2 id="language-settings-heading">{{ t(s="Address prefix of the default language") }}</h2>
+    {{ settings_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+</section>
+{% endblock content %}

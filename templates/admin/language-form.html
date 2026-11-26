@@ -1,0 +1,11 @@
+{% extends "page--admin.html" %}
+
+{% block page_title %}{{ t(s=title) }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="A language is served at once under its code: /code/ is its front page.") }}</p>{% endblock page_intro %}
+
+{% block content %}
+<div class="admin-card">
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+    <p><a href="/admin/config/languages">{{ t(s="Back to languages") }}</a></p>
+</div>
+{% endblock content %}

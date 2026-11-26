@@ -242,7 +242,7 @@ fn inject_site_context_does_not_overwrite_the_routes_language() {
         );
         assert_eq!(
             context.get("default_language").and_then(|v| v.as_str()),
-            Some(app.state.default_language()),
+            Some(app.state.default_language().as_str()),
             "the site default is still reported, under its own name"
         );
     });
@@ -266,7 +266,7 @@ fn inject_site_context_supplies_a_default_when_the_route_is_silent() {
 
         assert_eq!(
             context.get("active_language").and_then(|v| v.as_str()),
-            Some(app.state.default_language())
+            Some(app.state.default_language().as_str())
         );
         assert_eq!(
             context.get("text_direction").and_then(|v| v.as_str()),

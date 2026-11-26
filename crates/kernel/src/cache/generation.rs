@@ -64,11 +64,14 @@ pub enum CacheKind {
     /// Site configuration values held in memory: the front page path
     /// (`routes::front`).
     SiteConfig,
+    /// The site's languages and the default language prefix
+    /// (`AppState::languages`).
+    Languages,
 }
 
 impl CacheKind {
     /// Every kind, for a writer that may have touched any of them.
-    pub const ALL: [CacheKind; 13] = [
+    pub const ALL: [CacheKind; 14] = [
         CacheKind::Permissions,
         CacheKind::Users,
         CacheKind::Items,
@@ -82,6 +85,7 @@ impl CacheKind {
         CacheKind::TextFormats,
         CacheKind::Themes,
         CacheKind::SiteConfig,
+        CacheKind::Languages,
     ];
 
     /// The field name in the Redis hash.
@@ -100,6 +104,7 @@ impl CacheKind {
             CacheKind::TextFormats => "text_formats",
             CacheKind::Themes => "themes",
             CacheKind::SiteConfig => "site_config",
+            CacheKind::Languages => "languages",
         }
     }
 
@@ -124,6 +129,7 @@ impl CacheKind {
             "menu_link" | "url_alias" => CacheKind::Menus,
             "text_format" => CacheKind::TextFormats,
             "site_config" => CacheKind::SiteConfig,
+            "language" => CacheKind::Languages,
             _ => return None,
         })
     }

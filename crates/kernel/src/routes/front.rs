@@ -259,7 +259,8 @@ async fn dispatch(state: &AppState, app: &Router, request: Request) -> Response 
 }
 
 /// The language prefix of a request for the front page: `""` for `/`, and
-/// `/{lang}` for `/{lang}` or `/{lang}/` in a known non-default language.
+/// `/{lang}` for `/{lang}` or `/{lang}/` in a known language (the default
+/// included: language negotiation serves or redirects it, B161).
 /// `None` for any other path.
 fn front_page_prefix(state: &AppState, path: &str) -> Option<String> {
     if path == "/" {
@@ -267,7 +268,10 @@ fn front_page_prefix(state: &AppState, path: &str) -> Option<String> {
     }
     let language = path.strip_prefix('/')?;
     let language = language.strip_suffix('/').unwrap_or(language);
-    (language != state.default_language() && state.known_languages().iter().any(|l| l == language))
+    state
+        .known_languages()
+        .iter()
+        .any(|l| l == language)
         .then(|| format!("/{language}"))
 }
 

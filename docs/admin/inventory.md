@@ -12,7 +12,7 @@ Columns: the path as registered; its methods; its group; the handler and where i
 - Appearance: 3 routes
 - People: 17 routes
 - Extend: 13 routes
-- Configuration: 23 routes
+- Configuration: 27 routes
 - Reports: 6 routes
 
 <!-- kernel routes -->
@@ -133,6 +133,10 @@ Columns: the path as registered; its methods; its group; the handler and where i
 | `/admin/config/formats/{format}/delete` | GET,POST | Configuration | `GET: delete_form \| POST: delete_submit` (GET: crates/kernel/src/routes/admin_text_format.rs:673 \| POST: crates/kernel/src/routes/admin_text_format.rs:703) | GET: admin/text-format-delete.html \| POST: redirect | require_permission("administer text formats") |
 | `/admin/config/formats/{format}/edit` | GET,POST | Configuration | `GET: edit_form \| POST: edit_submit` (GET: crates/kernel/src/routes/admin_text_format.rs:511 \| POST: crates/kernel/src/routes/admin_text_format.rs:543) | admin/text-format-form.html | GET: require_permission("administer text formats") \| POST: require_permission("administer text formats") via save() |
 | `/admin/config/formats/add` | GET,POST | Configuration | `GET: add_form \| POST: add_submit` (GET: crates/kernel/src/routes/admin_text_format.rs:482 \| POST: crates/kernel/src/routes/admin_text_format.rs:502) | admin/text-format-form.html | GET: require_permission("administer text formats") \| POST: require_permission("administer text formats") via save() |
+| `/admin/config/languages` | GET,POST | Configuration | `GET: list_languages \| POST: save_settings` (crates/kernel/src/routes/admin_language.rs) | GET: admin/languages.html \| POST: redirect (re-renders admin/languages.html on error) | require_permission("administer languages"); CSRF on POST |
+| `/admin/config/languages/{code}/delete` | GET,POST | Configuration | `GET: delete_form \| POST: delete_submit` (crates/kernel/src/routes/admin_language.rs) | GET: admin/language-delete.html \| POST: redirect | require_permission("administer languages"); CSRF on POST; the default language and a language in use are refused |
+| `/admin/config/languages/{code}/edit` | GET,POST | Configuration | `GET: edit_form \| POST: edit_submit` (crates/kernel/src/routes/admin_language.rs) | GET: admin/language-form.html \| POST: redirect (re-renders on error) | require_permission("administer languages"); CSRF on POST |
+| `/admin/config/languages/add` | GET,POST | Configuration | `GET: add_form \| POST: add_submit` (crates/kernel/src/routes/admin_language.rs) | GET: admin/language-form.html \| POST: redirect (re-renders on error) | require_permission("administer languages"); CSRF on POST |
 | `/admin/config/overview` | GET | Configuration | `landing` (crates/kernel/src/routes/admin_shell.rs) | admin/landing.html | require_permission("access administration pages"); lists only pages whose own gate admits the viewer; 404 when none |
 | `/admin/config/redirects` | GET | Configuration | `list_redirects` (crates/kernel/src/routes/admin_redirect.rs:63) | admin/redirects.html | require_permission("view redirects"); plugin trovato_redirects enabled |
 | `/admin/config/redirects/{id}/delete` | POST | Configuration | `delete_redirect` (crates/kernel/src/routes/admin_redirect.rs:291) | redirect | require_permission("administer redirects"); CSRF; plugin trovato_redirects enabled |

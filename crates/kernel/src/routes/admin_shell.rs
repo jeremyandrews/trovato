@@ -174,7 +174,7 @@ async fn render_preferences(
             ("alt-k", "Alt+K (Option+K on a Mac)"),
         ],
     );
-    context.insert("default_language", state.default_language());
+    context.insert("default_language", &state.default_language());
     context.insert("flash", &flash);
     context.insert("error_message", &error);
     context.insert("path", admin_nav::PREFERENCES);

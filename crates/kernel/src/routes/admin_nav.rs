@@ -597,6 +597,22 @@ pub const LINKS: &[Link] = &[
         )
     },
     Link {
+        synonyms: &[
+            "language",
+            "translation",
+            "multilingual",
+            "locale",
+            "prefix",
+        ],
+        ..page(
+            Configuration,
+            "Languages",
+            "/admin/config/languages",
+            Permission("administer languages"),
+            "The languages content is written in, their order and address prefixes.",
+        )
+    },
+    Link {
         synonyms: &["html", "filters", "markdown", "allowed tags", "editor"],
         ..page(
             Configuration,
