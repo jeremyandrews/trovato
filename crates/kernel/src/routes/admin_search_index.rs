@@ -342,7 +342,10 @@ pub async fn search(
     let like = list.like();
     let encoded = urlencoding::encode(query.trim()).into_owned();
 
-    // Content: titles, for whoever may open the content listing.
+    // Content: titles, for whoever may open the content listing. As the
+    // listing does: `edit any content` sees every item and its admin edit
+    // form; whoever holds only the overview sees the items they may view,
+    // linked to the edit form they may use, or to the item itself.
     if may_open("/admin/content") {
         let (items, total) = state
             .items()
@@ -352,22 +355,42 @@ pub async fn search(
                 tracing::warn!(error = %e, "admin search: content");
                 (Vec::new(), 0)
             });
+        let editor = viewer.can("edit any content");
+        let allowed = |item: &crate::models::Item, op: &'static str| {
+            let item = item.clone();
+            async move {
+                matches!(
+                    state.items().check_access(&item, op, viewer).await,
+                    Ok(true)
+                )
+            }
+        };
+        let mut hits = Vec::new();
+        for item in items {
+            let href = if editor {
+                format!("/admin/content/{}/edit", item.id)
+            } else if allowed(&item, "edit").await {
+                format!("/item/{}/edit", item.id)
+            } else if allowed(&item, "view").await {
+                format!("/item/{}", item.id)
+            } else {
+                continue;
+            };
+            hits.push(Hit {
+                context: if item.status == 1 {
+                    UiMessage::new("{type}, published").arg("type", item.item_type.clone())
+                } else {
+                    UiMessage::new("{type}, unpublished").arg("type", item.item_type.clone())
+                },
+                label: item.title,
+                translate: false,
+                href,
+            });
+        }
         groups.push(HitGroup {
             key: "content",
             title: "Content",
-            hits: items
-                .into_iter()
-                .map(|item| Hit {
-                    label: item.title,
-                    translate: false,
-                    context: if item.status == 1 {
-                        UiMessage::new("{type}, published").arg("type", item.item_type)
-                    } else {
-                        UiMessage::new("{type}, unpublished").arg("type", item.item_type)
-                    },
-                    href: format!("/admin/content/{}/edit", item.id),
-                })
-                .collect(),
+            hits,
             more: (total > DATA_LIMIT).then(|| format!("/admin/content?q={encoded}")),
         });
     }

@@ -311,6 +311,44 @@ fn search_never_shows_what_the_viewer_may_not_open() {
     });
 }
 
+/// Someone who holds only the content overview finds the items they may
+/// view, linked to the item rather than to an edit form they may not open,
+/// and not an unpublished item of someone else's: as the listing shows them.
+#[test]
+fn the_content_overview_alone_finds_only_what_it_may_view() {
+    run_test(async {
+        let app = shared_app().await;
+        let tag = tag();
+        let published = item(app, &format!("Open {tag}")).await;
+        let hidden = item(app, &format!("Hidden {tag}")).await;
+        sqlx::query("UPDATE item SET status = 0 WHERE id = $1")
+            .bind(hidden)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        let author = holding(
+            app,
+            &[
+                "access administration pages",
+                "access content overview",
+                "access content",
+            ],
+        )
+        .await;
+        let (status, html) = get(app, &author, &format!("/admin/search?q={tag}")).await;
+        assert_eq!(status, StatusCode::OK);
+        let groups = page_groups(&html);
+        assert_eq!(
+            hrefs_in(&groups, "content"),
+            [format!("/item/{published}")],
+            "{html}"
+        );
+        let (_, json) = get(app, &author, &format!("/admin/search/suggest?q={tag}")).await;
+        assert!(!json.contains(&hidden.to_string()), "{json}");
+        assert!(!json.contains(&format!("/admin/content/{published}/edit")));
+    });
+}
+
 /// Each setting the search links to is a field on its page: the anchor is
 /// an element id there.
 #[test]
