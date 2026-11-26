@@ -226,6 +226,7 @@ fn user_writes_are_audited() {
                     is_admin: false,
                 },
                 &admin(actor),
+                "admin",
             )
             .await
             .expect("create user");

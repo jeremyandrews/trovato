@@ -1486,9 +1486,12 @@ async fn create_user_from_cli(
     };
     let nobody = tap::UserContext::anonymous();
     let user = if account.blocked {
-        state.users().create_with_status(input, 0, &nobody).await?
+        state
+            .users()
+            .create_with_status(input, 0, &nobody, "cli")
+            .await?
     } else {
-        state.users().create(input, &nobody).await?
+        state.users().create(input, &nobody, "cli").await?
     };
     // The account is committed before its roles, one grant at a time, as on
     // the form. A grant that fails (a role deleted since it was looked up, a

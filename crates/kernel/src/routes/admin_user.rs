@@ -446,7 +446,7 @@ async fn add_user_submit(
     };
 
     let user_ctx = admin_user_context(&state, &current_user).await;
-    match state.users().create(input, &user_ctx).await {
+    match state.users().create(input, &user_ctx, "admin").await {
         Ok(user) => {
             apply_role_membership(&state, &current_user, user.id, &form.roles).await;
             tracing::info!(name = %form.name, "user created");

@@ -262,33 +262,46 @@ impl UserService {
     }
 
     /// Create a new active user with `tap_user_register` invocation.
-    pub async fn create(&self, input: CreateUser, acting_user: &UserContext) -> Result<User> {
+    ///
+    /// `path` names where the account came from (`registration`, `admin`,
+    /// `installer`, `cli`), for [`SecurityEventKind::AccountCreated`].
+    pub async fn create(
+        &self,
+        input: CreateUser,
+        acting_user: &UserContext,
+        path: &str,
+    ) -> Result<User> {
         let user = User::create(&self.inner.pool, input).await?;
         self.inner.cache.insert(user.id, user.clone());
         self.dispatch_tap("tap_user_register", user.id, acting_user)
             .await;
         info!(user_id = %user.id, name = %user.name, "user created");
-        self.audit_created(&user, acting_user).await;
+        self.audit_created(&user, acting_user, path, true).await;
         Ok(user)
     }
 
     /// Create a new user with a specific status and `tap_user_register` invocation.
     ///
     /// Use `status = 0` for inactive accounts pending email verification.
+    /// `path` is as [`Self::create`].
     pub async fn create_with_status(
         &self,
         input: CreateUser,
         status: i16,
         acting_user: &UserContext,
+        path: &str,
     ) -> Result<User> {
         let user = User::create_with_status(&self.inner.pool, input, status).await?;
-        self.created_with_status(&user, status, acting_user).await;
+        self.created_with_status(&user, status, acting_user, path)
+            .await;
         Ok(user)
     }
 
     /// [`Self::create_with_status`], queueing the mail `mail` builds for the new
     /// account in the same transaction as the insert (BG18): a registration
     /// that rolls back sends nothing, and one that commits always sends.
+    ///
+    /// `path` is as [`Self::create`].
     ///
     /// # Errors
     ///
@@ -300,6 +313,7 @@ impl UserService {
         acting_user: &UserContext,
         email: &crate::services::email::EmailService,
         mail: impl FnOnce(&User) -> Vec<crate::services::email::NewMail>,
+        path: &str,
     ) -> Result<User> {
         // Hash before BEGIN: Argon2 takes a while, and a pooled connection
         // must not sit idle in a transaction meanwhile.
@@ -311,17 +325,25 @@ impl UserService {
         }
         tx.commit().await?;
         email.wake();
-        self.created_with_status(&user, status, acting_user).await;
+        self.created_with_status(&user, status, acting_user, path)
+            .await;
         Ok(user)
     }
 
     /// What follows a committed insert: cache, `tap_user_register`, audit.
-    async fn created_with_status(&self, user: &User, status: i16, acting_user: &UserContext) {
+    async fn created_with_status(
+        &self,
+        user: &User,
+        status: i16,
+        acting_user: &UserContext,
+        path: &str,
+    ) {
         self.inner.cache.insert(user.id, user.clone());
         self.dispatch_tap("tap_user_register", user.id, acting_user)
             .await;
         info!(user_id = %user.id, name = %user.name, status, "user created with status");
-        self.audit_created(user, acting_user).await;
+        self.audit_created(user, acting_user, path, status == 1)
+            .await;
     }
 
     /// Update a user with `tap_user_update` invocation.
@@ -449,9 +471,23 @@ impl UserService {
     /// [`User::delete`] reattributes the account's authored content to the anonymous
     /// author inside its own transaction; see its documentation for why that is a
     /// bug fix and not only a policy.
+    ///
+    /// Emits `account.deleted`, whoever called this — self-service and
+    /// administrator deletion both go through here, so both are recorded the
+    /// same way rather than each keeping its own copy of the emit.
     pub async fn delete(&self, id: Uuid, acting_user: &UserContext) -> Result<bool> {
         // Dispatch tap before deletion
         self.dispatch_tap("tap_user_delete", id, acting_user).await;
+
+        // Counted before the row goes: afterwards there is nothing left to
+        // count, and `User::delete` reattributes rather than erases, so the
+        // counts taken now are exactly what it reattributes.
+        let items = crate::models::Item::count_by_author(&self.inner.pool, id)
+            .await
+            .unwrap_or(0);
+        let comments = crate::models::Comment::count_by_author(&self.inner.pool, id)
+            .await
+            .unwrap_or(0);
 
         let deleted = User::delete(&self.inner.pool, id).await?;
         if deleted {
@@ -467,6 +503,32 @@ impl UserService {
                     id,
                     actor_of(acting_user),
                     serde_json::json!({}),
+                )
+                .await;
+
+            let actor = actor_of(acting_user).filter(|a| *a != id);
+            let by = if actor.is_some() { "admin" } else { "self" };
+            // Deliberately **no** `.user(...)`: `security_audit_log.user_id`
+            // references `users` with `ON DELETE SET NULL`, and by now the
+            // account is gone, so an insert naming its id would fail the
+            // foreign key. The hashed subject is the only identity the row
+            // carries, which is also the point: an audit row naming the raw id
+            // of an account just erased would undercut the erasure.
+            //
+            // `actor_decided()` for the same reason: a self-deletion's signed-in
+            // user *is* the account that just vanished, and without it
+            // `with_request_context` would fill that erased id back in as the
+            // actor and the insert would fail the same foreign key.
+            self.inner
+                .audit
+                .security(
+                    SecurityEvent::new(SecurityEventKind::AccountDeleted)
+                        .subject(&id.to_string())
+                        .maybe_actor(actor)
+                        .actor_decided()
+                        .detail("by", by)
+                        .detail("items_reattributed", items)
+                        .detail("comments_reattributed", comments),
                 )
                 .await;
         }
@@ -570,22 +632,52 @@ impl UserService {
     }
 
     /// Dispatch a user tap hook with standard `{ "user_id": "..." }` payload.
-    /// Record an account created.
-    async fn audit_created(&self, user: &User, acting_user: &UserContext) {
+    /// Record an account created, both as a content audit row and, as the
+    /// security event every creation path shares, `account.created`.
+    ///
+    /// `by` is the acting account's id when one is authenticated; otherwise
+    /// `"self"` for a visitor registering their own account, or `"operator"`
+    /// for the installer and the command line, where no site is running to
+    /// have an authenticated acting user at all.
+    async fn audit_created(
+        &self,
+        user: &User,
+        acting_user: &UserContext,
+        path: &str,
+        active: bool,
+    ) {
+        let actor = actor_of(acting_user);
         self.inner
             .audit
             .record(
                 "create",
                 "user",
                 user.id,
-                actor_of(acting_user),
+                actor,
                 serde_json::json!({ "name": user.name, "status": user.status }),
+            )
+            .await;
+        let by = match actor {
+            Some(actor) => actor.to_string(),
+            None if matches!(path, "cli" | "installer") => "operator".to_string(),
+            None => "self".to_string(),
+        };
+        self.inner
+            .audit
+            .security(
+                SecurityEvent::new(SecurityEventKind::AccountCreated)
+                    .user(user.id)
+                    .maybe_actor(actor.filter(|a| *a != user.id))
+                    .detail("path", path)
+                    .detail("active", active)
+                    .detail("by", by),
             )
             .await;
     }
 
     /// Record an account updated, and, as security events, a change to its
-    /// blocked state or its administrator flag.
+    /// username, its e-mail address, its blocked state or its administrator
+    /// flag.
     async fn audit_updated(&self, before: Option<&User>, after: &User, acting_user: &UserContext) {
         let actor = actor_of(acting_user);
         let mut changed = Vec::new();
@@ -615,6 +707,26 @@ impl UserService {
             .await;
         let Some(before) = before else { return };
         let other_actor = actor.filter(|a| *a != after.id);
+        if before.name != after.name {
+            audit
+                .security(
+                    SecurityEvent::new(SecurityEventKind::UserNameChanged)
+                        .user(after.id)
+                        .maybe_actor(other_actor)
+                        .detail("from", &before.name)
+                        .detail("to", &after.name),
+                )
+                .await;
+        }
+        if before.mail != after.mail {
+            audit
+                .security(
+                    SecurityEvent::new(SecurityEventKind::UserMailChanged)
+                        .user(after.id)
+                        .maybe_actor(other_actor),
+                )
+                .await;
+        }
         if before.status != after.status {
             audit
                 .security(

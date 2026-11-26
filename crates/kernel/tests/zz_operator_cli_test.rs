@@ -224,6 +224,20 @@ async fn user_create_makes_an_account_that_can_log_in() {
         events.iter().any(|k| k == "user.roles_changed"),
         "role grant audited: {events:?}"
     );
+
+    // And the account's own creation, as the admin "Add user" form's does:
+    // `details.path` says this came from the command line, not a site that
+    // was ever running to have an authenticated operator in the usual sense.
+    let details: serde_json::Value = sqlx::query_scalar(
+        "SELECT details FROM security_audit_log WHERE kind = 'account.created' AND user_id = $1",
+    )
+    .bind(alice.id)
+    .fetch_one(db.pool())
+    .await
+    .expect("account.created is audited");
+    assert_eq!(details["path"], "cli");
+    assert_eq!(details["active"], true);
+    assert_eq!(details["by"], "operator");
 }
 
 #[tokio::test]
@@ -255,6 +269,20 @@ async fn user_create_blocked_and_without_a_password() {
     );
     assert!(!password_verifies(db.pool(), "cli_bob", "").await);
 
+    let details: serde_json::Value = sqlx::query_scalar(
+        "SELECT details FROM security_audit_log WHERE kind = 'account.created' AND user_id = $1",
+    )
+    .bind(bob.id)
+    .fetch_one(db.pool())
+    .await
+    .expect("account.created is audited");
+    assert_eq!(details["path"], "cli");
+    assert_eq!(
+        details["active"], false,
+        "--blocked starts the account inactive"
+    );
+    assert_eq!(details["by"], "operator");
+
     // The reset the command points at is what lets it log in.
     let reset = run(
         &db.url(),
@@ -277,6 +305,12 @@ async fn user_create_refuses_what_the_admin_form_refuses() {
     .await;
     assert_eq!(first.code, Some(0), "{}", first.all());
     let before = user_count(db.pool()).await;
+    let events_before: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM security_audit_log WHERE kind = 'account.created'",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
 
     // (args, stdin, what the message must say)
     let cases: Vec<(Vec<&str>, String, &str)> = vec![
@@ -349,6 +383,16 @@ async fn user_create_refuses_what_the_admin_form_refuses() {
         before,
         "a refused create writes nothing"
     );
+    let events_after: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM security_audit_log WHERE kind = 'account.created'",
+    )
+    .fetch_one(db.pool())
+    .await
+    .unwrap();
+    assert_eq!(
+        events_before, events_after,
+        "a refused create writes no account.created event either"
+    );
 }
 
 // =============================================================================
@@ -413,6 +457,19 @@ impl Server {
         let (status, body) = self.get(path).await.expect("server answers");
         assert_eq!(status, 200, "GET {path}:\n{body}");
         body
+    }
+
+    /// POST a form-urlencoded body, following no redirect: the caller reads
+    /// the status the handler itself answered with.
+    async fn post_form(&self, path: &str, fields: &[(&str, &str)]) -> u16 {
+        http()
+            .post(format!("{}{path}", self.base))
+            .form(fields)
+            .send()
+            .await
+            .expect("post")
+            .status()
+            .as_u16()
     }
 
     async fn stop(mut self) {
@@ -609,6 +666,53 @@ async fn cache_clear_drops_the_shared_search_settings() {
     // Leave no copy of this scratch site's settings for another test to read.
     let ran = run(&db.url(), &["cache", "clear", "--kind", "site_config"], "").await;
     assert_eq!(ran.code, Some(0), "{}", ran.all());
+}
+
+// =============================================================================
+// The installer's admin-account step, against a running server
+// =============================================================================
+
+/// `POST /install/admin` makes the site's first account exactly as the admin
+/// "Add user" form and `trovato user create` do, down to the security event:
+/// one `account.created` naming the installer as the path, the account
+/// starting active, and no authenticated operator to name (no site has run
+/// yet), so `details.by` says `"operator"`.
+#[tokio::test]
+async fn installer_admin_step_audits_account_created() {
+    let db = migrated("cli_installer").await;
+    let server = Server::start(&db.url()).await;
+
+    let status = server
+        .post_form(
+            "/install/admin",
+            &[
+                ("username", "installer_admin"),
+                ("email", "installer_admin@example.com"),
+                ("password", PASSWORD),
+                ("password_confirm", PASSWORD),
+            ],
+        )
+        .await;
+    assert_eq!(status, 303, "the installer must accept the admin form");
+
+    let admin = account(db.pool(), "installer_admin")
+        .await
+        .expect("the installer's admin account exists");
+    assert_eq!(admin.status, 1);
+    assert!(admin.is_admin);
+
+    let details: serde_json::Value = sqlx::query_scalar(
+        "SELECT details FROM security_audit_log WHERE kind = 'account.created' AND user_id = $1",
+    )
+    .bind(admin.id)
+    .fetch_one(db.pool())
+    .await
+    .expect("account.created is audited");
+    assert_eq!(details["path"], "installer");
+    assert_eq!(details["active"], true);
+    assert_eq!(details["by"], "operator");
+
+    server.stop().await;
 }
 
 /// A grant that fails after the account is written (here a trigger refusing one

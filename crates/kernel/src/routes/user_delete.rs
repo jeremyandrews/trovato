@@ -499,18 +499,14 @@ async fn delete_confirm_submit(
         }
     }
 
-    let items = crate::models::Item::count_by_author(state.db(), user.id)
-        .await
-        .unwrap_or(0);
-    let comments = crate::models::Comment::count_by_author(state.db(), user.id)
-        .await
-        .unwrap_or(0);
-
     // Before the row goes, because afterwards there is no address to send to. A
     // failure here does not stop the deletion: the person asked for the account to
     // go, and an unsendable courtesy note is not a reason to keep it.
     send_farewell(&state, &user).await;
 
+    // `account.deleted` is emitted by `UserService::delete` itself — the
+    // shared layer self-service and administrator deletion both go through —
+    // so it is not repeated here.
     let acting = crate::tap::UserContext::authenticated(user.id, Vec::new());
     match state.users().delete(user.id, &acting).await {
         Ok(true) => {}
@@ -530,29 +526,8 @@ async fn delete_confirm_submit(
         .map(|entries| entries.len())
         .unwrap_or(0);
 
-    // Deliberately **no** `.user(...)`. Two reasons, and they point the same way:
-    // `security_audit_log.user_id` references `users` with `ON DELETE SET NULL`, so
-    // by the time this row is written the account it would name is gone and the
-    // insert would fail on the foreign key; and an audit row carrying the raw id of
-    // an account that was just erased would undercut the erasure. The hashed subject
-    // is the record, which is what the audit module's hashing rule is for.
-    state
-        .security_audit()
-        .emit(
-            SecurityEvent::new(SecurityEventKind::AccountDeleted)
-                .subject(&user.id.to_string())
-                .ip(ip)
-                .detail("by", "self")
-                .detail("items_reattributed", items)
-                .detail("comments_reattributed", comments)
-                .detail("sessions_revoked", revoked),
-        )
-        .await;
-
     info!(
         user_id = %user.id,
-        items_reattributed = items,
-        comments_reattributed = comments,
         sessions_revoked = revoked,
         "account deleted by its holder"
     );

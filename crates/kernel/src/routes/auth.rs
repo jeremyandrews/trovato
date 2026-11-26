@@ -980,7 +980,7 @@ async fn do_register(
     let Some(email_service) = state.email() else {
         let user = state
             .users()
-            .create_with_status(input, 0, &user_ctx)
+            .create_with_status(input, 0, &user_ctx, "registration")
             .await?;
         tracing::warn!(
             user_id = %user.id,
@@ -1013,64 +1013,75 @@ async fn do_register(
 
     let user = state
         .users()
-        .create_with_status_and_mail(input, 0, &user_ctx, email_service, |user| {
-            let verify_url = format!(
-                "{site_url}/user/verify/{}",
-                crate::services::email::SECRET_MARKER
-            );
-            let body = format!(
-                "Welcome to {site_name}!\n\n\
+        .create_with_status_and_mail(
+            input,
+            0,
+            &user_ctx,
+            email_service,
+            |user| {
+                let verify_url = format!(
+                    "{site_url}/user/verify/{}",
+                    crate::services::email::SECRET_MARKER
+                );
+                let body = format!(
+                    "Welcome to {site_name}!\n\n\
                  To activate your account, visit the following link:\n\
                  {verify_url}\n\n\
                  If you did not register for an account, you can safely ignore this email.\n\n\
                  This link will expire in 24 hours."
-            );
-            let mut messages = vec![
-                NewMail::account(
-                    "registration_verify",
-                    &user_mail,
-                    &format!("Verify your account at {site_name}"),
-                    &body,
-                )
-                .secret(MailSecret::Verification {
-                    user_id: user.id,
-                    purpose: PURPOSE_REGISTRATION.to_string(),
-                })
-                .dedupe(format!("register:{}", user.id)),
-            ];
-            if !admin_mail.is_empty() {
-                let action_url = format!("{site_url}/admin/users");
-                let subject = format!("New user registration at {site_name}: {user_name}");
-                let mut ctx = tera::Context::new();
-                ctx.insert("site_name", &site_name);
-                ctx.insert("username", &user_name);
-                ctx.insert("user_email", &user_mail);
-                ctx.insert("action_url", &action_url);
-                ctx.insert("subject", &subject);
-                match crate::services::email_templates::render(tera, "admin_new_user", &ctx) {
-                    Ok((html, text)) => {
-                        let notice =
-                            NewMail::notification("admin_new_user", &admin_mail, &subject, &text)
-                                .html(html)
-                                .dedupe(format!("admin-new-user:{}", user.id));
-                        // A notice to the site's own address that cannot be sent
-                        // must not refuse the registration.
-                        match notice.validate() {
-                            Ok(()) => messages.push(notice),
-                            Err(e) => tracing::warn!(
-                                error = %e,
-                                "admin registration notification cannot be sent"
-                            ),
+                );
+                let mut messages = vec![
+                    NewMail::account(
+                        "registration_verify",
+                        &user_mail,
+                        &format!("Verify your account at {site_name}"),
+                        &body,
+                    )
+                    .secret(MailSecret::Verification {
+                        user_id: user.id,
+                        purpose: PURPOSE_REGISTRATION.to_string(),
+                    })
+                    .dedupe(format!("register:{}", user.id)),
+                ];
+                if !admin_mail.is_empty() {
+                    let action_url = format!("{site_url}/admin/users");
+                    let subject = format!("New user registration at {site_name}: {user_name}");
+                    let mut ctx = tera::Context::new();
+                    ctx.insert("site_name", &site_name);
+                    ctx.insert("username", &user_name);
+                    ctx.insert("user_email", &user_mail);
+                    ctx.insert("action_url", &action_url);
+                    ctx.insert("subject", &subject);
+                    match crate::services::email_templates::render(tera, "admin_new_user", &ctx) {
+                        Ok((html, text)) => {
+                            let notice = NewMail::notification(
+                                "admin_new_user",
+                                &admin_mail,
+                                &subject,
+                                &text,
+                            )
+                            .html(html)
+                            .dedupe(format!("admin-new-user:{}", user.id));
+                            // A notice to the site's own address that cannot be sent
+                            // must not refuse the registration.
+                            match notice.validate() {
+                                Ok(()) => messages.push(notice),
+                                Err(e) => tracing::warn!(
+                                    error = %e,
+                                    "admin registration notification cannot be sent"
+                                ),
+                            }
                         }
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            "admin registration notification: template render failed"
+                        ),
                     }
-                    Err(e) => tracing::warn!(
-                        error = %e,
-                        "admin registration notification: template render failed"
-                    ),
                 }
-            }
-            messages
-        })
+                messages
+            },
+            "registration",
+        )
         .await?;
 
     let pending_approval =

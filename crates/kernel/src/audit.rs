@@ -3,7 +3,8 @@
 //! One stream, structured events, one bounded retention policy — the
 //! audit-events direction Jeremy set 2026-07-14 (recorded in the decision log
 //! 2026-07-17 alongside the Epic-4 ratification). Every security-relevant state
-//! change in the kernel emits here: authentication outcomes, passkey lifecycle,
+//! change in the kernel emits here: account lifecycle (creation, deletion,
+//! username and e-mail changes), authentication outcomes, passkey lifecycle,
 //! password lifecycle, session lifecycle (the D-36 rider), and account recovery
 //! (including the D-32 fold-escalation amendment).
 //!
@@ -131,6 +132,15 @@ pub enum SecurityEventKind {
     RecoveryFoldWrongShape,
 
     // ── Account lifecycle ───────────────────────────────────────────────────
+    /// An account was created. `details.path` names where (`registration`,
+    /// `admin`, `installer`, `cli`), `details.active` says whether it starts
+    /// usable, and `details.by` is the acting account's id, or `"self"`
+    /// (public registration) or `"operator"` (no site is running: the
+    /// installer or the command line).
+    ///
+    /// Emitted after the insert succeeds, so a failed attempt leaves no record
+    /// claiming an account exists.
+    AccountCreated,
     /// An account was deleted. `details.by` says whether the account holder did it
     /// or an administrator did, and the counts say what became of the content.
     ///
@@ -140,6 +150,13 @@ pub enum SecurityEventKind {
     /// A deletion was refused because it would have left the site with no active
     /// administrator.
     AccountDeletionBlocked,
+    /// An account's username changed. `details.from` and `details.to` are the
+    /// names before and after.
+    UserNameChanged,
+    /// An account's e-mail address changed. Never the addresses themselves —
+    /// the event says only that it changed; the actor (absent when the
+    /// account holder changed their own) says who.
+    UserMailChanged,
     /// An account's roles changed: a role assigned or removed, or the
     /// administrator flag set or cleared. `details` names what changed.
     UserRolesChanged,
@@ -185,8 +202,11 @@ impl SecurityEventKind {
             Self::RecoveryRateLimited => "recovery.rate_limited",
             Self::RecoveryFoldEscalationAttempt => "recovery.fold_escalation_attempt",
             Self::RecoveryFoldWrongShape => "recovery.fold_wrong_shape",
+            Self::AccountCreated => "account.created",
             Self::AccountDeleted => "account.deleted",
             Self::AccountDeletionBlocked => "account.deletion_blocked",
+            Self::UserNameChanged => "user.name_changed",
+            Self::UserMailChanged => "user.mail_changed",
             Self::UserRolesChanged => "user.roles_changed",
             Self::UserStatusChanged => "user.status_changed",
             Self::RoleCreated => "role.created",
@@ -250,6 +270,7 @@ pub struct SecurityEvent {
     ip_address: Option<String>,
     user_agent: Option<String>,
     details: serde_json::Value,
+    actor_locked: bool,
 }
 
 impl SecurityEvent {
@@ -264,6 +285,7 @@ impl SecurityEvent {
             ip_address: None,
             user_agent: None,
             details: serde_json::Value::Object(serde_json::Map::new()),
+            actor_locked: false,
         }
     }
 
@@ -301,6 +323,23 @@ impl SecurityEvent {
     #[must_use]
     pub fn maybe_actor(mut self, actor_id: Option<Uuid>) -> Self {
         self.actor_id = actor_id;
+        self
+    }
+
+    /// Decide the actor is `None` and mean it: [`with_request_context`](Self::with_request_context)
+    /// must not fill one in from the signed-in request user.
+    ///
+    /// For almost every kind, an absent actor and an *unset* one are the same
+    /// thing, and the request's signed-in user is the right fallback. They
+    /// are not the same for an event whose subject no longer exists by the
+    /// time it is written (`account.deleted`: the row is gone, so there is no
+    /// `user_id` for `with_request_context`'s "different from the subject"
+    /// check to compare against) — there, the signed-in user of a
+    /// self-deletion request *is* the erased account, and naming it as actor
+    /// would insert a foreign key referencing a row that is no longer there.
+    #[must_use]
+    pub fn actor_decided(mut self) -> Self {
+        self.actor_locked = true;
         self
     }
 
@@ -350,7 +389,7 @@ impl SecurityEvent {
     /// when it is someone other than the account the event is about.
     #[must_use]
     pub fn with_request_context(mut self, request: &crate::services::audit::AuditActor) -> Self {
-        if self.actor_id.is_none() {
+        if self.actor_id.is_none() && !self.actor_locked {
             self.actor_id = request.user_id.filter(|id| Some(*id) != self.user_id);
         }
         if self.ip_address.is_none() && !request.ip.is_empty() {
@@ -616,8 +655,11 @@ mod tests {
             SecurityEventKind::RecoveryRateLimited,
             SecurityEventKind::RecoveryFoldEscalationAttempt,
             SecurityEventKind::RecoveryFoldWrongShape,
+            SecurityEventKind::AccountCreated,
             SecurityEventKind::AccountDeleted,
             SecurityEventKind::AccountDeletionBlocked,
+            SecurityEventKind::UserNameChanged,
+            SecurityEventKind::UserMailChanged,
             SecurityEventKind::UserRolesChanged,
             SecurityEventKind::UserStatusChanged,
             SecurityEventKind::RoleCreated,
@@ -641,6 +683,37 @@ mod tests {
         assert_ne!(hash, raw);
         assert_eq!(hash.len(), 64, "SHA-256 hex is 64 chars");
         assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    /// Without `actor_decided()`, an absent actor is filled from the request's
+    /// signed-in user, as almost every kind wants.
+    #[test]
+    fn request_context_fills_an_unset_actor() {
+        let actor = Uuid::now_v7();
+        let request = crate::services::audit::AuditActor {
+            user_id: Some(actor),
+            ip: String::new(),
+            user_agent: String::new(),
+        };
+        let event =
+            SecurityEvent::new(SecurityEventKind::LoginSucceeded).with_request_context(&request);
+        assert_eq!(event.actor_id, Some(actor));
+    }
+
+    /// With it, the request's signed-in user is never substituted in — the
+    /// guard `account.deleted` needs, since a self-deletion's signed-in user
+    /// is the very account that no longer exists to be named.
+    #[test]
+    fn actor_decided_blocks_the_request_context_fill() {
+        let request = crate::services::audit::AuditActor {
+            user_id: Some(Uuid::now_v7()),
+            ip: String::new(),
+            user_agent: String::new(),
+        };
+        let event = SecurityEvent::new(SecurityEventKind::AccountDeleted)
+            .actor_decided()
+            .with_request_context(&request);
+        assert_eq!(event.actor_id, None);
     }
 
     #[test]
