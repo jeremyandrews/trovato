@@ -10,6 +10,8 @@
  * - Narrow screens: the Menu button (aria-expanded) shows and hides the
  *   sidebar. Escape closes it and returns focus to the button.
  *
+ * - window.trovatoText: the admin's script words in the viewer's language.
+ *
  * Nothing opens on hover.
  */
 (function () {
@@ -18,6 +20,27 @@
     var root = document.documentElement;
     root.classList.remove('no-js');
     root.classList.add('js');
+
+    // The admin's script words, translated by the shell (<template
+    // id="admin-text">): trovatoText('Close') is the viewer's language, and
+    // the English source where there is no table. {name} placeholders are
+    // filled from args.
+    var table = null;
+    window.trovatoText = function (source, args) {
+        if (table === null) {
+            table = {};
+            var tpl = document.getElementById('admin-text');
+            if (tpl && tpl.content) {
+                tpl.content.querySelectorAll('[data-s]').forEach(function (el) {
+                    table[el.getAttribute('data-s')] = el.textContent;
+                });
+            }
+        }
+        var text = Object.prototype.hasOwnProperty.call(table, source) ? table[source] : source;
+        return text.replace(/\{([a-z_]+)\}/g, function (m, name) {
+            return args && Object.prototype.hasOwnProperty.call(args, name) ? String(args[name]) : m;
+        });
+    };
 
     function saveCollapsed(nav) {
         var collapsed = [];

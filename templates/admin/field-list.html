@@ -11,7 +11,7 @@
 {% endblock page_actions %}
 
 {% block content %}
-{{ form::errors(errors=errors) }}
+{% set errs = errors | default(value=[]) %}
 
 <div class="admin-card" id="fields-wrapper">
     <div class="table-scroll" role="region" aria-labelledby="fields-caption" tabindex="0">
@@ -56,53 +56,23 @@
 
 <section class="admin-card" aria-labelledby="add-field-heading">
     <h2 id="add-field-heading">{{ t(s="Add a new field") }}</h2>
-    <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/fields/add" id="add-field-form">
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
-        <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
+    <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/fields/add" id="add-field-form" novalidate>
+        {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
+
+        {{ form::error_summary(errors=errs) }}
 
         <div class="inline-fields">
-            <div class="form-item">
-                <label for="new_field_label" class="form-item__label">{{ t(s="Label") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
-                <input type="text" id="new_field_label" name="label" class="form-text" required value="{{ values.label | default(value='') }}" data-machine-name-source="new_field_name" data-machine-name-prefix="field_" data-machine-name-max="32">
-            </div>
+            {{ form::field(name="label", id="new_field_label", label=t(s="Label"), value=values.label | default(value=""), required=true, errors=errs, attrs='data-machine-name-source="new_field_name" data-machine-name-prefix="field_" data-machine-name-max="32"') }}
 
-            <div class="form-item">
-                <label for="new_field_name" class="form-item__label">{{ t(s="Machine name") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
-                <input type="text" id="new_field_name" name="name" class="form-text"
-                       value="{{ values.name | default(value='') }}"
-                       pattern="[a-z][a-z0-9_]*" required>
-            </div>
+            {{ form::field(name="name", id="new_field_name", label=t(s="Machine name"), value=values.name | default(value=""), required=true, errors=errs, attrs='pattern="[a-z][a-z0-9_]*" spellcheck="false" autocapitalize="none"') }}
 
-            <div class="form-item">
-                <label for="new_field_type" class="form-item__label">{{ t(s="Type") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
-                <select id="new_field_type" name="field_type" class="form-select" required>
-                    <option value="">{{ t(s="- Select -") }}</option>
-                    {% set selected_type = values.field_type | default(value='') %}
-                    <option value="text" {% if selected_type == "text" %}selected{% endif %}>{{ t(s="Text (plain)") }}</option>
-                    <option value="text_long" {% if selected_type == "text_long" %}selected{% endif %}>{{ t(s="Text (long)") }}</option>
-                    <option value="integer" {% if selected_type == "integer" %}selected{% endif %}>{{ t(s="Integer") }}</option>
-                    <option value="float" {% if selected_type == "float" %}selected{% endif %}>{{ t(s="Float") }}</option>
-                    <option value="boolean" {% if selected_type == "boolean" %}selected{% endif %}>{{ t(s="Boolean") }}</option>
-                    <option value="date" {% if selected_type == "date" %}selected{% endif %}>{{ t(s="Date") }}</option>
-                    <option value="email" {% if selected_type == "email" %}selected{% endif %}>{{ t(s="Email") }}</option>
-                    <option value="record_reference" {% if selected_type == "record_reference" %}selected{% endif %}>{{ t(s="Reference") }}</option>
-                    <option value="category_reference" {% if selected_type == "category_reference" %}selected{% endif %}>{{ t(s="Category reference (tags)") }}</option>
-                </select>
-            </div>
+            {% if values.field_type is defined and values.field_type %}{% set selected_type = values.field_type %}{% else %}{% set selected_type = "" %}{% endif %}
+            {{ form::select(name="field_type", id="new_field_type", label=t(s="Type"), options=field_type_options, value=selected_type, empty=t(s="- Select -"), translate_options=true, required=true, errors=errs) }}
 
-            <div class="form-item">
-                <label for="new_field_category" class="form-item__label">{{ t(s="Category") }}</label>
-                <select id="new_field_category" name="category" class="form-select" aria-describedby="new_field_category-hint">
-                    <option value="">{{ t(s="- None -") }}</option>
-                    {% set selected_category = values.category | default(value='') %}
-                    {% for category in categories %}
-                    <option value="{{ category.id }}"{% if selected_category == category.id %} selected{% endif %}>{{ category.label }}</option>
-                    {% endfor %}
-                </select>
-                <div class="description" id="new_field_category-hint">{{ t(s="Required for a category reference: the field holds tags of this category.") }}</div>
-            </div>
+            {% if values.category is defined and values.category %}{% set selected_category = values.category %}{% else %}{% set selected_category = "" %}{% endif %}
+            {{ form::select(name="category", id="new_field_category", label=t(s="Category"), options=category_options, value=selected_category, empty=t(s="- None -"), hint=t(s="Required for a category reference: the field holds tags of this category."), errors=errs) }}
 
-            <div class="form-item inline-fields__submit">
+            <div class="inline-fields__submit">
                 <button type="submit" class="button button--primary"
                         data-ajax-trigger="add_field"
                         data-ajax-wrapper="#fields-wrapper">

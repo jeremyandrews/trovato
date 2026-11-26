@@ -8,6 +8,13 @@
 (function () {
     'use strict';
 
+    // The words below in the admin language on an admin page (the shell's
+    // table, admin-shell.js); elsewhere the English source, as before.
+    function tr(source, args) {
+        if (window.trovatoText) return window.trovatoText(source, args);
+        return source.replace(/\{([a-z_]+)\}/g, function (m, n) { return args && n in args ? String(args[n]) : m; });
+    }
+
     function initCompoundFields() {
         document.querySelectorAll('.compound-field').forEach(function (el) {
             // Guard against double-init (if script loaded multiple times)
@@ -62,7 +69,7 @@
         function updateAddButton() {
             if (maxItems !== null && sectionsEl.children.length >= maxItems) {
                 addBtn.disabled = true;
-                addBtn.title = 'Maximum of ' + maxItems + ' section(s) reached';
+                addBtn.title = tr('Maximum of {count} section(s) reached', { count: maxItems });
             } else {
                 addBtn.disabled = false;
                 addBtn.title = '';
@@ -172,11 +179,11 @@
             var header = document.createElement('div');
             header.className = 'compound-section-editor__header';
             header.innerHTML =
-                '<span class="compound-section-editor__drag" role="img" aria-label="Drag to reorder" title="Drag to reorder">&#x2630;</span>' +
-                '<button type="button" class="compound-section-editor__move-up" title="Move up" aria-label="Move section up">&#x25B2;</button>' +
-                '<button type="button" class="compound-section-editor__move-down" title="Move down" aria-label="Move section down">&#x25BC;</button>' +
+                '<span class="compound-section-editor__drag" role="img" aria-label="' + escapeHtml(tr('Drag to reorder')) + '" title="' + escapeHtml(tr('Drag to reorder')) + '">&#x2630;</span>' +
+                '<button type="button" class="compound-section-editor__move-up" title="' + escapeHtml(tr('Move up')) + '" aria-label="' + escapeHtml(tr('Move section up')) + '">&#x25B2;</button>' +
+                '<button type="button" class="compound-section-editor__move-down" title="' + escapeHtml(tr('Move down')) + '" aria-label="' + escapeHtml(tr('Move section down')) + '">&#x25BC;</button>' +
                 '<span class="compound-section-editor__label">' + escapeHtml(schema ? schema.label : typeName) + '</span>' +
-                '<button type="button" class="compound-section-editor__remove" title="Remove section" aria-label="Remove section">&times;</button>';
+                '<button type="button" class="compound-section-editor__remove" title="' + escapeHtml(tr('Remove section')) + '" aria-label="' + escapeHtml(tr('Remove section')) + '">&times;</button>';
             section.appendChild(header);
 
             // Move up handler

@@ -5,14 +5,34 @@ import { test } from '@playwright/test';
 import { setLanguage } from '../specs/helpers.mjs';
 
 const OUT = '../../docs/images/b199';
-const PAGES = {
-  dashboard: '/admin',
-  landing: '/admin/people/overview',
-  list: '/admin/content',
-  form: '/admin/structure/stages/add',
-  preferences: '/admin/preferences',
-  search: '/admin/search?q=content',
+// SHOTS picks the set: the shell's page types (default), or "forms".
+const SETS = {
+  shell: {
+    dashboard: '/admin',
+    landing: '/admin/people/overview',
+    list: '/admin/content',
+    form: '/admin/structure/stages/add',
+    preferences: '/admin/preferences',
+    search: '/admin/search?q=content',
+  },
+  forms: {
+    // A hand-written form, a form built in Rust, a settings form with its
+    // "What this changes" line, and a failed submit with its error summary.
+    'forms-user': '/admin/people/add',
+    'forms-item': async (page) => {
+      await page.goto('/admin/content/add');
+      const href = await page.locator('main a[href^="/admin/content/add/"]').first().getAttribute('href');
+      await page.goto(href);
+    },
+    'forms-settings': '/admin/config/site',
+    'forms-errors': async (page) => {
+      await page.goto('/admin/people/add');
+      await page.locator('#mail').fill('not-an-address');
+      await Promise.all([page.waitForLoadState('load'), page.locator('form#user-form [type=submit]').click()]);
+    },
+  },
 };
+const PAGES = SETS[process.env.SHOTS || 'shell'];
 const MODES = [
   { mode: 'light', width: 1280, scheme: 'light' },
   { mode: 'dark', width: 1280, scheme: 'dark' },
@@ -37,7 +57,11 @@ for (const { mode, width, scheme, language } of MODES) {
     }
     for (const [type, path] of Object.entries(PAGES)) {
       test(`${type} ${mode}`, async ({ page }) => {
-        await page.goto(path);
+        if (typeof path === 'function') await path(page);
+        else await page.goto(path);
+        // A full page capture draws a sticky action bar where the first
+        // screen ends, over the form; lay it out in place for the image.
+        await page.addStyleTag({ content: '.form-actions--sticky { position: static; }' });
         await page.screenshot({ path: `${OUT}/${type}-${mode}.png`, fullPage: true });
       });
     }

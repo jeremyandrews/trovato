@@ -6,18 +6,12 @@
 
 {% block content %}
 <div class="admin-card">
-    <form id="role-form" method="post" action="{{ action }}">
+    <form id="role-form" method="post" action="{{ action }}" novalidate>
         {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
 
-        {{ form::errors(errors=errors) }}
+        {{ form::error_summary(errors=errors | default(value=[])) }}
 
-        <div class="form-item">
-            <label for="name" class="form-item__label">{{ t(s="Role name") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
-            <p class="form-item__description" id="name-hint">{{ t(s="The human-readable name of this role.") }}</p>
-            <input type="text" id="name" name="name" class="form-text"
-                   value="{{ values.name | default(value='') }}"
-                   aria-describedby="name-hint" required>
-        </div>
+        {{ form::field(name="name", label=t(s="Role name"), value=values.name | default(value=""), hint=t(s="The human-readable name of this role."), required=true, errors=errors | default(value=[]), width="30") }}
 
         {% if editing %}
         {{ form::actions(submit_label=t(s="Save changes"), cancel_url="/admin/people/roles") }}

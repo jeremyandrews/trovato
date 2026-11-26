@@ -6,7 +6,7 @@
 {% block content %}
 <p>{{ t(s="This grid lists the permissions the kernel defines and the permissions each enabled plugin declares through {hook}, with the owner of each in the Declared by column. Saving changes only the permissions shown here: one belonging to a disabled plugin, or added directly to the database, keeps whatever it already had.", hook="tap_perm") }}</p>
 
-<form id="permissions-form" method="post" action="/admin/people/permissions">
+<form id="permissions-form" method="post" action="/admin/people/permissions" novalidate>
     <input type="hidden" name="_token" value="{{ csrf_token }}">
     <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
 

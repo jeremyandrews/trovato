@@ -8,7 +8,9 @@ use serde::Deserialize;
 use tower_sessions::Session;
 
 use crate::form::csrf::generate_csrf_token;
+use crate::i18n::UiMessage;
 use crate::models::{CreateCategory, CreateTag, UpdateCategory, UpdateTag};
+use crate::routes::admin_form::FieldError;
 use crate::state::AppState;
 
 use super::helpers::{
@@ -108,6 +110,7 @@ async fn add_category_form(State(state): State<AppState>, session: Session) -> R
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &false);
+    context.insert("hierarchy_options", HIERARCHY_OPTIONS);
     context.insert("values", &serde_json::json!({"hierarchy": 0}));
     context.insert("path", "/admin/structure/categories/add");
 
@@ -119,6 +122,14 @@ async fn add_category_form(State(state): State<AppState>, session: Session) -> R
     )
     .await
 }
+
+/// A category's hierarchy choices: value and English label, translated by
+/// the select macro.
+const HIERARCHY_OPTIONS: &[(&str, &str)] = &[
+    ("0", "Flat (no hierarchy)"),
+    ("1", "Single parent"),
+    ("2", "Multiple parents"),
+];
 
 /// Handle add category form submission.
 ///
@@ -141,13 +152,13 @@ async fn add_category_submit(
     let mut errors = Vec::new();
 
     if form.id.trim().is_empty() {
-        errors.push("Machine name is required.".to_string());
+        errors.push(FieldError::on("id", "Machine name is required."));
     } else if !is_valid_machine_name(&form.id) {
-        errors.push(MACHINE_NAME_ERROR.to_string());
+        errors.push(FieldError::on("id", MACHINE_NAME_ERROR));
     }
 
     if form.label.trim().is_empty() {
-        errors.push("Name is required.".to_string());
+        errors.push(FieldError::on("label", "Name is required."));
     }
 
     // Check if category already exists
@@ -157,7 +168,10 @@ async fn add_category_submit(
         .await
         .unwrap_or(false)
     {
-        errors.push(format!("A category with ID '{}' already exists.", form.id));
+        errors.push(FieldError::on(
+            "id",
+            UiMessage::new("A category with ID '{id}' already exists.").arg("id", &form.id),
+        ));
     }
 
     if !errors.is_empty() {
@@ -169,6 +183,7 @@ async fn add_category_submit(
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &false);
+        context.insert("hierarchy_options", HIERARCHY_OPTIONS);
         context.insert("errors", &errors);
         context.insert(
             "values",
@@ -243,6 +258,7 @@ async fn edit_category_form(
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &true);
+    context.insert("hierarchy_options", HIERARCHY_OPTIONS);
     context.insert("category_id", &category_id);
     context.insert(
         "values",
@@ -289,7 +305,7 @@ async fn edit_category_submit(
     let mut errors = Vec::new();
 
     if form.label.trim().is_empty() {
-        errors.push("Name is required.".to_string());
+        errors.push(FieldError::on("label", "Name is required."));
     }
 
     if !errors.is_empty() {
@@ -304,6 +320,7 @@ async fn edit_category_submit(
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &true);
+        context.insert("hierarchy_options", HIERARCHY_OPTIONS);
         context.insert("category_id", &category_id);
         context.insert("errors", &errors);
         context.insert(
@@ -612,7 +629,7 @@ async fn render_term_form(
     category: &crate::models::Category,
     tag_id: Option<uuid::Uuid>,
     values: serde_json::Value,
-    errors: &[String],
+    errors: &[FieldError],
     urls: &TermUrls,
 ) -> Response {
     // The parent selector: every term of the vocabulary but this one.
@@ -641,7 +658,12 @@ async fn render_term_form(
         context.insert("tag_id", &id.to_string());
     }
     context.insert("category", category);
-    context.insert("existing_tags", &tags);
+    // The parent choices, as [id, name] pairs for the select macro.
+    let parent_options: Vec<(String, String)> = tags
+        .iter()
+        .map(|t| (t.id.to_string(), t.label.clone()))
+        .collect();
+    context.insert("parent_options", &parent_options);
     if !errors.is_empty() {
         context.insert("errors", errors);
     }
@@ -709,24 +731,27 @@ pub(crate) async fn term_add_submit(
 
     let mut errors = Vec::new();
     if form.label.trim().is_empty() {
-        errors.push("Name is required.".to_string());
+        errors.push(FieldError::on("label", "Name is required."));
     }
     if let Some(ref s) = slug
         && !is_valid_slug(s)
     {
-        errors.push(SLUG_FORMAT_ERROR.to_string());
+        errors.push(FieldError::on("slug", SLUG_FORMAT_ERROR));
     }
     // Check for duplicate slug within this category.
     if errors.is_empty()
         && let Some(ref s) = slug
         && let Ok(Some(_)) = crate::models::Tag::find_by_slug(state.db(), &category.id, s).await
     {
-        errors.push("A tag with this slug already exists in this category.".to_string());
+        errors.push(FieldError::on(
+            "slug",
+            "A tag with this slug already exists in this category.",
+        ));
     }
     let parent_ids = match parent_of(state, category, form.parent_id.as_deref()).await {
         Ok(parents) => parents,
         Err(e) => {
-            errors.push(e);
+            errors.push(FieldError::on("parent_id", e));
             None
         }
     };
@@ -828,10 +853,10 @@ pub(crate) async fn term_edit_submit(
 
     let mut errors = Vec::new();
     if form.label.trim().is_empty() {
-        errors.push("Name is required.".to_string());
+        errors.push(FieldError::on("label", "Name is required."));
     }
     if !slug_value.is_empty() && !is_valid_slug(slug_value) {
-        errors.push(SLUG_FORMAT_ERROR.to_string());
+        errors.push(FieldError::on("slug", SLUG_FORMAT_ERROR));
     }
     // Check for duplicate slug within the same category (excluding this tag).
     if errors.is_empty()
@@ -840,13 +865,16 @@ pub(crate) async fn term_edit_submit(
             crate::models::Tag::find_by_slug(state.db(), &tag.category_id, slug_value).await
         && existing.id != tag_id
     {
-        errors.push("A tag with this slug already exists in this category.".to_string());
+        errors.push(FieldError::on(
+            "slug",
+            "A tag with this slug already exists in this category.",
+        ));
     }
     let parent_ids = if category.hierarchy > 0 {
         match parent_of(state, category, form.parent_id.as_deref()).await {
             Ok(parents) => parents.unwrap_or_default(),
             Err(e) => {
-                errors.push(e);
+                errors.push(FieldError::on("parent_id", e));
                 Vec::new()
             }
         }
@@ -854,7 +882,10 @@ pub(crate) async fn term_edit_submit(
         Vec::new()
     };
     if parent_ids.contains(&tag_id) {
-        errors.push("A tag cannot be its own parent.".to_string());
+        errors.push(FieldError::on(
+            "parent_id",
+            "A tag cannot be its own parent.",
+        ));
     }
     if !errors.is_empty() {
         return render_term_form(

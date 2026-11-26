@@ -1,4 +1,5 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {% block page_title %}{{ t(s="Media Library") }}{% endblock page_title %}
@@ -7,18 +8,8 @@
 <div class="admin-card">
     <form class="filter-form" method="get" action="/admin/media">
         <div class="filter-row">
-            <div class="filter-item">
-                <label for="type">{{ t(s="Type") }}</label>
-                <select id="type" name="type">
-                    <option value="all" {% if type_filter == "all" %}selected{% endif %}>{{ t(s="All files") }}</option>
-                    <option value="image" {% if type_filter == "image" %}selected{% endif %}>{{ t(s="Images") }}</option>
-                    <option value="document" {% if type_filter == "document" %}selected{% endif %}>{{ t(s="Documents") }}</option>
-                </select>
-            </div>
-            <div class="filter-item">
-                <label for="q">{{ t(s="Search") }}</label>
-                <input type="search" id="q" name="q" value="{{ search }}" placeholder="{{ t(s='Filename...') }}">
-            </div>
+            {{ form::select(name="type", label=t(s="Type"), options=type_options, value=type_filter, translate_options=true, wrapper="filter-item") }}
+            {{ form::field(name="q", type="search", label=t(s="Search"), hint=t(s="Part of a file name."), value=search, width="20", wrapper="filter-item") }}
             <div class="filter-item">
                 <button type="submit" class="button button--secondary">{{ t(s="Filter") }}</button>
             </div>

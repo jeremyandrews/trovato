@@ -5,53 +5,24 @@
 {% block page_intro %}<p class="page-intro">{{ t(s="A menu link points at a page on this site. Where it sits in the menu is set by its parent and its weight.") }}</p>{% endblock page_intro %}
 
 {% block content %}
+{% set errs = errors | default(value=[]) %}
 <div class="admin-card">
-    <form id="menu-link-form" method="post" action="{{ action }}">
+    <form id="menu-link-form" method="post" action="{{ action }}" novalidate>
         {{ form::csrf(csrf_token=csrf_token) }}
 
-        {{ form::errors(errors=errors) }}
+        {{ form::error_summary(errors=errs) }}
 
-        <div class="form-item">
-            <label for="title" class="form-item__label">{{ t(s="Title") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
-            <p class="form-item__description" id="title-hint">{{ t(s="The text the link shows.") }}</p>
-            <input type="text" id="title" name="title" class="form-text"
-                   value="{{ values.title | default(value='') }}" aria-describedby="title-hint" required>
-        </div>
+        {{ form::field(name="title", label=t(s="Title"), value=values.title | default(value=""), hint=t(s="The text the link shows."), required=true, errors=errs, width="30") }}
 
-        <div class="form-item">
-            <label for="path" class="form-item__label">{{ t(s="Path") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
-            <p class="form-item__description" id="path-hint">{{ t(s="A local absolute path, beginning with /. External URLs are not accepted. A path that does not resolve is saved and returns 404 when followed, so check it.") }}</p>
-            <input type="text" id="path" name="path" class="form-text"
-                   value="{{ values.path | default(value='') }}"
-                   placeholder="{{ '/about' }}" aria-describedby="path-hint" required>
-        </div>
+        {{ form::field(name="path", label=t(s="Path"), value=values.path | default(value=""), hint=t(s="A local absolute path, beginning with /. External URLs are not accepted. A path that does not resolve is saved and returns 404 when followed, so check it."), required=true, errors=errs, width="30", attrs='spellcheck="false" autocapitalize="none"') }}
 
-        <div class="form-item">
-            <label for="parent_id" class="form-item__label">{{ t(s="Parent link") }}</label>
-            <p class="form-item__description" id="parent_id-hint">{{ t(s="The link this one nests under. A link cannot be placed below itself, so its own descendants are not offered.") }}</p>
-            <select id="parent_id" name="parent_id" class="form-select" aria-describedby="parent_id-hint">
-                <option value="">{{ t(s="<Top level>") }}</option>
-                {% for parent in parents %}
-                <option value="{{ parent.id }}"{% if values.parent_id | default(value='') == parent.id %} selected{% endif %}>{{ parent.label }}</option>
-                {% endfor %}
-            </select>
-        </div>
+        {% if values.parent_id is defined and values.parent_id %}{% set parent = values.parent_id %}{% else %}{% set parent = "" %}{% endif %}
+        {{ form::select(name="parent_id", label=t(s="Parent link"), options=parents, value=parent, empty=t(s="<Top level>"), hint=t(s="The link this one nests under. A link cannot be placed below itself, so its own descendants are not offered."), errors=errs) }}
 
-        <div class="form-item">
-            <label for="weight" class="form-item__label">{{ t(s="Weight") }}</label>
-            <p class="form-item__description" id="weight-hint">{{ t(s="Lower sorts first among siblings. Ties break on title.") }}</p>
-            <input type="number" id="weight" name="weight" class="form-text"
-                   value="{{ values.weight | default(value=0) }}" step="1" aria-describedby="weight-hint">
-        </div>
+        {% if values.weight is defined and values.weight %}{% set weight = values.weight ~ "" %}{% else %}{% set weight = "0" %}{% endif %}
+        {{ form::field(name="weight", type="number", label=t(s="Weight"), value=weight, hint=t(s="Lower sorts first among siblings. Ties break on title."), errors=errs, width="10", attrs='step="1"') }}
 
-        <div class="form-item">
-            <div class="form-checkbox-wrapper">
-                <input type="checkbox" id="hidden" name="hidden" value="1" aria-describedby="hidden-hint"
-                       {% if values.hidden | default(value=false) %}checked{% endif %}>
-                <label for="hidden">{{ t(s="Hidden") }}</label>
-            </div>
-            <p class="form-item__description" id="hidden-hint">{{ t(s="A hidden link stays in the menu and is not rendered. Its children are still rendered.") }}</p>
-        </div>
+        {{ form::checkbox(name="hidden", label=t(s="Hidden"), checked=values.hidden | default(value=false), hint=t(s="A hidden link stays in the menu and is not rendered. Its children are still rendered."), errors=errs) }}
 
         {% if editing %}
         {{ form::actions(submit_label=t(s="Save changes"), cancel_url="/admin/structure/menus/" ~ menu_name) }}

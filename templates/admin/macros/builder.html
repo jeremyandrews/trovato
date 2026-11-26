@@ -1,0 +1,7 @@
+{#- Helpers for admin/form/*.html: the form builder's admin templates, which
+    map a FormElement onto the field macros in admin/macros/form.html. -#}
+
+{#- The element's extra attributes, escaped: what a plugin or the builder set
+    (min, max, step, data-…), its placeholder (translated), a text field's
+    maxlength, and the AJAX trigger. -#}
+{% macro attrs(element) %}{% if element.attributes %}{% for key, value in element.attributes %}{% if key != "class" and key != "id" and key != "name" %} {{ key | escape }}="{{ value | escape }}"{% endif %}{% endfor %}{% endif %}{% if element.placeholder %} placeholder="{{ t(s=element.placeholder) | escape }}"{% endif %}{% if element.max_length %} maxlength="{{ element.max_length }}"{% endif %}{% if element.ajax %} data-ajax-trigger="{{ element.ajax.callback | escape }}" data-ajax-event="{{ element.ajax.event | default(value='change') | escape }}"{% endif %}{% endmacro attrs %}

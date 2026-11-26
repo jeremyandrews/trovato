@@ -310,14 +310,14 @@
     - heading "Create" [level=3]
     - list:
       - listitem:
-        - link "Add Blog Post":
-          - /url: /item/add/blog
-      - listitem:
         - link "Add Media":
           - /url: /item/add/media
       - listitem:
         - link "Add Basic Page":
           - /url: /item/add/page
+      - listitem:
+        - link "Add Blog Post":
+          - /url: /item/add/blog
   - region "You":
     - heading "You" [level=3]
     - paragraph: Signed in as gen_admin.

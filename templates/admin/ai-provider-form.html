@@ -5,93 +5,50 @@
 {% block page_intro %}<p class="page-intro">{{ t(s="An AI provider is a service the site may call, and the model it uses for each kind of work.") }}</p>{% endblock page_intro %}
 
 {% block content %}
+{% set errs = errors | default(value=[]) %}
+{#- Operation choices as [key, label] pairs, and the protocols. -#}
+{% set_global op_options = [] %}
+{% for op in operations %}{% set op_label = t(s=op.label) %}{% set pair = [op.key, op_label] %}{% set_global op_options = op_options | concat(with=[pair]) %}{% endfor %}
+{% set proto_openai_label = t(s="OpenAI Compatible") %}
+{% set proto_anthropic_label = t(s="Anthropic") %}
+{% set proto_openai = ["open_ai_compatible", proto_openai_label] %}
+{% set proto_anthropic = ["anthropic", proto_anthropic_label] %}
+{% set protocols = [proto_openai, proto_anthropic] %}
 <div class="admin-card">
-    {{ form::errors(errors=errors) }}
-
-    <form method="post" action="{{ action }}">
+    <form method="post" action="{{ action }}" novalidate>
         {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
 
-        <div class="form-item">
-            <label for="label" class="form-item__label">{{ t(s="Label") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
-            <p class="form-item__description" id="label-hint">{{ t(s='A human-readable name for this provider (e.g. "OpenAI Production").') }}</p>
-            <input type="text" id="label" name="label" value="{{ values.label | default(value='') }}" aria-describedby="label-hint" required>
-        </div>
+        {{ form::error_summary(errors=errs) }}
 
-        <div class="form-item">
-            <label for="protocol" class="form-item__label">{{ t(s="Protocol") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
-            <p class="form-item__description" id="protocol-hint">{{ t(s="OpenAI Compatible covers OpenAI, Azure, Ollama, and vLLM endpoints.") }}</p>
-            <select id="protocol" name="protocol" aria-describedby="protocol-hint" required>
-                <option value="">{{ t(s="— Select —") }}</option>
-                <option value="open_ai_compatible" {% if values.protocol is defined and values.protocol == "open_ai_compatible" %}selected{% endif %}>{{ t(s="OpenAI Compatible") }}</option>
-                <option value="anthropic" {% if values.protocol is defined and values.protocol == "anthropic" %}selected{% endif %}>{{ t(s="Anthropic") }}</option>
-            </select>
-        </div>
+        {{ form::field(name="label", label=t(s="Label"), value=values.label | default(value=""), hint=t(s='A human-readable name for this provider (e.g. "OpenAI Production").'), required=true, errors=errs, width="30") }}
 
-        <div class="form-item">
-            <label for="base_url" class="form-item__label">{{ t(s="Base URL") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
-            <p class="form-item__description" id="base_url-hint">{{ t(s="The API base URL without trailing slash.") }}</p>
-            <input type="url" id="base_url" name="base_url" value="{{ values.base_url | default(value='') }}" placeholder="{{ "https://api.openai.com/v1" }}" aria-describedby="base_url-hint" required>
-        </div>
+        {{ form::select(name="protocol", label=t(s="Protocol"), options=protocols, value=values.protocol | default(value=""), empty=t(s="— Select —"), hint=t(s="OpenAI Compatible covers OpenAI, Azure, Ollama, and vLLM endpoints."), required=true, errors=errs) }}
 
-        <div class="form-item">
-            <label for="api_key_env" class="form-item__label">{{ t(s="API Key Environment Variable") }}</label>
-            <p class="form-item__description" id="api_key_env-hint">{{ t(s="Name of the environment variable containing the API key. The key itself is never stored in the database.") }}</p>
-            <input type="text" id="api_key_env" name="api_key_env" value="{{ values.api_key_env | default(value='') }}" placeholder="{{ "OPENAI_API_KEY" }}" aria-describedby="api_key_env-hint">
-        </div>
+        {{ form::field(name="base_url", type="url", label=t(s="Base URL"), value=values.base_url | default(value=""), hint=t(s="The API base URL without trailing slash, for example {example}.", example="https://api.openai.com/v1"), required=true, errors=errs, autocomplete="off", attrs='spellcheck="false"') }}
 
-        <div class="form-item">
-            <label for="rate_limit_rpm" class="form-item__label">{{ t(s="Rate Limit (requests per minute)") }}</label>
-            <p class="form-item__description" id="rate_limit_rpm-hint">{{ t(s="0 = no rate limiting.") }}</p>
-            <input type="number" id="rate_limit_rpm" name="rate_limit_rpm" value="{{ values.rate_limit_rpm | default(value='0') }}" min="0" aria-describedby="rate_limit_rpm-hint">
-        </div>
+        {{ form::field(name="api_key_env", label=t(s="API Key Environment Variable"), value=values.api_key_env | default(value=""), hint=t(s="Name of the environment variable containing the API key, for example {example}. The key itself is never stored in the database.", example="OPENAI_API_KEY"), errors=errs, width="30", autocomplete="off", attrs='spellcheck="false" autocapitalize="characters"') }}
 
-        <div class="form-item">
-            <div class="form-checkbox-wrapper">
-                <input type="checkbox" id="enabled" name="enabled" value="1" {% if values.enabled is defined and values.enabled %}checked{% endif %}>
-                <label for="enabled">{{ t(s="Enabled") }}</label>
-            </div>
-        </div>
+        {{ form::field(name="rate_limit_rpm", type="number", label=t(s="Rate Limit (requests per minute)"), value=values.rate_limit_rpm | default(value="0"), hint=t(s="0 = no rate limiting."), errors=errs, width="10", attrs='min="0"') }}
 
-        <fieldset>
-            <legend>{{ t(s="Operation Models") }}</legend>
-            <p class="form-item__description">{{ t(s="Assign a model identifier to each operation type this provider supports. Leave blank for operations this provider does not serve.") }}</p>
+        {{ form::checkbox(name="enabled", label=t(s="Enabled"), checked=values.enabled | default(value=false), errors=errs) }}
 
+        {{ form::fieldset_start(legend=t(s="Operation Models"), id="operation-models", hint=t(s="Assign a model identifier to each operation type this provider supports. Leave blank for operations this provider does not serve.")) }}
             {#- Rows are added and removed by static/js/ai-admin.js, which keys on
                 #model-rows, .form-item--inline, .js-remove-row and #add-model-row. -#}
             <div id="model-rows">
-                {% if values.models is defined and values.models | length > 0 %}
-                    {% for m in values.models %}
-                    <div class="form-item form-item--inline">
-                        <label class="visually-hidden" for="op_{{ loop.index0 }}">{{ t(s="Operation {number}", number=loop.index) }}</label>
-                        <select id="op_{{ loop.index0 }}" name="op_{{ loop.index0 }}">
-                            <option value="">{{ t(s="— Select operation —") }}</option>
-                            {% for op in operations %}
-                            <option value="{{ op.key }}" {% if m.operation == op.key %}selected{% endif %}>{{ t(s=op.label) }}</option>
-                            {% endfor %}
-                        </select>
-                        <label class="visually-hidden" for="model_{{ loop.index0 }}">{{ t(s="Model {number}", number=loop.index) }}</label>
-                        <input type="text" id="model_{{ loop.index0 }}" name="model_{{ loop.index0 }}" value="{{ m.model | default(value='') }}" placeholder="{{ t(s='Model ID (e.g. gpt-4o)') }}">
-                        <button type="button" class="button button--small button--danger js-remove-row" title="{{ t(s='Remove') }}" aria-label="{{ t(s='Remove model {number}', number=loop.index) }}">&times;</button>
-                    </div>
-                    {% endfor %}
-                {% else %}
-                    <div class="form-item form-item--inline">
-                        <label class="visually-hidden" for="op_0">{{ t(s="Operation {number}", number=1) }}</label>
-                        <select id="op_0" name="op_0">
-                            <option value="">{{ t(s="— Select operation —") }}</option>
-                            {% for op in operations %}
-                            <option value="{{ op.key }}">{{ t(s=op.label) }}</option>
-                            {% endfor %}
-                        </select>
-                        <label class="visually-hidden" for="model_0">{{ t(s="Model {number}", number=1) }}</label>
-                        <input type="text" id="model_0" name="model_0" value="" placeholder="{{ t(s='Model ID (e.g. gpt-4o)') }}">
-                        <button type="button" class="button button--small button--danger js-remove-row" title="{{ t(s='Remove') }}" aria-label="{{ t(s='Remove model {number}', number=1) }}">&times;</button>
-                    </div>
-                {% endif %}
+                {% if values.models is defined and values.models | length > 0 %}{% set rows = values.models %}{% else %}{% set rows = [0] %}{% endif %}
+                {% for m in rows %}
+                {% if m is object %}{% set mop = m.operation %}{% set mmodel = m.model | default(value="") %}{% else %}{% set mop = "" %}{% set mmodel = "" %}{% endif %}
+                <div class="model-row form-item--inline">
+                    {{ form::select(name="op_" ~ loop.index0, label=t(s="Operation {number}", number=loop.index), options=op_options, value=mop, empty=t(s="— Select operation —"), errors=errs) }}
+                    {{ form::field(name="model_" ~ loop.index0, label=t(s="Model {number}", number=loop.index), value=mmodel, errors=errs, attrs='spellcheck="false"') }}
+                    <button type="button" class="button button--small button--danger js-remove-row" aria-label="{{ t(s='Remove model {number}', number=loop.index) }}">{{ t(s="Remove") }}</button>
+                </div>
+                {% endfor %}
             </div>
 
             <button type="button" id="add-model-row" class="button button--secondary">{{ t(s="Add model") }}</button>
-        </fieldset>
+        {{ form::fieldset_end() }}
 
         {{ form::actions(submit_label=t(s="Save provider"), cancel_url="/admin/system/ai-providers") }}
     </form>

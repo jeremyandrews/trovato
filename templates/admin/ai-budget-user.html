@@ -46,7 +46,7 @@
     <h2 id="user-overrides-heading">{{ t(s="Per-User Overrides") }}</h2>
     <p id="user-overrides-hint">{{ t(s="Set per-user token limits that override role defaults. Enter 0 for unlimited. Leave blank to use role default.") }}</p>
 
-    <form method="post" action="/admin/system/ai-budgets/user/{{ user_id }}">
+    <form method="post" action="/admin/system/ai-budgets/user/{{ user_id }}" novalidate>
         {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
 
         {% if provider_usage | length > 0 %}

@@ -24,7 +24,7 @@
     column of identical "Delete"s. `confirm_text` is shown in the browser's
     confirm dialog before the form is sent. Both arrive translated. -#}
 {% macro delete_button(action, label, confirm_text, btn_class="link-button link-button--danger", csrf_token="") %}
-<form method="post" action="{{ action }}" class="inline-form">
+<form method="post" action="{{ action }}" class="inline-form" novalidate>
     <input type="hidden" name="_token" value="{{ csrf_token }}">
     <button type="submit" class="{{ btn_class }}" data-confirm="{{ confirm_text }}">{{ label }}</button>
 </form>

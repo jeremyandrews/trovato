@@ -22,6 +22,16 @@ use super::helpers::{
     require_csrf_header, require_permission, require_permission_json,
 };
 
+/// The redirect status choices: code and English label, translated by the
+/// select macro.
+const STATUS_OPTIONS: &[(&str, &str)] = &[
+    ("301", "301 Moved Permanently"),
+    ("302", "302 Found"),
+    ("303", "303 See Other"),
+    ("307", "307 Temporary Redirect"),
+    ("308", "308 Permanent Redirect"),
+];
+
 /// Default page size of the redirect JSON list.
 const LIST_DEFAULT: i64 = 50;
 
@@ -135,6 +145,7 @@ async fn add_redirect_form(State(state): State<AppState>, session: Session) -> R
     context.insert("csrf_token", &csrf_token);
     context.insert("action", "/admin/config/redirects/add");
     context.insert("editing", &false);
+    context.insert("status_options", STATUS_OPTIONS);
     context.insert("values", &serde_json::json!({}));
     context.insert("path", "/admin/config/redirects/add");
 
@@ -218,6 +229,7 @@ async fn edit_redirect_form(
         &format!("/admin/config/redirects/{redirect_id}/edit"),
     );
     context.insert("editing", &true);
+    context.insert("status_options", STATUS_OPTIONS);
     context.insert(
         "values",
         &serde_json::json!({

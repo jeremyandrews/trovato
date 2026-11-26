@@ -5,123 +5,60 @@
 {% block page_intro %}<p class="page-intro">{{ t(s="A tile is a piece of a page shown in one region of the site, such as the sidebar or the footer.") }}</p>{% endblock page_intro %}
 
 {% block content %}
+{% set errs = errors | default(value=[]) %}
 <div class="admin-card">
-    <form method="post" action="{{ action }}">
+    <form id="tile-form" method="post" action="{{ action }}" novalidate>
         {{ form::csrf(csrf_token=csrf_token) }}
 
-        <div class="form-item">
-            <label for="machine_name" class="form-item__label">{{ t(s="Machine name") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
-            <p class="form-item__description" id="machine_name-hint">{{ t(s="Lowercase letters, numbers, and underscores only") }}</p>
-            <input type="text" id="machine_name" name="machine_name" class="form-text"
-                   value="{{ values.machine_name | default(value='') }}"
-                   {% if editing %}readonly{% endif %}
-                   required
-                   pattern="[a-z0-9_]+" aria-describedby="machine_name-hint">
-        </div>
+        {{ form::error_summary(errors=errs) }}
 
-        <div class="form-item">
-            <label for="label" class="form-item__label">{{ t(s="Label") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
-            <input type="text" id="label" name="label" class="form-text"
-                   value="{{ values.label | default(value='') }}"
-                   required>
-        </div>
+        {{ form::field(name="machine_name", label=t(s="Machine name"), value=values.machine_name | default(value=""), hint=t(s="Lowercase letters, numbers, and underscores only"), required=true, errors=errs, width="30", readonly=editing, attrs='pattern="[a-z0-9_]+" spellcheck="false" autocapitalize="none"') }}
 
-        <div class="form-item">
-            <label for="region" class="form-item__label">{{ t(s="Region") }}</label>
-            <select id="region" name="region" class="form-select">
-                <option value="sidebar" {% if values.region is defined and values.region == "sidebar" %}selected{% endif %}>{{ t(s="Sidebar") }}</option>
-                <option value="header" {% if values.region is defined and values.region == "header" %}selected{% endif %}>{{ t(s="Header") }}</option>
-                <option value="footer" {% if values.region is defined and values.region == "footer" %}selected{% endif %}>{{ t(s="Footer") }}</option>
-                <option value="content_top" {% if values.region is defined and values.region == "content_top" %}selected{% endif %}>{{ t(s="Content top") }}</option>
-                <option value="content_bottom" {% if values.region is defined and values.region == "content_bottom" %}selected{% endif %}>{{ t(s="Content bottom") }}</option>
-            </select>
-        </div>
+        {{ form::field(name="label", label=t(s="Label"), value=values.label | default(value=""), required=true, errors=errs, width="30") }}
 
-        <div class="form-item">
-            <label for="tile_type" class="form-item__label">{{ t(s="Type") }}</label>
-            <select id="tile_type" name="tile_type" class="form-select">
-                <option value="custom_html" {% if values.tile_type is defined and values.tile_type == "custom_html" %}selected{% endif %}>{{ t(s="Custom HTML") }}</option>
-                <option value="menu" {% if values.tile_type is defined and values.tile_type == "menu" %}selected{% endif %}>{{ t(s="Menu") }}</option>
-                <option value="gather_query" {% if values.tile_type is defined and values.tile_type == "gather_query" %}selected{% endif %}>{{ t(s="Gather query") }}</option>
-                <option value="chat" {% if values.tile_type is defined and values.tile_type == "chat" %}selected{% endif %}>{{ t(s="Chat") }}</option>
-                <option value="language_switcher" {% if values.tile_type is defined and values.tile_type == "language_switcher" %}selected{% endif %}>{{ t(s="Language switcher") }}</option>
-            </select>
-        </div>
+        {% if values.region is defined and values.region %}{% set region = values.region %}{% else %}{% set region = "sidebar" %}{% endif %}
+        {{ form::select(name="region", label=t(s="Region"), options=region_options, value=region, translate_options=true, errors=errs) }}
+
+        {% if values.tile_type is defined and values.tile_type %}{% set tile_type = values.tile_type %}{% else %}{% set tile_type = "custom_html" %}{% endif %}
+        {{ form::select(name="tile_type", label=t(s="Type"), options=tile_type_options, value=tile_type, translate_options=true, errors=errs) }}
 
         {#- The settings of each type. admin-helpers.js shows only the chosen
             type's group; without JavaScript every group is shown. -#}
         <div id="fields-custom_html" class="tile-type-fields">
-            <div class="form-item">
-                <label for="body" class="form-item__label">{{ t(s="Body") }}</label>
-                <textarea id="body" name="body" rows="8" class="form-textarea">{{ values.body | default(value='') }}</textarea>
-            </div>
-            <div class="form-item">
-                <label for="format" class="form-item__label">{{ t(s="Text format") }}</label>
-                <select id="format" name="format" class="form-select">
-                    <option value="filtered_html" {% if values.format is defined and values.format == "filtered_html" %}selected{% endif %}>{{ t(s="Filtered HTML") }}</option>
-                    <option value="full_html" {% if values.format is defined and values.format == "full_html" %}selected{% endif %}>{{ t(s="Full HTML") }}</option>
-                    <option value="plain_text" {% if values.format is defined and values.format == "plain_text" %}selected{% endif %}>{{ t(s="Plain text") }}</option>
-                </select>
-            </div>
+            {{ form::textarea(name="body", label=t(s="Body"), value=values.body | default(value=""), rows=8, errors=errs) }}
+
+            {% if values.format is defined and values.format %}{% set format = values.format %}{% else %}{% set format = "filtered_html" %}{% endif %}
+            {{ form::select(name="format", label=t(s="Text format"), options=format_options, value=format, translate_options=true, errors=errs) }}
         </div>
 
         <div id="fields-menu" class="tile-type-fields">
-            <div class="form-item">
-                <label for="menu_name" class="form-item__label">{{ t(s="Menu") }}</label>
-                <input type="text" id="menu_name" name="menu_name"
-                       value="{{ values.menu_name | default(value='main') }}"
-                       class="form-text" placeholder="{{ 'main' }}">
-            </div>
+            {% if values.menu_name is defined and values.menu_name %}{% set menu_name = values.menu_name %}{% else %}{% set menu_name = "main" %}{% endif %}
+            {{ form::field(name="menu_name", label=t(s="Menu"), value=menu_name, hint=t(s="The machine name of the menu to show, such as {example}.", example="main"), errors=errs, width="20", attrs='spellcheck="false" autocapitalize="none"') }}
         </div>
 
         <div id="fields-gather_query" class="tile-type-fields">
-            <div class="form-item">
-                <label for="query_id" class="form-item__label">{{ t(s="Query ID") }}</label>
-                <input type="text" id="query_id" name="query_id"
-                       value="{{ values.query_id | default(value='') }}"
-                       class="form-text" placeholder="{{ t(s='e.g., blog_listing') }}">
-            </div>
-            <div class="form-item">
-                <label for="items" class="form-item__label">{{ t(s="Items") }}</label>
-                <p class="form-item__description" id="items-hint">{{ t(s="How many of the gather's rows the tile lists, from 1 to 50.") }}</p>
-                <input type="number" id="items" name="items" min="1" max="50" step="1"
-                       value="{{ values.items | default(value=5) }}"
-                       class="form-text form-text--compact" aria-describedby="items-hint">
-            </div>
+            {{ form::field(name="query_id", label=t(s="Query ID"), value=values.query_id | default(value=""), hint=t(s="The ID of the gather query to list, such as {example}.", example="blog_listing"), errors=errs, width="30", attrs='spellcheck="false" autocapitalize="none"') }}
+
+            {% if values.items is defined and values.items %}{% set items = values.items ~ "" %}{% else %}{% set items = "5" %}{% endif %}
+            {{ form::field(name="items", type="number", label=t(s="Items"), value=items, hint=t(s="How many of the gather's rows the tile lists, from 1 to 50."), errors=errs, width="4", attrs='min="1" max="50" step="1"') }}
         </div>
 
         <div id="fields-chat" class="tile-type-fields">
-            <p class="form-item__description">{{ t(s="The chat widget will be rendered in this region. Its settings are on the AI chat page.") }} <a href="/admin/system/ai-chat">{{ t(s="Configure AI chat") }}</a></p>
+            <p class="description">{{ t(s="The chat widget will be rendered in this region. Its settings are on the AI chat page.") }} <a href="/admin/system/ai-chat">{{ t(s="Configure AI chat") }}</a></p>
         </div>
 
         <div id="fields-language_switcher" class="tile-type-fields">
-            <p class="form-item__description">{{ t(s="One link per enabled language, to this same page in that language. Hidden automatically on a site with only one language.") }}</p>
+            <p class="description">{{ t(s="One link per enabled language, to this same page in that language. Hidden automatically on a site with only one language.") }}</p>
         </div>
 
-        <div class="form-item">
-            <label for="audience" class="form-item__label">{{ t(s="Show to") }}</label>
-            <p class="form-item__description" id="audience-hint">{{ t(s="Who may see this tile, regardless of its other visibility rules.") }}</p>
-            <select id="audience" name="audience" class="form-select" aria-describedby="audience-hint">
-                <option value="" {% if values.audience is not defined or values.audience == "" %}selected{% endif %}>{{ t(s="Everyone") }}</option>
-                <option value="anonymous" {% if values.audience is defined and values.audience == "anonymous" %}selected{% endif %}>{{ t(s="Anonymous visitors only") }}</option>
-                <option value="authenticated" {% if values.audience is defined and values.audience == "authenticated" %}selected{% endif %}>{{ t(s="Signed-in users only") }}</option>
-            </select>
-        </div>
+        {% if values.audience is defined and values.audience %}{% set audience = values.audience %}{% else %}{% set audience = "" %}{% endif %}
+        {{ form::select(name="audience", label=t(s="Show to"), options=audience_options, value=audience, translate_options=true, hint=t(s="Who may see this tile, regardless of its other visibility rules."), errors=errs) }}
 
-        <div class="form-item">
-            <label for="weight" class="form-item__label">{{ t(s="Weight") }}</label>
-            <input type="number" id="weight" name="weight"
-                   value="{{ values.weight | default(value=0) }}"
-                   class="form-text form-text--compact">
-        </div>
+        {% if values.weight is defined and values.weight %}{% set weight = values.weight ~ "" %}{% else %}{% set weight = "0" %}{% endif %}
+        {{ form::field(name="weight", type="number", label=t(s="Weight"), value=weight, errors=errs, width="10") }}
 
-        <div class="form-item">
-            <div class="form-checkbox-wrapper">
-                <input type="checkbox" id="status" name="status" value="1"
-                       {% if not editing or (values.status is defined and values.status) %}checked{% endif %}>
-                <label for="status">{{ t(s="Active") }}</label>
-            </div>
-        </div>
+        {% set active = not editing or (values.status is defined and values.status) %}
+        {{ form::checkbox(name="status", label=t(s="Active"), checked=active, errors=errs) }}
 
         {{ form::actions(submit_label=t(s="Save"), cancel_url="/admin/structure/tiles") }}
     </form>

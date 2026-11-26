@@ -252,17 +252,109 @@ context, the pseudo locales and the marker mode the tests use.
 The admin language is the viewer's choice in Your preferences, else the site's
 default language; `lang` and `dir` on `<html>` follow it.
 
-## 8. Form pattern (Part 2)
+## 8. Form pattern
 
-Label above the field, always visible; hint under the label, tied with
-`aria-describedby`; required marked in text; one column; widths sized to the
-value; related controls in a `fieldset` with a `legend`; advanced settings in
-native `details`. On a failed submit the `<title>` starts with "Error:", an
-error summary (`role="alert"`, "There is a problem", one link per error)
-takes focus, and each failed field has `aria-invalid="true"` and its message
-tied with `aria-describedby`. Part 2 picks whether every form moves onto the
-Rust form builder or the macro is rebuilt to emit identical markup, and records
-the choice here.
+**One presentation layer: the macros.** Every admin field is drawn by
+`templates/admin/macros/form.html`. Hand-written admin forms call its macros
+(`field`, `textarea`, `select`, `checkbox`, `choices`, `fieldset_start` and
+`fieldset_end`, `details_start` and `details_end`, `effect`, `actions`,
+`error_summary`).
+
+A form built in Rust with an `/admin` action renders through
+`templates/admin/form/*.html`. Those templates do nothing but map the element
+onto the same macros. So the two kinds of form produce identical markup, and
+a test (`admin_forms_test::hand_written_and_builder_fields_are_the_same_markup`)
+compares them.
+
+The alternative was moving every hand-written form onto the Rust builder. It
+was rejected for three reasons:
+- About forty forms with their own handlers would have been rewritten,
+  validation and all, for no difference a person can see or hear.
+- Several of those forms are grids or listings with inline controls, which
+  the builder does not model.
+- The macros keep each form's markup readable where it is.
+
+The front end's form templates (`templates/form/*.html`) are not changed. A
+form whose action is not under `/admin` renders exactly as before, and a
+golden test proves it. No admin template may draw a field by hand:
+`admin_forms_test::no_admin_form_is_left_outside_the_pattern` fails on a
+hand-written `<label>` (other than a visually hidden one in a grid cell),
+`<select>`, `<textarea>`, `<legend>` or `form-item` block, an inline `on…=`
+handler, or a posting form without `novalidate`.
+
+**The field.**
+- The label is above the field and always visible; a placeholder is never
+  the label.
+- A hint sits under the label, `id="{field}-hint"`, and the field names it in
+  `aria-describedby`.
+- Required is said in words, " (required)" inside the label, so it is part of
+  the field's name; "(optional)" is available for a form where most fields
+  are required. There is no asterisk and no colour-only cue.
+- One column.
+- Widths are sized to the value: `width="4"`, `"10"`, `"20"` or `"30"`
+  characters, or the full measure.
+- Person fields carry `autocomplete` (username, email, new-password).
+- Related radios and checkboxes sit in a `fieldset` with a `legend`
+  (`choices`).
+- Long or advanced settings are collapsed in native `details` and `summary`,
+  which every keyboard and screen reader can open with no script. A
+  collapsible fieldset from the form builder is drawn the same way, on the
+  front end too; it used to open only from an `onclick` on its legend.
+
+**Errors.**
+- Forms carry `novalidate`; the server validates on submit.
+- A failed submit shows the form again with an error summary first: a
+  `role="alert"` box, focusable (`tabindex="-1"`), headed "There is a
+  problem", with one link per problem.
+- `admin-forms.js` moves focus to the summary. Each link moves focus to its
+  field and scrolls its label, or its group's legend, into view. Without
+  script the links are ordinary anchors to the field's id.
+- The page `<title>` starts with the translated "Error:"
+  (`admin_nav::finish_page` reads it from the summary).
+- Each failed field has `aria-invalid="true"` and a message,
+  `id="{field}-error"`, under its label, starting with a visually hidden
+  "Error:"; `aria-describedby` names the hint and the message.
+- A handler reports a problem as `routes::admin_form::FieldError::on(id,
+  message)`, or `FieldError::form(message)` for the form as a whole. The
+  message is a `UiMessage`, translated when shown. A form built in Rust uses
+  `form::ValidationError`, which the macros read the same way.
+- Nothing validates on blur or as you type.
+
+**Saving.**
+- The primary action comes first in the action bar and is the one filled
+  button.
+- Destructive actions are styled as danger and worded as what they do.
+  Delete confirmation without script comes with the table pattern (section 9).
+- On a form taller than the window, `admin-forms.js` makes the action bar
+  sticky and sets the page's `scroll-padding-block-end` to the bar's height,
+  so a focused field is never hidden behind it (WCAG 2.4.11).
+- An unsaved changes warning appears only while a form differs from what was
+  loaded, and never after it is submitted. Only forms built from the field
+  pattern are watched; a listing's checkboxes are not.
+- After a successful save the handler redirects, the status message shows,
+  and focus moves to it.
+
+**What this changes.** A settings form whose effect is not obvious ends with
+one short, factual sentence above Save, led by "What this changes:"
+(`effect`).
+
+**Widgets.**
+- A section list that can be dragged (compound fields) also has Move up and
+  Move down buttons (WCAG 2.5.7).
+- The permission grid is a table with column headers (roles) and row headers
+  (permissions); each checkbox is named "{role}: {permission}".
+- Weight and order are number fields; nothing needs a drag.
+- On admin pages the media picker is a native modal `dialog`
+  (`admin-media-picker.js`):
+  - focus stays inside it, Escape closes it, and focus returns to the button
+    that opened it;
+  - the type filter, search and upload are labelled;
+  - each file is a button named by its file name, with `aria-pressed` for the
+    chosen one;
+  - the result count is announced.
+  The front end keeps its own picker.
+- Words that scripts show come from a translated table the admin shell
+  renders (`<template id="admin-text">`, read through `window.trovatoText`).
 
 ## 9. Table pattern (Part 3)
 

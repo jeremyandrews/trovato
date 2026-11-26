@@ -191,9 +191,9 @@
   - text: Type
   - combobox "Type":
     - option "- Any -" [selected]
-    - option "Blog Post"
     - option "Media"
     - option "Basic Page"
+    - option "Blog Post"
   - text: Status
   - combobox "Status":
     - option "- Any -" [selected]

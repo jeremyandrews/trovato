@@ -1,4 +1,5 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {% block page_title %}{{ t(s="Comments") }}{% endblock page_title %}
@@ -7,17 +8,9 @@
 <div class="admin-card">
     <form class="filter-form" method="get" action="/admin/content/comments">
         <div class="filter-row">
-            <div class="filter-item">
-                <label for="status">{{ t(s="Status") }}</label>
-                <select id="status" name="status">
-                    <option value="">{{ t(s="- Any -") }}</option>
-                    {# Options come from CommentStatus, so the filter cannot drift
-                       from the statuses the model actually stores. #}
-                    {% for option in status_options %}
-                    <option value="{{ option.value }}" {% if status_filter == option.value %}selected{% endif %}>{{ t(s=option.label) }}</option>
-                    {% endfor %}
-                </select>
-            </div>
+            {#- Options come from CommentStatus, so the filter cannot drift from
+                the statuses the model actually stores. -#}
+            {{ form::select(name="status", label=t(s="Status"), options=status_options, value=status_filter, empty=t(s="- Any -"), translate_options=true, wrapper="filter-item") }}
             <div class="filter-item">
                 <button type="submit" class="button button--secondary">{{ t(s="Filter") }}</button>
             </div>
@@ -69,19 +62,19 @@
                 <td>{{ comment.created | date(format="%Y-%m-%d %H:%M") }}</td>
                 <td class="operations">
                     {% if comment.can_approve %}
-                    <form method="post" action="/admin/content/comments/{{ comment.id }}/approve" class="inline-form">
+                    <form method="post" action="/admin/content/comments/{{ comment.id }}/approve" class="inline-form" novalidate>
                         <input type="hidden" name="_token" value="{{ csrf_token }}">
                         <button type="submit" class="link-button">{{ t(s="Approve {name}", name=name) }}</button>
                     </form>
                     {% endif %}
                     {% if comment.can_unpublish %}
-                    <form method="post" action="/admin/content/comments/{{ comment.id }}/unpublish" class="inline-form">
+                    <form method="post" action="/admin/content/comments/{{ comment.id }}/unpublish" class="inline-form" novalidate>
                         <input type="hidden" name="_token" value="{{ csrf_token }}">
                         <button type="submit" class="link-button">{{ t(s="Unpublish {name}", name=name) }}</button>
                     </form>
                     {% endif %}
                     {% if comment.can_mark_spam %}
-                    <form method="post" action="/admin/content/comments/{{ comment.id }}/spam" class="inline-form">
+                    <form method="post" action="/admin/content/comments/{{ comment.id }}/spam" class="inline-form" novalidate>
                         <input type="hidden" name="_token" value="{{ csrf_token }}">
                         <button type="submit" class="link-button">{{ t(s="Mark {name} as spam", name=name) }}</button>
                     </form>
@@ -114,20 +107,16 @@
 {# `GET /admin/content/comments/settings` serves this page; the id is the anchor for links to the form. #}
 <section class="admin-card" aria-labelledby="comment-settings-heading">
     <h2 id="comment-settings-heading">{{ t(s="Comment settings") }}</h2>
-    <form id="comment-settings" class="filter-form settings-form" method="post" action="/admin/content/comments/settings">
+    <form id="comment-settings" class="filter-form settings-form" method="post" action="/admin/content/comments/settings" novalidate>
         <input type="hidden" name="_token" value="{{ csrf_token }}">
         <div class="filter-row">
-            <div class="filter-item">
-                <label for="default_status">{{ t(s="New comments") }}</label>
-                <select id="default_status" name="default_status">
-                    <option value="published" {% if not default_status_pending %}selected{% endif %}>{{ t(s="Publish immediately") }}</option>
-                    <option value="pending" {% if default_status_pending %}selected{% endif %}>{{ t(s="Hold for review") }}</option>
-                </select>
-            </div>
+            {% if default_status_pending %}{% set default_status = "pending" %}{% else %}{% set default_status = "published" %}{% endif %}
+            {{ form::select(name="default_status", label=t(s="New comments"), options=default_status_options, value=default_status, translate_options=true, wrapper="filter-item") }}
             <div class="filter-item">
                 <button type="submit" class="button button--secondary">{{ t(s="Save") }}</button>
             </div>
         </div>
+        {{ form::effect(text=t(s="Whether a comment posted from now on is shown at once or waits in this list for approval. Comments already posted keep their status.")) }}
     </form>
 </section>
 {% endblock content %}

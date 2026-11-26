@@ -15,12 +15,25 @@ const PAGE_TYPES = {
   form: '/admin/structure/stages/add',
   preferences: '/admin/preferences',
   search: '/admin/search?q=content',
+  // The form pattern: a hand-written form, one built in Rust, a settings
+  // form, and a failed submit.
+  'form-user': '/admin/people/add',
+  'form-item': async (page) => {
+    await page.goto('/admin/content/add');
+    await page.goto(await page.locator('main a[href^="/admin/content/add/"]').first().getAttribute('href'));
+  },
+  'form-settings': '/admin/config/site',
+  'form-errors': async (page) => {
+    await page.goto('/admin/people/roles/add');
+    await Promise.all([page.waitForLoadState('load'), page.locator('form#role-form [type=submit]').click()]);
+  },
 };
 
 for (const [type, path] of Object.entries(PAGE_TYPES)) {
   test(`the ${type} page exposes the shell's landmarks and one heading`, async ({ page }, info) => {
     test.skip(info.project.name !== 'light', 'the tree is the same in every colour mode');
-    await page.goto(path);
+    if (typeof path === 'function') await path(page);
+    else await page.goto(path);
     const body = page.locator('body');
     await expect(body).toMatchAriaSnapshot(`
       - link /Skip to main content/
@@ -35,6 +48,13 @@ for (const [type, path] of Object.entries(PAGE_TYPES)) {
       const crumbs = page.getByRole('navigation', { name: 'Breadcrumb' });
       await expect(crumbs).toBeVisible();
       await expect(crumbs.locator('[aria-current="page"]')).toHaveText(await page.locator('h1').innerText());
+    }
+    if (type === 'form-errors') {
+      // The summary is an alert that has focus, with a link per problem;
+      // the failed field is invalid and its message is its description.
+      await expect(page.getByRole('alert').filter({ hasText: /./ }).first()).toBeFocused();
+      await expect(page.locator('[data-error-summary] a[href="#name"]')).toHaveCount(1);
+      await expect(page.locator('#name')).toHaveAttribute('aria-invalid', 'true');
     }
     const tree = await body.ariaSnapshot();
     // ADMIN_A11Y_RECORD_ARIA=1 writes them where docs/admin/accessibility.md

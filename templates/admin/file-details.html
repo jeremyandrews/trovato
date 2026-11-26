@@ -1,4 +1,5 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 
 {% block page_title %}{{ t(s="File: {name}", name=file.filename) }}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="An uploaded file: its details, its alternative text if it is an image, and where it is served from.") }}</p>{% endblock page_intro %}
@@ -14,21 +15,12 @@
     </div>
     {% endif %}
 
-    <form class="alt-text-form" method="post" action="/admin/content/files/{{ file.id }}/alt-text">
+    <form class="alt-text-form" method="post" action="/admin/content/files/{{ file.id }}/alt-text" novalidate>
         <input type="hidden" name="_token" value="{{ csrf_token }}">
-        <div class="form-item">
-            <label for="alt_text" class="form-item__label">{{ t(s="Alternative text") }}</label>
-            <p id="alt_text_help" class="form-item__description">{{ t(s="What the image shows, for readers who cannot see it. Leave empty only if the image is decorative and carries no information.") }}</p>
-            {% if file.alt_text is undefined %}
-            <p id="alt_text_state" class="form-item__description"><strong>{{ t(s="Not set.") }}</strong></p>
-            {% endif %}
-            <div class="alt-text-form__row">
-                <input type="text" id="alt_text" name="alt_text" maxlength="1024" class="form-text"
-                       value="{{ file.alt_text | default(value='') }}"
-                       aria-describedby="alt_text_help{% if file.alt_text is undefined %} alt_text_state{% endif %}">
-                <button type="submit" class="button button--secondary">{{ t(s="Save") }}</button>
-            </div>
-        </div>
+        {%- set alt_help = t(s="What the image shows, for readers who cannot see it. Leave empty only if the image is decorative and carries no information.") -%}
+        {%- if file.alt_text is undefined %}{% set alt_hint = t(s="Not set.") ~ " " ~ alt_help %}{% else %}{% set alt_hint = alt_help %}{% endif %}
+        {{ form::field(name="alt_text", label=t(s="Alternative text"), value=file.alt_text | default(value=""), hint=alt_hint, attrs='maxlength="1024"') }}
+        {{ form::actions(submit_label=t(s="Save")) }}
     </form>
 </div>
 
@@ -71,7 +63,7 @@
     </dl>
 
     <div class="form-actions">
-        <form method="post" action="/admin/content/files/{{ file.id }}/delete" class="inline-form">
+        <form method="post" action="/admin/content/files/{{ file.id }}/delete" class="inline-form" novalidate>
             <input type="hidden" name="_token" value="{{ csrf_token }}">
             <button type="submit" class="button button--danger" data-confirm="{{ t(s='Are you sure you want to delete this file?') }}">{{ t(s="Delete file") }}</button>
         </form>

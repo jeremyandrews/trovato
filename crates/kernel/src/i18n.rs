@@ -70,6 +70,20 @@ pub const MARK_DATA_OPEN: char = '\u{E002}';
 /// Closes a printed value.
 pub const MARK_DATA_CLOSE: char = '\u{E003}';
 
+/// Starts an interface word a form builder wrote in Rust (a field title, a
+/// button), in marker mode only. `t` drops it; one printed without `t`
+/// keeps it, and [`untranslated_text`] reports it.
+pub const MARK_BUILT: char = '\u{E004}';
+
+/// `text` with [`MARK_BUILT`] in front (the engine marks form builder words
+/// with it in marker mode).
+pub fn mark_built(text: &str) -> String {
+    if text.is_empty() {
+        return String::new();
+    }
+    format!("{MARK_BUILT}{}", text.trim_start_matches(MARK_BUILT))
+}
+
 /// Whether marker mode is on: `TROVATO_I18N_MARKERS=1`, read once.
 pub fn markers_enabled() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
@@ -531,7 +545,14 @@ const RESERVED_ARGS: &[&str] = &["s", "plural", "count", "ctx", "lang"];
 
 impl tera::Function for TranslateFunction {
     fn call(&self, args: &HashMap<String, tera::Value>) -> tera::Result<tera::Value> {
+        // A form builder word arrives marked (marker mode): unmarked here,
+        // it is the source like any other.
+        let unmarked;
         let source = match args.get("s") {
+            Some(tera::Value::String(s)) if s.contains(MARK_BUILT) => {
+                unmarked = s.replace(MARK_BUILT, "");
+                unmarked.as_str()
+            }
             Some(tera::Value::String(s)) => s.as_str(),
             Some(other) => {
                 return Err(tera::Error::msg(format!(
@@ -603,6 +624,11 @@ pub fn marker_escape(input: &str) -> String {
 /// passing through `t` or being printed from data. `None` when the text is
 /// clean.
 pub fn untranslated_text(text: &str) -> Option<String> {
+    // A form builder word printed without `t`: reported as is, even though
+    // the escape marked it as a value.
+    if text.contains(MARK_BUILT) {
+        return Some(strip_markers(text).trim().to_string());
+    }
     let mut current: Vec<char> = text.chars().collect();
     loop {
         let mut changed = false;
@@ -658,7 +684,7 @@ pub fn strip_markers(text: &str) -> String {
         .filter(|c| {
             !matches!(
                 *c,
-                MARK_T_OPEN | MARK_T_CLOSE | MARK_DATA_OPEN | MARK_DATA_CLOSE
+                MARK_T_OPEN | MARK_T_CLOSE | MARK_DATA_OPEN | MARK_DATA_CLOSE | MARK_BUILT
             )
         })
         .collect()
@@ -799,6 +825,27 @@ mod tests {
         );
     }
 
+    /// A form builder word printed as a value is still reported; through `t`
+    /// it is translated text like any other, its mark gone.
+    #[test]
+    fn a_form_builder_word_is_reported_unless_it_went_through_t() {
+        let d = |s: &str| format!("{MARK_DATA_OPEN}{s}{MARK_DATA_CLOSE}");
+        assert_eq!(
+            untranslated_text(&d(&mark_built("Save"))),
+            Some("Save".to_string())
+        );
+        assert_eq!(untranslated_text(&d("Ada")), None, "data is data");
+
+        let mut tera = tera::Tera::default();
+        tera.register_function("t", TranslateFunction::new(None));
+        tera.add_raw_template("x.html", r#"{{ t(s=label) }}"#)
+            .unwrap();
+        let mut ctx = tera::Context::new();
+        ctx.insert("label", &mark_built("Save"));
+        let out = scope("en", || tera.render("x.html", &ctx)).unwrap();
+        assert_eq!(out, "Save", "t drops the mark and finds the source");
+    }
+
     #[test]
     fn the_tera_function_reads_placeholders_plural_and_context() {
         let mut tera = tera::Tera::default();
@@ -930,6 +977,18 @@ impl UiMessage {
     }
 }
 
+impl From<&str> for UiMessage {
+    fn from(source: &str) -> Self {
+        Self::new(source)
+    }
+}
+
+impl From<String> for UiMessage {
+    fn from(source: String) -> Self {
+        Self::new(source)
+    }
+}
+
 /// The `t_message` Tera function: `{{ t_message(m=flash) }}` renders a
 /// [`UiMessage`] (or a plain source string) translated, as safe HTML.
 pub struct TranslateMessageFunction {
@@ -948,6 +1007,13 @@ impl tera::Function for TranslateMessageFunction {
         let message = match args.get("m") {
             Some(tera::Value::String(s)) => UiMessage::new(s.clone()),
             Some(tera::Value::Null) | None => return Ok(tera::Value::String(String::new())),
+            // A form builder error (`form::ValidationError`): its message is
+            // the source.
+            Some(tera::Value::Object(o)) if !o.contains_key("s") => UiMessage::new(
+                o.get("message")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or_default(),
+            ),
             Some(other) => serde_json::from_value::<UiMessage>(other.clone())
                 .map_err(|e| tera::Error::msg(format!("t_message: not a message: {e}")))?,
         };

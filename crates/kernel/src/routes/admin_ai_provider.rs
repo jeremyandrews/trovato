@@ -8,6 +8,7 @@ use serde::Deserialize;
 use tower_sessions::Session;
 
 use crate::form::csrf::generate_csrf_token;
+use crate::routes::admin_form::FieldError;
 use crate::services::ai_provider::{
     AiDefaults, AiOperationType, AiProviderConfig, AiProviderService, OperationModel,
     ProviderProtocol, validate_base_url, validate_env_var_name,
@@ -251,27 +252,27 @@ async fn add_provider_submit(
     let mut errors = Vec::new();
 
     if form.label.trim().is_empty() {
-        errors.push("Label is required.".to_string());
+        errors.push(FieldError::on("label", "Label is required."));
     }
 
     let protocol = match parse_protocol(&form.protocol) {
         Some(p) => p,
         None => {
-            errors.push("Protocol is required.".to_string());
+            errors.push(FieldError::on("protocol", "Protocol is required."));
             ProviderProtocol::OpenAiCompatible
         }
     };
 
     let base_url = form.base_url.trim();
     if base_url.is_empty() {
-        errors.push("Base URL is required.".to_string());
+        errors.push(FieldError::on("base_url", "Base URL is required."));
     } else if let Err(msg) = validate_base_url(base_url) {
-        errors.push(msg);
+        errors.push(FieldError::on("base_url", msg));
     }
 
     let api_key_env = form.api_key_env.trim();
     if let Err(msg) = validate_env_var_name(api_key_env) {
-        errors.push(msg);
+        errors.push(FieldError::on("api_key_env", msg));
     }
 
     let models = parse_operation_models(&form.extra);
@@ -437,27 +438,27 @@ async fn edit_provider_submit(
     let mut errors = Vec::new();
 
     if form.label.trim().is_empty() {
-        errors.push("Label is required.".to_string());
+        errors.push(FieldError::on("label", "Label is required."));
     }
 
     let protocol = match parse_protocol(&form.protocol) {
         Some(p) => p,
         None => {
-            errors.push("Protocol is required.".to_string());
+            errors.push(FieldError::on("protocol", "Protocol is required."));
             ProviderProtocol::OpenAiCompatible
         }
     };
 
     let base_url = form.base_url.trim();
     if base_url.is_empty() {
-        errors.push("Base URL is required.".to_string());
+        errors.push(FieldError::on("base_url", "Base URL is required."));
     } else if let Err(msg) = validate_base_url(base_url) {
-        errors.push(msg);
+        errors.push(FieldError::on("base_url", msg));
     }
 
     let api_key_env = form.api_key_env.trim();
     if let Err(msg) = validate_env_var_name(api_key_env) {
-        errors.push(msg);
+        errors.push(FieldError::on("api_key_env", msg));
     }
 
     let models = parse_operation_models(&form.extra);
@@ -640,7 +641,7 @@ async fn redisplay_form(
     session: &Session,
     action: &str,
     editing: bool,
-    errors: &[String],
+    errors: &[FieldError],
     form: &ProviderFormData,
     models: &[OperationModel],
 ) -> Response {

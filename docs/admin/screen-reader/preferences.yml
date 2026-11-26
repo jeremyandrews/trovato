@@ -196,7 +196,9 @@
     - option "English" [selected]
     - option "Pseudo (accented, longer)"
     - option "Pseudo (right to left)"
-  - paragraph: "What this changes: only how this administration looks and reads for you. Nobody else is affected."
+  - paragraph:
+    - strong: "What this changes:"
+    - text: only how this administration looks and reads for you. Nobody else is affected.
   - button "Save preferences"
   - region "Sign out":
     - heading "Sign out" [level=2]
