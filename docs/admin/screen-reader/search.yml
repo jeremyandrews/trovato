@@ -9,6 +9,7 @@
     - text: Search the administration
     - searchbox "Search the administration": content
     - button "Search"
+  - button "Quick search"
   - list:
     - listitem:
       - link "View site":
@@ -172,6 +173,9 @@
         - listitem:
           - link "Search report":
             - /url: /admin/reports/search
+        - listitem:
+          - link "Accessibility":
+            - /url: /admin/reports/accessibility
 - main:
   - navigation "Breadcrumb":
     - list:
@@ -180,12 +184,12 @@
           - /url: /admin
       - listitem: Search results for “content”
   - heading "Search results for “content”" [level=1]
-  - paragraph: Find any administration page by its name or what it is for. Only pages you may open are listed.
+  - paragraph: Find pages, settings, content, people, plugins and log messages. Only what you may open is listed.
   - search "Search again":
     - text: Search for
     - searchbox "Search for": content
     - button "Search"
-  - status: 11 results
+  - status: 18 results
   - region "Pages":
     - heading "Pages" [level=2]
     - list:
@@ -193,54 +197,80 @@
         - link "Content":
           - /url: /admin/content
         - paragraph: Administration › Content
-        - paragraph: Find, filter and edit every item on the site.
       - listitem:
         - link "Add content":
           - /url: /admin/content/add
         - paragraph: Administration › Content
-        - paragraph: Start a new item of any content type you may create.
       - listitem:
         - link "Moderated content":
           - /url: /admin/content/moderated
         - paragraph: Administration › Content
-        - paragraph: Items with a newer version waiting to be reviewed or published.
       - listitem:
         - link "Content types":
           - /url: /admin/structure/types
         - paragraph: Administration › Structure
-        - paragraph: The kinds of content the site holds, and the fields each one has.
       - listitem:
         - link "Comments":
           - /url: /admin/content/comments
         - paragraph: Administration › Content
-        - paragraph: Approve, edit and remove comments, and set how new ones are published.
       - listitem:
         - link "Files":
           - /url: /admin/content/files
         - paragraph: Administration › Content
-        - paragraph: Every uploaded file, with its details and alternative text.
       - listitem:
         - link "Media":
           - /url: /admin/media
         - paragraph: Administration › Content
-        - paragraph: Browse images and other media by file name.
       - listitem:
         - link "Gathers":
           - /url: /admin/gather
         - paragraph: Administration › Structure
-        - paragraph: Listings and feeds built from content, with their filters and sorts.
       - listitem:
         - link "Categories":
           - /url: /admin/structure/categories
         - paragraph: Administration › Structure
-        - paragraph: Vocabularies and the tags in each, for classifying content.
       - listitem:
         - link "URL alias patterns":
           - /url: /admin/config/pathauto
         - paragraph: Administration › Structure
-        - paragraph: Patterns that give new content a readable address automatically.
       - listitem:
         - link "Stages":
           - /url: /admin/structure/stages
         - paragraph: Administration › Configuration
-        - paragraph: The editorial stages content moves through before it is live.
+  - region "Settings":
+    - heading "Settings" [level=2]
+    - list:
+      - listitem:
+        - link "Count content views":
+          - /url: /admin/config/site#count_content_views
+        - paragraph: Setting on Site settings
+      - listitem:
+        - link "Administration language":
+          - /url: /admin/preferences#admin-language
+        - paragraph: Setting on Your admin preferences
+  - region "Plugins":
+    - heading "Plugins" [level=2]
+    - list:
+      - listitem:
+        - link "trovato_ai":
+          - /url: /admin/plugins#plugin-trovato_ai
+        - paragraph: Plugin, not enabled
+      - listitem:
+        - link "trovato_audit_log":
+          - /url: /admin/plugins#plugin-trovato_audit_log
+        - paragraph: Plugin, enabled
+      - listitem:
+        - link "trovato_blog":
+          - /url: /admin/plugins#plugin-trovato_blog
+        - paragraph: Plugin, enabled
+      - listitem:
+        - link "trovato_content_locking":
+          - /url: /admin/plugins#plugin-trovato_content_locking
+        - paragraph: Plugin, enabled
+      - listitem:
+        - link "trovato_content_translation":
+          - /url: /admin/plugins#plugin-trovato_content_translation
+        - paragraph: Plugin, enabled
+  - paragraph:
+    - link "Who can do this?":
+      - /url: /admin/people/who-can?path=/admin/search

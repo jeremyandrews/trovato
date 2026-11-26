@@ -1,12 +1,13 @@
 {% extends "page--admin.html" %}
 {% import "admin/macros/form.html" as form %}
-{#- Admin search results. Context: q, hits (label, description, href,
-    group), from routes::admin_shell::search. Results are grouped by kind
-    under headings; Part 4 of the redesign adds settings, content, people and
-    plugins to "Pages". -#}
+{#- Admin search results, grouped under headings: Pages, Settings, Content,
+    People, Plugins, Log messages (routes::admin_search_index). Context: q,
+    count, groups (key, title, hits, more); each hit has label, translate,
+    context (a message) and href. The command palette shows the same results
+    (GET /admin/search/suggest). -#}
 
 {% block page_title %}{% if q %}{{ t(s="Search results for “{q}”", q=q) }}{% else %}{{ t(s="Search the administration") }}{% endif %}{% endblock page_title %}
-{% block page_intro %}<p class="page-intro">{{ t(s="Find any administration page by its name or what it is for. Only pages you may open are listed.") }}</p>{% endblock page_intro %}
+{% block page_intro %}<p class="page-intro">{{ t(s="Find pages, settings, content, people, plugins and log messages. Only what you may open is listed.") }}</p>{% endblock page_intro %}
 
 {% block content %}
 <form class="search-page-form" role="search" action="/admin/search" method="get" aria-label="{{ t(s='Search again') }}">
@@ -15,21 +16,22 @@
 </form>
 
 {% if q %}
-<p class="result-count" role="status">{{ t(s="{count} result", plural="{count} results", count=hits | length) }}</p>
-{% if hits %}
-<section class="search-results" aria-labelledby="search-results-pages">
-    <h2 id="search-results-pages">{{ t(s="Pages") }}</h2>
+<p class="result-count" role="status">{{ t(s="{count} result", plural="{count} results", count=count) }}</p>
+{% for group in groups %}
+<section class="search-results" aria-labelledby="search-results-{{ group.key }}">
+    <h2 id="search-results-{{ group.key }}">{{ t(s=group.title) }}</h2>
     <ul class="landing-list">
-        {% for hit in hits %}
+        {% for hit in group.hits %}
         <li class="landing-list__item">
-            <a class="landing-list__link" href="{{ hit.href | safe }}">{{ t(s=hit.label) }}</a> {# SAFE: registry constants and validated plugin declarations #}
-            <p class="landing-list__context">{% if hit.group %}{{ t(s="Administration › {group}", group=t(s=hit.group)) }}{% else %}{{ t(s="Administration") }}{% endif %}</p>
-            {% if hit.description %}<p class="landing-list__description">{{ t(s=hit.description) }}</p>{% endif %}
+            <a class="landing-list__link" href="{{ hit.href }}">{% if hit.translate %}{{ t(s=hit.label) }}{% else %}{{ hit.label }}{% endif %}</a>
+            <p class="landing-list__context">{{ t_message(m=hit.context) }}</p>
         </li>
         {% endfor %}
     </ul>
+    {% if group.more %}<p><a href="{{ group.more }}">{{ t(s="All matches in {group}", group=t(s=group.title)) }}</a></p>{% endif %}
 </section>
-{% else %}
+{% endfor %}
+{% if not groups %}
 <div class="empty-state">
     <p>{{ t(s="Nothing matched. Try a shorter word, or a word for what you want to do, such as “menu”, “users” or “theme”.") }}</p>
     <p><a href="/admin">{{ t(s="Back to the dashboard") }}</a></p>

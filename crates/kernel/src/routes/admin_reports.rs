@@ -49,6 +49,7 @@ pub fn router() -> Router<AppState> {
             axum::routing::post(save_scheduler_settings),
         )
         .route("/admin/reports/log", get(log_report))
+        .route("/admin/reports/accessibility", get(accessibility_report))
 }
 
 // =============================================================================
@@ -395,4 +396,61 @@ async fn log_report(
     context.insert("type_options", &type_options);
     context.insert("path", "/admin/reports/log");
     render_admin_template(&state, &viewer, "admin/reports/log.html", context).await
+}
+
+/// An image file that has no text alternative.
+#[derive(Debug, Serialize, sqlx::FromRow)]
+struct MissingAlt {
+    id: uuid::Uuid,
+    filename: String,
+    created: i64,
+}
+
+/// Most images the accessibility report lists.
+const MISSING_ALT_ROWS: i64 = 50;
+
+/// GET /admin/reports/accessibility: images without a text alternative, the
+/// viewer's own accessibility settings, and how the administration is
+/// checked.
+async fn accessibility_report(State(state): State<AppState>, session: Session) -> Response {
+    let user = match require_permission(&state, &session, PERMISSION).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
+    let viewer = super::helpers::user_context_for(&state, &user).await;
+
+    let missing_total: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM file_managed WHERE filemime LIKE 'image/%' \
+         AND (alt_text IS NULL OR btrim(alt_text) = '')",
+    )
+    .fetch_one(state.db())
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "accessibility report: count images");
+        0
+    });
+    let missing: Vec<MissingAlt> = sqlx::query_as(
+        "SELECT id, filename, created FROM file_managed WHERE filemime LIKE 'image/%' \
+         AND (alt_text IS NULL OR btrim(alt_text) = '') \
+         ORDER BY created DESC, id DESC LIMIT $1",
+    )
+    .bind(MISSING_ALT_ROWS)
+    .fetch_all(state.db())
+    .await
+    .unwrap_or_default();
+    // A file's page is where its text alternative is set; link to it only
+    // for someone who may open it.
+    let may_fix = viewer.can("access files");
+
+    let prefs = super::admin_nav::Preferences::load(state.db(), user.id).await;
+
+    let mut context = tera::Context::new();
+    context.insert("missing_total", &missing_total);
+    context.insert("missing", &missing);
+    context.insert("may_fix", &may_fix);
+    context.insert("pref_theme", prefs.theme.as_deref().unwrap_or("system"));
+    context.insert("pref_slash", &!prefs.search_slash_off);
+    context.insert("pref_key", prefs.search_key());
+    context.insert("path", "/admin/reports/accessibility");
+    render_admin_template(&state, &viewer, "admin/reports/accessibility.html", context).await
 }

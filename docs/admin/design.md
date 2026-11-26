@@ -31,7 +31,7 @@ Configuration because that is where someone looking for it goes.
 | People | `people` | Users (with each user's sessions), Add user, Roles, Permissions, Access rules |
 | Extend | `extend` | Plugins, AI providers, AI budgets, AI chat, AI assistant, and every plugin-declared page whose section names no other group |
 | Configuration | `config` | Site settings, Text formats, Search settings, Stages, Account recovery |
-| Reports | `reports` | Recent log messages, Audit log, Cron, Search report (and, from Part 5, the accessibility check) |
+| Reports | `reports` | Recent log messages, Audit log, Cron, Search report, Accessibility |
 
 The Dashboard (`/admin`) and Your admin preferences (`/admin/preferences`) are
 personal pages and belong to no group.
@@ -94,8 +94,7 @@ the group: a group's title (`Structure`, `Content`, …), case-insensitively, or
 the pre-B199 name `System`, which maps to Configuration; any other name puts the
 link in Extend. Its `card_description`, when set, is also its line on the
 landing page and what search matches beside its label; the declaration itself
-is unchanged, so no plugin needs rebuilding. (Part 4 adds search keywords to the
-declaration.)
+is unchanged, so no plugin needs rebuilding.
 
 Filtering is the one function every surface calls: the viewer passes the
 entry's gate, and its plugin is enabled. The sidebar and search are display
@@ -124,7 +123,10 @@ Every admin page has the same skeleton, drawn by `templates/page--admin.html`:
      `role="tablist"`, because each loads a page;
    - messages: status in `role="status"`, errors in `role="alert"`, each with
      a text prefix ("Done:", "Error:"), never colour alone, rendered once;
-   - the page's own content.
+   - the page's own content;
+   - for someone who may change who can do what (`administer users`), a
+     "Who can do this?" link to `/admin/people/who-can?path=<this page>`,
+     the last thing in `main` (section 11).
 
 The `<title>` is `Page, Group, Site name` (`Page, Site name` on personal
 pages). It is filled from the rendered `h1` after rendering, so the two cannot
@@ -413,10 +415,101 @@ query and `templates/admin/macros/list.html` draws it:
 
 ## 10. Search pattern
 
-Part 1 ships the server side: `/admin/search?q=` searches the registry (title,
-description, group, synonyms), filtered by the viewer's permissions, with
-results under headings by kind. The form is in the header on every page, in a
-`search` landmark, and works with JavaScript off. Part 4 adds settings,
-content, people, plugins and log messages to the index, and the command
-palette (APG modal dialog with an ARIA 1.2 combobox) opened by a visible
-Search button or `/`.
+One search, two ways in. `/admin/search?q=` is a page that works with
+JavaScript off; the command palette is a quicker way to the same results.
+Both call `routes::admin_search_index::search`, so they cannot disagree, and
+a test compares them link by link.
+
+**What it finds**, in this order, each kind under its own heading:
+
+| Group | What matches | Links to | Shown to whoever may open |
+|---|---|---|---|
+| Pages | a registry page's title, description, group and synonyms, in English and in the viewer's language | the page | that page |
+| Settings | a setting field's label, hint and synonyms | the field itself (`/admin/config/site#site_slogan`) | the form it is on |
+| Content | item titles; the 8 most recently changed, then "All matches in Content" | the item's edit form | `/admin/content` |
+| People | account names and email addresses | the account's edit form | `/admin/people` |
+| Plugins | the pages enabled plugins declare (label, section, card description), and the plugins page's rows by name and description | the page, or the plugin's row (`/admin/plugins#plugin-blog`) | that page, or `/admin/plugins` |
+| Log messages | site log message text; the 8 newest | the site log filtered to it | `/admin/reports/log` |
+
+The gate of each group is the gate of the page it links to, through the
+same `offered_pages` the sidebar uses. Search never shows a record the
+viewer could not reach by the sidebar, and every route still checks its own
+permission. The queries run live, with the listings' own filters, so a
+deleted item or a disabled plugin is gone from the next search. Setting
+fields are a fixed list in `admin_search_index::SETTINGS`; a test opens
+each form and checks that every anchor is a field id there.
+
+**The results page.** A `search` landmark with the query, then "N results"
+as a status, then one `section` per group, labelled by its `h2`. A group
+with more matches than it shows ends with "All matches in Content" (or
+People, or Log messages), which opens that listing filtered by the query.
+With nothing found, it says so and suggests shorter or task words.
+
+**The command palette** (`static/js/admin-palette.js`):
+- **Opening.** The banner's "Quick search" button (`aria-haspopup="dialog"`),
+  shown only when the script runs. `/` opens it when focus is not in a text
+  field. Each viewer may turn `/` off (WCAG 2.1.4) and add Control+K
+  (Command+K on a Mac) or Alt+K (Option+K) under "Search shortcuts" in Your
+  preferences; those work in text fields too. The button's
+  `aria-keyshortcuts` names the keys in force, and its `<kbd>` shows `/`.
+- **The dialog.** A native `<dialog>` opened with `showModal()`, so the
+  page behind is inert (the APG modal dialog pattern). It is labelled by its
+  `h2`. Escape, the Close button and a click outside close it; focus goes
+  back to whatever opened it.
+- **The combobox** (ARIA 1.2, editable, list autocomplete). The input keeps
+  focus. `aria-controls` names the listbox, `aria-expanded` says whether it
+  has options, and `aria-activedescendant` names the active option, which
+  also carries `aria-selected="true"`. The listbox holds one `group` per
+  kind, labelled by its heading. Down and Up move through every option and
+  wrap. Enter opens the active option, or with none active, submits to the
+  results page. A polite status says "N results" after each answer.
+- **The answers** come from `GET /admin/search/suggest?q=`, as JSON already
+  in the viewer's language. It refuses anyone who may not use the
+  administration (403). Typing waits 150ms between requests, and a late
+  answer to an older query is dropped.
+
+`aria-activedescendant` was chosen over moving focus into the list, so the
+query can be edited at any time. It works in Chromium and WebKit, which the
+browser checks run in. If a screen reader is found not to follow it, the
+fallback is to move real focus to the options (each `tabindex="-1"`) and
+keep typing routed to the input.
+
+## 11. Dashboard and "Who can do this?"
+
+**Panels.** Above the area cards, the Dashboard shows what needs the viewer
+now (`routes::admin_dashboard`):
+
+| Panel | Says | Shown to whoever may open |
+|---|---|---|
+| Your recent content | how many items the viewer wrote and how many are not published; the last five, linked as the content listing links them: the admin edit form for someone who may edit any content, otherwise the item's own edit form or page | anyone who has written something or may create content |
+| Waiting for you | drafts to review; comments waiting for approval | `/admin/content/moderated`; `/admin/content/comments` |
+| Scheduled tasks | whether the last cron run worked, failed or was skipped; plugin queue jobs that stopped after repeated failures | `/admin/reports/cron` |
+| Recent errors | errors logged in the last 24 hours, the newest five, each linking to the log filtered to it | `/admin/reports/log` |
+
+Each panel is a `section` labelled by its `h2`, with its state in one
+sentence ("Nothing is waiting for you.", "3 errors in the last 24 hours.").
+Numbers are words in a sentence, with plural forms per language, and never
+a figure alone, a chart or a colour. A panel's gate is the gate of the page
+it is about, through `offered_pages`, so the Dashboard offers nothing that
+answers 403. The cards below are unchanged: one per area, one per plugin
+card, Create and You.
+
+**"Who can do this?"** Each admin page the registry knows ends with a link
+to `/admin/people/who-can?path=<the page>`, for someone who holds
+`administer users` (the Permissions page's gate). The page:
+- works the answer out again from the path, with the registry's gate for
+  that page (`admin_nav::placement`), so nothing in the address can change
+  it, and accepts only a clean path under `/admin`;
+- names the permission, or any of several, or "only site administrators";
+- lists the roles that hold it, how many people each has (or "everyone
+  signed in" for the built-in roles), and links to edit each role and to the
+  Permissions page.
+
+Without a path, it lists what opens every page, kernel and plugin, each
+linking to its own answer. The page leaves itself out of its own link.
+
+**The accessibility report** (Reports, `administer site`) lists images
+without a text alternative, newest first, each linking to the file page
+where one is set (for someone who may open files). It also shows the
+viewer's own settings (theme, search shortcuts), with a link to change
+them, and how this administration is checked.
