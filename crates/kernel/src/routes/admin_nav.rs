@@ -750,6 +750,16 @@ pub const LINKS: &[Link] = &[
             "Images that lack a text alternative, and how this administration is checked.",
         )
     },
+    Link {
+        synonyms: &["dlq", "dead letter", "failed jobs", "retry", "discard"],
+        ..page(
+            Reports,
+            "Dead jobs",
+            "/admin/reports/dead-jobs",
+            Permission("administer site"),
+            "Plugin-queue jobs that failed every retry, kept so you can inspect, retry or discard them.",
+        )
+    },
 ];
 
 /// Whether `href` is a kernel page's own address, one of its `also`

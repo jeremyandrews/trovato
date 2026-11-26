@@ -361,22 +361,33 @@ impl User {
     /// One page of the admin people listing, and how many accounts match.
     ///
     /// `like` is an `ILIKE` pattern matched against the name and the email
-    /// address, bound as a parameter. `order_by` must come from the listing's
-    /// own list of sortable columns (see `routes::admin_list`), never from the
-    /// request.
+    /// address, bound as a parameter. `role_id` narrows to accounts holding
+    /// that role. `order_by` must come from the listing's own list of
+    /// sortable columns (see `routes::admin_list`), never from the request.
     pub async fn admin_page(
         pool: &PgPool,
         like: Option<&str>,
+        role_id: Option<Uuid>,
         order_by: &str,
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<Self>, i64)> {
-        let condition = if like.is_some() {
-            " WHERE (name ILIKE $1 OR mail ILIKE $1)"
+        let mut clauses = Vec::new();
+        if like.is_some() {
+            clauses.push("(name ILIKE $1 OR mail ILIKE $1)".to_string());
+        }
+        if role_id.is_some() {
+            let n = clauses.len() + 1;
+            clauses.push(format!(
+                "id IN (SELECT user_id FROM user_roles WHERE role_id = ${n})"
+            ));
+        }
+        let condition = if clauses.is_empty() {
+            String::new()
         } else {
-            ""
+            format!(" WHERE {}", clauses.join(" AND "))
         };
-        let n = usize::from(like.is_some());
+        let n = clauses.len();
         // Ties: by name, then the id; a sort by name needs only the id.
         let ties = if order_by.starts_with("lower(name) ") {
             "id"
@@ -396,6 +407,10 @@ impl User {
         if let Some(l) = like {
             list = list.bind(l);
             count = count.bind(l);
+        }
+        if let Some(r) = role_id {
+            list = list.bind(r);
+            count = count.bind(r);
         }
         let users = list
             .bind(limit)

@@ -16,6 +16,7 @@
 <div class="admin-card">
     {{ list::filter_start(action="/admin/people", label=t(s="Filter users")) }}
         {{ form::field(name="q", type="search", label=t(s="Name or email contains"), value=list.q, width="20", wrapper="filter-item") }}
+        {{ form::select(name="role", label=t(s="Role"), options=role_options, value=role_filter, empty=t(s="- Any -"), wrapper="filter-item") }}
     {{ list::filter_end(list=list, action="/admin/people") }}
 </div>
 {{ list::sort_form(list=list, action="/admin/people") }}

@@ -13,7 +13,7 @@ Columns: the path as registered; its methods; its group; the handler and where i
 - People: 17 routes
 - Extend: 13 routes
 - Configuration: 27 routes
-- Reports: 6 routes
+- Reports: 9 routes
 
 <!-- kernel routes -->
 
@@ -158,6 +158,9 @@ Columns: the path as registered; its methods; its group; the handler and where i
 | `/admin/structure/stages/add` | GET,POST | Configuration | `GET: add_stage_form \| POST: add_stage_submit` (GET: crates/kernel/src/routes/admin_stage.rs:224 \| POST: crates/kernel/src/routes/admin_stage.rs:253) | GET: admin/stage-form.html \| POST: redirect (re-renders admin/stage-form.html on error) | require_permission("administer site") |
 | `/admin/reports/audit` | GET | Reports | `audit_report` (crates/kernel/src/routes/admin_audit.rs:50) | admin/reports/audit.html | require_permission("view audit log"); plugin trovato_audit_log enabled |
 | `/admin/reports/cron` | GET,POST | Reports | `GET: cron_report \| POST: run_cron_now` (GET: crates/kernel/src/routes/admin_reports.rs:67 \| POST: crates/kernel/src/routes/admin_reports.rs:121) | GET: admin/reports/cron.html \| POST: redirect | require_any_permission("run cron", "administer site"); CSRF on POST |
+| `/admin/reports/dead-jobs` | GET | Reports | `dead_jobs_page` (crates/kernel/src/routes/admin_dead_jobs.rs) | admin/reports/dead-jobs.html | require_permission("administer site") |
+| `/admin/reports/dead-jobs/{id}/discard` | POST | Reports | `discard_job` (crates/kernel/src/routes/admin_dead_jobs.rs) | redirect | require_permission("administer site"); CSRF; asks first (`?confirm`) |
+| `/admin/reports/dead-jobs/{id}/retry` | POST | Reports | `retry_job` (crates/kernel/src/routes/admin_dead_jobs.rs) | redirect | require_permission("administer site"); CSRF |
 | `/admin/reports/accessibility` | GET | Reports | `accessibility_report` (crates/kernel/src/routes/admin_reports.rs) | admin/reports/accessibility.html | require_permission("administer site"); file links only with "access files" |
 | `/admin/reports/log` | GET | Reports | `log_report` (crates/kernel/src/routes/admin_reports.rs:193) | admin/reports/log.html | require_permission("administer site") |
 | `/admin/reports/overview` | GET | Reports | `landing` (crates/kernel/src/routes/admin_shell.rs) | admin/landing.html | require_permission("access administration pages"); lists only pages whose own gate admits the viewer; 404 when none |

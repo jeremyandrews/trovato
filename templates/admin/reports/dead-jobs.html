@@ -1,0 +1,66 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
+{% import "admin/macros/list.html" as list %}
+
+{#- The dead jobs report (routes::admin_dead_jobs). `list` is its filter, sort
+    and page (routes::admin_list); `jobs` are plugin_queue rows with
+    status = 'dead', newest death first unless a column says otherwise. -#}
+
+{% block page_title %}{{ t(s="Dead jobs") }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="Plugin-queue jobs that failed every retry. Retry puts a job back in its queue; Discard removes it for good.") }}</p>{% endblock page_intro %}
+
+{% block content %}
+<div class="admin-card">
+    {{ list::filter_start(action="/admin/reports/dead-jobs", label=t(s="Filter dead jobs")) }}
+        {{ form::select(name="queue", label=t(s="Queue"), options=queue_options, value=queue_filter, empty=t(s="- Any -"), wrapper="filter-item") }}
+        {{ form::select(name="plugin", label=t(s="Plugin"), options=plugin_options, value=plugin_filter, empty=t(s="- Any -"), wrapper="filter-item") }}
+    {{ list::filter_end(list=list, action="/admin/reports/dead-jobs") }}
+</div>
+{{ list::sort_form(list=list, action="/admin/reports/dead-jobs") }}
+
+{% if jobs %}
+<div class="admin-card">
+    {{ list::count(list=list) }}
+    <div class="table-scroll" role="region" aria-labelledby="dead-jobs-caption" tabindex="0">
+        <table class="table table--stack">
+            <caption id="dead-jobs-caption">{{ t(s="Dead-lettered jobs") }}</caption>
+            <thead>
+                <tr>
+                    {{ list::sort_th(label=t(s="Queue"), key="queue", list=list) }}
+                    {{ list::sort_th(label=t(s="Plugin"), key="plugin", list=list) }}
+                    <th scope="col">{{ t(s="Job") }}</th>
+                    {{ list::sort_th(label=t(s="Died (UTC)"), key="dead_at", list=list) }}
+                    <th scope="col">{{ t(s="Reason") }}</th>
+                    {{ list::sort_th(label=t(s="Attempts"), key="attempts", list=list) }}
+                    <th scope="col" class="operations">{{ t(s="Operations") }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for job in jobs %}
+                <tr>
+                    <th scope="row">{{ job.queue_name }}</th>
+                    <td>{{ job.plugin_name }}</td>
+                    <td>{{ job.id }}</td>
+                    <td>{% if job.dead_at %}{{ job.dead_at | format_date(format="%Y-%m-%d %H:%M:%S") }}{% else %}-{% endif %}</td>
+                    <td>{% if job.dead_reason %}{{ job.dead_reason }}{% else %}-{% endif %}</td>
+                    <td>{{ job.attempts }} / {{ job.max_attempts }}</td>
+                    <td class="operations">
+                        <form method="post" action="/admin/reports/dead-jobs/{{ job.id }}/retry" class="inline-form" novalidate>
+                            <input type="hidden" name="_token" value="{{ csrf_token }}">
+                            <button type="submit" class="link-button">{{ t(s="Retry job {id}", id=job.id) }}</button>
+                        </form>
+                        {{ list::delete_button(action="/admin/reports/dead-jobs/" ~ job.id ~ "/discard", label=t(s="Discard job {id}", id=job.id), confirm_text=t(s="Discard job {id}? This cannot be undone.", id=job.id), csrf_token=csrf_token) }}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {{ list::pager(list=list, action="/admin/reports/dead-jobs", label=t(s="Pages of dead jobs")) }}
+</div>
+{% elif list.filtered %}
+{{ list::empty(message=t(s="No dead job matches this filter."), add_url="/admin/reports/dead-jobs", add_label=t(s="Clear filter")) }}
+{% else %}
+{{ list::empty(message=t(s="No job has died. Every queue is keeping up.")) }}
+{% endif %}
+{% endblock content %}
