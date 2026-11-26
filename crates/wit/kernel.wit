@@ -196,7 +196,7 @@ interface user-api {
     /// No status or identity filter beyond the capability gate: a blocked
     /// account or the anonymous account answers like any other.
     ///
-    /// Added by B179, after 0.107.0: a new function in an existing interface
+    /// Added by B179, after 0.104.0: a new function in an existing interface
     /// and no new manifest capability; no existing signature changed.
     find-user-by-name: func(name: string) -> result<string, string>;
 
@@ -209,7 +209,7 @@ interface user-api {
     /// name, matching case-insensitively. `prefix` must be 1 to 255
     /// characters; the same visibility rule as `find-user-by-name` applies.
     ///
-    /// Added by B179, after 0.107.0: a new function in an existing interface
+    /// Added by B179, after 0.104.0: a new function in an existing interface
     /// and no new manifest capability; no existing signature changed.
     find-users-by-name-prefix: func(prefix: string) -> result<string, string>;
 }
@@ -463,7 +463,7 @@ interface query {
 /// this plugin declared (-90), the id a new machine name (-91 invalid, -92
 /// taken). `list-owned` returns the owner's vocabularies as a JSON array.
 ///
-/// Added by B108, after 0.106.0: a new interface; no existing signature changed.
+/// Added by B108, after 0.104.0: a new interface; no existing signature changed.
 interface vocabulary {
     create-owned: func(request-json: string) -> result<string, string>;
     list-owned: func(owner-type: string, owner-id: string) -> result<string, string>;

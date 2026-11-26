@@ -43,22 +43,22 @@ a migration Job, the Deployment (`MIGRATE_ON_START=false`, liveness on
    because a running pod's binary does not know the new migrations:
 
    ```sh
-   sed -e 's/0.107.0/0.108.0/g' -e 's/name: trovato-migrate-/name: trovato-dry-run-/' \
+   sed -e 's/0.105.0/0.105.1/g' -e 's/name: trovato-migrate-/name: trovato-dry-run-/' \
        -e 's/"migrate", "--lock-timeout", "10"/"migrate", "--dry-run"/' \
        deploy/kubernetes/migrate-job.yaml | kubectl apply -f -
-   kubectl wait --for=condition=complete --timeout=5m job/trovato-dry-run-0.108.0
-   kubectl logs job/trovato-dry-run-0.108.0
+   kubectl wait --for=condition=complete --timeout=5m job/trovato-dry-run-0.105.1
+   kubectl logs job/trovato-dry-run-0.105.1
    ```
 
 3. Run the migration Job for the new release, and wait for it. The old pods
    keep serving throughout, because every migration keeps them working.
 
    ```sh
-   sed 's/0.107.0/0.108.0/g' deploy/kubernetes/migrate-job.yaml | kubectl apply -f -
-   kubectl wait --for=condition=complete --timeout=15m job/trovato-migrate-0.108.0
+   sed 's/0.105.0/0.105.1/g' deploy/kubernetes/migrate-job.yaml | kubectl apply -f -
+   kubectl wait --for=condition=complete --timeout=15m job/trovato-migrate-0.105.1
    ```
 
-   If it fails, read `kubectl logs job/trovato-migrate-0.108.0`. A failed
+   If it fails, read `kubectl logs job/trovato-migrate-0.105.1`. A failed
    migration rolls back its own transaction and the old pods are unaffected.
    The exception is a concurrent index build (a `-- no-transaction`
    migration): if it fails it leaves an INVALID index, and every retry fails
@@ -70,7 +70,7 @@ a migration Job, the Deployment (`MIGRATE_ON_START=false`, liveness on
 4. Roll out the new image:
 
    ```sh
-   kubectl set image deployment/trovato trovato=ghcr.io/jeremyandrews/trovato:0.108.0
+   kubectl set image deployment/trovato trovato=ghcr.io/jeremyandrews/trovato:0.105.1
    kubectl rollout status deployment/trovato
    ```
 

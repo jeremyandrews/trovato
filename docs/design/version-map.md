@@ -4,7 +4,7 @@ Trovato has one version number (see [Versioning.md](Versioning.md)). This page
 explains how that one number reaches everything that repeats it.
 
 <!-- version:begin -->
-Current version: **0.107.0**, plugin API **(0, 107)**.
+Current version: **0.105.0**, plugin API **(0, 105)**.
 <!-- version:end -->
 
 That line is generated. So is nearly everything below it: the only thing a
@@ -29,6 +29,14 @@ $EDITOR CHANGELOG.md
 through and nothing to remember, which is the point: the list used to be
 fifteen rows long and two of those rows were "every one of the plugin
 manifests".
+
+Do this once per release. The version in `Cargo.toml` is the next release, not a
+count of changes. A pull request raises it only when it still equals the newest
+`v*` tag, which makes that pull request the first change after a release; once
+raised it is never raised again before it is tagged. A new host function or
+manifest key belongs to the version `main` already heads for. A change that
+would need a MAJOR while `main` heads for a MINOR is a stop for the maintainer,
+not a second bump. `scripts/version-check.sh` enforces this in CI.
 
 ## What derives the version, and how
 

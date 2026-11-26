@@ -796,7 +796,7 @@ fn a_page_saved_before_root_fields_validates_and_renders_the_same_html() {
     run_test(async {
         let app = app();
         let page: Value = serde_json::from_str(
-            &std::fs::read_to_string(fixture_path("standard-page-v0.106.json")).unwrap(),
+            &std::fs::read_to_string(fixture_path("standard-page-pre-registry.json")).unwrap(),
         )
         .unwrap();
         let errors = app.state.page_builder_components().validate_page(&page);
@@ -806,12 +806,13 @@ fn a_page_saved_before_root_fields_validates_and_renders_the_same_html() {
             .theme()
             .render_page_builder_content(&page, &ResolvedReferences::default())
             .expect("render");
-        let expected = std::fs::read_to_string(fixture_path("standard-page-v0.106.html")).unwrap();
+        let expected =
+            std::fs::read_to_string(fixture_path("standard-page-pre-registry.html")).unwrap();
         assert_eq!(rendered.html, expected);
         assert_eq!(
             Value::Object(rendered.root),
             json!({
-                "title": "A page saved by v0.106.0",
+                "title": "A page saved before the component registry",
                 "footer_cta_mode": "default",
                 "variant_classes": ""
             })

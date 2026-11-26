@@ -64,8 +64,8 @@ current minor only, and the upgrade path is forward:
 <!-- version:begin -->
 | Version | Supported |
 |---|---|
-| 0.107.x (current) | Yes |
-| 0.106.x and earlier | No: upgrade to the current release |
+| 0.105.x (current) | Yes |
+| 0.104.x and earlier | No: upgrade to the current release |
 <!-- version:end -->
 
 There are no backports to earlier minors before 1.0. `UPGRADING.md` documents

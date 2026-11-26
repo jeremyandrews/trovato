@@ -492,19 +492,19 @@ pub const ERR_QUERY_BOUND: i32 = -81;
 /// `[[vocabulary_owners]]`: a plugin creates and lists vocabularies only for
 /// the owners it declared.
 ///
-/// Added by B108, after 0.106.0.
+/// Added by B108, after 0.104.0.
 pub const ERR_VOCABULARY_OWNER_UNDECLARED: i32 = -90;
 
 /// The vocabulary id is not a machine name (lowercase letters, digits and
 /// underscores, at most 32), the label is empty, or the owner id is empty or
 /// longer than 255.
 ///
-/// Added by B108, after 0.106.0.
+/// Added by B108, after 0.104.0.
 pub const ERR_VOCABULARY_INVALID: i32 = -91;
 
 /// A vocabulary with this id exists, owned or not.
 ///
-/// Added by B108, after 0.106.0.
+/// Added by B108, after 0.104.0.
 pub const ERR_VOCABULARY_EXISTS: i32 = -92;
 
 // =============================================================================
