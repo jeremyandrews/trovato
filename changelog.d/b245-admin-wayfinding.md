@@ -24,10 +24,13 @@ has one: unpublished items (for whoever may edit any content), comments
 waiting for moderation, blocked accounts, errors in the last 24 hours, and
 when cron last ran. Waiting work turns the line itself into a badge, so a
 screen reader hears each count once. Each count is one indexed statement,
-never cached. The Dashboard's group cards no longer repeat every link: each
+never cached, and a count that cannot be read is said rather than taken for
+zero, so the Waiting for you panel never gives an all clear it could not
+count. The Dashboard's group cards no longer repeat every link: each
 is the group's chip, its title leading to its landing page, its status lines
 and its main action, and a count a Dashboard panel already gives is not
 repeated on a card; the Waiting for you and Recent errors panels now take
 their comment and error sentences from the same status lines. Add content,
 Add content type (newly in the registry) and Add user are filled buttons
-beside their landing page's heading and on their Dashboard card.
+beside their landing page's heading and on their Dashboard card, and on
+Add content type and Add user the sidebar marks the list each adds to.

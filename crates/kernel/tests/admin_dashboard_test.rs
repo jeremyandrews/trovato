@@ -680,3 +680,63 @@ fn a_status_line_is_shown_only_to_whoever_may_open_all_it_counts() {
         assert!(!html.contains("blocked account"));
     });
 }
+
+/// The Recent errors panel counts and lists its errors with one cutoff: an
+/// error exactly at the cutoff is both counted and listed, and a second later
+/// is neither, so the summary never counts an error the rows leave out.
+#[test]
+fn the_recent_errors_count_and_rows_share_one_cutoff() {
+    run_test(async {
+        let app = shared_app().await;
+        let tag = tag();
+        // Far in the future, so no other error falls in the windows below.
+        let at = 4_000_000_000_i64;
+        trovato_kernel::system_log::insert(
+            &app.db,
+            &[trovato_kernel::system_log::LogRecord {
+                created: at,
+                level: "error",
+                log_type: "dashboard_test".to_string(),
+                message: format!("Cutoff test failure {tag}"),
+                context: Default::default(),
+            }],
+        )
+        .await
+        .unwrap();
+        let pool = app.db.clone();
+        let like = format!("%{tag}%");
+        defer_cleanup(move || async move {
+            let _ = sqlx::query("DELETE FROM system_log WHERE message LIKE $1")
+                .bind(like)
+                .execute(&pool)
+                .await;
+        });
+        let admin = UserContext::administrator(Uuid::nil(), vec![]);
+        let day = 24 * 60 * 60;
+
+        let panel =
+            trovato_kernel::routes::admin_dashboard::errors_at(&app.state, &admin, at + day)
+                .await
+                .expect("the panel");
+        let listed = panel
+            .rows
+            .iter()
+            .filter(|r| r.text.args.values().any(|v| v.contains(&tag)))
+            .count();
+        assert_eq!(panel.summary.count, Some(1), "{:?}", panel.summary);
+        assert_eq!(listed, 1, "the counted error is listed");
+
+        let panel =
+            trovato_kernel::routes::admin_dashboard::errors_at(&app.state, &admin, at + day + 1)
+                .await
+                .expect("the panel");
+        assert_eq!(panel.summary.count, Some(0), "{:?}", panel.summary);
+        assert!(
+            !panel
+                .rows
+                .iter()
+                .any(|r| r.text.args.values().any(|v| v.contains(&tag))),
+            "an error past the cutoff is neither counted nor listed"
+        );
+    });
+}

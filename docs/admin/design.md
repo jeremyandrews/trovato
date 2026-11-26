@@ -170,7 +170,11 @@ aria-controls>` disclosure, followed by the group's own `ul`. The button and
 the heading text shown without JavaScript both start with the group's icon;
 the links carry none. The first link in each group is its Overview (landing
 page). The current page's link carries `aria-current="page"` and the
-found-dot marker (section 6).
+found-dot marker (section 6). A group's main action kept out of the
+sidebar (Add content type, Add user) is the add form of the list above it,
+so on it that list carries the marker; any other page kept out (Who can do
+this?, search, preferences) marks no link, since none of the shown links is
+that page.
 
 By default only the group holding the current page is open (`data-current`
 on its item); every other group shows its icon and heading, collapsed, and
@@ -519,6 +523,11 @@ now (`routes::admin_dashboard`):
 
 Each panel is a `section` labelled by its `h2`, with its state in one
 sentence ("Nothing is waiting for you.", "3 errors in the last 24 hours.").
+A count that could not be read is said, never taken for zero: its row reads
+"Comments waiting for moderation could not be counted", and the summary
+becomes "What waits for you could not be counted." or "At least 3 things
+wait for you.", never an all clear. Recent errors counts and lists its
+errors with one cutoff, so the count and the rows always agree.
 Numbers are words in a sentence, with plural forms per language, and never
 a figure alone, a chart or a colour. A panel's gate is the gate of the page
 it is about, through `offered_pages`, so the Dashboard offers nothing that
@@ -527,7 +536,9 @@ answers 403.
 **Cards.** Below the panels, under the "Areas you may use" heading, one
 compact card per group the viewer may use: its icon chip, an `h3` whose
 title links to the group's landing page, its status lines and its main
-action. A card no longer lists the group's pages; its landing page does.
+action. A card no longer lists the group's pages; its landing page does. A
+plugin page with no card of its own counts for its group, so a viewer whose
+only page in a group is a plugin's still gets the group's card.
 A status a panel already reports (`DASHBOARD_PANEL_STATUSES`: comments,
 errors, cron) is left off the cards, so no count is said twice on the page.
 A plugin card is the Extend chip, its title linking to its page, and its

@@ -245,37 +245,61 @@ async fn waiting(
             status_line: None,
         });
     }
-    if may_moderate_comments
-        && let Some(line) =
-            admin_nav::status_line(admin_nav::Status::CommentsWaiting, viewer, state).await
-    {
-        // The sentence and its count are `status_line`'s, so the count is
-        // run and worded once; the total reads the same number.
-        total += line.message.count.unwrap_or(0);
+    let mut uncounted = false;
+    if may_moderate_comments {
         let pending = crate::models::comment::CommentStatus::Pending.as_i16();
-        rows.push(PanelRow {
-            text: line.message.clone(),
-            detail: None,
-            href: Some(format!("/admin/content/comments?status={pending}")),
-            status_line: Some(line),
-        });
+        let href = Some(format!("/admin/content/comments?status={pending}"));
+        match admin_nav::status_line(admin_nav::Status::CommentsWaiting, viewer, state).await {
+            // The sentence and its count are `status_line`'s, so the count is
+            // run and worded once; the total reads the same number.
+            Some(line) => {
+                total += line.message.count.unwrap_or(0);
+                rows.push(PanelRow {
+                    text: line.message.clone(),
+                    detail: None,
+                    href,
+                    status_line: Some(line),
+                });
+            }
+            // The count could not be read: say so, never "nothing waits".
+            None => {
+                uncounted = true;
+                rows.push(PanelRow {
+                    text: UiMessage::new("Comments waiting for moderation could not be counted"),
+                    detail: None,
+                    href,
+                    status_line: None,
+                });
+            }
+        }
     }
     Some(Panel {
         key: "waiting",
         title: "Waiting for you",
-        summary: if total == 0 {
-            UiMessage::new("Nothing is waiting for you.")
-        } else {
-            count(
-                total,
-                "{count} thing waits for you.",
-                "{count} things wait for you.",
-            )
-        },
+        summary: waiting_summary(total, uncounted),
         summary_line: None,
         rows,
         more: None,
     })
+}
+
+/// The Waiting for you sentence: how much waits, and never an all clear
+/// when part of it could not be counted.
+fn waiting_summary(total: i64, uncounted: bool) -> UiMessage {
+    match (total, uncounted) {
+        (0, false) => UiMessage::new("Nothing is waiting for you."),
+        (0, true) => UiMessage::new("What waits for you could not be counted."),
+        (n, false) => count(
+            n,
+            "{count} thing waits for you.",
+            "{count} things wait for you.",
+        ),
+        (n, true) => count(
+            n,
+            "At least {count} thing waits for you.",
+            "At least {count} things wait for you.",
+        ),
+    }
 }
 
 /// Whether the last cron run worked, and dead plugin queue jobs.
@@ -336,8 +360,15 @@ async fn tasks(state: &AppState) -> Panel {
 /// is the `LogErrors` status line, so the count is run and worded once;
 /// without it (the count could not be read) there is no panel.
 async fn errors(state: &AppState, viewer: &UserContext) -> Option<Panel> {
-    let line = admin_nav::status_line(admin_nav::Status::LogErrors, viewer, state).await?;
-    let since = chrono::Utc::now().timestamp() - 24 * 60 * 60;
+    errors_at(state, viewer, chrono::Utc::now().timestamp()).await
+}
+
+/// The Recent errors panel as at `now` (Unix seconds). The count and the
+/// rows share one cutoff, so an error the summary counts is never missing
+/// from the rows for having crossed the cutoff between two clock reads.
+pub async fn errors_at(state: &AppState, viewer: &UserContext, now: i64) -> Option<Panel> {
+    let line = admin_nav::status_line_at(admin_nav::Status::LogErrors, viewer, state, now).await?;
+    let since = now - 24 * 60 * 60;
     let latest: Vec<(i64, String, String)> = sqlx::query_as(
         "SELECT created, log_type, message FROM system_log \
          WHERE level = 'error' AND created >= $1 ORDER BY id DESC LIMIT $2",
@@ -383,6 +414,25 @@ mod tests {
     #[test]
     fn a_long_message_is_shortened_with_an_ellipsis() {
         assert_eq!(shorten("one two three four", 10), "one two t…");
+    }
+
+    #[test]
+    fn the_waiting_summary_never_gives_an_all_clear_it_could_not_count() {
+        assert_eq!(waiting_summary(0, false).s, "Nothing is waiting for you.");
+        assert_eq!(
+            waiting_summary(0, true).s,
+            "What waits for you could not be counted."
+        );
+        let some = waiting_summary(3, false);
+        assert_eq!(
+            (some.plural.as_deref(), some.count),
+            (Some("{count} things wait for you."), Some(3))
+        );
+        let at_least = waiting_summary(3, true);
+        assert_eq!(
+            (at_least.plural.as_deref(), at_least.count),
+            (Some("At least {count} things wait for you."), Some(3))
+        );
     }
 
     #[test]

@@ -909,6 +909,17 @@ pub async fn status_line(
     viewer: &UserContext,
     state: &crate::state::AppState,
 ) -> Option<StatusLine> {
+    status_line_at(status, viewer, state, chrono::Utc::now().timestamp()).await
+}
+
+/// [`status_line`] as at `now` (Unix seconds), so a caller that lists what
+/// a line counts can list it with the same cutoff.
+pub async fn status_line_at(
+    status: Status,
+    viewer: &UserContext,
+    state: &crate::state::AppState,
+    now: i64,
+) -> Option<StatusLine> {
     use crate::i18n::UiMessage;
     if !may_see(status, viewer) {
         return None;
@@ -961,7 +972,7 @@ pub async fn status_line(
             })
         }
         Status::LogErrors => {
-            let since = chrono::Utc::now().timestamp() - 24 * 60 * 60;
+            let since = now - 24 * 60 * 60;
             let n =
                 count("SELECT COUNT(*) FROM system_log WHERE level = 'error' AND created >= $1")
                     .bind(since)
@@ -1143,8 +1154,9 @@ fn primary_of(pages: &[PageEntry], group: Group) -> Option<PrimaryAction> {
 }
 
 /// The dashboard cards `viewer` may use: one per group with at least one
-/// sidebar page the viewer may open, leading to its landing page, then one
-/// per plugin-declared card, under the same rule, so the dashboard never
+/// sidebar page the viewer may open (a plugin page without a card of its
+/// own counts for its group), leading to its landing page, then one per
+/// plugin-declared card, under the same rule, so the dashboard never
 /// offers a page that answers 403 or 404. A group card no longer lists its
 /// pages: its landing page does.
 pub fn dashboard(
@@ -1153,11 +1165,31 @@ pub fn dashboard(
     plugin_links: &[PluginNavLink],
     plugin_cards: &[PluginNavCard],
 ) -> Vec<DashboardCard> {
-    // Plugin pages are drawn as their own cards below, not inside a group's.
     let pages: Vec<PageEntry> = offered_pages(viewer, enabled_plugins, &[], &[]);
+    // A plugin page with a card of its own is offered by that card below. One
+    // without a card is reached through its group's landing page, which lists
+    // it, so it earns its group a card like any page in the group.
+    let uncarded: Vec<PluginNavLink> = plugin_links
+        .iter()
+        .filter(|l| {
+            !plugin_cards
+                .iter()
+                .any(|c| c.plugin == l.plugin && c.href == l.href)
+        })
+        .cloned()
+        .collect();
+    let reached: Vec<PageEntry> = offered_pages(viewer, enabled_plugins, &uncarded, &[])
+        .into_iter()
+        .filter(|p| p.plugin.is_some())
+        .collect();
     let mut cards: Vec<DashboardCard> = GROUPS
         .iter()
-        .filter(|g| pages.iter().any(|p| p.group == Some(g.group) && p.sidebar))
+        .filter(|g| {
+            pages
+                .iter()
+                .chain(&reached)
+                .any(|p| p.group == Some(g.group) && p.sidebar)
+        })
         .map(|g| DashboardCard {
             title: g.title.to_string(),
             description: String::new(),
@@ -1279,7 +1311,17 @@ pub fn sidebar(
     plugin_links: &[PluginNavLink],
 ) -> Vec<NavSection> {
     let pages = offered_pages(viewer, enabled_plugins, plugin_links, &[]);
-    let active_href = current_page(&pages, path).map(|e| e.href.clone());
+    // A group's main action kept out of the sidebar (Add content type, Add
+    // user) is the add form of the list above it, so that list is marked
+    // current. Any other page kept out (Who can do this?, search,
+    // preferences) marks no link: no shown link is the page.
+    let active_href = current_page(&pages, path).map(|e| {
+        if e.sidebar || !e.primary {
+            return e.href.clone();
+        }
+        let shown: Vec<PageEntry> = pages.iter().filter(|p| p.sidebar).cloned().collect();
+        current_page(&shown, &e.href).map_or_else(|| e.href.clone(), |p| p.href.clone())
+    });
     let landing = landing_group(path);
 
     let nav = |e: &PageEntry| NavLink {
@@ -2453,6 +2495,65 @@ mod tests {
         assert!(
             dashboard(&granted, &[], &[groups_link()], &[groups_card()]).is_empty(),
             "disabling the plugin drops the card too"
+        );
+    }
+
+    #[test]
+    fn a_plugin_page_without_a_card_earns_its_group_a_card() {
+        let granted = viewer(&["access administration pages", "administer groups"]);
+        let cards = dashboard(&granted, &["groups".to_string()], &[groups_link()], &[]);
+        assert_eq!(card_hrefs(&cards), vec!["/admin/structure/overview"]);
+        assert_eq!(cards[0].group, Some(Group::Structure));
+        assert!(
+            cards[0].primary.is_none(),
+            "the plugin page is not the group's main action"
+        );
+        let landing = landing(
+            &granted,
+            &["groups".to_string()],
+            Group::Structure,
+            &[groups_link()],
+            &[],
+        );
+        assert!(
+            landing.items.iter().any(|i| i.href == "/admin/groups"),
+            "the card's landing page lists the plugin page"
+        );
+
+        let holder = viewer(&["access administration pages"]);
+        assert!(
+            dashboard(&holder, &["groups".to_string()], &[groups_link()], &[]).is_empty(),
+            "nor without the plugin page's permission"
+        );
+        assert!(
+            dashboard(&granted, &[], &[groups_link()], &[]).is_empty(),
+            "nor with the plugin disabled"
+        );
+    }
+
+    #[test]
+    fn a_main_action_kept_out_of_the_sidebar_marks_the_list_it_adds_to() {
+        let admin = UserContext::administrator(Uuid::now_v7(), vec![]);
+        let active = |path: &str| -> Vec<String> {
+            sidebar(&admin, &[], path, &[])
+                .into_iter()
+                .flat_map(|s| s.links)
+                .filter(|l| l.active)
+                .map(|l| l.href)
+                .collect()
+        };
+        assert_eq!(
+            active("/admin/structure/types/add"),
+            vec!["/admin/structure/types"]
+        );
+        assert_eq!(active("/admin/people/add"), vec!["/admin/people"]);
+        assert_eq!(
+            active("/admin/structure/types"),
+            vec!["/admin/structure/types"]
+        );
+        assert!(
+            active("/admin/people/who-can").is_empty(),
+            "a page kept out of the sidebar that adds to no list marks nothing"
         );
     }
 

@@ -1273,7 +1273,7 @@ filtered to viewers who hold `permission` while the plugin is enabled:
 |---|---|
 | Sidebar | a link under its group: the `section` names the group (`Structure`, `People`, …, or `System` for Configuration); any other name joins Extend |
 | The group's landing page (`/admin/{group}/overview`) | a tile with the group's icon, the link, and `card_description` as its line when set |
-| Dashboard | a card titled `label` linking to `href`, with the Extend icon and `card_description`, when `card_description` is set |
+| Dashboard | a card titled `label` linking to `href`, with the Extend icon and `card_description`, when `card_description` is set; without one, the link still gives its group a card for whoever may open it |
 | Admin search and the command palette | a result under "Plugins", found by `label`, `section` and `card_description` |
 | Breadcrumb and `<title>` of your page and the pages below it | Administration › group › `label` |
 | "Who can do this?" | `permission`, and the roles that hold it |
