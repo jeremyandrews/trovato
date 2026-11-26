@@ -17,3 +17,8 @@ machine name, a type the kernel renders, a custom HTML format the site has, an
 audience the form offers, and a machine name free on the live stage. The tile
 form's list of audiences is now shared with the importer instead of being
 private to the form.
+
+An `item` record that changes a stored item may no longer date the change
+before the item's current revision. The new revision would not have been the
+latest, which the revision list and content moderation both read as the
+newest; such a record now fails the import with its line number.

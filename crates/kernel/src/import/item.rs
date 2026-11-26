@@ -151,6 +151,21 @@ pub(crate) async fn import_item(run: &mut Run<'_>, r: ItemRecord) -> Result<Outc
         return Ok(Outcome::Unchanged);
     }
 
+    // A change is a new current revision, dated `changed`: dated before the
+    // one it follows, it would not be the latest, and the revision list and
+    // content moderation read the latest as the newest.
+    if let Some(stored) = &stored
+        && r.changed < stored.changed
+    {
+        anyhow::bail!(
+            "item {} was last changed at {}, and the record's changed ({}) is earlier: a \
+             change cannot be dated before the current revision",
+            r.id,
+            stored.changed,
+            r.changed
+        );
+    }
+
     // The revision this write adds. A stored one is never rewritten
     // (revisions are immutable), so a given id must be a new one.
     let revision_id = match r.revision_id {

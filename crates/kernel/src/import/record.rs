@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 /// Every record type, in the order the report lists them.
 pub const RECORD_TYPES: &[&str] = &[
-    "item", "revision", "comment", "alias", "redirect", "user", "tile",
+    "user", "item", "revision", "comment", "alias", "redirect", "tile",
 ];
 
 /// One line of the file, by its `type`.

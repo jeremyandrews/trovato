@@ -65,7 +65,7 @@ The item as it is now: its current revision.
 | `title` | yes | Non-empty, at most 1000 bytes (the forms' limit). |
 | `author_id` | yes | A user id, stored or on an earlier line. |
 | `created` | yes | Authored on. |
-| `changed` | yes | Last changed; the current revision's date. Not before `created`. |
+| `changed` | yes | Last changed; the current revision's date. Not before `created`. On a change, not before the stored `changed`. |
 | `status` | no | 0 or 1; default 1. |
 | `promote`, `sticky` | no | 0 or 1; default the content type's publishing defaults. |
 | `language` | no | A configured language; default the site's default language. |

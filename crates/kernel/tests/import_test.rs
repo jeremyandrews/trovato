@@ -30,6 +30,15 @@ async fn run(
     dry_run: bool,
 ) -> anyhow::Result<ImportReport> {
     let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    // At most four imports at once: each holds its transaction's connection
+    // while the field checks take another from the shared pool, and fourteen
+    // at once can starve a small one (as `trovato import`, alone in its
+    // process, never is).
+    static AT_ONCE: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(4);
+    let _turn = AT_ONCE
+        .acquire()
+        .await
+        .expect("the semaphore is never closed");
     import(&app.state, text.as_bytes(), dry_run).await
 }
 
@@ -238,6 +247,18 @@ fn a_changed_item_gains_one_revision_dated_as_the_record_says() {
 
         let third = run(app, &lines, false).await.expect("third run");
         assert_eq!(third.changes(), 0, "the edit, rerun, is unchanged");
+
+        // A change dated before the current revision would not be the latest.
+        let mut backwards = lines.clone();
+        backwards[0] = item_line(item, writer, "B167 change, backdated", Y2016);
+        let error = run(app, &backwards, false).await.expect_err("refused");
+        let failed = error.downcast_ref::<ImportFailed>().unwrap();
+        assert_eq!(failed.line, 1);
+        assert!(
+            failed.message.contains("cannot be dated before"),
+            "{failed}"
+        );
+        assert_eq!(revisions_of(app, item).await.len(), 4, "nothing written");
     });
 }
 
