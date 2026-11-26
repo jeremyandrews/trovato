@@ -6366,6 +6366,7 @@ dependencies = [
  "infer",
  "jsonwebtoken",
  "lettre",
+ "libc",
  "moka",
  "opentelemetry",
  "opentelemetry-otlp",

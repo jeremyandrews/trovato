@@ -783,3 +783,214 @@ async fn user_create_does_not_echo_a_typed_password() {
     assert!(shown.contains("Created active user 'cli_tty'"), "{shown}");
     assert!(password_verifies(db.pool(), "cli_tty", PASSWORD).await);
 }
+
+/// A pseudo-terminal, with echo on as a shell leaves it, and the path to its
+/// slave side (reopening it afterwards reads the pty's termios back without
+/// needing to keep a slave file descriptor of our own open).
+#[cfg(unix)]
+fn open_pty() -> (std::fs::File, std::fs::File, PathBuf) {
+    let master =
+        rustix::pty::openpt(rustix::pty::OpenptFlags::RDWR | rustix::pty::OpenptFlags::NOCTTY)
+            .unwrap();
+    rustix::pty::grantpt(&master).unwrap();
+    rustix::pty::unlockpt(&master).unwrap();
+    let slave_path = PathBuf::from(
+        rustix::pty::ptsname(&master, Vec::new())
+            .unwrap()
+            .to_str()
+            .unwrap(),
+    );
+    let slave = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(&slave_path)
+        .unwrap();
+    let attrs = rustix::termios::tcgetattr(&slave).unwrap();
+    assert!(
+        attrs
+            .local_modes
+            .contains(rustix::termios::LocalModes::ECHO),
+        "the terminal starts with echo on"
+    );
+    (std::fs::File::from(master), slave, slave_path)
+}
+
+/// Starts `trovato user create` on a pty and returns it once the password
+/// prompt has reached the terminal, along with everything the terminal has
+/// shown so far (shared with the caller, who keeps reading it).
+#[cfg(unix)]
+async fn user_create_waiting_for_password(
+    db: &ScratchDb,
+    work: &TempDir,
+    slave: std::fs::File,
+    master: std::fs::File,
+) -> (
+    Child,
+    std::fs::File,
+    std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+) {
+    use std::io::Read;
+    use std::sync::{Arc, Mutex};
+
+    let mut cmd = command(&db.url(), work);
+    cmd.args(["user", "create", "cli_tty", "--mail", "tty@example.com"])
+        .stdin(Stdio::from(slave.try_clone().unwrap()))
+        .stdout(Stdio::from(slave.try_clone().unwrap()))
+        .stderr(Stdio::from(slave.try_clone().unwrap()));
+    // SAFETY: `setsid` and the `ioctl` only touch the child's own session and
+    // its already-redirected stdin (tokio dup2s stdio before running this),
+    // not any memory shared with the parent. Without this, the pty has no
+    // foreground process group, so the interrupt character typed into it
+    // (`interrupted_password_prompt::interrupt_character`) has nowhere to
+    // deliver `SIGINT` to.
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc::setsid() == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if libc::ioctl(0, libc::TIOCSCTTY as _, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+    let child = cmd.spawn().expect("spawn trovato");
+    drop(slave);
+
+    let mut reader = master.try_clone().unwrap();
+    let transcript = Arc::new(Mutex::new(Vec::<u8>::new()));
+    let sink = transcript.clone();
+    std::thread::spawn(move || {
+        let mut buf = [0u8; 4096];
+        while let Ok(n) = reader.read(&mut buf) {
+            if n == 0 {
+                break;
+            }
+            sink.lock().unwrap().extend_from_slice(&buf[..n]);
+        }
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let shown = String::from_utf8_lossy(&transcript.lock().unwrap()).to_string();
+        if shown.contains("Password:") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no password prompt on the terminal:\n{shown}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    (child, master, transcript)
+}
+
+/// Interrupting the password prompt leaves the terminal exactly as it was
+/// (B224): echo on, as the shell left it, not off as the read had set it to
+/// answer the prompt without showing what was typed.
+///
+/// Three ways a shell delivers that interruption, each its own case: a signal
+/// sent directly (`kill`, as `SIGINT` or `SIGTERM` reach a foreground
+/// process), and the interrupt character typed at the terminal itself, which
+/// the pty's own line discipline turns into `SIGINT` before `trovato` ever
+/// sees a byte of it — the path a person pressing Ctrl-C actually takes.
+#[cfg(unix)]
+mod interrupted_password_prompt {
+    use super::*;
+
+    async fn assert_restores_terminal(
+        label: &str,
+        interrupt: impl FnOnce(&Child, &std::fs::File),
+        expected_code: i32,
+    ) {
+        let db = migrated(label).await;
+        let (master, slave, slave_path) = open_pty();
+        let work = TempDir::new(label);
+        let (mut child, master, transcript) =
+            user_create_waiting_for_password(&db, &work, slave, master).await;
+
+        interrupt(&child, &master);
+
+        let status = tokio::time::timeout(Duration::from_secs(60), child.wait())
+            .await
+            .expect("the command finishes")
+            .unwrap();
+        let shown = String::from_utf8_lossy(&transcript.lock().unwrap()).to_string();
+        assert_eq!(status.code(), Some(expected_code), "{label}:\n{shown}");
+
+        // Reopening the slave reads the pty's termios back without racing the
+        // child's own exit: it is a property of the pty itself, not of any
+        // one file descriptor onto it.
+        let reopened = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&slave_path)
+            .unwrap();
+        let attrs = rustix::termios::tcgetattr(&reopened).unwrap();
+        assert!(
+            attrs
+                .local_modes
+                .contains(rustix::termios::LocalModes::ECHO),
+            "{label}: echo was left off after the interrupt:\n{shown}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sigint() {
+        assert_restores_terminal(
+            "cli-tty-sigint",
+            |child, _master| {
+                let pid = child.id().expect("child has a pid") as libc::pid_t;
+                assert_eq!(unsafe { libc::kill(pid, libc::SIGINT) }, 0);
+            },
+            130,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn sigterm() {
+        assert_restores_terminal(
+            "cli-tty-sigterm",
+            |child, _master| {
+                let pid = child.id().expect("child has a pid") as libc::pid_t;
+                assert_eq!(unsafe { libc::kill(pid, libc::SIGTERM) }, 0);
+            },
+            143,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn sighup() {
+        assert_restores_terminal(
+            "cli-tty-sighup",
+            |child, _master| {
+                let pid = child.id().expect("child has a pid") as libc::pid_t;
+                assert_eq!(unsafe { libc::kill(pid, libc::SIGHUP) }, 0);
+            },
+            129,
+        )
+        .await;
+    }
+
+    /// The interrupt character (Ctrl-C, byte `0x03`), typed at the terminal
+    /// rather than sent with `kill`: the pty's line discipline (`ISIG` is on
+    /// by default) turns it into `SIGINT` for the foreground process itself,
+    /// so `trovato` never reads the byte.
+    #[tokio::test]
+    async fn interrupt_character() {
+        use std::io::Write;
+
+        assert_restores_terminal(
+            "cli-tty-ctrl-c",
+            |_child, master| {
+                let mut writer = master.try_clone().unwrap();
+                writer.write_all(&[0x03]).unwrap();
+            },
+            130,
+        )
+        .await;
+    }
+}
