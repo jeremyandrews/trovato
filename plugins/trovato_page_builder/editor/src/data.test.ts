@@ -10,8 +10,8 @@ const fixture = (name: string) =>
   );
 
 describe("stored page ↔ Puck data", () => {
-  it("round-trips a page saved by v0.106 without changing it", () => {
-    const page = fixture("standard-page-v0.106.json");
+  it("round-trips a page saved before the component registry without changing it", () => {
+    const page = fixture("standard-page-pre-registry.json");
     expect(puckToStored(storedToPuck(page))).toEqual(page);
   });
 
@@ -53,8 +53,8 @@ describe("stored page ↔ Puck data", () => {
     });
   });
 
-  it("round-trips the v0.106 page with root fields declared", () => {
-    const page = fixture("standard-page-v0.106.json");
+  it("round-trips the pre-registry page with root fields declared", () => {
+    const page = fixture("standard-page-pre-registry.json");
     expect(puckToStored(storedToPuck(page), ["footer_cta_mode"])).toEqual(page);
   });
 

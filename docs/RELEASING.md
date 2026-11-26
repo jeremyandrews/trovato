@@ -53,6 +53,11 @@ that is the sweep commit unless the sweep has already landed. On an empty
 `changelog.d/` it exits 0 having changed nothing, so a release script can call it
 without checking first.
 
+The release branch therefore adds no fragment of its own, and
+`scripts/changelog-check.sh` recognises it as a release fold rather than failing
+it: fragments deleted, `changelog.d/` left holding only its README, and a new
+`## vX.Y.Z` heading for the version `Cargo.toml` declares.
+
 Entries written under `## Unreleased` before fragments existed are still sitting
 there, and they release the way they always did: move them into the version's
 section by hand. If the sweep commit already opened that section, fold
@@ -88,15 +93,24 @@ Annotated, named `vX.Y.Z`, message `Trovato X.Y.Z`:
 
 <!-- version:begin -->
 ```sh
-git tag -a v0.107.0 -m "Trovato 0.107.0"
-git push origin v0.107.0
+git tag -a v0.105.0 -m "Trovato 0.105.0"
+git push origin v0.105.0
 ```
 <!-- version:end -->
 
 `.github/workflows/docker-publish.yml` runs on `refs/tags/v*` and publishes
 `ghcr.io/jeremyandrews/trovato` at `X.Y.Z`, `X.Y` and `latest`, built for amd64
-and arm64 (arm64 is release-only; nightlies skip it and take up to four hours
-when it does run).
+and arm64. Both platforms build on every run, nightly and release alike, each on
+a native runner.
+
+Until a `vX.Y.*` tag exists, a push to `main` publishes `X.Y.0-nightly.N`,
+`nightly` and `nightly-<sha>`, where `N` counts commits since the previous
+release tag. A SemVer prerelease sorts below its release, so for a minor or a
+major release no nightly outranks the tag, whichever order the merge and the
+tag push happen in. A patch release has no such guarantee: once `vX.Y.0` exists,
+nightlies are numbered `X.Y.<patch + commits since that tag>`, and one can take
+or pass `X.Y.1` before its tag is pushed (see
+[design/Versioning.md](design/Versioning.md#docker-images)).
 
 That workflow carries `paths-ignore: ['**/*.md']`, which does **not** apply to a
 tag push: GitHub evaluates path filters for branch pushes only. Measured at
@@ -113,8 +127,8 @@ gh run list --workflow=docker-publish.yml --limit 3
 gh workflow run docker-publish.yml --ref vX.Y.Z   # only if it did not fire
 ```
 
-Budget roughly two and a half hours. The amd64 leg finishes quickly; arm64 is
-built under QEMU and dominates. v0.100.0 took 2h23m and v0.101.0 took 2h47m.
+Budget roughly half an hour. The two legs build in parallel on native runners;
+`main` runs in November 2026 took about twenty minutes from start to manifest.
 
 ## 5. The GitHub Release
 

@@ -72,7 +72,7 @@ name = "isDecorative"
 type = "boolean"
 hidden = true
 
-# Before 0.107 a free CSS colour written into a style attribute.
+# Before 0.105 a free CSS colour written into a style attribute.
 [[fields]]
 name = "backgroundColor"
 type = "text"

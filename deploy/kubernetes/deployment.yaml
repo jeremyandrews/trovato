@@ -37,7 +37,7 @@ spec:
       terminationGracePeriodSeconds: 45
       containers:
         - name: trovato
-          image: ghcr.io/jeremyandrews/trovato:0.107.0
+          image: ghcr.io/jeremyandrews/trovato:0.105.0
           ports:
             - name: http
               containerPort: 3000

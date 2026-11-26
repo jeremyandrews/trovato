@@ -1,7 +1,7 @@
 name = "trovato_webhooks"
 description = "Event-driven webhook dispatch with HMAC-SHA256 signatures"
-version = "0.107.0"
-api_version = "0.107"
+version = "0.105.0"
+api_version = "0.105"
 dependencies = []
 
 [taps]
@@ -28,7 +28,7 @@ host_interfaces = []
 # Site configuration this plugin owns: `config export` writes each row of
 # these tables and `config import` reads them back. A secret column is never
 # exported: the file holds `env:TROVATO_SECRET_<TABLE>_<PK>_<COLUMN>` and
-# import reads that variable (API 0.107).
+# import reads that variable (API 0.105).
 [config]
 tables = ["webhook"]
 secret_columns = { webhook = ["secret"] }
