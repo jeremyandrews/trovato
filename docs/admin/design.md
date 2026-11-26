@@ -88,13 +88,14 @@ the page to exist, other path prefixes that belong to the page (so
 whether it is shown in the sidebar (every page is on its landing page and in
 search; "Add user" is not in the sidebar).
 
-A plugin entry comes from `tap_admin_nav` (BL-162), unchanged: section, label,
-href, permission and an optional dashboard card description. The section names
-the group: a group's title (`Structure`, `Content`, …), case-insensitively, or
-the pre-B199 name `System`, which maps to Configuration; any other name puts the
-link in Extend. Its `card_description`, when set, is also its line on the
-landing page and what search matches beside its label; the declaration itself
-is unchanged, so no plugin needs rebuilding.
+A plugin entry comes from `tap_admin_nav` (BL-162): section, label, href,
+permission, an optional dashboard card description and optional search
+keywords. The section names the group: a group's title (`Structure`,
+`Content`, …), case-insensitively, or the pre-B199 name `System`, which maps
+to Configuration; any other name puts the link in Extend. Its
+`card_description`, when set, is also its line on the landing page and what
+search matches beside its label; its keywords are other words a viewer might
+search for it by, matched the same way a kernel entry's synonyms are.
 
 Filtering is the one function every surface calls: the viewer passes the
 entry's gate, and its plugin is enabled. The sidebar and search are display

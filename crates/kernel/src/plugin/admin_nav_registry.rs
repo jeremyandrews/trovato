@@ -21,9 +21,12 @@ use std::collections::HashSet;
 use tracing::warn;
 use trovato_sdk::types::AdminNavDefinition;
 
-/// Longest label, section or description accepted, matching the admin theme's
-/// layout assumptions rather than any protocol limit.
+/// Longest label, section, description or keyword accepted, matching the
+/// admin theme's layout assumptions rather than any protocol limit.
 const MAX_TEXT_LEN: usize = 255;
+
+/// Most keywords one declaration may carry.
+const MAX_KEYWORDS: usize = 20;
 
 /// One sidebar link a plugin declared, with the plugin that declared it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -33,6 +36,7 @@ pub struct PluginNavLink {
     pub label: String,
     pub href: String,
     pub permission: String,
+    pub keywords: Vec<String>,
 }
 
 /// One dashboard card a plugin declared, from an [`AdminNavDefinition`] that
@@ -116,6 +120,7 @@ impl AdminNavRegistry {
                     label: def.label.clone(),
                     href: def.href.clone(),
                     permission: def.permission.clone(),
+                    keywords: def.keywords.clone(),
                 });
                 if let Some(description) = def.card_description {
                     registry.cards.push(PluginNavCard {
@@ -209,6 +214,17 @@ fn validate(def: &AdminNavDefinition, seen_hrefs: &HashSet<String>) -> Result<()
             "card_description is longer than {MAX_TEXT_LEN} bytes"
         ));
     }
+    if def.keywords.len() > MAX_KEYWORDS {
+        return Err(format!("more than {MAX_KEYWORDS} keywords"));
+    }
+    for keyword in &def.keywords {
+        if keyword.trim().is_empty() {
+            return Err("a keyword is empty".to_string());
+        }
+        if keyword.len() > MAX_TEXT_LEN {
+            return Err(format!("a keyword is longer than {MAX_TEXT_LEN} bytes"));
+        }
+    }
     // A kernel link owns its href and every prefix in its `also` list: a
     // plugin link at one of those would tie with the kernel link for the
     // active highlight on every page beneath it.
@@ -264,6 +280,30 @@ mod tests {
         assert_eq!(registry.links()[0].href, "/admin/groups");
         assert!(registry.cards().is_empty());
         assert!(registry.rejections().is_empty());
+    }
+
+    #[test]
+    fn keywords_reach_the_registered_link() {
+        let with_keywords = def("/admin/groups").with_keywords(["teams", "cohorts"]);
+        let registry = AdminNavRegistry::from_tap_results(vec![(
+            "groups".to_string(),
+            serde_json::to_string(&vec![with_keywords]).unwrap(),
+        )]);
+        assert_eq!(
+            registry.links()[0].keywords,
+            vec!["teams".to_string(), "cohorts".to_string()]
+        );
+    }
+
+    #[test]
+    fn an_empty_keyword_is_rejected() {
+        let d = def("/admin/groups").with_keywords([""]);
+        let registry = AdminNavRegistry::from_tap_results(vec![(
+            "groups".to_string(),
+            serde_json::to_string(&vec![d]).unwrap(),
+        )]);
+        assert!(registry.links().is_empty());
+        assert_eq!(registry.rejections().len(), 1);
     }
 
     #[test]

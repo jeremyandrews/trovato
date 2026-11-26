@@ -841,7 +841,9 @@ pub fn offered_pages(
                     .unwrap_or_default(),
                 href: l.href.clone(),
                 also: Vec::new(),
-                synonyms: vec![l.section.clone()],
+                synonyms: std::iter::once(l.section.clone())
+                    .chain(l.keywords.iter().cloned())
+                    .collect(),
                 sidebar: true,
                 plugin: Some(l.plugin.clone()),
             }),
@@ -1604,6 +1606,7 @@ mod tests {
             label: "Groups".to_string(),
             href: "/admin/groups".to_string(),
             permission: "administer groups".to_string(),
+            keywords: vec!["teams".to_string()],
         }
     }
 
@@ -1904,6 +1907,25 @@ mod tests {
         let other = viewer(&["access administration pages"]);
         assert!(
             !found(search(&other, &enabled, &links, &[], "groups", &id)),
+            "no permission"
+        );
+    }
+
+    /// A plugin entry is also found by a keyword it declared through
+    /// `AdminNavDefinition::with_keywords`, a word that is in neither its
+    /// label nor its section, for a viewer holding its permission, and not
+    /// otherwise.
+    #[test]
+    fn search_finds_a_plugin_entry_by_its_declared_keyword() {
+        let id = |s: &str| s.to_string();
+        let links = [groups_link()];
+        let found = |hits: Vec<SearchHit>| hits.iter().any(|h| h.href == "/admin/groups");
+        let holder = viewer(&["access administration pages", "administer groups"]);
+        let enabled = ["groups".to_string()];
+        assert!(found(search(&holder, &enabled, &links, &[], "teams", &id)));
+        let other = viewer(&["access administration pages"]);
+        assert!(
+            !found(search(&other, &enabled, &links, &[], "teams", &id)),
             "no permission"
         );
     }
