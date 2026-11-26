@@ -21,13 +21,13 @@
 //! does not verify is passed straight to the handler, which refuses it as it
 //! always did, so the page only ever repeats words this site's own form wrote.
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{Method, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::get;
-use axum::Router;
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
@@ -97,19 +97,14 @@ pub async fn ask_first(session: Session, request: Request, next: Next) -> Respon
         .and_then(same_site_path)
         .unwrap_or_else(|| "/admin".to_string());
     let (parts, body) = request.into_parts();
-    let bytes = match axum::body::to_bytes(body, BODY_LIMIT).await {
-        Ok(bytes) => bytes,
-        Err(_) => {
-            return (
-                axum::http::StatusCode::PAYLOAD_TOO_LARGE,
-                "The form is too large.",
-            )
-                .into_response();
-        }
+    let Ok(bytes) = axum::body::to_bytes(body, BODY_LIMIT).await else {
+        return (
+            axum::http::StatusCode::PAYLOAD_TOO_LARGE,
+            "The form is too large.",
+        )
+            .into_response();
     };
-    let fields: Vec<(String, String)> = url::form_urlencoded::parse(&bytes)
-        .into_owned()
-        .collect();
+    let fields: Vec<(String, String)> = url::form_urlencoded::parse(&bytes).into_owned().collect();
     let rebuilt = |parts, bytes| next.run(Request::from_parts(parts, Body::from(bytes)));
 
     let Some(pending) = pending_for(parts.uri.path(), &marker, &fields, cancel) else {
@@ -208,8 +203,10 @@ fn pending_for(
         action: path.to_string(),
         fields: kept(&["_token", "_confirm", "_confirm_label"]),
         question: Words::Message(
-            UiMessage::new("Delete {count} selected item? This cannot be undone.")
-                .plural("Delete {count} selected items? This cannot be undone.", count),
+            UiMessage::new("Delete {count} selected item? This cannot be undone.").plural(
+                "Delete {count} selected items? This cannot be undone.",
+                count,
+            ),
         ),
         label: Words::Message(
             UiMessage::new("Delete {count} item").plural("Delete {count} items", count),
@@ -243,6 +240,7 @@ pub fn router() -> Router<AppState> {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
@@ -267,7 +265,12 @@ mod tests {
         assert!(pending_for("/admin/content/bulk", "delete", &publish, "/".into()).is_none());
         let none = fields(&[("action", "delete")]);
         assert!(pending_for("/admin/content/bulk", "delete", &none, "/".into()).is_none());
-        let two = fields(&[("_token", "t"), ("action", "delete"), ("ids[]", "a"), ("ids[]", "b")]);
+        let two = fields(&[
+            ("_token", "t"),
+            ("action", "delete"),
+            ("ids[]", "a"),
+            ("ids[]", "b"),
+        ]);
         let p = pending_for("/admin/content/bulk", "delete", &two, "/".into()).unwrap();
         assert!(matches!(&p.question, Words::Message(m) if m.count == Some(2)));
         assert!(p.fields.iter().all(|(k, _)| k != "_token"));
@@ -276,7 +279,11 @@ mod tests {
 
     #[test]
     fn a_plain_form_asks_its_own_question() {
-        let f = fields(&[("_token", "t"), ("_confirm", "Delete the tag Rust?"), ("_confirm_label", "Delete Rust")]);
+        let f = fields(&[
+            ("_token", "t"),
+            ("_confirm", "Delete the tag Rust?"),
+            ("_confirm_label", "Delete Rust"),
+        ]);
         let p = pending_for("/admin/structure/tags/1/delete", "", &f, "/admin".into()).unwrap();
         assert_eq!(p.action, "/admin/structure/tags/1/delete");
         assert!(p.fields.is_empty());
@@ -286,7 +293,10 @@ mod tests {
 
     #[test]
     fn cancel_never_leaves_the_site() {
-        assert_eq!(same_site_path("https://example.com/admin/x?page=2"), Some("/admin/x?page=2".into()));
+        assert_eq!(
+            same_site_path("https://example.com/admin/x?page=2"),
+            Some("/admin/x?page=2".into())
+        );
         assert_eq!(same_site_path("/admin/x"), Some("/admin/x".into()));
         assert_eq!(same_site_path("//evil.example/x"), None);
     }

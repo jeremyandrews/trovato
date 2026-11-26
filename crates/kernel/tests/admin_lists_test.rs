@@ -241,7 +241,12 @@ fn a_delete_asks_on_its_own_page_before_it_deletes() {
         let title = format!("Doomed {}", Uuid::new_v4().simple());
         let id = item(app, &title).await;
 
-        let (_, page) = get(app, &cookies, &format!("/admin/content?q={}", encode(&title))).await;
+        let (_, page) = get(
+            app,
+            &cookies,
+            &format!("/admin/content?q={}", encode(&title)),
+        )
+        .await;
         assert!(
             page.contains(&format!(r#"action="/admin/content/{id}/delete?confirm""#)),
             "the row's delete form asks first"
@@ -252,22 +257,34 @@ fn a_delete_asks_on_its_own_page_before_it_deletes() {
             encode(&format!("Delete {title}? This cannot be undone.")),
             encode(&format!("Delete {title}")),
         );
-        let (status, location, _) =
-            post(app, &cookies, &format!("/admin/content/{id}/delete?confirm"), form).await;
+        let (status, location, _) = post(
+            app,
+            &cookies,
+            &format!("/admin/content/{id}/delete?confirm"),
+            form,
+        )
+        .await;
         assert_eq!(status, StatusCode::SEE_OTHER);
         assert_eq!(location, "/admin/confirm");
-        assert!(exists(app, id).await, "nothing is deleted before confirming");
+        assert!(
+            exists(app, id).await,
+            "nothing is deleted before confirming"
+        );
 
         let (status, confirm) = get(app, &cookies, "/admin/confirm").await;
         assert_eq!(status, StatusCode::OK);
-        assert!(confirm.contains(&format!("<h1")), "the page has its heading");
+        assert!(confirm.contains("<h1"), "the page has its heading");
         assert!(confirm.contains(&format!("Delete {title}? This cannot be undone.")));
         assert!(
-            confirm.contains(&format!(r#"action="&#x2F;admin&#x2F;content&#x2F;{id}&#x2F;delete""#)),
+            confirm.contains(&format!(
+                r#"action="&#x2F;admin&#x2F;content&#x2F;{id}&#x2F;delete""#
+            )),
             "the button posts to the delete itself, without the marker"
         );
         assert!(
-            confirm.contains(&format!(r#"class="button button--danger">Delete {title}</button>"#)),
+            confirm.contains(&format!(
+                r#"class="button button--danger">Delete {title}</button>"#
+            )),
             "the button names what it deletes"
         );
         assert!(
@@ -322,7 +339,10 @@ fn a_bulk_delete_names_how_many_items() {
         let (_, page) = get(app, &cookies, &format!("/admin/content?q={tag}")).await;
         assert!(page.contains(r#"action="/admin/content/bulk?confirm=delete""#));
         assert!(page.contains("data-select-all"), "a select all box");
-        assert!(page.contains("data-selected-count"), "a live selected count");
+        assert!(
+            page.contains("data-selected-count"),
+            "a live selected count"
+        );
         let token = token(&page);
         let ids = format!("&ids%5B%5D={a}&ids%5B%5D={b}");
 
@@ -333,7 +353,10 @@ fn a_bulk_delete_names_how_many_items() {
             format!("_token={}&action=delete{ids}", encode(&token)),
         )
         .await;
-        assert_eq!((status, location.as_str()), (StatusCode::SEE_OTHER, "/admin/confirm"));
+        assert_eq!(
+            (status, location.as_str()),
+            (StatusCode::SEE_OTHER, "/admin/confirm")
+        );
         let (_, confirm) = get(app, &cookies, "/admin/confirm").await;
         assert!(
             confirm.contains("Delete 2 selected items? This cannot be undone."),
@@ -369,12 +392,22 @@ fn the_content_listing_filters_sorts_and_counts() {
         item(app, &format!("Beta {tag}")).await;
         item(app, &format!("Unrelated {}", Uuid::new_v4().simple())).await;
 
-        let (status, page) = get(app, &cookies, &format!("/admin/content?q={tag}&sort=title")).await;
+        let (status, page) =
+            get(app, &cookies, &format!("/admin/content?q={tag}&sort=title")).await;
         assert_eq!(status, StatusCode::OK);
-        assert!(page.contains(r#"role="search""#), "the filter is a search landmark");
+        assert!(
+            page.contains(r#"role="search""#),
+            "the filter is a search landmark"
+        );
         assert!(page.contains(r#"name="q""#) && page.contains(&format!(r#"value="{tag}""#)));
-        assert!(page.contains("2 results"), "the count says how many matched");
-        assert!(page.contains(r#"id="list-live""#), "a live region for the count");
+        assert!(
+            page.contains("2 results"),
+            "the count says how many matched"
+        );
+        assert!(
+            page.contains(r#"id="list-live""#),
+            "a live region for the count"
+        );
         let alpha = page.find(&format!("Alpha {tag}")).expect("Alpha is listed");
         let beta = page.find(&format!("Beta {tag}")).expect("Beta is listed");
         assert!(alpha < beta, "sorted by title, ascending");
@@ -389,16 +422,32 @@ fn the_content_listing_filters_sorts_and_counts() {
             "sorting keeps the filter"
         );
 
-        let (_, page) = get(app, &cookies, &format!("/admin/content?q={tag}&sort=-title")).await;
-        assert!(page.find(&format!("Beta {tag}")).unwrap() < page.find(&format!("Alpha {tag}")).unwrap());
+        let (_, page) = get(
+            app,
+            &cookies,
+            &format!("/admin/content?q={tag}&sort=-title"),
+        )
+        .await;
+        assert!(
+            page.find(&format!("Beta {tag}")).unwrap()
+                < page.find(&format!("Alpha {tag}")).unwrap()
+        );
         assert!(page.contains(r#"aria-sort="descending""#));
 
         // An unknown column falls back to the default order.
-        let (status, _) = get(app, &cookies, &format!("/admin/content?q={tag}&sort=id;drop")).await;
+        let (status, _) = get(
+            app,
+            &cookies,
+            &format!("/admin/content?q={tag}&sort=id;drop"),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
 
         let (_, page) = get(app, &cookies, "/admin/content?q=no-such-title-at-all-b199").await;
         assert!(page.contains("No content matches this filter."));
-        assert!(page.contains(r#"href="/admin/content""#), "a way to clear it");
+        assert!(
+            page.contains(r#"href="/admin/content""#),
+            "a way to clear it"
+        );
     });
 }

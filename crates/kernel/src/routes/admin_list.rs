@@ -101,11 +101,7 @@ impl ListQuery {
     /// `default` (a key of `allowed` and whether it is descending). Returns
     /// the key, whether it is descending, and the column's SQL from `allowed`.
     /// Only the SQL in `allowed` ever reaches a query.
-    pub fn sort<'a>(
-        &self,
-        allowed: &[(&'a str, &'a str)],
-        default: (&'a str, bool),
-    ) -> Sort<'a> {
+    pub fn sort<'a>(&self, allowed: &[(&'a str, &'a str)], default: (&'a str, bool)) -> Sort<'a> {
         if let Some(key) = &self.sort
             && let Some((k, sql)) = allowed.iter().find(|(k, _)| k == key)
         {
@@ -167,10 +163,7 @@ impl ListQuery {
             pages,
             total,
             shown,
-            filtered: self
-                .params
-                .iter()
-                .any(|(k, _)| k != "sort" && k != "page"),
+            filtered: self.params.iter().any(|(k, _)| k != "sort" && k != "page"),
             query: encode(&["page"]),
             keep_for_sort: keep(&["sort", "page"]),
         }
@@ -260,12 +253,18 @@ mod tests {
         let sort = s.sort(COLUMNS, ("changed", true));
         assert_eq!(sort.order_by(), "lower(title) DESC");
         let s = q(&[("sort", "id; DROP TABLE item")]);
-        assert_eq!(s.sort(COLUMNS, ("changed", true)).order_by(), "changed DESC");
+        assert_eq!(
+            s.sort(COLUMNS, ("changed", true)).order_by(),
+            "changed DESC"
+        );
     }
 
     #[test]
     fn the_filter_is_a_literal_pattern() {
-        assert_eq!(q(&[("q", " 50%_off ")]).like().as_deref(), Some("%50\\%\\_off%"));
+        assert_eq!(
+            q(&[("q", " 50%_off ")]).like().as_deref(),
+            Some("%50\\%\\_off%")
+        );
         assert_eq!(q(&[("q", "  ")]).like(), None);
         assert!(q(&[("q", "about US")]).matches(&["About us", "page"]));
         assert!(!q(&[("q", "about them")]).matches(&["About us"]));
@@ -273,13 +272,21 @@ mod tests {
 
     #[test]
     fn links_keep_the_rest_of_the_query() {
-        let s = q(&[("q", "a b"), ("type", "page"), ("sort", "title"), ("page", "3")]);
+        let s = q(&[
+            ("q", "a b"),
+            ("type", "page"),
+            ("sort", "title"),
+            ("page", "3"),
+        ]);
         let sort = s.sort(COLUMNS, ("changed", true));
         let view = s.view(120, 20, Some(&sort));
         assert_eq!(view.query, "q=a+b&sort=title&type=page");
         assert_eq!(
             view.keep_for_sort,
-            vec![("q".to_string(), "a b".to_string()), ("type".to_string(), "page".to_string())]
+            vec![
+                ("q".to_string(), "a b".to_string()),
+                ("type".to_string(), "page".to_string())
+            ]
         );
         assert_eq!(view.pages, 3);
         assert_eq!(view.page, 3);
