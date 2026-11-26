@@ -1,0 +1,258 @@
+- link "Skip to main content":
+  - /url: "#main"
+- banner:
+  - link "Trovato Administration":
+    - /url: /admin
+    - img "Trovato"
+    - text: Administration
+  - search:
+    - text: Search the administration
+    - searchbox "Search the administration"
+    - button "Search"
+  - list:
+    - listitem:
+      - link "View site":
+        - /url: /
+    - listitem:
+      - link "Your preferences":
+        - /url: /admin/preferences
+- navigation "Administration":
+  - list:
+    - listitem:
+      - link "Dashboard":
+        - /url: /admin
+    - listitem:
+      - heading "Content" [level=2]:
+        - button "Content" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/content/overview
+        - listitem:
+          - link "Content":
+            - /url: /admin/content
+        - listitem:
+          - link "Add content":
+            - /url: /admin/content/add
+        - listitem:
+          - link "Moderated content":
+            - /url: /admin/content/moderated
+        - listitem:
+          - link "Comments":
+            - /url: /admin/content/comments
+        - listitem:
+          - link "Files":
+            - /url: /admin/content/files
+        - listitem:
+          - link "Media":
+            - /url: /admin/media
+    - listitem:
+      - heading "Structure" [level=2]:
+        - button "Structure" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/structure/overview
+        - listitem:
+          - link "Content types":
+            - /url: /admin/structure/types
+        - listitem:
+          - link "Record types":
+            - /url: /admin/structure/records
+        - listitem:
+          - link "Gathers":
+            - /url: /admin/gather
+        - listitem:
+          - link "Menus":
+            - /url: /admin/structure/menus
+        - listitem:
+          - link "Tiles":
+            - /url: /admin/structure/tiles
+        - listitem:
+          - link "Categories":
+            - /url: /admin/structure/categories
+        - listitem:
+          - link "URL aliases":
+            - /url: /admin/structure/aliases
+        - listitem:
+          - link "URL alias patterns":
+            - /url: /admin/config/pathauto
+    - listitem:
+      - heading "Appearance" [level=2]:
+        - button "Appearance" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/appearance/overview
+        - listitem:
+          - link "Themes":
+            - /url: /admin/appearance
+    - listitem:
+      - heading "People" [level=2]:
+        - button "People" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/people/overview
+        - listitem:
+          - link "Users":
+            - /url: /admin/people
+        - listitem:
+          - link "Roles":
+            - /url: /admin/people/roles
+        - listitem:
+          - link "Permissions":
+            - /url: /admin/people/permissions
+        - listitem:
+          - link "Access rules":
+            - /url: /admin/people/rules
+    - listitem:
+      - heading "Extend" [level=2]:
+        - button "Extend" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/extend/overview
+        - listitem:
+          - link "Plugins":
+            - /url: /admin/plugins
+        - listitem:
+          - link "AI providers":
+            - /url: /admin/system/ai-providers
+        - listitem:
+          - link "AI budgets":
+            - /url: /admin/system/ai-budgets
+        - listitem:
+          - link "AI chat":
+            - /url: /admin/system/ai-chat
+        - listitem:
+          - link "AI assistant":
+            - /url: /admin/system/ai-assistant
+    - listitem:
+      - heading "Configuration" [level=2]:
+        - button "Configuration" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/config/overview
+        - listitem:
+          - link "Site settings":
+            - /url: /admin/config/site
+        - listitem:
+          - link "Text formats":
+            - /url: /admin/config/formats
+        - listitem:
+          - link "Search settings":
+            - /url: /admin/config/search
+        - listitem:
+          - link "Stages":
+            - /url: /admin/structure/stages
+        - listitem:
+          - link "Redirects":
+            - /url: /admin/config/redirects
+        - listitem:
+          - link "Account recovery":
+            - /url: /admin/recovery
+    - listitem:
+      - heading "Reports" [level=2]:
+        - button "Reports" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/reports/overview
+        - listitem:
+          - link "Recent log messages":
+            - /url: /admin/reports/log
+        - listitem:
+          - link "Audit log":
+            - /url: /admin/reports/audit
+        - listitem:
+          - link "Cron":
+            - /url: /admin/reports/cron
+        - listitem:
+          - link "Search report":
+            - /url: /admin/reports/search
+- main:
+  - navigation "Breadcrumb":
+    - list:
+      - listitem:
+        - link "Administration":
+          - /url: /admin
+      - listitem:
+        - link "Configuration":
+          - /url: /admin/config/overview
+      - listitem: Site settings
+  - heading "Site settings" [level=1]
+  - paragraph: The site's name, front page, email and maintenance mode.
+  - group "General":
+    - text: General Site name (required)
+    - textbox "Site name (required)": Generated site
+    - text: Site slogan
+    - textbox "Site slogan"
+    - text: Site email (required)
+    - paragraph: Used as the From address for system emails.
+    - textbox "Site email (required)"
+  - group "Front page":
+    - text: Front page Default front page
+    - paragraph: "Any path on this site: an item, a gather listing, a plugin route, or an alias of one (e.g., /blog or /conferences). / shows exactly what that path shows, with no redirect. The path must resolve when you save. Leave empty for the promoted items listing."
+    - textbox "Default front page":
+      - /placeholder: /
+      - text: /blog
+    - text: Items per page
+    - spinbutton "Items per page": "10"
+  - group "User registration":
+    - text: User registration
+    - radio "Open — anyone can register"
+    - text: Open — anyone can register
+    - radio "Admin only — administrators create accounts, and /user/register is closed" [checked]
+    - text: Admin only — administrators create accounts, and /user/register is closed
+  - group "Email delivery":
+    - text: Email delivery
+    - term: SMTP host
+    - definition: "not configured: mail is not sent"
+    - term: Port
+    - definition: "587"
+    - term: Encryption
+    - definition: starttls
+    - term: From address
+    - definition: noreply@localhost
+    - term: Username
+    - definition: not set
+    - term: Password
+    - definition: not set
+    - paragraph: Set in the server environment (SMTP_HOST, SMTP_PORT, SMTP_ENCRYPTION, SMTP_FROM_EMAIL, SMTP_USERNAME, SMTP_PASSWORD) and read at startup; change them there and restart the server.
+  - group "Session cookie":
+    - text: Session cookie
+    - term: Secure flag (COOKIE_SECURE)
+    - definition: never
+    - status:
+      - strong: "Warning:"
+      - text: The session cookie is not Secure. COOKIE_SECURE=never sends the login cookie over plain HTTP, where anyone on the network path can read it and take over the session. Use it only for a plain HTTP LAN or development site, never on the internet.
+    - paragraph: Set in the server environment and read at startup; change it there and restart the server.
+  - group "Notifications":
+    - text: Notifications
+    - checkbox "Notify admin when new users register"
+    - text: Notify admin when new users register
+    - checkbox "Check for Trovato releases" [checked]
+    - text: Check for Trovato releases
+    - paragraph: "One outbound HTTPS request to api.github.com, at most once a day, carrying no site data: no URL, no version, no identifier. GitHub learns that an IP address asked about a public repository."
+    - paragraph: When a newer release exists an administrator sees a banner on the dashboard, styled as an alarm if the release announces itself as a security release. Nobody but an administrator sees it, and no page render ever makes the request.
+    - paragraph: No check has completed yet; it runs from cron.
+    - paragraph: A deployment that must make no outbound requests at all should set UPDATE_CHECK=0 in the environment rather than rely on this checkbox.
+    - checkbox "Count content views"
+    - text: Count content views
+    - paragraph: Each view of an item adds one to its count, shown as "N reads" to roles with the view post access counter permission. One database write per item view while it is on.
+  - paragraph:
+    - strong: "What this changes:"
+    - text: the site name, slogan, email address, front page, registration rule and notifications, for every visitor, as soon as you save. The email delivery and session cookie settings are read only here.
+  - button "Save settings"
+  - paragraph: Sends a test email to the site email address.
+  - button "Send test email"
+  - region "Maintenance mode":
+    - heading "Maintenance mode" [level=2]
+    - checkbox "Put the site into maintenance mode"
+    - text: Put the site into maintenance mode
+    - paragraph: Everyone without the "bypass maintenance mode" permission gets a 503 with this message. Signing in, static files, the health check and cron still work, and administrators can use the whole site.
+    - text: Message
+    - textbox "Message": The site is down for maintenance. Please check back again soon.
+    - button "Save maintenance mode"

@@ -1324,6 +1324,8 @@
     .filter-row > .form-item,
     .bulk-actions .form-item {
         margin-block-end: 0;
+        min-inline-size: 0;
+        max-inline-size: 100%;
     }
 
     .filter-item label {

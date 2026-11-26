@@ -107,13 +107,16 @@ test('collapsed settings are native details that open from the keyboard', async 
     const summary = page.locator('details:not([open]) > summary').first();
     if ((await summary.count()) === 0) continue;
     found = true;
-    const details = summary.locator('xpath=..');
-    await summary.focus();
-    await expect(summary).toBeFocused();
+    // Pin this one: the selector above matches the next closed one once
+    // this opens.
+    const handle = await summary.elementHandle();
+    const open = () => handle.evaluate((el) => el.parentElement.open);
+    await handle.focus();
+    expect(await handle.evaluate((el) => el === document.activeElement)).toBe(true);
     await page.keyboard.press('Enter');
-    await expect(details).toHaveAttribute('open', '');
+    await expect.poll(open).toBe(true);
     await page.keyboard.press('Space');
-    await expect(details).not.toHaveAttribute('open', '');
+    await expect.poll(open).toBe(false);
     break;
   }
   expect(found, `no collapsed details on ${candidates.join(', ')}`).toBe(true);

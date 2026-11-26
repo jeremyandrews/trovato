@@ -59,6 +59,9 @@ for (const { mode, width, scheme, language } of MODES) {
       test(`${type} ${mode}`, async ({ page }) => {
         if (typeof path === 'function') await path(page);
         else await page.goto(path);
+        // A full page capture draws a sticky action bar where the first
+        // screen ends, over the form; lay it out in place for the image.
+        await page.addStyleTag({ content: '.form-actions--sticky { position: static; }' });
         await page.screenshot({ path: `${OUT}/${type}-${mode}.png`, fullPage: true });
       });
     }
