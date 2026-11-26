@@ -547,10 +547,17 @@ impl Comment {
             ));
         }
         let from = "FROM comment c LEFT JOIN users u ON u.id = c.author_id WHERE 1=1";
+        // Ties: newest first, then the id; a sort by `c.created` needs only
+        // the id after it.
+        let ties = if order_by.starts_with("c.created ") {
+            "c.id DESC"
+        } else {
+            "c.created DESC, c.id DESC"
+        };
         let list_sql = format!(
             "SELECT c.id, c.item_id, c.parent_id, c.author_id, c.subject, c.body, c.body_format, \
              c.status, c.created, c.changed, c.depth {from}{conditions} \
-             ORDER BY {order_by}, c.created DESC, c.id DESC LIMIT ${} OFFSET ${}",
+             ORDER BY {order_by}, {ties} LIMIT ${} OFFSET ${}",
             n + 1,
             n + 2
         );

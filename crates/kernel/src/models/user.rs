@@ -377,8 +377,14 @@ impl User {
             ""
         };
         let n = usize::from(like.is_some());
+        // Ties: by name, then the id; a sort by name needs only the id.
+        let ties = if order_by.starts_with("lower(name) ") {
+            "id"
+        } else {
+            "lower(name), id"
+        };
         let list_sql = format!(
-            "SELECT * FROM users{condition} ORDER BY {order_by}, lower(name), id \
+            "SELECT * FROM users{condition} ORDER BY {order_by}, {ties} \
              LIMIT ${} OFFSET ${}",
             n + 1,
             n + 2

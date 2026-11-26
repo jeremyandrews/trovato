@@ -499,9 +499,16 @@ impl UrlAlias {
             ""
         };
         let n = usize::from(like.is_some());
+        // Ties: newest first, then the id; a sort by `created` needs only
+        // the id after it.
+        let ties = if order_by.starts_with("created ") {
+            "id DESC"
+        } else {
+            "created DESC, id DESC"
+        };
         let list_sql = format!(
             "SELECT id, source, alias, language, stage_id, created, changed \
-             FROM url_alias{condition} ORDER BY {order_by}, created DESC, id DESC \
+             FROM url_alias{condition} ORDER BY {order_by}, {ties} \
              LIMIT ${} OFFSET ${}",
             n + 1,
             n + 2
