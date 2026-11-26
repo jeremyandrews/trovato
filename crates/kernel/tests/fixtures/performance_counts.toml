@@ -503,9 +503,9 @@ sql = "select value from site_config where key = $? and tenant_id = $?"
 count = 4
 sql = "select * from tile where region = $? and stage_id = $? and status = ? order by weight asc, label asc"
 
-["front.anonymous.cold".statements."select:url_alias:1ebefcfa"]
+["front.anonymous.cold".statements."select:url_alias:2c11c267"]
 count = 1
-sql = "select id, source, alias, language, stage_id, created, changed from url_alias where alias = $? and stage_id = $? order by case when language = $? then ? when language = ? then ? else ? end, created desc, id desc limit ?"
+sql = "select a.id, a.source, a.alias, a.language, a.stage_id, a.created, a.changed, (a.alias = any($?)) as exact, (select o.alias from url_alias o where o.source = a.source and o.stage_id = a.stage_id and o.language = $? order by o.created desc, o.id desc limit ?) as own_alias from url_alias a where (a.alias = any($?) or lower(a.alias) = lower($?)) and a.stage_id = $? order by (a.alias = any($?)) desc, case when a.language = $? then ? when a.language = ? then ? else ? end, a.created desc, a.id desc limit ?"
 
 ["front.anonymous.cold".statements."select:url_alias:8f9302ee"]
 count = 1
@@ -557,9 +557,9 @@ sql = "select value from site_config where key = $? and tenant_id = $?"
 count = 4
 sql = "select * from tile where region = $? and stage_id = $? and status = ? order by weight asc, label asc"
 
-["front.anonymous.warm".statements."select:url_alias:1ebefcfa"]
+["front.anonymous.warm".statements."select:url_alias:2c11c267"]
 count = 1
-sql = "select id, source, alias, language, stage_id, created, changed from url_alias where alias = $? and stage_id = $? order by case when language = $? then ? when language = ? then ? else ? end, created desc, id desc limit ?"
+sql = "select a.id, a.source, a.alias, a.language, a.stage_id, a.created, a.changed, (a.alias = any($?)) as exact, (select o.alias from url_alias o where o.source = a.source and o.stage_id = a.stage_id and o.language = $? order by o.created desc, o.id desc limit ?) as own_alias from url_alias a where (a.alias = any($?) or lower(a.alias) = lower($?)) and a.stage_id = $? order by (a.alias = any($?)) desc, case when a.language = $? then ? when a.language = ? then ? else ? end, a.created desc, a.id desc limit ?"
 
 ["front.anonymous.warm".statements."select:url_alias:8f9302ee"]
 count = 1
@@ -623,9 +623,9 @@ sql = "select value from site_config where key = $? and tenant_id = $?"
 count = 4
 sql = "select * from tile where region = $? and stage_id = $? and status = ? order by weight asc, label asc"
 
-["front.user.cold".statements."select:url_alias:1ebefcfa"]
+["front.user.cold".statements."select:url_alias:2c11c267"]
 count = 1
-sql = "select id, source, alias, language, stage_id, created, changed from url_alias where alias = $? and stage_id = $? order by case when language = $? then ? when language = ? then ? else ? end, created desc, id desc limit ?"
+sql = "select a.id, a.source, a.alias, a.language, a.stage_id, a.created, a.changed, (a.alias = any($?)) as exact, (select o.alias from url_alias o where o.source = a.source and o.stage_id = a.stage_id and o.language = $? order by o.created desc, o.id desc limit ?) as own_alias from url_alias a where (a.alias = any($?) or lower(a.alias) = lower($?)) and a.stage_id = $? order by (a.alias = any($?)) desc, case when a.language = $? then ? when a.language = ? then ? else ? end, a.created desc, a.id desc limit ?"
 
 ["front.user.cold".statements."select:url_alias:8f9302ee"]
 count = 1
@@ -677,9 +677,9 @@ sql = "select value from site_config where key = $? and tenant_id = $?"
 count = 4
 sql = "select * from tile where region = $? and stage_id = $? and status = ? order by weight asc, label asc"
 
-["front.user.warm".statements."select:url_alias:1ebefcfa"]
+["front.user.warm".statements."select:url_alias:2c11c267"]
 count = 1
-sql = "select id, source, alias, language, stage_id, created, changed from url_alias where alias = $? and stage_id = $? order by case when language = $? then ? when language = ? then ? else ? end, created desc, id desc limit ?"
+sql = "select a.id, a.source, a.alias, a.language, a.stage_id, a.created, a.changed, (a.alias = any($?)) as exact, (select o.alias from url_alias o where o.source = a.source and o.stage_id = a.stage_id and o.language = $? order by o.created desc, o.id desc limit ?) as own_alias from url_alias a where (a.alias = any($?) or lower(a.alias) = lower($?)) and a.stage_id = $? order by (a.alias = any($?)) desc, case when a.language = $? then ? when a.language = ? then ? else ? end, a.created desc, a.id desc limit ?"
 
 ["front.user.warm".statements."select:url_alias:8f9302ee"]
 count = 1
