@@ -1,0 +1,20 @@
+{% extends "page--admin.html" %}
+
+{% block page_title %}{{ t(s="Performance") }}{% endblock page_title %}
+
+{% block content %}
+<section class="admin-card" aria-labelledby="performance-clear">
+    <h2 id="performance-clear" class="report-heading">{{ t(s="Clear cache") }}</h2>
+    <p>{{ t(s="Every server keeps copies of what it reads often: permissions, accounts, content, content types, categories, listings, redirects, translations, menus, text formats, themes and site settings. A change made through the site clears the copies it touches. A change made behind the site's back, in the database or by a command, is seen when the copies expire.") }}</p>
+    <p>{{ t(s="Clear all caches drops every copy on every running server, so the next request reads the database. It is safe at any time; the site is slower for a moment while the copies are rebuilt.") }}</p>
+    {{ clear_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+</section>
+
+<section class="admin-card" aria-labelledby="performance-kinds">
+    <h2 id="performance-kinds" class="report-heading">{{ t(s="What is cleared") }}</h2>
+    <ul class="report-list">
+        {% for kind in kinds %}<li><code>{{ kind }}</code></li>{% endfor %}
+    </ul>
+    <p>{{ t(s="The command line does the same: trovato cache clear.") }}</p>
+</section>
+{% endblock content %}

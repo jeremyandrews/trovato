@@ -6,14 +6,14 @@ Every `/admin` route the kernel registers, each in exactly one group: the group 
 
 Columns: the path as registered; its methods; its group; the handler and where it is; the template it renders (or what it returns); the gate it checks before anything else. Every gate below is the route's own and is unchanged by B199: the sidebar, landing pages, dashboard and search only show a link, they never admit anyone.
 
-- Dashboard: 4 routes
+- Dashboard: 8 routes
 - Content: 23 routes
 - Structure: 44 routes
 - Appearance: 3 routes
 - People: 17 routes
 - Extend: 13 routes
-- Configuration: 22 routes
-- Reports: 5 routes
+- Configuration: 23 routes
+- Reports: 6 routes
 
 <!-- kernel routes -->
 
@@ -24,6 +24,10 @@ Columns: the path as registered; its methods; its group; the handler and where i
 | `/admin/preferences/nav` | POST | Dashboard | `save_nav_state` (crates/kernel/src/routes/admin_shell.rs) | 204 (JSON body) | require_permission_json("access administration pages"); JSON body; cross-site Sec-Fetch-Site refused |
 | `/admin/search` | GET | Dashboard | `search` (crates/kernel/src/routes/admin_shell.rs) | admin/search.html | require_permission("access administration pages"); results filtered by each page's own gate |
 | `/admin/search/suggest` | GET | Dashboard | `suggest` (crates/kernel/src/routes/admin_shell.rs) | JSON for the command palette | require_permission("access administration pages") (403 otherwise); the same results as `/admin/search`, filtered by each page's own gate |
+| `/admin/config` | GET | Dashboard | `group_index` (crates/kernel/src/routes/admin_shell.rs) | 308 to `/admin/config/overview` | none: the landing page checks its own gate |
+| `/admin/extend` | GET | Dashboard | `group_index` (crates/kernel/src/routes/admin_shell.rs) | 308 to `/admin/extend/overview` | none: the landing page checks its own gate |
+| `/admin/reports` | GET | Dashboard | `group_index` (crates/kernel/src/routes/admin_shell.rs) | 308 to `/admin/reports/overview` | none: the landing page checks its own gate |
+| `/admin/structure` | GET | Dashboard | `group_index` (crates/kernel/src/routes/admin_shell.rs) | 308 to `/admin/structure/overview` | none: the landing page checks its own gate |
 | `/admin/content` | GET | Content | `list_content` (crates/kernel/src/routes/admin_content.rs:26) | admin/content-list.html | require_permission("edit any content") |
 | `/admin/content/{id}/delete` | POST | Content | `delete_content` (crates/kernel/src/routes/admin_content.rs:880) | redirect | require_permission("delete any content") |
 | `/admin/content/{id}/edit` | GET,POST | Content | `GET: edit_content_form \| POST: edit_content_submit` (GET: crates/kernel/src/routes/admin_content.rs:589 \| POST: crates/kernel/src/routes/admin_content.rs:664) | GET: admin/content-form.html \| POST: redirect (re-renders admin/content-form.html on error) | require_permission("edit any content") |
@@ -134,6 +138,7 @@ Columns: the path as registered; its methods; its group; the handler and where i
 | `/admin/config/redirects/{id}/delete` | POST | Configuration | `delete_redirect` (crates/kernel/src/routes/admin_redirect.rs:291) | redirect | require_permission("administer redirects"); CSRF; plugin trovato_redirects enabled |
 | `/admin/config/redirects/{id}/edit` | GET,POST | Configuration | `GET: edit_redirect_form \| POST: edit_redirect_submit` (crates/kernel/src/routes/admin_redirect.rs:194, crates/kernel/src/routes/admin_redirect.rs:247) | GET: admin/redirect-form.html \| POST: redirect (re-renders admin/redirect-form.html on error) | require_permission("administer redirects"); CSRF on POST; plugin trovato_redirects enabled |
 | `/admin/config/redirects/add` | GET,POST | Configuration | `GET: add_redirect_form \| POST: add_redirect_submit` (crates/kernel/src/routes/admin_redirect.rs:127, crates/kernel/src/routes/admin_redirect.rs:153) | GET: admin/redirect-form.html \| POST: redirect (re-renders admin/redirect-form.html on error) | require_permission("administer redirects"); CSRF on POST; plugin trovato_redirects enabled |
+| `/admin/config/performance` | GET,POST | Configuration | `GET: performance_page \| POST: clear_caches` (crates/kernel/src/routes/admin_performance.rs) | GET: admin/config/performance.html \| POST: redirect | require_any_permission("clear caches", "administer site"); CSRF on POST |
 | `/admin/config/search` | GET,POST | Configuration | `GET: show_form \| POST: save_form` (GET: crates/kernel/src/routes/admin_search.rs:309 \| POST: crates/kernel/src/routes/admin_search.rs:318) | GET: admin/config/search.html \| POST: redirect (re-renders admin/config/search.html on error) | require_permission("administer site") |
 | `/admin/config/site` | GET,POST | Configuration | `GET: site_config_form \| POST: site_config_submit` (GET: crates/kernel/src/routes/admin_config.rs:81 \| POST: crates/kernel/src/routes/admin_config.rs:168) | GET: admin/config/site.html \| POST: redirect (re-renders admin/config/site.html on error) | require_permission("administer site") |
 | `/admin/config/site/maintenance` | POST | Configuration | `maintenance_submit` (crates/kernel/src/routes/admin_config.rs:523) | redirect | require_permission("administer site") |
@@ -148,11 +153,12 @@ Columns: the path as registered; its methods; its group; the handler and where i
 | `/admin/structure/stages/{id}/edit` | GET,POST | Configuration | `GET: edit_stage_form \| POST: edit_stage_submit` (GET: crates/kernel/src/routes/admin_stage.rs:368 \| POST: crates/kernel/src/routes/admin_stage.rs:401) | GET: admin/stage-form.html \| POST: redirect (re-renders admin/stage-form.html on error) | require_permission("administer site") |
 | `/admin/structure/stages/add` | GET,POST | Configuration | `GET: add_stage_form \| POST: add_stage_submit` (GET: crates/kernel/src/routes/admin_stage.rs:224 \| POST: crates/kernel/src/routes/admin_stage.rs:253) | GET: admin/stage-form.html \| POST: redirect (re-renders admin/stage-form.html on error) | require_permission("administer site") |
 | `/admin/reports/audit` | GET | Reports | `audit_report` (crates/kernel/src/routes/admin_audit.rs:50) | admin/reports/audit.html | require_permission("view audit log"); plugin trovato_audit_log enabled |
-| `/admin/reports/cron` | GET,POST | Reports | `GET: cron_report \| POST: run_cron_now` (GET: crates/kernel/src/routes/admin_reports.rs:67 \| POST: crates/kernel/src/routes/admin_reports.rs:121) | GET: admin/reports/cron.html \| POST: redirect | require_permission("administer site") |
+| `/admin/reports/cron` | GET,POST | Reports | `GET: cron_report \| POST: run_cron_now` (GET: crates/kernel/src/routes/admin_reports.rs:67 \| POST: crates/kernel/src/routes/admin_reports.rs:121) | GET: admin/reports/cron.html \| POST: redirect | require_any_permission("run cron", "administer site"); CSRF on POST |
 | `/admin/reports/accessibility` | GET | Reports | `accessibility_report` (crates/kernel/src/routes/admin_reports.rs) | admin/reports/accessibility.html | require_permission("administer site"); file links only with "access files" |
 | `/admin/reports/log` | GET | Reports | `log_report` (crates/kernel/src/routes/admin_reports.rs:193) | admin/reports/log.html | require_permission("administer site") |
 | `/admin/reports/overview` | GET | Reports | `landing` (crates/kernel/src/routes/admin_shell.rs) | admin/landing.html | require_permission("access administration pages"); lists only pages whose own gate admits the viewer; 404 when none |
 | `/admin/reports/search` | GET | Reports | `report` (crates/kernel/src/routes/admin_search_report.rs:64) | admin/reports/search.html | require_permission("administer site") |
+| `/admin/reports/status` | GET | Reports | `status_report` (crates/kernel/src/routes/admin_reports.rs) | admin/reports/status.html | require_permission("administer site") |
 
 <!-- end kernel routes -->
 

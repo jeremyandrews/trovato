@@ -35,6 +35,12 @@ pub trait FileStorage: Send + Sync {
 
     /// Get the storage scheme (e.g., "local", "s3").
     fn scheme(&self) -> &'static str;
+
+    /// The directory files are written to, for a storage that is a local
+    /// directory: what the status report checks is writable.
+    fn local_dir(&self) -> Option<&std::path::Path> {
+        None
+    }
 }
 
 /// Prove this server can write, read back and delete a file in `dir`.
@@ -165,6 +171,10 @@ impl FileStorage for LocalFileStorage {
 
     fn scheme(&self) -> &'static str {
         "local"
+    }
+
+    fn local_dir(&self) -> Option<&std::path::Path> {
+        Some(&self.base_path)
     }
 }
 

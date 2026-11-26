@@ -1576,6 +1576,7 @@
     .status--inactive,
     .access-rule-status--deny,
     .log-level--error,
+    .badge--error,
     .badge--raw-sql {
         background: var(--danger-surface);
     }

@@ -1,6 +1,8 @@
 //! The pages the admin shell itself owns: each group's landing page, the
 //! viewer's admin preferences, and admin search.
 //!
+//! - `GET /admin/{group}`: for a group whose bare address no page holds
+//!   (structure, extend, config, reports), a redirect to its landing page.
 //! - `GET /admin/{group}/overview`: every page in the group the viewer may
 //!   open, each with its one sentence description, from the registry in
 //!   [`super::admin_nav`]. The way to browse the admin without JavaScript.
@@ -43,6 +45,14 @@ pub fn router() -> Router<AppState> {
         .route("/admin/preferences/nav", post(save_nav_state))
         .route(admin_nav::SEARCH, get(search))
         .route("/admin/search/suggest", get(suggest));
+    // A group's bare address, where no page already has it (`/admin/content`
+    // and `/admin/people` are their listings, `/admin/appearance` its page):
+    // the address Drupal gives each overview, so an old bookmark lands there.
+    router = router
+        .route("/admin/structure", get(group_index))
+        .route("/admin/extend", get(group_index))
+        .route("/admin/config", get(group_index))
+        .route("/admin/reports", get(group_index));
     // One static route per group rather than `/admin/{group}/overview`, so
     // no path parameter competes with the existing `/admin/content/...` and
     // `/admin/people/...` routes.
@@ -50,6 +60,12 @@ pub fn router() -> Router<AppState> {
         router = router.route(&g.group.landing_href(), get(landing));
     }
     router
+}
+
+/// GET /admin/{group}: a permanent redirect to the group's landing page.
+/// Nothing is shown before the landing page checks its own gate.
+async fn group_index(uri: axum::http::Uri) -> Response {
+    Redirect::permanent(&format!("{}/overview", uri.path())).into_response()
 }
 
 /// GET /admin/{group}/overview
