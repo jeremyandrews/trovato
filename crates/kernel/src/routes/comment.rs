@@ -848,7 +848,7 @@ pub(crate) async fn settings_for_type(
 }
 
 /// The settings that actually govern `item`: its type's, with `mode`
-/// resolved through [`crate::content::comment_settings::effective_mode`] —
+/// resolved through [`crate::content::comment_settings::effective_mode`]:
 /// the item's own override when it has one (B239), otherwise the type's.
 /// Threading, order and page size are always the type's; B239 adds no
 /// per-item override for those.

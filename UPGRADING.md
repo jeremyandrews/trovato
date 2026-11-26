@@ -95,7 +95,7 @@ accepts migrations it does not know unless one is marked incompatible.
 When the newer release is fixed, upgrade again. Its migrations are already
 applied, so `trovato migrate` finds nothing to do.
 
-## v0.106.0 — 2026-11-26
+## v0.106.0 (2026-11-26)
 
 ### An item's own comment override; `set item comment status` is a new permission
 

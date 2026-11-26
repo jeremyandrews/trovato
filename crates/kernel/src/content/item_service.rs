@@ -391,8 +391,8 @@ pub const USE_STAGES: &str = "use stages";
 /// site imported from Drupal keeps it on the roles that held it there.
 pub const VIEW_OWN_UNPUBLISHED: &str = "view own unpublished content";
 
-/// The permission that lets a user set an item's own comment override —
-/// `inherit`, `open`, `closed` or `hidden` — whatever its content type's
+/// The permission that lets a user set an item's own comment override:
+/// `inherit`, `open`, `closed` or `hidden`, whatever its content type's
 /// comment setting is (B239). The type's own setting is behind `administer
 /// site`, which does not fit a day to day editor; this is the narrower
 /// permission `trovato_comments` declares for just this. Granted by no
