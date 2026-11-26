@@ -794,7 +794,7 @@ async fn view_item(
     if translations.len() > 1 {
         context.insert(
             "hreflang_links",
-            &super::helpers::build_hreflang_links(&translations, state.default_language()),
+            &super::helpers::build_hreflang_links(&translations, &state.default_language()),
         );
     }
     context.insert("available_translations", &translations);

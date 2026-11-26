@@ -220,7 +220,9 @@ async fn sitemap_xml(State(state): State<AppState>) -> Response {
     }
 
     let base_url = canonical_base(&state.runtime().site_url);
-    let default_language = state.default_language();
+    let default_language = &state.default_language();
+    // The default language's own prefix, on a site that prefixes it (B161).
+    let default_prefix = state.languages().prefix(default_language);
 
     let mut xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     xml.push_str(
@@ -241,7 +243,7 @@ async fn sitemap_xml(State(state): State<AppState>) -> Response {
         // site still configures.
         let mut translations = vec![TranslationLink {
             language: default_language.to_string(),
-            path: canonical_path.clone(),
+            path: format!("{default_prefix}{canonical_path}"),
         }];
         for language in translated.get(&row.id).into_iter().flatten() {
             if language == default_language || !state.known_languages().contains(language) {

@@ -9,9 +9,7 @@ use sqlx::PgPool;
 
 use tracing::{error, info, warn};
 
-use crate::middleware::language::{
-    AcceptLanguageNegotiator, LanguageNegotiator, UrlPrefixNegotiator,
-};
+use crate::middleware::language::LanguageSet;
 
 use crate::assistant::AssistantRegistry;
 use crate::batch::BatchService;
@@ -201,21 +199,11 @@ struct AppStateInner {
     /// Stage service for publish operations.
     stage: Arc<StageService>,
 
-    /// Language negotiator chain (sorted by priority descending).
-    ///
-    /// Frozen at startup: adding/removing languages requires a restart.
-    /// Each negotiator also holds its own snapshot of known languages.
-    language_negotiators: Vec<Arc<dyn LanguageNegotiator>>,
-
-    /// Known language codes (loaded from DB at startup).
-    ///
-    /// Frozen at startup: adding/removing languages requires a restart.
-    known_languages: Vec<String>,
-
-    /// Default language code (loaded from DB at startup).
-    ///
-    /// Frozen at startup: changing the default language requires a restart.
-    default_language: String,
+    /// The site's languages and the negotiator chain built from them
+    /// ([`LanguageSet`]). Replaced whole by [`AppState::reload_languages`]
+    /// when the languages page changes anything, so a language added there
+    /// is served at once (B161); before, the set was frozen at startup.
+    languages: parking_lot::RwLock<Arc<LanguageSet>>,
 
     /// User service for user CRUD with tap integration and caching.
     users: Arc<services::user::UserService>,
@@ -1159,15 +1147,20 @@ impl AppState {
             audit_trail.clone(),
         ));
 
-        // Build language negotiator chain (languages were loaded earlier for locale)
-        let mut language_negotiators: Vec<Arc<dyn LanguageNegotiator>> = vec![
-            Arc::new(UrlPrefixNegotiator::new(
-                known_languages.clone(),
-                default_language.clone(),
-            )),
-            Arc::new(AcceptLanguageNegotiator::new(known_languages.clone())),
-        ];
-        language_negotiators.sort_by_key(|n| std::cmp::Reverse(n.priority()));
+        // The language set and its negotiator chain (languages were loaded
+        // earlier for locale).
+        let prefix_default =
+            crate::models::SiteConfig::get(&db, crate::middleware::language::PREFIX_DEFAULT_KEY)
+                .await
+                .ok()
+                .flatten()
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+        let language_set = Arc::new(LanguageSet::new(
+            known_languages.clone(),
+            default_language.clone(),
+            prefix_default,
+        ));
 
         // The kernel-internal security audit stream. Always present: an audit
         // trail that is only sometimes written is not an audit trail.
@@ -1394,9 +1387,7 @@ impl AppState {
                 rate_limiter,
                 batch,
                 stage,
-                language_negotiators,
-                known_languages,
-                default_language,
+                languages: parking_lot::RwLock::new(language_set),
                 users,
                 roles,
                 tiles,
@@ -1488,6 +1479,11 @@ impl AppState {
             CacheKind::Menus => {
                 crate::menu::clear_local_config_menus();
                 self.gather().clear_outbound_alias_cache();
+            }
+            CacheKind::Languages => {
+                if let Err(e) = self.reload_languages().await {
+                    warn!(error = %e, "failed to reload languages after a bump");
+                }
             }
             CacheKind::SiteConfig => {
                 self.front_page().clear();
@@ -1766,19 +1762,30 @@ impl AppState {
         &self.inner.stage
     }
 
-    /// Get the language negotiator chain (sorted by priority descending).
-    pub fn language_negotiators(&self) -> &[Arc<dyn LanguageNegotiator>] {
-        &self.inner.language_negotiators
+    /// The site's languages as this server last read them.
+    pub fn languages(&self) -> Arc<LanguageSet> {
+        self.inner.languages.read().clone()
     }
 
-    /// Get the known language codes (loaded from DB at startup).
-    pub fn known_languages(&self) -> &[String] {
-        &self.inner.known_languages
+    /// The known language codes, in weight order.
+    pub fn known_languages(&self) -> Arc<[String]> {
+        self.languages().known()
     }
 
-    /// Get the default language code (loaded from DB at startup).
-    pub fn default_language(&self) -> &str {
-        &self.inner.default_language
+    /// The default language's code.
+    pub fn default_language(&self) -> String {
+        self.languages().default_language().to_string()
+    }
+
+    /// Read the languages again from the database and serve them from the
+    /// next request: what a change on the languages page, here or on another
+    /// server, does (`CacheKind::Languages`).
+    pub async fn reload_languages(&self) -> Result<()> {
+        let set = LanguageSet::load(self.db())
+            .await
+            .context("failed to reload languages")?;
+        *self.inner.languages.write() = Arc::new(set);
+        Ok(())
     }
 
     /// Get the user service.

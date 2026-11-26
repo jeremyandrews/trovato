@@ -116,11 +116,12 @@ pub async fn check_redirect(
     let path = request.uri().path();
     let query = request.uri().query();
 
+    let default_language = state.default_language();
     let language = request
         .extensions()
         .get::<ResolvedLanguage>()
         .map(|l| l.0.as_str())
-        .unwrap_or_else(|| state.default_language());
+        .unwrap_or(&default_language);
 
     // A Drupal non-clean URL: the site root (as requested, before a configured
     // front page replaced it) with `?q=` naming a path.

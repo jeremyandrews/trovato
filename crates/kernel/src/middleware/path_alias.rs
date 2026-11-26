@@ -82,11 +82,12 @@ pub async fn resolve_path_alias(
     }
 
     // Extract resolved language from request extensions (set by negotiate_language middleware)
+    let default_language = state.default_language();
     let language = request
         .extensions()
         .get::<ResolvedLanguage>()
         .map(|l| l.0.as_str())
-        .unwrap_or_else(|| state.default_language());
+        .unwrap_or(&default_language);
 
     let active_stage = alias_stage(&state, &session).await;
 
@@ -192,9 +193,9 @@ pub async fn path_alias_fallback(
     // rewrite the URI for route matching in Axum 0.8 (middleware runs after
     // route matching). The fallback handles this by stripping the prefix
     // before looking up aliases.
-    let known_languages = state.known_languages();
-    let default_language = state.default_language();
-    let (path, resolved_lang) = strip_language_prefix(&raw_path, known_languages, default_language);
+    let known_languages = &state.known_languages();
+    let default_language = &state.default_language();
+    let (path, resolved_lang) = strip_language_prefix(&raw_path, known_languages);
     let had_lang_prefix = resolved_lang.is_some();
 
     // Read resolved language — prefer what we just stripped, fall back to
@@ -276,14 +277,15 @@ pub async fn path_alias_fallback(
     crate::routes::helpers::render_not_found()
 }
 
-/// Strip a language prefix from the path if it matches a known non-default language.
+/// Strip a language prefix from the path if it matches a known language, the
+/// default included (`/en/about` is `/about` in English; whether that address
+/// is served or redirected is `negotiate_language`'s decision).
 ///
 /// Returns `(stripped_path, Some(language_code))` if a prefix was found,
 /// or `(original_path, None)` if no prefix matches.
 pub(crate) fn strip_language_prefix(
     path: &str,
     known_languages: &[String],
-    default_language: &str,
 ) -> (String, Option<String>) {
     // Check if the path starts with /{lang}/ or is exactly /{lang}
     if let Some(trimmed) = path.strip_prefix('/') {
@@ -293,8 +295,7 @@ pub(crate) fn strip_language_prefix(
             (trimmed, "/")
         };
 
-        // Must be a known non-default language
-        if candidate != default_language && known_languages.iter().any(|l| l == candidate) {
+        if known_languages.iter().any(|l| l == candidate) {
             return (rest.to_string(), Some(candidate.to_string()));
         }
     }
