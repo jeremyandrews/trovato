@@ -1,4 +1,4 @@
-//! Building and checking a kernel admin         .and_then(|form| text.scope(|| state.theme().render_form_with_errors(&form, errors))) through `FormService` (B108).
+//! Building and checking a kernel admin form through `FormService` (B108).
 //!
 //! The admin screens added for access rules, text formats, appearance and
 //! owned vocabularies all do the same two things: build a [`Form`] for the
@@ -15,6 +15,40 @@ use crate::models::User;
 use crate::state::AppState;
 
 use super::helpers::{render_error, render_server_error};
+use crate::i18n::UiMessage;
+
+/// One problem with a submitted hand written admin form, as the error
+/// summary and the field show it (`admin/macros/form.html`): `field` is the
+/// id of the field it is about (the summary links to it, and the field gets
+/// `aria-invalid` and the message), `None` for the form as a whole. The
+/// message is translated when the form is shown again.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct FieldError {
+    /// The id of the field the problem is with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    /// What went wrong and how to put it right.
+    #[serde(flatten)]
+    pub message: UiMessage,
+}
+
+impl FieldError {
+    /// A problem with the field whose id is `field`.
+    pub fn on(field: &str, message: impl Into<UiMessage>) -> Self {
+        Self {
+            field: Some(field.to_string()),
+            message: message.into(),
+        }
+    }
+
+    /// A problem with the form as a whole, tied to no one field.
+    pub fn form(message: impl Into<UiMessage>) -> Self {
+        Self {
+            field: None,
+            message: message.into(),
+        }
+    }
+}
 
 /// Build `form` for `user` and render it, showing `errors` beside it.
 pub async fn render(

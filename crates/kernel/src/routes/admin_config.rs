@@ -14,7 +14,9 @@ use serde::Deserialize;
 use tower_sessions::Session;
 
 use crate::form::csrf::generate_csrf_token;
+use crate::i18n::UiMessage;
 use crate::models::SiteConfig;
+use crate::routes::admin_form::FieldError;
 use crate::state::AppState;
 
 use super::helpers::{
@@ -182,18 +184,21 @@ async fn site_config_submit(
     let pool = state.db();
 
     // Validate
-    let mut errors: Vec<String> = Vec::new();
+    let mut errors: Vec<FieldError> = Vec::new();
 
     let site_name = form.site_name.trim();
     if site_name.is_empty() {
-        errors.push("Site name is required.".to_string());
+        errors.push(FieldError::on("site_name", "Site name is required."));
     }
 
     let site_mail = form.site_mail.trim();
     if site_mail.is_empty() {
-        errors.push("Site email is required.".to_string());
+        errors.push(FieldError::on("site_mail", "Site email is required."));
     } else if !is_valid_email(site_mail) {
-        errors.push("Please enter a valid email address.".to_string());
+        errors.push(FieldError::on(
+            "site_mail",
+            "Please enter a valid email address.",
+        ));
     }
 
     // Any internal route may be the front page, but only an internal one:
@@ -208,15 +213,20 @@ async fn site_config_submit(
     let front_page = form.front_page.trim();
     if !front_page.is_empty() {
         if super::front::local_front_path(front_page).is_none() {
-            errors.push(
-                "Front page must be a path on this site, beginning with \"/\" (for example /blog)."
-                    .to_string(),
-            );
+            errors.push(FieldError::on(
+                "front_page",
+                "Front page must be a path on this site, beginning with \"/\" (for example /blog).",
+            ));
         } else if let Some(status) = state.front_page().probe(front_page).await
             && matches!(status, StatusCode::NOT_FOUND | StatusCode::GONE)
         {
-            errors.push(format!(
-                "Front page {front_page} does not resolve: this site answers {status} there."
+            errors.push(FieldError::on(
+                "front_page",
+                UiMessage::new(
+                    "Front page {front_page} does not resolve: this site answers {status} there.",
+                )
+                .arg("front_page", front_page)
+                .arg("status", status.to_string()),
             ));
         }
     }
@@ -225,10 +235,16 @@ async fn site_config_submit(
     if !items_per_page_str.is_empty() {
         match items_per_page_str.parse::<u32>() {
             Ok(n) if n == 0 || n > 100 => {
-                errors.push("Items per page must be between 1 and 100.".to_string());
+                errors.push(FieldError::on(
+                    "items_per_page",
+                    "Items per page must be between 1 and 100.",
+                ));
             }
             Err(_) => {
-                errors.push("Items per page must be a number.".to_string());
+                errors.push(FieldError::on(
+                    "items_per_page",
+                    "Items per page must be a number.",
+                ));
             }
             Ok(_) => {}
         }
@@ -236,7 +252,7 @@ async fn site_config_submit(
 
     let registration_mode = form.registration_mode.trim();
     if !["open", "admin_only", "closed"].contains(&registration_mode) {
-        errors.push("Invalid registration mode.".to_string());
+        errors.push(FieldError::on("reg_open", "Invalid registration mode."));
     }
 
     if !errors.is_empty() {
@@ -508,6 +524,8 @@ async fn insert_maintenance_form(
 ) -> Result<(), Response> {
     let (on, message) = crate::middleware::maintenance::current(state).await;
     let viewer = super::helpers::user_context_for(state, user).await;
+    // The builder's words in the viewer's admin language.
+    let text = super::admin_nav::AdminText::for_page(state, &viewer, "/admin/config/site").await;
     let mut form_state = crate::form::FormState::new(MAINTENANCE_FORM_ID, "");
     form_state.user_id = Some(user.id);
     let html = state
@@ -519,7 +537,7 @@ async fn insert_maintenance_form(
             form_state,
         )
         .await
-        .and_then(|form| state.theme().render_form(&form))
+        .and_then(|form| text.scope(|| state.theme().render_form(&form)))
         .map_err(|e| {
             tracing::error!(error = %e, "failed to build the maintenance form");
             render_server_error("The site settings could not be displayed.")

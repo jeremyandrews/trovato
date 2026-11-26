@@ -52,7 +52,7 @@
                 </td>
                 <td class="operations">
                     <a href="/admin/system/ai-providers/{{ provider.id }}/edit">{{ t(s="Edit {name}", name=provider.label) }}</a>
-                    <form method="post" action="/admin/system/ai-providers/{{ provider.id }}/test" class="inline-form js-test-connection" data-provider-id="{{ provider.id }}">
+                    <form method="post" action="/admin/system/ai-providers/{{ provider.id }}/test" class="inline-form js-test-connection" data-provider-id="{{ provider.id }}" novalidate>
                         {{ form::csrf(csrf_token=csrf_token) }}
                         <button type="submit" class="link-button">{{ t(s="Test {name}", name=provider.label) }}</button>
                     </form>
@@ -79,37 +79,18 @@
     <h2 id="default-providers-heading">{{ t(s="Default Providers") }}</h2>
     <p>{{ t(s="Assign a default provider for each operation type. Plugins will use these unless they specify an override.") }}</p>
 
-    <form method="post" action="/admin/system/ai-providers/defaults">
+    <form method="post" action="/admin/system/ai-providers/defaults" novalidate>
         {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
 
-        <div class="table-scroll" role="region" aria-labelledby="default-providers-caption" tabindex="0">
-            <table class="table">
-                <caption id="default-providers-caption">{{ t(s="Default provider for each operation") }}</caption>
-                <thead>
-                    <tr>
-                        <th scope="col">{{ t(s="Operation") }}</th>
-                        <th scope="col">{{ t(s="Default Provider") }}</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for op in operation_defaults %}
-                    <tr>
-                        <th scope="row"><label for="default_{{ op.key }}">{{ t(s=op.label) }}</label></th>
-                        <td>
-                            <select id="default_{{ op.key }}" name="default_{{ op.key }}">
-                                <option value="">{{ t(s="— None —") }}</option>
-                                {% for provider in providers %}
-                                {% if provider.enabled %}
-                                <option value="{{ provider.id }}" {% if op.default_provider == provider.id %}selected{% endif %}>{{ provider.label }}</option>
-                                {% endif %}
-                                {% endfor %}
-                            </select>
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
+        {#- The enabled providers, as [id, label] pairs. -#}
+        {% set_global provider_options = [] %}
+        {% for provider in providers %}{% if provider.enabled %}{% set pair = [provider.id, provider.label] %}{% set_global provider_options = provider_options | concat(with=[pair]) %}{% endif %}{% endfor %}
+
+        {{ form::fieldset_start(legend=t(s="Default provider for each operation")) }}
+            {% for op in operation_defaults %}
+            {{ form::select(name="default_" ~ op.key, label=t(s=op.label), options=provider_options, value=op.default_provider | default(value=""), empty=t(s="— None —")) }}
+            {% endfor %}
+        {{ form::fieldset_end() }}
 
         {{ form::actions(submit_label=t(s="Save defaults"), cancel_url="/admin/system/ai-providers") }}
     </form>

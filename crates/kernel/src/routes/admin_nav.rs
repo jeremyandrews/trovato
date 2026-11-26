@@ -1364,7 +1364,27 @@ pub fn finish_page(html: &str) -> String {
         return html.to_string();
     }
     let heading = heading_text(html).unwrap_or_default();
-    html.replace(TITLE_MARKER, &heading)
+    // A page showing a form's error summary leads its title with the
+    // summary's own (translated) "Error:", so the title alone says the
+    // submit failed.
+    let prefix = error_prefix(html)
+        .map(|p| format!("{p} "))
+        .unwrap_or_default();
+    html.replacen(ERROR_TITLE_MARKER, &prefix, 1)
+        .replace(TITLE_MARKER, &heading)
+}
+
+/// Where the shell's `<title>` takes the error prefix.
+pub const ERROR_TITLE_MARKER: &str = "<!--trovato:admin-error-->";
+
+/// The prefix an error summary on the page carries
+/// (`data-error-summary="Error:"`, `admin/macros/form.html`), still escaped.
+fn error_prefix(html: &str) -> Option<String> {
+    const ATTR: &str = "data-error-summary=\"";
+    let start = html.find(ATTR)? + ATTR.len();
+    let end = start + html[start..].find('"')?;
+    let prefix = html[start..end].trim();
+    (!prefix.is_empty()).then(|| prefix.to_string())
 }
 
 /// The text of the first `<h1>` in `html`, tags removed and whitespace

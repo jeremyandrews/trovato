@@ -49,14 +49,14 @@
                 <td class="operations">
                     {% if plugin.is_installed %}
                         {% if plugin.status == "Enabled" %}
-                        <form method="post" action="/admin/plugins/toggle" class="inline-form">
+                        <form method="post" action="/admin/plugins/toggle" class="inline-form" novalidate>
                             <input type="hidden" name="_token" value="{{ csrf_token }}">
                             <input type="hidden" name="plugin_name" value="{{ plugin.name }}">
                             <input type="hidden" name="action" value="disable">
                             <button type="submit" class="link-button">{{ t(s="Disable {name}", name=plugin.name) }}</button>
                         </form>
                         {% else %}
-                        <form method="post" action="/admin/plugins/toggle" class="inline-form">
+                        <form method="post" action="/admin/plugins/toggle" class="inline-form" novalidate>
                             <input type="hidden" name="_token" value="{{ csrf_token }}">
                             <input type="hidden" name="plugin_name" value="{{ plugin.name }}">
                             <input type="hidden" name="action" value="enable">

@@ -11,7 +11,7 @@
         {% if revision.log %}{{ t(s="Log message: {log}.", log=revision.log) }}{% endif %}
         {{ t(s="This cannot be undone.") }}
     </p>
-    <form method="post" action="/item/{{ item_id }}/revisions/{{ revision.id }}/delete">
+    <form method="post" action="/item/{{ item_id }}/revisions/{{ revision.id }}/delete" novalidate>
         <input type="hidden" name="_token" value="{{ csrf_token }}">
         <div class="form-actions">
             <button type="submit" class="button button--danger">{{ t(s="Delete the revision of {date}", date=revision.date) }}</button>

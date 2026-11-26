@@ -33,8 +33,10 @@ use tower_sessions::Session;
 use uuid::Uuid;
 
 use crate::form::csrf::generate_csrf_token;
+use crate::i18n::UiMessage;
 use crate::models::stage::{LIVE_STAGE_ID, Stage, StageVisibility, UpdateStage};
 use crate::models::{CreateStage, StageReferences};
+use crate::routes::admin_form::FieldError;
 use crate::state::AppState;
 
 use super::helpers::{
@@ -167,7 +169,7 @@ async fn render_form(
     session: &Session,
     stage_id: Option<Uuid>,
     values: serde_json::Value,
-    errors: Vec<String>,
+    errors: Vec<FieldError>,
 ) -> Response {
     let action = match stage_id {
         Some(id) => format!("/admin/structure/stages/{id}/edit"),
@@ -228,20 +230,31 @@ async fn add_stage_form(State(state): State<AppState>, session: Session) -> Resp
     render_form(&state, &session, None, blank_values(), Vec::new()).await
 }
 
+/// The refusal of a machine name another stage already has.
+fn already_exists(machine_name: &str) -> FieldError {
+    FieldError::on(
+        "machine_name",
+        UiMessage::new("A stage named '{name}' already exists.").arg("name", machine_name),
+    )
+}
+
 /// Validate the fields both submit paths share.
-fn validate(form: &StageFormData) -> Vec<String> {
+fn validate(form: &StageFormData) -> Vec<FieldError> {
     let mut errors = Vec::new();
 
     if form.machine_name.trim().is_empty() {
-        errors.push("Machine name is required.".to_string());
+        errors.push(FieldError::on("machine_name", "Machine name is required."));
     } else if !is_valid_machine_name(form.machine_name.trim()) {
-        errors.push(MACHINE_NAME_ERROR.to_string());
+        errors.push(FieldError::on("machine_name", MACHINE_NAME_ERROR));
     }
     if form.label.trim().is_empty() {
-        errors.push("Label is required.".to_string());
+        errors.push(FieldError::on("label", "Label is required."));
     }
     if form.visibility.parse::<StageVisibility>().is_err() {
-        errors.push("Visibility must be internal, public or accessible.".to_string());
+        errors.push(FieldError::on(
+            "visibility",
+            "Visibility must be internal, public or accessible.",
+        ));
     }
 
     errors
@@ -268,12 +281,12 @@ async fn add_stage_submit(
     if errors.is_empty() {
         match Stage::find_by_machine_name(state.db(), &machine_name).await {
             Ok(Some(_)) => {
-                errors.push(format!("A stage named '{machine_name}' already exists."));
+                errors.push(already_exists(&machine_name));
             }
             Ok(None) => {}
             Err(e) => {
                 tracing::error!(error = %e, "failed to check for an existing stage");
-                errors.push("Failed to check for an existing stage.".to_string());
+                errors.push(FieldError::form("Failed to check for an existing stage."));
             }
         }
     }
@@ -282,10 +295,10 @@ async fn add_stage_submit(
     // `visibility = 'public'` says so, and the render layer resolves published
     // content through the one that does.
     if errors.is_empty() && form.visibility == "public" {
-        errors.push(
-            "Only one stage can be public, and it is the Live stage. Use internal or accessible."
-                .to_string(),
-        );
+        errors.push(FieldError::on(
+            "visibility",
+            "Only one stage can be public, and it is the Live stage. Use internal or accessible.",
+        ));
     }
 
     if !errors.is_empty() {
@@ -327,7 +340,10 @@ async fn add_stage_submit(
                 &session,
                 None,
                 submitted_values(&form),
-                vec![format!("Failed to create the stage: {e}")],
+                vec![FieldError::form(
+                    UiMessage::new("Failed to create the stage: {error}")
+                        .arg("error", e.to_string()),
+                )],
             )
             .await;
         }
@@ -351,8 +367,9 @@ async fn add_stage_submit(
             &session,
             Some(created.id),
             submitted_values(&form),
-            vec![format!(
-                "The stage was created, but making it the default failed: {e}"
+            vec![FieldError::form(
+                UiMessage::new("The stage was created, but making it the default failed: {error}")
+                    .arg("error", e.to_string()),
             )],
         )
         .await;
@@ -420,11 +437,11 @@ async fn edit_stage_submit(
 
     if errors.is_empty() && machine_name != existing.machine_name {
         match Stage::find_by_machine_name(state.db(), &machine_name).await {
-            Ok(Some(_)) => errors.push(format!("A stage named '{machine_name}' already exists.")),
+            Ok(Some(_)) => errors.push(already_exists(&machine_name)),
             Ok(None) => {}
             Err(e) => {
                 tracing::error!(error = %e, "failed to check for an existing stage");
-                errors.push("Failed to check for an existing stage.".to_string());
+                errors.push(FieldError::form("Failed to check for an existing stage."));
             }
         }
     }
@@ -435,11 +452,11 @@ async fn edit_stage_submit(
         && form.visibility == "public"
         && existing.visibility != StageVisibility::Public
     {
-        errors.push(
+        errors.push(FieldError::on(
+            "visibility",
             "Only one stage can be public, and the Live stage already is. Use internal or \
-             accessible."
-                .to_string(),
-        );
+             accessible.",
+        ));
     }
 
     if !errors.is_empty() {
@@ -485,7 +502,7 @@ async fn edit_stage_submit(
                 &session,
                 Some(stage_id),
                 submitted_values(&form),
-                vec![format!("{e}")],
+                vec![FieldError::form(e.to_string())],
             )
             .await
         }

@@ -1,0 +1,10 @@
+{%- import "admin/macros/form.html" as f -%}
+{%- import "admin/macros/builder.html" as b -%}
+{#- The form builder's admin template: maps the element onto the field macro
+    every admin form uses (admin/macros/form.html). -#}
+{%- if element.title %}{% set label = t(s=element.title) %}{% else %}{% set label = "" %}{% endif -%}
+{%- if element.description %}{% set hint = t(s=element.description) %}{% else %}{% set hint = "" %}{% endif -%}
+{%- set attrs = b::attrs(element=element) -%}
+{%- if errors is defined %}{% set errs = errors %}{% else %}{% set errs = [] %}{% endif -%}
+{%- if element.default_value is defined %}{% set dv = element.default_value %}{% else %}{% set dv = "" %}{% endif -%}
+{{ f::checkbox(name=name, label=label, checked=dv, hint=hint, disabled=element.disabled, errors=errs, attrs=attrs) }}

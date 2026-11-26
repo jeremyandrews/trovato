@@ -931,8 +931,9 @@
         display: inline;
     }
 
-    /* Forms. The legacy form-item classes and the newer field classes are
-       drawn the same way; Part 2 of the redesign settles on one. */
+    /* Forms: the field pattern of admin/macros/form.html (design.md section
+       8). The older field classes some plugin templates use are drawn the
+       same way. */
     .form-item,
     .form-group,
     .field {
@@ -1098,6 +1099,209 @@
         color: var(--text-muted);
     }
 
+    .form__effect-label {
+        font-weight: 650;
+        color: var(--text);
+    }
+
+    /* The words "(required)" and "(optional)" after a label: text, never an
+       asterisk or a colour alone. */
+    .form-item__need {
+        font-weight: 400;
+        color: var(--text-muted);
+    }
+
+    /* Widths sized to the value expected: a few characters, 10, 20, 30. */
+    .form-text--w4 {
+        max-inline-size: calc(4ch + 2 * var(--space-3) + 2px + 1.5rem);
+    }
+
+    .form-text--w10 {
+        max-inline-size: calc(10ch + 2 * var(--space-3) + 2px + 1.5rem);
+    }
+
+    .form-text--w20 {
+        max-inline-size: calc(20ch + 2 * var(--space-3) + 2px);
+    }
+
+    .form-text--w30 {
+        max-inline-size: calc(30ch + 2 * var(--space-3) + 2px);
+    }
+
+    /* A failed field: a bar at its start and its message above it, so the
+       state is never shown by colour alone. */
+    .form-item--error {
+        padding-inline-start: var(--space-3);
+        border-inline-start: 4px solid var(--danger);
+    }
+
+    .form-item--error :is(.form-text, .form-select, .form-textarea) {
+        border-color: var(--danger);
+        border-width: 2px;
+    }
+
+    /* The error summary: first in a failed form, an alert that takes focus. */
+    .error-summary {
+        margin-block-end: var(--space-5);
+        padding: var(--space-4);
+        border: 2px solid var(--danger);
+        border-inline-start-width: 6px;
+        border-radius: var(--radius);
+        background: var(--danger-surface);
+        color: var(--text);
+    }
+
+    .error-summary:focus-visible,
+    .error-summary:focus {
+        outline: 3px solid var(--focus);
+        outline-offset: 2px;
+    }
+
+    .error-summary__title {
+        margin-block: 0 var(--space-2);
+        font-size: var(--step-1);
+    }
+
+    .error-summary__list {
+        margin: 0;
+        padding-inline-start: var(--space-5);
+    }
+
+    .error-summary__list a {
+        color: var(--text);
+        font-weight: 650;
+        text-decoration: underline;
+        text-decoration-thickness: 2px;
+    }
+
+    /* Advanced settings, collapsed in native details. */
+    .form-details {
+        margin-block-end: var(--space-5);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+    }
+
+    .form-details__summary {
+        display: flex;
+        align-items: center;
+        min-block-size: var(--target-primary);
+        padding-inline: var(--space-4);
+    }
+
+    .form-details__content {
+        padding: 0 var(--space-4) var(--space-4);
+    }
+
+    /* A long form's action bar stays in view; the page keeps a focused field
+       clear of it (WCAG 2.4.11) by padding the scroll edge with the bar's
+       height, which admin-forms.js measures into --action-bar-height. */
+    .form-actions--sticky {
+        position: sticky;
+        inset-block-end: 0;
+        z-index: 1;
+        padding-block: var(--space-3);
+        border-block-start: 1px solid var(--border);
+        background: var(--card-surface);
+    }
+
+    html:has(.form-actions--sticky) {
+        scroll-padding-block-end: calc(var(--action-bar-height, 4.5rem) + var(--space-3));
+    }
+
+    /* The media picker dialog (admin-media-picker.js). */
+    .admin-picker {
+        inline-size: min(52rem, calc(100vw - 2 * var(--space-4)));
+        max-block-size: calc(100vh - 2 * var(--space-5));
+        padding: var(--space-5);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        background: var(--surface-raised);
+        color: var(--text);
+    }
+
+    .admin-picker::backdrop {
+        background: rgb(0 0 0 / 0.55);
+    }
+
+    .admin-picker__head,
+    .admin-picker__foot,
+    .admin-picker__tools {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-end;
+        justify-content: space-between;
+        gap: var(--space-3);
+    }
+
+    .admin-picker__title {
+        margin: 0;
+        font-size: var(--step-1);
+    }
+
+    .admin-picker__tools {
+        justify-content: flex-start;
+        margin-block: var(--space-4);
+    }
+
+    .admin-picker__tools .form-item {
+        margin-block-end: 0;
+    }
+
+    .admin-picker__grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+        gap: var(--space-3);
+        margin: 0 0 var(--space-4);
+        padding: 0;
+        list-style: none;
+    }
+
+    .admin-picker__item {
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        gap: var(--space-1);
+        inline-size: 100%;
+        min-block-size: var(--target-primary);
+        padding: var(--space-2);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        background: var(--surface);
+        color: var(--text);
+        font: inherit;
+        text-align: start;
+        cursor: pointer;
+    }
+
+    .admin-picker__item[aria-pressed="true"] {
+        border: 3px solid var(--accent);
+        font-weight: 650;
+    }
+
+    .admin-picker__item img {
+        inline-size: 100%;
+        aspect-ratio: 4 / 3;
+        object-fit: cover;
+    }
+
+    .admin-picker__ext {
+        display: grid;
+        place-items: center;
+        aspect-ratio: 4 / 3;
+        background: var(--surface-raised);
+        font-weight: 650;
+    }
+
+    .admin-picker__name {
+        overflow-wrap: anywhere;
+        font-size: var(--step--1);
+    }
+
+    .admin-picker__chosen {
+        flex: 1 1 12rem;
+        margin: 0;
+    }
+
     /* Filters above a listing. */
     .filter-form {
         margin-block-end: var(--space-5);
@@ -1113,6 +1317,15 @@
     .filter-item {
         display: grid;
         gap: var(--space-1);
+    }
+
+    /* A filter or bulk field drawn by the form macros sits in the row: no
+       field spacing below it. */
+    .filter-row > .form-item,
+    .bulk-actions .form-item {
+        margin-block-end: 0;
+        min-inline-size: 0;
+        max-inline-size: 100%;
     }
 
     .filter-item label {
@@ -1623,7 +1836,8 @@
     }
 
     /* Content list: the bulk selects size to their options, not the row. */
-    .bulk-actions .bulk-action-select {
+    .bulk-actions .bulk-action-select,
+    .bulk-actions .form-select {
         inline-size: auto;
         max-inline-size: 100%;
     }
@@ -1795,12 +2009,16 @@
         margin-block-end: var(--space-2);
     }
 
-    .form-item--inline > select {
+    .form-item--inline > select,
+    .form-item--inline > .form-item--select {
         flex: 1 1 12rem;
+        margin-block-end: 0;
     }
 
-    .form-item--inline > input[type="text"] {
+    .form-item--inline > input[type="text"],
+    .form-item--inline > .form-item--text {
         flex: 2 1 14rem;
+        margin-block-end: 0;
     }
 
     .ai-budget-limit {

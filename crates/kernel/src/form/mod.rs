@@ -17,6 +17,6 @@ mod types;
 pub use ajax::{AjaxCommand, AjaxRequest, AjaxResponse};
 pub use csrf::{generate_csrf_token, verify_csrf_token};
 pub use service::{
-    FORM_EXPIRED, FormResult, FormService, FormState, ProcessError, ValidationError,
+    ADMIN_FORM, FORM_EXPIRED, FormResult, FormService, FormState, ProcessError, ValidationError,
 };
 pub use types::{ADD_ANOTHER, ElementType, Form, FormElement};

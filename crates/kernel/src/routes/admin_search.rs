@@ -16,6 +16,8 @@ use serde::Serialize;
 use tower_sessions::Session;
 
 use crate::form::csrf::generate_csrf_token;
+use crate::i18n::UiMessage;
+use crate::routes::admin_form::FieldError;
 use crate::search::settings::{NUMBER_RANGES, TYPE_BOOST_RANGE};
 use crate::search::{PriorityPage, SearchSettings};
 use crate::state::AppState;
@@ -103,7 +105,7 @@ impl FormValues {
 /// Raw pairs rather than a struct, because the type boost and priority page
 /// rows repeat. A number left empty takes its default; a switch not submitted
 /// is off, as an unticked checkbox is.
-fn parse_form(pairs: &[(String, String)]) -> (FormValues, Result<SearchSettings, Vec<String>>) {
+fn parse_form(pairs: &[(String, String)]) -> (FormValues, Result<SearchSettings, Vec<FieldError>>) {
     let mut values = FormValues {
         numbers: BTreeMap::new(),
         type_boosts: BTreeMap::new(),
@@ -151,10 +153,16 @@ fn parse_form(pairs: &[(String, String)]) -> (FormValues, Result<SearchSettings,
         match raw.parse::<f64>() {
             Ok(n) => {
                 if let Err(message) = set_number(&mut settings, range.field, n) {
-                    errors.push(format!("{} {message}", range.label));
+                    errors.push(FieldError::on(
+                        range.field,
+                        UiMessage::new(format!("{{label}} {message}")).arg("label", range.label),
+                    ));
                 }
             }
-            Err(_) => errors.push(format!("{} must be a number.", range.label)),
+            Err(_) => errors.push(FieldError::on(
+                range.field,
+                UiMessage::new("{label} must be a number.").arg("label", range.label),
+            )),
         }
     }
 
@@ -170,8 +178,12 @@ fn parse_form(pairs: &[(String, String)]) -> (FormValues, Result<SearchSettings,
                     settings.type_boosts.insert(item_type.clone(), n);
                 }
             }
-            Err(_) => errors.push(format!(
-                "The boost for {item_type} must be a number from {min} to {max}."
+            Err(_) => errors.push(FieldError::on(
+                &format!("type_boost_{item_type}"),
+                UiMessage::new("The boost for {type} must be a number from {min} to {max}.")
+                    .arg("type", item_type)
+                    .arg("min", min.to_string())
+                    .arg("max", max.to_string()),
             )),
         }
     }
@@ -184,7 +196,7 @@ fn parse_form(pairs: &[(String, String)]) -> (FormValues, Result<SearchSettings,
     settings.sentiment_enabled = values.switches["sentiment_enabled"];
 
     if let Err(more) = settings.validate() {
-        errors.extend(more);
+        errors.extend(more.into_iter().map(FieldError::form));
     }
     errors.dedup();
 
@@ -232,7 +244,7 @@ async fn render(
     state: &AppState,
     session: &Session,
     values: FormValues,
-    errors: Option<Vec<String>>,
+    errors: Option<Vec<FieldError>>,
 ) -> Response {
     let csrf_token = generate_csrf_token(session).await;
 

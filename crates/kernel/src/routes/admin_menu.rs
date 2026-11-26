@@ -35,6 +35,7 @@ use uuid::Uuid;
 use crate::form::csrf::generate_csrf_token;
 use crate::models::stage::LIVE_STAGE_ID;
 use crate::models::{CreateMenuLink, MenuLink, UpdateMenuLink};
+use crate::routes::admin_form::FieldError;
 use crate::state::AppState;
 
 use super::helpers::{
@@ -512,7 +513,7 @@ async fn render_form(
     menu_name: &str,
     link_id: Option<Uuid>,
     values: serde_json::Value,
-    errors: Vec<String>,
+    errors: Vec<FieldError>,
 ) -> Response {
     let links = match menu_links(state, menu_name).await {
         Ok(links) => links,
@@ -535,7 +536,12 @@ async fn render_form(
     context.insert("action", &action);
     context.insert("editing", &link_id.is_some());
     context.insert("values", &values);
-    context.insert("parents", &parent_options(&links, link_id));
+    // [id, label] pairs for the select macro.
+    let parents: Vec<(String, String)> = parent_options(&links, link_id)
+        .into_iter()
+        .map(|p| (p.id.to_string(), p.label))
+        .collect();
+    context.insert("parents", &parents);
     context.insert("errors", &errors);
     context.insert("path", &action);
 
@@ -591,19 +597,19 @@ async fn add_link_submit(
     let mut errors = Vec::new();
     let title = form.title.trim().to_string();
     if title.is_empty() {
-        errors.push("Title is required.".to_string());
+        errors.push(FieldError::on("title", "Title is required."));
     }
     let path = match validate_path(&form.path) {
         Ok(path) => path,
         Err(e) => {
-            errors.push(e);
+            errors.push(FieldError::on("path", e));
             String::new()
         }
     };
     let parent_id = match parse_parent(form.parent_id.as_deref()) {
         Ok(parent) => parent,
         Err(e) => {
-            errors.push(e);
+            errors.push(FieldError::on("parent_id", e));
             None
         }
     };
@@ -613,10 +619,13 @@ async fn add_link_submit(
     if let Some(parent) = parent_id {
         match MenuLink::find_by_id(state.db(), parent).await {
             Ok(Some(row)) if row.menu_name == menu_name => {}
-            Ok(_) => errors.push("Parent must be a link in this menu.".to_string()),
+            Ok(_) => errors.push(FieldError::on(
+                "parent_id",
+                "Parent must be a link in this menu.",
+            )),
             Err(e) => {
                 tracing::error!(error = %e, "failed to verify menu link parent");
-                errors.push("Failed to verify the parent link.".to_string());
+                errors.push(FieldError::form("Failed to verify the parent link."));
             }
         }
     }
@@ -657,11 +666,11 @@ async fn add_link_submit(
                 &menu_name,
                 None,
                 values,
-                vec![
+                vec![FieldError::on(
+                    "path",
                     "Failed to create the link. A link with this path may already exist in this \
-                     menu."
-                        .to_string(),
-                ],
+                     menu.",
+                )],
             )
             .await
         }
@@ -742,19 +751,19 @@ async fn edit_link_submit(
     let mut errors = Vec::new();
     let title = form.title.trim().to_string();
     if title.is_empty() {
-        errors.push("Title is required.".to_string());
+        errors.push(FieldError::on("title", "Title is required."));
     }
     let path = match validate_path(&form.path) {
         Ok(path) => path,
         Err(e) => {
-            errors.push(e);
+            errors.push(FieldError::on("path", e));
             String::new()
         }
     };
     let parent_id = match parse_parent(form.parent_id.as_deref()) {
         Ok(parent) => parent,
         Err(e) => {
-            errors.push(e);
+            errors.push(FieldError::on("parent_id", e));
             None
         }
     };
@@ -762,22 +771,25 @@ async fn edit_link_submit(
     if let Some(parent) = parent_id {
         match MenuLink::find_by_id(state.db(), parent).await {
             Ok(Some(row)) if row.menu_name == menu_name => {}
-            Ok(_) => errors.push("Parent must be a link in this menu.".to_string()),
+            Ok(_) => errors.push(FieldError::on(
+                "parent_id",
+                "Parent must be a link in this menu.",
+            )),
             Err(e) => {
                 tracing::error!(error = %e, "failed to verify menu link parent");
-                errors.push("Failed to verify the parent link.".to_string());
+                errors.push(FieldError::form("Failed to verify the parent link."));
             }
         }
 
         match would_cycle(&state, link_id, parent).await {
-            Ok(true) => errors.push(
-                "A link cannot be its own ancestor. Choose a parent that is not below this link."
-                    .to_string(),
-            ),
+            Ok(true) => errors.push(FieldError::on(
+                "parent_id",
+                "A link cannot be its own ancestor. Choose a parent that is not below this link.",
+            )),
             Ok(false) => {}
             Err(e) => {
                 tracing::error!(error = %e, "failed to check the menu link parent chain");
-                errors.push("Failed to check the parent chain.".to_string());
+                errors.push(FieldError::form("Failed to check the parent chain."));
             }
         }
     }
@@ -821,11 +833,11 @@ async fn edit_link_submit(
                 &menu_name,
                 Some(link_id),
                 values,
-                vec![
+                vec![FieldError::on(
+                    "path",
                     "Failed to save the link. A link with this path may already exist in this \
-                     menu."
-                        .to_string(),
-                ],
+                     menu.",
+                )],
             )
             .await
         }

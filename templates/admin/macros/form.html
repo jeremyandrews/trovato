@@ -1,20 +1,169 @@
-{#- Admin form macros — shared structure for admin form pages. Part 2 of the
-    redesign (docs/admin/design.md section 8) replaces the error list with the
-    error summary pattern. -#}
+{#- The admin form presentation layer: every admin field, hand written or
+    built in Rust, is drawn by these macros (docs/admin/design.md section 8).
+    The form builder's admin templates (admin/form/*.html) call them too, so
+    the two kinds of form cannot drift apart.
 
-{#- Form error list: interrupts (role=alert) and says what it is in words. -#}
+    The pattern: label above the field, always shown; a hint under the label,
+    tied to the field with aria-describedby; "(required)" or "(optional)" in
+    the label's words, never an asterisk; one column; a width that fits the
+    expected value; related choices in a fieldset with a legend. On a failed
+    submit the page leads with error_summary (an alert that takes focus, one
+    link per problem), and each failed field has aria-invalid="true" and its
+    message, also tied with aria-describedby.
+
+    No macro here calls another (`self::`): under `extends`, Tera does not
+    find one unless this file is the template's first import.
+
+    Words arrive translated: a caller passes label=t(s="Username"). `errors`
+    is the page's list of problems, each a FieldError (`routes::admin_form`),
+    a form builder ValidationError, or a plain source string; a field finds
+    its own by id.
+
+    widths: "4" (a few characters), "10", "20", "30" (characters), or ""
+    for the full measure. -#}
+
+{#- The error summary: first in the form, an alert that receives focus
+    (admin-forms.js; tabindex makes it focusable), one link per problem that
+    moves focus to its field. -#}
+{% macro error_summary(errors) %}
+{% if errors is defined and errors %}
+<div class="error-summary" role="alert" tabindex="-1" aria-labelledby="error-summary-title" data-error-summary="{{ t(s='Error:') }}">
+    <h2 class="error-summary__title" id="error-summary-title">{{ t(s="There is a problem") }}</h2>
+    <ul class="error-summary__list">
+        {% for e in errors %}
+        <li>{% if e is object and e.field is defined and e.field %}<a href="#{{ e.field }}">{{ t_message(m=e) }}</a>{% else %}{{ t_message(m=e) }}{% endif %}</li>
+        {% endfor %}
+    </ul>
+</div>
+{% endif %}
+{% endmacro error_summary %}
+
+{#- The former name of error_summary, kept for plugin templates. -#}
 {% macro errors(errors) %}
 {% if errors is defined and errors %}
-<div class="notice notice--error form__errors" role="alert">
-    <h2 class="notice__heading">{{ t(s="There is a problem") }}</h2>
-    <ul>
-        {% for error in errors %}
-        <li>{{ t(s=error) }}</li>
+<div class="error-summary" role="alert" tabindex="-1" aria-labelledby="error-summary-title" data-error-summary="{{ t(s='Error:') }}">
+    <h2 class="error-summary__title" id="error-summary-title">{{ t(s="There is a problem") }}</h2>
+    <ul class="error-summary__list">
+        {% for e in errors %}
+        <li>{% if e is object and e.field is defined and e.field %}<a href="#{{ e.field }}">{{ t_message(m=e) }}</a>{% else %}{{ t_message(m=e) }}{% endif %}</li>
         {% endfor %}
     </ul>
 </div>
 {% endif %}
 {% endmacro errors %}
+
+{#- A one line field: text, email, url, tel, number, date, password, search,
+    file. `attrs` is extra attributes written in the calling template
+    (min, max, step, data-…), never user input. -#}
+{% macro field(name, label, value="", type="text", id="", hint="", required=false, optional=false, errors=false, width="", autocomplete="", attrs="", disabled=false, readonly=false, wrapper="") %}
+{% set fid = id | default(value=name) %}{% if not fid %}{% set fid = name %}{% endif %}
+{% set_global error = "" %}{% if errors %}{% for e in errors %}{% if not error and e is object and e.field is defined and e.field == fid %}{% set_global error = t_message(m=e) %}{% endif %}{% endfor %}{% endif %}
+<div class="form-item form-item--{{ type }}{% if error %} form-item--error{% endif %}{% if wrapper %} {{ wrapper }}{% endif %}">
+    {% if label %}<label class="form-item__label" for="{{ fid }}">{{ label }}{% if required %} <span class="form-item__need">{{ t(s="(required)") }}</span>{% elif optional %} <span class="form-item__need">{{ t(s="(optional)") }}</span>{% endif %}</label>{% endif %}{% if hint %}
+    <p class="form-item__description" id="{{ fid }}-hint">{{ hint }}</p>{% endif %}{% if error %}
+    <p class="form-item__error" id="{{ fid }}-error"><span class="visually-hidden">{{ t(s="Error:") }}</span> {{ error | safe }}</p>{% endif %} {# SAFE: error is t_message output, already escaped #}
+    <input type="{{ type }}" id="{{ fid }}" name="{{ name }}" class="{% if type == 'file' %}form-file{% else %}form-text{% endif %}{% if width %} form-text--w{{ width }}{% endif %}"{% if type != "file" and type != "password" and value ~ "" != "" %} value="{{ value }}"{% endif %}{% if hint or error %} aria-describedby="{% if hint %}{{ fid }}-hint{% endif %}{% if hint and error %} {% endif %}{% if error %}{{ fid }}-error{% endif %}"{% endif %}{% if error %} aria-invalid="true"{% endif %}{% if autocomplete %} autocomplete="{{ autocomplete }}"{% endif %}{% if required %} required{% endif %}{% if disabled %} disabled{% endif %}{% if readonly %} readonly{% endif %}{% if attrs %} {{ attrs | safe }}{% endif %}> {# SAFE: attrs is written in the calling template, never user input #}
+</div>
+{% endmacro field %}
+
+{#- A multi line field. -#}
+{% macro textarea(name, label, value="", id="", hint="", rows=5, required=false, optional=false, errors=false, attrs="", disabled=false, wrapper="") %}
+{% set fid = id | default(value=name) %}{% if not fid %}{% set fid = name %}{% endif %}
+{% set_global error = "" %}{% if errors %}{% for e in errors %}{% if not error and e is object and e.field is defined and e.field == fid %}{% set_global error = t_message(m=e) %}{% endif %}{% endfor %}{% endif %}
+<div class="form-item form-item--textarea{% if error %} form-item--error{% endif %}{% if wrapper %} {{ wrapper }}{% endif %}">
+    {% if label %}<label class="form-item__label" for="{{ fid }}">{{ label }}{% if required %} <span class="form-item__need">{{ t(s="(required)") }}</span>{% elif optional %} <span class="form-item__need">{{ t(s="(optional)") }}</span>{% endif %}</label>{% endif %}{% if hint %}
+    <p class="form-item__description" id="{{ fid }}-hint">{{ hint }}</p>{% endif %}{% if error %}
+    <p class="form-item__error" id="{{ fid }}-error"><span class="visually-hidden">{{ t(s="Error:") }}</span> {{ error | safe }}</p>{% endif %} {# SAFE: error is t_message output, already escaped #}
+    <textarea id="{{ fid }}" name="{{ name }}" class="form-textarea" rows="{{ rows }}"{% if hint or error %} aria-describedby="{% if hint %}{{ fid }}-hint{% endif %}{% if hint and error %} {% endif %}{% if error %}{{ fid }}-error{% endif %}"{% endif %}{% if error %} aria-invalid="true"{% endif %}{% if required %} required{% endif %}{% if disabled %} disabled{% endif %}{% if attrs %} {{ attrs | safe }}{% endif %}>{{ value }}</textarea> {# SAFE: attrs is written in the calling template #}
+</div>
+{% endmacro textarea %}
+
+{#- A select. `options` is a list of [value, label] pairs or of objects with
+    `value` and `label`; labels are printed as given unless
+    translate_options (fixed English words from Rust). An option object with
+    `native` set is a language named in itself: never translated, and marked
+    with its own `lang` (its value). `empty` adds a first,
+    empty option with that text. -#}
+{% macro select(name, label, options, value="", id="", hint="", required=false, optional=false, errors=false, empty="", translate_options=false, multiple=false, values=false, attrs="", disabled=false, wrapper="") %}
+{% set fid = id | default(value=name) %}{% if not fid %}{% set fid = name %}{% endif %}
+{% set_global error = "" %}{% if errors %}{% for e in errors %}{% if not error and e is object and e.field is defined and e.field == fid %}{% set_global error = t_message(m=e) %}{% endif %}{% endfor %}{% endif %}
+<div class="form-item form-item--select{% if error %} form-item--error{% endif %}{% if wrapper %} {{ wrapper }}{% endif %}">
+    {% if label %}<label class="form-item__label" for="{{ fid }}">{{ label }}{% if required %} <span class="form-item__need">{{ t(s="(required)") }}</span>{% elif optional %} <span class="form-item__need">{{ t(s="(optional)") }}</span>{% endif %}</label>{% endif %}{% if hint %}
+    <p class="form-item__description" id="{{ fid }}-hint">{{ hint }}</p>{% endif %}{% if error %}
+    <p class="form-item__error" id="{{ fid }}-error"><span class="visually-hidden">{{ t(s="Error:") }}</span> {{ error | safe }}</p>{% endif %} {# SAFE: error is t_message output, already escaped #}
+    <select id="{{ fid }}" name="{{ name }}" class="form-select"{% if hint or error %} aria-describedby="{% if hint %}{{ fid }}-hint{% endif %}{% if hint and error %} {% endif %}{% if error %}{{ fid }}-error{% endif %}"{% endif %}{% if error %} aria-invalid="true"{% endif %}{% if required %} required{% endif %}{% if multiple %} multiple{% endif %}{% if disabled %} disabled{% endif %}{% if attrs %} {{ attrs | safe }}{% endif %}> {# SAFE: attrs is written in the calling template #}
+        {% if empty %}<option value="">{{ empty }}</option>{% endif %}
+        {% for o in options %}{% if o is object %}{% set v = o.value %}{% set l = o.label %}{% else %}{% set v = o.0 %}{% set l = o.1 %}{% endif %}
+        {% if o is object and o.native is defined and o.native %}{% set native = true %}{% else %}{% set native = false %}{% endif %}
+        <option value="{{ v }}"{% if multiple %}{% if values and v in values %} selected{% endif %}{% elif v ~ "" == value ~ "" %} selected{% endif %}{% if native %} lang="{{ v }}"{% endif %}>{% if translate_options and not native %}{{ t(s=l) }}{% else %}{{ l }}{% endif %}</option>
+        {% endfor %}
+    </select>
+</div>
+{% endmacro select %}
+
+{#- One checkbox, its label beside it. -#}
+{% macro checkbox(name, label, checked=false, id="", value="1", hint="", errors=false, attrs="", disabled=false, wrapper="") %}
+{% set fid = id | default(value=name) %}{% if not fid %}{% set fid = name %}{% endif %}
+{% set_global error = "" %}{% if errors %}{% for e in errors %}{% if not error and e is object and e.field is defined and e.field == fid %}{% set_global error = t_message(m=e) %}{% endif %}{% endfor %}{% endif %}
+<div class="form-item form-item--checkbox{% if error %} form-item--error{% endif %}{% if wrapper %} {{ wrapper }}{% endif %}">
+    <div class="form-checkbox-wrapper">
+        <input type="checkbox" id="{{ fid }}" name="{{ name }}" value="{{ value }}" class="form-checkbox"{% if hint or error %} aria-describedby="{% if hint %}{{ fid }}-hint{% endif %}{% if hint and error %} {% endif %}{% if error %}{{ fid }}-error{% endif %}"{% endif %}{% if error %} aria-invalid="true"{% endif %}{% if checked %} checked{% endif %}{% if disabled %} disabled{% endif %}{% if attrs %} {{ attrs | safe }}{% endif %}> {# SAFE: attrs is written in the calling template #}
+        <label for="{{ fid }}">{{ label }}</label>
+    </div>{% if hint %}
+    <p class="form-item__description" id="{{ fid }}-hint">{{ hint }}</p>{% endif %}{% if error %}
+    <p class="form-item__error" id="{{ fid }}-error"><span class="visually-hidden">{{ t(s="Error:") }}</span> {{ error | safe }}</p>{% endif %} {# SAFE: error is t_message output, already escaped #}
+</div>
+{% endmacro checkbox %}
+
+{#- A group of radios (type="radio") or checkboxes (type="checkbox") in a
+    fieldset with a legend. `options` as for select. The first choice's id is
+    `id` (or `name`), so an error links to the group; the rest are id-2, id-3…
+    A checkbox group submits name[] unless `names` is "own", where each
+    option's value is its own field name (posted as 1). -#}
+{% macro choices(name, legend, options, value="", values=false, type="radio", id="", hint="", required=false, optional=false, errors=false, translate_options=false, names="", disabled=false, wrapper="") %}
+{% set fid = id | default(value=name) %}{% if not fid %}{% set fid = name %}{% endif %}
+{% set_global error = "" %}{% if errors %}{% for e in errors %}{% if not error and e is object and e.field is defined and e.field == fid %}{% set_global error = t_message(m=e) %}{% endif %}{% endfor %}{% endif %}
+<fieldset class="fieldset fieldset--choices{% if error %} form-item--error{% endif %}{% if wrapper %} {{ wrapper }}{% endif %}"{% if hint or error %} aria-describedby="{% if hint %}{{ fid }}-hint{% endif %}{% if hint and error %} {% endif %}{% if error %}{{ fid }}-error{% endif %}"{% endif %}>
+    <legend class="fieldset__legend">{{ legend }}{% if required %} <span class="form-item__need">{{ t(s="(required)") }}</span>{% elif optional %} <span class="form-item__need">{{ t(s="(optional)") }}</span>{% endif %}</legend>{% if hint %}
+    <p class="form-item__description" id="{{ fid }}-hint">{{ hint }}</p>{% endif %}{% if error %}
+    <p class="form-item__error" id="{{ fid }}-error"><span class="visually-hidden">{{ t(s="Error:") }}</span> {{ error | safe }}</p>{% endif %} {# SAFE: error is t_message output, already escaped #}
+    <div class="choices">
+        {% for o in options %}{% if o is object %}{% set v = o.value %}{% set l = o.label %}{% else %}{% set v = o.0 %}{% set l = o.1 %}{% endif %}
+        {% if loop.first %}{% set oid = fid %}{% else %}{% set oid = fid ~ "-" ~ loop.index %}{% endif %}
+        <div class="{% if type == 'radio' %}form-radio-wrapper{% else %}form-checkbox-wrapper{% endif %}">
+            <input type="{{ type }}" id="{{ oid }}" name="{% if type == 'checkbox' and names == 'own' %}{{ v }}{% elif type == 'checkbox' %}{{ name }}[]{% else %}{{ name }}{% endif %}" value="{% if type == 'checkbox' and names == 'own' %}1{% else %}{{ v }}{% endif %}" class="form-{{ type }}"{% if type == "radio" and v ~ "" == value ~ "" %} checked{% elif type == "checkbox" and values and v in values %} checked{% endif %}{% if error %} aria-invalid="true"{% endif %}{% if disabled %} disabled{% endif %}>
+            <label for="{{ oid }}">{% if translate_options %}{{ t(s=l) }}{% else %}{{ l }}{% endif %}</label>
+        </div>
+        {% endfor %}
+    </div>
+</fieldset>
+{% endmacro choices %}
+
+{#- A fieldset around fields the template writes between start and end. -#}
+{% macro fieldset_start(legend, id="", hint="", wrapper="") %}
+<fieldset class="fieldset{% if wrapper %} {{ wrapper }}{% endif %}"{% if id %} id="{{ id }}"{% endif %}{% if hint and id %} aria-describedby="{{ id }}-hint"{% endif %}>
+    <legend class="fieldset__legend">{{ legend }}</legend>
+    <div class="fieldset__content">{% if hint %}
+    <p class="form-item__description"{% if id %} id="{{ id }}-hint"{% endif %}>{{ hint }}</p>{% endif %}
+{% endmacro fieldset_start %}
+
+{% macro fieldset_end() %}
+    </div>
+</fieldset>
+{% endmacro fieldset_end %}
+
+{#- Long or advanced settings, collapsed: native details, so the keyboard
+    and every screen reader can open it with no script. -#}
+{% macro details_start(summary, open=false, id="") %}
+<details class="form-details"{% if open %} open{% endif %}{% if id %} id="{{ id }}"{% endif %}>
+    <summary class="form-details__summary">{{ summary }}</summary>
+    <div class="form-details__content">
+{% endmacro details_start %}
+
+{% macro details_end() %}
+    </div>
+</details>
+{% endmacro details_end %}
 
 {#- Hidden CSRF token field. -#}
 {% macro csrf(csrf_token) %}
@@ -29,11 +178,18 @@
 {% endif %}
 {% endmacro hidden_fields %}
 
-{#- Form action buttons: the primary action first, then Cancel. The submit
-    label arrives translated. -#}
-{% macro actions(submit_label, cancel_url) %}
-<div class="form-actions">
-    <button type="submit" class="button button--primary">{{ submit_label }}</button>
-    <a href="{{ cancel_url }}" class="button button--secondary">{{ t(s="Cancel") }}</a>
+{#- What saving a settings form changes, where that is not obvious: one
+    short, factual sentence above Save. -#}
+{% macro effect(text) %}
+<p class="form__effect"><strong class="form__effect-label">{{ t(s="What this changes:") }}</strong> {{ text }}</p>
+{% endmacro effect %}
+
+{#- The action bar: the primary action first, then Cancel. The submit label
+    arrives translated. On a long form the bar stays in view (sticky) and the
+    page keeps the focused field clear of it (scroll-padding). -#}
+{% macro actions(submit_label, cancel_url="", name="", value="", sticky=false) %}
+<div class="form-actions{% if sticky %} form-actions--sticky{% endif %}">
+    <button type="submit" class="button button--primary"{% if name %} name="{{ name }}" value="{{ value }}"{% endif %}>{{ submit_label }}</button>
+    {% if cancel_url %}<a href="{{ cancel_url }}" class="button button--secondary">{{ t(s="Cancel") }}</a>{% endif %}
 </div>
 {% endmacro actions %}

@@ -1,4 +1,5 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/tabs.html" as tabs %}
 
 {#- One language's translation of an item, beside the original, with a form to
@@ -17,88 +18,54 @@
 <div class="admin-card">
     <p><a href="/admin/content/{{ item_id }}/translate">{{ t(s="All translations") }}</a></p>
 
-    <form method="post" action="/admin/content/{{ item_id }}/translate/{{ language }}">
+    {#- One column: each field is labelled with its name, and its original
+        text is the field's hint, so a translator hears or reads the source
+        on the field itself. -#}
+    <form method="post" action="/admin/content/{{ item_id }}/translate/{{ language }}" novalidate>
         <input type="hidden" name="_token" value="{{ csrf_token }}">
         <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
+        {% set errs = errors | default(value=[]) %}
+        {{ form::error_summary(errors=errs) }}
 
-        <div class="table-scroll" role="region" aria-labelledby="translate-caption" tabindex="0">
-            <table class="table translate-table">
-                <caption id="translate-caption">{{ t(s="The original and its {language} translation, field by field", language=language) }}</caption>
-                <thead>
-                    <tr>
-                        <th scope="col">{{ t(s="Field") }}</th>
-                        <th scope="col">{{ t(s="Original ({language})", language=item.language) }}</th>
-                        <th scope="col">{{ t(s="Translation ({language})", language=language) }}</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <tr>
-                        <th scope="row"><label for="translation-title">{{ t(s="Title") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label></th>
-                        <td class="translate-source">{{ item.title }}</td>
-                        <td>
-                            <input type="text"
-                                   id="translation-title"
-                                   name="title"
-                                   class="form-text"
-                                   required
-                                   value="{% if translation %}{{ translation.title }}{% endif %}">
-                        </td>
-                    </tr>
+        <p>{{ t(s="Each field shows its original, in {original}, under its name. Write it in {language}.", original=item.language, language=language) }}</p>
 
-                    {#- The translatable fields are the content type's own text
-                        fields, so the form is built from the type rather than from a
-                        fixed list. Only `Text` and `TextLong` appear: a boolean, a
-                        date, a file reference or a record reference is the same value
-                        in every language, and offering a second copy of one per
-                        language invites them to drift apart with nothing to
-                        reconcile them. A type that has gone away leaves the title,
-                        which is always translatable because it is a column. -#}
-                    {% if content_type %}
-                    {% for field in content_type.fields %}
-                    {% if field.field_type.Text or field.field_type == "TextLong" %}
-                    <tr>
-                        <th scope="row">
-                            <label for="translation-{{ field.field_name }}">{{ field.label }}</label>
-                        </th>
-                        <td class="translate-source">
-                            {{ item.fields[field.field_name] | default(value="") }}
-                        </td>
-                        <td>
-                            {%- set existing = "" -%}
-                            {%- if translation -%}
-                            {%- set existing = translation.fields[field.field_name] | default(value="") -%}
-                            {%- endif -%}
-                            {% if field.field_type == "TextLong" %}
-                            <textarea id="translation-{{ field.field_name }}"
-                                      name="{{ field.field_name }}"
-                                      class="form-textarea"
-                                      rows="6">{{ existing }}</textarea>
-                            {% else %}
-                            <input type="text"
-                                   id="translation-{{ field.field_name }}"
-                                   name="{{ field.field_name }}"
-                                   class="form-text"
-                                   value="{{ existing }}">
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endif %}
-                    {% endfor %}
-                    {% endif %}
-                </tbody>
-            </table>
-        </div>
+        {% if translation %}{% set title_value = translation.title %}{% else %}{% set title_value = "" %}{% endif %}
+        {{ form::field(name="title", id="translation-title", label=t(s="Title"), value=title_value, hint=t(s="Original: {text}", text=item.title), required=true, errors=errs) }}
 
-        <div class="form-actions">
-            <button type="submit" class="button button--primary">{{ t(s="Save translation") }}</button>
-        </div>
+        {#- The translatable fields are the content type's own text fields, so
+            the form is built from the type rather than from a fixed list. Only
+            `Text` and `TextLong` appear: a boolean, a date, a file reference
+            or a record reference is the same value in every language, and
+            offering a second copy of one per language invites them to drift
+            apart with nothing to reconcile them. A type that has gone away
+            leaves the title, which is always translatable because it is a
+            column. -#}
+        {% if content_type %}
+        {% for field in content_type.fields %}
+        {% if field.field_type.Text or field.field_type == "TextLong" %}
+        {%- set existing = "" -%}
+        {%- if translation -%}
+        {%- set existing = translation.fields[field.field_name] | default(value="") -%}
+        {%- endif -%}
+        {%- set original = item.fields[field.field_name] | default(value="") -%}
+        {%- if original %}{% set hint = t(s="Original: {text}", text=original) %}{% else %}{% set hint = t(s="The original is empty.") %}{% endif -%}
+        {% if field.field_type == "TextLong" %}
+        {{ form::textarea(name=field.field_name, id="translation-" ~ field.field_name, label=field.label, value=existing, hint=hint, rows=6, errors=errs) }}
+        {% else %}
+        {{ form::field(name=field.field_name, id="translation-" ~ field.field_name, label=field.label, value=existing, hint=hint, errors=errs) }}
+        {% endif %}
+        {% endif %}
+        {% endfor %}
+        {% endif %}
+
+        {{ form::actions(submit_label=t(s="Save translation")) }}
     </form>
 </div>
 
 {% if translation %}
 <div class="admin-card">
     <form method="post"
-          action="/admin/content/{{ item_id }}/translate/{{ language }}/delete">
+          action="/admin/content/{{ item_id }}/translate/{{ language }}/delete" novalidate>
         <input type="hidden" name="_token" value="{{ csrf_token }}">
         <button type="submit" class="button button--danger">{{ t(s="Remove this translation") }}</button>
     </form>

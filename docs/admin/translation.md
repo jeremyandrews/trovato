@@ -117,9 +117,42 @@ statically on template source, quicker while editing:
 node tests/admin-a11y/scripts/check-template-strings.mjs templates/admin/*.html
 ```
 
-## What marker mode cannot see
+## Words a form builder writes in Rust
 
-A word built in Rust and printed as a value (a form field's title from the
-form builder, an English status word) is data to marker mode, so the test
-cannot catch it. The form builder's labels are the known case; Part 2
-(forms) moves them onto `t`.
+A form built in Rust carries English words as data: a field's title and
+description, a button's text, a select's or radio's option labels. On an
+admin form (an `/admin` action) the admin form templates
+(`templates/admin/form/*.html`) pass each one through `t`, so they translate
+like any template word and can be added to a `.po` file by their English
+source.
+
+Marker mode sees them too. While it is on, the theme engine prefixes each
+such word with a third marker, `i18n::MARK_BUILT`. `t` drops that marker
+before it looks the word up, so a word printed without `t` keeps it, and the
+untranslated-string test reports it. That is also how
+`admin_i18n_test::form_builder_words_are_translated_on_admin_forms_and_caught_where_not`
+proves the check can see them: the front end's form templates print the same
+words untranslated, and the test finds every one.
+
+## Words scripts show
+
+An admin script must not build English sentences. The admin shell renders a
+table of the words the scripts use, translated:
+
+```html
+<template id="admin-text"><span data-s="Close">Fermer</span>…</template>
+```
+
+A script asks for a word by its English source, with `{name}` placeholders
+filled from an object:
+
+```js
+var tr = window.trovatoText;             // admin-shell.js
+tr('Close');                             // "Fermer"
+tr('Selected: {name}', { name: file });  // a whole sentence
+```
+
+A source missing from the table comes back as is, which is what a shared
+script (the compound field editor) shows on the front end, where there is no
+table. To add a word, add a `<span data-s>` to the table in
+`templates/page--admin.html` and use the same source in the script.

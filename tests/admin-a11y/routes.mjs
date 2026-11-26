@@ -121,9 +121,17 @@ async function concrete(page, pattern) {
     parts.forEach((p, i) => { if (p.startsWith('{')) last = i; });
     const listing = await concrete(page, parts.slice(0, last).join('/') || '/admin');
     if (listing) {
-      const links = await linksOn(page, listing);
       const full = toRegex(pattern);
+      let links = await linksOn(page, listing);
       found = links.find((h) => full.test(h)) || null;
+      // A listing that loaded but showed no such link is read once more:
+      // a page the site was still settling (a cache being refilled) has
+      // been seen to list none once.
+      if (!found && links.length) {
+        await page.waitForTimeout(1000);
+        links = await linksOn(page, listing);
+        found = links.find((h) => full.test(h)) || null;
+      }
       if (!found) {
         // A link to the instance itself, then the rest of the path.
         const head = toRegex(parts.slice(0, last + 1).join('/'));

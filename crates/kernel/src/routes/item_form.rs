@@ -706,7 +706,11 @@ fn add_another(
     widget.title = None;
     widget.required = false;
     let name = format!("{field}[{count}]");
-    let html = match state.theme().render_form_element_html(&name, &widget) {
+    let html = match state.theme().render_form_element_html(
+        &name,
+        &widget,
+        form_state.extra.contains_key(crate::form::ADMIN_FORM),
+    ) {
         Ok(html) => html,
         Err(e) => {
             tracing::error!(error = %e, field, "failed to render another value");

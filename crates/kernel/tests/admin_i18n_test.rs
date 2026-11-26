@@ -357,3 +357,59 @@ fn every_admin_page_passes_all_its_interface_text_through_the_translation_functi
         forget(app, "b199i18n").await;
     });
 }
+
+/// A word a form builder writes in Rust (a field's title, a button) is seen
+/// too: in marker mode the engine marks it, `t` drops the mark, and one
+/// printed without `t` is reported. The admin form templates translate every
+/// such word; the front end's form templates print them as they are, which
+/// is what proves the check can see them.
+#[test]
+fn form_builder_words_are_translated_on_admin_forms_and_caught_where_not() {
+    markers_on();
+    use trovato_kernel::form::{Form, FormElement};
+    let engine = trovato_kernel::theme::ThemeEngine::new(
+        &[common::project_root().join("templates")],
+        None,
+        std::sync::Arc::new(trovato_kernel::metrics::Metrics::new()),
+    )
+    .unwrap();
+    let form = |action: &str| {
+        Form::new("b199_marker")
+            .action(action)
+            .element(
+                "name",
+                FormElement::textfield()
+                    .title("Name")
+                    .description("What people call it.")
+                    .required(),
+            )
+            .element(
+                "size",
+                FormElement::radio(vec![("s".into(), "Small".into())]).title("Size"),
+            )
+            .element("save", FormElement::submit("Save"))
+    };
+    let admin = i18n::scope("en", || engine.render_form(&form("/admin/b199")).unwrap());
+    assert_eq!(untranslated(&admin), Vec::<String>::new(), "{admin}");
+
+    // A field that takes several values is a container titled with the
+    // field's own label: the site's data, printed as it is, not a word
+    // written in Rust.
+    let multi = Form::new("b199_multi").action("/admin/b199").element(
+        "field_tags",
+        FormElement::container()
+            .title("Tags")
+            .child("field_tags[0]", FormElement::textfield()),
+    );
+    let admin = i18n::scope("en", || engine.render_form(&multi).unwrap());
+    assert_eq!(untranslated(&admin), Vec::<String>::new(), "{admin}");
+
+    let front = i18n::scope("en", || engine.render_form(&form("/b199")).unwrap());
+    let left = untranslated(&front);
+    for word in ["Name", "What people call it.", "Size", "Small", "Save"] {
+        assert!(
+            left.iter().any(|l| l.contains(word)),
+            "{word} printed without t is not caught: {left:?}"
+        );
+    }
+}

@@ -6,30 +6,19 @@
 
 {% block content %}
 <div class="admin-card">
-    <form method="post" action="/admin/content/comments/{{ comment.id }}/edit">
+    <form method="post" action="/admin/content/comments/{{ comment.id }}/edit" novalidate>
         {{ form::csrf(csrf_token=csrf_token) }}
+        {% set errs = errors | default(value=[]) %}
+        {{ form::error_summary(errors=errs) }}
 
-        <div class="form-item">
-            <label for="subject" class="form-item__label">{{ t(s="Subject (optional)") }}</label>
-            <input type="text" id="subject" name="subject" class="form-text" maxlength="255" value="{{ comment.subject | default(value='') }}">
-        </div>
+        {{ form::field(name="subject", label=t(s="Subject"), optional=true, value=comment.subject | default(value=""), errors=errs, attrs='maxlength="255"') }}
 
-        <div class="form-item">
-            <label for="body" class="form-item__label">{{ t(s="Comment Body") }} <span class="form-item__required">{{ t(s="(required)") }}</span></label>
-            <textarea id="body" name="body" rows="6" class="form-textarea" required>{{ comment.body }}</textarea>
-        </div>
+        {{ form::textarea(name="body", label=t(s="Comment Body"), value=comment.body, rows=6, required=true, errors=errs) }}
 
-        <div class="form-item">
-            <label for="status" class="form-item__label">{{ t(s="Status") }}</label>
-            <select id="status" name="status" class="form-select">
-                {# Options come from CommentStatus (see status_options), so this
-                   form offers every status the model stores and labels each one
-                   the way the moderation list does. #}
-                {% for option in status_options %}
-                <option value="{{ option.value }}" {% if comment.status == option.value | int %}selected{% endif %}>{{ t(s=option.label) }}</option>
-                {% endfor %}
-            </select>
-        </div>
+        {#- Options come from CommentStatus (see status_options), so this form
+            offers every status the model stores and labels each one the way
+            the moderation list does. -#}
+        {{ form::select(name="status", label=t(s="Status"), options=status_options, value=comment.status, translate_options=true, errors=errs) }}
 
         <dl class="comment-meta">
             <dt>{{ t(s="Author") }}</dt>

@@ -11,6 +11,8 @@ use crate::form::csrf::generate_csrf_token;
 use crate::gather::{
     GatherQuery, GatherService, MAX_ITEMS_PER_PAGE, QueryDefinition, QueryDisplay,
 };
+use crate::i18n::UiMessage;
+use crate::routes::admin_form::FieldError;
 use crate::state::AppState;
 
 use super::helpers::{
@@ -21,6 +23,25 @@ use super::helpers::{
 // =============================================================================
 // What the builder can show
 // =============================================================================
+
+/// The base tables the builder offers: table name and English label,
+/// translated by the select macro.
+const BASE_TABLE_OPTIONS: &[(&str, &str)] = &[
+    ("item", "Content"),
+    ("users", "Users"),
+    ("url_alias", "URL aliases"),
+    ("role", "Roles"),
+    ("gather_query", "Gather queries"),
+];
+
+/// The display formats the builder offers. "List of items", not "List": the
+/// word alone is also a verb, and a translator could not tell which.
+const DISPLAY_FORMAT_OPTIONS: &[(&str, &str)] = &[
+    ("table", "Table"),
+    ("unformatted", "Unformatted"),
+    ("list", "List of items"),
+    ("grid", "Grid"),
+];
 
 /// Why the builder will not save a definition it cannot show.
 const BUILDER_CANNOT_SHOW: &str = "This gather uses filter groups or a summary \
@@ -108,6 +129,8 @@ async fn create_form(State(state): State<AppState>, session: Session) -> Respons
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &false);
+    context.insert("base_table_options", BASE_TABLE_OPTIONS);
+    context.insert("display_format_options", DISPLAY_FORMAT_OPTIONS);
     context.insert("definition", &default_definition);
     context.insert("definition_json", &empty_definition);
     context.insert("display_json", &empty_display);
@@ -155,22 +178,23 @@ async fn create_submit(
     let label = form.label.trim().to_string();
 
     if query_id.is_empty() {
-        errors.push("Query ID is required.".to_string());
+        errors.push(FieldError::on("query_id", "Query ID is required."));
     } else if !is_valid_query_id(&query_id) {
-        errors.push(
-            "Query ID must start with a letter and contain only lowercase letters, numbers, hyphens, underscores, dots, and colons."
-                .to_string(),
-        );
+        errors.push(FieldError::on(
+            "query_id",
+            "Query ID must start with a letter and contain only lowercase letters, numbers, hyphens, underscores, dots, and colons.",
+        ));
     }
 
     if label.is_empty() {
-        errors.push("Label is required.".to_string());
+        errors.push(FieldError::on("label", "Label is required."));
     }
 
     // Check if query ID already exists
     if state.gather().get_query(&query_id).is_some() {
-        errors.push(format!(
-            "A gather query with ID '{query_id}' already exists."
+        errors.push(FieldError::on(
+            "query_id",
+            UiMessage::new("A gather query with ID '{id}' already exists.").arg("id", &query_id),
         ));
     }
 
@@ -178,7 +202,9 @@ async fn create_submit(
     let definition: QueryDefinition = match serde_json::from_str(&form.definition_json) {
         Ok(d) => d,
         Err(e) => {
-            errors.push(format!("Invalid definition JSON: {e}"));
+            errors.push(FieldError::form(
+                UiMessage::new("Invalid definition JSON: {error}").arg("error", e.to_string()),
+            ));
             QueryDefinition::default()
         }
     };
@@ -187,16 +213,18 @@ async fn create_submit(
     let display: QueryDisplay = match serde_json::from_str(&form.display_json) {
         Ok(d) => d,
         Err(e) => {
-            errors.push(format!("Invalid display JSON: {e}"));
+            errors.push(FieldError::form(
+                UiMessage::new("Invalid display JSON: {error}").arg("error", e.to_string()),
+            ));
             QueryDisplay::default()
         }
     };
 
     // Validate definition
     let definition_errors = GatherService::validate_definition(&definition);
-    errors.extend(definition_errors);
+    errors.extend(definition_errors.into_iter().map(FieldError::form));
     if builder_cannot_show(&definition) {
-        errors.push(BUILDER_CANNOT_SHOW.to_string());
+        errors.push(FieldError::form(BUILDER_CANNOT_SHOW));
     }
 
     // Cap items_per_page
@@ -217,6 +245,8 @@ async fn create_submit(
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &false);
+        context.insert("base_table_options", BASE_TABLE_OPTIONS);
+        context.insert("display_format_options", DISPLAY_FORMAT_OPTIONS);
         context.insert("errors", &errors);
         context.insert("definition", &definition);
         context.insert("definition_json", &form.definition_json);
@@ -293,6 +323,8 @@ async fn edit_form(
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &true);
+    context.insert("base_table_options", BASE_TABLE_OPTIONS);
+    context.insert("display_format_options", DISPLAY_FORMAT_OPTIONS);
     context.insert(
         "builder_cannot_show",
         &builder_cannot_show(&query.definition),
@@ -348,14 +380,16 @@ async fn save_submit(
 
     let label = form.label.trim().to_string();
     if label.is_empty() {
-        errors.push("Label is required.".to_string());
+        errors.push(FieldError::on("label", "Label is required."));
     }
 
     // Parse definition JSON
     let definition: QueryDefinition = match serde_json::from_str(&form.definition_json) {
         Ok(d) => d,
         Err(e) => {
-            errors.push(format!("Invalid definition JSON: {e}"));
+            errors.push(FieldError::form(
+                UiMessage::new("Invalid definition JSON: {error}").arg("error", e.to_string()),
+            ));
             QueryDefinition::default()
         }
     };
@@ -367,18 +401,20 @@ async fn save_submit(
     let display: QueryDisplay = match display_over_stored(&existing.display, &form.display_json) {
         Ok(d) => d,
         Err(e) => {
-            errors.push(format!("Invalid display JSON: {e}"));
+            errors.push(FieldError::form(
+                UiMessage::new("Invalid display JSON: {error}").arg("error", e.to_string()),
+            ));
             QueryDisplay::default()
         }
     };
 
     // Validate definition
     let definition_errors = GatherService::validate_definition(&definition);
-    errors.extend(definition_errors);
+    errors.extend(definition_errors.into_iter().map(FieldError::form));
     // The stored definition counts too: the builder dropped what it could not
     // show before posting, so the submitted one alone would look fine.
     if builder_cannot_show(&existing.definition) || builder_cannot_show(&definition) {
-        errors.push(BUILDER_CANNOT_SHOW.to_string());
+        errors.push(FieldError::form(BUILDER_CANNOT_SHOW));
     }
 
     // Cap items_per_page
@@ -399,6 +435,8 @@ async fn save_submit(
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &true);
+        context.insert("base_table_options", BASE_TABLE_OPTIONS);
+        context.insert("display_format_options", DISPLAY_FORMAT_OPTIONS);
         context.insert(
             "builder_cannot_show",
             &(builder_cannot_show(&existing.definition) || builder_cannot_show(&definition)),

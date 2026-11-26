@@ -8,10 +8,12 @@ use serde::Deserialize;
 use tower_sessions::Session;
 
 use crate::form::csrf::generate_csrf_token;
+use crate::i18n::UiMessage;
 use crate::models::role::KERNEL_PERMISSIONS;
 use crate::models::role::well_known::{ANONYMOUS_ROLE_ID, AUTHENTICATED_ROLE_ID};
 use crate::models::user::ANONYMOUS_USER_ID;
 use crate::models::{CreateUser, UpdateUser, User};
+use crate::routes::admin_form::FieldError;
 use crate::state::AppState;
 
 use super::helpers::{
@@ -273,21 +275,21 @@ pub(crate) async fn new_account_problems(
     name: &str,
     mail: &str,
     password: Option<&str>,
-) -> Vec<String> {
+) -> Vec<FieldError> {
     let mut errors = Vec::new();
 
     if name.trim().is_empty() {
-        errors.push("Username is required.".to_string());
+        errors.push(FieldError::on("name", "Username is required."));
     }
 
     if mail.trim().is_empty() {
-        errors.push("Email is required.".to_string());
+        errors.push(FieldError::on("mail", "Email is required."));
     }
 
     if let Some(password) = password
         && let Err(msg) = validate_password(password)
     {
-        errors.push(msg.to_string());
+        errors.push(FieldError::on("password", msg));
     }
 
     // Check if username already exists. An empty value is already refused
@@ -295,14 +297,20 @@ pub(crate) async fn new_account_problems(
     if !name.trim().is_empty()
         && let Ok(Some(_)) = state.users().find_by_name(name).await
     {
-        errors.push(format!("Username '{name}' is already taken."));
+        errors.push(FieldError::on(
+            "name",
+            UiMessage::new("Username '{name}' is already taken.").arg("name", name),
+        ));
     }
 
     // Check if email already exists
     if !mail.trim().is_empty()
         && let Ok(Some(_)) = state.users().find_by_mail(mail).await
     {
-        errors.push(format!("Email '{mail}' is already in use."));
+        errors.push(FieldError::on(
+            "mail",
+            UiMessage::new("Email '{mail}' is already in use.").arg("mail", mail),
+        ));
     }
 
     errors
@@ -565,25 +573,31 @@ async fn edit_user_submit(
     let mut errors = Vec::new();
 
     if form.name.trim().is_empty() {
-        errors.push("Username is required.".to_string());
+        errors.push(FieldError::on("name", "Username is required."));
     }
 
     if form.mail.trim().is_empty() {
-        errors.push("Email is required.".to_string());
+        errors.push(FieldError::on("mail", "Email is required."));
     }
 
     // Check if new username is taken by someone else
     if form.name != existing_user.name
         && let Ok(Some(_)) = state.users().find_by_name(&form.name).await
     {
-        errors.push(format!("Username '{}' is already taken.", form.name));
+        errors.push(FieldError::on(
+            "name",
+            UiMessage::new("Username '{name}' is already taken.").arg("name", &form.name),
+        ));
     }
 
     // Check if new email is taken by someone else
     if form.mail != existing_user.mail
         && let Ok(Some(_)) = state.users().find_by_mail(&form.mail).await
     {
-        errors.push(format!("Email '{}' is already in use.", form.mail));
+        errors.push(FieldError::on(
+            "mail",
+            UiMessage::new("Email '{mail}' is already in use.").arg("mail", &form.mail),
+        ));
     }
 
     // Validate password if provided
@@ -591,7 +605,7 @@ async fn edit_user_submit(
         && !password.is_empty()
         && let Err(msg) = validate_password(password)
     {
-        errors.push(msg.to_string());
+        errors.push(FieldError::on("password", msg));
     }
 
     if !errors.is_empty() {
@@ -930,12 +944,15 @@ async fn add_role_submit(
     let mut errors = Vec::new();
 
     if form.name.trim().is_empty() {
-        errors.push("Role name is required.".to_string());
+        errors.push(FieldError::on("name", "Role name is required."));
     }
 
     // Check if role name already exists
     if let Ok(Some(_)) = state.roles().find_by_name(&form.name).await {
-        errors.push(format!("A role named '{}' already exists.", form.name));
+        errors.push(FieldError::on(
+            "name",
+            UiMessage::new("A role named '{name}' already exists.").arg("name", &form.name),
+        ));
     }
 
     if !errors.is_empty() {
@@ -1052,14 +1069,17 @@ async fn edit_role_submit(
     let mut errors = Vec::new();
 
     if form.name.trim().is_empty() {
-        errors.push("Role name is required.".to_string());
+        errors.push(FieldError::on("name", "Role name is required."));
     }
 
     // Check if new name is taken by someone else
     if form.name != existing_role.name
         && let Ok(Some(_)) = state.roles().find_by_name(&form.name).await
     {
-        errors.push(format!("A role named '{}' already exists.", form.name));
+        errors.push(FieldError::on(
+            "name",
+            UiMessage::new("A role named '{name}' already exists.").arg("name", &form.name),
+        ));
     }
 
     if !errors.is_empty() {

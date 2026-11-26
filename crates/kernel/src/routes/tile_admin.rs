@@ -45,6 +45,54 @@ pub struct TileFormData {
     pub audience: Option<String>,
 }
 
+/// The choices the tile form offers, by context name: value and English
+/// label, translated by the select macro.
+const TILE_CHOICES: &[(&str, &[(&str, &str)])] = &[
+    (
+        "region_options",
+        &[
+            ("sidebar", "Sidebar"),
+            ("header", "Header"),
+            ("footer", "Footer"),
+            ("content_top", "Content top"),
+            ("content_bottom", "Content bottom"),
+        ],
+    ),
+    (
+        "tile_type_options",
+        &[
+            ("custom_html", "Custom HTML"),
+            ("menu", "Menu"),
+            ("gather_query", "Gather query"),
+            ("chat", "Chat"),
+            ("language_switcher", "Language switcher"),
+        ],
+    ),
+    (
+        "format_options",
+        &[
+            ("filtered_html", "Filtered HTML"),
+            ("full_html", "Full HTML"),
+            ("plain_text", "Plain text"),
+        ],
+    ),
+    (
+        "audience_options",
+        &[
+            ("", "Everyone"),
+            ("anonymous", "Anonymous visitors only"),
+            ("authenticated", "Signed-in users only"),
+        ],
+    ),
+];
+
+/// Put the tile form's choices in `context` (see [`TILE_CHOICES`]).
+pub(crate) fn insert_choices(context: &mut tera::Context) {
+    for (key, options) in TILE_CHOICES {
+        context.insert(*key, options);
+    }
+}
+
 /// The `audience` values the tile form's select may post, besides "" for
 /// "Everyone".
 const AUDIENCE_VALUES: [&str; 2] = ["anonymous", "authenticated"];
@@ -154,6 +202,7 @@ async fn add_tile_form(State(state): State<AppState>, session: Session) -> Respo
     context.insert("action", "/admin/structure/tiles/add");
     context.insert("csrf_token", &csrf_token);
     context.insert("editing", &false);
+    insert_choices(&mut context);
     context.insert(
         "values",
         &serde_json::json!({ "items": GATHER_TILE_DEFAULT_ITEMS, "audience": "" }),
@@ -243,6 +292,7 @@ async fn edit_tile_form(
     context.insert("action", &format!("/admin/structure/tiles/{tile_id}/edit"));
     context.insert("csrf_token", &csrf_token);
     context.insert("editing", &true);
+    insert_choices(&mut context);
     context.insert("tile_id", &tile_id.to_string());
     context.insert(
         "values",

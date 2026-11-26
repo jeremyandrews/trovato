@@ -1,4 +1,5 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {% block page_title %}{{ t(s="Site log") }}{% endblock page_title %}
@@ -7,24 +8,8 @@
 <div class="admin-card">
     <form class="filter-form" method="get" action="/admin/reports/log" aria-label="{{ t(s='Filter the log') }}">
         <div class="filter-row">
-            <div class="filter-item">
-                <label for="level">{{ t(s="Level") }}</label>
-                <select id="level" name="level">
-                    <option value="">{{ t(s="- Any -") }}</option>
-                    {% for level in levels %}
-                    <option value="{{ level }}" {% if level_filter == level %}selected{% endif %}>{{ t(s=level) }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div class="filter-item">
-                <label for="type">{{ t(s="Type") }}</label>
-                <select id="type" name="type">
-                    <option value="">{{ t(s="- Any -") }}</option>
-                    {% for log_type in types %}
-                    <option value="{{ log_type }}" {% if type_filter == log_type %}selected{% endif %}>{{ log_type }}</option>
-                    {% endfor %}
-                </select>
-            </div>
+            {{ form::select(name="level", label=t(s="Level"), options=level_options, value=level_filter, empty=t(s="- Any -"), translate_options=true, wrapper="filter-item") }}
+            {{ form::select(name="type", label=t(s="Type"), options=type_options, value=type_filter, empty=t(s="- Any -"), wrapper="filter-item") }}
             <div class="filter-item">
                 <button type="submit" class="button button--secondary">{{ t(s="Filter") }}</button>
             </div>

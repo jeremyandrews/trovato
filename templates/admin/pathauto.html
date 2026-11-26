@@ -15,7 +15,7 @@
 {% for ct in content_types %}
 <form id="regen-{{ ct.machine_name }}"
       method="post"
-      action="/admin/config/pathauto/regenerate">
+      action="/admin/config/pathauto/regenerate" novalidate>
     <input type="hidden" name="_token" value="{{ csrf_token }}">
     <input type="hidden" name="item_type" value="{{ ct.machine_name }}">
 </form>
@@ -25,7 +25,7 @@
 <p><strong>{{ t(s="Save patterns before regenerating.") }}</strong> {{ t(s="Regenerate aliases uses the last saved pattern; unsaved edits in the text field are not used.") }}</p>
 
 {% if content_types %}
-<form method="post" action="/admin/config/pathauto">
+<form method="post" action="/admin/config/pathauto" novalidate>
     <input type="hidden" name="_token" value="{{ csrf_token }}">
 
     <div class="table-scroll" role="region" aria-labelledby="patterns-caption" tabindex="0">

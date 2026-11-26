@@ -86,6 +86,8 @@ async fn cron_report(State(state): State<AppState>, session: Session) -> Respons
         }
     };
 
+    // The builder's words ("Run cron now") in the viewer's admin language.
+    let text = super::admin_nav::AdminText::for_page(&state, &viewer, "/admin/").await;
     let mut form_state = FormState::new("cron_run_now_form", "");
     form_state.user_id = Some(user.id);
     let form_html = match state
@@ -97,7 +99,7 @@ async fn cron_report(State(state): State<AppState>, session: Session) -> Respons
             form_state,
         )
         .await
-        .and_then(|form| state.theme().render_form(&form))
+        .and_then(|form| text.scope(|| state.theme().render_form(&form)))
     {
         Ok(html) => html,
         Err(e) => {
@@ -248,6 +250,12 @@ async fn log_report(
     context.insert("types", &types);
     context.insert("level_filter", &level.unwrap_or_default());
     context.insert("type_filter", &log_type.unwrap_or_default());
+    // [value, label] pairs for the form macros: a level is a fixed word the
+    // template translates, a type is data.
+    let level_options: Vec<(&str, &str)> = LEVELS.iter().map(|l| (*l, *l)).collect();
+    context.insert("level_options", &level_options);
+    let type_options: Vec<(&str, &str)> = types.iter().map(|t| (t.as_str(), t.as_str())).collect();
+    context.insert("type_options", &type_options);
     context.insert("filter_qs", &filter_qs);
     context.insert("path", "/admin/reports/log");
     render_admin_template(&state, &viewer, "admin/reports/log.html", context).await

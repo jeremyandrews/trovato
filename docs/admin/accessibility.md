@@ -76,8 +76,27 @@ the page's one level-1 heading and its intro sentence.
   label with "(required)" spoken as part of the name ("Machine name
   (required), edit text"). The hint is read as the field's description. The
   checkbox is "Default stage for new content", with its explanation as the
-  description. "Create stage" is a button and "Cancel" a link. A failed save
-  puts the errors in an alert, "There is a problem", read at once.
+  description. "Create stage" is a button and "Cancel" a link.
+- **Form with errors** (Add role, saved empty; the form pattern is
+  [design.md section 8](design.md#8-form-pattern)): the page title starts
+  "Error:". Focus is on an alert, "There is a problem", which is read at once
+  and lists each problem as a link ("Role name is required."). Following a
+  link moves focus to the field, which is announced as invalid, with the
+  problem as its description ("Error: Role name is required."), after its
+  hint.
+- **Form built in Rust** (Add content, Add stage): read exactly like a
+  hand-written form. Every field comes from the same macros, so a listener
+  cannot tell the two kinds apart. Radio and checkbox groups are groups named
+  by their legend. Collapsed settings are a "disclosure triangle" button
+  (`summary`), opened with Enter or Space.
+- **Settings form** (Site settings): the fieldsets are groups named by their
+  legends. Just before Save, a paragraph starts "What this changes:".
+- **Media picker** (a file field's "Browse media"): a modal dialog named
+  "Choose media". Its controls are a labelled Type combobox, a "Search files"
+  search field and a "Choose files to upload" file chooser. Each file is a
+  toggle button named by its file name, pressed when chosen. After each
+  search the number of files shown is announced as a status. Escape closes
+  the dialog and focus returns to "Browse media".
 - **Your preferences**: a group "Colour theme" with three radio buttons,
   System, Light and Dark, and the hint as their description. Next is the
   "Administration language" combobox, where each language is named in its own
@@ -106,15 +125,18 @@ is the next stop after the banner. Escape closes it and returns focus to
 the button. Every focusable element shows a 3px ring 2px outside it, in
 the focus colour, and in system colours under forced colours.
 
-## Not done in Part 1
+On a form, the fields come in reading order and Save follows them. The
+"Cancel" link comes after Save. On a form taller than the window, the Save
+bar stays at the bottom of the screen, and the page scrolls a focused field
+clear of it. Leaving a form with unsaved changes asks first (the browser's
+own question), and only then.
+
+## Not done yet
 
 - **No live VoiceOver session.** No recorded VoiceOver or Guidepup session:
   driving VoiceOver needs the macOS accessibility permissions granted
   interactively, which an unattended run cannot do. The trees above are what
   VoiceOver reads, but its exact wording and verbosity were not heard.
-- **Form builder labels.** The form builder's field labels (the Rust-built
-  forms: stages, menus, text formats, site settings) are English data, not
-  yet through `t`; Part 2.
 - **Narrow content tables.** At 320 px the content table keeps to the screen
   by wrapping its titles word by word. The page does not scroll sideways, but
   the table is cramped; Part 3 (lists) decides how tables reflow.

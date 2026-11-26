@@ -1,4 +1,5 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {#- The content list. The shell renders `flash` (set by the create, update,
@@ -14,23 +15,8 @@
 <div class="admin-card">
     <form class="filter-form" method="get" action="/admin/content">
         <div class="filter-row">
-            <div class="filter-item">
-                <label for="type">{{ t(s="Type") }}</label>
-                <select id="type" name="type">
-                    <option value="">{{ t(s="- Any -") }}</option>
-                    {% for ct in content_types %}
-                    <option value="{{ ct.machine_name }}" {% if type_filter == ct.machine_name %}selected{% endif %}>{{ ct.label }}</option>
-                    {% endfor %}
-                </select>
-            </div>
-            <div class="filter-item">
-                <label for="status">{{ t(s="Status") }}</label>
-                <select id="status" name="status">
-                    <option value="">{{ t(s="- Any -") }}</option>
-                    <option value="1" {% if status_filter == "1" %}selected{% endif %}>{{ t(s="Published") }}</option>
-                    <option value="0" {% if status_filter == "0" %}selected{% endif %}>{{ t(s="Unpublished") }}</option>
-                </select>
-            </div>
+            {{ form::select(name="type", label=t(s="Type"), options=type_options, value=type_filter, empty=t(s="- Any -"), wrapper="filter-item") }}
+            {{ form::select(name="status", label=t(s="Status"), options=status_options, value=status_filter, empty=t(s="- Any -"), translate_options=true, wrapper="filter-item") }}
             <div class="filter-item">
                 <button type="submit" class="button button--secondary">{{ t(s="Filter") }}</button>
             </div>
@@ -40,31 +26,14 @@
 
 {% if items %}
 <div class="admin-card">
-    <form method="post" action="/admin/content/bulk" id="bulk-form">
+    <form method="post" action="/admin/content/bulk" id="bulk-form" novalidate>
         <input type="hidden" name="_token" value="{{ csrf_token }}">
         <div class="bulk-actions">
-            <label class="visually-hidden" for="bulk-action">{{ t(s="Bulk action") }}</label>
-            <select name="action" id="bulk-action" class="bulk-action-select">
-                <option value="">{{ t(s="- Bulk action -") }}</option>
-                <option value="publish">{{ t(s="Publish selected") }}</option>
-                <option value="unpublish">{{ t(s="Unpublish selected") }}</option>
-                <option value="promote">{{ t(s="Promote selected to front page") }}</option>
-                <option value="demote">{{ t(s="Remove selected from front page") }}</option>
-                <option value="sticky">{{ t(s="Make selected sticky") }}</option>
-                <option value="unsticky">{{ t(s="Make selected not sticky") }}</option>
-                <option value="delete">{{ t(s="Delete selected") }}</option>
-                {% if stages %}<option value="move_to_stage">{{ t(s="Move selected to stage") }}</option>{% endif %}
-            </select>
+            {{ form::select(name="action", id="bulk-action", label=t(s="Bulk action"), options=bulk_options, empty=t(s="- Bulk action -"), translate_options=true, wrapper="bulk-actions__field") }}
             {% if stages %}
-            {# The target of "Move selected to stage"; the other actions ignore it.
-               Each item's move is decided by the editorial workflow. #}
-            <label class="visually-hidden" for="bulk-stage">{{ t(s="Target stage") }}</label>
-            <select name="stage" id="bulk-stage" class="bulk-action-select">
-                <option value="">{{ t(s="- Target stage -") }}</option>
-                {% for stage in stages %}
-                <option value="{{ stage.id }}">{{ stage.label }}</option>
-                {% endfor %}
-            </select>
+            {#- The target of "Move selected to stage"; the other actions ignore
+                it. Each item's move is decided by the editorial workflow. -#}
+            {{ form::select(name="stage", id="bulk-stage", label=t(s="Target stage"), options=stage_options, empty=t(s="- Target stage -"), wrapper="bulk-actions__field") }}
             {% endif %}
             <button type="submit" class="button button--secondary button--small">{{ t(s="Apply") }}</button>
         </div>
@@ -115,7 +84,7 @@
        attribute. A form nested in #bulk-form would close it early and add a
        second _token to every bulk submission. #}
     {% for item in items %}
-    <form id="delete-{{ item.id }}" method="post" action="/admin/content/{{ item.id }}/delete" hidden>
+    <form id="delete-{{ item.id }}" method="post" action="/admin/content/{{ item.id }}/delete" novalidate hidden>
         <input type="hidden" name="_token" value="{{ csrf_token }}">
     </form>
     {% endfor %}
