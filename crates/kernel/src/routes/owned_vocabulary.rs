@@ -56,7 +56,7 @@ pub fn router(state: &AppState) -> Router<AppState> {
         let o = Arc::clone(&owner);
         router = router.route(
             &format!("{base}/{{vocabulary}}"),
-            get(move |state, session, path| list(o.clone(), state, session, path)),
+            get(move |state, session, path, query| list(o.clone(), state, session, path, query)),
         );
         let (o, p) = (Arc::clone(&owner), Arc::clone(&owner));
         router = router.route(
@@ -209,9 +209,12 @@ async fn list(
     State(state): State<AppState>,
     session: Session,
     Path(params): Params,
+    axum::extract::Query(query): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
     match admit_vocabulary(&owner, &state, &session, &params).await {
-        Ok((category, urls)) => admin_taxonomy::term_list(&state, &session, &category, &urls).await,
+        Ok((category, urls)) => {
+            admin_taxonomy::term_list(&state, &session, &category, &urls, &query).await
+        }
         Err(refusal) => refusal,
     }
 }

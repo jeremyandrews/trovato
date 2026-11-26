@@ -15,6 +15,7 @@ use crate::i18n::UiMessage;
 use crate::routes::admin_form::FieldError;
 use crate::state::AppState;
 
+use super::admin_list::{ListQuery, page_of, sort_rows};
 use super::helpers::{
     CsrfOnlyForm, render_admin_template, render_not_found, render_server_error, require_csrf,
     require_permission,
@@ -81,19 +82,55 @@ struct GatherFormData {
 // Handlers
 // =============================================================================
 
+/// The gather listing's sortable columns. The list is sorted in memory, so
+/// the second value is only the key's name.
+const GATHER_SORTS: &[(&str, &str)] = &[
+    ("label", "label"),
+    ("id", "id"),
+    ("table", "table"),
+    ("plugin", "plugin"),
+];
+
 /// List all gather queries.
 ///
 /// GET /admin/gather
-async fn list_queries(State(state): State<AppState>, session: Session) -> Response {
+async fn list_queries(
+    State(state): State<AppState>,
+    session: Session,
+    axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
     if let Err(redirect) = require_permission(&state, &session, "administer site").await {
         return redirect;
     }
 
-    let queries = state.gather().list_queries();
+    // A small list held in memory: filtered, sorted and paged here.
+    let query = ListQuery::from_params(&params);
+    let sort = query.sort(GATHER_SORTS, ("label", false));
+    let mut queries: Vec<GatherQuery> = state
+        .gather()
+        .list_queries()
+        .into_iter()
+        .filter(|g| query.matches(&[&g.label, &g.query_id, &g.definition.base_table, &g.plugin]))
+        .collect();
+    // Ties (and the unsorted map's order) settle on the id.
+    queries.sort_by(|a, b| a.query_id.cmp(&b.query_id));
+    sort_rows(
+        &mut queries,
+        &sort,
+        &[
+            ("label", |g: &GatherQuery| g.label.clone()),
+            ("id", |g: &GatherQuery| g.query_id.clone()),
+            ("table", |g: &GatherQuery| g.definition.base_table.clone()),
+            ("plugin", |g: &GatherQuery| g.plugin.clone()),
+        ],
+    );
+    let total = i64::try_from(queries.len()).unwrap_or(i64::MAX);
+    let queries = page_of(&queries, &query);
 
     let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
+    context.insert("list", &query.view(total, queries.len(), Some(&sort)));
     context.insert("queries", &queries);
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/gather");

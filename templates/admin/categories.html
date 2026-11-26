@@ -1,21 +1,35 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
+
+{#- The category listing. `list` is its filter, sort and page
+    (routes::admin_list); the handler filters and sorts in memory, and with
+    no sort keeps the stored order (weight, then name). -#}
 
 {% block page_title %}{{ t(s="Categories") }}{% endblock page_title %}
 {% block page_actions %}{{ list::add_link(url="/admin/structure/categories/add", label=t(s="Add category")) }}{% endblock page_actions %}
 
 {% block content %}
+<div class="admin-card">
+    {{ list::filter_start(action="/admin/structure/categories", label=t(s="Filter categories")) }}
+        {{ form::field(name="q", type="search", label=t(s="Name or machine name contains"), value=list.q, width="20", wrapper="filter-item") }}
+    {{ list::filter_end(list=list, action="/admin/structure/categories") }}
+</div>
+{{ list::sort_form(list=list, action="/admin/structure/categories") }}
+
 {% if categories %}
+<div class="admin-card">
+{{ list::count(list=list) }}
 <div class="table-scroll" role="region" aria-labelledby="categories-caption" tabindex="0">
-    <table class="table">
+    <table class="table table--stack">
         <caption id="categories-caption">{{ t(s="Categories") }}</caption>
         <thead>
             <tr>
-                <th scope="col">{{ t(s="Name") }}</th>
-                <th scope="col">{{ t(s="Machine name") }}</th>
+                {{ list::sort_th(label=t(s="Name"), key="name", list=list) }}
+                {{ list::sort_th(label=t(s="Machine name"), key="id", list=list) }}
                 <th scope="col">{{ t(s="Hierarchy") }}</th>
-                <th scope="col">{{ t(s="Tags") }}</th>
-                <th scope="col">{{ t(s="Operations") }}</th>
+                {{ list::sort_th(label=t(s="Tags"), key="tags", list=list) }}
+                <th scope="col" class="operations">{{ t(s="Operations") }}</th>
             </tr>
         </thead>
         <tbody>
@@ -42,6 +56,10 @@
         </tbody>
     </table>
 </div>
+{{ list::pager(list=list, action="/admin/structure/categories", label=t(s="Pages of categories")) }}
+</div>
+{% elif list.filtered %}
+{{ list::empty(message=t(s="No category matches this filter."), add_url="/admin/structure/categories", add_label=t(s="Clear filter")) }}
 {% else %}
 {{ list::empty(message=t(s="No categories found."), add_url="/admin/structure/categories/add", add_label=t(s="Add category")) }}
 {% endif %}

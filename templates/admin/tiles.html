@@ -1,13 +1,29 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
+
+{#- The tile listing, by region in render order. `list` is the filter and
+    page (routes::admin_list); a region's order is its tiles' weights, so the
+    listing has no sort. -#}
 
 {% block page_title %}{{ t(s="Tiles") }}{% endblock page_title %}
 {% block page_actions %}{{ list::add_link(url="/admin/structure/tiles/add", label=t(s="Add tile")) }}{% endblock page_actions %}
 
 {% block content %}
+<div class="admin-card">
+    {{ list::filter_start(action="/admin/structure/tiles", label=t(s="Filter tiles")) }}
+        {{ form::field(name="q", type="search", label=t(s="Label, machine name, type or region contains"), value=list.q, width="20", wrapper="filter-item") }}
+    {{ list::filter_end(list=list, action="/admin/structure/tiles") }}
+</div>
+
 {% if tiles | length == 0 %}
-{{ list::empty(message=t(s="No tiles have been created yet."), add_url="/admin/structure/tiles/add", add_label=t(s="Add tile")) }}
+{% if list.filtered %}
+{{ list::empty(message=t(s="No tile matches this filter."), add_url="/admin/structure/tiles", add_label=t(s="Clear filter")) }}
 {% else %}
+{{ list::empty(message=t(s="No tiles have been created yet."), add_url="/admin/structure/tiles/add", add_label=t(s="Add tile")) }}
+{% endif %}
+{% else %}
+{{ list::count(list=list) }}
 {% set current_region = "" %}
 {% for tile in tiles %}
 {% if tile.region != current_region %}
@@ -16,7 +32,7 @@
 <section class="admin-card" aria-labelledby="region-{{ tile.region }}-heading">
     <h2 id="region-{{ tile.region }}-heading">{{ t(s="Region: {region}", region=tile.region) }}</h2>
     <div class="table-scroll" role="region" aria-labelledby="region-{{ tile.region }}-caption" tabindex="0">
-    <table class="table">
+    <table class="table table--stack">
         <caption id="region-{{ tile.region }}-caption">{{ t(s="Tiles in the {region} region", region=tile.region) }}</caption>
         <thead>
             <tr>
@@ -25,7 +41,7 @@
                 <th scope="col">{{ t(s="Type") }}</th>
                 <th scope="col">{{ t(s="Weight") }}</th>
                 <th scope="col">{{ t(s="Status") }}</th>
-                <th scope="col">{{ t(s="Actions") }}</th>
+                <th scope="col" class="operations">{{ t(s="Actions") }}</th>
             </tr>
         </thead>
         <tbody>
@@ -48,5 +64,6 @@
 </section>
 {% endif %}
 {% endfor %}
+{{ list::pager(list=list, action="/admin/structure/tiles", label=t(s="Pages of tiles")) }}
 {% endif %}
 {% endblock content %}
