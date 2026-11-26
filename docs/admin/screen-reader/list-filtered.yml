@@ -196,8 +196,8 @@
     - combobox "Type":
       - option "- Any -" [selected]
       - option "Basic Page"
-      - option "Blog Post"
       - option "Media"
+      - option "Blog Post"
     - text: Status
     - combobox "Status":
       - option "- Any -"

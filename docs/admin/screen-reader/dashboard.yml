@@ -319,9 +319,6 @@
       - listitem:
         - link "Add Blog Post":
           - /url: /item/add/blog
-      - listitem:
-        - link "Add Media":
-          - /url: /item/add/media
   - region "You":
     - heading "You" [level=3]
     - paragraph: Signed in as gen_admin.

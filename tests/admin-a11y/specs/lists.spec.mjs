@@ -67,7 +67,7 @@ test.describe('with JavaScript off', () => {
     await Promise.all([page.waitForURL('**/admin/confirm'), row.locator('button.link-button--danger').click()]);
     await expect(page.locator('h1')).toContainText(title);
     await expect(page.locator('.confirm__question')).toContainText(title);
-    await Promise.all([page.waitForURL('**/admin/content**'), page.locator('form .button--secondary').click()]);
+    await Promise.all([page.waitForURL('**/admin/content**'), page.locator('main form .button--secondary').click()]);
     await expect(page.locator('tbody th[scope=row]', { hasText: title }).first()).toBeVisible();
   });
 
@@ -80,8 +80,8 @@ test.describe('with JavaScript off', () => {
     await page.selectOption('#bulk-action', 'delete');
     await Promise.all([page.waitForURL('**/admin/confirm'), page.locator('#bulk-form .bulk-actions [type=submit]').click()]);
     await expect(page.locator('.confirm__question')).toContainText('2');
-    await expect(page.locator('form .button--danger')).toContainText('2');
-    await Promise.all([page.waitForURL('**/admin/**'), page.locator('form .button--secondary').click()]);
+    await expect(page.locator('main form .button--danger')).toContainText('2');
+    await Promise.all([page.waitForURL('**/admin/**'), page.locator('main form .button--secondary').click()]);
   });
 });
 
@@ -103,5 +103,5 @@ test('the confirmation page has no WCAG 2.2 A or AA violations', async ({ page }
   await Promise.all([page.waitForURL('**/admin/confirm'), page.locator('tbody tr').first().locator('button.link-button--danger').click()]);
   const axe = await new AxeBuilder({ page }).withTags(TAGS).analyze();
   expect(axe.violations.map((v) => `${v.id}: ${v.nodes.map((n) => n.target.join(' ')).join(', ')}`)).toEqual([]);
-  await Promise.all([page.waitForURL('**/admin/content**'), page.locator('form .button--secondary').click()]);
+  await Promise.all([page.waitForURL('**/admin/content**'), page.locator('main form .button--secondary').click()]);
 });
