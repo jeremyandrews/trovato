@@ -366,10 +366,10 @@ fn markdown_events<'a>(source: &'a str) -> impl Iterator<Item = pulldown_cmark::
 ///
 /// The only place in the kernel Markdown becomes HTML. The `markdown` Tera
 /// filter and the page builder's rich text fields both come through here, so
-/// one set of [`MARKDOWN_OPTIONS`] decides what Markdown means and one
-/// sanitizer decides what it may produce: raw HTML in the source is cleaned, a
-/// code block keeps the class it needs to be highlighted, a table cell keeps
-/// its alignment.
+/// one set of options decides what Markdown means (CommonMark plus tables,
+/// footnotes, strikethrough and task lists) and one sanitizer decides what it
+/// may produce: raw HTML in the source is cleaned, a code block keeps the class
+/// it needs to be highlighted, a table cell keeps its alignment.
 pub fn render_markdown(text: &str, min_heading: usize) -> String {
     let processed = if min_heading > 1 {
         crate::content::page_builder::rewrite_markdown_headings(text, min_heading)
