@@ -392,6 +392,18 @@ fn form_builder_words_are_translated_on_admin_forms_and_caught_where_not() {
     let admin = i18n::scope("en", || engine.render_form(&form("/admin/b199")).unwrap());
     assert_eq!(untranslated(&admin), Vec::<String>::new(), "{admin}");
 
+    // A field that takes several values is a container titled with the
+    // field's own label: the site's data, printed as it is, not a word
+    // written in Rust.
+    let multi = Form::new("b199_multi").action("/admin/b199").element(
+        "field_tags",
+        FormElement::container()
+            .title("Tags")
+            .child("field_tags[0]", FormElement::textfield()),
+    );
+    let admin = i18n::scope("en", || engine.render_form(&multi).unwrap());
+    assert_eq!(untranslated(&admin), Vec::<String>::new(), "{admin}");
+
     let front = i18n::scope("en", || engine.render_form(&form("/b199")).unwrap());
     let left = untranslated(&front);
     for word in ["Name", "What people call it.", "Size", "Small", "Save"] {
