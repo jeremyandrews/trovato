@@ -79,6 +79,322 @@ sql = "select count(*) from item where ?=?"
 count = 3
 sql = "select value from site_config where key = $? and tenant_id = $?"
 
+["admin_content_landing.admin.cold"]
+queries = 9
+cache_gets = 2
+cache_misses = 2
+cache_sets = 0
+plugin_calls = 0
+host_calls = 0
+gathers = 0
+renders = 1
+
+["admin_content_landing.admin.cold".statements."select:admin_preference:f8d9bdb0"]
+count = 1
+sql = "select prefs from admin_preference where user_id = $?"
+
+["admin_content_landing.admin.cold".statements."select:comment:8332c0d6"]
+count = 1
+sql = "select count(*) from comment where status = $?"
+
+["admin_content_landing.admin.cold".statements."select:item:0b891dbc"]
+count = 1
+sql = "select count(*) from item where status = ?"
+
+["admin_content_landing.admin.cold".statements."select:role_permissions:2e8fbc1c"]
+count = 1
+sql = "select distinct rp.permission from role_permissions rp join user_roles ur on rp.role_id = ur.role_id where ur.user_id = $?"
+
+["admin_content_landing.admin.cold".statements."select:role_permissions:fd553152"]
+count = 1
+sql = "select permission from role_permissions where role_id = $?"
+
+["admin_content_landing.admin.cold".statements."select:roles:e4ee5500"]
+count = 1
+sql = "select r.* from roles r join user_roles ur on r.id = ur.role_id where ur.user_id = $? order by r.name"
+
+["admin_content_landing.admin.cold".statements."select:site_config:897f0424"]
+count = 2
+sql = "select value from site_config where key = $? and tenant_id = $?"
+
+["admin_content_landing.admin.cold".statements."select:users:37216782"]
+count = 1
+sql = "select * from users where id = $?"
+
+["admin_content_landing.admin.warm"]
+queries = 5
+cache_gets = 2
+cache_misses = 0
+cache_sets = 0
+plugin_calls = 0
+host_calls = 0
+gathers = 0
+renders = 1
+
+["admin_content_landing.admin.warm".statements."select:admin_preference:f8d9bdb0"]
+count = 1
+sql = "select prefs from admin_preference where user_id = $?"
+
+["admin_content_landing.admin.warm".statements."select:comment:8332c0d6"]
+count = 1
+sql = "select count(*) from comment where status = $?"
+
+["admin_content_landing.admin.warm".statements."select:item:0b891dbc"]
+count = 1
+sql = "select count(*) from item where status = ?"
+
+["admin_content_landing.admin.warm".statements."select:site_config:897f0424"]
+count = 2
+sql = "select value from site_config where key = $? and tenant_id = $?"
+
+["admin_dashboard.admin.cold"]
+queries = 18
+cache_gets = 3
+cache_misses = 2
+cache_sets = 0
+plugin_calls = 0
+host_calls = 0
+gathers = 0
+renders = 1
+
+["admin_dashboard.admin.cold".statements."select:admin_preference:f8d9bdb0"]
+count = 1
+sql = "select prefs from admin_preference where user_id = $?"
+
+["admin_dashboard.admin.cold".statements."select:comment:8332c0d6"]
+count = 1
+sql = "select count(*) from comment where status = $?"
+
+["admin_dashboard.admin.cold".statements."select:item:0b891dbc"]
+count = 1
+sql = "select count(*) from item where status = ?"
+
+["admin_dashboard.admin.cold".statements."select:item:85166919"]
+count = 1
+sql = "select id from item where author_id = $? order by changed desc, id desc limit $?"
+
+["admin_dashboard.admin.cold".statements."select:item:eab80e49"]
+count = 1
+sql = "select count(*), count(*) filter (where status <> ?) from item where author_id = $?"
+
+["admin_dashboard.admin.cold".statements."select:plugin_queue:63b99373"]
+count = 1
+sql = "select count(*) from plugin_queue where status = ?"
+
+["admin_dashboard.admin.cold".statements."select:role_permissions:2e8fbc1c"]
+count = 1
+sql = "select distinct rp.permission from role_permissions rp join user_roles ur on rp.role_id = ur.role_id where ur.user_id = $?"
+
+["admin_dashboard.admin.cold".statements."select:role_permissions:fd553152"]
+count = 1
+sql = "select permission from role_permissions where role_id = $?"
+
+["admin_dashboard.admin.cold".statements."select:roles:e4ee5500"]
+count = 1
+sql = "select r.* from roles r join user_roles ur on r.id = ur.role_id where ur.user_id = $? order by r.name"
+
+["admin_dashboard.admin.cold".statements."select:select:2c43a162"]
+count = 1
+sql = "select id, item_type, title, author_id, changed, state, ahead from ( select i.id, i.type as item_type, r.title, r.author_id, r.created as changed, coalesce(r.moderation_state, case when r.status = ? then ? else ? end) as state, (r.id is distinct from i.current_revision_id) as ahead from item i join item_type t on t.type = i.type and t.settings -> ? = ?::jsonb join lateral ( select id, title, author_id, created, status, moderation_state from item_revision where item_id = i.id order by created desc, id desc limit ? ) r on true ) latest where state <> ? and ($?::text is null or state = $?) order by changed desc, id desc limit $?"
+
+["admin_dashboard.admin.cold".statements."select:site_config:897f0424"]
+count = 3
+sql = "select value from site_config where key = $? and tenant_id = $?"
+
+["admin_dashboard.admin.cold".statements."select:system_log:809b84cf"]
+count = 1
+sql = "select count(*) from system_log where level = ? and created >= $?"
+
+["admin_dashboard.admin.cold".statements."select:system_log:e27b7b70"]
+count = 1
+sql = "select created, log_type, message from system_log where level = ? and created >= $? order by id desc limit $?"
+
+["admin_dashboard.admin.cold".statements."select:users:37216782"]
+count = 2
+sql = "select * from users where id = $?"
+
+["admin_dashboard.admin.cold".statements."select:users:5a42aa32"]
+count = 1
+sql = "select count(*) from users where status = ?"
+
+["admin_dashboard.admin.warm"]
+queries = 14
+cache_gets = 3
+cache_misses = 0
+cache_sets = 0
+plugin_calls = 0
+host_calls = 0
+gathers = 0
+renders = 1
+
+["admin_dashboard.admin.warm".statements."select:admin_preference:f8d9bdb0"]
+count = 1
+sql = "select prefs from admin_preference where user_id = $?"
+
+["admin_dashboard.admin.warm".statements."select:comment:8332c0d6"]
+count = 1
+sql = "select count(*) from comment where status = $?"
+
+["admin_dashboard.admin.warm".statements."select:item:0b891dbc"]
+count = 1
+sql = "select count(*) from item where status = ?"
+
+["admin_dashboard.admin.warm".statements."select:item:85166919"]
+count = 1
+sql = "select id from item where author_id = $? order by changed desc, id desc limit $?"
+
+["admin_dashboard.admin.warm".statements."select:item:eab80e49"]
+count = 1
+sql = "select count(*), count(*) filter (where status <> ?) from item where author_id = $?"
+
+["admin_dashboard.admin.warm".statements."select:plugin_queue:63b99373"]
+count = 1
+sql = "select count(*) from plugin_queue where status = ?"
+
+["admin_dashboard.admin.warm".statements."select:select:2c43a162"]
+count = 1
+sql = "select id, item_type, title, author_id, changed, state, ahead from ( select i.id, i.type as item_type, r.title, r.author_id, r.created as changed, coalesce(r.moderation_state, case when r.status = ? then ? else ? end) as state, (r.id is distinct from i.current_revision_id) as ahead from item i join item_type t on t.type = i.type and t.settings -> ? = ?::jsonb join lateral ( select id, title, author_id, created, status, moderation_state from item_revision where item_id = i.id order by created desc, id desc limit ? ) r on true ) latest where state <> ? and ($?::text is null or state = $?) order by changed desc, id desc limit $?"
+
+["admin_dashboard.admin.warm".statements."select:site_config:897f0424"]
+count = 3
+sql = "select value from site_config where key = $? and tenant_id = $?"
+
+["admin_dashboard.admin.warm".statements."select:system_log:809b84cf"]
+count = 1
+sql = "select count(*) from system_log where level = ? and created >= $?"
+
+["admin_dashboard.admin.warm".statements."select:system_log:e27b7b70"]
+count = 1
+sql = "select created, log_type, message from system_log where level = ? and created >= $? order by id desc limit $?"
+
+["admin_dashboard.admin.warm".statements."select:users:37216782"]
+count = 1
+sql = "select * from users where id = $?"
+
+["admin_dashboard.admin.warm".statements."select:users:5a42aa32"]
+count = 1
+sql = "select count(*) from users where status = ?"
+
+["admin_people_landing.admin.cold"]
+queries = 8
+cache_gets = 2
+cache_misses = 2
+cache_sets = 0
+plugin_calls = 0
+host_calls = 0
+gathers = 0
+renders = 1
+
+["admin_people_landing.admin.cold".statements."select:admin_preference:f8d9bdb0"]
+count = 1
+sql = "select prefs from admin_preference where user_id = $?"
+
+["admin_people_landing.admin.cold".statements."select:role_permissions:2e8fbc1c"]
+count = 1
+sql = "select distinct rp.permission from role_permissions rp join user_roles ur on rp.role_id = ur.role_id where ur.user_id = $?"
+
+["admin_people_landing.admin.cold".statements."select:role_permissions:fd553152"]
+count = 1
+sql = "select permission from role_permissions where role_id = $?"
+
+["admin_people_landing.admin.cold".statements."select:roles:e4ee5500"]
+count = 1
+sql = "select r.* from roles r join user_roles ur on r.id = ur.role_id where ur.user_id = $? order by r.name"
+
+["admin_people_landing.admin.cold".statements."select:site_config:897f0424"]
+count = 2
+sql = "select value from site_config where key = $? and tenant_id = $?"
+
+["admin_people_landing.admin.cold".statements."select:users:37216782"]
+count = 1
+sql = "select * from users where id = $?"
+
+["admin_people_landing.admin.cold".statements."select:users:5a42aa32"]
+count = 1
+sql = "select count(*) from users where status = ?"
+
+["admin_people_landing.admin.warm"]
+queries = 4
+cache_gets = 2
+cache_misses = 0
+cache_sets = 0
+plugin_calls = 0
+host_calls = 0
+gathers = 0
+renders = 1
+
+["admin_people_landing.admin.warm".statements."select:admin_preference:f8d9bdb0"]
+count = 1
+sql = "select prefs from admin_preference where user_id = $?"
+
+["admin_people_landing.admin.warm".statements."select:site_config:897f0424"]
+count = 2
+sql = "select value from site_config where key = $? and tenant_id = $?"
+
+["admin_people_landing.admin.warm".statements."select:users:5a42aa32"]
+count = 1
+sql = "select count(*) from users where status = ?"
+
+["admin_reports_landing.admin.cold"]
+queries = 8
+cache_gets = 2
+cache_misses = 2
+cache_sets = 0
+plugin_calls = 0
+host_calls = 0
+gathers = 0
+renders = 1
+
+["admin_reports_landing.admin.cold".statements."select:admin_preference:f8d9bdb0"]
+count = 1
+sql = "select prefs from admin_preference where user_id = $?"
+
+["admin_reports_landing.admin.cold".statements."select:role_permissions:2e8fbc1c"]
+count = 1
+sql = "select distinct rp.permission from role_permissions rp join user_roles ur on rp.role_id = ur.role_id where ur.user_id = $?"
+
+["admin_reports_landing.admin.cold".statements."select:role_permissions:fd553152"]
+count = 1
+sql = "select permission from role_permissions where role_id = $?"
+
+["admin_reports_landing.admin.cold".statements."select:roles:e4ee5500"]
+count = 1
+sql = "select r.* from roles r join user_roles ur on r.id = ur.role_id where ur.user_id = $? order by r.name"
+
+["admin_reports_landing.admin.cold".statements."select:site_config:897f0424"]
+count = 2
+sql = "select value from site_config where key = $? and tenant_id = $?"
+
+["admin_reports_landing.admin.cold".statements."select:system_log:809b84cf"]
+count = 1
+sql = "select count(*) from system_log where level = ? and created >= $?"
+
+["admin_reports_landing.admin.cold".statements."select:users:37216782"]
+count = 1
+sql = "select * from users where id = $?"
+
+["admin_reports_landing.admin.warm"]
+queries = 4
+cache_gets = 2
+cache_misses = 0
+cache_sets = 0
+plugin_calls = 0
+host_calls = 0
+gathers = 0
+renders = 1
+
+["admin_reports_landing.admin.warm".statements."select:admin_preference:f8d9bdb0"]
+count = 1
+sql = "select prefs from admin_preference where user_id = $?"
+
+["admin_reports_landing.admin.warm".statements."select:site_config:897f0424"]
+count = 2
+sql = "select value from site_config where key = $? and tenant_id = $?"
+
+["admin_reports_landing.admin.warm".statements."select:system_log:809b84cf"]
+count = 1
+sql = "select count(*) from system_log where level = ? and created >= $?"
+
 ["category.anonymous.cold"]
 queries = 19
 cache_gets = 19

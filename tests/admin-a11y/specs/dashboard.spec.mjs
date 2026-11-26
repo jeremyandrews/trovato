@@ -20,8 +20,10 @@ test('each dashboard panel is a region named by its heading, with its state in w
     await expect(heading).toHaveJSProperty('tagName', 'H2');
     await expect(heading).not.toBeEmpty();
     await expect(page.getByRole('region', { name: (await heading.innerText()).trim() })).toHaveCount(1);
-    // The state is a sentence of text, not a picture or a colour.
-    await expect(panel.locator('.dashboard-panel__summary')).not.toBeEmpty();
+    // The state is a sentence of text, not a picture or a colour: the
+    // panel's summary, or its status line where the summary is one (B245).
+    await expect(panel.locator(':scope > .dashboard-panel__summary, :scope > .status-line')).toHaveCount(1);
+    await expect(panel.locator(':scope > .dashboard-panel__summary, :scope > .status-line')).not.toBeEmpty();
     await expect(panel.locator('svg, canvas, img')).toHaveCount(0);
   }
 });

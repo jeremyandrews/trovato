@@ -271,7 +271,18 @@ fn dashboard_card_titles(html: &str) -> Vec<String> {
             let open = card.find("<h3")?;
             let from = open + card[open..].find('>')? + 1;
             let to = card[from..].find("</h3>")? + from;
-            Some(card[from..to].trim().to_string())
+            // The heading's text: its icon chip and link tags removed.
+            let mut text = String::new();
+            let mut in_tag = false;
+            for c in card[from..to].chars() {
+                match c {
+                    '<' => in_tag = true,
+                    '>' => in_tag = false,
+                    _ if !in_tag => text.push(c),
+                    _ => {}
+                }
+            }
+            Some(text.trim().to_string())
         })
         .collect()
 }

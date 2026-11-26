@@ -178,11 +178,23 @@ fn the_dashboard_panels_say_what_needs_the_viewer() {
             errors.contains(&format!("Dashboard test failure {tag}")),
             "{errors}"
         );
-        assert!(errors.contains("in the last 24 hours."));
+        assert!(
+            errors.contains("error in the last 24 hours</p>")
+                || errors.contains("errors in the last 24 hours</p>"),
+            "the status line's sentence: {errors}"
+        );
         assert!(errors.contains(r#"href="/admin/reports/log?level=error""#));
         let waiting = panel(&html, "waiting").unwrap();
         assert!(waiting.contains("to review"), "{waiting}");
-        assert!(waiting.contains("waiting for approval"));
+        assert!(
+            waiting.contains("comment waiting for moderation</p>")
+                || waiting.contains("comments waiting for moderation</p>"),
+            "{waiting}"
+        );
+        assert!(waiting.contains(&format!(
+            r#"href="/admin/content/comments?status={}""#,
+            trovato_kernel::models::comment::CommentStatus::Pending.as_i16()
+        )));
         let tasks = panel(&html, "tasks").unwrap();
         assert!(tasks.contains(r#"href="/admin/reports/cron""#), "{tasks}");
     });
@@ -201,8 +213,12 @@ fn a_dashboard_panel_is_shown_only_to_whoever_may_open_its_page() {
         );
         let waiting = panel(&html, "waiting").unwrap();
         assert!(
-            !waiting.contains("waiting for approval"),
+            !waiting.contains("waiting for moderation"),
             "no comment moderation"
+        );
+        assert!(
+            !waiting.contains("/admin/content/comments"),
+            "and no link to the comments"
         );
         assert!(panel(&html, "tasks").is_none());
         assert!(panel(&html, "errors").is_none());
@@ -368,5 +384,359 @@ fn the_accessibility_report_lists_images_without_a_text_alternative() {
         let editor = holding(app, &["access administration pages", "edit any content"]).await;
         let (status, _) = get(app, &editor, "/admin/reports/accessibility").await;
         assert_ne!(status, StatusCode::OK);
+    });
+}
+
+// --- status lines, compact cards and main actions (B245) ---
+
+/// Seed one of every state a `Status` counts, each deleted when the test
+/// ends: an unpublished item by `author` with a comment waiting for
+/// moderation, a blocked account, and an error logged now.
+async fn seed_every_status(app: &TestApp, author: Uuid) {
+    common::ensure_plugin_tables(app, "trovato_comments");
+    app.ensure_plugin_enabled("trovato_comments").await;
+    let tag = tag();
+    let item_id = item(app, &format!("Unpublished {tag}"), author).await;
+    let now = chrono::Utc::now().timestamp();
+    // Deleted with its item.
+    sqlx::query(
+        "INSERT INTO comment (id, item_id, author_id, body, status, created, changed) \
+         VALUES ($1, $2, $3, $4, $5, $6, $6)",
+    )
+    .bind(Uuid::now_v7())
+    .bind(item_id)
+    .bind(author)
+    .bind(format!("Waiting {tag}"))
+    .bind(trovato_kernel::models::comment::CommentStatus::Pending.as_i16())
+    .bind(now)
+    .execute(&app.db)
+    .await
+    .unwrap();
+    let (blocked, _) = common::user_holding(app, "dbblocked", &["access content"]).await;
+    forget(app, blocked);
+    sqlx::query("UPDATE users SET status = 0 WHERE id = $1")
+        .bind(blocked)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    trovato_kernel::system_log::insert(
+        &app.db,
+        &[trovato_kernel::system_log::LogRecord {
+            created: now,
+            level: "error",
+            log_type: "dashboard_test".to_string(),
+            message: format!("Status test failure {tag}"),
+            context: Default::default(),
+        }],
+    )
+    .await
+    .unwrap();
+    let pool = app.db.clone();
+    let like = format!("%{tag}%");
+    defer_cleanup(move || async move {
+        let _ = sqlx::query("DELETE FROM system_log WHERE message LIKE $1")
+            .bind(like)
+            .execute(&pool)
+            .await;
+    });
+}
+
+/// The dashboard cards: each `<section>` in the card grid, by its heading's
+/// text, tags removed.
+fn cards(html: &str) -> Vec<(String, &str)> {
+    let start = html
+        .find(r#"<div class="dashboard-grid">"#)
+        .expect("the card grid");
+    let grid = &html[start..];
+    grid.match_indices(r#"<section class="admin-card dashboard-card""#)
+        .map(|(at, _)| {
+            let section = &grid[at..at + grid[at..].find("</section>").unwrap()];
+            let open = section.find("<h3").unwrap();
+            let from = open + section[open..].find('>').unwrap() + 1;
+            let to = from + section[from..].find("</h3>").unwrap();
+            (text(&section[from..to]), section)
+        })
+        .collect()
+}
+
+/// `fragment` with its tags removed and its whitespace collapsed.
+fn text(fragment: &str) -> String {
+    let mut out = String::new();
+    let mut in_tag = false;
+    for c in fragment.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// The text of the filled button leading to `href`, if the page has one.
+fn button_text(html: &str, href: &str) -> Option<String> {
+    let open = format!(r#"<a href="{href}" class="button button--primary">"#);
+    let from = html.find(&open)? + open.len();
+    let to = from + html[from..].find("</a>")?;
+    Some(text(&html[from..to]))
+}
+
+/// The registry's label for the main action at `href`.
+fn primary_label(href: &str) -> &'static str {
+    trovato_kernel::routes::admin_nav::LINKS
+        .iter()
+        .find(|l| l.href == href && l.primary)
+        .map(|l| l.label)
+        .unwrap_or_else(|| panic!("{href} is a main action in the registry"))
+}
+
+/// With one of every state seeded, the Dashboard says each count once: the
+/// panels own comments and errors, the cards unpublished items and blocked
+/// accounts, and cron is the Scheduled tasks panel's alone. A group card
+/// lists none of its pages; it leads to its landing page and offers its main
+/// action, as the registry names it.
+#[test]
+fn the_dashboard_says_each_count_once_and_its_cards_lead_to_landing_pages() {
+    run_test(async {
+        let app = shared_app().await;
+        let (cookies, id) = admin(app).await;
+        seed_every_status(app, id).await;
+        let (status, html) = get(app, &cookies, "/admin").await;
+        assert_eq!(status, StatusCode::OK);
+
+        for sentence in [
+            " unpublished item",
+            " waiting for moderation",
+            " blocked account",
+            " in the last 24 hours",
+        ] {
+            assert_eq!(
+                html.matches(sentence).count(),
+                1,
+                "{sentence:?} once on the Dashboard: {html}"
+            );
+        }
+        assert!(!html.contains("Last run"), "cron is the tasks panel's");
+        assert!(!html.contains("No run in the last 24 hours"));
+
+        // The waiting comments are one element, the badge, inside its link.
+        let badge = format!(
+            r#"<a href="/admin/content/comments?status={}"><p class="status-line status-line--waiting">"#,
+            trovato_kernel::models::comment::CommentStatus::Pending.as_i16()
+        );
+        assert!(html.contains(&badge), "{html}");
+        let errors = panel(&html, "errors").unwrap();
+        assert!(
+            errors.contains(r#"<p class="status-line status-line--waiting">"#),
+            "{errors}"
+        );
+
+        let cards = cards(&html);
+        let titles: Vec<&str> = cards.iter().map(|(t, _)| t.as_str()).collect();
+        for group in trovato_kernel::routes::admin_nav::GROUPS {
+            let (_, card) = cards
+                .iter()
+                .find(|(t, _)| t == group.title)
+                .unwrap_or_else(|| panic!("a {} card: {titles:?}", group.title));
+            assert!(
+                card.contains(&format!(
+                    r#"<a href="{}">{}</a></h3>"#,
+                    group.group.landing_href(),
+                    group.title
+                )),
+                "{card}"
+            );
+            assert!(!card.contains("<ul"), "a group card lists no pages: {card}");
+            assert!(card.contains(r#"<span class="icon-chip" aria-hidden="true"><svg"#));
+        }
+        let card = |title: &str| cards.iter().find(|(t, _)| t == title).unwrap().1;
+        assert!(card("Content").contains(" unpublished item"));
+        assert!(card("People").contains(" blocked account"));
+        assert!(!card("Reports").contains("status-line"));
+        for (title, href) in [
+            ("Content", "/admin/content/add"),
+            ("Structure", "/admin/structure/types/add"),
+            ("People", "/admin/people/add"),
+        ] {
+            assert_eq!(
+                button_text(card(title), href).as_deref(),
+                Some(primary_label(href)),
+                "{title}"
+            );
+        }
+        for title in ["Appearance", "Extend", "Configuration", "Reports"] {
+            assert!(!card(title).contains("button--primary"), "{title}");
+        }
+    });
+}
+
+/// A landing page is a grid of tiles, each heading linking to its page and
+/// showing its state; waiting work is the line itself, styled as a badge;
+/// the main action is the button beside the heading, as the registry names
+/// it, and not a tile.
+#[test]
+fn landing_pages_show_state_and_their_main_action() {
+    run_test(async {
+        let app = shared_app().await;
+        let (cookies, id) = admin(app).await;
+        seed_every_status(app, id).await;
+
+        let (status, html) = get(app, &cookies, "/admin/content/overview").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains(r#"<ul class="dashboard-grid landing-tiles" role="list">"#));
+        assert!(
+            html.contains(r#"<a href="/admin/content">Content</a></h2>"#),
+            "only the heading text is the link: {html}"
+        );
+        assert_eq!(html.matches(" unpublished item").count(), 1);
+        assert_eq!(html.matches(" waiting for moderation").count(), 1);
+        let at = html.find(" waiting for moderation").unwrap();
+        let open = html[..at].rfind('<').unwrap();
+        assert!(
+            html[open..].starts_with(r#"<p class="status-line status-line--waiting">"#),
+            "the badge is the line itself: {}",
+            &html[open..at]
+        );
+        let actions = &html[html.find("page-header__actions").unwrap()..];
+        let actions = &actions[..actions.find("</div>").unwrap()];
+        assert_eq!(
+            button_text(actions, "/admin/content/add").as_deref(),
+            Some(primary_label("/admin/content/add"))
+        );
+        assert!(
+            !html.contains(r#"<a href="/admin/content/add">"#),
+            "the main action is not a tile"
+        );
+
+        for (group, href, state) in [
+            ("people", "/admin/people/add", " blocked account"),
+            ("structure", "/admin/structure/types/add", ""),
+        ] {
+            let (status, html) = get(app, &cookies, &format!("/admin/{group}/overview")).await;
+            assert_eq!(status, StatusCode::OK);
+            let actions = &html[html.find("page-header__actions").unwrap()..];
+            assert_eq!(
+                button_text(actions, href).as_deref(),
+                Some(primary_label(href)),
+                "{group}"
+            );
+            if !state.is_empty() {
+                assert_eq!(html.matches(state).count(), 1, "{group}");
+            }
+        }
+
+        let (_, html) = get(app, &cookies, "/admin/reports/overview").await;
+        assert_eq!(
+            html.matches("error in the last 24 hours").count()
+                + html.matches("errors in the last 24 hours").count(),
+            1
+        );
+        assert!(
+            html.contains(r#"<p class="status-line status-line--waiting">"#),
+            "errors wait"
+        );
+        assert!(
+            html.contains(r#"<p class="status-line">Last run "#)
+                || html.contains("No run in the last 24 hours"),
+            "the cron line: {html}"
+        );
+        assert!(
+            !html.contains("button--primary"),
+            "Reports has no main action"
+        );
+    });
+}
+
+/// A count never reveals what the viewer may not open: without `edit any
+/// content` the content list filters row by row, so there is no Content
+/// count; without the Comments page's permission, no comment count.
+#[test]
+fn a_status_line_is_shown_only_to_whoever_may_open_all_it_counts() {
+    run_test(async {
+        let app = shared_app().await;
+        let (_, id) = admin(app).await;
+        seed_every_status(app, id).await;
+
+        let author = holding(
+            app,
+            &["access administration pages", "access content overview"],
+        )
+        .await;
+        let (status, html) = get(app, &author, "/admin/content/overview").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains(r#"<a href="/admin/content">"#), "{html}");
+        assert!(!html.contains("unpublished item"), "{html}");
+        assert!(!html.contains("waiting for moderation"));
+        let (_, html) = get(app, &author, "/admin").await;
+        assert!(!html.contains("unpublished item"));
+
+        let editor = holding(app, &["access administration pages", "edit any content"]).await;
+        let (_, html) = get(app, &editor, "/admin/content/overview").await;
+        assert_eq!(html.matches(" unpublished item").count(), 1, "{html}");
+        assert!(!html.contains("waiting for moderation"));
+        let (_, html) = get(app, &editor, "/admin").await;
+        assert_eq!(html.matches(" unpublished item").count(), 1);
+        assert!(!html.contains("blocked account"));
+    });
+}
+
+/// The Recent errors panel counts and lists its errors with one cutoff: an
+/// error exactly at the cutoff is both counted and listed, and a second later
+/// is neither, so the summary never counts an error the rows leave out.
+#[test]
+fn the_recent_errors_count_and_rows_share_one_cutoff() {
+    run_test(async {
+        let app = shared_app().await;
+        let tag = tag();
+        // Far in the future, so no other error falls in the windows below.
+        let at = 4_000_000_000_i64;
+        trovato_kernel::system_log::insert(
+            &app.db,
+            &[trovato_kernel::system_log::LogRecord {
+                created: at,
+                level: "error",
+                log_type: "dashboard_test".to_string(),
+                message: format!("Cutoff test failure {tag}"),
+                context: Default::default(),
+            }],
+        )
+        .await
+        .unwrap();
+        let pool = app.db.clone();
+        let like = format!("%{tag}%");
+        defer_cleanup(move || async move {
+            let _ = sqlx::query("DELETE FROM system_log WHERE message LIKE $1")
+                .bind(like)
+                .execute(&pool)
+                .await;
+        });
+        let admin = UserContext::administrator(Uuid::nil(), vec![]);
+        let day = 24 * 60 * 60;
+
+        let panel =
+            trovato_kernel::routes::admin_dashboard::errors_at(&app.state, &admin, at + day)
+                .await
+                .expect("the panel");
+        let listed = panel
+            .rows
+            .iter()
+            .filter(|r| r.text.args.values().any(|v| v.contains(&tag)))
+            .count();
+        assert_eq!(panel.summary.count, Some(1), "{:?}", panel.summary);
+        assert_eq!(listed, 1, "the counted error is listed");
+
+        let panel =
+            trovato_kernel::routes::admin_dashboard::errors_at(&app.state, &admin, at + day + 1)
+                .await
+                .expect("the panel");
+        assert_eq!(panel.summary.count, Some(0), "{:?}", panel.summary);
+        assert!(
+            !panel
+                .rows
+                .iter()
+                .any(|r| r.text.args.values().any(|v| v.contains(&tag))),
+            "an error past the cutoff is neither counted nor listed"
+        );
     });
 }

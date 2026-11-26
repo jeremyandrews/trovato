@@ -63,12 +63,18 @@ The full table of every route, its handler, template, permission and group is
 ### Landing pages
 
 Every group has a landing page at `/admin/{slug}/overview` (for example
-`/admin/structure/overview`). It lists every page in the group the viewer may
-open, each with its title as a link and a one sentence description. It is the
-way to browse the admin without JavaScript, the target of the group's
-breadcrumb, and the first link in the group's sidebar list. A viewer who may
-open nothing in a group gets a 404 for its landing page, the same answer a
-page that does not exist gets.
+`/admin/structure/overview`). It is a grid of tiles (`.dashboard-grid` on a
+`<ul role="list">`), one for every page in the group the viewer may open.
+Each tile is an `h2` holding the page's icon chip (hidden from assistive
+technology) and its title as a link, the only link in the tile; then its one
+sentence description; then, where the page carries a status, its state now
+(section 12). The group's main action, when it has one and the viewer may
+open it (Add content, Add content type, Add user), is not a tile: it is the
+filled button beside the `h1`, as on a list page. The landing page is the way
+to browse the admin without JavaScript, the target of the group's breadcrumb,
+the first link in the group's sidebar list, and where a Dashboard card leads.
+A viewer who may open nothing in a group gets a 404 for its landing page, the
+same answer a page that does not exist gets.
 
 `/admin/{slug}/overview` rather than `/admin/{slug}` because `/admin/content`
 and `/admin/people` already are the content and user lists, and one pattern for
@@ -86,7 +92,11 @@ permissions, or the site administrator), the plugin that must be enabled for
 the page to exist, other path prefixes that belong to the page (so
 `/admin/structure/tags/9/edit` is under Categories), search synonyms, and
 whether it is shown in the sidebar (every page is on its landing page and in
-search; "Add user" is not in the sidebar).
+search; "Add user" is not in the sidebar). Three fields serve wayfinding
+(section 12): `icon`, the page's own icon (`None` takes its group's, and each
+group has one in `GroupInfo.icon`); `status`, the state its landing tile shows
+(a `Status`, each carried by exactly one entry); and `primary`, whether it is
+its group's main action (at most one a group).
 
 A plugin entry comes from `tap_admin_nav` (BL-162), unchanged: section, label,
 href, permission and an optional dashboard card description. The section names
@@ -156,14 +166,33 @@ words through `t`; outside an admin page `t` returns the English source, and
 
 Valid HTML: one list, whose items are the Dashboard link and one item per
 group. A group item is an `h2` holding a `<button aria-expanded
-aria-controls>` disclosure, followed by the group's own `ul`. The first link
-in each group is its Overview (landing page). The current page's link carries
-`aria-current="page"` and the found-dot marker (section 6); its group is always
-open.
+aria-controls>` disclosure, followed by the group's own `ul`. The button and
+the heading text shown without JavaScript both start with the group's icon;
+the links carry none. The first link in each group is its Overview (landing
+page). The current page's link carries `aria-current="page"` and the
+found-dot marker (section 6). A group's main action kept out of the
+sidebar (Add content type, Add user) is the add form of the list above it,
+so on it that list carries the marker; any other page kept out (Who can do
+this?, search, preferences) marks no link, since none of the shown links is
+that page.
 
-Collapsing is remembered per user (stored server side with the other admin
-preferences, so the page renders in the right state with no flash). With
+By default only the group holding the current page is open (`data-current`
+on its item); every other group shows its icon and heading, collapsed, and
+the Dashboard opens none, so a first visit shows one group's links rather
+than about 45. `NavSection.current` says the current page is in the group;
+`NavSection.open` is `current` or a group the viewer opened by hand.
+Groups opened by hand are remembered per user in
+`Preferences::expanded`, stored server side with the other admin
+preferences so the page renders in the right state with no flash: each
+button posts that one group and whether it is now open
+(`POST /admin/preferences/nav`, `Preferences::toggle_group`, one statement).
+Closing the current page's group lasts until the next page; its state is
+never saved. The `collapsed` list saved before B245 is ignored. With
 JavaScript off every group is open and the button is not rendered.
+
+Focus on a sidebar link or group button shows the hover surface as well as
+the focus ring; the current page keeps its raised surface, and the ring
+alone marks its focus.
 
 Below 48rem the sidebar is behind a "Menu" disclosure button in the header.
 Nothing opens on hover.
@@ -183,10 +212,14 @@ Three layers of custom properties:
 - **Semantic**: `--surface`, `--surface-raised`, `--surface-sunken`, `--text`,
   `--text-muted`, `--border`, `--border-strong`, `--accent`,
   `--accent-text` (text on accent), `--link`, `--danger`, `--danger-surface`,
-  `--success`, `--success-surface`, `--warning-surface`, `--focus`. Each is one
-  `light-dark()` pair, so light and dark are defined in one place.
+  `--success`, `--success-surface`, `--warning-surface`, `--focus`, and
+  `--accent-tint` (a peach tint, the dark ramp's `--night-800` in dark). Each
+  is one `light-dark()` pair, so light and dark are defined in one place.
 - **Component**: `--sidebar-surface`, `--button-surface`, `--field-border`,
-  and so on, defined from the semantic tokens only.
+  and so on, defined from the semantic tokens only. The icon chip is
+  `--chip-surface` (`--accent-tint`) and `--chip-icon` (`--accent`: clay in
+  light, a lighter clay in dark), held at 3:1 like a component boundary
+  although the icon is decorative.
 
 Light and dark follow `prefers-color-scheme`; a per user override (System,
 Light, Dark, in Your preferences) sets `color-scheme` on `<html>`.
@@ -240,9 +273,11 @@ The admin takes three things from that and nothing from anyone else:
   with the lockup, not a coloured bar.
 
 Density is comfortable: one column of content, a readable measure (about 72
-characters for prose), tables slightly tighter than prose. Icons, where there
-are any, are inline SVG drawn for Trovato and always paired with visible text
-or an accessible name.
+characters for prose), tables slightly tighter than prose. Icons are inline SVG
+drawn for Trovato, monoline like the wordmark, and always paired with visible
+text (section 12). On landing tiles and dashboard cards each sits in a chip,
+the icon in clay on a peach tint, a 40px rounded square: the one place the
+admin adds colour to help someone find their way, and no new hue.
 
 ## 7. Translation
 
@@ -482,17 +517,32 @@ now (`routes::admin_dashboard`):
 | Panel | Says | Shown to whoever may open |
 |---|---|---|
 | Your recent content | how many items the viewer wrote and how many are not published; the last five, linked as the content listing links them: the admin edit form for someone who may edit any content, otherwise the item's own edit form or page | anyone who has written something or may create content |
-| Waiting for you | drafts to review; comments waiting for approval | `/admin/content/moderated`; `/admin/content/comments` |
+| Waiting for you | drafts to review; comments waiting for moderation (the `CommentsWaiting` status line, a badge while any wait) | `/admin/content/moderated`; `/admin/content/comments` |
 | Scheduled tasks | whether the last cron run worked, failed or was skipped; plugin queue jobs that stopped after repeated failures | `/admin/reports/cron` |
-| Recent errors | errors logged in the last 24 hours, the newest five, each linking to the log filtered to it | `/admin/reports/log` |
+| Recent errors | errors logged in the last 24 hours (the `LogErrors` status line), the newest five, each linking to the log filtered to it | `/admin/reports/log` |
 
 Each panel is a `section` labelled by its `h2`, with its state in one
 sentence ("Nothing is waiting for you.", "3 errors in the last 24 hours.").
+A count that could not be read is said, never taken for zero: its row reads
+"Comments waiting for moderation could not be counted", and the summary
+becomes "What waits for you could not be counted." or "At least 3 things
+wait for you.", never an all clear. Recent errors counts and lists its
+errors with one cutoff, so the count and the rows always agree.
 Numbers are words in a sentence, with plural forms per language, and never
 a figure alone, a chart or a colour. A panel's gate is the gate of the page
 it is about, through `offered_pages`, so the Dashboard offers nothing that
-answers 403. The cards below are unchanged: one per area, one per plugin
-card, Create and You.
+answers 403.
+
+**Cards.** Below the panels, under the "Areas you may use" heading, one
+compact card per group the viewer may use: its icon chip, an `h3` whose
+title links to the group's landing page, its status lines and its main
+action. A card no longer lists the group's pages; its landing page does. A
+plugin page with no card of its own counts for its group, so a viewer whose
+only page in a group is a plugin's still gets the group's card.
+A status a panel already reports (`DASHBOARD_PANEL_STATUSES`: comments,
+errors, cron) is left off the cards, so no count is said twice on the page.
+A plugin card is the Extend chip, its title linking to its page, and its
+description. Create and You follow.
 
 **"Who can do this?"** Each admin page the registry knows ends with a link
 to `/admin/people/who-can?path=<the page>`, for someone who holds
@@ -513,3 +563,43 @@ without a text alternative, newest first, each linking to the file page
 where one is set (for someone who may open files). It also shows the
 viewer's own settings (theme, search shortcuts), with a link to change
 them, and how this administration is checked.
+
+## 12. Icons and status
+
+**Icons.** One set, drawn for Trovato and copied from no icon library or
+product: a 24 by 24 viewBox, a 1.75px stroke with round caps and joins to
+match the monoline wordmark, `stroke="currentColor"`, no fill and no text, and
+nothing that points one way, so no icon needs mirroring in a right to left
+language. Each is named by the object it shows, never by a page's label. The
+names are `admin_nav::ICONS`; `templates/admin/macros/icons.html` draws them
+through one macro, `icon(name)`, which emits an inline
+`<svg aria-hidden="true" focusable="false" class="admin-icon">` and nothing
+for a name it does not know. Every group has an icon (`GroupInfo.icon`), and
+a few pages have their own (`Link.icon`); any other page takes its group's,
+a plugin's page its section's group's, and a plugin's dashboard card
+Extend's. An icon is always decorative and always beside visible text: never
+the only content of a link or button. Tests render every name, hold every
+group and page to a name in `ICONS` and every name to being used, and, in the
+browser, check every `svg.admin-icon` on every inventoried page.
+
+**Status lines.** A landing tile or dashboard card can say, in one sentence,
+the state of its page: what waits, or how something last went. Each state is
+a variant of `admin_nav::Status`, carried by exactly one registry entry
+(`Link.status`), and `admin_nav::status_line` computes it with an
+exhaustive `match`: one indexed statement (or, for cron, one Redis read),
+awaited in the request's own task so the request profile counts it, never
+cached, so a cleared queue shows as cleared at once. A line is shown only to
+someone who may open its page, and never when it would count what they may
+not open (the Content count needs `edit any content`, because for anyone
+else the content list filters row by row). Only the landing page and
+Dashboard handlers, and the Dashboard panels that report the same states,
+call it; the sidebar never does.
+
+**The badge rule.** A `StatusLine` is one `UiMessage`, with at most one
+plural count, and a `waiting` flag. Every line is drawn by one macro,
+`render_status_line(line)` in `templates/admin/macros/status.html`: one
+`<p class="status-line">` holding the translated sentence. When work waits,
+that same element is the badge (`--text` on `--warning-surface`, with a
+transparent border that forced colours draw as a box), never a second
+element beside it, so a listener hears the count once, and the words, not
+the colour, carry the meaning.
