@@ -10,12 +10,14 @@ pub mod admin_alias;
 pub mod admin_appearance;
 pub mod admin_audit;
 pub mod admin_config;
+pub mod admin_confirm;
 pub mod admin_content;
 pub mod admin_content_type;
 #[cfg(test)]
 mod admin_design_tests;
 pub mod admin_embed;
 pub mod admin_form;
+pub mod admin_list;
 pub mod admin_menu;
 pub mod admin_nav;
 pub mod admin_pathauto;

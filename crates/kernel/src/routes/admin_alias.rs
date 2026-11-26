@@ -11,10 +11,19 @@ use crate::form::csrf::generate_csrf_token;
 use crate::models::{CreateUrlAlias, UpdateUrlAlias, UrlAlias};
 use crate::state::AppState;
 
+use super::admin_list::{ListQuery, PER_PAGE};
 use super::helpers::{
     CsrfOnlyForm, render_admin_template, render_not_found, render_server_error, require_csrf,
     require_permission,
 };
+
+/// The alias listing's sortable columns: key and SQL.
+const ALIAS_SORTS: &[(&str, &str)] = &[
+    ("alias", "lower(alias)"),
+    ("source", "lower(source)"),
+    ("language", "language"),
+    ("created", "created"),
+];
 
 // =============================================================================
 // Form data
@@ -55,24 +64,25 @@ async fn list_aliases(
         return redirect;
     }
 
-    let page: i64 = params
-        .get("page")
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(1)
-        .max(1);
-    let per_page: i64 = 50;
-    let offset = (page - 1) * per_page;
+    let query = ListQuery::from_params(&params);
+    let sort = query.sort(ALIAS_SORTS, ("created", true));
+    let like = query.like();
 
-    let aliases = match UrlAlias::list_all(state.db(), per_page, offset).await {
-        Ok(aliases) => aliases,
+    let (aliases, total) = match UrlAlias::admin_page(
+        state.db(),
+        like.as_deref(),
+        &sort.order_by(),
+        PER_PAGE,
+        query.offset(),
+    )
+    .await
+    {
+        Ok(page) => page,
         Err(e) => {
             tracing::error!(error = %e, "failed to list url aliases");
             return render_server_error("Failed to load URL aliases.");
         }
     };
-
-    let total = UrlAlias::count_all(state.db()).await.unwrap_or(0);
-    let total_pages = (total as f64 / per_page as f64).ceil() as i64;
 
     // Convert to display structs with formatted dates
     let aliases_display: Vec<AliasDisplay> = aliases
@@ -91,10 +101,11 @@ async fn list_aliases(
     let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
+    context.insert(
+        "list",
+        &query.view(total, aliases_display.len(), Some(&sort)),
+    );
     context.insert("aliases", &aliases_display);
-    context.insert("total", &total);
-    context.insert("page", &page);
-    context.insert("total_pages", &total_pages);
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/structure/aliases");
 

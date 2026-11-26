@@ -35,6 +35,7 @@ pub fn router() -> Router<AppState> {
             "/admin/content/{id}/translate/{lang}/delete",
             post(translation_delete),
         )
+        .layer(axum::middleware::from_fn(super::admin_confirm::ask_first))
 }
 
 /// Translation form data.

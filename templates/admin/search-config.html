@@ -54,8 +54,10 @@
                     </td>
                     <td>
                         {% if weight %}
-                        <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/{{ field.field_name }}/delete" class="inline-form" novalidate>
+                        <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/{{ field.field_name }}/delete?confirm" class="inline-form" novalidate>
                             <input type="hidden" name="_token" value="{{ csrf_token }}">
+                            <input type="hidden" name="_confirm" value="{{ t(s='Remove the search weight of {name}? It is searched at the default weight until you set another.', name=field.label) }}">
+                            <input type="hidden" name="_confirm_label" value="{{ t(s='Remove the weight of {name}', name=field.label) }}">
                             <button type="submit" class="link-button">{{ t(s="Remove the weight of {name}", name=field.label) }}</button>
                         </form>
                         {% else %}
@@ -104,9 +106,11 @@
 <section class="admin-card" aria-labelledby="reindex-heading">
     <h2 id="reindex-heading">{{ t(s="Reindex content") }}</h2>
     <p>{{ t(s="After changing search configuration, reindex all content of this type to apply the changes.") }}</p>
-    <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/reindex" novalidate>
+    <form method="post" action="/admin/structure/types/{{ content_type.machine_name }}/search/reindex?confirm" novalidate>
         <input type="hidden" name="_token" value="{{ csrf_token }}">
-        <button type="submit" class="button button--secondary" data-confirm="{{ t(s='This will update the search index for all {type} content. Continue?', type=content_type.label) }}">
+        <input type="hidden" name="_confirm" value="{{ t(s='This will update the search index for all {type} content. Continue?', type=content_type.label) }}">
+        <input type="hidden" name="_confirm_label" value="{{ t(s="Reindex all {type} content", type=content_type.label) }}">
+        <button type="submit" class="button button--secondary">
             {{ t(s="Reindex all {type} content", type=content_type.label) }}
         </button>
     </form>

@@ -7,12 +7,15 @@ use axum::{Form, Router};
 use serde::Deserialize;
 use tower_sessions::Session;
 
+use std::collections::HashMap;
+
 use crate::form::csrf::generate_csrf_token;
 use crate::i18n::UiMessage;
-use crate::models::{CreateCategory, CreateTag, UpdateCategory, UpdateTag};
+use crate::models::{Category, CreateCategory, CreateTag, Tag, UpdateCategory, UpdateTag};
 use crate::routes::admin_form::FieldError;
 use crate::state::AppState;
 
+use super::admin_list::{ListQuery, page_of, sort_rows};
 use super::helpers::{
     CsrfOnlyForm, MACHINE_NAME_ERROR, SLUG_FORMAT_ERROR, is_valid_machine_name, is_valid_slug,
     render_admin_template, render_error, render_not_found, render_server_error, require_csrf,
@@ -54,16 +57,36 @@ pub(crate) struct TagFormData {
 // Category handlers
 // =============================================================================
 
+/// The category listing's sorts. The list is sorted in memory, so the second
+/// value is only the key's name. `weight` is the stored order and has no
+/// column of its own.
+const CATEGORY_SORTS: &[(&str, &str)] = &[
+    ("weight", "weight"),
+    ("name", "name"),
+    ("id", "id"),
+    ("tags", "tags"),
+];
+
 /// List all categories.
 ///
 /// GET /admin/structure/categories
-async fn list_categories(State(state): State<AppState>, session: Session) -> Response {
+async fn list_categories(
+    State(state): State<AppState>,
+    session: Session,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
+) -> Response {
     if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
     }
 
-    let categories = match state.categories().list_categories().await {
-        Ok(categories) => categories,
+    let query = ListQuery::from_params(&params);
+    let sort = query.sort(CATEGORY_SORTS, ("weight", false));
+
+    let mut categories: Vec<Category> = match state.categories().list_categories().await {
+        Ok(categories) => categories
+            .into_iter()
+            .filter(|c| query.matches(&[&c.label, &c.id]))
+            .collect(),
         Err(e) => {
             tracing::error!(error = %e, "failed to list categories");
             return render_server_error("Failed to load categories.");
@@ -71,15 +94,39 @@ async fn list_categories(State(state): State<AppState>, session: Session) -> Res
     };
 
     // Get tag counts for each category
-    let mut tag_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut tag_counts: HashMap<String, i64> = HashMap::new();
     for cat in &categories {
         let count = state.categories().count_tags(&cat.id).await.unwrap_or(0);
         tag_counts.insert(cat.id.clone(), count);
     }
 
+    // A short list held in memory: sorted and paged here. The default is the
+    // stored order, weight then name.
+    if sort.key == "tags" {
+        categories.sort_by_key(|c| tag_counts.get(&c.id).copied().unwrap_or(0));
+        if sort.desc {
+            categories.reverse();
+        }
+    } else {
+        sort_rows(
+            &mut categories,
+            &sort,
+            &[
+                ("weight", |c: &Category| {
+                    format!("{:06}\u{0}{}", i32::from(c.weight) + 40_000, c.label)
+                }),
+                ("name", |c: &Category| c.label.clone()),
+                ("id", |c: &Category| c.id.clone()),
+            ],
+        );
+    }
+    let total = i64::try_from(categories.len()).unwrap_or(i64::MAX);
+    let categories = page_of(&categories, &query);
+
     let csrf_token = generate_csrf_token(&session).await;
 
     let mut context = tera::Context::new();
+    context.insert("list", &query.view(total, categories.len(), Some(&sort)));
     context.insert("categories", &categories);
     context.insert("tag_counts", &tag_counts);
     context.insert("csrf_token", &csrf_token);
@@ -451,6 +498,7 @@ async fn list_tags(
     State(state): State<AppState>,
     session: Session,
     Path(category_id): Path<String>,
+    axum::extract::Query(params): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
     if let Err(redirect) = require_permission(&state, &session, "administer categories").await {
         return redirect;
@@ -464,7 +512,14 @@ async fn list_tags(
     else {
         return render_not_found();
     };
-    term_list(&state, &session, &category, &TermUrls::site(&category_id)).await
+    term_list(
+        &state,
+        &session,
+        &category,
+        &TermUrls::site(&category_id),
+        &params,
+    )
+    .await
 }
 
 /// GET /admin/structure/categories/{id}/tags/add
@@ -587,24 +642,33 @@ async fn delete_tag(
 
 // ---- Shared with the owner routes ------------------------------------------
 
-/// The term list of `category`.
+/// The term list of `category`, filtered by the listing query in `params`.
+/// Terms keep their weight order, so the list has no sort.
 pub(crate) async fn term_list(
     state: &AppState,
     session: &Session,
     category: &crate::models::Category,
     urls: &TermUrls,
+    params: &HashMap<String, String>,
 ) -> Response {
-    let tags = match state.categories().list_tags(&category.id).await {
-        Ok(tags) => tags,
+    let query = ListQuery::from_params(params);
+    let tags: Vec<Tag> = match state.categories().list_tags(&category.id).await {
+        Ok(tags) => tags
+            .into_iter()
+            .filter(|t| query.matches(&[&t.label, t.slug.as_deref().unwrap_or("")]))
+            .collect(),
         Err(e) => {
             tracing::error!(error = %e, "failed to list tags");
             return render_server_error("Failed to load tags.");
         }
     };
+    let total = i64::try_from(tags.len()).unwrap_or(i64::MAX);
+    let tags = page_of(&tags, &query);
 
     let csrf_token = generate_csrf_token(session).await;
 
     let mut context = tera::Context::new();
+    context.insert("list", &query.view(total, tags.len(), None));
     context.insert("category", category);
     context.insert("tags", &tags);
     context.insert("csrf_token", &csrf_token);

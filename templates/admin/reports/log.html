@@ -2,62 +2,57 @@
 {% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
+{#- The site log. `list` is its filter, sort and page (routes::admin_list):
+    the text filter, the level and type selects, newest first unless a
+    column says otherwise. -#}
+
 {% block page_title %}{{ t(s="Site log") }}{% endblock page_title %}
 
 {% block content %}
 <div class="admin-card">
-    <form class="filter-form" method="get" action="/admin/reports/log" aria-label="{{ t(s='Filter the log') }}">
-        <div class="filter-row">
-            {{ form::select(name="level", label=t(s="Level"), options=level_options, value=level_filter, empty=t(s="- Any -"), translate_options=true, wrapper="filter-item") }}
-            {{ form::select(name="type", label=t(s="Type"), options=type_options, value=type_filter, empty=t(s="- Any -"), wrapper="filter-item") }}
-            <div class="filter-item">
-                <button type="submit" class="button button--secondary">{{ t(s="Filter") }}</button>
-            </div>
-        </div>
-    </form>
+    {{ list::filter_start(action="/admin/reports/log", label=t(s="Filter the log")) }}
+        {{ form::field(name="q", type="search", label=t(s="Message contains"), value=list.q, width="20", wrapper="filter-item") }}
+        {{ form::select(name="level", label=t(s="Level"), options=level_options, value=level_filter, empty=t(s="- Any -"), translate_options=true, wrapper="filter-item") }}
+        {{ form::select(name="type", label=t(s="Type"), options=type_options, value=type_filter, empty=t(s="- Any -"), wrapper="filter-item") }}
+    {{ list::filter_end(list=list, action="/admin/reports/log") }}
 </div>
+{{ list::sort_form(list=list, action="/admin/reports/log") }}
 
 {% if entries %}
-<div class="table-scroll" role="region" aria-labelledby="log-caption" tabindex="0">
-    <table class="table">
-        <caption id="log-caption">{{ t(s="Log messages, newest first") }}</caption>
-        <thead>
-            <tr>
-                <th scope="col">{{ t(s="Time (UTC)") }}</th>
-                <th scope="col">{{ t(s="Level") }}</th>
-                <th scope="col">{{ t(s="Type") }}</th>
-                <th scope="col">{{ t(s="Message") }}</th>
-                <th scope="col">{{ t(s="Details") }}</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for entry in entries %}
-            <tr>
-                <th scope="row" class="log-time">{{ entry.created | format_date(format="%Y-%m-%d %H:%M:%S") }}</th>
-                <td><span class="log-level log-level--{{ entry.level }}">{{ t(s=entry.level) }}</span></td>
-                <td>{{ entry.log_type }}</td>
-                <td>{{ entry.message }}</td>
-                <td class="log-context">
-                    {% for key, value in entry.context %}<span class="log-context__pair">{{ key }}={{ value }}</span> {% endfor %}
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+<div class="admin-card">
+    {{ list::count(list=list) }}
+    <div class="table-scroll" role="region" aria-labelledby="log-caption" tabindex="0">
+        <table class="table table--stack">
+            <caption id="log-caption">{{ t(s="Log messages") }}</caption>
+            <thead>
+                <tr>
+                    {{ list::sort_th(label=t(s="Time (UTC)"), key="time", list=list) }}
+                    {{ list::sort_th(label=t(s="Level"), key="level", list=list) }}
+                    {{ list::sort_th(label=t(s="Type"), key="type", list=list) }}
+                    <th scope="col">{{ t(s="Message") }}</th>
+                    <th scope="col">{{ t(s="Details") }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for entry in entries %}
+                <tr>
+                    <th scope="row" class="log-time">{{ entry.created | format_date(format="%Y-%m-%d %H:%M:%S") }}</th>
+                    <td><span class="log-level log-level--{{ entry.level }}">{{ t(s=entry.level) }}</span></td>
+                    <td>{{ entry.log_type }}</td>
+                    <td>{{ entry.message }}</td>
+                    <td class="log-context">
+                        {% for key, value in entry.context %}<span class="log-context__pair">{{ key }}={{ value }}</span> {% endfor %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {{ list::pager(list=list, action="/admin/reports/log", label=t(s="Pages of the log")) }}
 </div>
-
-{% if total_pages > 1 %}
-<nav class="pagination" aria-label="{{ t(s='Pages of the log') }}">
-    {% if page > 1 %}
-    <a href="?page={{ page - 1 }}{% if filter_qs %}&{{ filter_qs }}{% endif %}" class="button button--secondary" rel="prev">{{ t(s="« Previous") }}</a>
-    {% endif %}
-    <span class="pagination-info">{{ t(s="Page {page} of {pages} ({count} entry)", plural="Page {page} of {pages} ({count} entries)", page=page, pages=total_pages, count=total) }}</span>
-    {% if page < total_pages %}
-    <a href="?page={{ page + 1 }}{% if filter_qs %}&{{ filter_qs }}{% endif %}" class="button button--secondary" rel="next">{{ t(s="Next »") }}</a>
-    {% endif %}
-</nav>
-{% endif %}
+{% elif list.filtered %}
+{{ list::empty(message=t(s="No log message matches this filter."), add_url="/admin/reports/log", add_label=t(s="Clear filter")) }}
 {% else %}
-{{ list::empty(message=t(s="Nothing has been logged that matches.")) }}
+{{ list::empty(message=t(s="Nothing has been logged yet.")) }}
 {% endif %}
 {% endblock content %}

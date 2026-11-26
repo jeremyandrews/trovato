@@ -935,6 +935,79 @@ impl Item {
         Ok(count)
     }
 
+    /// One page of the admin content listing, and how many items match.
+    ///
+    /// The filters are optional: the type, the status, and `title_like`, an
+    /// `ILIKE` pattern (see `routes::admin_list::ListQuery::like`).
+    /// `order_by` must come from the listing's own allowed columns, never from
+    /// the request; ties fall back to the newest change, then the id.
+    pub async fn admin_page(
+        pool: &PgPool,
+        item_type: Option<&str>,
+        status: Option<i16>,
+        title_like: Option<&str>,
+        order_by: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<Self>, i64)> {
+        let mut conditions = String::new();
+        let mut n = 0;
+        if item_type.is_some() {
+            n += 1;
+            conditions.push_str(&format!(" AND type = ${n}"));
+        }
+        if status.is_some() {
+            n += 1;
+            conditions.push_str(&format!(" AND status = ${n}"));
+        }
+        if title_like.is_some() {
+            n += 1;
+            conditions.push_str(&format!(" AND title ILIKE ${n}"));
+        }
+        // Ties fall back to the newest first, then the id, so a page is
+        // stable; a sort by `changed` needs only the id after it.
+        let ties = if order_by.starts_with("changed ") {
+            "id DESC"
+        } else {
+            "changed DESC, id DESC"
+        };
+        let list_sql = format!(
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, \
+             promote, sticky, fields, stage_id, language, item_group_id, retention_days \
+             FROM item WHERE 1=1{conditions} ORDER BY {order_by}, {ties} \
+             LIMIT ${} OFFSET ${}",
+            n + 1,
+            n + 2
+        );
+        let count_sql = format!("SELECT COUNT(*) FROM item WHERE 1=1{conditions}");
+
+        let mut list = sqlx::query_as::<_, Item>(AssertSqlSafe(list_sql));
+        let mut count = sqlx::query_scalar::<_, i64>(AssertSqlSafe(count_sql));
+        if let Some(t) = item_type {
+            list = list.bind(t);
+            count = count.bind(t);
+        }
+        if let Some(s) = status {
+            list = list.bind(s);
+            count = count.bind(s);
+        }
+        if let Some(l) = title_like {
+            list = list.bind(l);
+            count = count.bind(l);
+        }
+        let items = list
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(pool)
+            .await
+            .context("failed to list the admin content page")?;
+        let total = count
+            .fetch_one(pool)
+            .await
+            .context("failed to count the admin content page")?;
+        Ok((items, total))
+    }
+
     /// Count all items.
     pub async fn count_all(pool: &PgPool) -> Result<i64> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM item")

@@ -63,9 +63,11 @@
     </dl>
 
     <div class="form-actions">
-        <form method="post" action="/admin/content/files/{{ file.id }}/delete" class="inline-form" novalidate>
+        <form method="post" action="/admin/content/files/{{ file.id }}/delete?confirm" class="inline-form" novalidate>
             <input type="hidden" name="_token" value="{{ csrf_token }}">
-            <button type="submit" class="button button--danger" data-confirm="{{ t(s='Are you sure you want to delete this file?') }}">{{ t(s="Delete file") }}</button>
+            <input type="hidden" name="_confirm" value="{{ t(s='Delete the file {name}? This cannot be undone.', name=file.filename) }}">
+            <input type="hidden" name="_confirm_label" value="{{ t(s="Delete {name}", name=file.filename) }}">
+            <button type="submit" class="button button--danger">{{ t(s="Delete file") }}</button>
         </form>
         <a href="/admin/content/files" class="button button--secondary">{{ t(s="Back to list") }}</a>
     </div>

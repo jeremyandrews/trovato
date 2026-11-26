@@ -1,39 +1,58 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
+
+{#- The menu listing. `list` is its filter, sort and page
+    (routes::admin_list); the handler filters and sorts in memory. -#}
 
 {% block page_title %}{{ t(s="Menus") }}{% endblock page_title %}
 
 {% block content %}
 <p>{{ t(s="A menu is a set of links. {main} and {footer} are the two this theme renders; a menu under any other name is stored and listed here, but nothing displays it until a template asks for it.", main="main", footer="footer") }}</p>
 
-<div class="table-scroll" role="region" aria-labelledby="menus-caption" tabindex="0">
-    <table class="table">
-        <caption id="menus-caption">{{ t(s="Menus") }}</caption>
-        <thead>
-            <tr>
-                <th scope="col">{{ t(s="Menu") }}</th>
-                <th scope="col">{{ t(s="Links") }}</th>
-                <th scope="col">{{ t(s="Editable here") }}</th>
-                <th scope="col">{{ t(s="Rendered by the theme") }}</th>
-                <th scope="col">{{ t(s="Operations") }}</th>
-            </tr>
-        </thead>
-        <tbody>
-            {% for menu in menus %}
-            <tr>
-                <th scope="row"><a href="/admin/structure/menus/{{ menu.name }}">{{ menu.name }}</a></th>
-                <td>{{ menu.links }}</td>
-                <td>{{ menu.editable }}</td>
-                <td>{% if menu.rendered %}{{ t(s="Yes") }}{% else %}{{ t(s="No") }}{% endif %}</td>
-                <td class="operations">
-                    <a href="/admin/structure/menus/{{ menu.name }}">{{ t(s="Edit links in {menu}", menu=menu.name) }}</a>
-                    <a href="/admin/structure/menus/{{ menu.name }}/add">{{ t(s="Add link to {menu}", menu=menu.name) }}</a>
-                </td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
+<div class="admin-card">
+    {{ list::filter_start(action="/admin/structure/menus", label=t(s="Filter menus")) }}
+        {{ form::field(name="q", type="search", label=t(s="Menu name contains"), value=list.q, width="20", wrapper="filter-item") }}
+    {{ list::filter_end(list=list, action="/admin/structure/menus") }}
 </div>
+{{ list::sort_form(list=list, action="/admin/structure/menus") }}
+
+{% if menus %}
+<div class="admin-card">
+    {{ list::count(list=list) }}
+    <div class="table-scroll" role="region" aria-labelledby="menus-caption" tabindex="0">
+        <table class="table table--stack">
+            <caption id="menus-caption">{{ t(s="Menus") }}</caption>
+            <thead>
+                <tr>
+                    {{ list::sort_th(label=t(s="Menu"), key="name", list=list) }}
+                    {{ list::sort_th(label=t(s="Links"), key="links", list=list) }}
+                    <th scope="col">{{ t(s="Editable here") }}</th>
+                    <th scope="col">{{ t(s="Rendered by the theme") }}</th>
+                    <th scope="col" class="operations">{{ t(s="Operations") }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for menu in menus %}
+                <tr>
+                    <th scope="row"><a href="/admin/structure/menus/{{ menu.name }}">{{ menu.name }}</a></th>
+                    <td>{{ menu.links }}</td>
+                    <td>{{ menu.editable }}</td>
+                    <td>{% if menu.rendered %}{{ t(s="Yes") }}{% else %}{{ t(s="No") }}{% endif %}</td>
+                    <td class="operations">
+                        <a href="/admin/structure/menus/{{ menu.name }}">{{ t(s="Edit links in {menu}", menu=menu.name) }}</a>
+                        <a href="/admin/structure/menus/{{ menu.name }}/add">{{ t(s="Add link to {menu}", menu=menu.name) }}</a>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {{ list::pager(list=list, action="/admin/structure/menus", label=t(s="Pages of menus")) }}
+</div>
+{% else %}
+{{ list::empty(message=t(s="No menu matches this filter."), add_url="/admin/structure/menus", add_label=t(s="Clear filter")) }}
+{% endif %}
 
 <section class="admin-card" aria-labelledby="plugin-nav-heading">
     <h2 id="plugin-nav-heading">{{ t(s="Plugin-registered navigation") }}</h2>
@@ -41,7 +60,7 @@
 
     {% if plugin_entries %}
     <div class="table-scroll" role="region" aria-labelledby="plugin-nav-caption" tabindex="0">
-        <table class="table">
+        <table class="table table--stack">
             <caption id="plugin-nav-caption">{{ t(s="Navigation entries registered by plugins") }}</caption>
             <thead>
                 <tr>

@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use sqlx::PgPool;
+use sqlx::{AssertSqlSafe, PgPool};
 use uuid::Uuid;
 
 /// Publication status of a comment.
@@ -517,6 +517,73 @@ impl Comment {
         .context("failed to list comments by status")?;
 
         Ok(comments)
+    }
+
+    /// One page of the admin comment listing, and how many comments match.
+    ///
+    /// `status` narrows to one [`CommentStatus`]; `like` is an `ILIKE`
+    /// pattern matched against the subject, the body and the author's name.
+    /// Both are bound as parameters. `order_by` must come from the listing's
+    /// own list of sortable columns (see `routes::admin_list`), never from
+    /// the request; it may name the comment as `c` and its author as `u`.
+    pub async fn admin_page(
+        pool: &PgPool,
+        status: Option<i16>,
+        like: Option<&str>,
+        order_by: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<Self>, i64)> {
+        let mut conditions = String::new();
+        let mut n = 0;
+        if status.is_some() {
+            n += 1;
+            conditions.push_str(&format!(" AND c.status = ${n}"));
+        }
+        if like.is_some() {
+            n += 1;
+            conditions.push_str(&format!(
+                " AND (c.subject ILIKE ${n} OR c.body ILIKE ${n} OR u.name ILIKE ${n})"
+            ));
+        }
+        let from = "FROM comment c LEFT JOIN users u ON u.id = c.author_id WHERE 1=1";
+        // Ties: newest first, then the id; a sort by `c.created` needs only
+        // the id after it.
+        let ties = if order_by.starts_with("c.created ") {
+            "c.id DESC"
+        } else {
+            "c.created DESC, c.id DESC"
+        };
+        let list_sql = format!(
+            "SELECT c.id, c.item_id, c.parent_id, c.author_id, c.subject, c.body, c.body_format, \
+             c.status, c.created, c.changed, c.depth {from}{conditions} \
+             ORDER BY {order_by}, {ties} LIMIT ${} OFFSET ${}",
+            n + 1,
+            n + 2
+        );
+        let count_sql = format!("SELECT COUNT(*) {from}{conditions}");
+
+        let mut list = sqlx::query_as::<_, Comment>(AssertSqlSafe(list_sql));
+        let mut count = sqlx::query_scalar::<_, i64>(AssertSqlSafe(count_sql));
+        if let Some(s) = status {
+            list = list.bind(s);
+            count = count.bind(s);
+        }
+        if let Some(l) = like {
+            list = list.bind(l);
+            count = count.bind(l);
+        }
+        let comments = list
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(pool)
+            .await
+            .context("failed to list the admin comment page")?;
+        let total = count
+            .fetch_one(pool)
+            .await
+            .context("failed to count the admin comment page")?;
+        Ok((comments, total))
     }
 
     /// Count all comments.

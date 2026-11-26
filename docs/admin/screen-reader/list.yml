@@ -188,18 +188,23 @@
     - /url: /admin/content/moderated
   - link "Add content":
     - /url: /admin/content/add
-  - text: Type
-  - combobox "Type":
-    - option "- Any -" [selected]
-    - option "Media"
-    - option "Basic Page"
-    - option "Blog Post"
-  - text: Status
-  - combobox "Status":
-    - option "- Any -" [selected]
-    - option "Published"
-    - option "Unpublished"
-  - button "Filter"
+  - search "Filter content":
+    - text: Title contains
+    - searchbox "Title contains"
+    - text: Type
+    - combobox "Type":
+      - option "- Any -" [selected]
+      - option "Basic Page"
+      - option "Media"
+      - option "Blog Post"
+    - text: Status
+    - combobox "Status":
+      - option "- Any -" [selected]
+      - option "Published"
+      - option "Unpublished"
+    - button "Filter"
+  - paragraph: 40 results
+  - status
   - text: Bulk action
   - combobox "Bulk action":
     - option "- Bulk action -" [selected]
@@ -224,11 +229,15 @@
           - columnheader "Select all items":
             - checkbox "Select all items"
             - text: Select all items
-          - columnheader "Title"
-          - columnheader "Type"
+          - columnheader "Title":
+            - button "Title"
+          - columnheader "Type":
+            - button "Type"
           - columnheader "Author"
-          - columnheader "Status"
-          - columnheader "Updated"
+          - columnheader "Status":
+            - button "Status"
+          - columnheader "Updated":
+            - button "Updated"
           - columnheader "Operations"
       - rowgroup:
         - 'row "Select Post 1: signal glacier beacon Post 1: signal glacier beacon blog gen_user_2 Published 2025-12-31 23:59 Edit Post 1: signal glacier beacon Revisions of Post 1: signal glacier beacon Delete Post 1: signal glacier beacon"':

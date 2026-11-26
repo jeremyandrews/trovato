@@ -64,14 +64,27 @@ the page's one level-1 heading and its intro sentence.
 - **Group landing page** (People): "People, heading level 1", what the group
   is for, then a list. Each page in the list is a link with its description
   under it. Only pages the listener may open are there.
-- **List** (Content): the heading, the intro, "Moderated content" and
-  "Add content" links, then the filters as labelled comboboxes ("Type",
-  "Status") and a "Filter" button. The bulk action comes next: "Bulk action"
-  and "Target stage" comboboxes and an "Apply" button. The table is a
-  scrollable region named "Content items", announced with its caption. Its
-  first column header is a "Select all items" checkbox, and every row checkbox
-  is named for its item. Each row starts with the item's title as a row
-  header. Its actions name the item: "Edit Post 3", "Delete Post 3".
+- **List** (Content; the pattern is [design.md section 9](design.md#9-table-pattern)):
+  the heading, the intro, "Moderated content" and "Add content" links, then
+  a search landmark named "Filter content". It holds a "Title contains"
+  search field, "Type" and "Status" comboboxes and a "Filter" button. Next
+  comes the count, for example "12 results". After a filter or sort the same
+  words are announced as a status. The bulk action follows: "Bulk action"
+  and "Target stage" comboboxes, an "Apply" button and a status that counts
+  the selection ("Selected: 3"). The table is a scrollable region named
+  "Content items", announced with its caption. Its first column header is a
+  "Select all items" checkbox, announced "mixed" when only some rows are
+  checked; every row checkbox is named for its item. Sortable column
+  headers hold a button ("Title, button"), and the sorted one is announced
+  "sorted ascending" or "descending". Each row starts with the item's title
+  as a row header. Its actions name the item: "Edit Post 3", "Delete Post
+  3". Last comes the "Pages of content" navigation, where the current page
+  is "current page".
+- **Confirmation** (after Delete, with or without JavaScript): "Delete Post
+  3, heading level 1", a sentence saying to check what will happen, then the
+  question, "Delete Post 3? This cannot be undone.". It is followed by a
+  "Delete Post 3" button and a "Cancel" link back to the listing. A bulk
+  delete says how many: "Delete 2 selected items? This cannot be undone.".
 - **Form** (Add stage): the heading, the intro, then each field by its
   label with "(required)" spoken as part of the name ("Machine name
   (required), edit text"). The hint is read as the field's description. The
@@ -131,15 +144,18 @@ bar stays at the bottom of the screen, and the page scrolls a focused field
 clear of it. Leaving a form with unsaved changes asks first (the browser's
 own question), and only then.
 
+On a listing, Tab reaches the filter fields, then the column headers' sort
+buttons (Enter sorts), then each row's checkbox and actions. Space checks a
+box; checking "Select all items" checks every row. Delete leads to a page
+whose button does it and whose "Cancel" link goes back. Nothing deletes
+without that second press.
+
 ## Not done yet
 
 - **No live VoiceOver session.** No recorded VoiceOver or Guidepup session:
   driving VoiceOver needs the macOS accessibility permissions granted
   interactively, which an unattended run cannot do. The trees above are what
   VoiceOver reads, but its exact wording and verbosity were not heard.
-- **Narrow content tables.** At 320 px the content table keeps to the screen
-  by wrapping its titles word by word. The page does not scroll sideways, but
-  the table is cramped; Part 3 (lists) decides how tables reflow.
 - **Pages never opened.** The parameterised pages with nothing seeded to open
   (an access rule, a tile, a menu link, a record, an AI provider, a
   translation, a deletable text format) were not opened by the browser checks.
