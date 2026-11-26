@@ -142,6 +142,7 @@ fn urls(owner: &RegisteredOwner, owner_key: &str, vocabulary: &str) -> TermUrls 
         list: format!("{base}/{vocabulary}"),
         add: format!("{base}/{vocabulary}/add"),
         term_base: format!("{base}/{vocabulary}/terms"),
+        offer: admin_taxonomy::TermOffer::ALL,
     }
 }
 

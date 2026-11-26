@@ -99,6 +99,14 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     "use editorial transition archived_draft",
     "use editorial transition archived_published",
     "view latest version",
+    // `/admin/content` without `edit any content`: the list of what the viewer
+    // may see, with Edit and Delete where the item allows them. Drupal's
+    // permission of the same name, for authors (B156). Granted by no
+    // migration; an administrator holds it implicitly.
+    "access content overview",
+    // `/admin/reports/log` without `administer site`, as Drupal's permission of
+    // the same name opens its recent log messages (B156).
+    "access site reports",
     // Read a stage other than Live: switch the session's active stage, and see
     // it (with Live beneath it) in search, gathers and aliases. Granted to no
     // role by any migration; an administrator holds it implicitly. See
@@ -111,6 +119,13 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     // administrator holds it implicitly.
     "administer access rules",
     "administer categories",
+    // The terms of a site category without `administer categories`: add,
+    // edit or delete a term, and see the term list to find it. The category
+    // itself stays with `administer categories`. Drupal's per-category
+    // "create terms in X" (edit, delete) is imported as these (B156).
+    "create category terms",
+    "edit category terms",
+    "delete category terms",
     "access files",
     "administer files",
     // `/admin/config/formats`: which tags each text format allows and which

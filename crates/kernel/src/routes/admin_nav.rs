@@ -143,6 +143,9 @@ pub enum Gate {
     Permission(&'static str),
     /// Any one of these permissions.
     AnyPermission(&'static [&'static str]),
+    /// Whoever may create some content type: `create content`, or one
+    /// `create {type} content`, as the "Add content" chooser asks.
+    CreatesContent,
     /// The site administrator (`users.is_admin`), as `require_admin` asks.
     Administrator,
 }
@@ -152,6 +155,13 @@ impl Gate {
         match self {
             Self::Permission(permission) => viewer.can(permission),
             Self::AnyPermission(permissions) => permissions.iter().any(|p| viewer.can(p)),
+            Self::CreatesContent => {
+                viewer.can("create content")
+                    || viewer
+                        .permissions
+                        .iter()
+                        .any(|p| p.starts_with("create ") && p.ends_with(" content"))
+            }
             Self::Administrator => viewer.is_admin(),
         }
     }
@@ -162,6 +172,8 @@ impl Gate {
         match self {
             Self::Permission(p) => vec![p],
             Self::AnyPermission(ps) => ps.to_vec(),
+            // And any `create {type} content`, which no static list can name.
+            Self::CreatesContent => vec!["create content"],
             Self::Administrator => Vec::new(),
         }
     }
@@ -211,7 +223,7 @@ const fn page(
     }
 }
 
-use Gate::{Administrator, AnyPermission, Permission};
+use Gate::{Administrator, AnyPermission, CreatesContent, Permission};
 use Group::{Appearance, Configuration, Content, Extend, People, Reports, Structure};
 
 /// The comments plugin, by the name `AppState::enabled_plugins` holds it under.
@@ -286,7 +298,7 @@ pub const LINKS: &[Link] = &[
             Content,
             "Content",
             "/admin/content",
-            Permission("edit any content"),
+            AnyPermission(&["access content overview", "edit any content"]),
             "Find, filter and edit every item on the site.",
         )
     },
@@ -296,7 +308,7 @@ pub const LINKS: &[Link] = &[
             Content,
             "Add content",
             "/admin/content/add",
-            Permission("create content"),
+            CreatesContent,
             "Start a new item of any content type you may create.",
         )
     },
@@ -400,7 +412,12 @@ pub const LINKS: &[Link] = &[
             Structure,
             "Categories",
             "/admin/structure/categories",
-            Permission("administer categories"),
+            AnyPermission(&[
+                "administer categories",
+                "create category terms",
+                "edit category terms",
+                "delete category terms",
+            ]),
             "Vocabularies and the tags in each, for classifying content.",
         )
     },
@@ -629,7 +646,7 @@ pub const LINKS: &[Link] = &[
             Reports,
             "Recent log messages",
             "/admin/reports/log",
-            Permission("administer site"),
+            AnyPermission(&["access site reports", "administer site"]),
             "Errors, warnings and notices the site has recorded, newest first.",
         )
     },

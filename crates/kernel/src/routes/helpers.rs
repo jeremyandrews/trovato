@@ -140,6 +140,27 @@ pub async fn require_permission(
     }
 }
 
+/// Require an authenticated, active user holding at least one of
+/// `permissions`.
+///
+/// For a screen that more than one permission opens, as Drupal's do: the
+/// content list to `access content overview` or `edit any content`, the term
+/// forms to `administer categories` or the term permission for the action.
+/// Refused as [`require_permission`] refuses.
+pub async fn require_any_permission(
+    state: &AppState,
+    session: &Session,
+    permissions: &[&str],
+) -> Result<User, Response> {
+    let user = require_login(state, session).await?;
+    for permission in permissions {
+        if holds(state, &user, permission).await {
+            return Ok(user);
+        }
+    }
+    Err(html_forbidden())
+}
+
 /// The refusal every JSON caller gets for being nobody: `401` with an
 /// [`AppError`](crate::error::AppError) body.
 fn json_login() -> crate::error::AppError {
