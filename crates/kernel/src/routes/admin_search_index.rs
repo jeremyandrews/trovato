@@ -106,8 +106,20 @@ pub const SETTINGS: &[Setting] = &[
         "Used as the From address for system emails.",
         "email address from sender",
     ),
-    setting(SITE, "front_page", "Default front page", "", "home page homepage start"),
-    setting(SITE, "items_per_page", "Items per page", "", "paging page size"),
+    setting(
+        SITE,
+        "front_page",
+        "Default front page",
+        "",
+        "home page homepage start",
+    ),
+    setting(
+        SITE,
+        "items_per_page",
+        "Items per page",
+        "",
+        "paging page size",
+    ),
     setting(
         SITE,
         "reg_open",
@@ -122,8 +134,20 @@ pub const SETTINGS: &[Setting] = &[
         "",
         "email notification registration",
     ),
-    setting(SITE, "update_check", "Check for Trovato releases", "", "updates version"),
-    setting(SITE, "count_content_views", "Count content views", "", "statistics reads hits"),
+    setting(
+        SITE,
+        "update_check",
+        "Check for Trovato releases",
+        "",
+        "updates version",
+    ),
+    setting(
+        SITE,
+        "count_content_views",
+        "Count content views",
+        "",
+        "statistics reads hits",
+    ),
     setting(
         SEARCH_SETTINGS,
         "expand",
@@ -208,7 +232,13 @@ pub const SETTINGS: &[Setting] = &[
 pub fn settings() -> Vec<Setting> {
     let mut all = SETTINGS.to_vec();
     for range in crate::search::settings::NUMBER_RANGES {
-        all.push(setting(SEARCH_SETTINGS, range.field, range.label, "", "ranking weight"));
+        all.push(setting(
+            SEARCH_SETTINGS,
+            range.field,
+            range.label,
+            "",
+            "ranking weight",
+        ));
     }
     all
 }
@@ -229,10 +259,7 @@ pub async fn search(
     query: &str,
     translate: &(dyn Fn(&str) -> String + Sync),
 ) -> Vec<HitGroup> {
-    let words: Vec<String> = query
-        .split_whitespace()
-        .map(str::to_lowercase)
-        .collect();
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
     if words.is_empty() {
         return Vec::new();
     }
@@ -260,7 +287,9 @@ pub async fn search(
     });
     let as_hit = |hit: admin_nav::SearchHit| Hit {
         context: match &hit.group {
-            Some(group) => UiMessage::new("Administration › {group}").arg("group", translate(group)),
+            Some(group) => {
+                UiMessage::new("Administration › {group}").arg("group", translate(group))
+            }
             None => UiMessage::new("Administration"),
         },
         label: hit.label,
@@ -285,7 +314,11 @@ pub async fn search(
                     s.label,
                     &translate(s.label),
                     s.hint,
-                    &if s.hint.is_empty() { String::new() } else { translate(s.hint) },
+                    &if s.hint.is_empty() {
+                        String::new()
+                    } else {
+                        translate(s.hint)
+                    },
                     s.synonyms,
                 ],
             )
@@ -304,9 +337,8 @@ pub async fn search(
         more: None,
     });
 
-    let list = ListQuery::from_params(
-        &[("q".to_string(), query.to_string())].into_iter().collect(),
-    );
+    let list =
+        ListQuery::from_params(&[("q".to_string(), query.to_string())].into_iter().collect());
     let like = list.like();
     let encoded = urlencoding::encode(query.trim()).into_owned();
 

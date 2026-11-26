@@ -246,7 +246,10 @@ fn search_groups_pages_settings_content_people_and_log_messages() {
         // A plugin on disk, by name, linking to its row on the plugins page.
         let (_, plugins) = get(app, &cookies, "/admin/plugins").await;
         let needle = r#"<th scope="row" id="plugin-"#;
-        let at = plugins.find(needle).expect("the plugins page lists a plugin") + needle.len();
+        let at = plugins
+            .find(needle)
+            .expect("the plugins page lists a plugin")
+            + needle.len();
         let name = &plugins[at..at + plugins[at..].find('"').unwrap()];
         let (_, html) = get(app, &cookies, &format!("/admin/search?q={name}")).await;
         let groups = page_groups(&html);
@@ -391,7 +394,10 @@ fn the_search_shortcuts_are_saved_and_reach_the_palette_button() {
         assert!(html.contains(r#"data-search-slash="on""#), "on by default");
         assert!(html.contains(r#"data-search-key="""#));
         assert!(html.contains(r#"aria-keyshortcuts="/""#));
-        assert!(html.contains(r#"id="admin-palette""#), "the dialog is there");
+        assert!(
+            html.contains(r#"id="admin-palette""#),
+            "the dialog is there"
+        );
 
         let (_, form) = get(app, &cookies, "/admin/preferences").await;
         assert!(form.contains(r#"id="search_slash""#), "{form}");
@@ -426,6 +432,9 @@ fn the_search_shortcuts_are_saved_and_reach_the_palette_button() {
         assert_eq!(status, StatusCode::SEE_OTHER);
         let (_, html) = get(app, &cookies, "/admin").await;
         assert!(html.contains(r#"data-search-slash="on""#));
-        assert!(html.contains(r#"data-search-key="""#), "an unknown key is none");
+        assert!(
+            html.contains(r#"data-search-key="""#),
+            "an unknown key is none"
+        );
     });
 }

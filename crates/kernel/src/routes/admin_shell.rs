@@ -388,9 +388,8 @@ async fn suggest(
         return StatusCode::FORBIDDEN.into_response();
     };
     let locale = state.locale().cloned();
-    let text = |m: &crate::i18n::UiMessage| {
-        crate::i18n::strip_markers(&m.text(locale.as_deref(), &lang))
-    };
+    let text =
+        |m: &crate::i18n::UiMessage| crate::i18n::strip_markers(&m.text(locale.as_deref(), &lang));
     let count = admin_search_index::count(&groups);
     let summary = text(
         &crate::i18n::UiMessage::new("{count} result")

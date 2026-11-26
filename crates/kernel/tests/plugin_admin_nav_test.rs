@@ -283,12 +283,9 @@ fn dashboard_card_titles(html: &str) -> Vec<String> {
 fn admin_search_finds_a_plugins_declared_page_only_for_a_holder() {
     common::run_test(async {
         let app = app();
-        let (_id, holder) = common::user_holding(
-            app,
-            "b199tpa",
-            &["access administration pages", PERM_WRITE],
-        )
-        .await;
+        let (_id, holder) =
+            common::user_holding(app, "b199tpa", &["access administration pages", PERM_WRITE])
+                .await;
         let (_id, other) =
             common::user_holding(app, "b199tpa-no", &["access administration pages"]).await;
 
@@ -298,7 +295,10 @@ fn admin_search_finds_a_plugins_declared_page_only_for_a_holder() {
             .find(r#"aria-labelledby="search-results-plugins""#)
             .expect("a Plugins group");
         let group = &html[start..start + html[start..].find("</section>").unwrap()];
-        assert!(group.contains(&format!(r#"href="{DASHBOARD_PATH}""#)), "{group}");
+        assert!(
+            group.contains(&format!(r#"href="{DASHBOARD_PATH}""#)),
+            "{group}"
+        );
         let (_, json) = get(app, &holder, "/admin/search/suggest?q=tpa+dashboard").await;
         assert!(json.contains(DASHBOARD_PATH), "{json}");
 

@@ -1794,9 +1794,15 @@ mod tests {
         let hits = search(&holder, &enabled, &links, &[], "teams", &id);
         assert_eq!(hits.len(), 1, "{hits:?}");
         assert_eq!(hits[0].href, "/admin/groups");
-        assert!(search(&holder, &[], &links, &[], "teams", &id).is_empty(), "disabled");
+        assert!(
+            search(&holder, &[], &links, &[], "teams", &id).is_empty(),
+            "disabled"
+        );
         let other = viewer(&["access administration pages"]);
-        assert!(search(&other, &enabled, &links, &[], "teams", &id).is_empty(), "no permission");
+        assert!(
+            search(&other, &enabled, &links, &[], "teams", &id).is_empty(),
+            "no permission"
+        );
     }
 
     #[test]
