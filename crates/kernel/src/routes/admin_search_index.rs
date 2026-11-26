@@ -503,7 +503,7 @@ pub async fn search(
 }
 
 /// `text` cut to `max` characters, with an ellipsis when it was longer.
-fn shorten(text: &str, max: usize) -> String {
+pub(crate) fn shorten(text: &str, max: usize) -> String {
     if text.chars().count() <= max {
         return text.to_string();
     }

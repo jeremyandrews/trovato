@@ -13,6 +13,7 @@ pub mod admin_config;
 pub mod admin_confirm;
 pub mod admin_content;
 pub mod admin_content_type;
+pub mod admin_dashboard;
 #[cfg(test)]
 mod admin_design_tests;
 pub mod admin_embed;
@@ -34,6 +35,7 @@ pub mod admin_taxonomy;
 pub mod admin_text_format;
 pub mod admin_translation;
 pub mod admin_user;
+pub mod admin_who_can;
 pub mod api;
 pub mod api_ai_assist;
 pub mod api_chat;

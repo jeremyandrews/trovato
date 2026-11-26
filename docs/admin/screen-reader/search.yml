@@ -173,6 +173,9 @@
         - listitem:
           - link "Search report":
             - /url: /admin/reports/search
+        - listitem:
+          - link "Accessibility":
+            - /url: /admin/reports/accessibility
 - main:
   - navigation "Breadcrumb":
     - list:
@@ -268,3 +271,6 @@
         - link "trovato_content_translation":
           - /url: /admin/plugins#plugin-trovato_content_translation
         - paragraph: Plugin, enabled
+  - paragraph:
+    - link "Who can do this?":
+      - /url: /admin/people/who-can?path=/admin/search

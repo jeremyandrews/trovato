@@ -496,6 +496,17 @@ pub const LINKS: &[Link] = &[
         )
     },
     Link {
+        sidebar: false,
+        synonyms: &["who can", "which roles", "access"],
+        ..page(
+            People,
+            "Who can do this?",
+            "/admin/people/who-can",
+            Permission("administer users"),
+            "Which permission opens each administration page, and the roles that hold it.",
+        )
+    },
+    Link {
         synonyms: &["ban", "block", "allow", "deny", "registration"],
         ..page(
             People,
@@ -679,6 +690,22 @@ pub const LINKS: &[Link] = &[
             "/admin/reports/search",
             Permission("administer site"),
             "What visitors search for, and which searches find nothing.",
+        )
+    },
+    Link {
+        synonyms: &[
+            "a11y",
+            "alt text",
+            "alternative text",
+            "wcag",
+            "screen reader",
+        ],
+        ..page(
+            Reports,
+            "Accessibility",
+            "/admin/reports/accessibility",
+            Permission("administer site"),
+            "Images that lack a text alternative, and how this administration is checked.",
         )
     },
 ];
@@ -1021,6 +1048,11 @@ pub struct Placement {
     /// The permissions that open the page (empty for administrator only),
     /// for "Who can do this?".
     pub permissions: Vec<String>,
+    /// Whether the registry knows the page (the Dashboard, a landing page,
+    /// or an entry or a page below one), so `permissions` is its gate.
+    pub known: bool,
+    /// The name of the registry entry the page belongs to.
+    pub entry: Option<String>,
 }
 
 /// Where `path` sits for `viewer`. Computed from every kernel entry and
@@ -1048,6 +1080,8 @@ pub fn placement(
         placement.title = Some("Dashboard".to_string());
         placement.intro = LINKS.first().map(|l| l.description.to_string());
         placement.permissions = vec!["access administration pages".to_string()];
+        placement.known = true;
+        placement.entry = placement.title.clone();
         return placement;
     }
     let root = Crumb {
@@ -1062,11 +1096,15 @@ pub fn placement(
         placement.intro = Some(info.description.to_string());
         placement.title = Some(info.title.to_string());
         placement.permissions = vec!["access administration pages".to_string()];
+        placement.known = true;
+        placement.entry = placement.title.clone();
         return placement;
     }
 
     placement.crumbs.push(root);
     if let Some(entry) = current_page(&pages, path) {
+        placement.known = true;
+        placement.entry = Some(entry.label.clone());
         if let Some(group) = entry.group {
             let info = group.info();
             placement.group = Some(info.title.to_string());
@@ -1335,7 +1373,8 @@ pub async fn insert_context(
 
     context.insert("admin_nav", &sections);
     context.insert("enabled_plugins", &enabled);
-    context.insert("admin_place", &placement(path, nav.links(), nav.cards()));
+    let place = placement(path, nav.links(), nav.cards());
+    context.insert("admin_place", &place);
     context.insert("admin_prefs", &prefs);
     context.insert("admin_theme", prefs.theme());
     context.insert("admin_lang", &lang);
@@ -1344,6 +1383,14 @@ pub async fn insert_context(
         crate::middleware::language::text_direction_for_language(&lang),
     );
     context.insert("admin_current_path", path);
+    // "Who can do this?" for someone who may change who can: the page
+    // itself recomputes the answer from the path.
+    context.insert(
+        "admin_who_can",
+        &(viewer.can(super::admin_who_can::PERMISSION)
+            && place.known
+            && path != super::admin_who_can::PATH),
+    );
     context.insert("admin_theme_stylesheets", &admin_theme_stylesheets(state));
     if !context.contains_key("site_name") {
         let site_name = crate::models::SiteConfig::site_name(state.db())
@@ -1733,6 +1780,7 @@ mod tests {
                 "/admin/people/add",
                 "/admin/people/roles",
                 "/admin/people/permissions",
+                "/admin/people/who-can",
                 "/admin/people/rules"
             ],
             "sidebar or not"

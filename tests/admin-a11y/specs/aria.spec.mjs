@@ -30,6 +30,10 @@ const PAGE_TYPES = {
   // The listing pattern: filtered and sorted, and the confirmation page a
   // Delete leads to.
   'list-filtered': '/admin/content?status=1&sort=title',
+  // The dashboard's panels are in the dashboard tree; who can open a page,
+  // and the accessibility report.
+  'who-can': '/admin/people/who-can?path=/admin/structure/menus',
+  'a11y-report': '/admin/reports/accessibility',
   confirm: async (page) => {
     await page.goto('/admin/content');
     await Promise.all([page.waitForURL('**/admin/confirm'), page.locator('tbody tr').first().locator('button.link-button--danger').click()]);
