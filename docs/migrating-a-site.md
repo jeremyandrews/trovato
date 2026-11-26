@@ -18,10 +18,23 @@ later run. A port that has numeric ids derives a UUID from each, the same
 way every time (a UUIDv5 of `"<table>:<old id>"` under a namespace of the
 port's own, for example), so a rerun finds the records the last run wrote.
 
-The full format is in [`docs/design/import.md`](design/import.md). This
-release imports `item`, `revision`, `comment`, `alias` and `redirect`
-records; the authors must already
-exist (`trovato user create`).
+The full format is in [`docs/design/import.md`](design/import.md): users,
+items and their revisions, comments, URL aliases, redirects and tiles.
+
+### Accounts first
+
+The authors come first, with their old ids turned into UUIDs and their
+sign-up dates. A password moves only as an Argon2 hash (`$argon2id$…`), the
+one format Trovato verifies; an account from a system that hashed another way
+comes without one, and its owner sets a password through a reset (or the
+operator runs `trovato user reset-password`):
+
+```json
+{"type":"user","id":"0192f0a0-0000-7000-8000-00000000a001","name":"archivist","mail":"archivist@example.com","created":"2015-09-01T12:00:00Z","roles":["editor"]}
+```
+
+The examples below assume that line was imported (in its own file, or at the
+top of the same one).
 
 ### A worked example
 
@@ -71,6 +84,15 @@ refers to:
 The reply names its parent, so it is threaded under it. The alias serves the
 article at `/news/moving-the-archive`, and the redirect sends the old site's
 `/node/101` there with a 301. Redirects need the `trovato_redirects` plugin.
+
+### A tile
+
+Tiles carry their region, weight and body; a custom HTML tile's format must be
+one the site has:
+
+```json
+{"type":"tile","id":"0192f0a0-0000-7000-8000-000000000501","machine_name":"archive_notice","label":"About the archive","region":"sidebar_first","config":{"body":"<p>Older articles moved here in 2019.</p>","format":"filtered_html"},"created":"2019-03-04T09:00:00Z","changed":"2021-06-01T14:30:00Z"}
+```
 
 ### Running it again
 

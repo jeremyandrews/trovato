@@ -706,3 +706,248 @@ async fn through_redirects(app: &TestApp, uri: &str) -> axum::response::Response
         .await
         .unwrap()
 }
+
+// =============================================================================
+// Users and tiles (part 3)
+// =============================================================================
+
+/// An Argon2id PHC string for "imported-password-1", made the way the kernel
+/// makes one.
+fn argon2_hash(password: &str) -> String {
+    use argon2::password_hash::{PasswordHasher, SaltString, rand_core::OsRng};
+    argon2::Argon2::default()
+        .hash_password(password.as_bytes(), &SaltString::generate(&mut OsRng))
+        .unwrap()
+        .to_string()
+}
+
+fn user_line(id: Uuid, name: &str) -> serde_json::Value {
+    json!({
+        "type": "user", "id": id, "name": name, "mail": format!("{name}@example.com"),
+        "created": "2012-05-06T07:08:09Z"
+    })
+}
+
+#[test]
+fn an_imported_user_keeps_its_id_and_date_and_signs_in_with_its_hash() {
+    run_test(async {
+        let app = shared_app().await;
+        let (with_hash, without) = (Uuid::now_v7(), Uuid::now_v7());
+        forget_rows(app, "users", vec![with_hash, without]);
+        let (a, b) = (
+            common::username("b167_hash"),
+            common::username("b167_nohash"),
+        );
+        let mut first = user_line(with_hash, &a);
+        first["password_hash"] = json!(argon2_hash("imported-password-1"));
+        let role = format!("b167_role_{}", with_hash.simple());
+        let role_id = common::create_test_role(app, &role).await;
+        first["roles"] = json!([role]);
+        let lines = vec![first, user_line(without, &b)];
+
+        let report = run(app, &lines, false).await.expect("imports");
+        assert_eq!(report.of("user").created, 2);
+        let created: i64 = sqlx::query_scalar(
+            "SELECT extract(epoch FROM created)::bigint FROM users WHERE id = $1",
+        )
+        .bind(with_hash)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+        assert_eq!(created, 1_336_288_089, "2012-05-06T07:08:09Z kept");
+
+        let user = trovato_kernel::models::User::find_by_id(&app.db, with_hash)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            user.verify_password("imported-password-1"),
+            "the imported hash verifies"
+        );
+        assert!(!user.verify_password("another-password-1"));
+        let held: Vec<Uuid> =
+            sqlx::query_scalar("SELECT role_id FROM user_roles WHERE user_id = $1")
+                .bind(with_hash)
+                .fetch_all(&app.db)
+                .await
+                .unwrap();
+        assert_eq!(held, vec![role_id], "the role was granted");
+        let pass: String = sqlx::query_scalar("SELECT pass FROM users WHERE id = $1")
+            .bind(without)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        assert!(pass.is_empty(), "no hash, no password: it cannot sign in");
+
+        let again = run(app, &lines, false).await.expect("rerun");
+        assert_eq!(again.changes(), 0, "{:?}", again.counts);
+
+        // A password set after the import is not wiped by the next run.
+        sqlx::query("UPDATE users SET pass = 'set-later' WHERE id = $1")
+            .bind(without)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(run(app, &lines, false).await.unwrap().changes(), 0);
+
+        let mut edited = lines.clone();
+        edited[1]["status"] = json!(0);
+        let report = run(app, &edited, false).await.expect("the change");
+        assert_eq!(report.of("user").updated, 1);
+        assert_eq!(report.changes(), 1);
+    });
+}
+
+#[test]
+fn a_user_that_fails_validation_writes_nothing_and_no_hash_is_echoed() {
+    run_test(async {
+        let app = shared_app().await;
+        let first = Uuid::now_v7();
+        forget_rows(app, "users", vec![first]);
+        let name = common::username("b167_baduser");
+        let taken = common::username("b167_taken");
+        app.create_test_user(&taken, "test-password-123", &format!("{taken}@example.com"))
+            .await;
+        let taken_id = common::user_id_of(app, &taken).await;
+        forget_rows(app, "users", vec![taken_id]);
+
+        let secret = "$S$Dsecret-drupal-hash-b167";
+        let cases = vec![
+            (
+                {
+                    let mut u = user_line(Uuid::now_v7(), "b167x");
+                    u["password_hash"] = json!(secret);
+                    u
+                },
+                "Argon2",
+            ),
+            (
+                {
+                    let mut u = user_line(Uuid::now_v7(), "b167x");
+                    u["password_hash"] = json!("plain-password-b167");
+                    u
+                },
+                "Argon2",
+            ),
+            (
+                user_line(Uuid::now_v7(), &taken.to_uppercase()),
+                "already taken",
+            ),
+            (
+                {
+                    let mut u = user_line(Uuid::now_v7(), "b167y");
+                    u["mail"] = json!(format!("{taken}@EXAMPLE.com"));
+                    u
+                },
+                "already in use",
+            ),
+            (
+                {
+                    let mut u = user_line(Uuid::now_v7(), "b167z");
+                    u["roles"] = json!(["b167 no such role"]);
+                    u
+                },
+                "not found",
+            ),
+            (
+                {
+                    let mut u = user_line(Uuid::now_v7(), " ");
+                    u["name"] = json!(" ");
+                    u
+                },
+                "required",
+            ),
+            (
+                {
+                    let mut u = user_line(Uuid::now_v7(), "b167w");
+                    u["is_admin"] = json!(true);
+                    u
+                },
+                "is_admin",
+            ),
+        ];
+        for (line, expected) in cases {
+            let error = run(app, &[user_line(first, &name), line.clone()], false)
+                .await
+                .expect_err("refused");
+            let failed = error
+                .downcast_ref::<ImportFailed>()
+                .expect("an ImportFailed");
+            assert_eq!(failed.line, 2, "{line}: {failed}");
+            assert!(failed.message.contains(expected), "{line}: {failed}");
+            assert!(
+                !failed.message.contains("secret-drupal")
+                    && !failed.message.contains("plain-password"),
+                "a credential is never repeated: {failed}"
+            );
+            let found: Option<i32> = sqlx::query_scalar("SELECT 1 FROM users WHERE id = $1")
+                .bind(first)
+                .fetch_optional(&app.db)
+                .await
+                .unwrap();
+            assert!(found.is_none(), "{line}: nothing written");
+        }
+    });
+}
+
+#[test]
+fn an_imported_tile_keeps_its_id_and_dates_and_reruns_unchanged() {
+    run_test(async {
+        let app = shared_app().await;
+        let tile = Uuid::now_v7();
+        forget_rows(app, "tile", vec![tile]);
+        let machine = format!("b167_{}", tile.simple());
+        let mut lines = vec![json!({
+            "type": "tile", "id": tile, "machine_name": machine, "label": "B167 tile",
+            "region": "sidebar_first", "status": 0,
+            "config": {"body": "<p>Imported tile</p>", "format": "filtered_html"},
+            "created": Y2014, "changed": Y2015
+        })];
+
+        let report = run(app, &lines, false).await.expect("imports");
+        assert_eq!(report.of("tile").created, 1);
+        let (created, changed, body): (i64, i64, serde_json::Value) =
+            sqlx::query_as("SELECT created, changed, config FROM tile WHERE id = $1")
+                .bind(tile)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        assert_eq!((created, changed), (Y2014, Y2015));
+        assert_eq!(body["body"], "<p>Imported tile</p>");
+        assert_eq!(run(app, &lines, false).await.unwrap().changes(), 0);
+
+        lines[0]["label"] = json!("B167 tile, renamed");
+        lines[0]["changed"] = json!(Y2016);
+        let report = run(app, &lines, false).await.expect("the change");
+        assert_eq!(report.of("tile").updated, 1);
+
+        for (key, value, expected) in [
+            ("machine_name", json!("Not-Valid"), "machine_name"),
+            ("tile_type", json!("b167_kind"), "tile_type"),
+            ("visibility", json!({"audience": "robots"}), "audience"),
+            (
+                "config",
+                json!({"body": "x", "format": "b167_nope"}),
+                "text format",
+            ),
+        ] {
+            let mut bad = lines.clone();
+            bad[0]["id"] = json!(Uuid::now_v7());
+            bad[0]["machine_name"] = json!(format!("{machine}_2"));
+            bad[0][key] = value;
+            let error = run(app, &bad, false).await.expect_err("refused");
+            let failed = error.downcast_ref::<ImportFailed>().unwrap();
+            assert!(failed.message.contains(expected), "{key}: {failed}");
+        }
+        let mut clash = lines.clone();
+        clash[0]["id"] = json!(Uuid::now_v7());
+        let error = run(app, &clash, false).await.expect_err("refused");
+        assert!(
+            error
+                .downcast_ref::<ImportFailed>()
+                .unwrap()
+                .message
+                .contains("already tile")
+        );
+    });
+}

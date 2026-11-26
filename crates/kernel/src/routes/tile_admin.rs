@@ -95,7 +95,7 @@ pub(crate) fn insert_choices(context: &mut tera::Context) {
 
 /// The `audience` values the tile form's select may post, besides "" for
 /// "Everyone".
-const AUDIENCE_VALUES: [&str; 2] = ["anonymous", "authenticated"];
+pub(crate) const AUDIENCE_VALUES: [&str; 2] = ["anonymous", "authenticated"];
 
 /// Why an `audience` value was refused, worded for whoever set it.
 const AUDIENCE_ERROR: &str =

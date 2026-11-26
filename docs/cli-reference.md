@@ -20,7 +20,7 @@ and `trovato <command> --help` print the same, from the binary.
 | `trovato user role-add <user> <role>` / `role-remove <user> <role>` / `roles <user>` | Manage a user's roles. |
 | `trovato cache clear [--kind <kind>]...` | Tell every running server to drop its in-memory caches (all kinds, or the ones named). |
 | `trovato item revision-delete <item> <revision>` | Delete a past revision of an item. |
-| `trovato import <file> [--dry-run]` | Import content from another site (items and their revisions, comments, aliases, redirects), keeping each record's id and dates. |
+| `trovato import <file> [--dry-run]` | Import content from another site (users, items and their revisions, comments, aliases, redirects, tiles), keeping each record's id and dates. |
 | `trovato generate --items <N> --admin-password <PASSWORD>` | Write a deterministic test site of a given size (for performance tests and benchmarks). |
 
 ## `trovato migrate`
@@ -218,8 +218,9 @@ trovato import <file> [--dry-run]
 Imports content from another site, keeping each record's id and its created
 and changed dates: what a site migration writes instead of SQL. The file is
 newline delimited JSON, one record per line, each with a `type`, a caller
-chosen `id` (a UUID) and that type's keys; `-` reads stdin. This release
-imports `item`, `revision`, `comment`, `alias` and `redirect` records. The format, every key and every rule
+chosen `id` (a UUID) and that type's keys; `-` reads stdin. Every record
+type in the format is imported: `user`, `item`, `revision`, `comment`, `alias`,
+`redirect` and `tile`. The format, every key and every rule
 are in [`docs/design/import.md`](design/import.md); a worked example is in
 [`docs/migrating-a-site.md`](migrating-a-site.md).
 
