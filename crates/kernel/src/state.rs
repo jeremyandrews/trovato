@@ -217,6 +217,9 @@ struct AppStateInner {
     /// URL alias writes.
     aliases: Arc<services::url_alias::UrlAliasService>,
 
+    /// Redirect writes: loop check, cache bump and audit entry, in one place.
+    redirects: Arc<services::redirect::RedirectService>,
+
     /// Menu link writes.
     menu_links: Arc<services::menu_link::MenuLinkService>,
 
@@ -1142,6 +1145,16 @@ impl AppState {
             db.clone(),
             audit_trail.clone(),
         ));
+        let redirect_cache = if enabled_set.contains("trovato_redirects") {
+            Some(Arc::new(services::redirect::RedirectCache::new()))
+        } else {
+            None
+        };
+        let redirects = Arc::new(services::redirect::RedirectService::new(
+            db.clone(),
+            audit_trail.clone(),
+            redirect_cache.clone(),
+        ));
         let menu_links = Arc::new(services::menu_link::MenuLinkService::new(
             db.clone(),
             audit_trail.clone(),
@@ -1392,6 +1405,7 @@ impl AppState {
                 roles,
                 tiles,
                 aliases,
+                redirects,
                 menu_links,
                 security_audit,
                 webauthn,
@@ -1405,11 +1419,7 @@ impl AppState {
                 image_styles,
                 oauth,
                 locale,
-                redirect_cache: if enabled_set.contains("trovato_redirects") {
-                    Some(Arc::new(services::redirect::RedirectCache::new()))
-                } else {
-                    None
-                },
+                redirect_cache,
                 front_page: crate::routes::front::FrontPageConfig::default(),
                 comments,
             }),
@@ -1806,6 +1816,11 @@ impl AppState {
     /// Get the URL alias write service.
     pub fn aliases(&self) -> &Arc<services::url_alias::UrlAliasService> {
         &self.inner.aliases
+    }
+
+    /// Get the redirect write service.
+    pub fn redirects(&self) -> &Arc<services::redirect::RedirectService> {
+        &self.inner.redirects
     }
 
     /// Get the menu link write service.
