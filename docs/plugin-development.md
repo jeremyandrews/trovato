@@ -638,7 +638,7 @@ fn tap_item_info() -> Vec<ContentTypeDefinition> {
 | Email | `FieldType::Email` | Email address |
 | File | `FieldType::File` | File upload |
 | Reference | `FieldType::RecordReference(target_type)` | Reference to another item, of one content type |
-| Category reference | `FieldType::CategoryReference(category_id)` | Tags of one category: a JSON array of tag uuid strings, whatever the cardinality. Every write refuses a value that is not a tag of that category. Added in B72 (0.107.0). `FieldType` is `#[non_exhaustive]`, so a plugin that matches on it needs a `_` arm |
+| Category reference | `FieldType::CategoryReference(category_id)` | Tags of one category: a JSON array of tag uuid strings, whatever the cardinality. Every write refuses a value that is not a tag of that category. Added in B72 (0.105.0). `FieldType` is `#[non_exhaustive]`, so a plugin that matches on it needs a `_` arm |
 
 ### Field Options
 

@@ -43,7 +43,7 @@ edition = "2024"
 EOF
 }
 
-# A repository with one release, v0.104.0, on `main`, and two queued fragments.
+# A repository with one release, v2.4.0, on `main`, and two queued fragments.
 # Leaves the shell in it.
 fixture() {
     local dir="$WORK/$1"
@@ -52,13 +52,13 @@ fixture() {
     cd "$dir"
     cp "$ROOT/scripts/version-check.sh" "$ROOT/scripts/changelog-check.sh" scripts/
     git_q init -q -b main
-    set_version 0.104.0
-    printf '# Changelog\n\n## Unreleased\n\n## v0.104.0 — 2026-09-24\n\nOld.\n' > CHANGELOG.md
+    set_version 2.4.0
+    printf '# Changelog\n\n## Unreleased\n\n## v2.4.0 — 2026-09-24\n\nOld.\n' > CHANGELOG.md
     echo "The queue." > changelog.d/README.md
     echo "fn a() {}" > crates/k/lib.rs
     git_q add -A
-    git_q commit -q -m "Trovato 0.104.0"
-    git_q tag -a v0.104.0 -m "Trovato 0.104.0"
+    git_q commit -q -m "Trovato 2.4.0"
+    git_q tag -a v2.4.0 -m "Trovato 2.4.0"
     echo "An entry." > changelog.d/one.md
     echo "Another entry." > changelog.d/two.md
     echo "fn b() {}" >> crates/k/lib.rs
@@ -74,41 +74,41 @@ commit_all() { git_q add -A && git_q commit -q -m "$1"; }
 
 fixture vtag
 on_branch next
-for case in "0.104.0 0" "0.104.1 0" "0.105.0 0" "1.0.0 0" "0.106.0 1" "0.105.1 1" \
-    "0.103.0 1" "0.104.0-rc.1 1" "0.105.0-nightly.3 1" "0.105 1"; do
+for case in "2.4.0 0" "2.4.1 0" "2.5.0 0" "3.0.0 0" "2.6.0 1" "2.5.1 1" \
+    "2.3.0 1" "2.4.0-rc.1 1" "2.5.0-nightly.3 1" "2.5 1"; do
     read -r v want <<< "$case"
     set_version "$v"
-    expect "version: $v over v0.104.0" "$want" ./scripts/version-check.sh
+    expect "version: $v over v2.4.0" "$want" ./scripts/version-check.sh
 done
 git_q checkout -q -- Cargo.toml
 
 # ── version-check.sh against the base it merges into ─────────────────────────
 
 fixture vbase
-# main has already raised the version once, to 0.105.0.
-set_version 0.105.0
-commit_all "raise to 0.105.0"
+# main has already raised the version once, to 2.5.0.
+set_version 2.5.0
+commit_all "raise to 2.5.0"
 on_branch second-raise
-set_version 1.0.0
+set_version 3.0.0
 commit_all "a second raise"
-expect "version: 1.0.0 over a base already at 0.105.0 fails" 1 ./scripts/version-check.sh main
-expect "version: 1.0.0 is one step above the tag, so without a base it passes" 0 ./scripts/version-check.sh
+expect "version: 3.0.0 over a base already at 2.5.0 fails" 1 ./scripts/version-check.sh main
+expect "version: 3.0.0 is one step above the tag, so without a base it passes" 0 ./scripts/version-check.sh
 git_q checkout -q main
 on_branch keeps-it
 echo "fn c() {}" >> crates/k/lib.rs
 commit_all "a change that leaves the version alone"
-expect "version: 0.105.0 over a base at 0.105.0 passes" 0 ./scripts/version-check.sh main
+expect "version: 2.5.0 over a base at 2.5.0 passes" 0 ./scripts/version-check.sh main
 git_q checkout -q main
-set_version 0.106.0
+set_version 2.6.0
 commit_all "main raised twice, as before the rule"
 on_branch back-down
-set_version 0.105.0
+set_version 2.5.0
 commit_all "set it back"
-expect "version: lowering 0.106.0 to 0.105.0 passes" 0 ./scripts/version-check.sh main
+expect "version: lowering 2.6.0 to 2.5.0 passes" 0 ./scripts/version-check.sh main
 
 fixture vfirst
 on_branch first-raise
-set_version 0.105.0
+set_version 2.5.0
 commit_all "the first change after the release"
 expect "version: the first raise over a base at the tag passes" 0 ./scripts/version-check.sh main
 
@@ -130,8 +130,8 @@ expect "changelog: a code change without a fragment fails" 1 ./scripts/changelog
 # The fold as scripts/changelog-fold.sh leaves it: fragments gone, README kept,
 # a new section for the declared version.
 fold() {
-    set_version 0.105.0
-    printf '# Changelog\n\n## v0.105.0 — 2026-11-25\n\nAn entry.\n\nAnother entry.\n\n## v0.104.0 — 2026-09-24\n\nOld.\n' > CHANGELOG.md
+    set_version 2.5.0
+    printf '# Changelog\n\n## v2.5.0 — 2026-11-25\n\nAn entry.\n\nAnother entry.\n\n## v2.4.0 — 2026-09-24\n\nOld.\n' > CHANGELOG.md
     rm changelog.d/one.md changelog.d/two.md
     echo "fn e() {}" >> crates/k/lib.rs
 }
@@ -139,9 +139,9 @@ fold() {
 fixture cfold
 on_branch release
 fold
-commit_all "Trovato 0.105.0"
+commit_all "Trovato 2.5.0"
 expect "changelog: a release fold passes" 0 ./scripts/changelog-check.sh main
-if grep -q 'release fold for v0.105.0' "$WORK/out"; then
+if grep -q 'release fold for v2.5.0' "$WORK/out"; then
     pass "changelog: a release fold names its rule"
 else
     fail "changelog: a release fold names its rule"
@@ -151,7 +151,7 @@ fixture cnoreadme
 on_branch release
 fold
 rm -r changelog.d
-commit_all "Trovato 0.105.0 without changelog.d"
+commit_all "Trovato 2.5.0 without changelog.d"
 expect "changelog: a fold that deletes changelog.d/ fails" 1 ./scripts/changelog-check.sh main
 
 fixture cleft
@@ -168,14 +168,14 @@ expect "changelog: a fold that leaves anything but the README fails" 1 ./scripts
 fixture cnoheading
 on_branch release
 fold
-printf '# Changelog\n\n## Unreleased\n\n## v0.104.0 — 2026-09-24\n\nOld.\n' > CHANGELOG.md
+printf '# Changelog\n\n## Unreleased\n\n## v2.4.0 — 2026-09-24\n\nOld.\n' > CHANGELOG.md
 commit_all "fragments deleted, no section opened"
 expect "changelog: fragments deleted with no new section fails" 1 ./scripts/changelog-check.sh main
 
 fixture coldheading
 on_branch release
 fold
-set_version 0.104.0
+set_version 2.4.0
 commit_all "a heading for a version Cargo.toml does not declare"
 expect "changelog: a section for a version Cargo.toml does not declare fails" 1 ./scripts/changelog-check.sh main
 

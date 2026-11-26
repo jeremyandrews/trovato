@@ -109,9 +109,9 @@ array of tag uuid strings, whatever the cardinality. `FieldType` is now
 `#[non_exhaustive]`, so that field kinds added later are additive. A plugin
 with an exhaustive `match` on it stops compiling against this SDK until it adds
 a `_` arm; a plugin that only constructs field types, or already has a `_` arm,
-is unaffected. Both changes ship in the unreleased 0.107.0 (plugin API 0.107)
-and change nothing in a released version, so the plugin API version does not
-move for them. `save-item` has a new error, `ERR_ITEM_INVALID_FIELDS` (-65).
+is unaffected. Both changes ship in 0.105.0, with the rest of plugin API
+`(0, 105)`, and change nothing in a released version, so the plugin API version
+does not move again for them. `save-item` has a new error, `ERR_ITEM_INVALID_FIELDS` (-65).
 
 Behaviour changes that follow: every item write (the item forms, the item API,
 `save-item`, revert and `config import`) refuses more values than a field's
