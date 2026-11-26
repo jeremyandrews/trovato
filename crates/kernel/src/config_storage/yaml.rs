@@ -2479,6 +2479,33 @@ mod tests {
         assert!(parsed.has_title);
     }
 
+    /// B207: a field's "Filterable and sortable" choice lives in its
+    /// `settings.filterable`, so export and import carry it with the type.
+    #[test]
+    fn item_type_yaml_keeps_the_filterable_setting() {
+        let item_type = ItemType {
+            type_name: "event".to_string(),
+            label: "Event".to_string(),
+            description: None,
+            has_title: true,
+            title_label: None,
+            plugin: "core".to_string(),
+            settings: serde_json::json!({"fields": [
+                {"field_name": "city", "field_type": "Text", "label": "City",
+                 "settings": {"filterable": true}},
+                {"field_name": "notes", "field_type": "TextLong", "label": "Notes",
+                 "settings": {"filterable": false}},
+            ]}),
+        };
+
+        let yaml = serde_yml::to_string(&item_type).unwrap();
+        assert!(yaml.contains("filterable: true"), "{yaml}");
+        let parsed = deserialize_entity("item_type", &yaml).unwrap();
+        let it = parsed.entity.as_item_type().expect("item type");
+        assert_eq!(it.settings["fields"][0]["settings"]["filterable"], true);
+        assert_eq!(it.settings["fields"][1]["settings"]["filterable"], false);
+    }
+
     #[test]
     fn category_yaml_round_trip() {
         let category = Category {

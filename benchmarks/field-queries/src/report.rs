@@ -164,6 +164,18 @@ fn print_sizes(r: &Results) {
         println!("| `{name}` | {} |", mb(*bytes));
     }
     println!();
+    if !r.field_indexes.is_empty() {
+        println!("| Field index (B207) | Kind | State | Build time | Size |");
+        println!("|---|---|---|---:|---:|");
+        for (field, kind, state, ms, bytes) in &r.field_indexes {
+            println!(
+                "| `{field}` | {kind} | {state} | {:.1} s | {} |",
+                ms.unwrap_or(0) as f64 / 1000.0,
+                mb(*bytes)
+            );
+        }
+        println!();
+    }
     println!("Hot set ({}):", r.hot_set_note);
     println!();
     if !r.hot_set.is_empty() {
