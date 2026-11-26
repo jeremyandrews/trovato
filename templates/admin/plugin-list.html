@@ -30,7 +30,7 @@
         <tbody>
             {% for plugin in plugins %}
             <tr>
-                <th scope="row"><code>{{ plugin.name }}</code>{% if plugin.raw_sql %} <span class="badge badge--raw-sql" data-raw-sql="{{ plugin.name }}" title="{{ t(s='Holds raw_sql: runs SQL the kernel does not compile') }}">{{ t(s="raw SQL") }}</span>{% endif %}</th>
+                <th scope="row" id="plugin-{{ plugin.name }}"><code>{{ plugin.name }}</code>{% if plugin.raw_sql %} <span class="badge badge--raw-sql" data-raw-sql="{{ plugin.name }}" title="{{ t(s='Holds raw_sql: runs SQL the kernel does not compile') }}">{{ t(s="raw SQL") }}</span>{% endif %}</th>
                 <td>{{ plugin.description }}</td>
                 <td>{{ plugin.version }}</td>
                 <td>{{ plugin.dependencies }}</td>

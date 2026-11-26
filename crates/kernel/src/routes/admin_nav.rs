@@ -1178,9 +1178,26 @@ pub struct Preferences {
     /// The slugs of the sidebar groups the viewer collapsed.
     #[serde(default)]
     pub collapsed: Vec<String>,
+    /// Whether the viewer turned off the single-key `/` search shortcut
+    /// (WCAG 2.1.4: a one-character shortcut can be turned off).
+    #[serde(default)]
+    pub search_slash_off: bool,
+    /// The other key that opens search, if the viewer chose one: `ctrl-k`
+    /// or `alt-k`.
+    #[serde(default)]
+    pub search_key: Option<String>,
 }
 
 impl Preferences {
+    /// The other key that opens search: `ctrl-k`, `alt-k`, or empty.
+    pub fn search_key(&self) -> &str {
+        match self.search_key.as_deref() {
+            Some("ctrl-k") => "ctrl-k",
+            Some("alt-k") => "alt-k",
+            _ => "",
+        }
+    }
+
     /// The colour theme, one of `system`, `light`, `dark`.
     pub fn theme(&self) -> &str {
         match self.theme.as_deref() {
