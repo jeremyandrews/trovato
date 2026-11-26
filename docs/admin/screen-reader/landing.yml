@@ -24,70 +24,13 @@
         - /url: /admin
     - listitem:
       - heading "Content" [level=2]:
-        - button "Content" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/content/overview
-        - listitem:
-          - link "Content":
-            - /url: /admin/content
-        - listitem:
-          - link "Add content":
-            - /url: /admin/content/add
-        - listitem:
-          - link "Moderated content":
-            - /url: /admin/content/moderated
-        - listitem:
-          - link "Comments":
-            - /url: /admin/content/comments
-        - listitem:
-          - link "Files":
-            - /url: /admin/content/files
-        - listitem:
-          - link "Media":
-            - /url: /admin/media
+        - button "Content"
     - listitem:
       - heading "Structure" [level=2]:
-        - button "Structure" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/structure/overview
-        - listitem:
-          - link "Content types":
-            - /url: /admin/structure/types
-        - listitem:
-          - link "Record types":
-            - /url: /admin/structure/records
-        - listitem:
-          - link "Gathers":
-            - /url: /admin/gather
-        - listitem:
-          - link "Menus":
-            - /url: /admin/structure/menus
-        - listitem:
-          - link "Tiles":
-            - /url: /admin/structure/tiles
-        - listitem:
-          - link "Categories":
-            - /url: /admin/structure/categories
-        - listitem:
-          - link "URL aliases":
-            - /url: /admin/structure/aliases
-        - listitem:
-          - link "URL alias patterns":
-            - /url: /admin/config/pathauto
+        - button "Structure"
     - listitem:
       - heading "Appearance" [level=2]:
-        - button "Appearance" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/appearance/overview
-        - listitem:
-          - link "Themes":
-            - /url: /admin/appearance
+        - button "Appearance"
     - listitem:
       - heading "People" [level=2]:
         - button "People" [expanded]
@@ -109,73 +52,13 @@
             - /url: /admin/people/rules
     - listitem:
       - heading "Extend" [level=2]:
-        - button "Extend" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/extend/overview
-        - listitem:
-          - link "Plugins":
-            - /url: /admin/plugins
-        - listitem:
-          - link "AI providers":
-            - /url: /admin/system/ai-providers
-        - listitem:
-          - link "AI budgets":
-            - /url: /admin/system/ai-budgets
-        - listitem:
-          - link "AI chat":
-            - /url: /admin/system/ai-chat
-        - listitem:
-          - link "AI assistant":
-            - /url: /admin/system/ai-assistant
+        - button "Extend"
     - listitem:
       - heading "Configuration" [level=2]:
-        - button "Configuration" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/config/overview
-        - listitem:
-          - link "Site settings":
-            - /url: /admin/config/site
-        - listitem:
-          - link "Text formats":
-            - /url: /admin/config/formats
-        - listitem:
-          - link "Search settings":
-            - /url: /admin/config/search
-        - listitem:
-          - link "Stages":
-            - /url: /admin/structure/stages
-        - listitem:
-          - link "Redirects":
-            - /url: /admin/config/redirects
-        - listitem:
-          - link "Account recovery":
-            - /url: /admin/recovery
+        - button "Configuration"
     - listitem:
       - heading "Reports" [level=2]:
-        - button "Reports" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/reports/overview
-        - listitem:
-          - link "Recent log messages":
-            - /url: /admin/reports/log
-        - listitem:
-          - link "Audit log":
-            - /url: /admin/reports/audit
-        - listitem:
-          - link "Cron":
-            - /url: /admin/reports/cron
-        - listitem:
-          - link "Search report":
-            - /url: /admin/reports/search
-        - listitem:
-          - link "Accessibility":
-            - /url: /admin/reports/accessibility
+        - button "Reports"
 - main:
   - navigation "Breadcrumb":
     - list:
@@ -185,30 +68,34 @@
       - listitem: People
   - heading "People" [level=1]
   - paragraph: Accounts, roles, what each role may do, and who may register.
+  - link "Add user":
+    - /url: /admin/people/add
   - list:
     - listitem:
-      - link "Users":
-        - /url: /admin/people
+      - heading "Users" [level=2]:
+        - link "Users":
+          - /url: /admin/people
       - paragraph: "Every account: find, edit, block, and sign out of devices."
+      - paragraph: 0 blocked accounts
     - listitem:
-      - link "Add user":
-        - /url: /admin/people/add
-      - paragraph: Create an account and choose its roles.
-    - listitem:
-      - link "Roles":
-        - /url: /admin/people/roles
+      - heading "Roles" [level=2]:
+        - link "Roles":
+          - /url: /admin/people/roles
       - paragraph: Named sets of permissions that accounts are given.
     - listitem:
-      - link "Permissions":
-        - /url: /admin/people/permissions
+      - heading "Permissions" [level=2]:
+        - link "Permissions":
+          - /url: /admin/people/permissions
       - paragraph: What each role may do, as a grid of roles and permissions.
     - listitem:
-      - link "Who can do this?":
-        - /url: /admin/people/who-can
+      - heading "Who can do this?" [level=2]:
+        - link "Who can do this?":
+          - /url: /admin/people/who-can
       - paragraph: Which permission opens each administration page, and the roles that hold it.
     - listitem:
-      - link "Access rules":
-        - /url: /admin/people/rules
+      - heading "Access rules" [level=2]:
+        - link "Access rules":
+          - /url: /admin/people/rules
       - paragraph: Names, addresses and hosts that may or may not register and sign in.
   - paragraph:
     - link "Who can do this?":
