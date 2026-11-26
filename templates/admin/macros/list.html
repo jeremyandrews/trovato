@@ -17,15 +17,96 @@
 </div>
 {% endmacro empty %}
 
-{#- Inline delete button with confirmation dialog.
+{#- A delete button that asks first, with or without JavaScript.
 
     `label` is the button's visible text and accessible name; it names the
     object ("Delete About us"), so a screen reader's list of buttons is not a
-    column of identical "Delete"s. `confirm_text` is shown in the browser's
-    confirm dialog before the form is sent. Both arrive translated. -#}
+    column of identical "Delete"s. `confirm_text` is the question the
+    confirmation page asks (routes::admin_confirm): the form's action carries
+    `?confirm`, so posting it leads to a page that names what will be deleted
+    and offers the real button. Both arrive translated. -#}
 {% macro delete_button(action, label, confirm_text, btn_class="link-button link-button--danger", csrf_token="") %}
-<form method="post" action="{{ action }}" class="inline-form" novalidate>
+<form method="post" action="{{ action }}?confirm" class="inline-form" novalidate>
     <input type="hidden" name="_token" value="{{ csrf_token }}">
-    <button type="submit" class="{{ btn_class }}" data-confirm="{{ confirm_text }}">{{ label }}</button>
+    <input type="hidden" name="_confirm" value="{{ confirm_text }}">
+    <input type="hidden" name="_confirm_label" value="{{ label }}">
+    <button type="submit" class="{{ btn_class }}">{{ label }}</button>
 </form>
 {% endmacro delete_button %}
+
+{#- The listing pattern (docs/admin/design.md section 9). A handler gives its
+    template `list`, a routes::admin_list::ListView; these draw the parts that
+    are the same on every listing. Everything is a GET form or a link, so it
+    works without JavaScript and every address can be shared. -#}
+
+{#- Open a listing's filter form. Its fields follow (the text filter is a
+    `form::field` named `q`, then the listing's selects); `filter_end`
+    closes it. `label` names the form, for example "Filter content". -#}
+{% macro filter_start(action, label) %}
+<form class="filter-form" method="get" action="{{ action }}" id="list-filter" role="search" aria-label="{{ label }}">
+    <div class="filter-row">
+{% endmacro filter_start %}
+
+{#- Close the filter form: the Filter button, a link that clears the filter
+    when one is applied, and the current sort, kept. -#}
+{% macro filter_end(list, action) %}
+        <div class="filter-item filter-item--actions">
+            {% if list.sort_param %}<input type="hidden" name="sort" value="{{ list.sort_param }}">{% endif %}
+            <button type="submit" class="button button--secondary">{{ t(s="Filter") }}</button>
+            {% if list.filtered %}<a class="filter-clear" href="{{ action }}">{{ t(s="Clear filter") }}</a>{% endif %}
+        </div>
+    </div>
+</form>
+{% endmacro filter_end %}
+
+{#- The form a sort button submits: the filters now applied, kept as they
+    are, so sorting never loses them. Put it once on the page, outside any
+    other form; the buttons reach it through their `form` attribute. -#}
+{% macro sort_form(list, action) %}
+<form id="list-sort" method="get" action="{{ action }}" hidden>
+    {% for pair in list.keep_for_sort %}<input type="hidden" name="{{ pair.0 }}" value="{{ pair.1 }}">{% endfor %}
+</form>
+{% endmacro sort_form %}
+
+{#- A sortable column header: a button inside the `th`, which carries
+    `aria-sort` when the listing is sorted by it. Pressing it sorts by this
+    column, ascending first, and the other way when it is already sorted so. -#}
+{% macro sort_th(label, key, list, class="") %}
+{% if list.sort == key %}
+<th scope="col" aria-sort="{% if list.desc %}descending{% else %}ascending{% endif %}"{% if class %} class="{{ class }}"{% endif %} data-label="{{ label }}">
+    <button type="submit" form="list-sort" name="sort" value="{% if list.desc %}{{ key }}{% else %}-{{ key }}{% endif %}" class="sort-button sort-button--active">{{ label }}<span class="sort-button__icon" aria-hidden="true">{% if list.desc %}▼{% else %}▲{% endif %}</span></button>
+</th>
+{% else %}
+<th scope="col"{% if class %} class="{{ class }}"{% endif %} data-label="{{ label }}">
+    <button type="submit" form="list-sort" name="sort" value="{{ key }}" class="sort-button">{{ label }}<span class="sort-button__icon" aria-hidden="true">↕</span></button>
+</th>
+{% endif %}
+{% endmacro sort_th %}
+
+{#- How many rows matched, in the page, and a polite live region that
+    admin-lists.js fills with the same words after a filter or sort, so a
+    screen reader hears what the filter found. -#}
+{% macro count(list) %}
+<p class="list-count" data-list-count>{% if list.pages > 1 %}{{ t(s="{count} result, page {page} of {pages}", plural="{count} results, page {page} of {pages}", count=list.total, page=list.page, pages=list.pages) }}{% else %}{{ t(s="{count} result", plural="{count} results", count=list.total) }}{% endif %}</p>
+<div id="list-live" class="visually-hidden" role="status" aria-live="polite"></div>
+{% endmacro count %}
+
+{#- The pager of a listing: its links keep the filter and the sort. -#}
+{% macro pager(list, action, label) %}
+{% if list.pages > 1 %}
+{% if list.query %}{% set base = action ~ "?" ~ list.query ~ "&page=" %}{% else %}{% set base = action ~ "?page=" %}{% endif %}
+<nav class="pagination" aria-label="{{ label }}">
+    <ul class="pagination__list">
+        {% if list.page > 1 %}<li><a class="pagination__link" href="{{ base }}{{ list.page - 1 }}" rel="prev">{{ t(s="Previous page") }}</a></li>{% endif %}
+        {% for p in range(start=1, end=list.pages + 1) %}
+        {% if p == 1 or p == list.pages or (p >= list.page - 2 and p <= list.page + 2) %}
+        <li>{% if p == list.page %}<a class="pagination__link" aria-current="page" aria-label="{{ t(s='Page {number}', number=p) }}">{{ p }}</a>{% else %}<a class="pagination__link" href="{{ base }}{{ p }}" aria-label="{{ t(s='Page {number}', number=p) }}">{{ p }}</a>{% endif %}</li>
+        {% elif p == 2 or p == list.pages - 1 %}
+        <li aria-hidden="true">{{ "…" }}</li>
+        {% endif %}
+        {% endfor %}
+        {% if list.page < list.pages %}<li><a class="pagination__link" href="{{ base }}{{ list.page + 1 }}" rel="next">{{ t(s="Next page") }}</a></li>{% endif %}
+    </ul>
+</nav>
+{% endif %}
+{% endmacro pager %}

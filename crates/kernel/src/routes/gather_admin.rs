@@ -622,4 +622,5 @@ pub fn router() -> Router<AppState> {
         .route("/admin/gather/{id}/save", post(save_submit))
         .route("/admin/gather/{id}/clone", post(clone_query))
         .route("/admin/gather/{id}/delete", post(delete_query))
+        .layer(axum::middleware::from_fn(super::admin_confirm::ask_first))
 }

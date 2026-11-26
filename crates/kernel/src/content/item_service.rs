@@ -2881,6 +2881,31 @@ impl ItemService {
         Item::list_promoted(&self.inner.pool, limit, offset).await
     }
 
+    /// One page of the admin content listing and how many items match; see
+    /// [`Item::admin_page`]. `order_by` comes from the listing's allowed
+    /// columns.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn admin_page(
+        &self,
+        item_type: Option<&str>,
+        status: Option<i16>,
+        title_like: Option<&str>,
+        order_by: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<Item>, i64)> {
+        Item::admin_page(
+            &self.inner.pool,
+            item_type,
+            status,
+            title_like,
+            order_by,
+            limit,
+            offset,
+        )
+        .await
+    }
+
     /// List items with filtering and return total count for pagination.
     pub async fn list_filtered(
         &self,

@@ -419,4 +419,5 @@ pub fn router() -> Router<AppState> {
             get(edit_tile_form).post(edit_tile_submit),
         )
         .route("/admin/structure/tiles/{id}/delete", post(delete_tile))
+        .layer(axum::middleware::from_fn(super::admin_confirm::ask_first))
 }

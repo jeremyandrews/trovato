@@ -15,8 +15,10 @@
 {% for ct in content_types %}
 <form id="regen-{{ ct.machine_name }}"
       method="post"
-      action="/admin/config/pathauto/regenerate" novalidate>
+      action="/admin/config/pathauto/regenerate?confirm" novalidate>
     <input type="hidden" name="_token" value="{{ csrf_token }}">
+    <input type="hidden" name="_confirm" value="{{ t(s='Save pattern changes first. Regenerate aliases for all {type} items using the saved pattern?', type=ct.label) }}">
+    <input type="hidden" name="_confirm_label" value="{{ t(s="Regenerate aliases for {type}", type=ct.label) }}">
     <input type="hidden" name="item_type" value="{{ ct.machine_name }}">
 </form>
 {% endfor %}
@@ -62,8 +64,7 @@
                         #}
                         <button type="submit"
                                 form="regen-{{ ct.machine_name }}"
-                                class="button button--secondary button--small"
-                                data-confirm="{{ t(s='Save pattern changes first. Regenerate aliases for all {type} items using the saved pattern?', type=ct.label) }}">{{ t(s="Regenerate aliases for {type}", type=ct.label) }}</button>
+                                class="button button--secondary button--small">{{ t(s="Regenerate aliases for {type}", type=ct.label) }}</button>
                     </td>
                 </tr>
                 {% endfor %}

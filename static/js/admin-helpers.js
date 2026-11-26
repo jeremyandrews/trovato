@@ -5,7 +5,6 @@
  * - data-confirm click handler (delete confirmation dialogs)
  * - WAI-ARIA tab keyboard navigation
  * - Machine name auto-generation from label fields
- * - Select-all / bulk action form handling
  * - Tile form type field toggling
  */
 (function() {
@@ -85,27 +84,6 @@
             this.dataset.userEdited = 'true';
         });
     });
-
-    // -------------------------------------------------------------------------
-    // Select-all checkbox + bulk action confirmation
-    // -------------------------------------------------------------------------
-    var selectAll = document.getElementById('select-all');
-    if (selectAll) {
-        selectAll.addEventListener('change', function(e) {
-            document.querySelectorAll('input[name="ids[]"]').forEach(function(cb) {
-                cb.checked = e.target.checked;
-            });
-        });
-    }
-
-    var bulkForm = document.getElementById('bulk-form');
-    if (bulkForm) {
-        bulkForm.addEventListener('submit', function(e) {
-            var action = this.querySelector('[name="action"]').value;
-            if (!action) { e.preventDefault(); return; }
-            if (action === 'delete' && !confirm('Delete selected items?')) { e.preventDefault(); }
-        });
-    }
 
     // -------------------------------------------------------------------------
     // Tile form: toggle visibility of type-specific field groups

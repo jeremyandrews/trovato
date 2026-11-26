@@ -1132,11 +1132,15 @@ pub fn router() -> Router<AppState> {
         .merge(super::admin_embed::router())
         // AJAX endpoint
         .route("/system/ajax", post(ajax_callback))
+        // The confirmation page for destructive actions
+        .merge(super::admin_confirm::router())
+        .layer(axum::middleware::from_fn(super::admin_confirm::ask_first))
 }
 
 /// Category and tag admin routes (registered when "categories" plugin is enabled).
 pub fn category_admin_router() -> Router<AppState> {
     super::admin_taxonomy::router()
+        .layer(axum::middleware::from_fn(super::admin_confirm::ask_first))
 }
 
 /// Comment moderation admin routes (registered when "comments" plugin is enabled).
@@ -1165,4 +1169,5 @@ pub fn comment_admin_router() -> Router<AppState> {
             "/admin/content/comments/{id}/delete",
             post(delete_comment_admin),
         )
+        .layer(axum::middleware::from_fn(super::admin_confirm::ask_first))
 }
