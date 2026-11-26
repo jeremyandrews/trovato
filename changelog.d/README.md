@@ -77,7 +77,11 @@ had; the order they are emitted in is the list at the top of
 
 `scripts/changelog-check.sh` fails a pull request that changes anything under
 `crates/`, `plugins/` or `templates/` and adds no fragment. CI runs it as the
-`Changelog Fragment` job. Run it yourself first:
+`Changelog Fragment` job. The one exception is the release fold itself, which
+deletes fragments instead of adding one: a branch that empties this directory
+down to this README and opens a `## vX.Y.Z` section in `CHANGELOG.md` for the
+version `Cargo.toml` declares passes, and the script says so. Run it yourself
+first:
 
 ```sh
 ./scripts/changelog-check.sh

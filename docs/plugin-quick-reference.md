@@ -37,11 +37,11 @@ dependencies = []
 implements = ["tap_item_info", "tap_item_view"]
 weight = 0
 
-# Optional (API 0.106): tables of your own holding site configuration,
+# Optional (API 0.105): tables of your own holding site configuration,
 # carried by `trovato config export` / `config import`.
 [config]
 tables = ["my_plugin_setting"]
-# Optional (API 0.107): columns holding a secret, password, token, key or a
+# Optional (API 0.105): columns holding a secret, password, token, key or a
 # hash of one. Exported as env:TROVATO_SECRET_<TABLE>_<PK>_<COLUMN>, never as
 # the value; import reads that variable.
 secret_columns = { my_plugin_setting = ["api_key"] }

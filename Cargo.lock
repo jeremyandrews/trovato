@@ -1883,7 +1883,7 @@ dependencies = [
 
 [[package]]
 name = "goose"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5280,7 +5280,7 @@ dependencies = [
 
 [[package]]
 name = "test_ai_background"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5289,7 +5289,7 @@ dependencies = [
 
 [[package]]
 name = "test_assistant_scope"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde_json",
  "trovato-sdk",
@@ -5297,14 +5297,14 @@ dependencies = [
 
 [[package]]
 name = "test_e2e_bystander"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "trovato-sdk",
 ]
 
 [[package]]
 name = "test_e2e_callee"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5313,7 +5313,7 @@ dependencies = [
 
 [[package]]
 name = "test_e2e_caller"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5322,14 +5322,14 @@ dependencies = [
 
 [[package]]
 name = "test_e2e_nocaps"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "trovato-sdk",
 ]
 
 [[package]]
 name = "test_form_taps"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde_json",
  "trovato-sdk",
@@ -5337,7 +5337,7 @@ dependencies = [
 
 [[package]]
 name = "test_form_taps_b"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde_json",
  "trovato-sdk",
@@ -5345,7 +5345,7 @@ dependencies = [
 
 [[package]]
 name = "test_item_background"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5354,14 +5354,14 @@ dependencies = [
 
 [[package]]
 name = "test_item_deny"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "trovato-sdk",
 ]
 
 [[package]]
 name = "test_item_writer"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5370,7 +5370,7 @@ dependencies = [
 
 [[package]]
 name = "test_members"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5379,7 +5379,7 @@ dependencies = [
 
 [[package]]
 name = "test_menu_entries"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5388,7 +5388,7 @@ dependencies = [
 
 [[package]]
 name = "test_owned_vocabulary"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5397,7 +5397,7 @@ dependencies = [
 
 [[package]]
 name = "test_page_builder_components"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5406,7 +5406,7 @@ dependencies = [
 
 [[package]]
 name = "test_plugin_api"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5415,7 +5415,7 @@ dependencies = [
 
 [[package]]
 name = "test_queue_worker"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5424,7 +5424,7 @@ dependencies = [
 
 [[package]]
 name = "test_recovery_bystander"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5433,7 +5433,7 @@ dependencies = [
 
 [[package]]
 name = "test_search_enqueue"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5442,7 +5442,7 @@ dependencies = [
 
 [[package]]
 name = "test_site_queries"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -5929,7 +5929,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-kernel"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "ammonia",
  "anyhow",
@@ -6002,7 +6002,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-loadtest"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "chrono",
  "clap",
@@ -6016,7 +6016,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-mcp"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -6038,7 +6038,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-phase0"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -6053,7 +6053,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-sdk"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6063,7 +6063,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-sdk-macros"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -6072,7 +6072,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-search-index"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "anyhow",
  "convert_case 0.6.0",
@@ -6094,7 +6094,7 @@ dependencies = [
 
 [[package]]
 name = "trovato-test-utils"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "dotenvy",
  "parking_lot",
@@ -6106,7 +6106,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_ai"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6115,7 +6115,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_audit_log"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6124,7 +6124,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_block_editor"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6133,7 +6133,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_blog"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6142,7 +6142,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_book"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6151,7 +6151,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_captcha"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6160,7 +6160,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_categories"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6169,7 +6169,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_comments"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6178,7 +6178,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_config_translation"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6187,7 +6187,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_contact"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6196,7 +6196,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_content_locking"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6205,7 +6205,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_content_translation"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6214,7 +6214,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_field_access_ref"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6224,7 +6224,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_image_styles"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6233,7 +6233,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_locale"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6242,7 +6242,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_media"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6251,7 +6251,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_oauth2"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6260,7 +6260,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_page_builder"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6269,7 +6269,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_record_ref"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6279,7 +6279,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_recovery_ref"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6288,7 +6288,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_redirects"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6297,7 +6297,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_scheduled_publishing"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6306,7 +6306,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_search"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6315,7 +6315,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_seo"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6324,7 +6324,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_series"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6333,7 +6333,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_spam"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -6342,7 +6342,7 @@ dependencies = [
 
 [[package]]
 name = "trovato_webhooks"
-version = "0.107.0"
+version = "0.105.0"
 dependencies = [
  "serde",
  "serde_json",

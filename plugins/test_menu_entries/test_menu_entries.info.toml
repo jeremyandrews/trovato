@@ -1,7 +1,7 @@
 name = "test_menu_entries"
 description = "B74 fixture: navigation entries under /user, one gated, one per viewer, one unfollowable"
-version = "0.107.0"
-api_version = "0.107"
+version = "0.105.0"
+api_version = "0.105"
 default_enabled = false
 dependencies = []
 

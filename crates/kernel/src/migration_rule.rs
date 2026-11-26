@@ -426,7 +426,7 @@ fn dollar_tag(s: &str) -> Option<&str> {
 mod tests {
     use super::*;
 
-    const V: &str = "0.107.0";
+    const V: &str = "0.207.0";
 
     fn refused(sql: &str) -> bool {
         check(sql, V, Source::Kernel).is_err()
@@ -439,7 +439,7 @@ mod tests {
         assert_eq!(err.len(), 1);
         assert!(err[0].reason.contains("drops a column"), "{err:?}");
 
-        let marked = "-- trovato:contract 0.106.0: item.legacy_flag unread since 0.106.0\n\
+        let marked = "-- trovato:contract 0.206.0: item.legacy_flag unread since 0.206.0\n\
                       ALTER TABLE item DROP COLUMN legacy_flag;";
         assert_eq!(check(marked, V, Source::Kernel), Ok(()));
     }
@@ -448,16 +448,16 @@ mod tests {
     fn a_marker_must_name_an_existing_release_and_a_reason() {
         let sql = "ALTER TABLE item DROP COLUMN legacy_flag;";
         for marker in [
-            "-- trovato:contract 0.108.0: not released yet",
-            "-- trovato:contract 0.107.0: the release being built",
-            "-- trovato:contract 0.106.0:",
-            "-- trovato:contract 0.106: no patch number",
+            "-- trovato:contract 0.208.0: not released yet",
+            "-- trovato:contract 0.207.0: the release being built",
+            "-- trovato:contract 0.206.0:",
+            "-- trovato:contract 0.206: no patch number",
             "-- trovato:contract soon: no version",
         ] {
             assert!(refused(&format!("{marker}\n{sql}")), "{marker}");
         }
         assert!(!refused(&format!(
-            "-- trovato:contract 0.106.3: an older release\n{sql}"
+            "-- trovato:contract 0.206.3: an older release\n{sql}"
         )));
     }
 
@@ -578,7 +578,7 @@ mod tests {
         assert!(!refused(&format!("-- no-transaction\n{build}")));
         assert!(!refused(&format!("-- no-transaction\n-- why\n{build}\n")));
         // A drop is a contract step: alone, and with a marker.
-        let marker = "-- trovato:contract 0.106.0: idx_item_title unused since 0.106.0";
+        let marker = "-- trovato:contract 0.206.0: idx_item_title unused since 0.206.0";
         assert!(refused(&format!("-- no-transaction\n{drop}")));
         assert!(!refused(&format!("-- no-transaction\n{marker}\n{drop}")));
         // A marker waives compatibility, not where a statement can run.
@@ -617,7 +617,7 @@ mod tests {
     #[test]
     fn the_marker_counts_only_in_the_leading_comments() {
         let sql = "ALTER TABLE item DROP COLUMN legacy_flag;";
-        let marker = "-- trovato:contract 0.106.0: unread since 0.106.0";
+        let marker = "-- trovato:contract 0.206.0: unread since 0.206.0";
         assert!(!refused(&format!("-- Drop the flag.\n\n{marker}\n{sql}")));
         // After the first statement, in a comment or a string, it blesses nothing.
         assert!(refused(&format!("{sql}\n{marker}")));

@@ -30,7 +30,7 @@ options = [
   { value = "large", label = "Large", class = "pb-columns--gap-large" },
 ]
 
-# Before 0.107 the gap was a free CSS value written into a style attribute.
+# Before 0.105 the gap was a free CSS value written into a style attribute.
 [[fields]]
 name = "gap"
 type = "text"

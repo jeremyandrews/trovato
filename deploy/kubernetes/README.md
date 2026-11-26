@@ -6,7 +6,7 @@ adapt, not a supported chart. The upgrade procedure they implement is in
 [docs/deployment/upgrades.md](../../docs/deployment/upgrades.md); the design is
 [docs/design/upgrades-and-probes.md](../../docs/design/upgrades-and-probes.md).
 
-The image tag `0.107.0` is a placeholder: replace it with the release you
+The image tag `0.105.0` is a placeholder: replace it with the release you
 deploy, in both files.
 
 What you supply:
