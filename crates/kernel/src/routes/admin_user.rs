@@ -16,12 +16,12 @@ use crate::models::{CreateUser, UpdateUser, User};
 use crate::routes::admin_form::FieldError;
 use crate::state::AppState;
 
+use super::admin_list::{ListQuery, PER_PAGE};
 use super::helpers::{
     CsrfOnlyForm, admin_user_context, build_local_tasks, render_admin_template, render_error,
     render_forbidden, render_not_found, render_server_error, require_csrf, require_permission,
     validate_password,
 };
-use super::admin_list::{ListQuery, PER_PAGE};
 use super::user_delete::blocks_last_admin;
 
 /// User form data.

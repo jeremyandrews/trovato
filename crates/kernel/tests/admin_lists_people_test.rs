@@ -93,18 +93,34 @@ async fn check_sort(
     assert_eq!(status, StatusCode::OK);
     let body = tbody(&html);
     assert!(at(body, first) < at(body, second), "{base} sorted by {key}");
-    assert!(html.contains(r#"aria-sort="ascending""#), "{base}: ascending is marked");
+    assert!(
+        html.contains(r#"aria-sort="ascending""#),
+        "{base}: ascending is marked"
+    );
 
     let (_, html) = get(app, cookies, &format!("{base}&sort=-{key}")).await;
     let body = tbody(&html);
-    assert!(at(body, second) < at(body, first), "{base} sorted by -{key}");
-    assert!(html.contains(r#"aria-sort="descending""#), "{base}: descending is marked");
+    assert!(
+        at(body, second) < at(body, first),
+        "{base} sorted by -{key}"
+    );
+    assert!(
+        html.contains(r#"aria-sort="descending""#),
+        "{base}: descending is marked"
+    );
 
     let (status, html) = get(app, cookies, &format!("{base}&sort=id%3B+DROP+TABLE+x")).await;
-    assert_eq!(status, StatusCode::OK, "{base}: an unknown sort is not an error");
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "{base}: an unknown sort is not an error"
+    );
     let body = tbody(&html);
     assert!(body.contains(first) && body.contains(second));
-    assert!(html.contains("aria-sort="), "{base}: the default sort is marked");
+    assert!(
+        html.contains("aria-sort="),
+        "{base}: the default sort is marked"
+    );
 }
 
 // =============================================================================
@@ -129,15 +145,13 @@ fn people_filter_sort_page_and_empty_states() {
         let alpha = format!("{tag}-alpha");
         let beta = format!("{tag}-beta");
         for (name, mail) in [(&alpha, "zz"), (&beta, "aa")] {
-            sqlx::query(
-                "INSERT INTO users (id, name, pass, mail) VALUES ($1, $2, '', $3)",
-            )
-            .bind(Uuid::now_v7())
-            .bind(name)
-            .bind(format!("{mail}-{name}@test.local"))
-            .execute(&app.db)
-            .await
-            .unwrap();
+            sqlx::query("INSERT INTO users (id, name, pass, mail) VALUES ($1, $2, '', $3)")
+                .bind(Uuid::now_v7())
+                .bind(name)
+                .bind(format!("{mail}-{name}@test.local"))
+                .execute(&app.db)
+                .await
+                .unwrap();
         }
 
         // The text filter narrows to the matching row, by name or by email.
@@ -147,9 +161,15 @@ fn people_filter_sort_page_and_empty_states() {
         assert!(!html.contains(&beta), "the filter leaves out the other row");
         assert!(html.contains("1 result"), "the count says how many matched");
         assert!(html.contains("table--stack"));
-        assert!(html.contains(&format!("Delete {alpha}")), "a row action names its object");
+        assert!(
+            html.contains(&format!("Delete {alpha}")),
+            "a row action names its object"
+        );
         let (_, html) = get(app, &cookies, &format!("/admin/people?q=aa-{tag}")).await;
-        assert!(html.contains(&beta) && !html.contains(&alpha), "email matches too");
+        assert!(
+            html.contains(&beta) && !html.contains(&alpha),
+            "email matches too"
+        );
 
         // Sorted by name and by email, which order the two the other way.
         let base = format!("/admin/people?q={tag}");
@@ -173,14 +193,25 @@ fn people_filter_sort_page_and_empty_states() {
         .await
         .unwrap();
         let (_, html) = get(app, &cookies, &format!("/admin/people?q={tag}&sort=-name")).await;
-        assert!(html.contains("53 results, page 1 of 2"), "the count names the pages");
+        assert!(
+            html.contains("53 results, page 1 of 2"),
+            "the count names the pages"
+        );
         assert!(
             html.contains(&format!("/admin/people?q={tag}&sort=-name&page=2")),
             "the pager keeps the filter and the sort"
         );
-        let (_, html) = get(app, &cookies, &format!("/admin/people?q={tag}&sort=-name&page=2")).await;
+        let (_, html) = get(
+            app,
+            &cookies,
+            &format!("/admin/people?q={tag}&sort=-name&page=2"),
+        )
+        .await;
         assert!(html.contains("53 results, page 2 of 2"));
-        assert!(html.contains(&alpha), "the last name sorts onto the last page");
+        assert!(
+            html.contains(&alpha),
+            "the last name sorts onto the last page"
+        );
     });
 }
 
@@ -218,7 +249,14 @@ async fn commented_item(app: &TestApp, author: Uuid, tag: &str) -> Uuid {
     item_id
 }
 
-async fn comment(app: &TestApp, item: Uuid, author: Uuid, subject: &str, status: i16, created: i64) {
+async fn comment(
+    app: &TestApp,
+    item: Uuid,
+    author: Uuid,
+    subject: &str,
+    status: i16,
+    created: i64,
+) {
     sqlx::query(
         "INSERT INTO comment (id, item_id, author_id, subject, body, body_format, status, \
          created, changed) VALUES ($1, $2, $3, $4, $5, 'plain_text', $6, $7, $7)",
@@ -280,21 +318,40 @@ fn comments_filter_sort_page_and_empty_states() {
         assert!(body.contains(&older) && !body.contains(&newer));
         assert!(html.contains("1 result"));
         assert!(html.contains("table--stack"));
-        assert!(html.contains(&format!("Delete {older}")), "a row action names its object");
-        let (_, html) = get(app, &cookies, &format!("/admin/content/comments?q={writer}")).await;
+        assert!(
+            html.contains(&format!("Delete {older}")),
+            "a row action names its object"
+        );
+        let (_, html) = get(
+            app,
+            &cookies,
+            &format!("/admin/content/comments?q={writer}"),
+        )
+        .await;
         let body = tbody(&html);
-        assert!(body.contains(&newer) && !body.contains(&older), "author matches too");
+        assert!(
+            body.contains(&newer) && !body.contains(&older),
+            "author matches too"
+        );
         // The existing status select still filters, with the text filter.
-        let (_, html) =
-            get(app, &cookies, &format!("/admin/content/comments?q={tag}&status=0")).await;
+        let (_, html) = get(
+            app,
+            &cookies,
+            &format!("/admin/content/comments?q={tag}&status=0"),
+        )
+        .await;
         let body = tbody(&html);
         assert!(body.contains(&newer) && !body.contains(&older));
 
         let base = format!("/admin/content/comments?q={tag}");
         check_sort(app, &cookies, &base, "posted", &older, &newer).await;
 
-        let (_, html) =
-            get(app, &cookies, &format!("/admin/content/comments?q=none-{tag}")).await;
+        let (_, html) = get(
+            app,
+            &cookies,
+            &format!("/admin/content/comments?q=none-{tag}"),
+        )
+        .await;
         assert!(html.contains("No comments match this filter."));
         assert!(html.contains(r#"href="/admin/content/comments""#));
 
@@ -312,16 +369,27 @@ fn comments_filter_sort_page_and_empty_states() {
         .execute(&app.db)
         .await
         .unwrap();
-        let (_, html) =
-            get(app, &cookies, &format!("/admin/content/comments?q={tag}&status=1")).await;
-        assert!(html.contains("52 results, page 1 of 2"), "the count follows the filter");
+        let (_, html) = get(
+            app,
+            &cookies,
+            &format!("/admin/content/comments?q={tag}&status=1"),
+        )
+        .await;
+        assert!(
+            html.contains("52 results, page 1 of 2"),
+            "the count follows the filter"
+        );
         assert!(
             html.contains(&format!("/admin/content/comments?q={tag}&status=1&page=2")),
             "the pager keeps the filter"
         );
         // The old address still works.
-        let (status, html) =
-            get(app, &cookies, &format!("/admin/content/comments?q={tag}&status=1&page=2")).await;
+        let (status, html) = get(
+            app,
+            &cookies,
+            &format!("/admin/content/comments?q={tag}&status=1&page=2"),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK);
         assert!(html.contains("52 results, page 2 of 2"));
     });
@@ -332,7 +400,15 @@ fn comments_filter_sort_page_and_empty_states() {
 // =============================================================================
 
 /// A managed file row, gone when the test ends.
-async fn file(app: &TestApp, owner: Uuid, name: &str, mime: &str, size: i64, status: i16, created: i64) {
+async fn file(
+    app: &TestApp,
+    owner: Uuid,
+    name: &str,
+    mime: &str,
+    size: i64,
+    status: i16,
+    created: i64,
+) {
     let id = Uuid::now_v7();
     sqlx::query(
         "INSERT INTO file_managed (id, owner_id, filename, uri, filemime, filesize, status, \
@@ -399,11 +475,21 @@ fn files_filter_sort_page_and_empty_states() {
         assert!(body.contains(&small) && !body.contains(&large));
         assert!(html.contains("1 result"));
         assert!(html.contains("table--stack"));
-        assert!(html.contains(&format!("Delete {small}")), "a row action names its object");
-        let (_, html) =
-            get(app, &cookies, &format!("/admin/content/files?q={tag}&status=1")).await;
+        assert!(
+            html.contains(&format!("Delete {small}")),
+            "a row action names its object"
+        );
+        let (_, html) = get(
+            app,
+            &cookies,
+            &format!("/admin/content/files?q={tag}&status=1"),
+        )
+        .await;
         let body = tbody(&html);
-        assert!(body.contains(&large) && !body.contains(&small), "the status select still filters");
+        assert!(
+            body.contains(&large) && !body.contains(&small),
+            "the status select still filters"
+        );
 
         let base = format!("/admin/content/files?q={tag}");
         check_sort(app, &cookies, &base, "name", &small, &large).await;
@@ -421,7 +507,12 @@ fn files_filter_sort_page_and_empty_states() {
             html.contains(&format!("/admin/content/files?q={tag}&page=2")),
             "the pager keeps the filter"
         );
-        let (_, html) = get(app, &cookies, &format!("/admin/content/files?q={tag}&page=2")).await;
+        let (_, html) = get(
+            app,
+            &cookies,
+            &format!("/admin/content/files?q={tag}&page=2"),
+        )
+        .await;
         assert!(html.contains("53 results, page 2 of 2"));
     });
 }
@@ -443,10 +534,23 @@ fn media_filter_count_page_and_empty_states() {
         assert_eq!(status, StatusCode::OK);
         assert!(html.contains(&picture) && !html.contains(&paper));
         assert!(html.contains("1 result"));
-        let (_, html) = get(app, &cookies, &format!("/admin/media?q={tag}&type=document")).await;
-        assert!(html.contains(&paper) && !html.contains(&picture), "the type select still filters");
+        let (_, html) = get(
+            app,
+            &cookies,
+            &format!("/admin/media?q={tag}&type=document"),
+        )
+        .await;
+        assert!(
+            html.contains(&paper) && !html.contains(&picture),
+            "the type select still filters"
+        );
 
-        let (_, html) = get(app, &cookies, &format!("/admin/media?q=none-{tag}&type=all")).await;
+        let (_, html) = get(
+            app,
+            &cookies,
+            &format!("/admin/media?q=none-{tag}&type=all"),
+        )
+        .await;
         assert!(html.contains("No media matches this filter."));
         assert!(html.contains(r#"href="/admin/media""#));
 
@@ -457,7 +561,12 @@ fn media_filter_count_page_and_empty_states() {
             html.contains(&format!("/admin/media?q={tag}&type=image&page=2")),
             "the pager keeps the filter"
         );
-        let (_, html) = get(app, &cookies, &format!("/admin/media?q={tag}&type=image&page=2")).await;
+        let (_, html) = get(
+            app,
+            &cookies,
+            &format!("/admin/media?q={tag}&type=image&page=2"),
+        )
+        .await;
         assert!(html.contains("52 results, page 2 of 2"));
     });
 }
