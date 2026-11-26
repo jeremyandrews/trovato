@@ -535,7 +535,7 @@ fn fields_object_sql(specs: &[FieldSpec]) -> String {
     format!("jsonb_strip_nulls({})", chunks.join(" || "))
 }
 
-/// The field definition [`ItemType`] settings carry for `spec`.
+/// The field definition `ItemType` settings carry for `spec`.
 fn field_definition(spec: &FieldSpec) -> Value {
     use trovato_sdk::types::{FieldDefinition, FieldType};
     let field_type = match spec.kind {
