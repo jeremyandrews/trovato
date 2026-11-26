@@ -9,6 +9,7 @@
     - text: Search the administration
     - searchbox "Search the administration"
     - button "Search"
+  - button "Quick search"
   - list:
     - listitem:
       - link "View site":

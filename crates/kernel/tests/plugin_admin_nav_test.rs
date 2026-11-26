@@ -275,3 +275,39 @@ fn dashboard_card_titles(html: &str) -> Vec<String> {
         })
         .collect()
 }
+
+/// The page a plugin declares is found by admin search under Plugins, for a
+/// viewer holding its permission, and not for one who does not; the
+/// palette's suggestions agree.
+#[test]
+fn admin_search_finds_a_plugins_declared_page_only_for_a_holder() {
+    common::run_test(async {
+        let app = app();
+        let (_id, holder) =
+            common::user_holding(app, "b199tpa", &["access administration pages", PERM_WRITE])
+                .await;
+        let (_id, other) =
+            common::user_holding(app, "b199tpa-no", &["access administration pages"]).await;
+
+        let (status, html) = get(app, &holder, "/admin/search?q=tpa+dashboard").await;
+        assert_eq!(status, StatusCode::OK);
+        let start = html
+            .find(r#"aria-labelledby="search-results-plugins""#)
+            .expect("a Plugins group");
+        let group = &html[start..start + html[start..].find("</section>").unwrap()];
+        assert!(
+            group.contains(&format!(r#"href="{DASHBOARD_PATH}""#)),
+            "{group}"
+        );
+        let (_, json) = get(app, &holder, "/admin/search/suggest?q=tpa+dashboard").await;
+        assert!(json.contains(DASHBOARD_PATH), "{json}");
+
+        let (status, html) = get(app, &other, "/admin/search?q=tpa+dashboard").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!html.contains(&format!(r#"href="{DASHBOARD_PATH}""#)));
+        let (_, json) = get(app, &other, "/admin/search/suggest?q=tpa+dashboard").await;
+        assert!(!json.contains(DASHBOARD_PATH), "{json}");
+
+        disable_plugin(app).await;
+    });
+}

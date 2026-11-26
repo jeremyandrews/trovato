@@ -13,7 +13,7 @@ const doc = fs.readFileSync(path.join(here, '../../docs/admin/inventory.md'), 'u
 const kernel = doc.split('<!-- kernel routes -->')[1].split('<!-- end kernel routes -->')[0];
 
 /** Not pages: an image and JSON endpoints. */
-const NOT_PAGES = new Set(['/admin/appearance/{theme}/screenshot', '/admin/stage/current', '/admin/embed/status']);
+const NOT_PAGES = new Set(['/admin/appearance/{theme}/screenshot', '/admin/stage/current', '/admin/embed/status', '/admin/search/suggest']);
 
 export const routes = kernel
   .split('\n')

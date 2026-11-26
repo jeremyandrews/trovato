@@ -402,6 +402,11 @@
         min-inline-size: 0;
     }
 
+    .admin-search__button,
+    .admin-palette-open {
+        white-space: nowrap;
+    }
+
     .admin-account {
         display: flex;
         flex-wrap: wrap;
@@ -2288,6 +2293,115 @@
     .report-facts th,
     .report-facts td {
         overflow-wrap: anywhere;
+    }
+}
+
+@layer components {
+    /* The command palette (admin-palette.js): its banner button and the
+       modal dialog with the combobox and grouped results. */
+    .admin-palette-open kbd {
+        padding-inline: var(--space-1);
+        border: 1px solid currentColor;
+        border-radius: 3px;
+        font: inherit;
+        font-size: 0.85em;
+    }
+
+    .admin-palette {
+        inline-size: min(40rem, calc(100vw - 2 * var(--space-4)));
+        max-block-size: calc(100vh - 2 * var(--space-5));
+        margin-block-start: 10vh;
+        padding: var(--space-5);
+        border: 1px solid var(--border-strong);
+        border-radius: var(--radius);
+        background: var(--surface-raised);
+        color: var(--text);
+    }
+
+    .admin-palette::backdrop {
+        background: rgb(0 0 0 / 0.55);
+    }
+
+    .admin-palette__title {
+        margin: 0 0 var(--space-3);
+        font-size: var(--step-1);
+    }
+
+    .admin-palette__label {
+        display: block;
+        font-weight: 650;
+    }
+
+    .admin-palette__input {
+        inline-size: 100%;
+    }
+
+    .admin-palette__help {
+        margin-block: var(--space-1) var(--space-3);
+    }
+
+    .admin-palette__results {
+        max-block-size: 50vh;
+        overflow-y: auto;
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+    }
+
+    .admin-palette__heading {
+        padding: var(--space-2) var(--space-3) var(--space-1);
+        color: var(--text-muted);
+        font-size: 0.875rem;
+        font-weight: 650;
+    }
+
+    .admin-palette__option {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0 var(--space-2);
+        min-block-size: var(--target);
+        padding: var(--space-2) var(--space-3);
+        border-inline-start: 4px solid transparent;
+        cursor: pointer;
+    }
+
+    .admin-palette__option:hover {
+        background: var(--surface-hover);
+    }
+
+    /* The active option: a bar and a background, not colour alone. */
+    .admin-palette__option[aria-selected="true"] {
+        border-inline-start-color: var(--accent);
+        background: var(--surface-hover);
+        outline: 2px solid var(--accent);
+        outline-offset: -2px;
+    }
+
+    .admin-palette__option-label {
+        font-weight: 650;
+        overflow-wrap: anywhere;
+    }
+
+    .admin-palette__option-context {
+        color: var(--text-muted);
+        font-size: 0.875rem;
+        overflow-wrap: anywhere;
+    }
+
+    .admin-palette__count {
+        margin-block: var(--space-2) 0;
+        color: var(--text-muted);
+    }
+
+    .admin-palette__count:empty {
+        display: none;
+    }
+
+    .admin-palette__actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-2);
+        margin-block-start: var(--space-4);
     }
 }
 

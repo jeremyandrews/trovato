@@ -16,6 +16,11 @@
 
     {{ form::select(name="language", id="admin-language", label=t(s="Administration language"), options=languages, value=language, translate_options=true, hint=t(s="The language these pages are shown in. It does not change the language of your content.")) }}
 
+    {{ form::fieldset_start(legend=t(s="Search shortcuts")) }}
+        {{ form::checkbox(name="search_slash", label=t(s="Open search with /"), checked=search_slash, hint=t(s="Pressing / anywhere outside a text field opens search. Turn it off if it gets in the way of your screen reader or other keys.")) }}
+        {{ form::select(name="search_key", label=t(s="Another key to open search"), options=search_key_options, value=search_key, translate_options=true, hint=t(s="Works in text fields too. Control+K replaces the browser's own use of that key on these pages.")) }}
+    {{ form::fieldset_end() }}
+
     {{ form::effect(text=t(s="only how this administration looks and reads for you. Nobody else is affected.")) }}
     {{ form::actions(submit_label=t(s="Save preferences")) }}
 </form>
