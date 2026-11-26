@@ -183,10 +183,14 @@ Three layers of custom properties:
 - **Semantic**: `--surface`, `--surface-raised`, `--surface-sunken`, `--text`,
   `--text-muted`, `--border`, `--border-strong`, `--accent`,
   `--accent-text` (text on accent), `--link`, `--danger`, `--danger-surface`,
-  `--success`, `--success-surface`, `--warning-surface`, `--focus`. Each is one
-  `light-dark()` pair, so light and dark are defined in one place.
+  `--success`, `--success-surface`, `--warning-surface`, `--focus`, and
+  `--accent-tint` (a peach tint, the dark ramp's `--night-800` in dark). Each
+  is one `light-dark()` pair, so light and dark are defined in one place.
 - **Component**: `--sidebar-surface`, `--button-surface`, `--field-border`,
-  and so on, defined from the semantic tokens only.
+  and so on, defined from the semantic tokens only. The icon chip is
+  `--chip-surface` (`--accent-tint`) and `--chip-icon` (`--accent`: clay in
+  light, a lighter clay in dark), held at 3:1 like a component boundary
+  although the icon is decorative.
 
 Light and dark follow `prefers-color-scheme`; a per user override (System,
 Light, Dark, in Your preferences) sets `color-scheme` on `<html>`.
