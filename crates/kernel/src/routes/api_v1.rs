@@ -61,10 +61,12 @@ pub fn kernel_api() -> ApiRoutes {
         .get(
             "/tags/autocomplete",
             autocomplete_tags,
-            doc("Search the tags of one category by label, for a category reference field's picker")
-                .required("category", "Category machine name")
-                .required("q", "Label prefix search query")
-                .query("limit", "Max results (default 10, max 50)"),
+            doc(
+                "Search the tags of one category by label, for a category reference field's picker",
+            )
+            .required("category", "Category machine name")
+            .required("q", "Label prefix search query")
+            .query("limit", "Max results (default 10, max 50)"),
         )
         .get(
             "/media/browse",
@@ -396,11 +398,11 @@ struct MediaItem {
 /// The tag picker of a `CategoryReference` field: `[{"id": "uuid", "title":
 /// "..."}]` for the tags of `category` whose label starts with `q`, ignoring
 /// case, by label, from the category's cached tag list
-/// ([`CategoryService::search_tags`](crate::gather::category_service::CategoryService::search_tags)).
+/// ([`CategoryService::search_tags`](crate::gather::CategoryService::search_tags)).
 /// Answers as the viewer, by the rule every category read applies
 /// ([`owned_vocabulary::visible_category`](crate::content::owned_vocabulary::visible_category)):
 /// a site-wide category's tags are public, as `/api/category/{id}/tags` shows
-/// them; an owned vocabulary the viewer may not read answers `[]`, the same as
+/// them; an owner's category the viewer may not read answers `[]`, the same as
 /// a category that does not exist.
 async fn autocomplete_tags(
     State(state): State<AppState>,
@@ -419,16 +421,17 @@ async fn autocomplete_tags(
     }
 
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
-    let found = match crate::content::owned_vocabulary::visible_category(&state, &viewer, category)
-        .await
-    {
-        Ok(Some(category)) => state
-            .categories()
-            .search_tags(&[category.id], query, limit)
-            .await,
-        Ok(None) => Ok(Vec::new()),
-        Err(e) => Err(e),
-    };
+    let found =
+        match crate::content::owned_vocabulary::visible_category(&state, &viewer, category).await {
+            Ok(Some(category)) => {
+                state
+                    .categories()
+                    .search_tags(&[category.id], query, limit)
+                    .await
+            }
+            Ok(None) => Ok(Vec::new()),
+            Err(e) => Err(e),
+        };
     match found {
         Ok(tags) => Json(serde_json::Value::Array(
             tags.into_iter()

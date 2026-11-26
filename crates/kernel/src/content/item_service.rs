@@ -2149,8 +2149,8 @@ impl ItemService {
     /// `tag_url(category, slug)` ([`crate::gather::GatherService::tag_url`] on
     /// the item route), null for a tag without a slug or a category no route
     /// lists. A uuid naming no tag is left out, and so is a tag whose category
-    /// `visible_category` refuses: the item route passes the vocabulary read
-    /// rule (`owned_vocabulary::visible_category`), so an owned vocabulary the
+    /// `visible_category` refuses: the item route passes the category read
+    /// rule (`owned_vocabulary::visible_category`), so an owner's category the
     /// viewer may not read shows nothing. Ancestors share their tag's category.
     pub async fn referenced_tags(
         &self,

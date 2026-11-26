@@ -593,7 +593,7 @@ async fn view_item(
 
     // Resolve CategoryReference fields to their tags: one query for the tags,
     // one recursive query for their ancestors, and the URL of the gather route
-    // that lists each tag's category. A tag of a vocabulary the viewer may not
+    // that lists each tag's category. A tag of a category the viewer may not
     // read (an owned one, B189) is left out: the rule every category read
     // applies, decided once per category the fields name.
     let mut readable_categories = std::collections::HashSet::new();

@@ -97,15 +97,12 @@ pub fn form_text(field_type: &FieldType, value: Option<&Value>) -> String {
             other => scalar_text(other).unwrap_or_default(),
         },
         FieldType::Date => date_text(scalar_of(value)),
-        // `_`: `FieldType` is `#[non_exhaustive]`; a kind this kernel has no
-        // arm for yet shows as text (see `trovato_sdk::types::FieldType`).
-        FieldType::Text { .. }
-        | FieldType::TextLong
-        | FieldType::Email
-        | FieldType::File
-        | _ => {
+        FieldType::Text { .. } | FieldType::TextLong | FieldType::Email | FieldType::File => {
             scalar_text(scalar_of(value)).unwrap_or_default()
         }
+        // `FieldType` is `#[non_exhaustive]`: a kind this kernel has no arm
+        // for yet shows as text (see `trovato_sdk::types::FieldType`).
+        _ => scalar_text(scalar_of(value)).unwrap_or_default(),
     }
 }
 
@@ -356,8 +353,9 @@ pub fn parse(
         | FieldType::RecordReference(_)
         | FieldType::CategoryReference(_)
         | FieldType::Compound { .. }
-        | FieldType::Blocks
-        | _ => Ok(Some(Value::String(raw.to_string()))),
+        | FieldType::Blocks => Ok(Some(Value::String(raw.to_string()))),
+        // `FieldType` is `#[non_exhaustive]`: an unknown kind is kept as text.
+        _ => Ok(Some(Value::String(raw.to_string()))),
     }
 }
 
@@ -438,7 +436,9 @@ fn check_one(
             }
             wrapped_scalar
         }
-        FieldType::Text { .. } | FieldType::Date | FieldType::File | _ => wrapped_scalar,
+        FieldType::Text { .. } | FieldType::Date | FieldType::File => wrapped_scalar,
+        // `FieldType` is `#[non_exhaustive]`: an unknown kind takes a scalar.
+        _ => wrapped_scalar,
     };
     if ok {
         Ok(())

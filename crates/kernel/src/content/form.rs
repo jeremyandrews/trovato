@@ -464,7 +464,11 @@ impl FormBuilder {
             // field is always the repeating container (`stores_a_list`), so
             // what it posts back is an array. The box shows the tag's label.
             FieldType::CategoryReference(category) => {
-                let display = self.reference_titles.get(&text).cloned().unwrap_or_default();
+                let display = self
+                    .reference_titles
+                    .get(&text)
+                    .cloned()
+                    .unwrap_or_default();
                 FormElement::widget("record_reference")
                     .attribute("data-target-type", category.clone())
                     .attribute(
