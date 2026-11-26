@@ -1,0 +1,30 @@
+[package]
+name = "trovato-field-bench"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Benchmark of Gather field filters, sorts and facets at 200 fields and millions of items"
+publish = false
+
+[[bin]]
+name = "field-bench"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+trovato-kernel = { path = "../../crates/kernel" }
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+tokio = { workspace = true }
+sqlx = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+trovato-test-utils = { path = "../../crates/test-utils" }

@@ -12,6 +12,7 @@
 /// the JSON API and the MCP tools refuse a longer one alike.
 pub const MAX_TITLE_LENGTH: usize = 1000;
 
+pub mod accessibility_scan;
 pub mod block_render;
 pub mod block_types;
 pub mod body_field;

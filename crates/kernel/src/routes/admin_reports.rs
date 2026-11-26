@@ -287,9 +287,22 @@ struct MissingAlt {
 /// Most images the accessibility report lists.
 const MISSING_ALT_ROWS: i64 = 50;
 
-/// GET /admin/reports/accessibility: images without a text alternative, the
-/// viewer's own accessibility settings, and how the administration is
-/// checked.
+/// An item whose rich text holds images with no text alternative, as the
+/// "In content" section lists it.
+#[derive(Debug, Serialize)]
+struct MissingAltItem {
+    title: String,
+    item_type: String,
+    count: i32,
+    href: String,
+}
+
+/// Most items the accessibility report's "In content" section lists.
+const MISSING_ALT_ITEM_ROWS: i64 = 50;
+
+/// GET /admin/reports/accessibility: images without a text alternative,
+/// uploaded or written into rich text, the viewer's own accessibility
+/// settings, and how the administration is checked.
 async fn accessibility_report(State(state): State<AppState>, session: Session) -> Response {
     let user = match require_permission(&state, &session, PERMISSION).await {
         Ok(user) => user,
@@ -320,17 +333,92 @@ async fn accessibility_report(State(state): State<AppState>, session: Session) -
     // for someone who may open it.
     let may_fix = viewer.can("access files");
 
+    let (content_missing_total, content_missing) = content_missing_alt(&state, &viewer).await;
+
     let prefs = super::admin_nav::Preferences::load(state.db(), user.id).await;
 
     let mut context = tera::Context::new();
     context.insert("missing_total", &missing_total);
     context.insert("missing", &missing);
     context.insert("may_fix", &may_fix);
+    context.insert("content_missing_total", &content_missing_total);
+    context.insert("content_missing", &content_missing);
     context.insert("pref_theme", prefs.theme.as_deref().unwrap_or("system"));
     context.insert("pref_slash", &!prefs.search_slash_off);
     context.insert("pref_key", prefs.search_key());
     context.insert("path", "/admin/reports/accessibility");
     render_admin_template(&state, &viewer, "admin/reports/accessibility.html", context).await
+}
+
+/// Content items whose rich text holds images with no text alternative: the
+/// total with a finding, and the newest [`MISSING_ALT_ITEM_ROWS`], each linked
+/// to the item's edit form for a viewer who may edit it, to the item for a
+/// viewer who may only view it, and left out for anyone else (B199's listing
+/// rule, `routes::admin_dashboard::your_content`). Reads only the stored scan
+/// ([`crate::content::accessibility_scan`]), written on save: no item's HTML
+/// is parsed here.
+async fn content_missing_alt(
+    state: &AppState,
+    viewer: &crate::tap::UserContext,
+) -> (i64, Vec<MissingAltItem>) {
+    let total: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM item_accessibility WHERE images_missing_alt > 0")
+            .fetch_one(state.db())
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!(error = %e, "accessibility report: count items");
+                0
+            });
+
+    let rows: Vec<(uuid::Uuid, i32)> = sqlx::query_as(
+        "SELECT item_accessibility.item_id, item_accessibility.images_missing_alt \
+         FROM item_accessibility JOIN item ON item.id = item_accessibility.item_id \
+         WHERE item_accessibility.images_missing_alt > 0 \
+         ORDER BY item.changed DESC, item.id DESC LIMIT $1",
+    )
+    .bind(MISSING_ALT_ITEM_ROWS)
+    .fetch_all(state.db())
+    .await
+    .unwrap_or_default();
+    let counts: HashMap<uuid::Uuid, i32> = rows.into_iter().collect();
+    let ids: Vec<uuid::Uuid> = counts.keys().copied().collect();
+
+    let mut items = crate::models::Item::find_by_ids(state.db(), &ids)
+        .await
+        .unwrap_or_default();
+    items.sort_by_key(|i| std::cmp::Reverse((i.changed, i.id)));
+
+    let editor = viewer.can("edit any content");
+    let mut content_missing = Vec::new();
+    for item in items {
+        let href = if editor {
+            format!("/admin/content/{}/edit", item.id)
+        } else if state
+            .items()
+            .check_access(&item, "edit", viewer)
+            .await
+            .unwrap_or(false)
+        {
+            format!("/item/{}/edit", item.id)
+        } else if state
+            .items()
+            .check_access(&item, "view", viewer)
+            .await
+            .unwrap_or(false)
+        {
+            format!("/item/{}", item.id)
+        } else {
+            continue;
+        };
+        let count = counts.get(&item.id).copied().unwrap_or(0);
+        content_missing.push(MissingAltItem {
+            title: item.title.clone(),
+            item_type: item.item_type.clone(),
+            count,
+            href,
+        });
+    }
+    (total, content_missing)
 }
 
 // =============================================================================
