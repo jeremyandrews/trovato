@@ -9,6 +9,7 @@ members = [
     "crates/search-index",
     "benchmarks/phase0",
     "benchmarks/load-test",
+    "benchmarks/field-queries",
     "plugins/trovato_blog",
     "plugins/trovato_media",
     "plugins/trovato_redirects",
@@ -122,6 +123,7 @@ default-members = [
     "crates/search-index",
     "benchmarks/phase0",
     "benchmarks/load-test",
+    "benchmarks/field-queries",
     "plugins/trovato_blog",
 ]
 
