@@ -29,7 +29,10 @@ use trovato_kernel::models::stage::LIVE_STAGE_ID;
 use trovato_test_utils::scratch_db::ScratchDb;
 
 const TYPE: &str = "fx_rec";
-const ITEMS: i64 = 30_000;
+/// Enough items that an index beats reading the type for every shape, on
+/// PostgreSQL 16 and 17, and few enough that each test, which seeds its own
+/// database and fills and builds every index, stays well inside the CI budget.
+const ITEMS: i64 = 12_000;
 
 // ---------------------------------------------------------------------------
 // Statement capture
