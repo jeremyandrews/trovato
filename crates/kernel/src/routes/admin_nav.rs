@@ -587,6 +587,16 @@ pub const LINKS: &[Link] = &[
         )
     },
     Link {
+        synonyms: &["cache", "clear cache", "flush", "speed", "rebuild"],
+        ..page(
+            Configuration,
+            "Performance",
+            "/admin/config/performance",
+            AnyPermission(&["clear caches", "administer site"]),
+            "Clear every cached copy on every server.",
+        )
+    },
+    Link {
         synonyms: &["html", "filters", "markdown", "allowed tags", "editor"],
         ..page(
             Configuration,
@@ -673,12 +683,28 @@ pub const LINKS: &[Link] = &[
         )
     },
     Link {
+        synonyms: &[
+            "requirements",
+            "health",
+            "versions",
+            "system information",
+            "security",
+        ],
+        ..page(
+            Reports,
+            "Status report",
+            "/admin/reports/status",
+            Permission("administer site"),
+            "Versions, the database, the cache server, cron, the file system and security settings, checked now.",
+        )
+    },
+    Link {
         synonyms: &["scheduled tasks", "jobs", "queue", "background"],
         ..page(
             Reports,
             "Cron",
             "/admin/reports/cron",
-            Permission("administer site"),
+            AnyPermission(&["run cron", "administer site"]),
             "Scheduled background tasks, when each last ran and whether it worked.",
         )
     },
