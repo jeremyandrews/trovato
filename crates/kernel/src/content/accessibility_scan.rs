@@ -2,9 +2,9 @@
 //!
 //! `item.fields` stores a rich text (`TextLong`) value as `{"value": "<html
 //! or text>", "format": "<text format>"}`, the shape [`super::submission`]
-//! writes and [`super::item::render_item_fields`] (in `routes::item`) reads
-//! back to render the item's page. Every other field shape (a plain scalar, a
-//! Blocks tree) has no `value` string and contributes nothing here.
+//! writes and `routes::item::render_item_fields` reads back to render the
+//! item's page. Every other field shape (a plain scalar, a Blocks tree) has
+//! no `value` string and contributes nothing here.
 //!
 //! The scan renders each rich text value through the same [`FilterPipeline`]
 //! the item's own page renders it with, then counts with

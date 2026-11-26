@@ -1,5 +1,5 @@
 //! Counts `<img>` elements with no text alternative in a fragment of HTML
-//! (B251), with the same `lol_html` parser [`crate::tokenize`] runs over a
+//! (B251), with the same `lol_html` parser [`crate::tokenize()`] runs over a
 //! page: a real HTML tokenizer, not a regular expression over markup.
 
 use lol_html::html_content::Element;
