@@ -14,7 +14,7 @@
 //! same functions: `account.created` (path `import`), `user.name_changed`,
 //! `user.mail_changed`, `user.status_changed`, `password.set` or
 //! `password.changed` (via `import`), and `user.roles_changed` for each role
-//! granted. They are queued on the [`Run`](super::Run) and written once the
+//! granted. They are queued on the [`Run`] and written once the
 //! import commits, so a dry run or a run rolled back records nothing.
 
 use anyhow::{Context, Result};
