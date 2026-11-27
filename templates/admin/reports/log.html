@@ -37,7 +37,7 @@
                 {% for entry in entries %}
                 <tr>
                     <th scope="row" class="log-time">{{ admin_time(ts=entry.created, seconds=true) }}</th>
-                    <td><span class="log-level log-level--{{ entry.level }}">{{ t(s=entry.level) }}</span></td>
+                    <td>{% set entry_key = entry.id ~ "" %}{% set state = states[entry_key] %}{{ list::status(label=t(s=state.label), kind=state.kind) }}</td>
                     <td>{{ entry.log_type }}</td>
                     <td>{{ entry.message }}</td>
                     <td class="log-context">

@@ -314,6 +314,17 @@ async fn list_files(
     let mut context = tera::Context::new();
     context.insert("files", &files);
     context.insert("thumbnails", &thumbnails);
+    // Each row's state, as every listing shows one (`ListState`).
+    let states: std::collections::HashMap<String, super::admin_list::StateView> = files
+        .iter()
+        .map(|f| {
+            (
+                f.id.to_string(),
+                super::admin_list::ListState::of_file(f.status).view(),
+            )
+        })
+        .collect();
+    context.insert("states", &states);
     context.insert("list", &query.view(total, files.len(), Some(&sort)));
     context.insert("owners", &owners);
     context.insert("status_filter", &status_filter.map(|s| s as i16));
@@ -353,6 +364,10 @@ async fn file_details(
     let mut context = tera::Context::new();
     context.insert("csrf_token", &csrf_token);
     context.insert("file", &file);
+    context.insert(
+        "file_state",
+        &super::admin_list::ListState::of_file(file.status).view(),
+    );
     context.insert("owner", &owner);
     context.insert("public_url", &public_url);
     context.insert("path", &format!("/admin/content/files/{file_id}"));
@@ -630,10 +645,8 @@ struct CommentSettingsForm {
 struct CommentRow<'a> {
     #[serde(flatten)]
     comment: &'a Comment,
-    /// Human-readable status.
-    status_label: &'static str,
-    /// CSS class suffix for the status badge.
-    status_class: &'static str,
+    /// The comment's state, as every listing shows one (`ListState`).
+    state: super::admin_list::StateView,
     /// Whether the approve action applies.
     can_approve: bool,
     /// Whether the unpublish action applies.
@@ -649,8 +662,7 @@ impl<'a> CommentRow<'a> {
         let status = CommentStatus::from_i16(comment.status).unwrap_or(CommentStatus::Unpublished);
         Self {
             comment,
-            status_label: status.label(),
-            status_class: status.css_suffix(),
+            state: super::admin_list::ListState::of_comment(status).view(),
             can_approve: !status.is_visible(),
             can_unpublish: status.is_visible(),
             can_mark_spam: status != CommentStatus::Spam,

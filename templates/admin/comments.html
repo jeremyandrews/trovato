@@ -63,7 +63,7 @@
                         {% endif %}
                     </td>
                     <td>
-                        <span class="status status--{{ comment.status_class }}">{{ t(s=comment.status_label) }}</span>
+                        {{ list::status(label=t(s=comment.state.label), kind=comment.state.kind) }}
                     </td>
                     <td>{{ admin_time(ts=comment.created) }}</td>
                     <td class="operations">

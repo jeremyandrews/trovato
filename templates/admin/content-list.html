@@ -65,11 +65,7 @@
                         <td>{{ item.type }}</td>
                         <td>{% if author %}{{ author }}{% else %}{{ t(s="Unknown") }}{% endif %}</td>
                         <td>
-                            {% if item.status == 1 %}
-                            <span class="status status--published">{{ t(s="Published") }}</span>
-                            {% else %}
-                            <span class="status status--unpublished">{{ t(s="Unpublished") }}</span>
-                            {% endif %}
+                            {% set state = states[item.id] %}{{ list::status(label=t(s=state.label), kind=state.kind) }}
                         </td>
                         <td>{{ admin_time(ts=item.changed) }}</td>
                         <td class="operations">

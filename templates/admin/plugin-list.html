@@ -37,13 +37,7 @@
                 <td>{{ plugin.version }}</td>
                 <td>{{ plugin.dependencies }}</td>
                 <td>
-                    {% if plugin.status == "Enabled" %}
-                    <span class="status status--active">{{ t(s="Enabled") }}</span>
-                    {% elif plugin.status == "Disabled" %}
-                    <span class="status">{{ t(s="Disabled") }}</span>
-                    {% else %}
-                    <span class="status">{{ t(s="Not installed") }}</span>
-                    {% endif %}
+                    {{ list::status(label=t(s=plugin.state.label), kind=plugin.state.kind) }}
                     {% if plugin.pending_restart %}
                     <span class="plugin-pending-restart" data-pending-restart="{{ plugin.name }}">{{ t(s="Waiting for restart") }}</span>
                     {% endif %}

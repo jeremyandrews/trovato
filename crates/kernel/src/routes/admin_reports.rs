@@ -420,6 +420,17 @@ async fn log_report(
     let mut context = tera::Context::new();
     context.insert("list", &query.view(total, entries.len(), Some(&sort)));
     context.insert("entries", &entries);
+    // Each entry's level, as every listing shows a state (`ListState`).
+    let states: std::collections::HashMap<String, super::admin_list::StateView> = entries
+        .iter()
+        .map(|e| {
+            (
+                e.id.to_string(),
+                super::admin_list::ListState::of_log_level(&e.level).view(),
+            )
+        })
+        .collect();
+    context.insert("states", &states);
     context.insert("levels", LEVELS);
     context.insert("types", &types);
     context.insert("level_filter", &level.unwrap_or_default());

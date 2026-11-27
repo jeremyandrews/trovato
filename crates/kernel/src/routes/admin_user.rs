@@ -245,6 +245,17 @@ async fn list_users(
     let mut context = tera::Context::new();
     context.insert("warning", &warning);
     context.insert("users", &users);
+    // Each row's state, as every listing shows one (`ListState`).
+    let states: std::collections::HashMap<String, super::admin_list::StateView> = users
+        .iter()
+        .map(|u| {
+            (
+                u.id.to_string(),
+                super::admin_list::ListState::of_account(u.status).view(),
+            )
+        })
+        .collect();
+    context.insert("states", &states);
     context.insert("list", &query.view(total, users.len(), Some(&sort)));
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/people");

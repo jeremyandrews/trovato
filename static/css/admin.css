@@ -1586,9 +1586,7 @@
 
     /* Badges and statuses: always text. */
     .badge,
-    .status,
-    .access-rule-status,
-    .log-level,
+    .list-status,
     .theme-card__badge {
         display: inline-block;
         padding: 0 var(--space-2);
@@ -1607,24 +1605,28 @@
         margin-inline-start: var(--space-1);
     }
 
-    .badge--success,
-    .status--published,
-    .status--active,
-    .access-rule-status--allow {
+    .badge--success {
         background: var(--success-surface);
     }
 
-    .status--unpublished,
-    .status--inactive,
-    .access-rule-status--deny,
-    .log-level--error,
     .badge--error,
     .badge--raw-sql {
         background: var(--danger-surface);
     }
 
-    .log-level--warn {
+    /* A listing row's state (`list::status`, design.md "Icons and status"):
+       the word in --text inside a --border-strong pill, and colour only
+       where the row needs someone. `ListState::kind()` picks the kind. */
+    .list-status--problem {
+        background: var(--danger-surface);
+    }
+
+    .list-status--attention {
         background: var(--warning-surface);
+    }
+
+    .list-status--done {
+        font-weight: 400;
     }
 
     /* Icons (design.md "Icons and status"): decorative, drawn in the
@@ -2076,7 +2078,8 @@
         .landing-list,
         .table-scroll,
         .button,
-        .badge {
+        .badge,
+        .list-status {
             border-color: CanvasText;
         }
 
@@ -2090,21 +2093,6 @@
 
 /* content, comments, files, media. */
 @layer components {
-    /* Comment and file statuses beyond the shared published/unpublished pair.
-       The words carry the meaning; the surface only reinforces it. */
-    .status--pending,
-    .status--temporary {
-        background: var(--warning-surface);
-    }
-
-    .status--spam {
-        background: var(--danger-surface);
-    }
-
-    .status--permanent {
-        background: var(--success-surface);
-    }
-
     /* Content list: the bulk selects size to their options, not the row. */
     .bulk-actions .bulk-action-select,
     .bulk-actions .form-select {

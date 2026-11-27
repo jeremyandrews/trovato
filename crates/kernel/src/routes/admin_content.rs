@@ -154,6 +154,17 @@ async fn list_content(
     let mut context = tera::Context::new();
     context.insert("items", &items);
     context.insert("operations", &operations);
+    // Each row's state, as every listing shows one (`ListState`).
+    let states: std::collections::HashMap<String, super::admin_list::StateView> = items
+        .iter()
+        .map(|i| {
+            (
+                i.id.to_string(),
+                super::admin_list::ListState::of_item(i.status).view(),
+            )
+        })
+        .collect();
+    context.insert("states", &states);
     context.insert("authors", &authors);
     context.insert("content_types", &content_types);
     context.insert("stages", &stages);

@@ -183,6 +183,8 @@ struct RuleRow {
     rule_type: &'static str,
     pattern: String,
     status: &'static str,
+    /// The row's state, as every listing shows one (`ListState`).
+    state: super::admin_list::StateView,
     created: i64,
 }
 
@@ -193,6 +195,7 @@ impl From<AccessRule> for RuleRow {
             rule_type: rule.rule_type.label(),
             pattern: rule.pattern,
             status: rule.status.as_str(),
+            state: super::admin_list::ListState::of_rule(rule.status).view(),
             created: rule.created,
         }
     }

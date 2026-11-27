@@ -446,6 +446,8 @@ query and `templates/admin/macros/list.html` draws it:
   revision of …"). The actions column is as wide as its content on a wide
   screen. `tests/admin-a11y/specs/row-actions.spec.mjs` holds every
   listing to this.
+- **State.** A row's state is a `list::status` pill, quiet unless the row
+  needs someone: see "Icons and status" (section 12).
 - **Asking first.** A destructive action asks on a page of its own
   (`routes::admin_confirm`), the same with JavaScript on or off. Its form
   posts to its usual address with `?confirm`; the layer keeps the fields in
@@ -622,3 +624,24 @@ that same element is the badge (`--text` on `--warning-surface`, with a
 transparent border that forced colours draw as a box), never a second
 element beside it, so a listener hears the count once, and the words, not
 the colour, carry the meaning.
+
+**A row's state.** Every listing that shows a row's state (published,
+blocked, pending review, a log level) draws it with one macro,
+`list::status(label, kind)` in `templates/admin/macros/list.html`: one pill
+holding the translated word, in `--text` with a `--border-strong` border.
+The word carries the meaning; the colour only repeats it, and only where
+the row needs someone, so the common state is quiet and the rare one
+stands out. There are three kinds:
+
+- `problem`, on `--danger-surface`: something failed or was refused;
+- `attention`, on `--warning-surface`: something waits for a person;
+- `done`, a quiet neutral pill: the ordinary state.
+
+`admin_list::ListState::kind()` is the one place a state's kind is set,
+with an exhaustive `match`; each model value reaches a `ListState` through
+one function per source (`ListState::of_comment`, `of_log_level`, …), so the
+same state looks the same on every page. The waiting status line above is
+not a `ListState` and keeps its own rule (`.status-line--waiting`); it and
+the `attention` pill share the `--warning-surface` token. Other badges (a
+language's "Default", a role's "Built-in", an AI provider's key) are not
+states of the row and stay badges.

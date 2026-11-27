@@ -49,11 +49,7 @@
                     <td>{{ t(s="{size} KB", size=size_kb) }}</td>
                     <td>{% if owner %}{{ owner }}{% else %}{{ t(s="Unknown") }}{% endif %}</td>
                     <td>
-                        {% if file.status == "Permanent" %}
-                        <span class="status status--permanent">{{ t(s="Permanent") }}</span>
-                        {% else %}
-                        <span class="status status--temporary">{{ t(s="Temporary") }}</span>
-                        {% endif %}
+                        {% set state = states[file.id] %}{{ list::status(label=t(s=state.label), kind=state.kind) }}
                     </td>
                     <td>{{ admin_time(ts=file.created) }}</td>
                     <td class="operations">

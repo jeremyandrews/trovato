@@ -46,11 +46,7 @@
                     {% endif %}
                 </td>
                 <td>
-                    {% if provider.enabled %}
-                    <span class="badge badge--success">{{ t(s="Enabled") }}</span>
-                    {% else %}
-                    <span class="badge badge--warning">{{ t(s="Disabled") }}</span>
-                    {% endif %}
+                    {{ list::status(label=t(s=provider.state.label), kind=provider.state.kind) }}
                 </td>
                 <td class="operations">
                     {{ list::row_action(href="/admin/system/ai-providers/" ~ provider.id ~ "/edit", text=t(s="Edit", ctx="row action"), id="act-edit-" ~ provider.id, row_id="row-" ~ provider.id) }}

@@ -128,6 +128,11 @@ fn a_row_action_shows_its_verb_and_is_named_by_the_row() {
             )),
             "Delete is named by the row"
         );
+        // Its state is a quiet pill: published needs nobody.
+        assert!(
+            html.contains(r#"<span class="list-status list-status--done">Published</span>"#),
+            "{html}"
+        );
         // The title is not repeated as the actions' visible text.
         assert!(!html.contains(&format!(">Edit {title}<")), "{html}");
         assert!(!html.contains(&format!(">Revisions of {title}<")), "{html}");

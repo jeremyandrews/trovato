@@ -43,11 +43,7 @@
                     </th>
                     <td>{{ user.mail }}</td>
                     <td>
-                        {% if user.status == 1 %}
-                        <span class="status status--active">{{ t(s="Active") }}</span>
-                        {% else %}
-                        <span class="status status--inactive">{{ t(s="Blocked") }}</span>
-                        {% endif %}
+                        {% set state = states[user.id] %}{{ list::status(label=t(s=state.label), kind=state.kind) }}
                     </td>
                     <td>{% if user.is_admin %}{{ t(s="Yes") }}{% else %}{{ t(s="No") }}{% endif %}</td>
                     <td class="operations">
