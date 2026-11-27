@@ -203,6 +203,16 @@ pub struct Visit {
     pub body: String,
 }
 
+/// One write [`PerfSite::write`] sent.
+pub struct Written {
+    /// What it did.
+    pub visit: Visit,
+    /// How long the request took.
+    pub elapsed: std::time::Duration,
+    /// The cookies to send next.
+    pub cookies: String,
+}
+
 /// A site of its own for performance tests.
 pub struct PerfSite {
     /// The app, on the scratch database.
@@ -385,8 +395,19 @@ impl PerfSite {
     /// (deleting those would make the generation watcher clear caches at a
     /// moment of its choosing).
     async fn make_cold(&self) {
+        self.make_cold_keeping("").await;
+    }
+
+    /// [`Self::make_cold`], keeping the sessions `cookies` holds too.
+    async fn make_cold_keeping(&self, cookies: &str) {
         self.app.state.clear_local_caches().await;
-        let keep = self.session_keys();
+        let mut keep = self.session_keys();
+        keep.extend(
+            cookies
+                .split(';')
+                .filter_map(|kv| kv.trim().split_once('='))
+                .map(|(_, v)| v.to_string()),
+        );
         let mut conn = self
             .redis
             .get_multiplexed_async_connection()
@@ -495,6 +516,86 @@ impl PerfSite {
             body,
         }
     }
+    /// The session cookies `visitor` signs in with.
+    pub fn cookies_of(&self, visitor: Visitor) -> &str {
+        self.cookies(visitor)
+    }
+
+    /// Load `page` with `cookies`, then send the write `post` makes of that
+    /// page's HTML, and say what the write did under `key`, how long it took
+    /// (the request alone, from sending it to reading its whole body), and
+    /// the cookies to send next (the ones it reissued, or `cookies`).
+    ///
+    /// With `cold`, the caches are emptied before the page loads, as
+    /// [`Self::submit`] does: the page then warms the same caches on every
+    /// run, so the write's counts are the same on every run too. Without it
+    /// nothing is emptied, for timing a write the way a busy site serves it.
+    pub async fn write(
+        &self,
+        key: &str,
+        cookies: &str,
+        page: &str,
+        cold: bool,
+        post: impl FnOnce(&str) -> Request<Body>,
+    ) -> Written {
+        let _turn = self.one_at_a_time.lock().await;
+        if cold {
+            self.make_cold_keeping(cookies).await;
+        }
+        let mut get = Request::get(page);
+        if !cookies.is_empty() {
+            get = get.header("cookie", cookies);
+        }
+        let response = self
+            .app
+            .request(get.body(Body::empty()).expect("request"))
+            .await;
+        assert_eq!(response.status().as_u16(), 200, "{key}: {page} did not load");
+        let html = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default();
+        let mut request = post(&html);
+        if !cookies.is_empty() {
+            request
+                .headers_mut()
+                .insert("cookie", cookies.parse().expect("cookie header"));
+        }
+        if cold {
+            super::settle_cache_generations().await;
+        }
+
+        let started = std::time::Instant::now();
+        let response = self.app.request(request).await;
+        let status = response.status().as_u16();
+        let reissued = super::extract_cookies(&response);
+        let snapshot = response
+            .extensions()
+            .get::<RequestProfileSnapshot>()
+            .cloned()
+            .expect("the timing layer leaves a profile in every response");
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .map(|b| String::from_utf8_lossy(&b).into_owned())
+            .unwrap_or_default();
+        let elapsed = started.elapsed();
+
+        Written {
+            visit: Visit {
+                status,
+                counts: Counts::of(&snapshot),
+                key: key.to_string(),
+                body,
+            },
+            elapsed,
+            cookies: if reissued.is_empty() {
+                cookies.to_string()
+            } else {
+                reissued
+            },
+        }
+    }
+
     /// Load `path` as `visitor` with `caches`, and say what the request did.
     pub async fn visit(&self, page: &str, visitor: Visitor, caches: Caches, path: &str) -> Visit {
         self.visit_with(page, visitor, caches, path, false).await
@@ -610,7 +711,17 @@ fn record(key: &str, counts: &Counts) {
 
 /// Check `visit` against the file: panics with the difference, or records it.
 pub fn check(visit: &Visit) {
-    assert_eq!(visit.status, 200, "{} answered {}", visit.key, visit.status);
+    check_answered(visit, 200);
+}
+
+/// [`check`], for a request whose success answers `status` (a redirect after
+/// a form, `201` after a create).
+pub fn check_answered(visit: &Visit, status: u16) {
+    assert_eq!(
+        visit.status, status,
+        "{} answered {}: {}",
+        visit.key, visit.status, visit.body
+    );
     // A page with empty caches reads the database: none counted means the
     // counting is broken, not that the page is free.
     assert!(

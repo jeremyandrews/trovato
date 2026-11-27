@@ -395,6 +395,74 @@ sql = "select value from site_config where key = $? and tenant_id = $?"
 count = 1
 sql = "select count(*) from system_log where level = ? and created >= $?"
 
+["admin_user_edit.admin.post"]
+queries = 9
+cache_gets = 3
+cache_misses = 2
+cache_sets = 0
+plugin_calls = 0
+host_calls = 0
+gathers = 0
+renders = 0
+
+["admin_user_edit.admin.post".statements."insert:security_audit_log:7b944fcd"]
+count = 1
+sql = "insert into security_audit_log (kind, user_id, actor_id, subject_hash, outcome, ip_address, user_agent, details, id) values ($?)"
+
+["admin_user_edit.admin.post".statements."select:roles:1bee9f41"]
+count = 1
+sql = "select * from roles order by name"
+
+["admin_user_edit.admin.post".statements."select:roles:e4ee5500"]
+count = 1
+sql = "select r.* from roles r join user_roles ur on r.id = ur.role_id where ur.user_id = $? order by r.name"
+
+["admin_user_edit.admin.post".statements."select:site_config:897f0424"]
+count = 1
+sql = "select value from site_config where key = $? and tenant_id = $?"
+
+["admin_user_edit.admin.post".statements."select:users:37216782"]
+count = 3
+sql = "select * from users where id = $?"
+
+["admin_user_edit.admin.post".statements."select:users:fb08b630"]
+count = 1
+sql = "select * from users where lower(mail) = lower($?)"
+
+["admin_user_edit.admin.post".statements."update:users:59ce245e"]
+count = 1
+sql = "update users set name = $?, mail = $?, is_admin = $?, status = $? where id = $? returning *"
+
+["api_token_create.user.post"]
+queries = 5
+cache_gets = 1
+cache_misses = 1
+cache_sets = 0
+plugin_calls = 0
+host_calls = 0
+gathers = 0
+renders = 0
+
+["api_token_create.user.post".statements."insert:api_tokens:d832e228"]
+count = 1
+sql = "insert into api_tokens (id, user_id, name, token_hash, expires_at) values ($?) returning *"
+
+["api_token_create.user.post".statements."insert:security_audit_log:7b944fcd"]
+count = 1
+sql = "insert into security_audit_log (kind, user_id, actor_id, subject_hash, outcome, ip_address, user_agent, details, id) values ($?)"
+
+["api_token_create.user.post".statements."select:api_tokens:9e4ead37"]
+count = 1
+sql = "select count(*) from api_tokens where user_id = $?"
+
+["api_token_create.user.post".statements."select:site_config:897f0424"]
+count = 1
+sql = "select value from site_config where key = $? and tenant_id = $?"
+
+["api_token_create.user.post".statements."select:users:37216782"]
+count = 1
+sql = "select * from users where id = $?"
+
 ["category.anonymous.cold"]
 queries = 19
 cache_gets = 19
@@ -1292,6 +1360,52 @@ sql = "select * from tile where region = $? and stage_id = $? and status = ? ord
 ["login.anonymous.warm".statements."select:users:37216782"]
 count = 1
 sql = "select * from users where id = $?"
+
+["password_change.user.post"]
+queries = 15
+cache_gets = 7
+cache_misses = 1
+cache_sets = 0
+plugin_calls = 0
+host_calls = 0
+gathers = 0
+renders = 0
+
+["password_change.user.post".statements."insert:form_state_cache:56dca877"]
+count = 2
+sql = "insert into form_state_cache (form_build_id, form_id, state, created, updated) values ($?) on conflict (form_build_id) do update set state = excluded.state, updated = excluded.updated"
+
+["password_change.user.post".statements."insert:security_audit_log:7b944fcd"]
+count = 1
+sql = "insert into security_audit_log (kind, user_id, actor_id, subject_hash, outcome, ip_address, user_agent, details, id) values ($?)"
+
+["password_change.user.post".statements."select:form_state_cache:9446971b"]
+count = 1
+sql = "select state from form_state_cache where form_build_id = $?"
+
+["password_change.user.post".statements."select:site_config:51f89970"]
+count = 1
+sql = "select key, value, updated from site_config"
+
+["password_change.user.post".statements."select:site_config:897f0424"]
+count = 1
+sql = "select value from site_config where key = $? and tenant_id = $?"
+
+["password_change.user.post".statements."select:tile:cc3dd263"]
+count = 4
+sql = "select * from tile where region = $? and stage_id = $? and status = ? order by weight asc, label asc"
+
+["password_change.user.post".statements."select:user_mail_preference:de4e6927"]
+count = 1
+sql = "select plugin from user_mail_preference where user_id = $? and opted_out_at is not null order by plugin"
+
+["password_change.user.post".statements."select:users:37216782"]
+count = 3
+sql = "select * from users where id = $?"
+
+["password_change.user.post".statements."update:users:63595ee7"]
+count = 1
+sql = "update users set pass = $? where id = $?"
 
 ["search.anonymous.cold"]
 queries = 14

@@ -16,7 +16,7 @@
 
 mod common;
 
-use common::perf::{Caches, PerfSite, Visitor, check, expected, shared_site};
+use common::perf::{Caches, PerfSite, Visitor, check, check_answered, expected, shared_site};
 use common::run_test;
 
 /// Held by a test that adds a comment row for a while (the measured comment
@@ -598,5 +598,272 @@ fn comment() {
             .await
             .unwrap();
         check(&visit);
+    });
+}
+
+// ── Writes the security log records (B277) ─────────────────────────────────
+//
+// Each of these writes an account change and the security event that records
+// it, in one transaction. The counts pin what that costs; the ignored
+// `security_event_write_latency` below times the same requests.
+
+/// The password every account made by these tests starts with, and the one
+/// the password change alternates with.
+const WRITE_PASSWORDS: [&str; 2] = ["Perf-Write-Password-1", "Perf-Write-Password-2"];
+
+/// A signed-in member of the site of its own: `(id, name, cookies)`. Its
+/// session is registered (the page load does that) before anything is
+/// measured.
+async fn own_member(site: &PerfSite, prefix: &str) -> (uuid::Uuid, String, String) {
+    let name = format!("{prefix}_{}", uuid::Uuid::now_v7().simple());
+    site.app
+        .create_test_user(&name, WRITE_PASSWORDS[0], &format!("{name}@perf.example.test"))
+        .await;
+    let id = common::user_id_of(&site.app, &name).await;
+    let cookies = site.app.login(&name, WRITE_PASSWORDS[0]).await;
+    (id, name, cookies)
+}
+
+/// The `content` of the page's `csrf-token` meta tag.
+fn meta_csrf(html: &str) -> String {
+    let marker = "name=\"csrf-token\" content=\"";
+    html.find(marker)
+        .and_then(|start| html[start + marker.len()..].split('"').next())
+        .expect("a csrf-token meta tag")
+        .to_string()
+}
+
+/// The value of the first `_token` input on the page.
+fn form_token(html: &str) -> String {
+    common::input_value_in(html, "_token").expect("a CSRF form field")
+}
+
+/// Self registration, as the signup page posts it.
+fn register(html: &str, name: &str) -> axum::http::Request<axum::body::Body> {
+    axum::http::Request::post("/user/register/json")
+        .header("content-type", "application/json")
+        .header("x-csrf-token", meta_csrf(html))
+        .body(axum::body::Body::from(
+            serde_json::json!({
+                "username": name,
+                "mail": format!("{name}@perf.example.test"),
+                "password": WRITE_PASSWORDS[0],
+            })
+            .to_string(),
+        ))
+        .unwrap()
+}
+
+/// The profile page's password change, from `from` to `to`.
+fn change_password(html: &str, from: &str, to: &str) -> axum::http::Request<axum::body::Body> {
+    let fields = common::form_fields(html, "user_password_change");
+    axum::http::Request::post("/user/password")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(axum::body::Body::from(format!(
+            "{fields}&current_password={from}&new_password={to}&confirm_password={to}"
+        )))
+        .unwrap()
+}
+
+/// The administrator's edit form for the account `name`, saved with `mail`.
+fn admin_edit(html: &str, id: uuid::Uuid, name: &str, mail: &str) -> axum::http::Request<axum::body::Body> {
+    axum::http::Request::post(format!("/admin/people/{id}/edit"))
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(axum::body::Body::from(format!(
+            "_token={}&_form_build_id=x&name={}&mail={}&status=1",
+            urlencoding::encode(&form_token(html)),
+            urlencoding::encode(name),
+            urlencoding::encode(mail),
+        )))
+        .unwrap()
+}
+
+/// `POST /api/tokens`, as the tokens page sends it.
+fn create_token(html: &str) -> axum::http::Request<axum::body::Body> {
+    axum::http::Request::post("/api/tokens")
+        .header("content-type", "application/json")
+        .header("x-csrf-token", meta_csrf(html))
+        .body(axum::body::Body::from(
+            serde_json::json!({ "name": "perf", "expires_in_days": 30 }).to_string(),
+        ))
+        .unwrap()
+}
+
+/// How many security events of `kind` name `user_id`.
+async fn events_of(site: &PerfSite, kind: &str, user_id: uuid::Uuid) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM security_audit_log WHERE kind = $1 AND user_id = $2")
+        .bind(kind)
+        .bind(user_id)
+        .fetch_one(&site.app.db)
+        .await
+        .unwrap()
+}
+
+/// A member changing their own password writes the hash and
+/// `password.changed`, and commits them together.
+#[test]
+fn password_change() {
+    run_test(async {
+        let site = shared_site();
+        let (id, _, cookies) = own_member(site, "perf_pw").await;
+        let written = site
+            .write("password_change.user.post", &cookies, "/user/profile", true, |html| {
+                change_password(html, WRITE_PASSWORDS[0], WRITE_PASSWORDS[1])
+            })
+            .await;
+        assert_eq!(events_of(site, "password.changed", id).await, 1);
+        check(&written.visit);
+    });
+}
+
+/// An administrator changing an account's e-mail address writes the account
+/// and `user.mail_changed`, and commits them together.
+#[test]
+fn admin_user_edit() {
+    run_test(async {
+        let site = shared_site();
+        let (id, name, _) = own_member(site, "perf_edit").await;
+        let admin = site.cookies_of(Visitor::Admin).to_string();
+        let page = format!("/admin/people/{id}/edit");
+        let written = site
+            .write("admin_user_edit.admin.post", &admin, &page, true, |html| {
+                admin_edit(html, id, &name, &format!("{name}@changed.example.test"))
+            })
+            .await;
+        assert_eq!(events_of(site, "user.mail_changed", id).await, 1);
+        check_answered(&written.visit, 303);
+    });
+}
+
+/// Issuing an API token writes the token and `api_token.created`, and
+/// commits them together.
+#[test]
+fn api_token_create() {
+    run_test(async {
+        let site = shared_site();
+        let (id, _, cookies) = own_member(site, "perf_token").await;
+        let written = site
+            .write("api_token_create.user.post", &cookies, "/user/tokens", true, create_token)
+            .await;
+        assert_eq!(events_of(site, "api_token.created", id).await, 1);
+        check_answered(&written.visit, 201);
+    });
+}
+
+/// The `q`th quantile of `samples` (sorted here), nearest rank.
+fn quantile(samples: &mut [std::time::Duration], q: f64) -> std::time::Duration {
+    samples.sort_unstable();
+    let rank = (q * samples.len() as f64).ceil() as usize;
+    samples[rank.clamp(1, samples.len()) - 1]
+}
+
+/// Time `runs` writes after `warmup` unmeasured ones, and print the median
+/// and 95th percentile latency and the statements per request.
+async fn time_write<F, Fut>(label: &str, warmup: usize, runs: usize, mut one: F)
+where
+    F: FnMut(usize) -> Fut,
+    Fut: std::future::Future<Output = common::perf::Written>,
+{
+    let mut samples = Vec::with_capacity(runs);
+    let mut statements = std::collections::BTreeMap::<u32, usize>::new();
+    for i in 0..warmup + runs {
+        let written = one(i).await;
+        assert!(
+            (200..400).contains(&written.visit.status),
+            "{label} answered {}: {}",
+            written.visit.status,
+            written.visit.body
+        );
+        if i >= warmup {
+            samples.push(written.elapsed);
+            *statements.entry(written.visit.counts.queries).or_default() += 1;
+        }
+    }
+    let p50 = quantile(&mut samples, 0.50);
+    let p95 = quantile(&mut samples, 0.95);
+    println!(
+        "B277 {label}: p50 {:.3} ms, p95 {:.3} ms, statements per request {statements:?} ({runs} runs after {warmup} warmup)",
+        p50.as_secs_f64() * 1000.0,
+        p95.as_secs_f64() * 1000.0,
+    );
+}
+
+/// The latency of the four writes above, on a warm site: 200 requests each
+/// after 20 unmeasured ones. Timings differ by machine, so this is not run
+/// with the suite; run it on a release build with nothing else running:
+///
+/// ```sh
+/// cargo test --release -p trovato-kernel --test performance_test \
+///     security_event_write_latency -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore = "a timing, not a check: run by hand on a quiet machine"]
+fn security_event_write_latency() {
+    run_test(async {
+        const WARMUP: usize = 20;
+        const RUNS: usize = 200;
+        let site = shared_site();
+
+        time_write("registration", WARMUP, RUNS, |_| async {
+            let name = format!("perf_reg_{}", uuid::Uuid::now_v7().simple());
+            site.write("bench", "", "/", false, |html| register(html, &name))
+                .await
+        })
+        .await;
+
+        let (pw_id, _, pw_cookies) = own_member(site, "perf_pw_bench").await;
+        let cookies = std::sync::Mutex::new(pw_cookies);
+        time_write("password change", WARMUP, RUNS, |i| {
+            let cookies = &cookies;
+            async move {
+                site.app
+                    .state
+                    .rate_limiter()
+                    .reset("password", &pw_id.to_string())
+                    .await
+                    .ok();
+                let (from, to) = (WRITE_PASSWORDS[i % 2], WRITE_PASSWORDS[(i + 1) % 2]);
+                let current = cookies.lock().unwrap().clone();
+                let written = site
+                    .write("bench", &current, "/user/profile", false, |html| {
+                        change_password(html, from, to)
+                    })
+                    .await;
+                *cookies.lock().unwrap() = written.cookies.clone();
+                written
+            }
+        })
+        .await;
+
+        let (edit_id, edit_name, _) = own_member(site, "perf_edit_bench").await;
+        let admin = site.cookies_of(Visitor::Admin).to_string();
+        let edit_page = format!("/admin/people/{edit_id}/edit");
+        time_write("admin user edit", WARMUP, RUNS, |i| {
+            let (admin, edit_page, edit_name) = (&admin, &edit_page, &edit_name);
+            async move {
+                let mail = format!("{edit_name}+{}@perf.example.test", i % 2);
+                site.write("bench", admin, edit_page, false, |html| {
+                    admin_edit(html, edit_id, edit_name, &mail)
+                })
+                .await
+            }
+        })
+        .await;
+
+        let (token_id, _, token_cookies) = own_member(site, "perf_token_bench").await;
+        time_write("api token create", WARMUP, RUNS, |_| {
+            let token_cookies = &token_cookies;
+            async move {
+                // Under the per-account limit, whatever the run before left.
+                sqlx::query("DELETE FROM api_tokens WHERE user_id = $1")
+                    .bind(token_id)
+                    .execute(&site.app.db)
+                    .await
+                    .unwrap();
+                site.write("bench", token_cookies, "/user/tokens", false, create_token)
+                    .await
+            }
+        })
+        .await;
     });
 }
