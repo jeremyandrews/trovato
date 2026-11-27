@@ -2291,12 +2291,13 @@ impl ItemService {
 
     /// FR-8 Story 3.7 — route search results through the shared access seam.
     ///
-    /// Search's own SQL applies only a coarse `status`/`author`/`stage` filter
-    /// and builds `ts_headline` snippets from the raw long text field, with no
-    /// field-level access. This runs each result row through the same seam
-    /// REST/SSR/gather use: (1) drop any result the viewer cannot see at the
-    /// item level (`check_access("view")`) — this catches plugin `tap_item_access`
-    /// denies the coarse SQL filter misses; (2) **redact the snippet** (the
+    /// Search's SQL decides which rows a viewer may see from
+    /// [`Self::search_visibility`] and builds `ts_headline` snippets from the
+    /// raw long text field, with no field-level access. This runs each result
+    /// row through the same seam REST/SSR/gather use: (1) drop any result the
+    /// viewer cannot see at the item level (`check_access("view")`), as
+    /// defence in depth: a drop means the predicate and `check_access` have
+    /// drifted, and is logged; (2) **redact the snippet** (the
     /// `ts_headline` source) for any result whose type denies the viewer that
     /// field under either of its two names, so a restricted field cannot leak
     /// through the highlight.
@@ -2334,14 +2335,20 @@ impl ItemService {
                         warn!(
                             item_id = %r.id,
                             item_type = %r.item_type,
-                            "search predicate drift: SQL returned a row check_access denies \
-                             this viewer, dropping it from the count"
+                            reason = "check_access denied view",
+                            "search predicate drift: the search SQL returned a row \
+                             check_access denies this viewer; dropping it from the page"
                         );
                     }
                 }
                 Ok(None) => {} // deleted between the query and this load — not a drift
                 Err(e) => {
-                    warn!(item_id = %r.id, error = %e, "failed to load search result for access check, dropping it");
+                    warn!(
+                        item_id = %r.id,
+                        reason = "load failed",
+                        error = %e,
+                        "search result could not be loaded for its access check; dropping it"
+                    );
                 }
             }
         }
@@ -2395,8 +2402,11 @@ impl ItemService {
     ///   Public and Accessible stages (Live is always Public) reach the query,
     ///   so an internal-stage item is never a search candidate.
     /// - The viewer's own unpublished items are included only when they hold
-    ///   [`VIEW_OWN_UNPUBLISHED`] — the one permission `check_access`'s
-    ///   fallback reads for exactly this case.
+    ///   [`VIEW_OWN_UNPUBLISHED`], `view own content` or `view any content`,
+    ///   the generic grants `check_access`'s fallback reads for that case.
+    ///   A plugin `tap_item_access` can still deny one of them; the per-page
+    ///   check in [`Self::filter_search_results`] then drops it and logs the
+    ///   drift.
     pub async fn search_visibility(
         &self,
         viewer: &UserContext,
@@ -2433,8 +2443,14 @@ impl ItemService {
             }
         };
 
+        // Each of these makes `check_access` show a signed-in author their own
+        // unpublished item of any type (its step 5). A type-specific grant
+        // (`view own article`) is not read here: it would need the predicate
+        // to name types, so such an author finds their drafts by browsing.
         let own_unpublished_author = (viewer.authenticated
-            && viewer.has_permission(VIEW_OWN_UNPUBLISHED))
+            && [VIEW_OWN_UNPUBLISHED, "view own content", "view any content"]
+                .iter()
+                .any(|p| viewer.has_permission(p)))
         .then_some(viewer.id);
 
         SearchVisibility {

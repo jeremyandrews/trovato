@@ -21,6 +21,7 @@ path = "junit.xml"
 [test-groups]
 cluster = { max-threads = 1 }
 ai-send-path = { max-threads = 1 }
+anonymous-role = { max-threads = 1 }
 
 [[profile.default.overrides]]
 filter = "binary(cluster_test)"
@@ -33,3 +34,11 @@ test-group = "cluster"
 [[profile.default.overrides]]
 filter = "binary(ai_usage_budget_test) | binary(ai_send_path_test)"
 test-group = "ai-send-path"
+
+# Two binaries take a permission away from the anonymous role for a moment
+# (`search content`, `access content`), and their other tests, and B248's
+# search pager tests, search as an anonymous visitor. Their static SERIAL
+# mutexes serialize them under libtest only; under nextest it has to be here.
+[[profile.default.overrides]]
+filter = "binary(search_query_test) | binary(item_view_access_test) | binary(search_pager_test)"
+test-group = "anonymous-role"

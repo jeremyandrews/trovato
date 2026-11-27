@@ -138,6 +138,24 @@ pub struct SearchVisibility {
 }
 
 impl SearchVisibility {
+    /// The `WHERE` clause both search statements share. `$1` is the query
+    /// text, `$2` the stage list and `$3` the viewer's id for their own
+    /// unpublished items (bound in every shape, read only by the one that
+    /// needs it). Three fixed strings, so Postgres plans each shape on its
+    /// own instead of one plan with an `OR` that never prunes.
+    fn predicate(&self) -> &'static str {
+        if self.admin_bypass {
+            "search_vector @@ websearch_to_tsquery('english', $1) \
+             AND stage_id = ANY($2)"
+        } else if self.own_unpublished_author.is_some() {
+            "search_vector @@ websearch_to_tsquery('english', $1) \
+             AND (status = 1 OR author_id = $3) AND stage_id = ANY($2)"
+        } else {
+            "search_vector @@ websearch_to_tsquery('english', $1) \
+             AND status = 1 AND stage_id = ANY($2)"
+        }
+    }
+
     /// Published content on exactly `stage_ids`, with no admin bypass and no
     /// own-unpublished inclusion: the shape
     /// [`crate::content::ItemService::search_visibility`] resolves for an
@@ -295,109 +313,36 @@ impl SearchService {
 
         let (boost_types, boost_values) = settings.type_boost_arrays();
         let stage_ids = visibility.stage_ids.as_slice();
+        // One predicate for both statements below, chosen once from the
+        // viewer's `SearchVisibility`: the count and the page cannot disagree
+        // about which rows match, because they are the same `WHERE`.
+        let predicate = visibility.predicate();
 
-        // Get total count. Three predicates, one per `SearchVisibility` shape
-        // — never a per-row check: an administrator (or the background
-        // principal) bypasses `status` entirely, a holder of
-        // `view own unpublished content` adds their own drafts, and everyone
-        // else sees only what is published on a requested stage.
-        let (total, terms): (i64, i32) = if visibility.admin_bypass {
-            sqlx::query_as(
+        let (total, terms): (i64, i32) = sqlx::query_as(
+            // Built from compile-time constants only: no input in the text.
+            AssertSqlSafe(format!(
                 r#"
                 SELECT COUNT(*), numnode(websearch_to_tsquery('english', $1))
                 FROM item
-                WHERE search_vector @@ websearch_to_tsquery('english', $1)
-                  AND stage_id = ANY($2)
-                "#,
-            )
-            .bind(ts_query)
-            .bind(stage_ids)
-            .fetch_one(&self.pool)
-            .await
-            .context("failed to count search results")?
-        } else if let Some(author_id) = visibility.own_unpublished_author {
-            sqlx::query_as(
-                r#"
-                SELECT COUNT(*), numnode(websearch_to_tsquery('english', $1))
-                FROM item
-                WHERE search_vector @@ websearch_to_tsquery('english', $1)
-                  AND (status = 1 OR author_id = $2)
-                  AND stage_id = ANY($3)
-                "#,
-            )
-            .bind(ts_query)
-            .bind(author_id)
-            .bind(stage_ids)
-            .fetch_one(&self.pool)
-            .await
-            .context("failed to count search results")?
-        } else {
-            sqlx::query_as(
-                r#"
-                SELECT COUNT(*), numnode(websearch_to_tsquery('english', $1))
-                FROM item
-                WHERE search_vector @@ websearch_to_tsquery('english', $1)
-                  AND status = 1
-                  AND stage_id = ANY($2)
-                "#,
-            )
-            .bind(ts_query)
-            .bind(stage_ids)
-            .fetch_one(&self.pool)
-            .await
-            .context("failed to count search results")?
-        };
+                WHERE {predicate}
+                "#
+            )),
+        )
+        .bind(ts_query)
+        .bind(stage_ids)
+        .bind(visibility.own_unpublished_author)
+        .fetch_one(&self.pool)
+        .await
+        .context("failed to count search results")?;
 
-        // Get ranked results — the same three predicates as the count above,
-        // so the two agree by construction. The snippet is `ts_headline` over
-        // the title and body with tags stripped, highlighted with fixed
-        // markers that [`snippet::render`] escapes and turns into `<mark>`
-        // (B123).
-        let results = if visibility.admin_bypass {
-            sqlx::query_as::<_, SearchResultRow>(
-                // Built from compile-time constants only: no input in the text.
-                AssertSqlSafe(format!(
-                    r#"
-                SELECT
-                    id,
-                    type,
-                    title,
-                    ts_rank(search_vector, websearch_to_tsquery('english', $1))
-                        * COALESCE(boost.factor, 1.0::real) AS rank,
-                    ts_headline(
-                        'english',
-                        -- B123: tags stripped from the source before
-                        -- highlighting; see crate::search::snippet.
-                        {source},
-                        websearch_to_tsquery('english', $1),
-                        '{options}'
-                    ) as snippet
-                FROM item
-                LEFT JOIN unnest($5::text[], $6::real[]) AS boost(item_type, factor)
-                    ON boost.item_type = item.type
-                WHERE search_vector @@ websearch_to_tsquery('english', $1)
-                  AND stage_id = ANY($2)
-                ORDER BY rank DESC, created DESC
-                LIMIT $3 OFFSET $4
-                "#,
-                    source = snippet::SOURCE_SQL,
-                    options = snippet::HEADLINE_OPTIONS,
-                )),
-            )
-            .bind(ts_query)
-            .bind(stage_ids)
-            .bind(limit)
-            .bind(offset)
-            .bind(&boost_types)
-            .bind(&boost_values)
-            .fetch_all(&self.pool)
-            .await
-            .context("failed to execute search query")?
-        } else if let Some(author_id) = visibility.own_unpublished_author {
-            sqlx::query_as::<_, SearchResultRow>(
-                // Built from compile-time constants only: no input in the text.
-                AssertSqlSafe(format!(
-                    r#"
+        // The ranked page, over the same predicate. The snippet is
+        // `ts_headline` over the title and body with tags stripped,
+        // highlighted with fixed markers that [`snippet::render`] escapes and
+        // turns into `<mark>` (B123).
+        let results = sqlx::query_as::<_, SearchResultRow>(
+            // Built from compile-time constants only: no input in the text.
+            AssertSqlSafe(format!(
+                r#"
                 SELECT
                     id,
                     type,
@@ -415,68 +360,24 @@ impl SearchService {
                 FROM item
                 LEFT JOIN unnest($6::text[], $7::real[]) AS boost(item_type, factor)
                     ON boost.item_type = item.type
-                WHERE search_vector @@ websearch_to_tsquery('english', $1)
-                  AND (status = 1 OR author_id = $2)
-                  AND stage_id = ANY($3)
+                WHERE {predicate}
                 ORDER BY rank DESC, created DESC
                 LIMIT $4 OFFSET $5
                 "#,
-                    source = snippet::SOURCE_SQL,
-                    options = snippet::HEADLINE_OPTIONS,
-                )),
-            )
-            .bind(ts_query)
-            .bind(author_id)
-            .bind(stage_ids)
-            .bind(limit)
-            .bind(offset)
-            .bind(&boost_types)
-            .bind(&boost_values)
-            .fetch_all(&self.pool)
-            .await
-            .context("failed to execute search query")?
-        } else {
-            sqlx::query_as::<_, SearchResultRow>(
-                // Built from compile-time constants only: no input in the text.
-                AssertSqlSafe(format!(
-                    r#"
-                SELECT
-                    id,
-                    type,
-                    title,
-                    ts_rank(search_vector, websearch_to_tsquery('english', $1))
-                        * COALESCE(boost.factor, 1.0::real) AS rank,
-                    ts_headline(
-                        'english',
-                        -- B123: tags stripped from the source before
-                        -- highlighting; see crate::search::snippet.
-                        {source},
-                        websearch_to_tsquery('english', $1),
-                        '{options}'
-                    ) as snippet
-                FROM item
-                LEFT JOIN unnest($5::text[], $6::real[]) AS boost(item_type, factor)
-                    ON boost.item_type = item.type
-                WHERE search_vector @@ websearch_to_tsquery('english', $1)
-                  AND status = 1
-                  AND stage_id = ANY($2)
-                ORDER BY rank DESC, created DESC
-                LIMIT $3 OFFSET $4
-                "#,
-                    source = snippet::SOURCE_SQL,
-                    options = snippet::HEADLINE_OPTIONS,
-                )),
-            )
-            .bind(ts_query)
-            .bind(stage_ids)
-            .bind(limit)
-            .bind(offset)
-            .bind(&boost_types)
-            .bind(&boost_values)
-            .fetch_all(&self.pool)
-            .await
-            .context("failed to execute search query")?
-        };
+                source = snippet::SOURCE_SQL,
+                options = snippet::HEADLINE_OPTIONS,
+            )),
+        )
+        .bind(ts_query)
+        .bind(stage_ids)
+        .bind(visibility.own_unpublished_author)
+        .bind(limit)
+        .bind(offset)
+        .bind(&boost_types)
+        .bind(&boost_values)
+        .fetch_all(&self.pool)
+        .await
+        .context("failed to execute search query")?;
 
         debug!(
             query = %query_clean,

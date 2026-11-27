@@ -43,7 +43,7 @@ Trovato has two search backends and one AI layer.
 | Coverage (B106, merged in #218 and #219) | Every text field and every published comment. Two switches per type (`SearchSwitches`, `mod.rs:47`), edited at `/admin/structure/types/{type}/search` |
 | Snippets (B123, merged in #226) | `search::snippet::render` (`snippet.rs:62`): escaped exactly once |
 | Routes | `crates/kernel/src/routes/search.rs`: `/search` (the HTML page, and the no-JavaScript fallback), `/api/search`, `/api/v1/search` |
-| Access | The searching user's own access, and stages only for holders of `use stages` (`routes::helpers::read_stages`) |
+| Access | `ItemService::search_visibility` (the rule in `docs/admin-permissions.md#search`), and stages only for holders of `use stages` (`routes::helpers::read_stages`) |
 
 ### Browser side: a static Pagefind index
 
@@ -282,7 +282,7 @@ Scolta never decides what that is.**
   fetches chunks with plain GETs, so a role index would need authenticated
   serving of every chunk, a second build per role, and invalidation on every
   role change. Content that only some users can see stays on server search,
-  which applies the searcher's own access and stages. The search page already
+  which applies the rule in `docs/admin-permissions.md#search`. The search page already
   links to it as the fallback. If per-role static search is ever wanted, it is
   its own design.
 - **AI context.** Summaries and follow-ups are built from text the browser

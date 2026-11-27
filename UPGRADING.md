@@ -95,33 +95,21 @@ accepts migrations it does not know unless one is marked incompatible.
 When the newer release is fixed, upgrade again. Its migrations are already
 applied, so `trovato migrate` finds nothing to do.
 
+## Unreleased
+
+### Search needs `access content` and counts only what it shows
+
+**Who is affected:** visitors holding `search content` without
+`access content`, now refused search; and anyone but a superuser who searched
+for items on an internal stage, or for their own unpublished items opened by a
+type-specific permission or a plugin such as the blog plugin. See
+[docs/admin-permissions.md](docs/admin-permissions.md#search).
+
+**How to find out.** Look for roles holding `search content` but not
+`access content`. The stock `anonymous user` and `authenticated user` roles
+hold both by default.
+
 ## v0.105.0 — 2026-11-25
-
-### Search leaves out an internal-visibility stage item for a role that is not the site administrator
-
-**Who is affected:** a role, other than the site administrator, that used a
-broad `view any content` style permission or a plugin's own access check to
-find an internal-visibility stage item by searching.
-
-**What changed.** `/search` and `/api/v1/search` now decide what a viewer may
-be shown before the query runs, not after, so the total, the page count and
-the pager no longer drift apart by stage, publish status or a missing
-permission (B248). The rule: the site administrator (a superuser,
-`users.is_admin`) sees every status on every stage asked for. Any item on an
-internal-visibility stage, published or not, or one only a plugin's own
-access check would allow, is left out of search for everyone else, even
-where `check_access` would show it to them on the item's own page. An
-author's own unpublished item is additionally a candidate only when they
-hold `view own unpublished content`, and even then not if it sits on an
-internal-visibility stage. Searching itself now also asks for
-`access content`, refused the same way a missing `search content` is.
-
-**How to find out.** List the roles granting a broad view permission (`view
-any content` or a type-specific form of it):
-`SELECT DISTINCT role_id FROM role_permissions WHERE permission LIKE 'view any%';`
-Their holders stop finding internal-visibility stage items by search, the
-site administrator aside. A plugin-granted equivalent has no fixed name to
-query for; check that plugin's own permissions by hand.
 
 ### A `CategoryReference` field kind; `FieldType` is `#[non_exhaustive]`; cardinality is enforced on every write
 

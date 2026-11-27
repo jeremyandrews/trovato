@@ -478,7 +478,8 @@ index is a set of static files any visitor downloads, so it is built as the
 anonymous role, through the same item and field access seam a page view uses: an
 unpublished item, an item on an internal stage, a field `tap_field_access`
 denies to anonymous visitors, and an unpublished or held comment are never in
-it. Server side search applies the searching user's own access instead.
+it. Server side search applies the rule in
+[admin-permissions.md](../admin-permissions.md#search) instead.
 
 #### The two switches
 
@@ -513,7 +514,7 @@ current inside the write's own transaction.
 
 Pagefind supports custom metadata per page, which is how we inject ranking signals into the client-side index.
 
-For editor search (items on internal-visibility stages + live stage), the tsvector fallback handles it server-side with stage-scoped queries -- same as the existing stage-aware kernel search. **The Pagefind index is Live only:** it is built from published Live items and served as static files to everyone, so it never contains a stage's content. Server-side search reads a stage only for a holder of `use stages` who switched to it (`routes::helpers::read_stages`; see `docs/design/stage-workflow.md` §8); everyone else, and every Pagefind query, reads Live.
+Searching a stage other than Live is server side, with stage-scoped queries; items on an internal-visibility stage are found only by a superuser ([admin-permissions.md](../admin-permissions.md#search)). **The Pagefind index is Live only:** it is built from published Live items and served as static files to everyone, so it never contains a stage's content. Server-side search reads a stage only for a holder of `use stages` who switched to it (`routes::helpers::read_stages`; see `docs/design/stage-workflow.md` §8); everyone else, and every Pagefind query, reads Live.
 
 ### Rust/WASM Synergy
 

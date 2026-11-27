@@ -319,6 +319,30 @@ cannot be changed.
 | `/admin/content/{id}/translate/{lang}` | GET, POST | `translate content` |
 | `/admin/content/{id}/translate/{lang}/delete` | POST | `translate content` |
 
+## Search
+
+`/search` and `/api/v1/search` need both `search content` and `access content`.
+An anonymous visitor holds only the `anonymous user` role; a signed-in visitor
+holds `authenticated user` and their assigned roles.
+
+Server search covers Live and, for a `use stages` holder, the stage they
+switched to, unless its Visibility is Internal (the default for a new stage at
+`/admin/structure/stages`). There a visitor finds:
+
+- every published item, which no plugin can deny;
+- their own unpublished items, if they are signed in and hold
+  `view own unpublished content`, `view own content` or `view any content`.
+
+A superuser finds every match on Live and that stage, internal or not,
+published or not.
+
+Search finds and counts only these items: not another author's unpublished
+item under `view any content`, nor one only a type-specific permission or a
+plugin opens. If a plugin denies an author their own unpublished item, the
+page hides it but the total counts it. With JavaScript
+on, `/search` lists Pagefind results instead, which hold published Live items
+only.
+
 ## Superuser only
 
 Two routes keep `require_admin` and are not delegable by permission, because

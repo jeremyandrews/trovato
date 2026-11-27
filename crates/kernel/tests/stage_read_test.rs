@@ -321,6 +321,14 @@ fn search_reads_the_active_stage_only_while_the_permission_is_held() {
     run_test(async {
         let app = shared_app().await;
         let stage = internal_stage(app).await;
+        // Search leaves an internal stage out for everyone but a superuser
+        // (B248), so this one is made Accessible: what is under test is which
+        // stage the session reads, not that stage's visibility.
+        sqlx::query("UPDATE stage_config SET visibility = 'accessible' WHERE tag_id = $1")
+            .bind(stage)
+            .execute(&app.db)
+            .await
+            .unwrap();
         let marker = format!("bsr{}", unique());
         let item = page_on(app, stage, &format!("b69 staged {marker}"), 1).await;
         let (user_id, cookies) = user_holding(
