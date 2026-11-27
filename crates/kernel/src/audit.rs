@@ -34,6 +34,28 @@
 //! [`SecurityEvent`] builder has no field that takes one, which is the point:
 //! the API makes the mistake awkward rather than merely forbidden.
 //!
+//! # Events commit with the change they record
+//!
+//! An event that records a change to stored state (an account created,
+//! updated or deleted, a password set, changed or removed, a passkey
+//! registered, renamed or revoked, an API token issued or revoked, a role or
+//! a role membership changed, an import) is written inside the database
+//! transaction that makes the change, with [`SecurityAudit::record_in`] (or
+//! as part of the one statement that makes it). The change and its event
+//! persist together or not at all: when the event cannot be written, the
+//! change rolls back and the request fails as a failed change would. A
+//! change in this list therefore always has its event, which is what lets
+//! the stream be cited as complete.
+//!
+//! Work that cannot roll back (mail, a session ended in Redis, a cache
+//! invalidation, a plugin tap) runs only after the commit.
+//!
+//! An event with no stored change behind it (a login success or failure, a
+//! refused deletion or credential removal, a rate limit hit, a recovery step
+//! or a session whose whole state is in Redis) has nothing to be atomic
+//! with. It is written best effort with [`SecurityAudit::emit`], and a
+//! failed write is logged, never turned into a failed request.
+//!
 //! # Retention
 //!
 //! One bounded policy for the whole stream:
