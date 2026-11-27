@@ -238,3 +238,66 @@ fn an_import_that_does_not_commit_writes_no_account_events() {
         );
     });
 }
+
+/// A role grant the insert did not make (the row arrived some other way
+/// between the importer's lookup and its insert, so `ON CONFLICT DO NOTHING`
+/// added nothing) writes no `user.roles_changed`. A trigger that skips the
+/// insert for one role stands in for the other writer, deterministically.
+#[test]
+fn a_grant_the_insert_did_not_make_writes_no_roles_changed_event() {
+    run_test(async {
+        let app = shared_app().await;
+        let id = Uuid::now_v7();
+        forget_users(app, vec![id]);
+        let role = format!("b223imp_skip_{}", id.simple());
+        let role_id = common::create_test_role(app, &role).await;
+
+        let suffix = id.simple().to_string();
+        let function = format!("b223_skip_grant_{suffix}");
+        let trigger = format!("b223_skip_grant_{suffix}");
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS \
+             $$ BEGIN RETURN NULL; END $$"
+        )))
+        .execute(&app.db)
+        .await
+        .unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE TRIGGER {trigger} BEFORE INSERT ON user_roles FOR EACH ROW \
+             WHEN (NEW.role_id = '{role_id}') EXECUTE FUNCTION {function}()"
+        )))
+        .execute(&app.db)
+        .await
+        .unwrap();
+        let pool = app.db.clone();
+        let (drop_trigger, drop_function) = (
+            format!("DROP TRIGGER IF EXISTS {trigger} ON user_roles"),
+            format!("DROP FUNCTION IF EXISTS {function}()"),
+        );
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query(sqlx::AssertSqlSafe(drop_trigger))
+                .execute(&pool)
+                .await;
+            let _ = sqlx::query(sqlx::AssertSqlSafe(drop_function))
+                .execute(&pool)
+                .await;
+        });
+
+        let mut line = user_line(id, &common::username("b223imp_skip"));
+        line["roles"] = json!([role]);
+        run(app, &[line], false).await.expect("imports");
+
+        let held: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_roles WHERE user_id = $1")
+            .bind(id)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(held, 0, "the insert added no row");
+        let seen = events(app, id).await;
+        assert!(
+            of_kind(&seen, "user.roles_changed").is_empty(),
+            "no grant was made, so none is recorded: {seen:?}"
+        );
+        assert_eq!(of_kind(&seen, "account.created").len(), 1, "{seen:?}");
+    });
+}

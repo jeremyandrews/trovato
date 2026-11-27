@@ -575,10 +575,20 @@ impl UserService {
     /// author inside its own transaction; see its documentation for why that is a
     /// bug fix and not only a policy.
     ///
+    /// Ends every session the account holds, everywhere (through `sessions`,
+    /// the site's session registry), once the row is gone: no session is worth
+    /// keeping for an account that no longer exists.
+    ///
     /// Emits `account.deleted`, whoever called this — self-service and
     /// administrator deletion both go through here, so both are recorded the
-    /// same way rather than each keeping its own copy of the emit.
-    pub async fn delete(&self, id: Uuid, acting_user: &UserContext) -> Result<bool> {
+    /// same way rather than each keeping its own copy of the emit. Its
+    /// `sessions_revoked` counts the sessions just ended.
+    pub async fn delete(
+        &self,
+        id: Uuid,
+        acting_user: &UserContext,
+        sessions: &crate::services::session_registry::SessionRegistry,
+    ) -> Result<bool> {
         // Dispatch tap before deletion
         self.dispatch_tap("tap_user_delete", id, acting_user).await;
 
@@ -609,6 +619,22 @@ impl UserService {
                 )
                 .await;
 
+            // Revoked after the delete and without a per-session audit row:
+            // the audit log's `user_id` references `users`, and the account is
+            // gone. The count goes in `account.deleted` instead.
+            let sessions_revoked = sessions
+                .revoke_all_except(id, None)
+                .await
+                .map(|entries| entries.len())
+                .unwrap_or_else(|e| {
+                    tracing::error!(
+                        error = %e,
+                        user_id = %id,
+                        "failed to end a deleted account's sessions"
+                    );
+                    0
+                });
+
             let actor = actor_of(acting_user).filter(|a| *a != id);
             let by = if actor.is_some() { "admin" } else { "self" };
             // Deliberately **no** `.user(...)`: `security_audit_log.user_id`
@@ -631,7 +657,8 @@ impl UserService {
                         .actor_decided()
                         .detail("by", by)
                         .detail("items_reattributed", items)
-                        .detail("comments_reattributed", comments),
+                        .detail("comments_reattributed", comments)
+                        .detail("sessions_revoked", sessions_revoked),
                 )
                 .await;
         }

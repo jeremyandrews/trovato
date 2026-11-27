@@ -241,7 +241,10 @@ fn user_writes_are_audited() {
             )
             .await
             .unwrap();
-        users.delete(user.id, &admin(actor)).await.unwrap();
+        users
+            .delete(user.id, &admin(actor), app.state.session_registry())
+            .await
+            .unwrap();
 
         let rows = audit_rows(app, "user", &user.id.to_string()).await;
         assert_eq!(actions(&rows), ["create", "update", "delete"], "{rows:?}");

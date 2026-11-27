@@ -89,7 +89,8 @@ pub async fn create(
             SecurityEvent::new(SecurityEventKind::ApiTokenCreated)
                 .user(user_id)
                 .subject(&token.id.to_string())
-                .detail("name", &token.name)
+                // Not the label: it is free text its holder typed, and may
+                // hold anything, an address or a secret included.
                 .detail("expires", token.expires_at.is_some()),
         )
         .await;

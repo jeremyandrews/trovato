@@ -213,8 +213,7 @@ pub(crate) async fn import_user(run: &mut Run<'_>, r: UserRecord) -> Result<Outc
         )),
     }
     for role in missing_roles {
-        run.role_grants.push((r.id, role));
-        sqlx::query(
+        let granted = sqlx::query(
             "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
         )
         .bind(r.id)
@@ -222,6 +221,13 @@ pub(crate) async fn import_user(run: &mut Run<'_>, r: UserRecord) -> Result<Outc
         .execute(&mut *run.tx)
         .await
         .context("failed to grant a role")?;
+        // Audited only when the insert added the row: `ON CONFLICT DO NOTHING`
+        // adds none when the grant already exists (another writer made it
+        // since the lookup above), and no event may claim a grant this import
+        // did not make.
+        if granted.rows_affected() > 0 {
+            run.role_grants.push((r.id, role));
+        }
     }
     Ok(if stored.is_some() {
         Outcome::Updated

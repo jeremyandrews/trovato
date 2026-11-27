@@ -508,7 +508,12 @@ async fn delete_confirm_submit(
     // shared layer self-service and administrator deletion both go through —
     // so it is not repeated here.
     let acting = crate::tap::UserContext::authenticated(user.id, Vec::new());
-    match state.users().delete(user.id, &acting).await {
+    // Every session, everywhere, including this one, ends inside `delete`.
+    match state
+        .users()
+        .delete(user.id, &acting, state.session_registry())
+        .await
+    {
         Ok(true) => {}
         Ok(false) => return render_server_error("That account no longer exists."),
         Err(e) => {
@@ -517,20 +522,7 @@ async fn delete_confirm_submit(
         }
     }
 
-    // Every session, everywhere, including this one. `None` because there is no
-    // session worth keeping for an account that no longer exists.
-    let revoked = state
-        .session_registry()
-        .revoke_all_except(user.id, None)
-        .await
-        .map(|entries| entries.len())
-        .unwrap_or(0);
-
-    info!(
-        user_id = %user.id,
-        sessions_revoked = revoked,
-        "account deleted by its holder"
-    );
+    info!(user_id = %user.id, "account deleted by its holder");
 
     // And this session, which the registry may not have indexed.
     let _ = session.flush().await;

@@ -125,7 +125,10 @@ fn creating_and_revoking_a_token_writes_one_event_each() {
     run_test(async {
         let app = shared_app().await;
         let (user_id, cookies, ip, csrf) = signed_in_user(app, "b223tok").await;
-        let name = format!("b223 deploy key {}", Uuid::now_v7().simple());
+        // A label holding an address: free text its holder typed, which the
+        // security log must not keep.
+        let address = format!("b223-{}@example.com", Uuid::now_v7().simple());
+        let name = format!("deploy key for {address}");
 
         let response = create(app, &cookies, &ip, &csrf, &name).await;
         assert_eq!(response.status(), StatusCode::CREATED);
@@ -137,7 +140,7 @@ fn creating_and_revoking_a_token_writes_one_event_each() {
         assert_eq!(issued.len(), 1, "exactly one api_token.created: {issued:?}");
         let (subject, details) = &issued[0];
         assert_eq!(subject.as_deref(), Some(hash_subject(&id).as_str()));
-        assert_eq!(details["name"], name.as_str());
+        assert!(details.get("name").is_none(), "no label: {details}");
         assert_eq!(details["expires"], true);
         let stored: String = sqlx::query_scalar(
             "SELECT row_to_json(s)::text FROM security_audit_log s \
@@ -148,6 +151,10 @@ fn creating_and_revoking_a_token_writes_one_event_each() {
         .await
         .unwrap();
         assert!(!stored.contains(&raw), "never the token: {stored}");
+        assert!(
+            !stored.contains(&address),
+            "never the label's contents: {stored}"
+        );
 
         let csrf = page_csrf(app, &cookies, &ip).await;
         assert_eq!(

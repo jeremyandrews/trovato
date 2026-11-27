@@ -121,8 +121,8 @@ pub enum SecurityEventKind {
 
     // ── API tokens ──────────────────────────────────────────────────────────
     /// An API token was issued to the account. `subject_hash` is the hash of
-    /// the token's id (never the token); `details.name` is the label its
-    /// holder gave it and `details.expires` whether it has an expiry.
+    /// the token's id (never the token); `details.expires` says whether it
+    /// has an expiry. Never the label its holder gave it: that is free text.
     ApiTokenCreated,
     /// An API token was revoked. `subject_hash` is the hash of its id;
     /// `details.reason` is `"self"` (its holder revoked it) or

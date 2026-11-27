@@ -444,6 +444,17 @@ fn a_password_account_deletes_itself_and_its_content_is_reattributed() {
             "the screen must offer the export before it is too late"
         );
 
+        // The seeded entry and the step-up session itself: more than one, so
+        // the event's count is told apart from "one" or "none".
+        let indexed = app
+            .state
+            .session_registry()
+            .list(account.id)
+            .await
+            .unwrap()
+            .len();
+        assert!(indexed >= 2, "two sessions indexed, got {indexed}");
+
         let response =
             post_form(app, &cookies, "/user/delete/confirm", &[("_token", &token)]).await;
         let status = response.status();
@@ -525,6 +536,10 @@ fn a_password_account_deletes_itself_and_its_content_is_reattributed() {
         assert_eq!(details["by"], "self");
         assert_eq!(details["items_reattributed"], 1);
         assert_eq!(details["comments_reattributed"], 1);
+        assert_eq!(
+            details["sessions_revoked"], indexed,
+            "the event counts every session the deletion ended"
+        );
 
         // And the raw id appears nowhere in the row.
         let raw_matches: i64 =
@@ -957,10 +972,15 @@ fn a_deletion_refused_for_lack_of_permission_writes_no_account_deleted_event() {
         let app = shared_app().await;
         let victim = seed_account(app, "delrefusedvictim", false).await;
         let bystander = seed_account(app, "delrefusedbystander", false).await;
+        // Counted for this account only: other tests delete accounts in the
+        // same database at the same time.
+        let victim_hash = trovato_kernel::audit::hash_subject(&victim.id.to_string());
 
         let before: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM security_audit_log WHERE kind = 'account.deleted'",
+            "SELECT COUNT(*) FROM security_audit_log \
+             WHERE kind = 'account.deleted' AND subject_hash = $1",
         )
+        .bind(&victim_hash)
         .fetch_one(&app.db)
         .await
         .unwrap();
@@ -987,12 +1007,15 @@ fn a_deletion_refused_for_lack_of_permission_writes_no_account_deleted_event() {
         assert_eq!(alive, 1, "the refused account must still exist");
 
         let after: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM security_audit_log WHERE kind = 'account.deleted'",
+            "SELECT COUNT(*) FROM security_audit_log \
+             WHERE kind = 'account.deleted' AND subject_hash = $1",
         )
+        .bind(&victim_hash)
         .fetch_one(&app.db)
         .await
         .unwrap();
-        assert_eq!(before, after, "a refused deletion must write no event");
+        assert_eq!(before, 0, "no deletion of this account yet");
+        assert_eq!(after, 0, "a refused deletion must write no event");
 
         cleanup(app, &victim).await;
         cleanup(app, &bystander).await;
@@ -1046,6 +1069,16 @@ fn an_admin_deletion_ends_the_accounts_sessions_and_empties_its_index() {
             .await
             .unwrap();
         assert!(!record, "the deleted account's session record must be gone");
+
+        let details: serde_json::Value = sqlx::query_scalar(
+            "SELECT details FROM security_audit_log \
+             WHERE kind = 'account.deleted' AND subject_hash = $1",
+        )
+        .bind(trovato_kernel::audit::hash_subject(&victim.id.to_string()))
+        .fetch_one(&app.db)
+        .await
+        .expect("the deletion is audited");
+        assert_eq!(details["sessions_revoked"], before.len());
 
         cleanup(app, &victim).await;
         cleanup(app, &admin).await;

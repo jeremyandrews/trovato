@@ -162,6 +162,17 @@ async fn password_verifies(pool: &PgPool, name: &str, password: &str) -> bool {
 // trovato user create
 // =============================================================================
 
+/// How many `account.created` rows name `user_id`: exactly one per account.
+async fn account_created_count(pool: &sqlx::PgPool, user_id: uuid::Uuid) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM security_audit_log WHERE kind = 'account.created' AND user_id = $1",
+    )
+    .bind(user_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
 #[tokio::test]
 async fn user_create_makes_an_account_that_can_log_in() {
     let db = migrated("cli_user_create").await;
@@ -235,6 +246,11 @@ async fn user_create_makes_an_account_that_can_log_in() {
     .fetch_one(db.pool())
     .await
     .expect("account.created is audited");
+    assert_eq!(
+        account_created_count(db.pool(), alice.id).await,
+        1,
+        "exactly one account.created"
+    );
     assert_eq!(details["path"], "cli");
     assert_eq!(details["active"], true);
     assert_eq!(details["by"], "operator");
@@ -276,6 +292,11 @@ async fn user_create_blocked_and_without_a_password() {
     .fetch_one(db.pool())
     .await
     .expect("account.created is audited");
+    assert_eq!(
+        account_created_count(db.pool(), bob.id).await,
+        1,
+        "exactly one account.created"
+    );
     assert_eq!(details["path"], "cli");
     assert_eq!(
         details["active"], false,
@@ -311,6 +332,10 @@ async fn user_create_refuses_what_the_admin_form_refuses() {
     .fetch_one(db.pool())
     .await
     .unwrap();
+    assert_eq!(
+        events_before, 1,
+        "this database's one account, created once, has one account.created"
+    );
 
     // (args, stdin, what the message must say)
     let cases: Vec<(Vec<&str>, String, &str)> = vec![
@@ -708,6 +733,11 @@ async fn installer_admin_step_audits_account_created() {
     .fetch_one(db.pool())
     .await
     .expect("account.created is audited");
+    assert_eq!(
+        account_created_count(db.pool(), admin.id).await,
+        1,
+        "exactly one account.created"
+    );
     assert_eq!(details["path"], "installer");
     assert_eq!(details["active"], true);
     assert_eq!(details["by"], "operator");
