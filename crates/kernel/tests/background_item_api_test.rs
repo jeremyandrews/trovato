@@ -46,6 +46,9 @@ const QUERY_NOCAP: &str = "test_item_background_query_nocap";
 /// one test's restore cannot land between another's enable and its build.
 const FIXTURE_LOCK: i64 = 0x0040_0000_0001;
 
+/// The pool size each app in this file runs with; see [`app_with`].
+const APP_MAX_CONNECTIONS: u32 = 8;
+
 /// Copy the fixture into a fresh directory as plugin `name`, optionally
 /// without the `item_background` line, and return the directory.
 fn fixture_dir(name: &str, item_background: bool) -> PathBuf {
@@ -158,7 +161,16 @@ async fn app_with(name: &'static str, item_background: bool) -> TestApp {
 
     let dir = fixture_dir(name, item_background);
     let plugins = dir.clone();
-    let app = TestApp::with_config(move |config| config.plugins_dirs = vec![plugins]).await;
+    // Every test in this file keeps its own app alive at once, in one process
+    // under libtest. At the harness default of 25 connections each, six apps
+    // ask CI's Postgres (100 clients) for more than it has, and the last app to
+    // start times out. Each app here runs one step at a time, so a few
+    // connections are plenty.
+    let app = TestApp::with_config(move |config| {
+        config.plugins_dirs = vec![plugins];
+        config.database_max_connections = APP_MAX_CONNECTIONS;
+    })
+    .await;
 
     restore_status(&pool, name, saved).await;
     unlock(pool, lock).await;
