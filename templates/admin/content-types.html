@@ -20,14 +20,15 @@
         <tbody>
             {% for ct in content_types %}
             <tr>
+                {% if ct.machine_name is matching("^[a-z0-9_-]+$") %}{% set key = ct.machine_name %}{% else %}{% set key = loop.index %}{% endif %}
                 <th scope="row">
-                    <a href="/admin/structure/types/{{ ct.machine_name }}/edit">{{ ct.label }}</a>
+                    <a id="row-{{ key }}" href="/admin/structure/types/{{ ct.machine_name }}/edit">{{ ct.label }}</a>
                 </th>
                 <td><code>{{ ct.machine_name }}</code></td>
                 <td>{{ ct.description | default(value="-") }}</td>
                 <td class="operations">
-                    <a href="/admin/structure/types/{{ ct.machine_name }}/edit">{{ t(s="Edit {name}", name=ct.label) }}</a>
-                    <a href="/admin/structure/types/{{ ct.machine_name }}/fields">{{ t(s="Manage fields of {name}", name=ct.label) }}</a>
+                    {{ list::row_action(href="/admin/structure/types/" ~ ct.machine_name ~ "/edit", text=t(s="Edit", ctx="row action"), id="act-edit-" ~ key, row_id="row-" ~ key) }}
+                    {{ list::row_action(href="/admin/structure/types/" ~ ct.machine_name ~ "/fields", text=t(s="Manage fields", ctx="row action"), id="act-fields-" ~ key, row_id="row-" ~ key) }}
                 </td>
             </tr>
             {% endfor %}

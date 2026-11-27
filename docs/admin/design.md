@@ -425,9 +425,27 @@ query and `templates/admin/macros/list.html` draws it:
   us"). A select-all box checks every row and shows "mixed" when some are
   checked. A polite live region counts the selection ("Selected: 3"). The
   action is a labelled select with an Apply button.
-- **Row actions.** Visible text links and buttons whose names include the
-  object: "Edit About us", "Delete About us", never a column of bare
-  "Edit".
+- **Row actions.** Each action shows its verb alone ("Edit", "Delete",
+  translated with `ctx="row action"`), so the actions column stays narrow
+  and the eye scans titles, not repeated titles. Its accessible name is
+  the verb and the row's name ("Edit About us"): `aria-labelledby` names
+  the action's own id, then the id of the element inside the row's
+  `th scope="row"` that holds only the row's name (the title link, or a
+  `span` around it), never the `th` itself, which may hold a badge or a
+  description too. So a screen reader's list of links is never a column of
+  identical "Edit"s, and what is seen is the start of what is heard
+  (WCAG 2.5.3). Ids are `act-{verb}-{key}` and `row-{key}`: `{verb}` a
+  fixed English slug, `{key}` the row's database id, or its machine name,
+  or the loop index, never text a person typed, because `aria-labelledby`
+  splits on spaces. `list::row_action` draws a link,
+  `list::row_button` a form that posts at once and `list::delete_button`
+  (with `text`, `id` and `row_id`) a Delete that asks first. Every action
+  stays visible inline. A listing whose row's name would be only a
+  language code, a number or a date (an item's translations, its
+  revisions) keeps a full sentence for each action ("Revert to the
+  revision of …"). The actions column is as wide as its content on a wide
+  screen. `tests/admin-a11y/specs/row-actions.spec.mjs` holds every
+  listing to this.
 - **Asking first.** A destructive action asks on a page of its own
   (`routes::admin_confirm`), the same with JavaScript on or off. Its form
   posts to its usual address with `?confirm`; the layer keeps the fields in

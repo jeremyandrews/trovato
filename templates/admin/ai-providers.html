@@ -24,7 +24,7 @@
         <tbody>
             {% for provider in providers %}
             <tr>
-                <th scope="row">{{ provider.label }}</th>
+                <th scope="row"><span id="row-{{ provider.id }}">{{ provider.label }}</span></th>
                 <td>{{ t(s=provider.protocol) }}</td>
                 <td><code>{{ provider.base_url }}</code></td>
                 <td>
@@ -53,12 +53,14 @@
                     {% endif %}
                 </td>
                 <td class="operations">
-                    <a href="/admin/system/ai-providers/{{ provider.id }}/edit">{{ t(s="Edit {name}", name=provider.label) }}</a>
+                    {{ list::row_action(href="/admin/system/ai-providers/" ~ provider.id ~ "/edit", text=t(s="Edit", ctx="row action"), id="act-edit-" ~ provider.id, row_id="row-" ~ provider.id) }}
                     <form method="post" action="/admin/system/ai-providers/{{ provider.id }}/test" class="inline-form js-test-connection" data-provider-id="{{ provider.id }}" novalidate>
                         {{ form::csrf(csrf_token=csrf_token) }}
-                        <button type="submit" class="link-button">{{ t(s="Test {name}", name=provider.label) }}</button>
+                        {#- This form stays as it is: static/js/ai-admin.js finds it by
+                            `js-test-connection` and its address answers JSON. -#}
+                        <button type="submit" id="act-test-{{ provider.id }}" aria-labelledby="act-test-{{ provider.id }} row-{{ provider.id }}" class="link-button">{{ t(s="Test", ctx="row action") }}</button>
                     </form>
-                    {{ list::delete_button(action="/admin/system/ai-providers/" ~ provider.id ~ "/delete", label=t(s="Delete {name}", name=provider.label), confirm_text=t(s="Delete the {name} provider?", name=provider.label), csrf_token=csrf_token) }}
+                    {{ list::delete_button(action="/admin/system/ai-providers/" ~ provider.id ~ "/delete", label=t(s="Delete {name}", name=provider.label), confirm_text=t(s="Delete the {name} provider?", name=provider.label), csrf_token=csrf_token, text=t(s="Delete", ctx="row action"), id="act-delete-" ~ provider.id, row_id="row-" ~ provider.id) }}
                 </td>
             </tr>
             {% endfor %}

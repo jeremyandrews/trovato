@@ -22,12 +22,13 @@
         <tbody>
             {% for vocabulary in vocabularies %}
             <tr>
-                <th scope="row"><a href="{{ base }}/{{ vocabulary.id }}">{{ vocabulary.label }}</a></th>
+                {% if vocabulary.id is matching("^[a-z0-9_-]+$") %}{% set key = vocabulary.id %}{% else %}{% set key = loop.index %}{% endif %}
+                <th scope="row"><a id="row-{{ key }}" href="{{ base }}/{{ vocabulary.id }}">{{ vocabulary.label }}</a></th>
                 <td>{{ vocabulary.description | default(value="") }}</td>
                 <td>{{ tag_counts[vocabulary.id] | default(value=0) }}</td>
                 <td class="operations">
-                    <a href="{{ base }}/{{ vocabulary.id }}">{{ t(s="List tags in {name}", name=vocabulary.label) }}</a>
-                    <a href="{{ base }}/{{ vocabulary.id }}/add">{{ t(s="Add tag to {name}", name=vocabulary.label) }}</a>
+                    {{ list::row_action(href=base ~ "/" ~ vocabulary.id, text=t(s="List tags", ctx="row action"), id="act-tags-" ~ key, row_id="row-" ~ key) }}
+                    {{ list::row_action(href=base ~ "/" ~ vocabulary.id ~ "/add", text=t(s="Add tag", ctx="row action"), id="act-add-tag-" ~ key, row_id="row-" ~ key) }}
                 </td>
             </tr>
             {% endfor %}

@@ -1452,33 +1452,44 @@ pub(crate) async fn handle_ajax_add_field(
     if let Some(locale) = state.locale() {
         locale.ensure_loaded(lang).await;
     }
-    let tr = |source: &str, args: &[(String, String)]| {
+    let tr = |source: &str, context: &str| {
         crate::i18n::strip_markers(&crate::i18n::translate(
             state.locale().map(|l| l.as_ref()),
             lang,
-            &crate::i18n::Message::new(source),
-            args,
+            &crate::i18n::Message {
+                context,
+                ..crate::i18n::Message::new(source)
+            },
+            &[],
         ))
+    };
+    // The row's key in its ids, as the template's: the machine name, which
+    // field names always are (`[a-z0-9_]`); never the label.
+    let key = if !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    {
+        name.to_string()
+    } else {
+        "new".to_string()
     };
     let row_html = format!(
         r#"<tr data-field="{name_esc}">
-            <th scope="row">{label_esc}</th>
+            <th scope="row"><span id="row-{key}">{label_esc}</span></th>
             <td><code>{name_esc}</code></td>
             <td>{type_esc}</td>
             <td>{no}</td>
             <td class="operations">
-                <a href="/admin/structure/types/{ct_esc}/fields/{name_esc}/edit">{edit}</a>
+                <a id="act-edit-{key}" aria-labelledby="act-edit-{key} row-{key}" href="/admin/structure/types/{ct_esc}/fields/{name_esc}/edit">{edit}</a>
             </td>
         </tr>"#,
         name_esc = html_escape(name),
         label_esc = html_escape(label),
         type_esc = html_escape(field_type),
         ct_esc = html_escape(type_name),
-        no = html_escape(&tr("No", &[])),
-        edit = html_escape(&tr(
-            "Edit {name}",
-            &[("name".to_string(), label.to_string())]
-        )),
+        no = html_escape(&tr("No", "")),
+        edit = html_escape(&tr("Edit", "row action")),
     );
 
     // Return AJAX response to append row and reset form

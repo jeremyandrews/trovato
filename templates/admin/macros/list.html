@@ -18,22 +18,58 @@
 </div>
 {% endmacro empty %}
 
+{#- Row actions (docs/admin/design.md, "Table pattern"). A row action shows
+    only its verb ("Edit"), and its accessible name is that verb followed by
+    the row's name ("Edit About us"): `aria-labelledby` names the action's own
+    element first, then the element holding only the row's name. So a
+    sighted reader scans a short column, and a screen reader's list of links
+    is still never a column of identical "Edit"s.
+
+    `id` is `act-{verb}-{key}` and `row_id` is `row-{key}`: `{verb}` a fixed
+    English slug and `{key}` the row's database id (or machine name), never
+    text a person typed, because `aria-labelledby` splits on spaces. `text`
+    arrives translated (`ctx="row action"`); these macros call no `t`. -#}
+
+{#- A row action that is a link. -#}
+{% macro row_action(href, text, id, row_id) %}<a id="{{ id }}" aria-labelledby="{{ id }} {{ row_id }}" href="{{ href }}">{{ text }}</a>{% endmacro row_action %}
+
+{#- A row action that posts at once, without asking first (Approve, Enable,
+    Clone): an inline POST form holding the form token and `fields`, a flat
+    list of hidden field names and values (`[name, value, name, value]`),
+    and a button named as `row_action` names a link. -#}
+{% macro row_button(action, text, id, row_id, csrf_token, fields="", btn_class="link-button") %}
+<form method="post" action="{{ action }}" class="inline-form" novalidate>
+    <input type="hidden" name="_token" value="{{ csrf_token }}">
+    {% if fields %}{% for name in fields %}{% if loop.index0 is even %}{% set value_index = loop.index0 + 1 %}<input type="hidden" name="{{ name }}" value="{{ fields[value_index] }}">{% endif %}{% endfor %}{% endif %}
+    <button type="submit" id="{{ id }}" aria-labelledby="{{ id }} {{ row_id }}" class="{{ btn_class }}">{{ text }}</button>
+</form>
+{% endmacro row_button %}
+
 {#- A delete button that asks first, with or without JavaScript.
 
-    `label` is the button's visible text and accessible name; it names the
-    object ("Delete About us"), so a screen reader's list of buttons is not a
-    column of identical "Delete"s. `confirm_text` is the question the
+    `label` names the object ("Delete About us"): the confirmation page's
+    button says it, and it is the button's own text when the macro is not
+    given `text`. In a listing row, pass `text` (the bare verb, "Delete"),
+    `id` and `row_id`: the button then shows the verb and is named as
+    `row_action` names a link. `confirm_text` is the question the
     confirmation page asks (routes::admin_confirm): the form's action carries
     `?confirm`, so posting it leads to a page that names what will be deleted
-    and offers the real button. Both arrive translated. -#}
-{% macro delete_button(action, label, confirm_text, btn_class="link-button link-button--danger", csrf_token="") %}
+    and offers the real button. All arrive translated. -#}
+{% macro delete_button(action, label, confirm_text, btn_class="link-button link-button--danger", csrf_token="", text="", id="", row_id="") %}
 <form method="post" action="{{ action }}?confirm" class="inline-form" novalidate>
     <input type="hidden" name="_token" value="{{ csrf_token }}">
     <input type="hidden" name="_confirm" value="{{ confirm_text }}">
     <input type="hidden" name="_confirm_label" value="{{ label }}">
-    <button type="submit" class="{{ btn_class }}">{{ label }}</button>
+    {% if text and id and row_id %}<button type="submit" id="{{ id }}" aria-labelledby="{{ id }} {{ row_id }}" class="{{ btn_class }}">{{ text }}</button>{% else %}<button type="submit" class="{{ btn_class }}">{{ label }}</button>{% endif %}
 </form>
 {% endmacro delete_button %}
+
+{#- A row's state, as one quiet pill (docs/admin/design.md, "Icons and
+    status"). `label` arrives translated; `kind` is the state's
+    `admin_list::StatusKind` (`problem`, `attention` or `done`), set by
+    `ListState::kind()` and nowhere else. The word carries the meaning; the
+    colour only repeats it. -#}
+{% macro status(label, kind) %}<span class="list-status list-status--{{ kind }}">{{ label }}</span>{% endmacro status %}
 
 {#- The listing pattern (docs/admin/design.md section 9). A handler gives its
     template `list`, a routes::admin_list::ListView; these draw the parts that

@@ -33,18 +33,16 @@
             </thead>
             <tbody>
                 {% for query in queries %}
+                {% if query.query_id is matching("^[a-z0-9_-]+$") %}{% set key = query.query_id %}{% else %}{% set key = loop.index %}{% endif %}
                 <tr>
-                    <th scope="row"><a href="/admin/gather/{{ query.query_id }}/edit">{{ query.label }}</a></th>
+                    <th scope="row"><a id="row-{{ key }}" href="/admin/gather/{{ query.query_id }}/edit">{{ query.label }}</a></th>
                     <td><code>{{ query.query_id }}</code></td>
                     <td>{{ query.definition.base_table }}</td>
                     <td>{{ query.plugin }}</td>
                     <td class="operations">
-                        <a href="/admin/gather/{{ query.query_id }}/edit">{{ t(s="Edit {name}", name=query.label) }}</a>
-                        <form method="post" action="/admin/gather/{{ query.query_id }}/clone" class="inline-form" novalidate>
-                            <input type="hidden" name="_token" value="{{ csrf_token }}">
-                            <button type="submit" class="link-button">{{ t(s="Clone {name}", name=query.label) }}</button>
-                        </form>
-                        {{ list::delete_button(action="/admin/gather/" ~ query.query_id ~ "/delete", label=t(s="Delete {name}", name=query.label), confirm_text=t(s="Delete the {name} query?", name=query.label), csrf_token=csrf_token) }}
+                        {{ list::row_action(href="/admin/gather/" ~ query.query_id ~ "/edit", text=t(s="Edit", ctx="row action"), id="act-edit-" ~ key, row_id="row-" ~ key) }}
+                        {{ list::row_button(action="/admin/gather/" ~ query.query_id ~ "/clone", text=t(s="Clone", ctx="row action"), id="act-clone-" ~ key, row_id="row-" ~ key, csrf_token=csrf_token) }}
+                        {{ list::delete_button(action="/admin/gather/" ~ query.query_id ~ "/delete", label=t(s="Delete {name}", name=query.label), confirm_text=t(s="Delete the {name} query?", name=query.label), csrf_token=csrf_token, text=t(s="Delete", ctx="row action"), id="act-delete-" ~ key, row_id="row-" ~ key) }}
                     </td>
                 </tr>
                 {% endfor %}

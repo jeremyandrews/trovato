@@ -40,7 +40,7 @@
                 {% set size_kb = (file.filesize / 1024) | round(precision=1) %}
                 <tr>
                     <th scope="row">
-                        <a href="/admin/content/files/{{ file.id }}">{{ file.filename }}</a>
+                        <a id="row-{{ file.id }}" href="/admin/content/files/{{ file.id }}">{{ file.filename }}</a>
                     </th>
                     <td>{{ file.filemime }}</td>
                     <td>{{ t(s="{size} KB", size=size_kb) }}</td>
@@ -54,8 +54,8 @@
                     </td>
                     <td>{{ file.created | date(format="%Y-%m-%d %H:%M") }}</td>
                     <td class="operations">
-                        <a href="/admin/content/files/{{ file.id }}">{{ t(s="View {name}", name=file.filename) }}</a>
-                        {{ list::delete_button(action="/admin/content/files/" ~ file.id ~ "/delete", label=t(s="Delete {name}", name=file.filename), confirm_text=t(s="Are you sure you want to delete this file?"), csrf_token=csrf_token) }}
+                        {{ list::row_action(href="/admin/content/files/" ~ file.id, text=t(s="View", ctx="row action"), id="act-view-" ~ file.id, row_id="row-" ~ file.id) }}
+                        {{ list::delete_button(action="/admin/content/files/" ~ file.id ~ "/delete", label=t(s="Delete {name}", name=file.filename), confirm_text=t(s="Are you sure you want to delete this file?"), csrf_token=csrf_token, text=t(s="Delete", ctx="row action"), id="act-delete-" ~ file.id, row_id="row-" ~ file.id) }}
                     </td>
                 </tr>
                 {% endfor %}

@@ -22,14 +22,14 @@
         <tbody>
             {% for redirect in redirects %}
             <tr>
-                <th scope="row"><code>{{ redirect.source }}</code></th>
+                <th scope="row"><code id="row-{{ redirect.id }}">{{ redirect.source }}</code></th>
                 <td><code>{{ redirect.destination }}</code></td>
                 <td>{{ redirect.status_code }}</td>
                 <td>{% if redirect.language %}{{ redirect.language }}{% else %}{{ t(s="Any") }}{% endif %}</td>
                 <td>{{ redirect.created_display }}</td>
                 <td class="operations">
-                    <a href="/admin/config/redirects/{{ redirect.id }}/edit">{{ t(s="Edit the redirect from {source}", source=redirect.source) }}</a>
-                    {{ list::delete_button(action="/admin/config/redirects/" ~ redirect.id ~ "/delete", label=t(s="Delete the redirect from {source}", source=redirect.source), confirm_text=t(s="Delete the redirect from {source}?", source=redirect.source), csrf_token=csrf_token) }}
+                    {{ list::row_action(href="/admin/config/redirects/" ~ redirect.id ~ "/edit", text=t(s="Edit", ctx="row action"), id="act-edit-" ~ redirect.id, row_id="row-" ~ redirect.id) }}
+                    {{ list::delete_button(action="/admin/config/redirects/" ~ redirect.id ~ "/delete", label=t(s="Delete the redirect from {source}", source=redirect.source), confirm_text=t(s="Delete the redirect from {source}?", source=redirect.source), csrf_token=csrf_token, text=t(s="Delete", ctx="row action"), id="act-delete-" ~ redirect.id, row_id="row-" ~ redirect.id) }}
                 </td>
             </tr>
             {% endfor %}

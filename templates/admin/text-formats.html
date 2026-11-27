@@ -22,14 +22,15 @@
         <tbody>
             {% for format in formats %}
             <tr>
-                <th scope="row">{{ format.name }}<br><code class="text-format-machine">{{ format.format }}</code></th>
+                {% if format.format is matching("^[a-z0-9_-]+$") %}{% set key = format.format %}{% else %}{% set key = loop.index %}{% endif %}
+                <th scope="row"><span id="row-{{ key }}">{{ format.name }}</span><br><code class="text-format-machine">{{ format.format }}</code></th>
                 <td>{{ t(s=format.filter) }}</td>
                 <td>{% if format.tags %}<code class="text-format-tags">{{ format.tags }}</code>{% else %}{{ t(s="None") }}{% endif %}</td>
                 <td>{% if format.everyone %}{{ t(s="Every role") }}{% elif format.roles %}{{ format.roles | join(sep=", ") }}{% else %}{{ t(s="Administrators only") }}{% endif %}</td>
                 <td>{{ format.weight }}</td>
                 <td class="operations">
-                    <a href="/admin/config/formats/{{ format.format }}/edit">{{ t(s="Edit {name}", name=format.name) }}</a>
-                    {% if not format.built_in %}<a href="/admin/config/formats/{{ format.format }}/delete">{{ t(s="Delete {name}", name=format.name) }}</a>{% endif %}
+                    {{ list::row_action(href="/admin/config/formats/" ~ format.format ~ "/edit", text=t(s="Edit", ctx="row action"), id="act-edit-" ~ key, row_id="row-" ~ key) }}
+                    {% if not format.built_in %}{{ list::row_action(href="/admin/config/formats/" ~ format.format ~ "/delete", text=t(s="Delete", ctx="row action"), id="act-delete-" ~ key, row_id="row-" ~ key) }}{% endif %}
                 </td>
             </tr>
             {% endfor %}

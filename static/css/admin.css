@@ -946,6 +946,24 @@
         margin-inline-start: var(--space-3);
     }
 
+    /* A listing's row actions are short verbs ("Edit", "Delete"), so their
+       column takes only the room they need and the title column the rest.
+       Wide screens only: the stacked narrow layout below is untouched. Text
+       there that is not an action (a "Not deletable" note) still wraps. */
+    @media (width > 40rem) {
+        th.operations,
+        td.operations {
+            inline-size: 1%;
+            white-space: nowrap;
+        }
+
+        .operations__note {
+            display: inline-block;
+            min-inline-size: min(14rem, 40vw);
+            white-space: normal;
+        }
+    }
+
     /* A link that is not part of a sentence (a row's operations, a "Back to"
        or "Cancel" link alone in its paragraph) is a target, and gets the
        24px a target needs (WCAG 2.5.8) whatever the font's line height. */
