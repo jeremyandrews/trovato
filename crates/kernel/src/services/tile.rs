@@ -204,8 +204,8 @@ fn wrap_tile(tile: &Tile, body: &str) -> String {
 /// `current_item`/`current_item.fields.<name>` resolves against it, so the
 /// same tile placed once on every item page can exclude, or filter by a field
 /// of, whichever item it is rendered beside. On a page showing no item, such a
-/// filter makes the gather return nothing rather than an unfiltered list — see
-/// [`crate::gather::gather_service::GatherService::resolve_contextual_values`].
+/// tile is left off the page (and `GatherService` itself returns no rows
+/// rather than an unfiltered list).
 ///
 /// `None`, and so no tile, when the viewer may not run the gather; when the
 /// gather does not exist, the config is invalid or the run fails, also with a
