@@ -30,7 +30,6 @@
             <thead>
                 <tr>
                     {{ list::sort_th(label=t(s="Name"), key="name", list=list) }}
-                    {{ list::sort_th(label=t(s="Owner"), key="owner", list=list) }}
                     {{ list::sort_th(label=t(s="Next run"), key="next", list=list) }}
                     <th scope="col">{{ t(s="Repeat") }}</th>
                     {{ list::sort_th(label=t(s="Status"), key="status", list=list) }}
@@ -41,8 +40,7 @@
             <tbody>
                 {% for timer in timers %}
                 <tr>
-                    <th scope="row"><code>{{ timer.name }}</code></th>
-                    <td>{{ timer.owner }}</td>
+                    <th scope="row"><code>{{ timer.name }}</code><br><span class="form-item__description">{{ t(s="Owner: {owner}", owner=timer.owner) }}</span></th>
                     <td>
                         <time class="timer-when" datetime="{{ timer.next_utc }}">{{ timer.next_local }}</time><br>
                         <span class="form-item__description">{% set r = timer.next_relative %}{% if r.future %}{% if r.unit == "second" %}{{ t(s="in {count} second", plural="in {count} seconds", count=r.count) }}{% elif r.unit == "minute" %}{{ t(s="in {count} minute", plural="in {count} minutes", count=r.count) }}{% elif r.unit == "hour" %}{{ t(s="in {count} hour", plural="in {count} hours", count=r.count) }}{% else %}{{ t(s="in {count} day", plural="in {count} days", count=r.count) }}{% endif %}{% else %}{% if r.unit == "second" %}{{ t(s="{count} second ago", plural="{count} seconds ago", count=r.count) }}{% elif r.unit == "minute" %}{{ t(s="{count} minute ago", plural="{count} minutes ago", count=r.count) }}{% elif r.unit == "hour" %}{{ t(s="{count} hour ago", plural="{count} hours ago", count=r.count) }}{% else %}{{ t(s="{count} day ago", plural="{count} days ago", count=r.count) }}{% endif %}{% endif %}</span>
