@@ -31,8 +31,9 @@ its digits keep their order. Form inputs that take a date are still UTC.
 order, ignoring case, with numbers by value and an accented letter beside its
 plain one: "Post 2" before "Post 10", "eclair" beside "Éclair". A migration
 creates the ICU collation `trovato_natural` (`und-u-kn-true`), which the sort
-expressions name (`admin_list::natural!`) without changing any column, and an
-index on `lower(name) COLLATE trovato_natural` keeps the people listing's first
-page an index scan. Listings sorted in memory use a key that gives the same
-order. Titles that differ only in punctuation such as `_` or `~` can still
+expressions name (`admin_list::natural!`) without changing any column, and
+indexes on `lower(name) COLLATE trovato_natural` and `lower(title) COLLATE
+trovato_natural` keep the first page of the people and content listings an index
+scan, in either direction. Listings sorted in memory use a key that gives the
+same order. Titles that differ only in punctuation such as `_` or `~` can still
 order differently between the two.

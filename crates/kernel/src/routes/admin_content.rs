@@ -1521,6 +1521,26 @@ mod tests {
         uuid::Uuid::parse_str(s).unwrap()
     }
 
+    /// The title sort is the expression idx_item_title_natural indexes, so the
+    /// first page of a large site reads from the index in either direction.
+    #[test]
+    fn the_title_sort_is_the_natural_index_expression() {
+        let index = include_str!("../../migrations/20261211000003_item_title_natural_index.sql");
+        let title_sql = CONTENT_SORTS
+            .iter()
+            .find(|(k, _)| *k == "title")
+            .map(|(_, sql)| *sql)
+            .unwrap_or_default();
+        assert_eq!(title_sql, "lower(title) COLLATE trovato_natural");
+        assert!(index.starts_with("-- no-transaction\n"), "{index}");
+        assert!(
+            index.contains(&format!(
+                "CREATE INDEX CONCURRENTLY idx_item_title_natural ON item (({title_sql}));"
+            )),
+            "{index}"
+        );
+    }
+
     #[test]
     fn several_ids_are_read_in_the_order_they_were_sent() {
         let body = format!("_token=t&action=publish&ids%5B%5D={B}&ids%5B%5D={A}&ids[]={C}");
