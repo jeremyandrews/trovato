@@ -1,0 +1,12 @@
+-- no-transaction
+-- The content list sorts by title in natural order (B246):
+-- `lower(title) COLLATE trovato_natural`. Without an index the first page of
+-- a large site sorts every item to show fifty, and a descending sort under
+-- the ICU collation took more than twice as long as the byte-order sort it
+-- replaced (17 ms against 7 ms on 10000 items). With it both directions read
+-- the first page from the index. The expression is the one `CONTENT_SORTS`
+-- writes (a unit test in routes::admin_content holds the two to each other).
+--
+-- CONCURRENTLY, alone in this no-transaction file, so building it does not
+-- block writes to `item` for the build's duration.
+CREATE INDEX CONCURRENTLY idx_item_title_natural ON item ((lower(title) COLLATE trovato_natural));
