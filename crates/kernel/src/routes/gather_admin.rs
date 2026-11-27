@@ -63,19 +63,39 @@ const BUILDER_CANNOT_SHOW: &str = "This gather uses filter groups or a summary \
 // `templates/admin/ai-provider-form.html`'s `ai-operations` block already
 // uses for `static/js/ai-admin.js`).
 
-/// The filter operators the builder offers, value and English label.
-const BUILDER_OPERATORS: &[(&str, &str)] = &[
-    ("equals", "Equals"),
-    ("not_equals", "Not equals"),
-    ("contains", "Contains"),
-    ("not_contains", "Not contains"),
-    ("greater_than", "Greater than"),
-    ("less_than", "Less than"),
-    ("in", "In"),
-    ("not_in", "Not in"),
-    ("is_null", "Is null"),
-    ("is_not_null", "Is not null"),
-    ("full_text_search", "Full-text search"),
+/// The filter operators the builder offers: value, English label, the
+/// option group it is placed under (also translated), and whether it only
+/// works on the `item` table (`semantic_similarity` compares against item
+/// embeddings; there is nothing to compare on any other table). Every
+/// [`crate::gather::types::FilterOperator`] the query engine accepts appears
+/// here except `custom`, which a plugin defines and the builder cannot
+/// enumerate: a filter using it is kept verbatim and shown read only
+/// (`gather-builder.js`), never rewritten on save.
+const BUILDER_OPERATORS: &[(&str, &str, &str, bool)] = &[
+    ("equals", "Equals", "Equality", false),
+    ("not_equals", "Not equals", "Equality", false),
+    ("is_null", "Is empty", "Equality", false),
+    ("is_not_null", "Is not empty", "Equality", false),
+    ("greater_than", "Greater than", "Compare", false),
+    ("less_than", "Less than", "Compare", false),
+    ("greater_or_equal", "At least", "Compare", false),
+    ("less_or_equal", "At most", "Compare", false),
+    ("contains", "Contains", "Text", false),
+    ("starts_with", "Starts with", "Text", false),
+    ("ends_with", "Ends with", "Text", false),
+    ("in", "In", "Lists", false),
+    ("not_in", "Not in", "Lists", false),
+    ("has_tag", "Has this tag", "Tags", false),
+    ("has_any_tag", "Has any of these tags", "Tags", false),
+    ("has_all_tags", "Has all of these tags", "Tags", false),
+    (
+        "has_tag_or_descendants",
+        "Has tag or a child of it",
+        "Tags",
+        false,
+    ),
+    ("full_text_search", "Full-text search", "Search", false),
+    ("semantic_similarity", "Semantic similarity", "Search", true),
 ];
 
 /// The relationship join types the builder offers.
@@ -98,6 +118,37 @@ const BUILDER_STRINGS: &[(&str, &str)] = &[
     ("filter_operator", "Filter operator"),
     ("value", "Value"),
     ("filter_value", "Filter value"),
+    ("value_source", "Value source"),
+    ("value_source_fixed", "Fixed value"),
+    ("value_source_current_item", "This item (id)"),
+    ("value_source_current_item_field", "A field of this item"),
+    ("value_source_url_arg", "A URL argument"),
+    ("value_source_current_user", "Current user"),
+    ("value_source_current_time", "Current time"),
+    ("value_source_current_date", "Current date"),
+    ("item_field_name", "Item field name"),
+    (
+        "item_field_name_example",
+        "Item field name (e.g., field_tags)",
+    ),
+    ("url_arg_name", "URL argument name"),
+    ("url_arg_name_example", "URL argument name (e.g., cat)"),
+    (
+        "fixed_value_hint",
+        "A literal value. For “In” and “Has any or all of these tags”, one value per line or comma separated.",
+    ),
+    (
+        "reserved_keyword_error",
+        "“{keyword}” cannot be stored as a fixed value: that exact spelling always reads as the matching value source above. Choose that source instead, or use different wording.",
+    ),
+    (
+        "unknown_operator_option",
+        "Not shown by this builder ({operator})",
+    ),
+    (
+        "unknown_filter_note",
+        "This filter uses an operator or value this builder cannot show. It is kept as stored; remove it if you no longer need it, or change it where the gather is defined.",
+    ),
     ("remove", "Remove"),
     ("remove_filter", "Remove filter"),
     ("sort_field_name", "Sort field name"),

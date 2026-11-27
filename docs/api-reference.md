@@ -442,6 +442,41 @@ same rules, and a definition that breaks them is refused before any SQL runs.
 - A field, filter or sort may not name a column called `pass`, `password`,
   `secret` or `token`, or one ending in `_hash`, `_secret` or `_token`.
 
+### Filters that use the page
+
+A filter's `value` is usually a fixed number, string, boolean, UUID or list,
+compared against as written. It can instead name something read off the page
+at query time (`ContextualValue`, `crates/kernel/src/gather/types.rs`):
+
+| Reads                                  | JSON spelling                             |
+|-----------------------------------------|--------------------------------------------|
+| The signed-in viewer's id (or anonymous) | `"current_user"`                           |
+| The current Unix timestamp              | `"current_time"`                           |
+| Today's date, `YYYY-MM-DD`              | `"current_date"`                           |
+| A URL query-string argument              | `{"url_arg": "cat"}`                       |
+| The id of the item the page shows       | `"current_item"`                           |
+| A field of the item the page shows       | `{"current_item_field": "tags"}` (also written `"current_item.fields.tags"`) |
+
+`current_item`/`current_item_field` resolve against the item a page is
+showing (an item view, most often), which a tile placed in its sidebar can
+read without a copy per item:
+
+- **Other articles.** `{"field": "id", "operator": "not_equals", "value": "current_item"}`
+  lists every other article, never the one shown.
+- **Related by tag.** `{"field": "fields.tags", "operator": "has_any_tag", "value": {"current_item_field": "tags"}}`
+  lists items sharing one of the shown item's tags. Combine it with the
+  `not_equals` filter above to drop the item itself from its own "related"
+  list.
+
+A gather naming `current_item`/`current_item_field` on a page with no item in
+view (a gather's own listing, the front page) is never left unconstrained: it
+renders nothing rather than every row. The admin gather builder's value
+source select writes and reads every one of these spellings; a fixed value
+typed exactly as one of the bare keywords above (`current_item`,
+`current_user`, `current_time`, `current_date`) is refused, since that exact
+spelling always reads back as the matching value source, never as literal
+text.
+
 ---
 
 ## Categories & Tags

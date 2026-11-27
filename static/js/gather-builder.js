@@ -42,6 +42,23 @@
 
     var STAGE_AWARE_TABLES = { item: true };
 
+    // Operators whose value is a list (one value per line or comma
+    // separated), not a single value.
+    var LIST_OPERATORS = { in: true, not_in: true, has_any_tag: true, has_all_tags: true };
+
+    // Operators that take no value at all.
+    var NO_VALUE_OPERATORS = { is_null: true, is_not_null: true };
+
+    // The bare-string spellings `ContextualValue`'s unit variants serialize
+    // as (`crates/kernel/src/gather/types.rs`). A fixed value typed as one of
+    // these would silently read back as that contextual value, not as the
+    // literal text, so the form refuses it (B279).
+    var RESERVED_CONTEXTUAL_KEYWORDS = ['current_item', 'current_user', 'current_time', 'current_date'];
+
+    // Refreshers the base-table listener calls so every filter row's operator
+    // list drops (or restores) `semantic_similarity` when the table changes.
+    var operatorSelectRefreshers = [];
+
     // -------------------------------------------------------------------------
     // State
     // -------------------------------------------------------------------------
@@ -254,49 +271,182 @@
     // Filter blocks
     // -------------------------------------------------------------------------
 
-    function createFilterRow(data, index) {
+    /** `true` when `v` is a JSON object (not null, not an array). */
+    function isPlainObject(v) {
+        return v !== null && typeof v === 'object' && !Array.isArray(v);
+    }
+
+    /**
+     * Read a stored `FilterValue` into the shape the value-source UI edits:
+     * `{source, text, list, field, arg}`. `source` is one of `fixed`,
+     * `current_item`, `current_item_field`, `url_arg`, `current_user`,
+     * `current_time`, `current_date`, or `unknown` for an object shape this
+     * builder does not recognize (kept verbatim like an unknown operator).
+     */
+    function parseValueShape(value) {
+        if (value === null || value === undefined) {
+            return { source: 'fixed', text: '', list: [] };
+        }
+        if (typeof value === 'string') {
+            if (RESERVED_CONTEXTUAL_KEYWORDS.indexOf(value) !== -1) {
+                return { source: value };
+            }
+            return { source: 'fixed', text: value, list: splitListInput(value) };
+        }
+        if (Array.isArray(value)) {
+            var list = value.map(function (item) {
+                return typeof item === 'string' ? item : JSON.stringify(item);
+            });
+            return { source: 'fixed', text: list.join(', '), list: list };
+        }
+        if (isPlainObject(value)) {
+            if (typeof value.url_arg === 'string') return { source: 'url_arg', arg: value.url_arg };
+            if (typeof value.current_item_field === 'string') {
+                return { source: 'current_item_field', field: value.current_item_field };
+            }
+            return { source: 'unknown' };
+        }
+        // A number or boolean: shown as its text form, restored verbatim
+        // (its JSON type kept) unless the user edits it.
+        return { source: 'fixed', text: String(value), list: [value] };
+    }
+
+    /** One value per line, or comma separated (the hint states both). */
+    function splitListInput(text) {
+        return (text || '')
+            .split(/[\n,]+/)
+            .map(function (s) { return s.trim(); })
+            .filter(function (s) { return s.length > 0; });
+    }
+
+    /** Build `<option>`s (grouped by `optgroup`) for one operator `<select>`. */
+    function populateOperatorSelect(select, currentValue, unknownOperatorLabel) {
+        select.innerHTML = '';
+        if (unknownOperatorLabel !== null) {
+            var unknownOpt = document.createElement('option');
+            unknownOpt.value = '';
+            unknownOpt.textContent = unknownOperatorLabel;
+            unknownOpt.selected = true;
+            select.appendChild(unknownOpt);
+            select.disabled = true;
+            return;
+        }
+        var group = null;
+        var groupEl = null;
+        OPERATORS.forEach(function (op) {
+            if (op.item_only && definition.base_table !== 'item' && op.value !== currentValue) return;
+            if (op.group !== group) {
+                group = op.group;
+                groupEl = document.createElement('optgroup');
+                groupEl.label = group;
+                select.appendChild(groupEl);
+            }
+            var opt = document.createElement('option');
+            opt.value = op.value;
+            opt.textContent = op.label;
+            if (op.value === currentValue) opt.selected = true;
+            groupEl.appendChild(opt);
+        });
+    }
+
+    function createFilterRow(data, index, isNew) {
+        var raw = data;
+        var unknownOperator = typeof raw.operator !== 'string';
+        var parsedValue = parseValueShape(raw.value);
+        var unknown = unknownOperator || parsedValue.source === 'unknown';
+        var valueTouched = !!isNew;
+
         var row = document.createElement('div');
         row.className = 'gather-block-row gather-block-row--filter';
+        if (unknown) row.className += ' gather-filter-row--unknown';
+
+        var main = document.createElement('div');
+        main.className = 'gather-filter-row__main';
 
         // Field name
         var fieldInput = document.createElement('input');
         fieldInput.type = 'text';
         fieldInput.className = 'form-text';
         fieldInput.placeholder = I18N.strings.field_name;
-        fieldInput.value = data.field || '';
+        fieldInput.value = raw.field || '';
         fieldInput.setAttribute('aria-label', I18N.strings.filter_field_name);
         fieldInput.setAttribute('list', 'gather-item-columns');
         fieldInput.dataset.role = 'field-name';
+        fieldInput.disabled = unknown;
 
         // Operator
         var opSelect = document.createElement('select');
         opSelect.className = 'form-select';
         opSelect.setAttribute('aria-label', I18N.strings.filter_operator);
-        OPERATORS.forEach(function (op) {
-            var opt = document.createElement('option');
-            opt.value = op.value;
-            opt.textContent = op.label;
-            if (data.operator === op.value) opt.selected = true;
-            opSelect.appendChild(opt);
+        var unknownOperatorLabel = unknownOperator
+            ? fillTemplate(I18N.strings.unknown_operator_option, {
+                operator: raw.operator && raw.operator.custom ? raw.operator.custom : JSON.stringify(raw.operator),
+            })
+            : null;
+        populateOperatorSelect(opSelect, unknownOperator ? '' : raw.operator, unknownOperatorLabel);
+        operatorSelectRefreshers.push(function () {
+            if (unknownOperator) return;
+            populateOperatorSelect(opSelect, opSelect.value, null);
         });
 
-        // Value
-        var valueInput = document.createElement('input');
-        valueInput.type = 'text';
-        valueInput.className = 'form-text';
-        valueInput.placeholder = I18N.strings.value;
-        valueInput.value = data.value !== undefined && data.value !== null ? data.value : '';
-        valueInput.setAttribute('aria-label', I18N.strings.filter_value);
-        valueInput.dataset.role = 'value';
+        // Value source
+        var sourceSelect = document.createElement('select');
+        sourceSelect.className = 'form-select';
+        sourceSelect.setAttribute('aria-label', I18N.strings.value_source);
+        [
+            ['fixed', I18N.strings.value_source_fixed],
+            ['current_item', I18N.strings.value_source_current_item],
+            ['current_item_field', I18N.strings.value_source_current_item_field],
+            ['url_arg', I18N.strings.value_source_url_arg],
+            ['current_user', I18N.strings.value_source_current_user],
+            ['current_time', I18N.strings.value_source_current_time],
+            ['current_date', I18N.strings.value_source_current_date],
+        ].forEach(function (pair) {
+            var opt = document.createElement('option');
+            opt.value = pair[0];
+            opt.textContent = pair[1];
+            if (parsedValue.source === pair[0]) opt.selected = true;
+            sourceSelect.appendChild(opt);
+        });
+        sourceSelect.disabled = unknown;
 
-        // Disable value for null operators
-        function updateValueState() {
-            var op = opSelect.value;
-            var isNullOp = (op === 'is_null' || op === 'is_not_null');
-            valueInput.disabled = isNullOp;
-            if (isNullOp) valueInput.value = '';
-        }
-        updateValueState();
+        // Fixed value: single text input
+        var fixedInput = document.createElement('input');
+        fixedInput.type = 'text';
+        fixedInput.className = 'form-text';
+        fixedInput.placeholder = I18N.strings.value;
+        fixedInput.value = parsedValue.text || '';
+        fixedInput.setAttribute('aria-label', I18N.strings.filter_value);
+        fixedInput.dataset.role = 'value-fixed';
+        fixedInput.disabled = unknown;
+
+        // Fixed value: list (in / not_in / has_any_tag / has_all_tags)
+        var listInput = document.createElement('textarea');
+        listInput.className = 'form-text gather-filter-row__list';
+        listInput.setAttribute('aria-label', I18N.strings.filter_value);
+        listInput.value = (parsedValue.list || []).join('\n');
+        listInput.dataset.role = 'value-list';
+        listInput.disabled = unknown;
+
+        // Value source: a field of this item
+        var itemFieldInput = document.createElement('input');
+        itemFieldInput.type = 'text';
+        itemFieldInput.className = 'form-text';
+        itemFieldInput.placeholder = I18N.strings.item_field_name_example;
+        itemFieldInput.value = parsedValue.field || '';
+        itemFieldInput.setAttribute('aria-label', I18N.strings.item_field_name);
+        itemFieldInput.dataset.role = 'value-item-field';
+        itemFieldInput.disabled = unknown;
+
+        // Value source: a URL argument
+        var urlArgInput = document.createElement('input');
+        urlArgInput.type = 'text';
+        urlArgInput.className = 'form-text';
+        urlArgInput.placeholder = I18N.strings.url_arg_name_example;
+        urlArgInput.value = parsedValue.arg || '';
+        urlArgInput.setAttribute('aria-label', I18N.strings.url_arg_name);
+        urlArgInput.dataset.role = 'value-url-arg';
+        urlArgInput.disabled = unknown;
 
         // Remove button
         var removeBtn = document.createElement('button');
@@ -305,30 +455,135 @@
         removeBtn.textContent = I18N.strings.remove;
         removeBtn.setAttribute('aria-label', I18N.strings.remove_filter);
 
-        // Events
+        var hint = document.createElement('p');
+        hint.className = 'gather-filter-row__hint description';
+        hint.textContent = unknown ? I18N.strings.unknown_filter_note : I18N.strings.fixed_value_hint;
+
+        var error = document.createElement('p');
+        error.className = 'gather-filter-row__error';
+        error.setAttribute('role', 'alert');
+        error.hidden = true;
+
+        /** Show or hide the value controls that match the current operator and source. */
+        function updateValueControls() {
+            var op = opSelect.value;
+            var noValue = NO_VALUE_OPERATORS[op] === true;
+            var isList = LIST_OPERATORS[op] === true;
+            var source = sourceSelect.value;
+
+            sourceSelect.hidden = noValue;
+            fixedInput.hidden = noValue || source !== 'fixed' || isList;
+            listInput.hidden = noValue || source !== 'fixed' || !isList;
+            itemFieldInput.hidden = noValue || source !== 'current_item_field';
+            urlArgInput.hidden = noValue || source !== 'url_arg';
+            hint.hidden = unknown ? false : (noValue || source !== 'fixed');
+        }
+        updateValueControls();
+
+        function markTouched() {
+            valueTouched = true;
+            error.hidden = true;
+            readFiltersFromDOM();
+            syncToHiddenInputs();
+        }
+
         fieldInput.addEventListener('input', function () {
             readFiltersFromDOM();
             syncToHiddenInputs();
         });
         opSelect.addEventListener('change', function () {
-            updateValueState();
+            // Changing the operator alone does not touch the value: a
+            // number, boolean or UUID fixed value still keeps its JSON type
+            // on save unless the value itself is also edited.
+            updateValueControls();
+            error.hidden = true;
             readFiltersFromDOM();
             syncToHiddenInputs();
         });
-        valueInput.addEventListener('input', function () {
-            readFiltersFromDOM();
-            syncToHiddenInputs();
-        });
+        sourceSelect.addEventListener('change', markTouched);
+        fixedInput.addEventListener('input', markTouched);
+        listInput.addEventListener('input', markTouched);
+        itemFieldInput.addEventListener('input', markTouched);
+        urlArgInput.addEventListener('input', markTouched);
         removeBtn.addEventListener('click', function () {
             row.remove();
             readFiltersFromDOM();
             syncToHiddenInputs();
         });
 
-        row.appendChild(fieldInput);
-        row.appendChild(opSelect);
-        row.appendChild(valueInput);
-        row.appendChild(removeBtn);
+        /** This row's current value as a `FilterValue` JSON shape. */
+        function currentValue() {
+            var op = opSelect.value;
+            if (NO_VALUE_OPERATORS[op]) return null;
+            if (!valueTouched) return raw.value !== undefined ? raw.value : null;
+            switch (sourceSelect.value) {
+                case 'current_item': return 'current_item';
+                case 'current_user': return 'current_user';
+                case 'current_time': return 'current_time';
+                case 'current_date': return 'current_date';
+                case 'url_arg': return { url_arg: urlArgInput.value.trim() };
+                case 'current_item_field': return { current_item_field: itemFieldInput.value.trim() };
+                default:
+                    return LIST_OPERATORS[op] ? splitListInput(listInput.value) : fixedInput.value;
+            }
+        }
+
+        /**
+         * `null`, or an error message when a fixed value is written exactly
+         * as a reserved contextual keyword (B279): the engine would read it
+         * back as that contextual value, never as the literal text.
+         */
+        function validate() {
+            if (unknown) return null;
+            var op = opSelect.value;
+            if (NO_VALUE_OPERATORS[op] || sourceSelect.value !== 'fixed') return null;
+            var candidates = LIST_OPERATORS[op] ? splitListInput(listInput.value) : [fixedInput.value];
+            var hit = candidates.filter(function (c) {
+                return RESERVED_CONTEXTUAL_KEYWORDS.indexOf(c.trim()) !== -1;
+            })[0];
+            if (!hit) return null;
+            return {
+                message: fillTemplate(I18N.strings.reserved_keyword_error, { keyword: hit.trim() }),
+                input: LIST_OPERATORS[op] ? listInput : fixedInput,
+            };
+        }
+
+        /** This row's filter, exactly as stored when nothing in it changed. */
+        function readFilter() {
+            if (unknown) return raw;
+            var filter = {
+                field: fieldInput.value.trim(),
+                operator: opSelect.value,
+                value: currentValue(),
+            };
+            if (raw.exposed) filter.exposed = raw.exposed;
+            if (raw.exposed_label !== undefined) filter.exposed_label = raw.exposed_label;
+            if (raw.widget !== undefined) filter.widget = raw.widget;
+            return filter;
+        }
+
+        row.readFilter = readFilter;
+        row.validateFilter = function () {
+            var problem = validate();
+            if (problem) {
+                error.textContent = problem.message;
+                error.hidden = false;
+            }
+            return problem;
+        };
+
+        main.appendChild(fieldInput);
+        main.appendChild(opSelect);
+        main.appendChild(sourceSelect);
+        main.appendChild(fixedInput);
+        main.appendChild(listInput);
+        main.appendChild(itemFieldInput);
+        main.appendChild(urlArgInput);
+        main.appendChild(removeBtn);
+
+        row.appendChild(main);
+        row.appendChild(hint);
+        row.appendChild(error);
 
         return row;
     }
@@ -337,15 +592,21 @@
         var rows = filtersContainer.querySelectorAll('.gather-block-row--filter');
         definition.filters = [];
         rows.forEach(function (row) {
-            var field    = row.querySelector('[data-role="field-name"]').value.trim();
-            var operator = row.querySelector('select').value;
-            var value    = row.querySelector('[data-role="value"]').value;
-            var filter   = { field: field, operator: operator };
-            if (operator !== 'is_null' && operator !== 'is_not_null') {
-                filter.value = value;
-            }
-            definition.filters.push(filter);
+            definition.filters.push(row.readFilter());
         });
+    }
+
+    /**
+     * `null`, or the first filter row's validation problem: a fixed value
+     * written exactly as a reserved contextual keyword (B279).
+     */
+    function validateFiltersInDOM() {
+        var rows = filtersContainer.querySelectorAll('.gather-block-row--filter');
+        for (var i = 0; i < rows.length; i++) {
+            var problem = rows[i].validateFilter();
+            if (problem) return problem;
+        }
+        return null;
     }
 
     // -------------------------------------------------------------------------
@@ -692,7 +953,7 @@
             addFilterBtn.addEventListener('click', function () {
                 var newFilter = { field: '', operator: 'equals', value: '' };
                 definition.filters.push(newFilter);
-                filtersContainer.appendChild(createFilterRow(newFilter, definition.filters.length - 1));
+                filtersContainer.appendChild(createFilterRow(newFilter, definition.filters.length - 1, true));
                 syncToHiddenInputs();
             });
         }
@@ -821,6 +1082,10 @@
         baseTableSelect.addEventListener('change', function () {
             definition.base_table = baseTableSelect.value;
             definition.stage_aware = !!STAGE_AWARE_TABLES[definition.base_table];
+            // `semantic_similarity` only applies to `item`: drop it from (or
+            // restore it to) every filter row's operator list.
+            operatorSelectRefreshers.forEach(function (refresh) { refresh(); });
+            readFiltersFromDOM();
             syncToHiddenInputs();
         });
     }
@@ -981,7 +1246,17 @@
         var form = document.getElementById('gather-form');
         if (!form) return;
 
-        form.addEventListener('submit', function () {
+        form.addEventListener('submit', function (event) {
+            // A fixed value spelled exactly like a contextual keyword
+            // (B279): block the submit rather than silently storing a
+            // filter that reads back as something the user did not intend.
+            var problem = validateFiltersInDOM();
+            if (problem) {
+                event.preventDefault();
+                problem.input.focus();
+                return;
+            }
+
             // Final sync before the form data is sent
             readFiltersFromDOM();
             readSortsFromDOM();

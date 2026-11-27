@@ -119,7 +119,7 @@
    to CSP (type="application/json" does not execute). #}
 <script id="gather-i18n" type="application/json">
 {
-  "operators": [{% for o in builder_operators %}{"value": "{{ o.0 }}", "label": "{{ t(s=o.1) }}"}{% if not loop.last %}, {% endif %}{% endfor %}],
+  "operators": [{% for o in builder_operators %}{"value": "{{ o.0 }}", "label": "{{ t(s=o.1) }}", "group": "{{ t(s=o.2) }}", "item_only": {{ o.3 }}}{% if not loop.last %}, {% endif %}{% endfor %}],
   "join_types": [{% for o in builder_join_types %}{"value": "{{ o.0 }}", "label": "{{ t(s=o.1) }}"}{% if not loop.last %}, {% endif %}{% endfor %}],
   "sort_directions": [{% for o in builder_sort_directions %}{"value": "{{ o.0 }}", "label": "{{ t(s=o.1) }}"}{% if not loop.last %}, {% endif %}{% endfor %}],
   "strings": { {% for s in builder_strings %}"{{ s.0 }}": "{{ t(s=s.1) }}"{% if not loop.last %}, {% endif %}{% endfor %} }
