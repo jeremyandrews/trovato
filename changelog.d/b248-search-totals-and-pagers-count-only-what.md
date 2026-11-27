@@ -4,8 +4,7 @@ visitor could read "12 results" above a page of 9 rows, or get a short page
 with a pager offering more, which told them a hidden item matched. The count
 and the page still share one `WHERE`, now built from a narrower form of
 `check_access`'s view rule, decided before the query once per request by
-`ItemService::search_visibility`. Searching now
-needs `access content` as well as `search content`. An author's own
+`ItemService::search_visibility`. Searching now needs `access content` as well as `search content`. An author's own
 unpublished items are included only with `view own unpublished content`,
 `view own content` or `view any content`; a type-specific permission or a
 plugin, such as the blog plugin for its authors, still opens them but no
