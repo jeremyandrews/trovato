@@ -340,6 +340,32 @@ a future session, not fixed in this one — this change's own constraints
 permit fixing a test only where the test itself is shown to be wrong, which
 neither of these has been.
 
+### Reconfirmed in the continuation session (2026-11-27, same pod spec)
+
+This branch was continued from a prior run's checkpoint and merged forward
+onto a newer `origin/main` (which had since landed B235, giving CI one
+canonical plugin-build script, and B247, a cron/Redis timeout change).
+`scripts/build-test-plugins.sh` now delegates to `scripts/ci-build-plugins.sh`
+instead of keeping a second copy of the plugin list, since B235 made that list
+the one CI itself calls; keeping a second, independently-derived list would
+have reintroduced exactly the drift B235 fixed. `./scripts/pre-commit-check.sh`
+and `SHARD=1/2/3 TOTAL_SHARDS=3 ./scripts/ci-test-shard.sh` were rerun in full
+on this pod against the merged tree: `config_storage_test` passes under its
+real shard (shard 1) and alone under `RUST_TEST_THREADS=16` with
+`DATABASE_MAX_CONNECTIONS` unset, and shard 3 reproduced the
+`user_directory_test` failure above twice in a row, in the same two tests,
+with `RUST_TEST_THREADS=4` (CI's own setting) — deterministic given this
+shard's target composition and this pod, not a random flake, and unchanged by
+anything in this branch's diff (`user_directory_test.rs` and everything it
+depends on carry no changes here). Shards 1 and 2 passed cleanly both runs.
+
+No root `AGENTS.md` was added: `.gitignore` already marks it, alongside
+`.claude/`, `.codex/` and `.cursor/`, as "Local coding-agent configuration ...
+per developer, never shared" — a deliberate, repository-wide policy from this
+project's first commit. Adding a tracked `AGENTS.md` would fight that policy
+instead of following it; "How to test fast" in `CONTRIBUTING.md` and this
+page are the shared, tracked equivalent.
+
 ## How to reproduce every number above
 
 ```sh
