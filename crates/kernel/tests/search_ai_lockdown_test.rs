@@ -465,6 +465,7 @@ fn followup_refuses_four_user_turns_when_the_cap_is_three() {
     run_test(async {
         let app = shared_app().await;
         common::hold_until_cleanup(SERIAL.lock().await);
+        let saved = SiteConfig::get(&app.db, "search").await.unwrap();
         SearchSettings {
             max_followups: 2,
             ..SearchSettings::default()
@@ -472,11 +473,17 @@ fn followup_refuses_four_user_turns_when_the_cap_is_three() {
         .save(&app.db, app.state.cache())
         .await
         .unwrap();
+        // Restore exactly what was there before — no row at all on a database
+        // that never saved search settings, not a default-valued one: a row
+        // this test left behind is not the state another file's test expects.
         defer_cleanup(move || async move {
-            SearchSettings::default()
-                .save(&app.db, app.state.cache())
-                .await
-                .unwrap();
+            match saved {
+                Some(v) => SiteConfig::set(&app.db, "search", v).await.unwrap(),
+                None => {
+                    let _ = SiteConfig::delete(&app.db, "search").await;
+                }
+            }
+            app.state.cache().invalidate("search_settings").await;
         });
 
         let turn =
