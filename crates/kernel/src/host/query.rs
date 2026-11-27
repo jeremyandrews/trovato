@@ -213,6 +213,7 @@ async fn run(
         viewer: Some(viewer),
         url_args: options.url_args,
         language: state.request.language().map(str::to_string),
+        ..Default::default()
     };
     let result = gather
         .execute_for_plugin(

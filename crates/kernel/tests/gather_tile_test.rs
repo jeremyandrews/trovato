@@ -138,6 +138,16 @@ async fn sidebar_page(app: &TestApp) -> String {
 /// Place a `gather_query` tile in the sidebar and return its id. Removed when
 /// the test ends.
 async fn tile(app: &TestApp, machine_name: &str, config: serde_json::Value) -> Uuid {
+    tile_with_visibility(app, machine_name, config, serde_json::json!({})).await
+}
+
+/// Like [`tile`], with a visibility rule other than "always visible".
+async fn tile_with_visibility(
+    app: &TestApp,
+    machine_name: &str,
+    config: serde_json::Value,
+    visibility: serde_json::Value,
+) -> Uuid {
     let tile = Tile::create(
         &app.db,
         CreateTile {
@@ -146,7 +156,7 @@ async fn tile(app: &TestApp, machine_name: &str, config: serde_json::Value) -> U
             region: Some("sidebar".to_string()),
             tile_type: Some("gather_query".to_string()),
             config: Some(config),
-            visibility: Some(serde_json::json!({})),
+            visibility: Some(visibility),
             weight: Some(0),
             status: Some(1),
             plugin: None,
@@ -315,6 +325,97 @@ fn a_gather_on_the_current_user_shows_each_viewer_their_own_rows() {
         assert_eq!(
             linked_titles(bob_tile, &marker),
             [format!("B74 mine {marker} bob")]
+        );
+    });
+}
+
+// -----------------------------------------------------------------------------
+// B186: a gather tile can name the item its page shows.
+// -----------------------------------------------------------------------------
+
+/// One tile, placed once, filters out whichever item it is rendered beside: on
+/// conference A's page it lists B (and not A); on B's page it lists A (and not
+/// B). On a page with no current item — the gather's own listing — it lists
+/// nothing, never an unfiltered "every conference".
+#[test]
+fn a_gather_tile_on_current_item_excludes_the_item_it_is_shown_on() {
+    run_test(async {
+        let app = shared_app().await;
+        let marker = stamp();
+        let a = conference(app, &format!("B186 conf {marker} A"), Uuid::nil()).await;
+        let b = conference(app, &format!("B186 conf {marker} B"), Uuid::nil()).await;
+        let query_id = gather(
+            app,
+            &marker,
+            serde_json::json!({ "filters": [{
+                "exposed": false,
+                "field": "id",
+                "operator": "not_equals",
+                "value": "current_item",
+            }] }),
+        )
+        .await;
+        let machine = format!("b186_current_{marker}");
+        tile(app, &machine, serde_json::json!({ "query_id": query_id })).await;
+
+        let html_a = get(app, &format!("/item/{a}"), "").await;
+        let tile_a = tile_html(&html_a, &machine).unwrap_or_else(|| panic!("{html_a}"));
+        assert_eq!(
+            linked_titles(tile_a, &marker),
+            [format!("B186 conf {marker} B")],
+            "{tile_a}"
+        );
+
+        let html_b = get(app, &format!("/item/{b}"), "").await;
+        let tile_b = tile_html(&html_b, &machine).unwrap_or_else(|| panic!("{html_b}"));
+        assert_eq!(
+            linked_titles(tile_b, &marker),
+            [format!("B186 conf {marker} A")],
+            "{tile_b}"
+        );
+
+        // The gather's own listing page shows no item: the filter must make
+        // the tile render nothing, not every conference.
+        let listing = format!("/gather/{query_id}");
+        let html_listing = get(app, &listing, "").await;
+        let tile_listing =
+            tile_html(&html_listing, &machine).unwrap_or_else(|| panic!("{html_listing}"));
+        assert!(
+            linked_titles(tile_listing, &marker).is_empty(),
+            "{tile_listing}"
+        );
+    });
+}
+
+/// A tile with `{"item_types": ["conference"]}` shows on a conference's page
+/// and nowhere else: not the gather's own listing, which shows no item.
+#[test]
+fn a_tile_with_item_types_visibility_shows_only_on_matching_item_pages() {
+    run_test(async {
+        let app = shared_app().await;
+        let marker = stamp();
+        let a = conference(app, &format!("B186 types {marker} A"), Uuid::nil()).await;
+        let query_id = gather(app, &marker, serde_json::json!({})).await;
+        let machine = format!("b186_types_{marker}");
+        tile_with_visibility(
+            app,
+            &machine,
+            serde_json::json!({ "query_id": query_id }),
+            serde_json::json!({ "item_types": ["conference"] }),
+        )
+        .await;
+
+        let html_item = get(app, &format!("/item/{a}"), "").await;
+        assert!(
+            tile_html(&html_item, &machine).is_some(),
+            "shows on a conference page:\n{html_item}"
+        );
+
+        let listing = format!("/gather/{query_id}");
+        let html_listing = get(app, &listing, "").await;
+        assert!(
+            tile_html(&html_listing, &machine).is_none(),
+            "a page with no item never matches an item_types rule:\n{html_listing}"
         );
     });
 }
@@ -494,6 +595,17 @@ async fn submit_tile_form(
     machine_name: &str,
     items: Option<&str>,
 ) -> axum::response::Response {
+    submit_tile_form_full(app, cookies, machine_name, items, None).await
+}
+
+/// Like [`submit_tile_form`], also posting `item_types` when given.
+async fn submit_tile_form_full(
+    app: &TestApp,
+    cookies: &str,
+    machine_name: &str,
+    items: Option<&str>,
+    item_types: Option<&str>,
+) -> axum::response::Response {
     let form_page = app
         .request_with_cookies(
             Request::get("/admin/structure/tiles/add")
@@ -517,6 +629,9 @@ async fn submit_tile_form(
     if let Some(items) = items {
         fields.push(("items", items));
     }
+    if let Some(item_types) = item_types {
+        fields.push(("item_types", item_types));
+    }
     let body = fields
         .iter()
         .map(|(k, v)| format!("{k}={}", urlencoding::encode(v)))
@@ -535,6 +650,14 @@ async fn submit_tile_form(
 
 async fn stored_config(app: &TestApp, machine_name: &str) -> Option<serde_json::Value> {
     sqlx::query_scalar("SELECT config FROM tile WHERE machine_name = $1")
+        .bind(machine_name)
+        .fetch_optional(&app.db)
+        .await
+        .expect("read tile")
+}
+
+async fn stored_visibility(app: &TestApp, machine_name: &str) -> Option<serde_json::Value> {
+    sqlx::query_scalar("SELECT visibility FROM tile WHERE machine_name = $1")
         .bind(machine_name)
         .fetch_optional(&app.db)
         .await
@@ -618,5 +741,76 @@ fn the_tile_form_refuses_an_item_count_outside_one_to_fifty() {
                 "items={typed} saved nothing"
             );
         }
+    });
+}
+
+#[test]
+fn the_tile_form_stores_and_redisplays_item_types() {
+    run_test(async {
+        let app = shared_app().await;
+        let cookies = admin_session(app).await;
+
+        let machine = format!("b186_form_{}", stamp());
+        forget_tile(app, &machine);
+        let response =
+            submit_tile_form_full(app, &cookies, &machine, None, Some("article, recipe")).await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let visibility = stored_visibility(app, &machine)
+            .await
+            .expect("tile saved");
+        assert_eq!(
+            visibility["item_types"],
+            serde_json::json!(["article", "recipe"]),
+            "{visibility}"
+        );
+
+        // Left blank, no `item_types` key at all: visible on every page.
+        let blank_machine = format!("b186_form_blank_{}", stamp());
+        forget_tile(app, &blank_machine);
+        let response = submit_tile_form_full(app, &cookies, &blank_machine, None, Some("")).await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        let visibility = stored_visibility(app, &blank_machine)
+            .await
+            .expect("tile saved");
+        assert!(visibility.get("item_types").is_none(), "{visibility}");
+
+        // The edit form redisplays the stored types.
+        let id: Uuid = sqlx::query_scalar("SELECT id FROM tile WHERE machine_name = $1")
+            .bind(&machine)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        let edit = app
+            .request_with_cookies(
+                Request::get(format!("/admin/structure/tiles/{id}/edit"))
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        let html = body_text(edit).await;
+        let field = &html[html.find("name=\"item_types\"").expect("an item_types field")..];
+        let field = &field[..field.find('>').unwrap()];
+        assert!(field.contains("value=\"article, recipe\""), "{field}");
+    });
+}
+
+#[test]
+fn the_tile_form_refuses_an_invalid_item_type() {
+    run_test(async {
+        let app = shared_app().await;
+        let cookies = admin_session(app).await;
+
+        let machine = format!("b186_form_bad_{}", stamp());
+        forget_tile(app, &machine);
+        let response =
+            submit_tile_form_full(app, &cookies, &machine, None, Some("Not Valid!")).await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let html = body_text(response).await;
+        assert!(html.contains("machine names"), "the refusal says why: {html}");
+        assert!(
+            stored_config(app, &machine).await.is_none(),
+            "an invalid item type saved nothing"
+        );
     });
 }

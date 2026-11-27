@@ -160,6 +160,7 @@ fn context(viewer: UserContext) -> QueryContext {
         viewer: Some(viewer),
         url_args: HashMap::new(),
         language: None,
+        ..Default::default()
     }
 }
 

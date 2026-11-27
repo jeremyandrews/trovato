@@ -155,6 +155,7 @@ async fn gather_rows(
         viewer: Some(admin()),
         url_args: HashMap::new(),
         language: None,
+        ..Default::default()
     };
 
     app.state

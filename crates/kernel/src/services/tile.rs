@@ -46,6 +46,13 @@ pub struct TileRenderContext<'a> {
     /// tile to fall back to a language's front page, the same way a crawler
     /// is offered no `hreflang` alternate at all for a page with none.
     pub translations: Option<&'a [TranslationLink]>,
+    /// The item this page shows (B186): an item page sets this; every other
+    /// route leaves it `None`, since there is no single item in view. Read by
+    /// [`Tile::is_visible`]'s `item_types` rule and by a `gather_query` tile's
+    /// `CurrentItem`/`CurrentItemField` contextual values, so one tile
+    /// placed in a region can filter out, or filter by a field of, the item
+    /// it is rendered beside.
+    pub current_item: Option<&'a crate::models::Item>,
 }
 
 /// Service for loading and rendering tiles.
@@ -105,10 +112,12 @@ impl TileService {
         Ok(deleted)
     }
 
-    /// Get visible tiles for a region, filtered by path, role and audience
-    /// visibility rules. `authenticated` decides an `audience` rule; it is the
-    /// viewer's actual signed-in state, not derived from `user_roles` (every
-    /// viewer, signed in or not, can carry `anonymous user` there).
+    /// Get visible tiles for a region, filtered by path, role, audience and
+    /// item-type visibility rules. `authenticated` decides an `audience`
+    /// rule; it is the viewer's actual signed-in state, not derived from
+    /// `user_roles` (every viewer, signed in or not, can carry `anonymous
+    /// user` there). `item_type`, when given, is the type of the item the
+    /// page shows (B186), for an `item_types` rule.
     pub async fn get_visible_tiles(
         &self,
         region: &str,
@@ -116,12 +125,13 @@ impl TileService {
         path: &str,
         user_roles: &[String],
         authenticated: bool,
+        item_type: Option<&str>,
     ) -> Result<Vec<Tile>> {
         let tiles = Tile::list_by_region(&self.db, region, stage_id).await?;
 
         Ok(tiles
             .into_iter()
-            .filter(|t| t.is_visible(path, user_roles, authenticated))
+            .filter(|t| t.is_visible(path, user_roles, authenticated, item_type))
             .collect())
     }
 
@@ -140,6 +150,7 @@ impl TileService {
                 path,
                 render.roles,
                 render.viewer.authenticated,
+                render.current_item.map(|item| item.item_type.as_str()),
             )
             .await?;
         let mut html = String::new();
@@ -189,6 +200,13 @@ fn wrap_tile(tile: &Tile, body: &str) -> String {
 /// take, with the same authorization, stages and item access. One run per
 /// tile, fetching only the rows the tile shows.
 ///
+/// `render.current_item` goes along (B186): a filter naming
+/// `current_item`/`current_item.fields.<name>` resolves against it, so the
+/// same tile placed once on every item page can exclude, or filter by a field
+/// of, whichever item it is rendered beside. On a page showing no item, such a
+/// filter makes the gather return nothing rather than an unfiltered list — see
+/// [`crate::gather::gather_service::GatherService::resolve_contextual_values`].
+///
 /// `None`, and so no tile, when the viewer may not run the gather; when the
 /// gather does not exist, the config is invalid or the run fails, also with a
 /// warning naming the tile.
@@ -218,6 +236,7 @@ async fn render_gather_tile(tile: &Tile, render: &TileRenderContext<'_>) -> Opti
         query_language(render.language, &state.default_language()),
         render.viewer.clone(),
         Some(items),
+        render.current_item,
     )
     .await
     {

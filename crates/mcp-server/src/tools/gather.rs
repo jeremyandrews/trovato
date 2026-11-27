@@ -50,6 +50,7 @@ pub async fn run_gather(
         viewer: Some(user_ctx.clone()),
         url_args: HashMap::new(),
         language: None,
+        ..Default::default()
     };
 
     let result = state
