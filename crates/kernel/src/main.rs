@@ -85,6 +85,35 @@ struct Cli {
 enum Commands {
     /// Start the HTTP server (default).
     Serve,
+    /// Install the site unattended: create the first administrator, record
+    /// the site name and mail, and mark the site installed, with no browser
+    /// involved. Meant to run once before `serve` in a container start
+    /// command; safe to put there on every start, since an installed site
+    /// exits 0 and changes nothing.
+    ///
+    /// The password is read from stdin (`--admin-password-stdin`) or a file
+    /// named by TROVATO_INSTALL_ADMIN_PASSWORD_FILE, never from an argument
+    /// or from the password itself in an environment variable. Every other
+    /// value may come from its flag or from TROVATO_INSTALL_ADMIN_USER,
+    /// TROVATO_INSTALL_ADMIN_MAIL, TROVATO_INSTALL_SITE_NAME or
+    /// TROVATO_INSTALL_SITE_MAIL; a flag wins over its environment variable.
+    Install {
+        /// The first administrator's username.
+        #[arg(long, value_name = "NAME")]
+        admin_user: Option<String>,
+        /// The first administrator's email address.
+        #[arg(long, value_name = "MAIL")]
+        admin_mail: Option<String>,
+        /// Read the administrator's password from stdin (min 12 characters).
+        #[arg(long)]
+        admin_password_stdin: bool,
+        /// The site's name.
+        #[arg(long, value_name = "NAME")]
+        site_name: Option<String>,
+        /// The site's email address.
+        #[arg(long, value_name = "MAIL")]
+        site_mail: Option<String>,
+    },
     /// Plugin management commands.
     Plugin {
         #[command(subcommand)]
@@ -343,6 +372,22 @@ async fn main() -> Result<()> {
 
     let result = match cli.command {
         None | Some(Commands::Serve) => run_server(log_receiver).await,
+        Some(Commands::Install {
+            admin_user,
+            admin_mail,
+            admin_password_stdin,
+            site_name,
+            site_mail,
+        }) => {
+            run_install_command(InstallArgs {
+                admin_user,
+                admin_mail,
+                admin_password_stdin,
+                site_name,
+                site_mail,
+            })
+            .await
+        }
         Some(Commands::Plugin { action }) => run_plugin_command(action).await,
         Some(Commands::Config { action }) => run_config_command(action).await,
         Some(Commands::User { action }) => run_user_command(action).await,
@@ -1187,6 +1232,133 @@ async fn shutdown_signal() -> Signal {
         info!("Received SIGINT, starting graceful shutdown");
         Signal::Interrupt
     }
+}
+
+/// What `trovato install` was given on the command line, each value still
+/// possibly missing (its environment variable is tried next).
+struct InstallArgs {
+    admin_user: Option<String>,
+    admin_mail: Option<String>,
+    admin_password_stdin: bool,
+    site_name: Option<String>,
+    site_mail: Option<String>,
+}
+
+/// A flag's value, falling back to an environment variable: the flag wins
+/// when both are given.
+fn flag_or_env(flag: Option<String>, env_name: &str) -> Option<String> {
+    flag.or_else(|| std::env::var(env_name).ok())
+}
+
+/// The administrator's password for `trovato install`, read from stdin when
+/// `--admin-password-stdin` was given, or from the file named by
+/// TROVATO_INSTALL_ADMIN_PASSWORD_FILE otherwise. Never a command-line
+/// argument and never the password itself in an environment variable, so it
+/// cannot appear in `ps`, shell history or a container's recorded env.
+///
+/// `Ok(None)` when neither was given: fine when no administrator needs
+/// creating, an error otherwise.
+fn resolve_install_password(admin_password_stdin: bool) -> Result<Option<String>> {
+    if admin_password_stdin {
+        return Ok(Some(password_prompt::read_password_from_stdin(
+            "Admin password: ",
+        )?));
+    }
+    match std::env::var("TROVATO_INSTALL_ADMIN_PASSWORD_FILE") {
+        Ok(path) => {
+            let contents = std::fs::read_to_string(&path).with_context(|| {
+                format!("failed to read TROVATO_INSTALL_ADMIN_PASSWORD_FILE ({path})")
+            })?;
+            Ok(Some(contents.trim().to_string()))
+        }
+        Err(_) => Ok(None),
+    }
+}
+
+/// `trovato install`: an unattended, idempotent path to a working site, so a
+/// container start command can run it before `serve` with nobody opening the
+/// web installer (B272). Creates the first administrator and completes the
+/// site step the web installer's two POST handlers do
+/// (`services::install::create_admin`, `services::install::finish_site_setup`),
+/// through the same full server state `trovato generate` and `trovato user
+/// create` build so a plugin's `tap_user_register` and the audit trail see
+/// this account exactly as they see one the web installer created.
+///
+/// Exits 0 and changes nothing on a site that is already installed. A site
+/// with an administrator but no site step done (a previous run that reached
+/// the first step and stopped) completes only the missing step.
+async fn run_install_command(args: InstallArgs) -> Result<()> {
+    let config = Config::from_env().context("failed to load configuration")?;
+
+    let pool = db::create_pool(&config)
+        .await
+        .context("failed to create database pool")?;
+
+    prepare_schema_for_cli(&pool, &config).await?;
+
+    if models::SiteConfig::is_installed(&pool).await? {
+        println!("The site is already installed; nothing to do.");
+        return Ok(());
+    }
+
+    let admin_user = flag_or_env(args.admin_user, "TROVATO_INSTALL_ADMIN_USER")
+        .context("--admin-user (or TROVATO_INSTALL_ADMIN_USER) is required")?;
+    let admin_mail = flag_or_env(args.admin_mail, "TROVATO_INSTALL_ADMIN_MAIL")
+        .context("--admin-mail (or TROVATO_INSTALL_ADMIN_MAIL) is required")?;
+    let site_name = flag_or_env(args.site_name, "TROVATO_INSTALL_SITE_NAME")
+        .context("--site-name (or TROVATO_INSTALL_SITE_NAME) is required")?;
+    let site_mail = flag_or_env(args.site_mail, "TROVATO_INSTALL_SITE_MAIL");
+
+    let state = AppState::new(&config)
+        .await
+        .context("failed to initialize application state")?;
+
+    let admin_count = services::install::admin_count(&pool)
+        .await
+        .context("failed to count administrators")?;
+
+    if admin_count == 0 {
+        let password = resolve_install_password(args.admin_password_stdin)?.context(
+            "an administrator password is required: pass --admin-password-stdin or set \
+             TROVATO_INSTALL_ADMIN_PASSWORD_FILE",
+        )?;
+        match services::install::create_admin(&state, &admin_user, &admin_mail, password, "cli")
+            .await
+        {
+            Ok(user) => println!("Created administrator '{}' ({}).", user.name, user.id),
+            Err(services::install::CreateAdminError::Username(msg)) => anyhow::bail!("{msg}"),
+            Err(services::install::CreateAdminError::Email(msg)) => anyhow::bail!("{msg}"),
+            Err(services::install::CreateAdminError::Password(msg)) => anyhow::bail!("{msg}"),
+            Err(services::install::CreateAdminError::UsernameTaken) => {
+                anyhow::bail!("Username '{admin_user}' already exists.")
+            }
+            Err(services::install::CreateAdminError::EmailTaken) => {
+                anyhow::bail!("Email '{admin_mail}' is already in use.")
+            }
+            Err(services::install::CreateAdminError::Failed(e)) => {
+                return Err(e.context("failed to create administrator"));
+            }
+        }
+    } else {
+        println!("An administrator already exists; not creating one.");
+    }
+
+    match services::install::finish_site_setup(&pool, &site_name, None, site_mail.as_deref()).await
+    {
+        Ok(()) => println!("Site configuration saved; the site is now installed."),
+        Err(services::install::FinishSiteSetupError::SiteNameRequired) => {
+            anyhow::bail!("Site name is required.")
+        }
+        Err(services::install::FinishSiteSetupError::SiteNameSaveFailed(e)) => {
+            return Err(e.context("failed to save site configuration"));
+        }
+        Err(services::install::FinishSiteSetupError::MarkInstalledFailed(e)) => {
+            return Err(e.context("failed to mark the site installed"));
+        }
+    }
+
+    println!("{}", bump_from_cli(&config, &CacheKind::ALL).await);
+    Ok(())
 }
 
 /// Run a plugin CLI command with a minimal context (pool only).

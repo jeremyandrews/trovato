@@ -20,6 +20,7 @@ pub mod email;
 pub mod email_templates;
 pub mod embed_index;
 pub mod image_style;
+pub mod install;
 pub mod locale;
 pub mod mail_transport;
 pub mod mail_worker;
