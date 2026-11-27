@@ -412,6 +412,40 @@ query and `templates/admin/macros/list.html` draws it:
   filters, and the filter form keeps the sort. The address names the column
   (`sort=title`, `sort=-title`). The SQL comes only from each listing's own
   list of allowed columns.
+
+  Text sorts in natural order, the order a person expects: ignoring case,
+  numbers by value ("Post 2" before "Post 10"), an accented letter beside
+  its plain one ("eclair", "Éclair"). In SQL, `admin_list::natural!` adds
+  `COLLATE trovato_natural`, an ICU collation (`und-u-kn-true`) the
+  migrations create, to the sort expression only, never to a column, so
+  `ILIKE` filters and existing indexes keep the default collation. The
+  people and content title sorts have an index on that exact expression,
+  so their first page reads from the index in either direction; a unit
+  test holds each index to its listing's sort SQL. A listing sorted in
+  memory (`admin_list::sort_rows`) builds a key that gives the same order:
+  each non-ASCII letter transliterated (`deunicode`), lowercased, every run
+  of digits by value; a test holds SQL and `sort_rows` to the same order.
+  A known difference: punctuation. ICU puts every punctuation mark before
+  digits and letters; the in-memory key orders it by byte value, so `_`
+  and `~` come after the digits there ("a b, a-b, a.b, a1, a_b, ab, a~b"
+  in memory against "a b, a_b, a-b, a.b, a~b, a1, ab" in SQL). Space,
+  hyphen and full stop agree. Titles that differ only in such a mark are
+  rare enough that we have not matched the two.
+- **Dates.** A date in a listing is written in the viewer's own timezone
+  (`users.timezone`; UTC when it is empty or not a known zone) and language:
+  "Today, 14:05", "Yesterday, 09:30", "3 Nov 2026, 05:20". Templates write
+  `admin_time(ts=…)`, a `time` element whose `datetime` holds the full ISO
+  time with its offset; `admin_time_text` gives the words alone, for a
+  sentence or an accessible name. Rust passes the timestamp, never a
+  formatted string, and `UiMessage::time` puts one into a message. In a
+  right-to-left language the text is isolated so its digits keep their
+  order.
+- **Thumbnails.** An image row in Files shows a 48-pixel thumbnail
+  (`list-thumbnail`) beside its name, from the image styles plugin's
+  `thumbnail` style. It is decorative (`alt=""`): the name beside it says
+  what it is. Without the plugin there is no thumbnail and no broken image.
+  The thumbnail loads lazily, and its width and height are set, so the
+  table does not move as it loads.
 - **Count.** "N results" (and "page P of Q" when there are several) sits
   above the table. After a filter or sort the same words are put into a
   polite live region, so a screen reader hears what the filter found.

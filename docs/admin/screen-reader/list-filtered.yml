@@ -88,7 +88,6 @@
     - combobox "Type":
       - option "- Any -" [selected]
       - option "Blog Post"
-      - option "Media"
       - option "Basic Page"
     - text: Status
     - combobox "Status":
@@ -98,7 +97,7 @@
     - button "Filter"
     - link "Clear filter":
       - /url: /admin/content
-  - paragraph: 36 results
+  - paragraph: 40 results
   - status
   - text: Bulk action
   - combobox "Bulk action":
@@ -135,160 +134,7 @@
             - button "Updated"
           - columnheader "Operations"
       - rowgroup:
-        - 'row "Select Post 10: willow signal hollow Post 10: willow signal hollow blog gen_user_11 Published 2025-12-31 23:50 Edit Post 10: willow signal hollow Revisions of Post 10: willow signal hollow Delete Post 10: willow signal hollow"':
-          - 'cell "Select Post 10: willow signal hollow"':
-            - 'checkbox "Select Post 10: willow signal hollow"'
-            - text: "Select Post 10: willow signal hollow"
-          - 'rowheader "Post 10: willow signal hollow"':
-            - 'link "Post 10: willow signal hollow"':
-              - /url: /admin/content/8a52ec78-319d-929a-1997-8980eee96634/edit
-          - cell "blog"
-          - cell "gen_user_11"
-          - cell "Published"
-          - cell "2025-12-31 23:50"
-          - 'cell "Edit Post 10: willow signal hollow Revisions of Post 10: willow signal hollow Delete Post 10: willow signal hollow"':
-            - 'link "Edit Post 10: willow signal hollow"':
-              - /url: /admin/content/8a52ec78-319d-929a-1997-8980eee96634/edit
-            - 'link "Revisions of Post 10: willow signal hollow"':
-              - /url: /item/8a52ec78-319d-929a-1997-8980eee96634/revisions
-            - 'button "Delete Post 10: willow signal hollow"'
-        - 'row "Select Post 12: compass basalt lagoon Post 12: compass basalt lagoon blog gen_user_13 Published 2025-12-31 23:48 Edit Post 12: compass basalt lagoon Revisions of Post 12: compass basalt lagoon Delete Post 12: compass basalt lagoon"':
-          - 'cell "Select Post 12: compass basalt lagoon"':
-            - 'checkbox "Select Post 12: compass basalt lagoon"'
-            - text: "Select Post 12: compass basalt lagoon"
-          - 'rowheader "Post 12: compass basalt lagoon"':
-            - 'link "Post 12: compass basalt lagoon"':
-              - /url: /admin/content/82fbe802-b827-5cad-293e-05c4ea802390/edit
-          - cell "blog"
-          - cell "gen_user_13"
-          - cell "Published"
-          - cell "2025-12-31 23:48"
-          - 'cell "Edit Post 12: compass basalt lagoon Revisions of Post 12: compass basalt lagoon Delete Post 12: compass basalt lagoon"':
-            - 'link "Edit Post 12: compass basalt lagoon"':
-              - /url: /admin/content/82fbe802-b827-5cad-293e-05c4ea802390/edit
-            - 'link "Revisions of Post 12: compass basalt lagoon"':
-              - /url: /item/82fbe802-b827-5cad-293e-05c4ea802390/revisions
-            - 'button "Delete Post 12: compass basalt lagoon"'
-        - 'row "Select Post 13: saffron island meadow Post 13: saffron island meadow blog gen_user_14 Published 2025-12-31 23:47 Edit Post 13: saffron island meadow Revisions of Post 13: saffron island meadow Delete Post 13: saffron island meadow"':
-          - 'cell "Select Post 13: saffron island meadow"':
-            - 'checkbox "Select Post 13: saffron island meadow"'
-            - text: "Select Post 13: saffron island meadow"
-          - 'rowheader "Post 13: saffron island meadow"':
-            - 'link "Post 13: saffron island meadow"':
-              - /url: /admin/content/ae225288-dff6-9d51-54a2-d4afe3207b90/edit
-          - cell "blog"
-          - cell "gen_user_14"
-          - cell "Published"
-          - cell "2025-12-31 23:47"
-          - 'cell "Edit Post 13: saffron island meadow Revisions of Post 13: saffron island meadow Delete Post 13: saffron island meadow"':
-            - 'link "Edit Post 13: saffron island meadow"':
-              - /url: /admin/content/ae225288-dff6-9d51-54a2-d4afe3207b90/edit
-            - 'link "Revisions of Post 13: saffron island meadow"':
-              - /url: /item/ae225288-dff6-9d51-54a2-d4afe3207b90/revisions
-            - 'button "Delete Post 13: saffron island meadow"'
-        - 'row "Select Post 14: cobalt valley basalt Post 14: cobalt valley basalt blog gen_user_15 Published 2025-12-31 23:46 Edit Post 14: cobalt valley basalt Revisions of Post 14: cobalt valley basalt Delete Post 14: cobalt valley basalt"':
-          - 'cell "Select Post 14: cobalt valley basalt"':
-            - 'checkbox "Select Post 14: cobalt valley basalt"'
-            - text: "Select Post 14: cobalt valley basalt"
-          - 'rowheader "Post 14: cobalt valley basalt"':
-            - 'link "Post 14: cobalt valley basalt"':
-              - /url: /admin/content/c5017b4d-4435-627c-f068-caec20f5e66b/edit
-          - cell "blog"
-          - cell "gen_user_15"
-          - cell "Published"
-          - cell "2025-12-31 23:46"
-          - 'cell "Edit Post 14: cobalt valley basalt Revisions of Post 14: cobalt valley basalt Delete Post 14: cobalt valley basalt"':
-            - 'link "Edit Post 14: cobalt valley basalt"':
-              - /url: /admin/content/c5017b4d-4435-627c-f068-caec20f5e66b/edit
-            - 'link "Revisions of Post 14: cobalt valley basalt"':
-              - /url: /item/c5017b4d-4435-627c-f068-caec20f5e66b/revisions
-            - 'button "Delete Post 14: cobalt valley basalt"'
-        - 'row "Select Post 15: cinder garden zenith Post 15: cinder garden zenith blog gen_user_16 Published 2025-12-31 23:45 Edit Post 15: cinder garden zenith Revisions of Post 15: cinder garden zenith Delete Post 15: cinder garden zenith"':
-          - 'cell "Select Post 15: cinder garden zenith"':
-            - 'checkbox "Select Post 15: cinder garden zenith"'
-            - text: "Select Post 15: cinder garden zenith"
-          - 'rowheader "Post 15: cinder garden zenith"':
-            - 'link "Post 15: cinder garden zenith"':
-              - /url: /admin/content/87ef8e90-d744-a66e-f8db-1092775a879d/edit
-          - cell "blog"
-          - cell "gen_user_16"
-          - cell "Published"
-          - cell "2025-12-31 23:45"
-          - 'cell "Edit Post 15: cinder garden zenith Revisions of Post 15: cinder garden zenith Delete Post 15: cinder garden zenith"':
-            - 'link "Edit Post 15: cinder garden zenith"':
-              - /url: /admin/content/87ef8e90-d744-a66e-f8db-1092775a879d/edit
-            - 'link "Revisions of Post 15: cinder garden zenith"':
-              - /url: /item/87ef8e90-d744-a66e-f8db-1092775a879d/revisions
-            - 'button "Delete Post 15: cinder garden zenith"'
-        - 'row "Select Post 16: kestrel velvet saffron Post 16: kestrel velvet saffron blog gen_user_17 Published 2025-12-31 23:44 Edit Post 16: kestrel velvet saffron Revisions of Post 16: kestrel velvet saffron Delete Post 16: kestrel velvet saffron"':
-          - 'cell "Select Post 16: kestrel velvet saffron"':
-            - 'checkbox "Select Post 16: kestrel velvet saffron"'
-            - text: "Select Post 16: kestrel velvet saffron"
-          - 'rowheader "Post 16: kestrel velvet saffron"':
-            - 'link "Post 16: kestrel velvet saffron"':
-              - /url: /admin/content/8904bcaf-ef8b-c4d5-1509-184a6a8afcbd/edit
-          - cell "blog"
-          - cell "gen_user_17"
-          - cell "Published"
-          - cell "2025-12-31 23:44"
-          - 'cell "Edit Post 16: kestrel velvet saffron Revisions of Post 16: kestrel velvet saffron Delete Post 16: kestrel velvet saffron"':
-            - 'link "Edit Post 16: kestrel velvet saffron"':
-              - /url: /admin/content/8904bcaf-ef8b-c4d5-1509-184a6a8afcbd/edit
-            - 'link "Revisions of Post 16: kestrel velvet saffron"':
-              - /url: /item/8904bcaf-ef8b-c4d5-1509-184a6a8afcbd/revisions
-            - 'button "Delete Post 16: kestrel velvet saffron"'
-        - 'row "Select Post 17: raven cobalt sable Post 17: raven cobalt sable blog gen_user_18 Published 2025-12-31 23:43 Edit Post 17: raven cobalt sable Revisions of Post 17: raven cobalt sable Delete Post 17: raven cobalt sable"':
-          - 'cell "Select Post 17: raven cobalt sable"':
-            - 'checkbox "Select Post 17: raven cobalt sable"'
-            - text: "Select Post 17: raven cobalt sable"
-          - 'rowheader "Post 17: raven cobalt sable"':
-            - 'link "Post 17: raven cobalt sable"':
-              - /url: /admin/content/2e066f1f-144b-a31c-cc52-7b40f67498e5/edit
-          - cell "blog"
-          - cell "gen_user_18"
-          - cell "Published"
-          - cell "2025-12-31 23:43"
-          - 'cell "Edit Post 17: raven cobalt sable Revisions of Post 17: raven cobalt sable Delete Post 17: raven cobalt sable"':
-            - 'link "Edit Post 17: raven cobalt sable"':
-              - /url: /admin/content/2e066f1f-144b-a31c-cc52-7b40f67498e5/edit
-            - 'link "Revisions of Post 17: raven cobalt sable"':
-              - /url: /item/2e066f1f-144b-a31c-cc52-7b40f67498e5/revisions
-            - 'button "Delete Post 17: raven cobalt sable"'
-        - 'row "Select Post 18: zenith jasper velvet Post 18: zenith jasper velvet blog gen_user_19 Published 2025-12-31 23:42 Edit Post 18: zenith jasper velvet Revisions of Post 18: zenith jasper velvet Delete Post 18: zenith jasper velvet"':
-          - 'cell "Select Post 18: zenith jasper velvet"':
-            - 'checkbox "Select Post 18: zenith jasper velvet"'
-            - text: "Select Post 18: zenith jasper velvet"
-          - 'rowheader "Post 18: zenith jasper velvet"':
-            - 'link "Post 18: zenith jasper velvet"':
-              - /url: /admin/content/221316bc-02d0-89de-d78e-5706b1e9ab5e/edit
-          - cell "blog"
-          - cell "gen_user_19"
-          - cell "Published"
-          - cell "2025-12-31 23:42"
-          - 'cell "Edit Post 18: zenith jasper velvet Revisions of Post 18: zenith jasper velvet Delete Post 18: zenith jasper velvet"':
-            - 'link "Edit Post 18: zenith jasper velvet"':
-              - /url: /admin/content/221316bc-02d0-89de-d78e-5706b1e9ab5e/edit
-            - 'link "Revisions of Post 18: zenith jasper velvet"':
-              - /url: /item/221316bc-02d0-89de-d78e-5706b1e9ab5e/revisions
-            - 'button "Delete Post 18: zenith jasper velvet"'
-        - 'row "Select Post 19: copper wander mosaic Post 19: copper wander mosaic blog gen_user_20 Published 2025-12-31 23:41 Edit Post 19: copper wander mosaic Revisions of Post 19: copper wander mosaic Delete Post 19: copper wander mosaic"':
-          - 'cell "Select Post 19: copper wander mosaic"':
-            - 'checkbox "Select Post 19: copper wander mosaic"'
-            - text: "Select Post 19: copper wander mosaic"
-          - 'rowheader "Post 19: copper wander mosaic"':
-            - 'link "Post 19: copper wander mosaic"':
-              - /url: /admin/content/4ffe6b89-42d1-d4d1-abcc-ee11cb620cf5/edit
-          - cell "blog"
-          - cell "gen_user_20"
-          - cell "Published"
-          - cell "2025-12-31 23:41"
-          - 'cell "Edit Post 19: copper wander mosaic Revisions of Post 19: copper wander mosaic Delete Post 19: copper wander mosaic"':
-            - 'link "Edit Post 19: copper wander mosaic"':
-              - /url: /admin/content/4ffe6b89-42d1-d4d1-abcc-ee11cb620cf5/edit
-            - 'link "Revisions of Post 19: copper wander mosaic"':
-              - /url: /item/4ffe6b89-42d1-d4d1-abcc-ee11cb620cf5/revisions
-            - 'button "Delete Post 19: copper wander mosaic"'
-        - 'row "Select Post 1: signal glacier beacon Post 1: signal glacier beacon blog gen_user_2 Published 2025-12-31 23:59 Edit Post 1: signal glacier beacon Revisions of Post 1: signal glacier beacon Delete Post 1: signal glacier beacon"':
+        - 'row "Select Post 1: signal glacier beacon Post 1: signal glacier beacon blog gen_user_2 Published 31 Dec 2025, 23:59 Edit Revisions Delete"':
           - 'cell "Select Post 1: signal glacier beacon"':
             - 'checkbox "Select Post 1: signal glacier beacon"'
             - text: "Select Post 1: signal glacier beacon"
@@ -298,184 +144,17 @@
           - cell "blog"
           - cell "gen_user_2"
           - cell "Published"
-          - cell "2025-12-31 23:59"
-          - 'cell "Edit Post 1: signal glacier beacon Revisions of Post 1: signal glacier beacon Delete Post 1: signal glacier beacon"':
+          - cell "31 Dec 2025, 23:59":
+            - time: 31 Dec 2025, 23:59
+          - 'cell "Edit Post 1: signal glacier beacon Revisions Delete"':
             - 'link "Edit Post 1: signal glacier beacon"':
               - /url: /admin/content/a591c6c4-50e5-480f-1005-e982d8a76703/edit
-            - 'link "Revisions of Post 1: signal glacier beacon"':
+              - text: Edit
+            - 'link "Revisions Post 1: signal glacier beacon"':
               - /url: /item/a591c6c4-50e5-480f-1005-e982d8a76703/revisions
-            - 'button "Delete Post 1: signal glacier beacon"'
-        - 'row "Select Post 20: pepper orbit falcon Post 20: pepper orbit falcon blog gen_user_21 Published 2025-12-31 23:40 Edit Post 20: pepper orbit falcon Revisions of Post 20: pepper orbit falcon Delete Post 20: pepper orbit falcon"':
-          - 'cell "Select Post 20: pepper orbit falcon"':
-            - 'checkbox "Select Post 20: pepper orbit falcon"'
-            - text: "Select Post 20: pepper orbit falcon"
-          - 'rowheader "Post 20: pepper orbit falcon"':
-            - 'link "Post 20: pepper orbit falcon"':
-              - /url: /admin/content/cec1427b-220e-9f56-472c-c76b6ed347cf/edit
-          - cell "blog"
-          - cell "gen_user_21"
-          - cell "Published"
-          - cell "2025-12-31 23:40"
-          - 'cell "Edit Post 20: pepper orbit falcon Revisions of Post 20: pepper orbit falcon Delete Post 20: pepper orbit falcon"':
-            - 'link "Edit Post 20: pepper orbit falcon"':
-              - /url: /admin/content/cec1427b-220e-9f56-472c-c76b6ed347cf/edit
-            - 'link "Revisions of Post 20: pepper orbit falcon"':
-              - /url: /item/cec1427b-220e-9f56-472c-c76b6ed347cf/revisions
-            - 'button "Delete Post 20: pepper orbit falcon"'
-        - 'row "Select Post 21: orchard summit grove Post 21: orchard summit grove blog gen_user_22 Published 2025-12-31 23:39 Edit Post 21: orchard summit grove Revisions of Post 21: orchard summit grove Delete Post 21: orchard summit grove"':
-          - 'cell "Select Post 21: orchard summit grove"':
-            - 'checkbox "Select Post 21: orchard summit grove"'
-            - text: "Select Post 21: orchard summit grove"
-          - 'rowheader "Post 21: orchard summit grove"':
-            - 'link "Post 21: orchard summit grove"':
-              - /url: /admin/content/5d6f561a-24e9-31df-3264-1e5ad526f89d/edit
-          - cell "blog"
-          - cell "gen_user_22"
-          - cell "Published"
-          - cell "2025-12-31 23:39"
-          - 'cell "Edit Post 21: orchard summit grove Revisions of Post 21: orchard summit grove Delete Post 21: orchard summit grove"':
-            - 'link "Edit Post 21: orchard summit grove"':
-              - /url: /admin/content/5d6f561a-24e9-31df-3264-1e5ad526f89d/edit
-            - 'link "Revisions of Post 21: orchard summit grove"':
-              - /url: /item/5d6f561a-24e9-31df-3264-1e5ad526f89d/revisions
-            - 'button "Delete Post 21: orchard summit grove"'
-        - 'row "Select Post 22: prism ripple orbit Post 22: prism ripple orbit blog gen_user_23 Published 2025-12-31 23:38 Edit Post 22: prism ripple orbit Revisions of Post 22: prism ripple orbit Delete Post 22: prism ripple orbit"':
-          - 'cell "Select Post 22: prism ripple orbit"':
-            - 'checkbox "Select Post 22: prism ripple orbit"'
-            - text: "Select Post 22: prism ripple orbit"
-          - 'rowheader "Post 22: prism ripple orbit"':
-            - 'link "Post 22: prism ripple orbit"':
-              - /url: /admin/content/61d9884c-7ecb-0e01-6d9b-f5ba1ec1d497/edit
-          - cell "blog"
-          - cell "gen_user_23"
-          - cell "Published"
-          - cell "2025-12-31 23:38"
-          - 'cell "Edit Post 22: prism ripple orbit Revisions of Post 22: prism ripple orbit Delete Post 22: prism ripple orbit"':
-            - 'link "Edit Post 22: prism ripple orbit"':
-              - /url: /admin/content/61d9884c-7ecb-0e01-6d9b-f5ba1ec1d497/edit
-            - 'link "Revisions of Post 22: prism ripple orbit"':
-              - /url: /item/61d9884c-7ecb-0e01-6d9b-f5ba1ec1d497/revisions
-            - 'button "Delete Post 22: prism ripple orbit"'
-        - 'row "Select Post 23: basalt kestrel zephyr Post 23: basalt kestrel zephyr blog gen_user_24 Published 2025-12-31 23:37 Edit Post 23: basalt kestrel zephyr Revisions of Post 23: basalt kestrel zephyr Delete Post 23: basalt kestrel zephyr"':
-          - 'cell "Select Post 23: basalt kestrel zephyr"':
-            - 'checkbox "Select Post 23: basalt kestrel zephyr"'
-            - text: "Select Post 23: basalt kestrel zephyr"
-          - 'rowheader "Post 23: basalt kestrel zephyr"':
-            - 'link "Post 23: basalt kestrel zephyr"':
-              - /url: /admin/content/248736c0-5bb8-609d-3afb-067a726efc04/edit
-          - cell "blog"
-          - cell "gen_user_24"
-          - cell "Published"
-          - cell "2025-12-31 23:37"
-          - 'cell "Edit Post 23: basalt kestrel zephyr Revisions of Post 23: basalt kestrel zephyr Delete Post 23: basalt kestrel zephyr"':
-            - 'link "Edit Post 23: basalt kestrel zephyr"':
-              - /url: /admin/content/248736c0-5bb8-609d-3afb-067a726efc04/edit
-            - 'link "Revisions of Post 23: basalt kestrel zephyr"':
-              - /url: /item/248736c0-5bb8-609d-3afb-067a726efc04/revisions
-            - 'button "Delete Post 23: basalt kestrel zephyr"'
-        - 'row "Select Post 24: beacon yarrow harbor Post 24: beacon yarrow harbor blog gen_user_25 Published 2025-12-31 23:36 Edit Post 24: beacon yarrow harbor Revisions of Post 24: beacon yarrow harbor Delete Post 24: beacon yarrow harbor"':
-          - 'cell "Select Post 24: beacon yarrow harbor"':
-            - 'checkbox "Select Post 24: beacon yarrow harbor"'
-            - text: "Select Post 24: beacon yarrow harbor"
-          - 'rowheader "Post 24: beacon yarrow harbor"':
-            - 'link "Post 24: beacon yarrow harbor"':
-              - /url: /admin/content/fb5c117d-0f7a-5e94-a170-9e53ea194388/edit
-          - cell "blog"
-          - cell "gen_user_25"
-          - cell "Published"
-          - cell "2025-12-31 23:36"
-          - 'cell "Edit Post 24: beacon yarrow harbor Revisions of Post 24: beacon yarrow harbor Delete Post 24: beacon yarrow harbor"':
-            - 'link "Edit Post 24: beacon yarrow harbor"':
-              - /url: /admin/content/fb5c117d-0f7a-5e94-a170-9e53ea194388/edit
-            - 'link "Revisions of Post 24: beacon yarrow harbor"':
-              - /url: /item/fb5c117d-0f7a-5e94-a170-9e53ea194388/revisions
-            - 'button "Delete Post 24: beacon yarrow harbor"'
-        - 'row "Select Post 25: jasper canvas juniper Post 25: jasper canvas juniper blog gen_user_26 Published 2025-12-31 23:35 Edit Post 25: jasper canvas juniper Revisions of Post 25: jasper canvas juniper Delete Post 25: jasper canvas juniper"':
-          - 'cell "Select Post 25: jasper canvas juniper"':
-            - 'checkbox "Select Post 25: jasper canvas juniper"'
-            - text: "Select Post 25: jasper canvas juniper"
-          - 'rowheader "Post 25: jasper canvas juniper"':
-            - 'link "Post 25: jasper canvas juniper"':
-              - /url: /admin/content/f89a46e7-193b-2dc9-7e56-433f116b557b/edit
-          - cell "blog"
-          - cell "gen_user_26"
-          - cell "Published"
-          - cell "2025-12-31 23:35"
-          - 'cell "Edit Post 25: jasper canvas juniper Revisions of Post 25: jasper canvas juniper Delete Post 25: jasper canvas juniper"':
-            - 'link "Edit Post 25: jasper canvas juniper"':
-              - /url: /admin/content/f89a46e7-193b-2dc9-7e56-433f116b557b/edit
-            - 'link "Revisions of Post 25: jasper canvas juniper"':
-              - /url: /item/f89a46e7-193b-2dc9-7e56-433f116b557b/revisions
-            - 'button "Delete Post 25: jasper canvas juniper"'
-        - 'row "Select Post 26: quill pixel yarrow Post 26: quill pixel yarrow blog gen_user_27 Published 2025-12-31 23:34 Edit Post 26: quill pixel yarrow Revisions of Post 26: quill pixel yarrow Delete Post 26: quill pixel yarrow"':
-          - 'cell "Select Post 26: quill pixel yarrow"':
-            - 'checkbox "Select Post 26: quill pixel yarrow"'
-            - text: "Select Post 26: quill pixel yarrow"
-          - 'rowheader "Post 26: quill pixel yarrow"':
-            - 'link "Post 26: quill pixel yarrow"':
-              - /url: /admin/content/ead3c750-30fa-47e7-154b-d33a927fea11/edit
-          - cell "blog"
-          - cell "gen_user_27"
-          - cell "Published"
-          - cell "2025-12-31 23:34"
-          - 'cell "Edit Post 26: quill pixel yarrow Revisions of Post 26: quill pixel yarrow Delete Post 26: quill pixel yarrow"':
-            - 'link "Edit Post 26: quill pixel yarrow"':
-              - /url: /admin/content/ead3c750-30fa-47e7-154b-d33a927fea11/edit
-            - 'link "Revisions of Post 26: quill pixel yarrow"':
-              - /url: /item/ead3c750-30fa-47e7-154b-d33a927fea11/revisions
-            - 'button "Delete Post 26: quill pixel yarrow"'
-        - 'row "Select Post 27: yarrow sparrow prism Post 27: yarrow sparrow prism blog gen_user_28 Published 2025-12-31 23:33 Edit Post 27: yarrow sparrow prism Revisions of Post 27: yarrow sparrow prism Delete Post 27: yarrow sparrow prism"':
-          - 'cell "Select Post 27: yarrow sparrow prism"':
-            - 'checkbox "Select Post 27: yarrow sparrow prism"'
-            - text: "Select Post 27: yarrow sparrow prism"
-          - 'rowheader "Post 27: yarrow sparrow prism"':
-            - 'link "Post 27: yarrow sparrow prism"':
-              - /url: /admin/content/62bc0feb-4a76-b39f-b2f2-e73878b197eb/edit
-          - cell "blog"
-          - cell "gen_user_28"
-          - cell "Published"
-          - cell "2025-12-31 23:33"
-          - 'cell "Edit Post 27: yarrow sparrow prism Revisions of Post 27: yarrow sparrow prism Delete Post 27: yarrow sparrow prism"':
-            - 'link "Edit Post 27: yarrow sparrow prism"':
-              - /url: /admin/content/62bc0feb-4a76-b39f-b2f2-e73878b197eb/edit
-            - 'link "Revisions of Post 27: yarrow sparrow prism"':
-              - /url: /item/62bc0feb-4a76-b39f-b2f2-e73878b197eb/revisions
-            - 'button "Delete Post 27: yarrow sparrow prism"'
-        - 'row "Select Post 28: meadow linen raven Post 28: meadow linen raven blog gen_user_29 Published 2025-12-31 23:32 Edit Post 28: meadow linen raven Revisions of Post 28: meadow linen raven Delete Post 28: meadow linen raven"':
-          - 'cell "Select Post 28: meadow linen raven"':
-            - 'checkbox "Select Post 28: meadow linen raven"'
-            - text: "Select Post 28: meadow linen raven"
-          - 'rowheader "Post 28: meadow linen raven"':
-            - 'link "Post 28: meadow linen raven"':
-              - /url: /admin/content/55fffc99-6501-dc12-ab68-9d2d2cff2de8/edit
-          - cell "blog"
-          - cell "gen_user_29"
-          - cell "Published"
-          - cell "2025-12-31 23:32"
-          - 'cell "Edit Post 28: meadow linen raven Revisions of Post 28: meadow linen raven Delete Post 28: meadow linen raven"':
-            - 'link "Edit Post 28: meadow linen raven"':
-              - /url: /admin/content/55fffc99-6501-dc12-ab68-9d2d2cff2de8/edit
-            - 'link "Revisions of Post 28: meadow linen raven"':
-              - /url: /item/55fffc99-6501-dc12-ab68-9d2d2cff2de8/revisions
-            - 'button "Delete Post 28: meadow linen raven"'
-        - 'row "Select Post 29: thunder zenith compass Post 29: thunder zenith compass blog gen_user_30 Published 2025-12-31 23:31 Edit Post 29: thunder zenith compass Revisions of Post 29: thunder zenith compass Delete Post 29: thunder zenith compass"':
-          - 'cell "Select Post 29: thunder zenith compass"':
-            - 'checkbox "Select Post 29: thunder zenith compass"'
-            - text: "Select Post 29: thunder zenith compass"
-          - 'rowheader "Post 29: thunder zenith compass"':
-            - 'link "Post 29: thunder zenith compass"':
-              - /url: /admin/content/561e9099-bc87-dbf4-68d5-9caea1ea7020/edit
-          - cell "blog"
-          - cell "gen_user_30"
-          - cell "Published"
-          - cell "2025-12-31 23:31"
-          - 'cell "Edit Post 29: thunder zenith compass Revisions of Post 29: thunder zenith compass Delete Post 29: thunder zenith compass"':
-            - 'link "Edit Post 29: thunder zenith compass"':
-              - /url: /admin/content/561e9099-bc87-dbf4-68d5-9caea1ea7020/edit
-            - 'link "Revisions of Post 29: thunder zenith compass"':
-              - /url: /item/561e9099-bc87-dbf4-68d5-9caea1ea7020/revisions
-            - 'button "Delete Post 29: thunder zenith compass"'
-        - 'row "Select Post 2: bridge nimbus copper Post 2: bridge nimbus copper blog gen_user_3 Published 2025-12-31 23:58 Edit Post 2: bridge nimbus copper Revisions of Post 2: bridge nimbus copper Delete Post 2: bridge nimbus copper"':
+              - text: Revisions
+            - 'button "Delete Post 1: signal glacier beacon"': Delete
+        - 'row "Select Post 2: bridge nimbus copper Post 2: bridge nimbus copper blog gen_user_3 Published 31 Dec 2025, 23:58 Edit Revisions Delete"':
           - 'cell "Select Post 2: bridge nimbus copper"':
             - 'checkbox "Select Post 2: bridge nimbus copper"'
             - text: "Select Post 2: bridge nimbus copper"
@@ -485,184 +164,17 @@
           - cell "blog"
           - cell "gen_user_3"
           - cell "Published"
-          - cell "2025-12-31 23:58"
-          - 'cell "Edit Post 2: bridge nimbus copper Revisions of Post 2: bridge nimbus copper Delete Post 2: bridge nimbus copper"':
+          - cell "31 Dec 2025, 23:58":
+            - time: 31 Dec 2025, 23:58
+          - 'cell "Edit Post 2: bridge nimbus copper Revisions Delete"':
             - 'link "Edit Post 2: bridge nimbus copper"':
               - /url: /admin/content/2af56fdf-4380-592d-896e-6047f48430a1/edit
-            - 'link "Revisions of Post 2: bridge nimbus copper"':
+              - text: Edit
+            - 'link "Revisions Post 2: bridge nimbus copper"':
               - /url: /item/2af56fdf-4380-592d-896e-6047f48430a1/revisions
-            - 'button "Delete Post 2: bridge nimbus copper"'
-        - 'row "Select Post 30: glacier thunder linen Post 30: glacier thunder linen blog gen_user_1 Published 2025-12-31 23:30 Edit Post 30: glacier thunder linen Revisions of Post 30: glacier thunder linen Delete Post 30: glacier thunder linen"':
-          - 'cell "Select Post 30: glacier thunder linen"':
-            - 'checkbox "Select Post 30: glacier thunder linen"'
-            - text: "Select Post 30: glacier thunder linen"
-          - 'rowheader "Post 30: glacier thunder linen"':
-            - 'link "Post 30: glacier thunder linen"':
-              - /url: /admin/content/3348edd2-f362-df7b-80ab-d122fec18d34/edit
-          - cell "blog"
-          - cell "gen_user_1"
-          - cell "Published"
-          - cell "2025-12-31 23:30"
-          - 'cell "Edit Post 30: glacier thunder linen Revisions of Post 30: glacier thunder linen Delete Post 30: glacier thunder linen"':
-            - 'link "Edit Post 30: glacier thunder linen"':
-              - /url: /admin/content/3348edd2-f362-df7b-80ab-d122fec18d34/edit
-            - 'link "Revisions of Post 30: glacier thunder linen"':
-              - /url: /item/3348edd2-f362-df7b-80ab-d122fec18d34/revisions
-            - 'button "Delete Post 30: glacier thunder linen"'
-        - 'row "Select Post 31: anchor cedar bridge Post 31: anchor cedar bridge blog gen_user_2 Published 2025-12-31 23:29 Edit Post 31: anchor cedar bridge Revisions of Post 31: anchor cedar bridge Delete Post 31: anchor cedar bridge"':
-          - 'cell "Select Post 31: anchor cedar bridge"':
-            - 'checkbox "Select Post 31: anchor cedar bridge"'
-            - text: "Select Post 31: anchor cedar bridge"
-          - 'rowheader "Post 31: anchor cedar bridge"':
-            - 'link "Post 31: anchor cedar bridge"':
-              - /url: /admin/content/5969f947-e02e-873c-a6ae-6c9ff633b38f/edit
-          - cell "blog"
-          - cell "gen_user_2"
-          - cell "Published"
-          - cell "2025-12-31 23:29"
-          - 'cell "Edit Post 31: anchor cedar bridge Revisions of Post 31: anchor cedar bridge Delete Post 31: anchor cedar bridge"':
-            - 'link "Edit Post 31: anchor cedar bridge"':
-              - /url: /admin/content/5969f947-e02e-873c-a6ae-6c9ff633b38f/edit
-            - 'link "Revisions of Post 31: anchor cedar bridge"':
-              - /url: /item/5969f947-e02e-873c-a6ae-6c9ff633b38f/revisions
-            - 'button "Delete Post 31: anchor cedar bridge"'
-        - 'row "Select Post 32: juniper timber fjord Post 32: juniper timber fjord blog gen_user_3 Published 2025-12-31 23:28 Edit Post 32: juniper timber fjord Revisions of Post 32: juniper timber fjord Delete Post 32: juniper timber fjord"':
-          - 'cell "Select Post 32: juniper timber fjord"':
-            - 'checkbox "Select Post 32: juniper timber fjord"'
-            - text: "Select Post 32: juniper timber fjord"
-          - 'rowheader "Post 32: juniper timber fjord"':
-            - 'link "Post 32: juniper timber fjord"':
-              - /url: /admin/content/a328d1ef-ff14-28d7-1e1e-442229f5971d/edit
-          - cell "blog"
-          - cell "gen_user_3"
-          - cell "Published"
-          - cell "2025-12-31 23:28"
-          - 'cell "Edit Post 32: juniper timber fjord Revisions of Post 32: juniper timber fjord Delete Post 32: juniper timber fjord"':
-            - 'link "Edit Post 32: juniper timber fjord"':
-              - /url: /admin/content/a328d1ef-ff14-28d7-1e1e-442229f5971d/edit
-            - 'link "Revisions of Post 32: juniper timber fjord"':
-              - /url: /item/a328d1ef-ff14-28d7-1e1e-442229f5971d/revisions
-            - 'button "Delete Post 32: juniper timber fjord"'
-        - 'row "Select Post 33: lagoon mosaic garden Post 33: lagoon mosaic garden blog gen_user_4 Published 2025-12-31 23:27 Edit Post 33: lagoon mosaic garden Revisions of Post 33: lagoon mosaic garden Delete Post 33: lagoon mosaic garden"':
-          - 'cell "Select Post 33: lagoon mosaic garden"':
-            - 'checkbox "Select Post 33: lagoon mosaic garden"'
-            - text: "Select Post 33: lagoon mosaic garden"
-          - 'rowheader "Post 33: lagoon mosaic garden"':
-            - 'link "Post 33: lagoon mosaic garden"':
-              - /url: /admin/content/b4614441-96ed-91de-5e9c-746157c048c7/edit
-          - cell "blog"
-          - cell "gen_user_4"
-          - cell "Published"
-          - cell "2025-12-31 23:27"
-          - 'cell "Edit Post 33: lagoon mosaic garden Revisions of Post 33: lagoon mosaic garden Delete Post 33: lagoon mosaic garden"':
-            - 'link "Edit Post 33: lagoon mosaic garden"':
-              - /url: /admin/content/b4614441-96ed-91de-5e9c-746157c048c7/edit
-            - 'link "Revisions of Post 33: lagoon mosaic garden"':
-              - /url: /item/b4614441-96ed-91de-5e9c-746157c048c7/revisions
-            - 'button "Delete Post 33: lagoon mosaic garden"'
-        - 'row "Select Post 34: island atlas timber Post 34: island atlas timber blog gen_user_5 Published 2025-12-31 23:26 Edit Post 34: island atlas timber Revisions of Post 34: island atlas timber Delete Post 34: island atlas timber"':
-          - 'cell "Select Post 34: island atlas timber"':
-            - 'checkbox "Select Post 34: island atlas timber"'
-            - text: "Select Post 34: island atlas timber"
-          - 'rowheader "Post 34: island atlas timber"':
-            - 'link "Post 34: island atlas timber"':
-              - /url: /admin/content/66ba0b51-df77-5643-9765-68a50c94e2ba/edit
-          - cell "blog"
-          - cell "gen_user_5"
-          - cell "Published"
-          - cell "2025-12-31 23:26"
-          - 'cell "Edit Post 34: island atlas timber Revisions of Post 34: island atlas timber Delete Post 34: island atlas timber"':
-            - 'link "Edit Post 34: island atlas timber"':
-              - /url: /admin/content/66ba0b51-df77-5643-9765-68a50c94e2ba/edit
-            - 'link "Revisions of Post 34: island atlas timber"':
-              - /url: /item/66ba0b51-df77-5643-9765-68a50c94e2ba/revisions
-            - 'button "Delete Post 34: island atlas timber"'
-        - 'row "Select Post 35: pebble pepper lantern Post 35: pebble pepper lantern blog gen_user_6 Published 2025-12-31 23:25 Edit Post 35: pebble pepper lantern Revisions of Post 35: pebble pepper lantern Delete Post 35: pebble pepper lantern"':
-          - 'cell "Select Post 35: pebble pepper lantern"':
-            - 'checkbox "Select Post 35: pebble pepper lantern"'
-            - text: "Select Post 35: pebble pepper lantern"
-          - 'rowheader "Post 35: pebble pepper lantern"':
-            - 'link "Post 35: pebble pepper lantern"':
-              - /url: /admin/content/a3a8123a-133e-1db3-a635-3409e38da9cc/edit
-          - cell "blog"
-          - cell "gen_user_6"
-          - cell "Published"
-          - cell "2025-12-31 23:25"
-          - 'cell "Edit Post 35: pebble pepper lantern Revisions of Post 35: pebble pepper lantern Delete Post 35: pebble pepper lantern"':
-            - 'link "Edit Post 35: pebble pepper lantern"':
-              - /url: /admin/content/a3a8123a-133e-1db3-a635-3409e38da9cc/edit
-            - 'link "Revisions of Post 35: pebble pepper lantern"':
-              - /url: /item/a3a8123a-133e-1db3-a635-3409e38da9cc/revisions
-            - 'button "Delete Post 35: pebble pepper lantern"'
-        - 'row "Select Post 36: wander anchor nimbus Post 36: wander anchor nimbus blog gen_user_7 Published 2025-12-31 23:24 Edit Post 36: wander anchor nimbus Revisions of Post 36: wander anchor nimbus Delete Post 36: wander anchor nimbus"':
-          - 'cell "Select Post 36: wander anchor nimbus"':
-            - 'checkbox "Select Post 36: wander anchor nimbus"'
-            - text: "Select Post 36: wander anchor nimbus"
-          - 'rowheader "Post 36: wander anchor nimbus"':
-            - 'link "Post 36: wander anchor nimbus"':
-              - /url: /admin/content/9f931229-c67e-c264-c900-0804909b2dfb/edit
-          - cell "blog"
-          - cell "gen_user_7"
-          - cell "Published"
-          - cell "2025-12-31 23:24"
-          - 'cell "Edit Post 36: wander anchor nimbus Revisions of Post 36: wander anchor nimbus Delete Post 36: wander anchor nimbus"':
-            - 'link "Edit Post 36: wander anchor nimbus"':
-              - /url: /admin/content/9f931229-c67e-c264-c900-0804909b2dfb/edit
-            - 'link "Revisions of Post 36: wander anchor nimbus"':
-              - /url: /item/9f931229-c67e-c264-c900-0804909b2dfb/revisions
-            - 'button "Delete Post 36: wander anchor nimbus"'
-        - 'row "Select Post 37: harbor zephyr wander Post 37: harbor zephyr wander blog gen_user_8 Published 2025-12-31 23:23 Edit Post 37: harbor zephyr wander Revisions of Post 37: harbor zephyr wander Delete Post 37: harbor zephyr wander"':
-          - 'cell "Select Post 37: harbor zephyr wander"':
-            - 'checkbox "Select Post 37: harbor zephyr wander"'
-            - text: "Select Post 37: harbor zephyr wander"
-          - 'rowheader "Post 37: harbor zephyr wander"':
-            - 'link "Post 37: harbor zephyr wander"':
-              - /url: /admin/content/46c976d9-73f3-b55d-ce2f-17d020610877/edit
-          - cell "blog"
-          - cell "gen_user_8"
-          - cell "Published"
-          - cell "2025-12-31 23:23"
-          - 'cell "Edit Post 37: harbor zephyr wander Revisions of Post 37: harbor zephyr wander Delete Post 37: harbor zephyr wander"':
-            - 'link "Edit Post 37: harbor zephyr wander"':
-              - /url: /admin/content/46c976d9-73f3-b55d-ce2f-17d020610877/edit
-            - 'link "Revisions of Post 37: harbor zephyr wander"':
-              - /url: /item/46c976d9-73f3-b55d-ce2f-17d020610877/revisions
-            - 'button "Delete Post 37: harbor zephyr wander"'
-        - 'row "Select Post 38: canvas nectar anchor Post 38: canvas nectar anchor blog gen_user_9 Published 2025-12-31 23:22 Edit Post 38: canvas nectar anchor Revisions of Post 38: canvas nectar anchor Delete Post 38: canvas nectar anchor"':
-          - 'cell "Select Post 38: canvas nectar anchor"':
-            - 'checkbox "Select Post 38: canvas nectar anchor"'
-            - text: "Select Post 38: canvas nectar anchor"
-          - 'rowheader "Post 38: canvas nectar anchor"':
-            - 'link "Post 38: canvas nectar anchor"':
-              - /url: /admin/content/d79c5e89-21f5-ad62-bf22-d7b69b978013/edit
-          - cell "blog"
-          - cell "gen_user_9"
-          - cell "Published"
-          - cell "2025-12-31 23:22"
-          - 'cell "Edit Post 38: canvas nectar anchor Revisions of Post 38: canvas nectar anchor Delete Post 38: canvas nectar anchor"':
-            - 'link "Edit Post 38: canvas nectar anchor"':
-              - /url: /admin/content/d79c5e89-21f5-ad62-bf22-d7b69b978013/edit
-            - 'link "Revisions of Post 38: canvas nectar anchor"':
-              - /url: /item/d79c5e89-21f5-ad62-bf22-d7b69b978013/revisions
-            - 'button "Delete Post 38: canvas nectar anchor"'
-        - 'row "Select Post 39: ember river quill Post 39: ember river quill blog gen_user_10 Published 2025-12-31 23:21 Edit Post 39: ember river quill Revisions of Post 39: ember river quill Delete Post 39: ember river quill"':
-          - 'cell "Select Post 39: ember river quill"':
-            - 'checkbox "Select Post 39: ember river quill"'
-            - text: "Select Post 39: ember river quill"
-          - 'rowheader "Post 39: ember river quill"':
-            - 'link "Post 39: ember river quill"':
-              - /url: /admin/content/1e796d5d-b4e0-24b6-92d8-0a4a08fdac41/edit
-          - cell "blog"
-          - cell "gen_user_10"
-          - cell "Published"
-          - cell "2025-12-31 23:21"
-          - 'cell "Edit Post 39: ember river quill Revisions of Post 39: ember river quill Delete Post 39: ember river quill"':
-            - 'link "Edit Post 39: ember river quill"':
-              - /url: /admin/content/1e796d5d-b4e0-24b6-92d8-0a4a08fdac41/edit
-            - 'link "Revisions of Post 39: ember river quill"':
-              - /url: /item/1e796d5d-b4e0-24b6-92d8-0a4a08fdac41/revisions
-            - 'button "Delete Post 39: ember river quill"'
-        - 'row "Select Post 3: velvet grove cobalt Post 3: velvet grove cobalt blog gen_user_4 Published 2025-12-31 23:57 Edit Post 3: velvet grove cobalt Revisions of Post 3: velvet grove cobalt Delete Post 3: velvet grove cobalt"':
+              - text: Revisions
+            - 'button "Delete Post 2: bridge nimbus copper"': Delete
+        - 'row "Select Post 3: velvet grove cobalt Post 3: velvet grove cobalt blog gen_user_4 Published 31 Dec 2025, 23:57 Edit Revisions Delete"':
           - 'cell "Select Post 3: velvet grove cobalt"':
             - 'checkbox "Select Post 3: velvet grove cobalt"'
             - text: "Select Post 3: velvet grove cobalt"
@@ -672,31 +184,37 @@
           - cell "blog"
           - cell "gen_user_4"
           - cell "Published"
-          - cell "2025-12-31 23:57"
-          - 'cell "Edit Post 3: velvet grove cobalt Revisions of Post 3: velvet grove cobalt Delete Post 3: velvet grove cobalt"':
+          - cell "31 Dec 2025, 23:57":
+            - time: 31 Dec 2025, 23:57
+          - 'cell "Edit Post 3: velvet grove cobalt Revisions Delete"':
             - 'link "Edit Post 3: velvet grove cobalt"':
               - /url: /admin/content/ef7713e2-49ac-ba8b-b56f-fa008947754f/edit
-            - 'link "Revisions of Post 3: velvet grove cobalt"':
+              - text: Edit
+            - 'link "Revisions Post 3: velvet grove cobalt"':
               - /url: /item/ef7713e2-49ac-ba8b-b56f-fa008947754f/revisions
-            - 'button "Delete Post 3: velvet grove cobalt"'
-        - 'row "Select Post 40: cedar violet orchard Post 40: cedar violet orchard blog gen_user_11 Published 2025-12-31 23:20 Edit Post 40: cedar violet orchard Revisions of Post 40: cedar violet orchard Delete Post 40: cedar violet orchard"':
-          - 'cell "Select Post 40: cedar violet orchard"':
-            - 'checkbox "Select Post 40: cedar violet orchard"'
-            - text: "Select Post 40: cedar violet orchard"
-          - 'rowheader "Post 40: cedar violet orchard"':
-            - 'link "Post 40: cedar violet orchard"':
-              - /url: /admin/content/54ff1f6b-d0d2-9b4a-65b2-063132fa42df/edit
+              - text: Revisions
+            - 'button "Delete Post 3: velvet grove cobalt"': Delete
+        - 'row "Select Post 4: tundra thistle atlas Post 4: tundra thistle atlas blog gen_user_5 Published 31 Dec 2025, 23:56 Edit Revisions Delete"':
+          - 'cell "Select Post 4: tundra thistle atlas"':
+            - 'checkbox "Select Post 4: tundra thistle atlas"'
+            - text: "Select Post 4: tundra thistle atlas"
+          - 'rowheader "Post 4: tundra thistle atlas"':
+            - 'link "Post 4: tundra thistle atlas"':
+              - /url: /admin/content/0940c26c-1e81-ba17-9efb-bf47da95393e/edit
           - cell "blog"
-          - cell "gen_user_11"
+          - cell "gen_user_5"
           - cell "Published"
-          - cell "2025-12-31 23:20"
-          - 'cell "Edit Post 40: cedar violet orchard Revisions of Post 40: cedar violet orchard Delete Post 40: cedar violet orchard"':
-            - 'link "Edit Post 40: cedar violet orchard"':
-              - /url: /admin/content/54ff1f6b-d0d2-9b4a-65b2-063132fa42df/edit
-            - 'link "Revisions of Post 40: cedar violet orchard"':
-              - /url: /item/54ff1f6b-d0d2-9b4a-65b2-063132fa42df/revisions
-            - 'button "Delete Post 40: cedar violet orchard"'
-        - 'row "Select Post 5: ripple willow tundra Post 5: ripple willow tundra blog gen_user_6 Published 2025-12-31 23:55 Edit Post 5: ripple willow tundra Revisions of Post 5: ripple willow tundra Delete Post 5: ripple willow tundra"':
+          - cell "31 Dec 2025, 23:56":
+            - time: 31 Dec 2025, 23:56
+          - 'cell "Edit Post 4: tundra thistle atlas Revisions Delete"':
+            - 'link "Edit Post 4: tundra thistle atlas"':
+              - /url: /admin/content/0940c26c-1e81-ba17-9efb-bf47da95393e/edit
+              - text: Edit
+            - 'link "Revisions Post 4: tundra thistle atlas"':
+              - /url: /item/0940c26c-1e81-ba17-9efb-bf47da95393e/revisions
+              - text: Revisions
+            - 'button "Delete Post 4: tundra thistle atlas"': Delete
+        - 'row "Select Post 5: ripple willow tundra Post 5: ripple willow tundra blog gen_user_6 Published 31 Dec 2025, 23:55 Edit Revisions Delete"':
           - 'cell "Select Post 5: ripple willow tundra"':
             - 'checkbox "Select Post 5: ripple willow tundra"'
             - text: "Select Post 5: ripple willow tundra"
@@ -706,14 +224,17 @@
           - cell "blog"
           - cell "gen_user_6"
           - cell "Published"
-          - cell "2025-12-31 23:55"
-          - 'cell "Edit Post 5: ripple willow tundra Revisions of Post 5: ripple willow tundra Delete Post 5: ripple willow tundra"':
+          - cell "31 Dec 2025, 23:55":
+            - time: 31 Dec 2025, 23:55
+          - 'cell "Edit Post 5: ripple willow tundra Revisions Delete"':
             - 'link "Edit Post 5: ripple willow tundra"':
               - /url: /admin/content/58c5f342-d1af-84d7-c9f2-0a5bdf0ad19b/edit
-            - 'link "Revisions of Post 5: ripple willow tundra"':
+              - text: Edit
+            - 'link "Revisions Post 5: ripple willow tundra"':
               - /url: /item/58c5f342-d1af-84d7-c9f2-0a5bdf0ad19b/revisions
-            - 'button "Delete Post 5: ripple willow tundra"'
-        - 'row "Select Post 6: dune orchard thistle Post 6: dune orchard thistle blog gen_user_7 Published 2025-12-31 23:54 Edit Post 6: dune orchard thistle Revisions of Post 6: dune orchard thistle Delete Post 6: dune orchard thistle"':
+              - text: Revisions
+            - 'button "Delete Post 5: ripple willow tundra"': Delete
+        - 'row "Select Post 6: dune orchard thistle Post 6: dune orchard thistle blog gen_user_7 Published 31 Dec 2025, 23:54 Edit Revisions Delete"':
           - 'cell "Select Post 6: dune orchard thistle"':
             - 'checkbox "Select Post 6: dune orchard thistle"'
             - text: "Select Post 6: dune orchard thistle"
@@ -723,14 +244,37 @@
           - cell "blog"
           - cell "gen_user_7"
           - cell "Published"
-          - cell "2025-12-31 23:54"
-          - 'cell "Edit Post 6: dune orchard thistle Revisions of Post 6: dune orchard thistle Delete Post 6: dune orchard thistle"':
+          - cell "31 Dec 2025, 23:54":
+            - time: 31 Dec 2025, 23:54
+          - 'cell "Edit Post 6: dune orchard thistle Revisions Delete"':
             - 'link "Edit Post 6: dune orchard thistle"':
               - /url: /admin/content/56ef67ee-c778-dd8f-5ca5-7f42d731d864/edit
-            - 'link "Revisions of Post 6: dune orchard thistle"':
+              - text: Edit
+            - 'link "Revisions Post 6: dune orchard thistle"':
               - /url: /item/56ef67ee-c778-dd8f-5ca5-7f42d731d864/revisions
-            - 'button "Delete Post 6: dune orchard thistle"'
-        - 'row "Select Post 8: sable hollow nectar Post 8: sable hollow nectar blog gen_user_9 Published 2025-12-31 23:52 Edit Post 8: sable hollow nectar Revisions of Post 8: sable hollow nectar Delete Post 8: sable hollow nectar"':
+              - text: Revisions
+            - 'button "Delete Post 6: dune orchard thistle"': Delete
+        - 'row "Select Post 7: linen juniper summit Post 7: linen juniper summit blog gen_user_8 Published 31 Dec 2025, 23:53 Edit Revisions Delete"':
+          - 'cell "Select Post 7: linen juniper summit"':
+            - 'checkbox "Select Post 7: linen juniper summit"'
+            - text: "Select Post 7: linen juniper summit"
+          - 'rowheader "Post 7: linen juniper summit"':
+            - 'link "Post 7: linen juniper summit"':
+              - /url: /admin/content/12a5a331-6d0b-cea0-858b-f3c454b1410e/edit
+          - cell "blog"
+          - cell "gen_user_8"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:53":
+            - time: 31 Dec 2025, 23:53
+          - 'cell "Edit Post 7: linen juniper summit Revisions Delete"':
+            - 'link "Edit Post 7: linen juniper summit"':
+              - /url: /admin/content/12a5a331-6d0b-cea0-858b-f3c454b1410e/edit
+              - text: Edit
+            - 'link "Revisions Post 7: linen juniper summit"':
+              - /url: /item/12a5a331-6d0b-cea0-858b-f3c454b1410e/revisions
+              - text: Revisions
+            - 'button "Delete Post 7: linen juniper summit"': Delete
+        - 'row "Select Post 8: sable hollow nectar Post 8: sable hollow nectar blog gen_user_9 Published 31 Dec 2025, 23:52 Edit Revisions Delete"':
           - 'cell "Select Post 8: sable hollow nectar"':
             - 'checkbox "Select Post 8: sable hollow nectar"'
             - text: "Select Post 8: sable hollow nectar"
@@ -740,13 +284,656 @@
           - cell "blog"
           - cell "gen_user_9"
           - cell "Published"
-          - cell "2025-12-31 23:52"
-          - 'cell "Edit Post 8: sable hollow nectar Revisions of Post 8: sable hollow nectar Delete Post 8: sable hollow nectar"':
+          - cell "31 Dec 2025, 23:52":
+            - time: 31 Dec 2025, 23:52
+          - 'cell "Edit Post 8: sable hollow nectar Revisions Delete"':
             - 'link "Edit Post 8: sable hollow nectar"':
               - /url: /admin/content/da57c3b8-156e-2979-30e5-79b937c2ef9b/edit
-            - 'link "Revisions of Post 8: sable hollow nectar"':
+              - text: Edit
+            - 'link "Revisions Post 8: sable hollow nectar"':
               - /url: /item/da57c3b8-156e-2979-30e5-79b937c2ef9b/revisions
-            - 'button "Delete Post 8: sable hollow nectar"'
+              - text: Revisions
+            - 'button "Delete Post 8: sable hollow nectar"': Delete
+        - 'row "Select Post 9: atlas umber marble Post 9: atlas umber marble blog gen_user_10 Published 31 Dec 2025, 23:51 Edit Revisions Delete"':
+          - 'cell "Select Post 9: atlas umber marble"':
+            - 'checkbox "Select Post 9: atlas umber marble"'
+            - text: "Select Post 9: atlas umber marble"
+          - 'rowheader "Post 9: atlas umber marble"':
+            - 'link "Post 9: atlas umber marble"':
+              - /url: /admin/content/0edac9e7-b53d-2347-2894-c4069fad3d4f/edit
+          - cell "blog"
+          - cell "gen_user_10"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:51":
+            - time: 31 Dec 2025, 23:51
+          - 'cell "Edit Post 9: atlas umber marble Revisions Delete"':
+            - 'link "Edit Post 9: atlas umber marble"':
+              - /url: /admin/content/0edac9e7-b53d-2347-2894-c4069fad3d4f/edit
+              - text: Edit
+            - 'link "Revisions Post 9: atlas umber marble"':
+              - /url: /item/0edac9e7-b53d-2347-2894-c4069fad3d4f/revisions
+              - text: Revisions
+            - 'button "Delete Post 9: atlas umber marble"': Delete
+        - 'row "Select Post 10: willow signal hollow Post 10: willow signal hollow blog gen_user_11 Published 31 Dec 2025, 23:50 Edit Revisions Delete"':
+          - 'cell "Select Post 10: willow signal hollow"':
+            - 'checkbox "Select Post 10: willow signal hollow"'
+            - text: "Select Post 10: willow signal hollow"
+          - 'rowheader "Post 10: willow signal hollow"':
+            - 'link "Post 10: willow signal hollow"':
+              - /url: /admin/content/8a52ec78-319d-929a-1997-8980eee96634/edit
+          - cell "blog"
+          - cell "gen_user_11"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:50":
+            - time: 31 Dec 2025, 23:50
+          - 'cell "Edit Post 10: willow signal hollow Revisions Delete"':
+            - 'link "Edit Post 10: willow signal hollow"':
+              - /url: /admin/content/8a52ec78-319d-929a-1997-8980eee96634/edit
+              - text: Edit
+            - 'link "Revisions Post 10: willow signal hollow"':
+              - /url: /item/8a52ec78-319d-929a-1997-8980eee96634/revisions
+              - text: Revisions
+            - 'button "Delete Post 10: willow signal hollow"': Delete
+        - 'row "Select Post 11: violet compass canvas Post 11: violet compass canvas blog gen_user_12 Published 31 Dec 2025, 23:49 Edit Revisions Delete"':
+          - 'cell "Select Post 11: violet compass canvas"':
+            - 'checkbox "Select Post 11: violet compass canvas"'
+            - text: "Select Post 11: violet compass canvas"
+          - 'rowheader "Post 11: violet compass canvas"':
+            - 'link "Post 11: violet compass canvas"':
+              - /url: /admin/content/0d00c89c-afa0-a463-c672-8e95f1cca4df/edit
+          - cell "blog"
+          - cell "gen_user_12"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:49":
+            - time: 31 Dec 2025, 23:49
+          - 'cell "Edit Post 11: violet compass canvas Revisions Delete"':
+            - 'link "Edit Post 11: violet compass canvas"':
+              - /url: /admin/content/0d00c89c-afa0-a463-c672-8e95f1cca4df/edit
+              - text: Edit
+            - 'link "Revisions Post 11: violet compass canvas"':
+              - /url: /item/0d00c89c-afa0-a463-c672-8e95f1cca4df/revisions
+              - text: Revisions
+            - 'button "Delete Post 11: violet compass canvas"': Delete
+        - 'row "Select Post 12: compass basalt lagoon Post 12: compass basalt lagoon blog gen_user_13 Published 31 Dec 2025, 23:48 Edit Revisions Delete"':
+          - 'cell "Select Post 12: compass basalt lagoon"':
+            - 'checkbox "Select Post 12: compass basalt lagoon"'
+            - text: "Select Post 12: compass basalt lagoon"
+          - 'rowheader "Post 12: compass basalt lagoon"':
+            - 'link "Post 12: compass basalt lagoon"':
+              - /url: /admin/content/82fbe802-b827-5cad-293e-05c4ea802390/edit
+          - cell "blog"
+          - cell "gen_user_13"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:48":
+            - time: 31 Dec 2025, 23:48
+          - 'cell "Edit Post 12: compass basalt lagoon Revisions Delete"':
+            - 'link "Edit Post 12: compass basalt lagoon"':
+              - /url: /admin/content/82fbe802-b827-5cad-293e-05c4ea802390/edit
+              - text: Edit
+            - 'link "Revisions Post 12: compass basalt lagoon"':
+              - /url: /item/82fbe802-b827-5cad-293e-05c4ea802390/revisions
+              - text: Revisions
+            - 'button "Delete Post 12: compass basalt lagoon"': Delete
+        - 'row "Select Post 13: saffron island meadow Post 13: saffron island meadow blog gen_user_14 Published 31 Dec 2025, 23:47 Edit Revisions Delete"':
+          - 'cell "Select Post 13: saffron island meadow"':
+            - 'checkbox "Select Post 13: saffron island meadow"'
+            - text: "Select Post 13: saffron island meadow"
+          - 'rowheader "Post 13: saffron island meadow"':
+            - 'link "Post 13: saffron island meadow"':
+              - /url: /admin/content/ae225288-dff6-9d51-54a2-d4afe3207b90/edit
+          - cell "blog"
+          - cell "gen_user_14"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:47":
+            - time: 31 Dec 2025, 23:47
+          - 'cell "Edit Post 13: saffron island meadow Revisions Delete"':
+            - 'link "Edit Post 13: saffron island meadow"':
+              - /url: /admin/content/ae225288-dff6-9d51-54a2-d4afe3207b90/edit
+              - text: Edit
+            - 'link "Revisions Post 13: saffron island meadow"':
+              - /url: /item/ae225288-dff6-9d51-54a2-d4afe3207b90/revisions
+              - text: Revisions
+            - 'button "Delete Post 13: saffron island meadow"': Delete
+        - 'row "Select Post 14: cobalt valley basalt Post 14: cobalt valley basalt blog gen_user_15 Published 31 Dec 2025, 23:46 Edit Revisions Delete"':
+          - 'cell "Select Post 14: cobalt valley basalt"':
+            - 'checkbox "Select Post 14: cobalt valley basalt"'
+            - text: "Select Post 14: cobalt valley basalt"
+          - 'rowheader "Post 14: cobalt valley basalt"':
+            - 'link "Post 14: cobalt valley basalt"':
+              - /url: /admin/content/c5017b4d-4435-627c-f068-caec20f5e66b/edit
+          - cell "blog"
+          - cell "gen_user_15"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:46":
+            - time: 31 Dec 2025, 23:46
+          - 'cell "Edit Post 14: cobalt valley basalt Revisions Delete"':
+            - 'link "Edit Post 14: cobalt valley basalt"':
+              - /url: /admin/content/c5017b4d-4435-627c-f068-caec20f5e66b/edit
+              - text: Edit
+            - 'link "Revisions Post 14: cobalt valley basalt"':
+              - /url: /item/c5017b4d-4435-627c-f068-caec20f5e66b/revisions
+              - text: Revisions
+            - 'button "Delete Post 14: cobalt valley basalt"': Delete
+        - 'row "Select Post 15: cinder garden zenith Post 15: cinder garden zenith blog gen_user_16 Published 31 Dec 2025, 23:45 Edit Revisions Delete"':
+          - 'cell "Select Post 15: cinder garden zenith"':
+            - 'checkbox "Select Post 15: cinder garden zenith"'
+            - text: "Select Post 15: cinder garden zenith"
+          - 'rowheader "Post 15: cinder garden zenith"':
+            - 'link "Post 15: cinder garden zenith"':
+              - /url: /admin/content/87ef8e90-d744-a66e-f8db-1092775a879d/edit
+          - cell "blog"
+          - cell "gen_user_16"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:45":
+            - time: 31 Dec 2025, 23:45
+          - 'cell "Edit Post 15: cinder garden zenith Revisions Delete"':
+            - 'link "Edit Post 15: cinder garden zenith"':
+              - /url: /admin/content/87ef8e90-d744-a66e-f8db-1092775a879d/edit
+              - text: Edit
+            - 'link "Revisions Post 15: cinder garden zenith"':
+              - /url: /item/87ef8e90-d744-a66e-f8db-1092775a879d/revisions
+              - text: Revisions
+            - 'button "Delete Post 15: cinder garden zenith"': Delete
+        - 'row "Select Post 16: kestrel velvet saffron Post 16: kestrel velvet saffron blog gen_user_17 Published 31 Dec 2025, 23:44 Edit Revisions Delete"':
+          - 'cell "Select Post 16: kestrel velvet saffron"':
+            - 'checkbox "Select Post 16: kestrel velvet saffron"'
+            - text: "Select Post 16: kestrel velvet saffron"
+          - 'rowheader "Post 16: kestrel velvet saffron"':
+            - 'link "Post 16: kestrel velvet saffron"':
+              - /url: /admin/content/8904bcaf-ef8b-c4d5-1509-184a6a8afcbd/edit
+          - cell "blog"
+          - cell "gen_user_17"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:44":
+            - time: 31 Dec 2025, 23:44
+          - 'cell "Edit Post 16: kestrel velvet saffron Revisions Delete"':
+            - 'link "Edit Post 16: kestrel velvet saffron"':
+              - /url: /admin/content/8904bcaf-ef8b-c4d5-1509-184a6a8afcbd/edit
+              - text: Edit
+            - 'link "Revisions Post 16: kestrel velvet saffron"':
+              - /url: /item/8904bcaf-ef8b-c4d5-1509-184a6a8afcbd/revisions
+              - text: Revisions
+            - 'button "Delete Post 16: kestrel velvet saffron"': Delete
+        - 'row "Select Post 17: raven cobalt sable Post 17: raven cobalt sable blog gen_user_18 Published 31 Dec 2025, 23:43 Edit Revisions Delete"':
+          - 'cell "Select Post 17: raven cobalt sable"':
+            - 'checkbox "Select Post 17: raven cobalt sable"'
+            - text: "Select Post 17: raven cobalt sable"
+          - 'rowheader "Post 17: raven cobalt sable"':
+            - 'link "Post 17: raven cobalt sable"':
+              - /url: /admin/content/2e066f1f-144b-a31c-cc52-7b40f67498e5/edit
+          - cell "blog"
+          - cell "gen_user_18"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:43":
+            - time: 31 Dec 2025, 23:43
+          - 'cell "Edit Post 17: raven cobalt sable Revisions Delete"':
+            - 'link "Edit Post 17: raven cobalt sable"':
+              - /url: /admin/content/2e066f1f-144b-a31c-cc52-7b40f67498e5/edit
+              - text: Edit
+            - 'link "Revisions Post 17: raven cobalt sable"':
+              - /url: /item/2e066f1f-144b-a31c-cc52-7b40f67498e5/revisions
+              - text: Revisions
+            - 'button "Delete Post 17: raven cobalt sable"': Delete
+        - 'row "Select Post 18: zenith jasper velvet Post 18: zenith jasper velvet blog gen_user_19 Published 31 Dec 2025, 23:42 Edit Revisions Delete"':
+          - 'cell "Select Post 18: zenith jasper velvet"':
+            - 'checkbox "Select Post 18: zenith jasper velvet"'
+            - text: "Select Post 18: zenith jasper velvet"
+          - 'rowheader "Post 18: zenith jasper velvet"':
+            - 'link "Post 18: zenith jasper velvet"':
+              - /url: /admin/content/221316bc-02d0-89de-d78e-5706b1e9ab5e/edit
+          - cell "blog"
+          - cell "gen_user_19"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:42":
+            - time: 31 Dec 2025, 23:42
+          - 'cell "Edit Post 18: zenith jasper velvet Revisions Delete"':
+            - 'link "Edit Post 18: zenith jasper velvet"':
+              - /url: /admin/content/221316bc-02d0-89de-d78e-5706b1e9ab5e/edit
+              - text: Edit
+            - 'link "Revisions Post 18: zenith jasper velvet"':
+              - /url: /item/221316bc-02d0-89de-d78e-5706b1e9ab5e/revisions
+              - text: Revisions
+            - 'button "Delete Post 18: zenith jasper velvet"': Delete
+        - 'row "Select Post 19: copper wander mosaic Post 19: copper wander mosaic blog gen_user_20 Published 31 Dec 2025, 23:41 Edit Revisions Delete"':
+          - 'cell "Select Post 19: copper wander mosaic"':
+            - 'checkbox "Select Post 19: copper wander mosaic"'
+            - text: "Select Post 19: copper wander mosaic"
+          - 'rowheader "Post 19: copper wander mosaic"':
+            - 'link "Post 19: copper wander mosaic"':
+              - /url: /admin/content/4ffe6b89-42d1-d4d1-abcc-ee11cb620cf5/edit
+          - cell "blog"
+          - cell "gen_user_20"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:41":
+            - time: 31 Dec 2025, 23:41
+          - 'cell "Edit Post 19: copper wander mosaic Revisions Delete"':
+            - 'link "Edit Post 19: copper wander mosaic"':
+              - /url: /admin/content/4ffe6b89-42d1-d4d1-abcc-ee11cb620cf5/edit
+              - text: Edit
+            - 'link "Revisions Post 19: copper wander mosaic"':
+              - /url: /item/4ffe6b89-42d1-d4d1-abcc-ee11cb620cf5/revisions
+              - text: Revisions
+            - 'button "Delete Post 19: copper wander mosaic"': Delete
+        - 'row "Select Post 20: pepper orbit falcon Post 20: pepper orbit falcon blog gen_user_21 Published 31 Dec 2025, 23:40 Edit Revisions Delete"':
+          - 'cell "Select Post 20: pepper orbit falcon"':
+            - 'checkbox "Select Post 20: pepper orbit falcon"'
+            - text: "Select Post 20: pepper orbit falcon"
+          - 'rowheader "Post 20: pepper orbit falcon"':
+            - 'link "Post 20: pepper orbit falcon"':
+              - /url: /admin/content/cec1427b-220e-9f56-472c-c76b6ed347cf/edit
+          - cell "blog"
+          - cell "gen_user_21"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:40":
+            - time: 31 Dec 2025, 23:40
+          - 'cell "Edit Post 20: pepper orbit falcon Revisions Delete"':
+            - 'link "Edit Post 20: pepper orbit falcon"':
+              - /url: /admin/content/cec1427b-220e-9f56-472c-c76b6ed347cf/edit
+              - text: Edit
+            - 'link "Revisions Post 20: pepper orbit falcon"':
+              - /url: /item/cec1427b-220e-9f56-472c-c76b6ed347cf/revisions
+              - text: Revisions
+            - 'button "Delete Post 20: pepper orbit falcon"': Delete
+        - 'row "Select Post 21: orchard summit grove Post 21: orchard summit grove blog gen_user_22 Published 31 Dec 2025, 23:39 Edit Revisions Delete"':
+          - 'cell "Select Post 21: orchard summit grove"':
+            - 'checkbox "Select Post 21: orchard summit grove"'
+            - text: "Select Post 21: orchard summit grove"
+          - 'rowheader "Post 21: orchard summit grove"':
+            - 'link "Post 21: orchard summit grove"':
+              - /url: /admin/content/5d6f561a-24e9-31df-3264-1e5ad526f89d/edit
+          - cell "blog"
+          - cell "gen_user_22"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:39":
+            - time: 31 Dec 2025, 23:39
+          - 'cell "Edit Post 21: orchard summit grove Revisions Delete"':
+            - 'link "Edit Post 21: orchard summit grove"':
+              - /url: /admin/content/5d6f561a-24e9-31df-3264-1e5ad526f89d/edit
+              - text: Edit
+            - 'link "Revisions Post 21: orchard summit grove"':
+              - /url: /item/5d6f561a-24e9-31df-3264-1e5ad526f89d/revisions
+              - text: Revisions
+            - 'button "Delete Post 21: orchard summit grove"': Delete
+        - 'row "Select Post 22: prism ripple orbit Post 22: prism ripple orbit blog gen_user_23 Published 31 Dec 2025, 23:38 Edit Revisions Delete"':
+          - 'cell "Select Post 22: prism ripple orbit"':
+            - 'checkbox "Select Post 22: prism ripple orbit"'
+            - text: "Select Post 22: prism ripple orbit"
+          - 'rowheader "Post 22: prism ripple orbit"':
+            - 'link "Post 22: prism ripple orbit"':
+              - /url: /admin/content/61d9884c-7ecb-0e01-6d9b-f5ba1ec1d497/edit
+          - cell "blog"
+          - cell "gen_user_23"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:38":
+            - time: 31 Dec 2025, 23:38
+          - 'cell "Edit Post 22: prism ripple orbit Revisions Delete"':
+            - 'link "Edit Post 22: prism ripple orbit"':
+              - /url: /admin/content/61d9884c-7ecb-0e01-6d9b-f5ba1ec1d497/edit
+              - text: Edit
+            - 'link "Revisions Post 22: prism ripple orbit"':
+              - /url: /item/61d9884c-7ecb-0e01-6d9b-f5ba1ec1d497/revisions
+              - text: Revisions
+            - 'button "Delete Post 22: prism ripple orbit"': Delete
+        - 'row "Select Post 23: basalt kestrel zephyr Post 23: basalt kestrel zephyr blog gen_user_24 Published 31 Dec 2025, 23:37 Edit Revisions Delete"':
+          - 'cell "Select Post 23: basalt kestrel zephyr"':
+            - 'checkbox "Select Post 23: basalt kestrel zephyr"'
+            - text: "Select Post 23: basalt kestrel zephyr"
+          - 'rowheader "Post 23: basalt kestrel zephyr"':
+            - 'link "Post 23: basalt kestrel zephyr"':
+              - /url: /admin/content/248736c0-5bb8-609d-3afb-067a726efc04/edit
+          - cell "blog"
+          - cell "gen_user_24"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:37":
+            - time: 31 Dec 2025, 23:37
+          - 'cell "Edit Post 23: basalt kestrel zephyr Revisions Delete"':
+            - 'link "Edit Post 23: basalt kestrel zephyr"':
+              - /url: /admin/content/248736c0-5bb8-609d-3afb-067a726efc04/edit
+              - text: Edit
+            - 'link "Revisions Post 23: basalt kestrel zephyr"':
+              - /url: /item/248736c0-5bb8-609d-3afb-067a726efc04/revisions
+              - text: Revisions
+            - 'button "Delete Post 23: basalt kestrel zephyr"': Delete
+        - 'row "Select Post 24: beacon yarrow harbor Post 24: beacon yarrow harbor blog gen_user_25 Published 31 Dec 2025, 23:36 Edit Revisions Delete"':
+          - 'cell "Select Post 24: beacon yarrow harbor"':
+            - 'checkbox "Select Post 24: beacon yarrow harbor"'
+            - text: "Select Post 24: beacon yarrow harbor"
+          - 'rowheader "Post 24: beacon yarrow harbor"':
+            - 'link "Post 24: beacon yarrow harbor"':
+              - /url: /admin/content/fb5c117d-0f7a-5e94-a170-9e53ea194388/edit
+          - cell "blog"
+          - cell "gen_user_25"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:36":
+            - time: 31 Dec 2025, 23:36
+          - 'cell "Edit Post 24: beacon yarrow harbor Revisions Delete"':
+            - 'link "Edit Post 24: beacon yarrow harbor"':
+              - /url: /admin/content/fb5c117d-0f7a-5e94-a170-9e53ea194388/edit
+              - text: Edit
+            - 'link "Revisions Post 24: beacon yarrow harbor"':
+              - /url: /item/fb5c117d-0f7a-5e94-a170-9e53ea194388/revisions
+              - text: Revisions
+            - 'button "Delete Post 24: beacon yarrow harbor"': Delete
+        - 'row "Select Post 25: jasper canvas juniper Post 25: jasper canvas juniper blog gen_user_26 Published 31 Dec 2025, 23:35 Edit Revisions Delete"':
+          - 'cell "Select Post 25: jasper canvas juniper"':
+            - 'checkbox "Select Post 25: jasper canvas juniper"'
+            - text: "Select Post 25: jasper canvas juniper"
+          - 'rowheader "Post 25: jasper canvas juniper"':
+            - 'link "Post 25: jasper canvas juniper"':
+              - /url: /admin/content/f89a46e7-193b-2dc9-7e56-433f116b557b/edit
+          - cell "blog"
+          - cell "gen_user_26"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:35":
+            - time: 31 Dec 2025, 23:35
+          - 'cell "Edit Post 25: jasper canvas juniper Revisions Delete"':
+            - 'link "Edit Post 25: jasper canvas juniper"':
+              - /url: /admin/content/f89a46e7-193b-2dc9-7e56-433f116b557b/edit
+              - text: Edit
+            - 'link "Revisions Post 25: jasper canvas juniper"':
+              - /url: /item/f89a46e7-193b-2dc9-7e56-433f116b557b/revisions
+              - text: Revisions
+            - 'button "Delete Post 25: jasper canvas juniper"': Delete
+        - 'row "Select Post 26: quill pixel yarrow Post 26: quill pixel yarrow blog gen_user_27 Published 31 Dec 2025, 23:34 Edit Revisions Delete"':
+          - 'cell "Select Post 26: quill pixel yarrow"':
+            - 'checkbox "Select Post 26: quill pixel yarrow"'
+            - text: "Select Post 26: quill pixel yarrow"
+          - 'rowheader "Post 26: quill pixel yarrow"':
+            - 'link "Post 26: quill pixel yarrow"':
+              - /url: /admin/content/ead3c750-30fa-47e7-154b-d33a927fea11/edit
+          - cell "blog"
+          - cell "gen_user_27"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:34":
+            - time: 31 Dec 2025, 23:34
+          - 'cell "Edit Post 26: quill pixel yarrow Revisions Delete"':
+            - 'link "Edit Post 26: quill pixel yarrow"':
+              - /url: /admin/content/ead3c750-30fa-47e7-154b-d33a927fea11/edit
+              - text: Edit
+            - 'link "Revisions Post 26: quill pixel yarrow"':
+              - /url: /item/ead3c750-30fa-47e7-154b-d33a927fea11/revisions
+              - text: Revisions
+            - 'button "Delete Post 26: quill pixel yarrow"': Delete
+        - 'row "Select Post 27: yarrow sparrow prism Post 27: yarrow sparrow prism blog gen_user_28 Published 31 Dec 2025, 23:33 Edit Revisions Delete"':
+          - 'cell "Select Post 27: yarrow sparrow prism"':
+            - 'checkbox "Select Post 27: yarrow sparrow prism"'
+            - text: "Select Post 27: yarrow sparrow prism"
+          - 'rowheader "Post 27: yarrow sparrow prism"':
+            - 'link "Post 27: yarrow sparrow prism"':
+              - /url: /admin/content/62bc0feb-4a76-b39f-b2f2-e73878b197eb/edit
+          - cell "blog"
+          - cell "gen_user_28"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:33":
+            - time: 31 Dec 2025, 23:33
+          - 'cell "Edit Post 27: yarrow sparrow prism Revisions Delete"':
+            - 'link "Edit Post 27: yarrow sparrow prism"':
+              - /url: /admin/content/62bc0feb-4a76-b39f-b2f2-e73878b197eb/edit
+              - text: Edit
+            - 'link "Revisions Post 27: yarrow sparrow prism"':
+              - /url: /item/62bc0feb-4a76-b39f-b2f2-e73878b197eb/revisions
+              - text: Revisions
+            - 'button "Delete Post 27: yarrow sparrow prism"': Delete
+        - 'row "Select Post 28: meadow linen raven Post 28: meadow linen raven blog gen_user_29 Published 31 Dec 2025, 23:32 Edit Revisions Delete"':
+          - 'cell "Select Post 28: meadow linen raven"':
+            - 'checkbox "Select Post 28: meadow linen raven"'
+            - text: "Select Post 28: meadow linen raven"
+          - 'rowheader "Post 28: meadow linen raven"':
+            - 'link "Post 28: meadow linen raven"':
+              - /url: /admin/content/55fffc99-6501-dc12-ab68-9d2d2cff2de8/edit
+          - cell "blog"
+          - cell "gen_user_29"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:32":
+            - time: 31 Dec 2025, 23:32
+          - 'cell "Edit Post 28: meadow linen raven Revisions Delete"':
+            - 'link "Edit Post 28: meadow linen raven"':
+              - /url: /admin/content/55fffc99-6501-dc12-ab68-9d2d2cff2de8/edit
+              - text: Edit
+            - 'link "Revisions Post 28: meadow linen raven"':
+              - /url: /item/55fffc99-6501-dc12-ab68-9d2d2cff2de8/revisions
+              - text: Revisions
+            - 'button "Delete Post 28: meadow linen raven"': Delete
+        - 'row "Select Post 29: thunder zenith compass Post 29: thunder zenith compass blog gen_user_30 Published 31 Dec 2025, 23:31 Edit Revisions Delete"':
+          - 'cell "Select Post 29: thunder zenith compass"':
+            - 'checkbox "Select Post 29: thunder zenith compass"'
+            - text: "Select Post 29: thunder zenith compass"
+          - 'rowheader "Post 29: thunder zenith compass"':
+            - 'link "Post 29: thunder zenith compass"':
+              - /url: /admin/content/561e9099-bc87-dbf4-68d5-9caea1ea7020/edit
+          - cell "blog"
+          - cell "gen_user_30"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:31":
+            - time: 31 Dec 2025, 23:31
+          - 'cell "Edit Post 29: thunder zenith compass Revisions Delete"':
+            - 'link "Edit Post 29: thunder zenith compass"':
+              - /url: /admin/content/561e9099-bc87-dbf4-68d5-9caea1ea7020/edit
+              - text: Edit
+            - 'link "Revisions Post 29: thunder zenith compass"':
+              - /url: /item/561e9099-bc87-dbf4-68d5-9caea1ea7020/revisions
+              - text: Revisions
+            - 'button "Delete Post 29: thunder zenith compass"': Delete
+        - 'row "Select Post 30: glacier thunder linen Post 30: glacier thunder linen blog gen_user_1 Published 31 Dec 2025, 23:30 Edit Revisions Delete"':
+          - 'cell "Select Post 30: glacier thunder linen"':
+            - 'checkbox "Select Post 30: glacier thunder linen"'
+            - text: "Select Post 30: glacier thunder linen"
+          - 'rowheader "Post 30: glacier thunder linen"':
+            - 'link "Post 30: glacier thunder linen"':
+              - /url: /admin/content/3348edd2-f362-df7b-80ab-d122fec18d34/edit
+          - cell "blog"
+          - cell "gen_user_1"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:30":
+            - time: 31 Dec 2025, 23:30
+          - 'cell "Edit Post 30: glacier thunder linen Revisions Delete"':
+            - 'link "Edit Post 30: glacier thunder linen"':
+              - /url: /admin/content/3348edd2-f362-df7b-80ab-d122fec18d34/edit
+              - text: Edit
+            - 'link "Revisions Post 30: glacier thunder linen"':
+              - /url: /item/3348edd2-f362-df7b-80ab-d122fec18d34/revisions
+              - text: Revisions
+            - 'button "Delete Post 30: glacier thunder linen"': Delete
+        - 'row "Select Post 31: anchor cedar bridge Post 31: anchor cedar bridge blog gen_user_2 Published 31 Dec 2025, 23:29 Edit Revisions Delete"':
+          - 'cell "Select Post 31: anchor cedar bridge"':
+            - 'checkbox "Select Post 31: anchor cedar bridge"'
+            - text: "Select Post 31: anchor cedar bridge"
+          - 'rowheader "Post 31: anchor cedar bridge"':
+            - 'link "Post 31: anchor cedar bridge"':
+              - /url: /admin/content/5969f947-e02e-873c-a6ae-6c9ff633b38f/edit
+          - cell "blog"
+          - cell "gen_user_2"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:29":
+            - time: 31 Dec 2025, 23:29
+          - 'cell "Edit Post 31: anchor cedar bridge Revisions Delete"':
+            - 'link "Edit Post 31: anchor cedar bridge"':
+              - /url: /admin/content/5969f947-e02e-873c-a6ae-6c9ff633b38f/edit
+              - text: Edit
+            - 'link "Revisions Post 31: anchor cedar bridge"':
+              - /url: /item/5969f947-e02e-873c-a6ae-6c9ff633b38f/revisions
+              - text: Revisions
+            - 'button "Delete Post 31: anchor cedar bridge"': Delete
+        - 'row "Select Post 32: juniper timber fjord Post 32: juniper timber fjord blog gen_user_3 Published 31 Dec 2025, 23:28 Edit Revisions Delete"':
+          - 'cell "Select Post 32: juniper timber fjord"':
+            - 'checkbox "Select Post 32: juniper timber fjord"'
+            - text: "Select Post 32: juniper timber fjord"
+          - 'rowheader "Post 32: juniper timber fjord"':
+            - 'link "Post 32: juniper timber fjord"':
+              - /url: /admin/content/a328d1ef-ff14-28d7-1e1e-442229f5971d/edit
+          - cell "blog"
+          - cell "gen_user_3"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:28":
+            - time: 31 Dec 2025, 23:28
+          - 'cell "Edit Post 32: juniper timber fjord Revisions Delete"':
+            - 'link "Edit Post 32: juniper timber fjord"':
+              - /url: /admin/content/a328d1ef-ff14-28d7-1e1e-442229f5971d/edit
+              - text: Edit
+            - 'link "Revisions Post 32: juniper timber fjord"':
+              - /url: /item/a328d1ef-ff14-28d7-1e1e-442229f5971d/revisions
+              - text: Revisions
+            - 'button "Delete Post 32: juniper timber fjord"': Delete
+        - 'row "Select Post 33: lagoon mosaic garden Post 33: lagoon mosaic garden blog gen_user_4 Published 31 Dec 2025, 23:27 Edit Revisions Delete"':
+          - 'cell "Select Post 33: lagoon mosaic garden"':
+            - 'checkbox "Select Post 33: lagoon mosaic garden"'
+            - text: "Select Post 33: lagoon mosaic garden"
+          - 'rowheader "Post 33: lagoon mosaic garden"':
+            - 'link "Post 33: lagoon mosaic garden"':
+              - /url: /admin/content/b4614441-96ed-91de-5e9c-746157c048c7/edit
+          - cell "blog"
+          - cell "gen_user_4"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:27":
+            - time: 31 Dec 2025, 23:27
+          - 'cell "Edit Post 33: lagoon mosaic garden Revisions Delete"':
+            - 'link "Edit Post 33: lagoon mosaic garden"':
+              - /url: /admin/content/b4614441-96ed-91de-5e9c-746157c048c7/edit
+              - text: Edit
+            - 'link "Revisions Post 33: lagoon mosaic garden"':
+              - /url: /item/b4614441-96ed-91de-5e9c-746157c048c7/revisions
+              - text: Revisions
+            - 'button "Delete Post 33: lagoon mosaic garden"': Delete
+        - 'row "Select Post 34: island atlas timber Post 34: island atlas timber blog gen_user_5 Published 31 Dec 2025, 23:26 Edit Revisions Delete"':
+          - 'cell "Select Post 34: island atlas timber"':
+            - 'checkbox "Select Post 34: island atlas timber"'
+            - text: "Select Post 34: island atlas timber"
+          - 'rowheader "Post 34: island atlas timber"':
+            - 'link "Post 34: island atlas timber"':
+              - /url: /admin/content/66ba0b51-df77-5643-9765-68a50c94e2ba/edit
+          - cell "blog"
+          - cell "gen_user_5"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:26":
+            - time: 31 Dec 2025, 23:26
+          - 'cell "Edit Post 34: island atlas timber Revisions Delete"':
+            - 'link "Edit Post 34: island atlas timber"':
+              - /url: /admin/content/66ba0b51-df77-5643-9765-68a50c94e2ba/edit
+              - text: Edit
+            - 'link "Revisions Post 34: island atlas timber"':
+              - /url: /item/66ba0b51-df77-5643-9765-68a50c94e2ba/revisions
+              - text: Revisions
+            - 'button "Delete Post 34: island atlas timber"': Delete
+        - 'row "Select Post 35: pebble pepper lantern Post 35: pebble pepper lantern blog gen_user_6 Published 31 Dec 2025, 23:25 Edit Revisions Delete"':
+          - 'cell "Select Post 35: pebble pepper lantern"':
+            - 'checkbox "Select Post 35: pebble pepper lantern"'
+            - text: "Select Post 35: pebble pepper lantern"
+          - 'rowheader "Post 35: pebble pepper lantern"':
+            - 'link "Post 35: pebble pepper lantern"':
+              - /url: /admin/content/a3a8123a-133e-1db3-a635-3409e38da9cc/edit
+          - cell "blog"
+          - cell "gen_user_6"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:25":
+            - time: 31 Dec 2025, 23:25
+          - 'cell "Edit Post 35: pebble pepper lantern Revisions Delete"':
+            - 'link "Edit Post 35: pebble pepper lantern"':
+              - /url: /admin/content/a3a8123a-133e-1db3-a635-3409e38da9cc/edit
+              - text: Edit
+            - 'link "Revisions Post 35: pebble pepper lantern"':
+              - /url: /item/a3a8123a-133e-1db3-a635-3409e38da9cc/revisions
+              - text: Revisions
+            - 'button "Delete Post 35: pebble pepper lantern"': Delete
+        - 'row "Select Post 36: wander anchor nimbus Post 36: wander anchor nimbus blog gen_user_7 Published 31 Dec 2025, 23:24 Edit Revisions Delete"':
+          - 'cell "Select Post 36: wander anchor nimbus"':
+            - 'checkbox "Select Post 36: wander anchor nimbus"'
+            - text: "Select Post 36: wander anchor nimbus"
+          - 'rowheader "Post 36: wander anchor nimbus"':
+            - 'link "Post 36: wander anchor nimbus"':
+              - /url: /admin/content/9f931229-c67e-c264-c900-0804909b2dfb/edit
+          - cell "blog"
+          - cell "gen_user_7"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:24":
+            - time: 31 Dec 2025, 23:24
+          - 'cell "Edit Post 36: wander anchor nimbus Revisions Delete"':
+            - 'link "Edit Post 36: wander anchor nimbus"':
+              - /url: /admin/content/9f931229-c67e-c264-c900-0804909b2dfb/edit
+              - text: Edit
+            - 'link "Revisions Post 36: wander anchor nimbus"':
+              - /url: /item/9f931229-c67e-c264-c900-0804909b2dfb/revisions
+              - text: Revisions
+            - 'button "Delete Post 36: wander anchor nimbus"': Delete
+        - 'row "Select Post 37: harbor zephyr wander Post 37: harbor zephyr wander blog gen_user_8 Published 31 Dec 2025, 23:23 Edit Revisions Delete"':
+          - 'cell "Select Post 37: harbor zephyr wander"':
+            - 'checkbox "Select Post 37: harbor zephyr wander"'
+            - text: "Select Post 37: harbor zephyr wander"
+          - 'rowheader "Post 37: harbor zephyr wander"':
+            - 'link "Post 37: harbor zephyr wander"':
+              - /url: /admin/content/46c976d9-73f3-b55d-ce2f-17d020610877/edit
+          - cell "blog"
+          - cell "gen_user_8"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:23":
+            - time: 31 Dec 2025, 23:23
+          - 'cell "Edit Post 37: harbor zephyr wander Revisions Delete"':
+            - 'link "Edit Post 37: harbor zephyr wander"':
+              - /url: /admin/content/46c976d9-73f3-b55d-ce2f-17d020610877/edit
+              - text: Edit
+            - 'link "Revisions Post 37: harbor zephyr wander"':
+              - /url: /item/46c976d9-73f3-b55d-ce2f-17d020610877/revisions
+              - text: Revisions
+            - 'button "Delete Post 37: harbor zephyr wander"': Delete
+        - 'row "Select Post 38: canvas nectar anchor Post 38: canvas nectar anchor blog gen_user_9 Published 31 Dec 2025, 23:22 Edit Revisions Delete"':
+          - 'cell "Select Post 38: canvas nectar anchor"':
+            - 'checkbox "Select Post 38: canvas nectar anchor"'
+            - text: "Select Post 38: canvas nectar anchor"
+          - 'rowheader "Post 38: canvas nectar anchor"':
+            - 'link "Post 38: canvas nectar anchor"':
+              - /url: /admin/content/d79c5e89-21f5-ad62-bf22-d7b69b978013/edit
+          - cell "blog"
+          - cell "gen_user_9"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:22":
+            - time: 31 Dec 2025, 23:22
+          - 'cell "Edit Post 38: canvas nectar anchor Revisions Delete"':
+            - 'link "Edit Post 38: canvas nectar anchor"':
+              - /url: /admin/content/d79c5e89-21f5-ad62-bf22-d7b69b978013/edit
+              - text: Edit
+            - 'link "Revisions Post 38: canvas nectar anchor"':
+              - /url: /item/d79c5e89-21f5-ad62-bf22-d7b69b978013/revisions
+              - text: Revisions
+            - 'button "Delete Post 38: canvas nectar anchor"': Delete
+        - 'row "Select Post 39: ember river quill Post 39: ember river quill blog gen_user_10 Published 31 Dec 2025, 23:21 Edit Revisions Delete"':
+          - 'cell "Select Post 39: ember river quill"':
+            - 'checkbox "Select Post 39: ember river quill"'
+            - text: "Select Post 39: ember river quill"
+          - 'rowheader "Post 39: ember river quill"':
+            - 'link "Post 39: ember river quill"':
+              - /url: /admin/content/1e796d5d-b4e0-24b6-92d8-0a4a08fdac41/edit
+          - cell "blog"
+          - cell "gen_user_10"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:21":
+            - time: 31 Dec 2025, 23:21
+          - 'cell "Edit Post 39: ember river quill Revisions Delete"':
+            - 'link "Edit Post 39: ember river quill"':
+              - /url: /admin/content/1e796d5d-b4e0-24b6-92d8-0a4a08fdac41/edit
+              - text: Edit
+            - 'link "Revisions Post 39: ember river quill"':
+              - /url: /item/1e796d5d-b4e0-24b6-92d8-0a4a08fdac41/revisions
+              - text: Revisions
+            - 'button "Delete Post 39: ember river quill"': Delete
+        - 'row "Select Post 40: cedar violet orchard Post 40: cedar violet orchard blog gen_user_11 Published 31 Dec 2025, 23:20 Edit Revisions Delete"':
+          - 'cell "Select Post 40: cedar violet orchard"':
+            - 'checkbox "Select Post 40: cedar violet orchard"'
+            - text: "Select Post 40: cedar violet orchard"
+          - 'rowheader "Post 40: cedar violet orchard"':
+            - 'link "Post 40: cedar violet orchard"':
+              - /url: /admin/content/54ff1f6b-d0d2-9b4a-65b2-063132fa42df/edit
+          - cell "blog"
+          - cell "gen_user_11"
+          - cell "Published"
+          - cell "31 Dec 2025, 23:20":
+            - time: 31 Dec 2025, 23:20
+          - 'cell "Edit Post 40: cedar violet orchard Revisions Delete"':
+            - 'link "Edit Post 40: cedar violet orchard"':
+              - /url: /admin/content/54ff1f6b-d0d2-9b4a-65b2-063132fa42df/edit
+              - text: Edit
+            - 'link "Revisions Post 40: cedar violet orchard"':
+              - /url: /item/54ff1f6b-d0d2-9b4a-65b2-063132fa42df/revisions
+              - text: Revisions
+            - 'button "Delete Post 40: cedar violet orchard"': Delete
   - paragraph:
     - link "Who can do this?":
       - /url: /admin/people/who-can?path=/admin/content

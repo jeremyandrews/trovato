@@ -82,7 +82,7 @@
         - link "Content":
           - /url: /admin/content
       - paragraph: Find, filter and edit every item on the site.
-      - paragraph: 4 unpublished items
+      - paragraph: 0 unpublished items
     - listitem:
       - heading "Moderated content" [level=2]:
         - link "Moderated content":
@@ -93,7 +93,7 @@
         - link "Comments":
           - /url: /admin/content/comments
       - paragraph: Approve, edit and remove comments, and set how new ones are published.
-      - paragraph: 7 comments waiting for moderation
+      - paragraph: 0 comments waiting for moderation
     - listitem:
       - heading "Files" [level=2]:
         - link "Files":

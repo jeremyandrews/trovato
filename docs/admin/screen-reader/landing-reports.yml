@@ -80,7 +80,7 @@
         - link "Recent log messages":
           - /url: /admin/reports/log
       - paragraph: Errors, warnings and notices the site has recorded, newest first.
-      - paragraph: 4 errors in the last 24 hours
+      - paragraph: 1 error in the last 24 hours
     - listitem:
       - heading "Audit log" [level=2]:
         - link "Audit log":
