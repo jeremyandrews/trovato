@@ -639,6 +639,9 @@ fn tap_item_info() -> Vec<ContentTypeDefinition> {
 | File | `FieldType::File` | File upload |
 | Reference | `FieldType::RecordReference(target_type)` | Reference to another item, of one content type |
 | Category reference | `FieldType::CategoryReference(category_id)` | Tags of one category: a JSON array of tag uuid strings, whatever the cardinality. Every write refuses a value that is not a tag of that category. Added in B72 (0.105.0). `FieldType` is `#[non_exhaustive]`, so a plugin that matches on it needs a `_` arm |
+| Link | `FieldType::Link` | A hyperlink: `{"uri": "<url>", "title": "<text>", "new_tab": true}`, `title` omitted when empty and `new_tab` omitted when false. `uri` is an absolute `http`/`https` URL or a local path (`/item/<uuid>` included); anything else (`javascript:`, `data:`, `mailto:`, a protocol-relative `//host`) is refused. Added in B302. `FieldType` is `#[non_exhaustive]`, so a plugin that matches on it needs a `_` arm |
+| List | `FieldType::List` | One choice from a fixed set, stored as the chosen key (a JSON string). The allowed keys and labels live in `FieldDefinition::settings.allowed_values` (`FieldDefinition::allowed_values`); a written value must be one of the keys. Single or multiple is the field's ordinary `cardinality`. Added in B302. `FieldType` is `#[non_exhaustive]`, so a plugin that matches on it needs a `_` arm |
+| Telephone | `FieldType::Telephone` | A telephone number: `{"value": "<as entered>", "e164": "+<digits>"}`, `e164` filled in on write when the number has a recognisable country prefix (a leading `+` or `00`), omitted otherwise. Added in B302. `FieldType` is `#[non_exhaustive]`, so a plugin that matches on it needs a `_` arm |
 
 ### Field Options
 

@@ -118,6 +118,9 @@ FieldType::Email                            // Email address
 FieldType::File                             // File upload
 FieldType::RecordReference("speaker".into())       // Reference to an item type
 FieldType::CategoryReference("topics".into())      // Tags of one category
+FieldType::Link                             // {"uri", "title"?, "new_tab"?}
+FieldType::List                              // chosen key; allowed_values in settings
+FieldType::Telephone                         // {"value", "e164"?}
 ```
 
 ---

@@ -462,10 +462,11 @@ backends (the Pagefind index and the Postgres vector behind `/search`):
 - every published item on the **live stage** that the anonymous role may view;
 - its **title** (weight A);
 - **every text field** its type declares (`Text` and `TextLong`, value and
-  summary), each at its `search_field_config` weight, D when it has none. A
+  summary; `Link`'s `title`, never its `uri`; a `List` value's label, not its
+  key), each at its `search_field_config` weight, D when it has none. A
   weight says how much a field counts; it no longer decides whether the field is
-  searched. Files, references, numbers, dates, booleans and structured fields are
-  not text and are not indexed;
+  searched. Files, references, numbers, dates, booleans, Telephone and structured
+  fields are not text and are not indexed;
 - **every published comment** on it that the item page shows (published, under
   a published parent), at Pagefind's default weight and D in Postgres. A match in
   a comment is a result for the item and links to the item.

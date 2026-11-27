@@ -857,6 +857,10 @@ Renders a `<select>` with three options: **Any** (empty, filter skipped), **Yes*
 
 This is the right widget for any field that stores `true`/`false` — it's more usable than a text box asking users to type the word "true".
 
+#### A `List` field's default widget — `field_status`
+
+A `List` field needs no `"widget"` key of its own: left at the default (omitted, or explicit `{ "type": "text" }`), an exposed filter on a `fields.<name>` path whose field is a `List` on the query's `item_type` renders a `<select>` of **Any** plus the field's allowed values (`settings.allowed_values`) instead of a free text box — labels shown, keys submitted. There is no new `ExposedWidget` variant for this: the field's own type decides the control, the same way `preload_widget_data` decides it for every other widget. A multi value `List` field filters with a `jsonb_array_contains` condition rather than `equals`; see `docs/design/import.md` and `crates/kernel/src/content/field_value.rs` for the field's stored shape.
+
 #### Category select widget — `field_topics`
 
 ```json
