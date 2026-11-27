@@ -873,19 +873,20 @@ impl ItemService {
         // The two write gates, on the client's own submission and before the
         // presave tap: a plugin's presave edits are trusted code, not user
         // input. Both return `WriteDenied`, which every caller maps to 403.
-        let moderated_state = if let Some(workflow) = self.moderation_workflow(&input.item_type).await {
-            let from = workflow.default_state.clone();
-            let requested = match moderation_state {
-                Some(name) => name.to_string(),
-                None => Self::status_target(&workflow, &from, input.status.unwrap_or(0)),
+        let moderated_state =
+            if let Some(workflow) = self.moderation_workflow(&input.item_type).await {
+                let from = workflow.default_state.clone();
+                let requested = match moderation_state {
+                    Some(name) => name.to_string(),
+                    None => Self::status_target(&workflow, &from, input.status.unwrap_or(0)),
+                };
+                let to = Self::gate_transition(&workflow, user, &from, &requested)?;
+                input.status = Some(workflow.status_of(&to));
+                Some(to)
+            } else {
+                input.status = Self::gate_publish(user, input.status, None)?;
+                None
             };
-            let to = Self::gate_transition(&workflow, user, &from, &requested)?;
-            input.status = Some(workflow.status_of(&to));
-            Some(to)
-        } else {
-            input.status = Self::gate_publish(user, input.status, None)?;
-            None
-        };
         Self::gate_promotion(user, input.promote, input.sticky, None)?;
         // A new item's author is its creator unless they hold the authority to
         // say otherwise, as is its authored on time.
@@ -1025,15 +1026,19 @@ impl ItemService {
     /// [`Self::stage_view`] reads the stage workflow. A type naming a
     /// workflow that does not exist falls back to the built-in editorial
     /// workflow, logged.
-    pub async fn moderation_workflow(&self, item_type: &str) -> Option<moderation::ModerationWorkflow> {
-        let settings = match crate::models::ItemType::find_by_type(&self.inner.pool, item_type).await {
-            Ok(Some(row)) => row.settings,
-            Ok(None) => return None,
-            Err(e) => {
-                warn!(error = %e, item_type, "reading the type's moderation workflow failed");
-                return None;
-            }
-        };
+    pub async fn moderation_workflow(
+        &self,
+        item_type: &str,
+    ) -> Option<moderation::ModerationWorkflow> {
+        let settings =
+            match crate::models::ItemType::find_by_type(&self.inner.pool, item_type).await {
+                Ok(Some(row)) => row.settings,
+                Ok(None) => return None,
+                Err(e) => {
+                    warn!(error = %e, item_type, "reading the type's moderation workflow failed");
+                    return None;
+                }
+            };
         if !moderation::is_moderated(&settings) {
             return None;
         }
@@ -1730,8 +1735,8 @@ impl ItemService {
                 input.title.get_or_insert_with(|| latest.title.clone());
                 input.fields.get_or_insert_with(|| latest.fields.clone());
             }
-            let forward = existing.is_published()
-                && workflow.state(&to).is_some_and(|s| !s.default_revision);
+            let forward =
+                existing.is_published() && workflow.state(&to).is_some_and(|s| !s.default_revision);
             // A stage move and a forward revision in the same save cannot both
             // take effect: the forward revision returns before `Item::update`
             // runs, so the move would be silently dropped rather than applied

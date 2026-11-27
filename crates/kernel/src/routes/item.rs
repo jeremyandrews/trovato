@@ -2022,7 +2022,12 @@ async fn preview_revision(
     context.insert("item_title", &item.title);
     context.insert(
         "revision",
-        &revision_summary(revision, &authors, item.current_revision_id, workflow.as_ref()),
+        &revision_summary(
+            revision,
+            &authors,
+            item.current_revision_id,
+            workflow.as_ref(),
+        ),
     );
     context.insert("current_revision_id", &item.current_revision_id);
     context.insert("fields_html", &fields_html);
@@ -2112,7 +2117,12 @@ async fn latest_version(
     context.insert("item_title", &item.title);
     context.insert(
         "revision",
-        &revision_summary(&revision, &authors, item.current_revision_id, Some(&workflow)),
+        &revision_summary(
+            &revision,
+            &authors,
+            item.current_revision_id,
+            Some(&workflow),
+        ),
     );
     context.insert("current_revision_id", &item.current_revision_id);
     context.insert("latest_state", &latest_state);
@@ -2274,7 +2284,12 @@ async fn confirm_delete_revision(
     context.insert("item_title", &item.title);
     context.insert(
         "revision",
-        &revision_summary(revision, &authors, item.current_revision_id, workflow.as_ref()),
+        &revision_summary(
+            revision,
+            &authors,
+            item.current_revision_id,
+            workflow.as_ref(),
+        ),
     );
     context.insert("csrf_token", &csrf_token);
 

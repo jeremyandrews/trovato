@@ -670,7 +670,12 @@ impl Item {
         let published: Vec<String> = {
             let mut ids: Vec<String> = workflows
                 .iter()
-                .flat_map(|w| w.states.iter().filter(|s| s.published).map(|s| s.id.clone()))
+                .flat_map(|w| {
+                    w.states
+                        .iter()
+                        .filter(|s| s.published)
+                        .map(|s| s.id.clone())
+                })
                 .collect();
             ids.sort_unstable();
             ids.dedup();

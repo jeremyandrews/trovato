@@ -1569,7 +1569,9 @@ async fn known_permissions(
     // file and a new workflow can arrive in the same import.
     let incoming_workflows = parsed.get(entity_types::VARIABLE).and_then(|vars| {
         vars.iter().find_map(|pe| match &pe.entity {
-            ConfigEntity::Variable { key, value } if key == crate::content::moderation::WORKFLOWS_KEY => {
+            ConfigEntity::Variable { key, value }
+                if key == crate::content::moderation::WORKFLOWS_KEY =>
+            {
                 Some(value)
             }
             _ => None,
@@ -1578,9 +1580,10 @@ async fn known_permissions(
     let workflows = match incoming_workflows {
         Some(value) => crate::content::moderation::resolve_workflows(Some(value)),
         None => {
-            let stored = crate::models::SiteConfig::get(pool, crate::content::moderation::WORKFLOWS_KEY)
-                .await
-                .map_err(|e| format!("failed to read the moderation workflows: {e:#}"))?;
+            let stored =
+                crate::models::SiteConfig::get(pool, crate::content::moderation::WORKFLOWS_KEY)
+                    .await
+                    .map_err(|e| format!("failed to read the moderation workflows: {e:#}"))?;
             crate::content::moderation::resolve_workflows(stored.as_ref())
         }
     };
@@ -1764,7 +1767,8 @@ async fn validate_moderation_workflows(
         let type_names: Vec<String> = types
             .iter()
             .filter(|(_, settings)| {
-                moderation::is_moderated(settings) && moderation::workflow_setting(settings) == old.id
+                moderation::is_moderated(settings)
+                    && moderation::workflow_setting(settings) == old.id
             })
             .map(|(name, _)| name.clone())
             .collect();

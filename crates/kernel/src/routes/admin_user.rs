@@ -1872,7 +1872,8 @@ async fn save_permissions(
     // A permission the actor does not hold is dropped for a non-superuser, so
     // it is neither granted nor revoked on any role: the grid is the
     // `apply_role_membership` rule applied one box at a time.
-    let known: std::collections::HashSet<String> = grid_permissions(&state).await
+    let known: std::collections::HashSet<String> = grid_permissions(&state)
+        .await
         .into_iter()
         .map(|p| p.name)
         .collect();

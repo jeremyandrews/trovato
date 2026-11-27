@@ -327,7 +327,10 @@ pub fn resolve_workflows(value: Option<&serde_json::Value>) -> Vec<ModerationWor
 }
 
 /// The workflow named `id` among `workflows`, if there is one.
-pub fn workflow_by_id<'a>(workflows: &'a [ModerationWorkflow], id: &str) -> Option<&'a ModerationWorkflow> {
+pub fn workflow_by_id<'a>(
+    workflows: &'a [ModerationWorkflow],
+    id: &str,
+) -> Option<&'a ModerationWorkflow> {
     workflows.iter().find(|w| w.id == id)
 }
 
@@ -336,10 +339,7 @@ pub fn workflow_by_id<'a>(workflows: &'a [ModerationWorkflow], id: &str) -> Opti
 /// `^[a-z][a-z0-9_]*$`.
 fn valid_state_id(id: &str) -> bool {
     id.len() <= 32
-        && id
-            .chars()
-            .next()
-            .is_some_and(|c| c.is_ascii_lowercase())
+        && id.chars().next().is_some_and(|c| c.is_ascii_lowercase())
         && id
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
@@ -359,7 +359,11 @@ fn valid_state_id(id: &str) -> bool {
 pub fn problems(value: &serde_json::Value) -> Vec<String> {
     let raw = match serde_json::from_value::<RawWorkflows>(value.clone()) {
         Ok(raw) => raw,
-        Err(e) => return vec![format!("`{WORKFLOWS_KEY}` must be {{workflows: [...]}}: {e}")],
+        Err(e) => {
+            return vec![format!(
+                "`{WORKFLOWS_KEY}` must be {{workflows: [...]}}: {e}"
+            )];
+        }
     };
 
     let mut problems = Vec::new();
@@ -407,7 +411,14 @@ pub fn problems(value: &serde_json::Value) -> Vec<String> {
         }
 
         for (n, t) in workflow.transitions.iter().enumerate() {
-            let at_t = |what: &str| format!("workflow '{}' transition {} ({}): {what}", workflow.id, n + 1, t.id);
+            let at_t = |what: &str| {
+                format!(
+                    "workflow '{}' transition {} ({}): {what}",
+                    workflow.id,
+                    n + 1,
+                    t.id
+                )
+            };
             for from in &t.from {
                 if !state_ids.contains(from.as_str()) {
                     problems.push(at_t(&format!("no state '{from}' to move from")));
@@ -448,7 +459,12 @@ mod tests {
                 "editor",
                 holding(
                     EDITORIAL,
-                    &["create_new_draft", "publish", "archive", "archived_published"],
+                    &[
+                        "create_new_draft",
+                        "publish",
+                        "archive",
+                        "archived_published",
+                    ],
                 ),
             ),
             ("admin", UserContext::administrator(Uuid::nil(), vec![])),
@@ -519,7 +535,12 @@ mod tests {
 
         let editor = holding(
             EDITORIAL,
-            &["create_new_draft", "publish", "archive", "archived_published"],
+            &[
+                "create_new_draft",
+                "publish",
+                "archive",
+                "archived_published",
+            ],
         );
         assert_eq!(
             ids(workflow.targets(PUBLISHED, &editor)),
@@ -612,38 +633,55 @@ mod tests {
         let mut bad = review_workflow();
         bad["workflows"][0]["transitions"][0]["to"] = json!("nowhere");
         let found = problems(&bad);
-        assert!(found.iter().any(|p| p.contains("no state 'nowhere'")), "{found:?}");
+        assert!(
+            found.iter().any(|p| p.contains("no state 'nowhere'")),
+            "{found:?}"
+        );
 
         let mut bad = review_workflow();
         bad["workflows"][0]["states"] = json!([
             {"id": "draft", "label": "Draft", "published": false, "default_revision": false}
         ]);
         let found = problems(&bad);
-        assert!(found.iter().any(|p| p.contains("no published state")), "{found:?}");
+        assert!(
+            found.iter().any(|p| p.contains("no published state")),
+            "{found:?}"
+        );
 
         let mut bad = review_workflow();
         bad["workflows"][0]["default_state"] = json!("missing");
         let found = problems(&bad);
-        assert!(found.iter().any(|p| p.contains("default_state")), "{found:?}");
+        assert!(
+            found.iter().any(|p| p.contains("default_state")),
+            "{found:?}"
+        );
 
         let mut bad = review_workflow();
         bad["workflows"][0]["states"][3]["default_revision"] = json!(false);
         let found = problems(&bad);
         assert!(
-            found.iter().any(|p| p.contains("published but not default_revision")),
+            found
+                .iter()
+                .any(|p| p.contains("published but not default_revision")),
             "{found:?}"
         );
 
         let mut bad = review_workflow();
         bad["workflows"][0]["states"][0]["id"] = json!("Not-Valid!");
         let found = problems(&bad);
-        assert!(found.iter().any(|p| p.contains("^[a-z][a-z0-9_]*$")), "{found:?}");
+        assert!(
+            found.iter().any(|p| p.contains("^[a-z][a-z0-9_]*$")),
+            "{found:?}"
+        );
 
         let long_id = "a".repeat(33);
         let mut bad = review_workflow();
         bad["workflows"][0]["states"][0]["id"] = json!(long_id);
         let found = problems(&bad);
-        assert!(found.iter().any(|p| p.contains("32 characters")), "{found:?}");
+        assert!(
+            found.iter().any(|p| p.contains("32 characters")),
+            "{found:?}"
+        );
 
         let mut two = json!({"workflows": [review_workflow()["workflows"][0].clone(), review_workflow()["workflows"][0].clone()]});
         two["workflows"][1]["id"] = json!("review_two");
@@ -651,7 +689,9 @@ mod tests {
         two["workflows"][1]["states"][0]["default_revision"] = json!(true);
         let found = problems(&two);
         assert!(
-            found.iter().any(|p| p.contains("mean the same thing everywhere")),
+            found
+                .iter()
+                .any(|p| p.contains("mean the same thing everywhere")),
             "{found:?}"
         );
     }
