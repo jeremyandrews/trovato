@@ -383,7 +383,7 @@ async fn install_admin_submit(
     };
 
     let anon = UserContext::anonymous();
-    match state.users().create(input, &anon).await {
+    match state.users().create(input, &anon, "installer").await {
         Ok(_) => Redirect::to("/install/site").into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to create admin user");

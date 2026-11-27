@@ -452,6 +452,38 @@ pub async fn forget_ended_session(
     }
 }
 
+/// A session the caller has just flushed has ended: drop it from the index
+/// ([`forget_ended_session`]) and write `session.ended` naming why.
+///
+/// The one place a sign-out is recorded, for both paths that flush the
+/// caller's own session (logout, and a blocked account's next request), so
+/// neither keeps its own copy of the emit. Call it only once `flush` has
+/// succeeded: the event says the session is over. `session_id` is the id read
+/// before the flush (it is hashed here, never stored raw); a session that had
+/// none was never saved, and so never began to end.
+pub async fn session_ended(
+    state: &crate::state::AppState,
+    user_id: Uuid,
+    device_id: Option<Uuid>,
+    session_id: Option<&str>,
+    reason: &'static str,
+) {
+    use crate::audit::{SecurityEvent, SecurityEventKind};
+
+    forget_ended_session(state, user_id, device_id).await;
+    let Some(session_id) = session_id else {
+        return;
+    };
+    let mut event = SecurityEvent::new(SecurityEventKind::SessionEnded)
+        .user(user_id)
+        .subject(session_id)
+        .detail("reason", reason);
+    if let Some(device_id) = device_id {
+        event = event.detail("device_id", device_id.to_string());
+    }
+    state.security_audit().emit(event).await;
+}
+
 impl std::fmt::Debug for SessionRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SessionRegistry")

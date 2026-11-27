@@ -55,8 +55,8 @@ pub async fn session_user(state: &AppState, session: &Session) -> Option<User> {
     Some(user)
 }
 
-/// End the session of a blocked account: flush it, and drop its device from
-/// the user's session index.
+/// End the session of a blocked account: flush it, drop its device from the
+/// user's session index, and record `session.ended` (reason `"blocked"`).
 ///
 /// `flush`, not `delete`: see `routes::auth::logout`. A session only deleted
 /// from the store is saved again by the session layer if this request writes to
@@ -69,8 +69,27 @@ async fn end_blocked_session(state: &AppState, session: &Session, user_id: Uuid)
         .await
         .ok()
         .flatten();
-    let _ = session.flush().await;
-    crate::services::session_registry::forget_ended_session(state, user_id, device_id).await;
+    let session_id = session.id().map(|id| id.to_string());
+    match session.flush().await {
+        Ok(()) => {
+            crate::services::session_registry::session_ended(
+                state,
+                user_id,
+                device_id,
+                session_id.as_deref(),
+                "blocked",
+            )
+            .await;
+        }
+        Err(e) => {
+            // Not ended, so not recorded as ended; the index entry still goes,
+            // as it always has, since a blocked account's sessions are refused
+            // on every request whatever the store holds.
+            tracing::warn!(error = %e, user_id = %user_id, "failed to flush a blocked account's session");
+            crate::services::session_registry::forget_ended_session(state, user_id, device_id)
+                .await;
+        }
+    }
 }
 
 /// Whether `user` holds `permission`; an administrator holds every permission.
