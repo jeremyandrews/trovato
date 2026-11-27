@@ -530,7 +530,11 @@ async fn view_item(
     // Every plugin's `tap_item_view` output, collected once. It reaches the
     // template on its own as `plugin_output`, for a theme that lays out its own
     // fields, and is still appended to `children` exactly as before.
-    let plugin_output: String = render_outputs.concat();
+    // A render tree (`#type`) is drawn by the theme, not shown as JSON.
+    let plugin_output: String = render_outputs
+        .iter()
+        .map(|output| state.theme().render_plugin_output(output))
+        .collect();
     children_html.push_str(&plugin_output);
 
     // Resolve forward RecordReference fields to linked item titles/URLs

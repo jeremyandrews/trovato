@@ -4,6 +4,7 @@
 //! and sitemap.xml generation for search engine optimization.
 
 use trovato_sdk::prelude::*;
+use trovato_sdk::render::escape_html;
 
 /// SEO-related permissions.
 #[plugin_tap]
@@ -72,7 +73,7 @@ pub fn tap_item_view(item: Item) -> String {
     if !meta_desc.is_empty() {
         html.push_str(&format!(
             " data-description=\"{}\"",
-            escape_attr(&meta_desc)
+            escape_html(&meta_desc)
         ));
     }
     html.push_str(&format!(
@@ -139,14 +140,6 @@ fn truncate_description(s: &str, max_len: usize) -> String {
         end -= 1;
     }
     format!("{}...", &s[..end])
-}
-
-/// Escape a string for use in an HTML attribute value.
-fn escape_attr(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('"', "&quot;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
 }
 
 /// Escape a string for use in a JSON string value.
@@ -228,10 +221,10 @@ mod tests {
     }
 
     #[test]
-    fn escape_attr_handles_special_chars() {
-        assert_eq!(escape_attr("a&b"), "a&amp;b");
-        assert_eq!(escape_attr("a\"b"), "a&quot;b");
-        assert_eq!(escape_attr("a<b>c"), "a&lt;b&gt;c");
+    fn the_sdk_escape_covers_attribute_values() {
+        assert_eq!(escape_html("a&b"), "a&amp;b");
+        assert_eq!(escape_html("a\"b"), "a&quot;b");
+        assert_eq!(escape_html("a<b>c"), "a&lt;b&gt;c");
     }
 
     #[test]

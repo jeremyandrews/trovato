@@ -11,6 +11,7 @@ implements = [
     "tap_menu",
     "tap_api",
     "tap_item_view",
+    "tap_form_validate",
 ]
 weight = 0
 

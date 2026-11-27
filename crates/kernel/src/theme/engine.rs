@@ -1314,6 +1314,30 @@ impl ThemeEngine {
         })
     }
 
+    /// A plugin's output as page HTML: a render tree (a JSON object with
+    /// `#type`, what the SDK's `render` builders produce) drawn through
+    /// [`Self::render_element`], anything else returned as it is.
+    ///
+    /// Used for a themed `tap_api` body and for `tap_item_view` output, which
+    /// before this showed a render tree as its JSON text. A tree that fails to
+    /// render is logged and left out rather than shown as JSON.
+    pub fn render_plugin_output(&self, raw: &str) -> String {
+        let trimmed = raw.trim();
+        if !trimmed.starts_with('{') {
+            return raw.to_string();
+        }
+        let Ok(element) = serde_json::from_str::<RenderElement>(trimmed) else {
+            return raw.to_string();
+        };
+        match self.render_element(&element, &mut tera::Context::new()) {
+            Ok(html) => html,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to render a plugin's render tree");
+                String::new()
+            }
+        }
+    }
+
     /// Render an item using template suggestions.
     pub fn render_item(&self, item: &Item, element: &RenderElement) -> Result<String> {
         crate::telemetry::render("item", || self.render_item_inner(item, element))
@@ -1719,6 +1743,21 @@ mod tests {
     /// A select, radio set or checkbox set with no default renders, with
     /// nothing chosen: `default_value` is left out of the serialized element
     /// when it is `None`, and the templates must not compare a missing value.
+    #[test]
+    fn a_plugins_render_tree_is_drawn_and_its_html_left_alone() {
+        let templates = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../templates");
+        let engine = ThemeEngine::new(&[templates], None, Default::default()).unwrap();
+
+        let tree = r##"{"#type":"markup","#tag":"p","#value":"<b>hi</b>"}"##;
+        let html = engine.render_plugin_output(tree);
+        assert!(!html.contains("#type"), "drawn, not shown as JSON: {html}");
+        assert!(html.contains("&lt;b&gt;hi&lt;/b&gt;"), "{html}");
+
+        for raw in ["<p>plain</p>", r#"{"no_type": 1}"#, "{not json", ""] {
+            assert_eq!(engine.render_plugin_output(raw), raw, "left alone: {raw}");
+        }
+    }
+
     #[test]
     fn a_choice_element_without_a_default_renders() {
         use crate::form::{Form, FormElement};

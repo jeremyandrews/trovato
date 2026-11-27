@@ -12,7 +12,11 @@
 
 use trovato_sdk::host;
 use trovato_sdk::prelude::*;
+use trovato_sdk::render::escape_html;
 use trovato_sdk::types::{ApiRequest, ApiResponse, MailAttachment, MenuRoute};
+
+/// The form [`show_pipeline_form`] serves through the kernel's form pipeline.
+const PIPELINE_FORM: &str = "test_plugin_api_note";
 
 /// Permission required to upload an attachment. Separate from [`PERM_WRITE`] so
 /// the suite can grant one without the other.
@@ -76,6 +80,13 @@ pub fn tap_menu() -> Vec<MenuRoute> {
         // Public, because the shape being exercised is a contact form: a visitor
         // with no account reaching the site owner.
         MenuRoute::api("POST", "/tpa/mail", "send_mail").title("Send mail"),
+        // A form the kernel builds, renders and checks (`ApiResponse::form`,
+        // B83b). The POST callback hears only of a submission that passed.
+        MenuRoute::api("GET", "/tpa/pipeline", "show_pipeline_form").title("A pipeline form"),
+        MenuRoute::api("POST", "/tpa/pipeline", "submit_pipeline_form")
+            .title("Submit the pipeline form"),
+        // A render tree as a themed page's body, drawn by the theme (B83b).
+        MenuRoute::api("GET", "/tpa/tree", "show_tree").title("A render tree"),
         // Asks to be rendered into the site's page template (0.101). Paired with
         // `/tpa/form`, which does not ask: the two together are what proves
         // theming is opt-in rather than the new default.
@@ -117,6 +128,9 @@ pub fn tap_api(request: ApiRequest) -> ApiResponse {
         "show_form" => show_form(&request),
         "submit_form" => submit_form(&request),
         "send_mail" => send_mail(&request),
+        "show_pipeline_form" => show_pipeline_form(),
+        "submit_pipeline_form" => submit_pipeline_form(&request),
+        "show_tree" => show_tree(),
         "show_themed" => show_themed(),
         "filter_text" => filter_text(&request),
         "show_admin_dashboard" => show_admin_dashboard(),
@@ -149,15 +163,65 @@ fn show_form(request: &ApiRequest) -> ApiResponse {
 ///
 /// Reaching this function at all is the assertion: a state-changing
 /// plugin-served request with no `X-CSRF-Token` header is refused with 403
-/// unless the `_token` field verified.
+/// unless the `_token` field verified. The body is echoed as it arrived,
+/// escaped, which proves the plugin was dispatched with it.
 fn submit_form(request: &ApiRequest) -> ApiResponse {
-    let message = form_field(&request.body, "message").unwrap_or_default();
     let body = format!(
         r#"<!DOCTYPE html>
-<html><body><p>received: {message}</p></body></html>"#,
-        message = escape_html(&message),
+<html><body><p>received: {body}</p></body></html>"#,
+        body = escape_html(&request.body),
     );
     ApiResponse::with_status(200, body).content_type("text/html; charset=utf-8")
+}
+
+/// A themed page with a form the kernel builds: one required message and an
+/// optional mood.
+fn show_pipeline_form() -> ApiResponse {
+    ApiResponse::themed(
+        "A pipeline form",
+        "<p id=\"tpa-pipeline-intro\">Leave a note.</p>",
+    )
+    .with_form(serde_json::json!({
+        "form_id": PIPELINE_FORM,
+        "elements": {
+            "message": {"type": "textfield", "title": "Message", "required": true},
+            "mood": {
+                "type": "select", "title": "Mood", "weight": 1,
+                "options": [["calm", "Calm"], ["loud", "Loud"]]
+            },
+            "save": {"type": "submit", "value": "Save note", "weight": 10}
+        }
+    }))
+}
+
+/// Answer a submission the kernel has checked with the values it passed.
+fn submit_pipeline_form(request: &ApiRequest) -> ApiResponse {
+    match &request.form_values {
+        Some(values) => ApiResponse::themed(
+            "Saved",
+            format!(
+                "<p id=\"tpa-pipeline-values\">{}</p>",
+                escape_html(&serde_json::Value::Object(values.clone()).to_string())
+            ),
+        ),
+        None => ApiResponse::error(400, "no checked form values"),
+    }
+}
+
+/// A themed page whose body is a render tree rather than HTML.
+fn show_tree() -> ApiResponse {
+    let tree = render::container()
+        .child(
+            "note",
+            render::markup("p", "<b>a tree, not JSON</b>")
+                .class("tpa-tree-note")
+                .build(),
+        )
+        .build();
+    ApiResponse::themed(
+        "A render tree",
+        serde_json::to_string(&tree).unwrap_or_default(),
+    )
 }
 
 /// A page that asks to be wrapped in the site's theme.
@@ -190,9 +254,10 @@ fn show_admin_dashboard() -> ApiResponse {
 /// refusal the host error code is reported rather than swallowed, so the test can
 /// tell "not configured" from "sent".
 fn send_mail(request: &ApiRequest) -> ApiResponse {
-    let subject = form_field(&request.body, "subject").unwrap_or_default();
-    let body = form_field(&request.body, "body").unwrap_or_default();
-    let attachments = if form_field(&request.body, "attach").as_deref() == Some("1") {
+    let fields: serde_json::Value = request.json().unwrap_or_default();
+    let text = |name: &str| fields[name].as_str().unwrap_or_default().to_string();
+    let (subject, body) = (text("subject"), text("body"));
+    let attachments = if fields["attach"] == true {
         vec![MailAttachment::text("message.txt", body.clone())]
     } else {
         Vec::new()
@@ -290,49 +355,6 @@ fn echo_upload(request: &ApiRequest) -> ApiResponse {
     .unwrap_or_else(|_| ApiResponse::error(500, "serialize failed"))
 }
 
-/// Read one field out of a URL-encoded body.
-///
-/// Hand-rolled because a plugin is a `no_std`-adjacent wasm crate with a
-/// deliberately thin dependency list, and this fixture needs one field.
-fn form_field(body: &str, field: &str) -> Option<String> {
-    body.split('&')
-        .filter_map(|pair| pair.split_once('='))
-        .find(|(key, _)| *key == field)
-        .map(|(_, value)| percent_decode(&value.replace('+', " ")))
-}
-
-/// Percent-decode a form value, leaving an invalid escape as written.
-fn percent_decode(raw: &str) -> String {
-    let bytes = raw.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
-            if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
-}
-
-/// Escape text for an HTML body or a double-quoted attribute.
-///
-/// The kernel does not sanitize a plugin's response body, which is the contract
-/// every view tap has, so the plugin does it.
-fn escape_html(raw: &str) -> String {
-    raw.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
-}
-
 /// Write a note owned by the authenticated caller — the write that had no
 /// surface before this existed.
 fn write_note(request: &ApiRequest) -> ApiResponse {
@@ -401,10 +423,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_menu_declares_ten_api_routes_with_callbacks() {
+    fn the_menu_declares_thirteen_api_routes_with_callbacks() {
         let menus = __inner_tap_menu();
         let api: Vec<&MenuRoute> = menus.iter().filter(|m| m.handler_type == "api").collect();
-        assert_eq!(api.len(), 10);
+        assert_eq!(api.len(), 13);
         assert!(api.iter().all(|m| !m.callback.is_empty()));
         assert_eq!(
             api.iter()
@@ -507,7 +529,7 @@ mod tests {
     }
 
     #[test]
-    fn the_submission_reads_its_field_out_of_a_form_encoded_body() {
+    fn the_submission_echoes_the_body_it_was_dispatched_with() {
         let mut request = ApiRequest::new("submit_form", "POST", "/tpa/form", "", false);
         request.body = "_token=abc&message=hello+there%21".to_string();
 
@@ -515,21 +537,55 @@ mod tests {
 
         assert_eq!(response.status, 200);
         assert!(
-            response.body.contains("received: hello there!"),
-            "the body must decode `+` and `%xx`: {}",
+            response
+                .body
+                .contains("received: _token=abc&amp;message=hello+there%21"),
+            "{}",
             response.body
         );
     }
 
     #[test]
-    fn a_submitted_message_carrying_markup_is_escaped() {
+    fn a_submitted_body_carrying_markup_is_escaped() {
         let mut request = ApiRequest::new("submit_form", "POST", "/tpa/form", "", false);
-        request.body = "message=%3Cimg+onerror%3Dx%3E".to_string();
+        request.body = "<img onerror=x>".to_string();
 
         let body = __inner_tap_api(request).body;
 
         assert!(!body.contains("<img"), "unescaped markup: {body}");
         assert!(body.contains("&lt;img onerror=x&gt;"), "{body}");
+    }
+
+    #[test]
+    fn the_pipeline_form_is_handed_to_the_kernel() {
+        let response = __inner_tap_api(ApiRequest::new(
+            "show_pipeline_form",
+            "GET",
+            "/tpa/pipeline",
+            "",
+            false,
+        ));
+        let form = response.form.expect("a form");
+        assert_eq!(form["form_id"], PIPELINE_FORM);
+        assert_eq!(form["elements"]["message"]["required"], true);
+    }
+
+    #[test]
+    fn the_pipeline_submission_answers_with_the_checked_values() {
+        let mut request =
+            ApiRequest::new("submit_pipeline_form", "POST", "/tpa/pipeline", "", false);
+        request.form_values = Some(
+            [("message".to_string(), serde_json::json!("hi"))]
+                .into_iter()
+                .collect(),
+        );
+        let response = __inner_tap_api(request);
+        assert_eq!(response.status, 200);
+        assert!(
+            response.body.contains("&quot;message&quot;:&quot;hi&quot;"),
+            "{}",
+            response.body
+        );
     }
 
     #[test]
@@ -548,14 +604,6 @@ mod tests {
         assert!(response.body.contains("plugin-content"));
         // Page content, not a document: the theme supplies the rest.
         assert!(!response.body.contains("<html"), "{}", response.body);
-    }
-
-    #[test]
-    fn a_missing_field_is_none_rather_than_a_panic() {
-        assert_eq!(form_field("message=hi", "_token"), None);
-        assert_eq!(form_field("", "message"), None);
-        // A pair with no `=` is skipped rather than read as an empty value.
-        assert_eq!(form_field("message", "message"), None);
     }
 
     #[test]
