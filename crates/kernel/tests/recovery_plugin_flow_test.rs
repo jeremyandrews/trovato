@@ -121,17 +121,21 @@ async fn user_id_of(app: &TestApp, username: &str) -> uuid::Uuid {
         .unwrap()
 }
 
-async fn start_recovery(app: &TestApp, identifier: &str, ip: &str) -> axum::response::Response {
-    app.request(
-        Request::post("/user/recover/start")
-            .header("content-type", "application/json")
-            .header("x-forwarded-for", ip)
-            .body(Body::from(
-                serde_json::json!({ "identifier": identifier }).to_string(),
-            ))
-            .unwrap(),
-    )
-    .await
+/// Open the recovery page from `ip` and post its first step.
+async fn start_recovery(
+    app: &TestApp,
+    identifier: &str,
+    ip: &str,
+) -> (common::RecoveryVisit, axum::response::Response) {
+    let mut flow = common::RecoveryVisit::open(app, ip).await;
+    let response = flow
+        .post(
+            app,
+            "/user/recover/start",
+            serde_json::json!({ "identifier": identifier }).to_string(),
+        )
+        .await;
+    (flow, response)
 }
 
 async fn reset_limits(app: &TestApp, ip: &str, user_id: uuid::Uuid) {
@@ -178,9 +182,8 @@ fn a_recovery_plugin_drives_the_full_kernel_flow_and_a_rogue_cannot_escalate() {
         reset_limits(app, ip, user_id).await;
 
         // ── describe: the plugin's method is offered, composed as a union ────────
-        let start = start_recovery(app, username, ip).await;
+        let (mut flow, start) = start_recovery(app, username, ip).await;
         assert_eq!(start.status(), StatusCode::OK);
-        let cookies = common::extract_cookies(&start);
         let body = json_body(start).await;
         let methods = body["methods"].as_array().unwrap();
         assert!(
@@ -197,16 +200,11 @@ fn a_recovery_plugin_drives_the_full_kernel_flow_and_a_rogue_cannot_escalate() {
         );
 
         // ── initiate ─────────────────────────────────────────────────────────────
-        let choose = app
-            .request_with_cookies(
-                Request::post("/user/recover/choose")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", ip)
-                    .body(Body::from(
-                        serde_json::json!({ "method_id": REF_METHOD }).to_string(),
-                    ))
-                    .unwrap(),
-                &cookies,
+        let choose = flow
+            .post(
+                app,
+                "/user/recover/choose",
+                serde_json::json!({ "method_id": REF_METHOD }).to_string(),
             )
             .await;
         assert_eq!(
@@ -221,16 +219,11 @@ fn a_recovery_plugin_drives_the_full_kernel_flow_and_a_rogue_cannot_escalate() {
         // verify, including this one. The owner says `Rejected`. An owner Rejected
         // beats a non-owner Verified, so recovery must be DENIED — and the forged
         // vote must be audited as an attempted escalation.
-        let wrong = app
-            .request_with_cookies(
-                Request::post("/user/recover/verify")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", ip)
-                    .body(Body::from(
-                        serde_json::json!({ "response": "000000" }).to_string(),
-                    ))
-                    .unwrap(),
-                &cookies,
+        let wrong = flow
+            .post(
+                app,
+                "/user/recover/verify",
+                serde_json::json!({ "response": "000000" }).to_string(),
             )
             .await;
         assert_eq!(
@@ -256,32 +249,21 @@ fn a_recovery_plugin_drives_the_full_kernel_flow_and_a_rogue_cannot_escalate() {
 
         // ── verify with the CORRECT code ─────────────────────────────────────────
         reset_limits(app, ip, user_id).await;
-        let start = start_recovery(app, username, ip).await;
-        let cookies = common::extract_cookies(&start);
+        let (mut flow, start) = start_recovery(app, username, ip).await;
         let _ = json_body(start).await;
 
-        app.request_with_cookies(
-            Request::post("/user/recover/choose")
-                .header("content-type", "application/json")
-                .header("x-forwarded-for", ip)
-                .body(Body::from(
-                    serde_json::json!({ "method_id": REF_METHOD }).to_string(),
-                ))
-                .unwrap(),
-            &cookies,
+        flow.post(
+            app,
+            "/user/recover/choose",
+            serde_json::json!({ "method_id": REF_METHOD }).to_string(),
         )
         .await;
 
-        let verify = app
-            .request_with_cookies(
-                Request::post("/user/recover/verify")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", ip)
-                    .body(Body::from(
-                        serde_json::json!({ "response": REF_CORRECT_CODE }).to_string(),
-                    ))
-                    .unwrap(),
-                &cookies,
+        let verify = flow
+            .post(
+                app,
+                "/user/recover/verify",
+                serde_json::json!({ "response": REF_CORRECT_CODE }).to_string(),
             )
             .await;
         assert_eq!(
@@ -289,10 +271,7 @@ fn a_recovery_plugin_drives_the_full_kernel_flow_and_a_rogue_cannot_escalate() {
             StatusCode::OK,
             "the owner's Verified on its own method must grant"
         );
-        let verified_cookies = {
-            let c = common::extract_cookies(&verify);
-            if c.is_empty() { cookies.clone() } else { c }
-        };
+        let verified_cookies = flow.cookies.clone();
         assert_eq!(json_body(verify).await["next"], "reset");
 
         // Still not a session (D-38) — the plugin path grants exactly what the
@@ -310,16 +289,11 @@ fn a_recovery_plugin_drives_the_full_kernel_flow_and_a_rogue_cannot_escalate() {
         );
 
         // ── reset, and only now a session ────────────────────────────────────────
-        let reset = app
-            .request_with_cookies(
-                Request::post("/user/recover/reset")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", ip)
-                    .body(Body::from(
-                        serde_json::json!({ "new_password": "plugin-recovered-pw-1" }).to_string(),
-                    ))
-                    .unwrap(),
-                &verified_cookies,
+        let reset = flow
+            .post(
+                app,
+                "/user/recover/reset",
+                serde_json::json!({ "new_password": "plugin-recovered-pw-1" }).to_string(),
             )
             .await;
         assert_eq!(reset.status(), StatusCode::OK);
@@ -362,34 +336,23 @@ fn a_rogue_cannot_verify_a_method_it_does_not_own_even_alone() {
         let ip = "10.61.0.12";
         reset_limits(app, ip, user_id).await;
 
-        let start = start_recovery(app, username, ip).await;
-        let cookies = common::extract_cookies(&start);
+        let (mut flow, start) = start_recovery(app, username, ip).await;
         let _ = json_body(start).await;
 
         // Ask to initiate the ref plugin's method, then verify with a code the ref
         // plugin rejects. Only the rogue says Verified, and it owns nothing here.
-        app.request_with_cookies(
-            Request::post("/user/recover/choose")
-                .header("content-type", "application/json")
-                .header("x-forwarded-for", ip)
-                .body(Body::from(
-                    serde_json::json!({ "method_id": REF_METHOD }).to_string(),
-                ))
-                .unwrap(),
-            &cookies,
+        flow.post(
+            app,
+            "/user/recover/choose",
+            serde_json::json!({ "method_id": REF_METHOD }).to_string(),
         )
         .await;
 
-        let verify = app
-            .request_with_cookies(
-                Request::post("/user/recover/verify")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", ip)
-                    .body(Body::from(
-                        serde_json::json!({ "response": "definitely-wrong" }).to_string(),
-                    ))
-                    .unwrap(),
-                &cookies,
+        let verify = flow
+            .post(
+                app,
+                "/user/recover/verify",
+                serde_json::json!({ "response": "definitely-wrong" }).to_string(),
             )
             .await;
         assert_eq!(
@@ -399,16 +362,11 @@ fn a_rogue_cannot_verify_a_method_it_does_not_own_even_alone() {
         );
 
         // And no grant was issued, so reset is refused too.
-        let reset = app
-            .request_with_cookies(
-                Request::post("/user/recover/reset")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", ip)
-                    .body(Body::from(
-                        serde_json::json!({ "new_password": "should-never-apply-1" }).to_string(),
-                    ))
-                    .unwrap(),
-                &cookies,
+        let reset = flow
+            .post(
+                app,
+                "/user/recover/reset",
+                serde_json::json!({ "new_password": "should-never-apply-1" }).to_string(),
             )
             .await;
         assert_eq!(reset.status(), StatusCode::FORBIDDEN);

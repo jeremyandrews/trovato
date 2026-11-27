@@ -73,17 +73,21 @@ async fn user_with_recovery_codes(app: &TestApp, username: &str) -> (uuid::Uuid,
     (user_id, codes)
 }
 
-async fn start_recovery(app: &TestApp, identifier: &str, ip: &str) -> axum::response::Response {
-    app.request(
-        Request::post("/user/recover/start")
-            .header("content-type", "application/json")
-            .header("x-forwarded-for", ip)
-            .body(Body::from(
-                serde_json::json!({ "identifier": identifier }).to_string(),
-            ))
-            .unwrap(),
-    )
-    .await
+/// Open the recovery page from `ip` and post its first step.
+async fn start_recovery(
+    app: &TestApp,
+    identifier: &str,
+    ip: &str,
+) -> (common::RecoveryVisit, axum::response::Response) {
+    let mut flow = common::RecoveryVisit::open(app, ip).await;
+    let response = flow
+        .post(
+            app,
+            "/user/recover/start",
+            serde_json::json!({ "identifier": identifier }).to_string(),
+        )
+        .await;
+    (flow, response)
 }
 
 #[test]
@@ -98,9 +102,8 @@ fn the_full_recovery_flow_grants_only_a_scoped_reset_then_a_session() {
         reset_recovery_limits(app, &ip, user_id).await;
 
         // ── start ────────────────────────────────────────────────────────────
-        let start = start_recovery(app, username, &ip).await;
+        let (mut flow, start) = start_recovery(app, username, &ip).await;
         assert_eq!(start.status(), StatusCode::OK);
-        let cookies = common::extract_cookies(&start);
         let body = json_body(start).await;
         let methods = body["methods"].as_array().unwrap();
         assert!(
@@ -111,16 +114,11 @@ fn the_full_recovery_flow_grants_only_a_scoped_reset_then_a_session() {
         );
 
         // Verification must not be reachable yet — nothing has been chosen.
-        let premature = app
-            .request_with_cookies(
-                Request::post("/user/recover/verify")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", &ip)
-                    .body(Body::from(
-                        serde_json::json!({ "response": codes[0] }).to_string(),
-                    ))
-                    .unwrap(),
-                &cookies,
+        let premature = flow
+            .post(
+                app,
+                "/user/recover/verify",
+                serde_json::json!({ "response": codes[0] }).to_string(),
             )
             .await;
         assert_eq!(
@@ -130,17 +128,11 @@ fn the_full_recovery_flow_grants_only_a_scoped_reset_then_a_session() {
         );
 
         // ── choose ───────────────────────────────────────────────────────────
-        let choose = app
-            .request_with_cookies(
-                Request::post("/user/recover/choose")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", &ip)
-                    .body(Body::from(
-                        serde_json::json!({ "method_id": "trovato_recovery_codes:code" })
-                            .to_string(),
-                    ))
-                    .unwrap(),
-                &cookies,
+        let choose = flow
+            .post(
+                app,
+                "/user/recover/choose",
+                serde_json::json!({ "method_id": "trovato_recovery_codes:code" }).to_string(),
             )
             .await;
         assert_eq!(choose.status(), StatusCode::OK);
@@ -152,16 +144,11 @@ fn the_full_recovery_flow_grants_only_a_scoped_reset_then_a_session() {
         );
 
         // Resetting must not be reachable yet — nothing has verified.
-        let premature_reset = app
-            .request_with_cookies(
-                Request::post("/user/recover/reset")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", &ip)
-                    .body(Body::from(
-                        serde_json::json!({ "new_password": "brand-new-password-1" }).to_string(),
-                    ))
-                    .unwrap(),
-                &cookies,
+        let premature_reset = flow
+            .post(
+                app,
+                "/user/recover/reset",
+                serde_json::json!({ "new_password": "brand-new-password-1" }).to_string(),
             )
             .await;
         assert_eq!(
@@ -171,25 +158,15 @@ fn the_full_recovery_flow_grants_only_a_scoped_reset_then_a_session() {
         );
 
         // ── verify ───────────────────────────────────────────────────────────
-        let verify = app
-            .request_with_cookies(
-                Request::post("/user/recover/verify")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", &ip)
-                    .body(Body::from(
-                        serde_json::json!({ "response": codes[0] }).to_string(),
-                    ))
-                    .unwrap(),
-                &cookies,
+        let verify = flow
+            .post(
+                app,
+                "/user/recover/verify",
+                serde_json::json!({ "response": codes[0] }).to_string(),
             )
             .await;
         assert_eq!(verify.status(), StatusCode::OK);
-        let verified_cookies = common::extract_cookies(&verify);
-        let verified_cookies = if verified_cookies.is_empty() {
-            cookies.clone()
-        } else {
-            verified_cookies
-        };
+        let verified_cookies = flow.cookies.clone();
         assert_eq!(json_body(verify).await["next"], "reset");
 
         // D-38: verification grants a SCOPED credential-reset state, NOT a
@@ -210,16 +187,11 @@ fn the_full_recovery_flow_grants_only_a_scoped_reset_then_a_session() {
         );
 
         // ── reset ────────────────────────────────────────────────────────────
-        let reset = app
-            .request_with_cookies(
-                Request::post("/user/recover/reset")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", &ip)
-                    .body(Body::from(
-                        serde_json::json!({ "new_password": "brand-new-password-1" }).to_string(),
-                    ))
-                    .unwrap(),
-                &verified_cookies,
+        let reset = flow
+            .post(
+                app,
+                "/user/recover/reset",
+                serde_json::json!({ "new_password": "brand-new-password-1" }).to_string(),
             )
             .await;
         assert_eq!(reset.status(), StatusCode::OK);
@@ -296,50 +268,33 @@ fn a_wrong_code_is_rejected_and_burns_the_flow() {
         let (user_id, codes) = user_with_recovery_codes(app, username).await;
         reset_recovery_limits(app, &ip, user_id).await;
 
-        let start = start_recovery(app, username, &ip).await;
-        let cookies = common::extract_cookies(&start);
+        let (mut flow, start) = start_recovery(app, username, &ip).await;
         let _ = json_body(start).await;
 
-        let choose = app
-            .request_with_cookies(
-                Request::post("/user/recover/choose")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", &ip)
-                    .body(Body::from(
-                        serde_json::json!({ "method_id": "trovato_recovery_codes:code" })
-                            .to_string(),
-                    ))
-                    .unwrap(),
-                &cookies,
+        let choose = flow
+            .post(
+                app,
+                "/user/recover/choose",
+                serde_json::json!({ "method_id": "trovato_recovery_codes:code" }).to_string(),
             )
             .await;
         assert_eq!(choose.status(), StatusCode::OK);
 
-        let bad = app
-            .request_with_cookies(
-                Request::post("/user/recover/verify")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", &ip)
-                    .body(Body::from(
-                        serde_json::json!({ "response": "NOTAREALCODE" }).to_string(),
-                    ))
-                    .unwrap(),
-                &cookies,
+        let bad = flow
+            .post(
+                app,
+                "/user/recover/verify",
+                serde_json::json!({ "response": "NOTAREALCODE" }).to_string(),
             )
             .await;
         assert_eq!(bad.status(), StatusCode::UNAUTHORIZED);
 
         // The nonce is burned, so the correct code cannot rescue this attempt.
-        let retry = app
-            .request_with_cookies(
-                Request::post("/user/recover/verify")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", &ip)
-                    .body(Body::from(
-                        serde_json::json!({ "response": codes[0] }).to_string(),
-                    ))
-                    .unwrap(),
-                &cookies,
+        let retry = flow
+            .post(
+                app,
+                "/user/recover/verify",
+                serde_json::json!({ "response": codes[0] }).to_string(),
             )
             .await;
         assert_eq!(
@@ -372,33 +327,21 @@ fn a_redeemed_code_cannot_be_reused() {
         // First flow: redeem code 0 successfully.
         for attempt in 0..2 {
             reset_recovery_limits(app, &ip, user_id).await;
-            let start = start_recovery(app, username, &ip).await;
-            let cookies = common::extract_cookies(&start);
+            let (mut flow, start) = start_recovery(app, username, &ip).await;
             let _ = json_body(start).await;
 
-            app.request_with_cookies(
-                Request::post("/user/recover/choose")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", &ip)
-                    .body(Body::from(
-                        serde_json::json!({ "method_id": "trovato_recovery_codes:code" })
-                            .to_string(),
-                    ))
-                    .unwrap(),
-                &cookies,
+            flow.post(
+                app,
+                "/user/recover/choose",
+                serde_json::json!({ "method_id": "trovato_recovery_codes:code" }).to_string(),
             )
             .await;
 
-            let verify = app
-                .request_with_cookies(
-                    Request::post("/user/recover/verify")
-                        .header("content-type", "application/json")
-                        .header("x-forwarded-for", &ip)
-                        .body(Body::from(
-                            serde_json::json!({ "response": codes[0] }).to_string(),
-                        ))
-                        .unwrap(),
-                    &cookies,
+            let verify = flow
+                .post(
+                    app,
+                    "/user/recover/verify",
+                    serde_json::json!({ "response": codes[0] }).to_string(),
                 )
                 .await;
 
@@ -434,11 +377,11 @@ fn recovery_start_is_generic_for_an_unknown_account() {
             .await
             .ok();
 
-        let unknown = start_recovery(app, "no_such_account_anywhere", &ip_a).await;
+        let (_flow, unknown) = start_recovery(app, "no_such_account_anywhere", &ip_a).await;
         assert_eq!(unknown.status(), StatusCode::OK);
         let unknown_body = json_body(unknown).await;
 
-        let existing = start_recovery(app, known, &ip_b).await;
+        let (_flow, existing) = start_recovery(app, known, &ip_b).await;
         assert_eq!(existing.status(), StatusCode::OK);
         let existing_body = json_body(existing).await;
 
@@ -467,7 +410,7 @@ fn recovery_initiation_is_rate_limited() {
 
         let mut saw_limit = false;
         for _ in 0..12 {
-            let response = start_recovery(app, username, &ip).await;
+            let (_flow, response) = start_recovery(app, username, &ip).await;
             if response.status() == StatusCode::TOO_MANY_REQUESTS {
                 saw_limit = true;
                 break;
@@ -500,21 +443,15 @@ fn a_method_the_flow_did_not_choose_cannot_be_verified() {
         let (user_id, codes) = user_with_recovery_codes(app, username).await;
         reset_recovery_limits(app, &ip, user_id).await;
 
-        let start = start_recovery(app, username, &ip).await;
-        let cookies = common::extract_cookies(&start);
+        let (mut flow, start) = start_recovery(app, username, &ip).await;
         let _ = json_body(start).await;
 
         // Choose a method that does not exist at all.
-        let bogus = app
-            .request_with_cookies(
-                Request::post("/user/recover/choose")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", &ip)
-                    .body(Body::from(
-                        serde_json::json!({ "method_id": "made_up_plugin:whatever" }).to_string(),
-                    ))
-                    .unwrap(),
-                &cookies,
+        let bogus = flow
+            .post(
+                app,
+                "/user/recover/choose",
+                serde_json::json!({ "method_id": "made_up_plugin:whatever" }).to_string(),
             )
             .await;
         assert_eq!(
@@ -524,16 +461,11 @@ fn a_method_the_flow_did_not_choose_cannot_be_verified() {
         );
 
         // And the flow is still in `Started`, so verify remains unreachable.
-        let verify = app
-            .request_with_cookies(
-                Request::post("/user/recover/verify")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", &ip)
-                    .body(Body::from(
-                        serde_json::json!({ "response": codes[0] }).to_string(),
-                    ))
-                    .unwrap(),
-                &cookies,
+        let verify = flow
+            .post(
+                app,
+                "/user/recover/verify",
+                serde_json::json!({ "response": codes[0] }).to_string(),
             )
             .await;
         assert_eq!(verify.status(), StatusCode::CONFLICT);
@@ -552,33 +484,16 @@ fn a_method_cannot_be_chosen_twice() {
         let (user_id, _codes) = user_with_recovery_codes(app, username).await;
         reset_recovery_limits(app, &ip, user_id).await;
 
-        let start = start_recovery(app, username, &ip).await;
-        let cookies = common::extract_cookies(&start);
+        let (mut flow, start) = start_recovery(app, username, &ip).await;
         let _ = json_body(start).await;
 
         let payload = serde_json::json!({ "method_id": "trovato_recovery_codes:code" }).to_string();
-        let first = app
-            .request_with_cookies(
-                Request::post("/user/recover/choose")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", &ip)
-                    .body(Body::from(payload.clone()))
-                    .unwrap(),
-                &cookies,
-            )
+        let first = flow
+            .post(app, "/user/recover/choose", payload.clone())
             .await;
         assert_eq!(first.status(), StatusCode::OK);
 
-        let second = app
-            .request_with_cookies(
-                Request::post("/user/recover/choose")
-                    .header("content-type", "application/json")
-                    .header("x-forwarded-for", &ip)
-                    .body(Body::from(payload))
-                    .unwrap(),
-                &cookies,
-            )
-            .await;
+        let second = flow.post(app, "/user/recover/choose", payload).await;
         assert_eq!(second.status(), StatusCode::CONFLICT);
     });
 }
@@ -889,6 +804,68 @@ fn generating_codes_replaces_the_previous_batch() {
             count,
             second.len() as i64,
             "regenerating must invalidate the old batch, not add to it"
+        );
+    });
+}
+
+/// Every step of the flow is a POST from the recovery page, and each checks the
+/// CSRF token that page was served with (B83b). A post without one, from a
+/// session that never opened the page, is refused before the step runs.
+#[test]
+fn a_recovery_step_without_the_pages_token_is_refused() {
+    common::run_test(async {
+        let app = common::shared_app().await;
+        common::hold_until_cleanup(RECOVERY_CONFIG.read().await);
+        let ip = ip_for("rec_no_token");
+        app.state.rate_limiter().reset("recovery", &ip).await.ok();
+
+        for (path, body) in [
+            (
+                "/user/recover/start",
+                serde_json::json!({ "identifier": "anyone" }),
+            ),
+            (
+                "/user/recover/choose",
+                serde_json::json!({ "method_id": "x:y" }),
+            ),
+            (
+                "/user/recover/verify",
+                serde_json::json!({ "response": "code" }),
+            ),
+            (
+                "/user/recover/reset",
+                serde_json::json!({ "new_password": "a-new-password-1" }),
+            ),
+        ] {
+            let response = app
+                .request(
+                    Request::post(path)
+                        .header("content-type", "application/json")
+                        .header("x-forwarded-for", &ip)
+                        .body(Body::from(body.to_string()))
+                        .unwrap(),
+                )
+                .await;
+            assert_eq!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "{path} without the page's CSRF token must be refused"
+            );
+        }
+
+        // The page's token is spent by one step, and the answer carries the next.
+        let mut flow = common::RecoveryVisit::open(app, &ip).await;
+        let start = flow
+            .post(
+                app,
+                "/user/recover/start",
+                serde_json::json!({ "identifier": "no_such_account_b83b" }).to_string(),
+            )
+            .await;
+        assert_eq!(start.status(), StatusCode::OK);
+        assert!(
+            start.headers().contains_key("x-csrf-token"),
+            "the answer carries the token for the next step"
         );
     });
 }
