@@ -364,7 +364,7 @@ impl FormBuilder {
         // container: the allowed values are fixed, so there is nothing to
         // "add another" of.
         if matches!(field.field_type, FieldType::List) {
-            let options = field_value::list_options(field);
+            let options = field_value::list_options(&field.settings);
             let selected: Vec<&str> = field_value::form_values(value)
                 .into_iter()
                 .filter_map(|v| v.as_str())
@@ -452,7 +452,7 @@ impl FormBuilder {
             // `/item/<uuid>`, which a Link must accept.
             FieldType::Link => FormElement::textfield().default_value(text),
             FieldType::List => {
-                let options = field_value::list_options(field);
+                let options = field_value::list_options(&field.settings);
                 FormElement::select(options).default_value(text)
             }
             FieldType::Telephone => FormElement::input("tel").default_value(text),

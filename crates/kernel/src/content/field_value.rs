@@ -233,11 +233,13 @@ pub fn is_valid_link_uri(uri: &str) -> bool {
     }
 }
 
-/// The allowed keys of a `List` field, in order, read from
-/// `settings.allowed_values` (`[{"key": "...", "label": "..."}]`).
-pub fn list_options(field: &FieldDefinition) -> Vec<(String, String)> {
-    field
-        .settings
+/// The allowed keys of a `List` field, in order, read from its `settings`
+/// (`settings.allowed_values`, `[{"key": "...", "label": "..."}]`). Takes the
+/// field's `settings` rather than the whole [`FieldDefinition`], so a caller
+/// that only has the settings JSON (the search export, reading an item
+/// type's stored field list) can call it too.
+pub fn list_options(settings: &Value) -> Vec<(String, String)> {
+    settings
         .get("allowed_values")
         .and_then(Value::as_array)
         .map(|values| {
@@ -259,13 +261,13 @@ pub fn list_options(field: &FieldDefinition) -> Vec<(String, String)> {
 /// Whether `key` is one of `field`'s allowed values: the one place a List
 /// write is judged against its allowed keys.
 pub fn is_valid_list_key(field: &FieldDefinition, key: &str) -> bool {
-    list_options(field).iter().any(|(k, _)| k == key)
+    list_options(&field.settings).iter().any(|(k, _)| k == key)
 }
 
 /// The label shown for a List field's stored `key`, or `None` when the key is
 /// no longer one of the field's allowed values.
 pub fn list_label_for(field: &FieldDefinition, key: &str) -> Option<String> {
-    list_options(field)
+    list_options(&field.settings)
         .into_iter()
         .find(|(k, _)| k == key)
         .map(|(_, label)| label)

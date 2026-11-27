@@ -34,6 +34,10 @@
         {{ form::select(name="category", id="edit_field_category", label=t(s="Category"), options=category_options, value=field_category, required=true, hint=t(s="The field holds tags of this category. Values already saved are not changed; the next save of the field is checked against the category chosen here."), errors=errs) }}
         {% endif %}
 
+        {% if is_list_field %}
+        {{ form::textarea(name="allowed_values", id="edit_field_allowed_values", label=t(s="Allowed values"), value=allowed_values_text, required=true, hint=t(s="One value per line, as key|label (a line with no | uses the text as both). Values already saved that name a key you remove here are not changed."), errors=errs) }}
+        {% endif %}
+
         {{ form::checkbox(name="required", id="edit_field_required", label=t(s="Required"), checked=field.required, hint=t(s="If checked, this field must be filled in when creating or editing content."), errors=errs) }}
 
         {{ form::field(name="cardinality", id="edit_field_cardinality", type="number", label=t(s="Number of values"), value=field.cardinality ~ "", hint=t(s="Maximum number of values. Use 1 for a single value, -1 for unlimited."), errors=errs, width="10", attrs='min="-1"') }}

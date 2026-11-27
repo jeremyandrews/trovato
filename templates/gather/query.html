@@ -53,6 +53,15 @@
             </select>
             {% endif %}
 
+            {% elif filter.widget_type == "list_select" %}
+            {# List field's allowed values: a fixed select, no faceting #}
+            <select id="filter-{{ filter.field }}" name="{{ filter.field }}" class="form-control">
+                <option value="">Any</option>
+                {% for opt in filter.options %}
+                <option value="{{ opt.value }}"{% if current_value == opt.value %} selected{% endif %}>{{ opt.label }}</option>
+                {% endfor %}
+            </select>
+
             {% else %}
             {# Default text input #}
             <input type="text" id="filter-{{ filter.field }}" name="{{ filter.field }}"
