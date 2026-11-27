@@ -16,8 +16,9 @@
 //! the item row — what visitors see — left as it is. A state with
 //! `published: true` must have `default_revision: true`: publishing always
 //! replaces what visitors see. A save is a transition from the state of the
-//! item's latest revision to the state the user asks for, and [`ItemService`]
-//! (`super::ItemService`) applies it on every write path; this module is pure.
+//! item's latest revision to the state the user asks for, and
+//! [`ItemService`](super::ItemService) applies it on every write path; this
+//! module is pure.
 
 use std::collections::HashMap;
 
@@ -186,10 +187,10 @@ impl ModerationWorkflow {
         if let Some(state) = stored.and_then(|id| self.state(id)) {
             return state.id.clone();
         }
-        if status == 1 {
-            if let Some(state) = self.states.iter().find(|s| s.published) {
-                return state.id.clone();
-            }
+        if status == 1
+            && let Some(state) = self.states.iter().find(|s| s.published)
+        {
+            return state.id.clone();
         }
         self.default_state.clone()
     }

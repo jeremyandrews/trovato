@@ -133,8 +133,8 @@ impl ContentTypeFormData {
         }
     }
 
-    /// The workflow this submission names, trimmed; [`moderation::EDITORIAL`]
-    /// when blank.
+    /// The workflow this submission names, trimmed;
+    /// [`EDITORIAL`](crate::content::moderation::EDITORIAL) when blank.
     fn moderation_workflow(&self) -> String {
         self.moderation_workflow
             .as_deref()
