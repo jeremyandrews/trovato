@@ -2184,23 +2184,11 @@ impl GatherService {
                             .as_ref()
                             .and_then(|fields| fields.get(name))
                             .map(filter_value_from_json)
+                            .filter(|value| !value.is_unset())
+                            .and_then(|value| usable_for_tag_operator(&filter.operator, value))
                         {
-                            // A tag operator reads only uuids out of the value
-                            // and drops the filter when there are none, so a
-                            // field holding no tag id counts as no value.
-                            Some(value)
-                                if !value.is_unset()
-                                    && (!matches!(
-                                        filter.operator,
-                                        FilterOperator::HasTag
-                                            | FilterOperator::HasAnyTag
-                                            | FilterOperator::HasAllTags
-                                            | FilterOperator::HasTagOrDescendants
-                                    ) || !value.as_uuid_list().is_empty()) =>
-                            {
-                                value
-                            }
-                            _ => {
+                            Some(value) => value,
+                            None => {
                                 missing_current_item = true;
                                 FilterValue::Null(())
                             }
@@ -3166,6 +3154,30 @@ fn remove_record_field(row: &mut serde_json::Value, target: &str) {
 /// Maximum items per page (enforced by performance guardrails).
 pub const MAX_ITEMS_PER_PAGE: u32 = 100;
 
+/// A current-item field value in the shape a tag operator reads, or `None`
+/// when that operator could find no tag in it and would drop the filter.
+///
+/// `HasAnyTag`/`HasAllTags` read every uuid out of a list, so they need at
+/// least one. `HasTag`/`HasTagOrDescendants` read a single uuid: a field of
+/// one tag (a one-element list, as a category reference stores it) becomes
+/// that uuid; a field of several is not one tag, and with no constraint the
+/// gather would list every row, so it counts as no value (`has_any_tag` is the
+/// operator for "shares a tag"). Any other operator takes the value as it is.
+fn usable_for_tag_operator(operator: &FilterOperator, value: FilterValue) -> Option<FilterValue> {
+    match operator {
+        FilterOperator::HasAnyTag | FilterOperator::HasAllTags => {
+            (!value.as_uuid_list().is_empty()).then_some(value)
+        }
+        FilterOperator::HasTag | FilterOperator::HasTagOrDescendants => {
+            match value.as_uuid_list().as_slice() {
+                [only] => Some(FilterValue::Uuid(*only)),
+                _ => None,
+            }
+        }
+        _ => Some(value),
+    }
+}
+
 /// Convert a JSON value read out of an item's `fields` into the [`FilterValue`]
 /// a resolved [`ContextualValue::CurrentItemField`] carries.
 ///
@@ -3808,6 +3820,53 @@ mod tests {
             GatherService::resolve_contextual_values(def, &QueryContext::default());
         assert!(missing);
         assert!(resolved.filters[0].value.is_null());
+    }
+
+    #[test]
+    fn resolve_contextual_current_item_field_for_single_tag_operators() {
+        // `has_tag`/`has_tag_or_descendants` read one uuid; a category
+        // reference stores a list. One tag becomes that uuid; several, or a
+        // non-tag, leave no usable value and the gather renders nothing —
+        // never a list the builder would drop the filter from.
+        let only = Uuid::now_v7();
+        for operator in [FilterOperator::HasTag, FilterOperator::HasTagOrDescendants] {
+            let resolve = |fields: serde_json::Value| {
+                let context = QueryContext {
+                    current_item_id: Some(Uuid::now_v7()),
+                    current_item_fields: Some(fields),
+                    ..Default::default()
+                };
+                let def = QueryDefinition {
+                    filters: vec![filter(
+                        "fields.tags",
+                        operator.clone(),
+                        FilterValue::Contextual(ContextualValue::CurrentItemField(
+                            "tags".to_string(),
+                        )),
+                        false,
+                    )],
+                    ..Default::default()
+                };
+                let (resolved, missing) = GatherService::resolve_contextual_values(def, &context);
+                (resolved.filters[0].value.clone(), missing)
+            };
+
+            let (value, missing) = resolve(serde_json::json!({ "tags": [only.to_string()] }));
+            assert!(!missing, "{operator:?}");
+            assert_eq!(value.as_uuid(), Some(only), "{operator:?}: {value:?}");
+
+            let (value, missing) = resolve(serde_json::json!({ "tags": only.to_string() }));
+            assert!(!missing, "{operator:?}");
+            assert_eq!(value.as_uuid(), Some(only), "{operator:?}: {value:?}");
+
+            for fields in [
+                serde_json::json!({ "tags": [Uuid::now_v7().to_string(), Uuid::now_v7().to_string()] }),
+                serde_json::json!({ "tags": ["not-a-tag-id"] }),
+            ] {
+                let (_, missing) = resolve(fields.clone());
+                assert!(missing, "{operator:?} with {fields}");
+            }
+        }
     }
 
     #[test]

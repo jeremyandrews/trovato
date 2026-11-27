@@ -346,3 +346,50 @@ fn missing_current_item_renders_nothing() {
         );
     });
 }
+
+/// `has_tag` on `current_item.fields.<name>` keeps its constraint when the
+/// field is the one-element list a category reference stores: only items
+/// carrying that tag are listed, not every item.
+#[test]
+fn current_item_field_has_tag_with_one_tag_keeps_the_constraint() {
+    run_test(async {
+        let app = shared_app().await;
+        let marker = format!("onetag{}", Uuid::now_v7().simple());
+        let tag = Uuid::now_v7().to_string();
+        let other = Uuid::now_v7().to_string();
+
+        let shown = create_item(app, &marker, "S", serde_json::json!({ "tags": [tag] })).await;
+        create_item(app, &marker, "Same", serde_json::json!({ "tags": [tag] })).await;
+        create_item(
+            app,
+            &marker,
+            "Other",
+            serde_json::json!({ "tags": [other] }),
+        )
+        .await;
+
+        let filters = vec![
+            QueryFilter {
+                field: "id".to_string(),
+                operator: FilterOperator::NotEquals,
+                value: FilterValue::Contextual(ContextualValue::CurrentItem),
+                exposed: false,
+                exposed_label: None,
+                widget: Default::default(),
+            },
+            QueryFilter {
+                field: "fields.tags".to_string(),
+                operator: FilterOperator::HasTag,
+                value: FilterValue::Contextual(ContextualValue::CurrentItemField(
+                    "tags".to_string(),
+                )),
+                exposed: false,
+                exposed_label: None,
+                widget: Default::default(),
+            },
+        ];
+
+        let rows = gather_rows(app, &marker, filters, Some(shown)).await;
+        assert_eq!(titles(&rows), [format!("{marker} Same")]);
+    });
+}

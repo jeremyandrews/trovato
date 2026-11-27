@@ -320,7 +320,7 @@ exposes `audience` as a "Show to" field, merged into the tile's stored
 import`, which the form has no control for) survives an edit.
 
 `item_types` (`["article", "recipe"]`) shows a tile only on a page showing an
-item of one of those types (B186). A page showing no item never matches. The
+item of one of those types (B186). A page showing no item never matches, and an empty list is no rule. The
 tile form exposes it as "Content types", a comma-separated list of machine
 names.
 
@@ -345,7 +345,9 @@ better linked than placed.
 the page shows, so a filter can name it. `"value": "current_item"` is that
 item's id, and `"value": "current_item.fields.tags"` (or
 `{"current_item_field": "tags"}`) is the value of its `tags` field. A list
-field such as a category reference's tag ids works with `has_any_tag`. One
+field such as a category reference's tag ids works with `has_any_tag`;
+`has_tag` and `has_tag_or_descendants` take it only when it holds exactly one
+tag, and otherwise return no rows. One
 tile placed once then serves every item page. "Other articles" is
 `{"field": "id", "operator": "not_equals", "value": "current_item"}`.
 "Related recipes" is that filter plus `{"field": "fields.tags", "operator":

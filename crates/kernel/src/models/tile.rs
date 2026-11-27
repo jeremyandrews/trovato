@@ -219,7 +219,8 @@ impl Tile {
     /// - `{ "item_types": ["article", "recipe"] }` — show only on a page
     ///   showing an item of one of these types (B186). A page showing no item
     ///   — a gather listing, the front page, an admin screen — never matches:
-    ///   `item_type` is `None` there, not a type the rule could name.
+    ///   `item_type` is `None` there, not a type the rule could name. An empty
+    ///   list is no rule, as the tile form's blank field is.
     /// - `{}` — always visible
     pub fn is_visible(
         &self,
@@ -248,8 +249,16 @@ impl Tile {
             }
         }
 
-        // Item type check (B186)
-        if let Some(item_types) = self.visibility.get("item_types").and_then(|v| v.as_array()) {
+        // Item type check (B186). An empty list is no rule, the way the tile
+        // form shows and saves it ("blank for every page"): otherwise a tile
+        // imported with `[]` would be hidden everywhere until an unrelated
+        // edit saved the blank field and made it visible everywhere.
+        if let Some(item_types) = self
+            .visibility
+            .get("item_types")
+            .and_then(|v| v.as_array())
+            .filter(|types| !types.is_empty())
+        {
             let type_match =
                 item_type.is_some_and(|t| item_types.iter().any(|v| v.as_str() == Some(t)));
             if !type_match {
@@ -466,6 +475,23 @@ mod tests {
         // A page with no item in view never matches: there is no type to
         // compare the rule against.
         assert!(!tile.is_visible("/", &[], false, None));
+    }
+
+    #[test]
+    fn empty_item_types_is_no_rule() {
+        // The tile form shows `[]` as a blank field and saves a blank field
+        // as no rule; the two must mean the same, or saving an unrelated
+        // edit flips a tile from hidden everywhere to shown everywhere.
+        let tile = make_tile(serde_json::json!({ "item_types": [] }));
+        assert!(tile.is_visible("/", &[], false, None));
+        assert!(tile.is_visible("/item/1", &[], false, Some("article")));
+        let blank = make_tile(serde_json::json!({}));
+        for (path, item_type) in [("/", None), ("/item/1", Some("article"))] {
+            assert_eq!(
+                tile.is_visible(path, &[], false, item_type),
+                blank.is_visible(path, &[], false, item_type)
+            );
+        }
     }
 
     #[test]
