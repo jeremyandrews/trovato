@@ -30,7 +30,7 @@
 //! background tap under the background CPU and wall clock limits. A kernel
 //! timer calls the Rust handler registered for it with
 //! [`TimerService::register_handler`]. A failure is retried with the kernel's
-//! exponential backoff ([`crate::cron::exponential_backoff_secs`]) up to
+//! exponential backoff (`crate::cron::exponential_backoff_secs`) up to
 //! [`MAX_ATTEMPTS`], then the timer is `failed`, with the error kept.
 //!
 //! A one-shot timer is deleted after it succeeds. A repeating one moves to its
