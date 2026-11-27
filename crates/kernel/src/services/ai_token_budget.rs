@@ -28,6 +28,18 @@ const CONFIG_KEY: &str = "ai_token_budgets";
 /// Site config key for the model→price table (P11c / D-44).
 const CONFIG_KEY_PRICING: &str = "ai_pricing";
 
+/// The anonymous role's token cap, per budget period, when no budget is
+/// configured for it at all.
+///
+/// A default install grants `use ai` to the anonymous role (migration
+/// `20261130000001_grant_use_ai_to_searchers`), and an unconfigured role used
+/// to read as unlimited: the only brake on anonymous AI spend was the per-IP
+/// rate limiter, easily spread across addresses. This cap applies only when
+/// the site has set no explicit limit for the anonymous role on a provider —
+/// an explicit limit, including an explicit `0` (meaning unlimited), keeps its
+/// configured meaning.
+pub const DEFAULT_ANONYMOUS_TOKEN_BUDGET: u64 = 100_000;
+
 /// Price of a single model, per 1,000 tokens (P11c / D-44).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelPrice {
@@ -678,14 +690,44 @@ impl AiTokenBudgetService {
     /// 3. No config → unlimited
     ///
     /// The nil user id is every anonymous visitor at once: its limit is the
-    /// `anonymous user` role's, a site-level cap on anonymous spend.
+    /// `anonymous user` role's, a site-level cap on anonymous spend. An
+    /// anonymous role with no explicit limit configured — including no budget
+    /// configuration at all — gets [`DEFAULT_ANONYMOUS_TOKEN_BUDGET`] rather
+    /// than unlimited; an explicit limit, `0` included, keeps its configured
+    /// meaning.
     pub async fn check_budget(
         &self,
         pool: &PgPool,
         user_id: Uuid,
         provider_id: &str,
     ) -> Result<BudgetCheckResult> {
-        let Some(config) = self.get_config().await? else {
+        let config = self.get_config().await?;
+
+        if user_id.is_nil() {
+            // Anonymous visitors share one site-level cap: the `anonymous user`
+            // role's limit for this provider, metered against every call made
+            // for an anonymous visitor (all recorded under the nil user id).
+            // One visitor cannot be told from another, so a per-visitor budget
+            // would be a per-IP budget, which is what the rate limiter is for;
+            // this cap bounds the site's spend.
+            let explicit = config.as_ref().and_then(|config| {
+                config
+                    .defaults
+                    .get(provider_id)
+                    .and_then(|roles| roles.get(ANONYMOUS_ROLE_NAME))
+                    .copied()
+            });
+            let limit = explicit.unwrap_or(DEFAULT_ANONYMOUS_TOKEN_BUDGET);
+            let period = config.as_ref().map_or(BudgetPeriod::Monthly, |c| c.period);
+            let action = config
+                .as_ref()
+                .map_or(BudgetAction::default(), |c| c.action_on_limit);
+            return self
+                .evaluate_budget(pool, user_id, provider_id, limit, period, action)
+                .await;
+        }
+
+        let Some(config) = config else {
             return Ok(BudgetCheckResult {
                 allowed: true,
                 remaining: None,
@@ -695,20 +737,7 @@ impl AiTokenBudgetService {
             });
         };
 
-        let limit = if user_id.is_nil() {
-            // Anonymous visitors share one site-level cap: the `anonymous user`
-            // role's limit for this provider, metered against every call made
-            // for an anonymous visitor (all recorded under the nil user id).
-            // No entry, or 0, is unlimited. One visitor cannot be told from
-            // another, so a per-visitor budget would be a per-IP budget, which
-            // is what the rate limiter is for; this cap bounds the site's spend.
-            config
-                .defaults
-                .get(provider_id)
-                .and_then(|roles| roles.get(ANONYMOUS_ROLE_NAME))
-                .copied()
-                .unwrap_or(0)
-        } else if let Some(ovr) = self.get_user_override(pool, user_id, provider_id).await? {
+        let limit = if let Some(ovr) = self.get_user_override(pool, user_id, provider_id).await? {
             // 1. Per-user override
             ovr
         } else {
@@ -717,19 +746,32 @@ impl AiTokenBudgetService {
                 .await?
         };
 
-        // 0 = unlimited
+        self.evaluate_budget(pool, user_id, provider_id, limit, config.period, config.action_on_limit)
+            .await
+    }
+
+    /// Weigh `limit` against usage already recorded in the current period:
+    /// `0` is unlimited, otherwise allowed while usage stays below it.
+    async fn evaluate_budget(
+        &self,
+        pool: &PgPool,
+        user_id: Uuid,
+        provider_id: &str,
+        limit: u64,
+        period: BudgetPeriod,
+        action: BudgetAction,
+    ) -> Result<BudgetCheckResult> {
         if limit == 0 {
             return Ok(BudgetCheckResult {
                 allowed: true,
                 remaining: None,
                 limit: 0,
                 used: 0,
-                action: config.action_on_limit,
+                action,
             });
         }
 
-        // 3. Query current usage
-        let since = config.period.period_start();
+        let since = period.period_start();
         let used = self
             .get_usage_for_period(pool, user_id, provider_id, since)
             .await?;
@@ -740,7 +782,7 @@ impl AiTokenBudgetService {
                 remaining: Some(0),
                 limit,
                 used,
-                action: config.action_on_limit,
+                action,
             })
         } else {
             Ok(BudgetCheckResult {
@@ -748,7 +790,7 @@ impl AiTokenBudgetService {
                 remaining: Some(limit - used),
                 limit,
                 used,
-                action: config.action_on_limit,
+                action,
             })
         }
     }

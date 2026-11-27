@@ -27,7 +27,8 @@ use axum::http::{Request, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::post;
 use common::{TestApp, run_test, shared_app};
-use trovato_kernel::models::SiteConfig;
+use trovato_kernel::models::stage::LIVE_STAGE_ID;
+use trovato_kernel::models::{CreateItem, SiteConfig};
 use trovato_kernel::plugin::{PluginConfig, PluginRuntime};
 use trovato_kernel::search::SearchSettings;
 use trovato_kernel::services::ai_provider::{AiCaller, allow_loopback_provider_for_tests};
@@ -361,10 +362,43 @@ fn one_call_on_each_path_records_its_real_usage() {
             .await;
         let member_id = common::user_id_of(app, &member).await;
         let member_cookies = app.login(&member, "Password123!").await;
+
+        // The summary is built server-side from a result URL now, not from
+        // browser-supplied text: a real, published item for it to resolve.
+        app.ensure_conference_type().await;
+        let admin =
+            UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
+        let item_id = app
+            .state
+            .items()
+            .create(
+                CreateItem {
+                    item_type: "conference".to_string(),
+                    title: format!("b89 usage summary target {query}"),
+                    author_id: Uuid::nil(),
+                    status: Some(1),
+                    promote: Some(0),
+                    sticky: Some(0),
+                    fields: Some(serde_json::json!({
+                        "field_body": { "value": "Some results." }
+                    })),
+                    stage_id: Some(LIVE_STAGE_ID),
+                    language: Some("en".to_string()),
+                    log: Some("b89 usage budget test".to_string()),
+                },
+                &admin,
+            )
+            .await
+            .unwrap()
+            .id;
+
         let (status, body) = post_json(
             app,
             "/api/v1/search/summarize",
-            serde_json::json!({"query": query, "context": "Some results."}),
+            serde_json::json!({
+                "query": query,
+                "results": [{"url": format!("/item/{item_id}")}],
+            }),
             Some(&member_cookies),
             &common::test_ip_for(&member),
         )

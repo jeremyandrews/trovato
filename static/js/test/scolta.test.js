@@ -16,7 +16,40 @@ const path = require('node:path');
 // scolta.js attaches `Scolta` to `window`, or to `this` outside a browser,
 // which for a CommonJS module is its exports.
 const { Scolta } = require(path.join(__dirname, '..', 'scolta.js'));
-const { escapeHtml, htmlToText, highlightText, bestExcerpt } = Scolta._text;
+const { escapeHtml, htmlToText, highlightText, bestExcerpt, isSafeLinkUrl, formatInline } =
+  Scolta._text;
+
+// B282: an AI answer can only link to http(s) or same-site addresses.
+//
+// formatInline rendered `[text](url)` as `<a href="${url}">` with no scheme
+// check once allowedLinkDomains was empty (the default), so a planted
+// `javascript:` or `data:` link in a prompt-injected answer became a real
+// link. A protocol-relative `//evil.example` passed a naive `new URL(url,
+// base)` parse too, resolving to whatever host the browser already trusted.
+test('a link is rendered only for http(s) or a same-site path', () => {
+  for (const url of ['javascript:alert(1)', 'data:text/html,hi', '//evil.example']) {
+    assert.equal(isSafeLinkUrl(url), false, url);
+  }
+  for (const url of ['/item/x', 'https://example.com/a', 'http://example.com/a']) {
+    assert.equal(isSafeLinkUrl(url), true, url);
+  }
+});
+
+test('formatInline renders only a safe link, falling back to plain text', () => {
+  for (const url of ['javascript:alert(document.cookie)', 'data:text/html,hi', '//evil.example']) {
+    const html = formatInline(`[click me](${url})`);
+    assert.ok(!html.includes('<a '), `${url} must not become a link: ${html}`);
+    assert.ok(html.startsWith('click me'), `the link text is kept: ${html}`);
+  }
+  assert.equal(
+    formatInline('[our page](/item/x)'),
+    '<a href="/item/x" target="_blank" rel="noopener">our page</a>',
+  );
+  assert.equal(
+    formatInline('[conference](https://example.com/conf)'),
+    '<a href="https://example.com/conf" target="_blank" rel="noopener">conference</a>',
+  );
+});
 
 test('a Pagefind excerpt is read as HTML and written escaped once', () => {
   const excerpt = 'Tom &amp; Jerry &lt;3 &quot;café&quot; <mark>noank</mark> &#39;s';

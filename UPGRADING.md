@@ -97,6 +97,29 @@ applied, so `trovato migrate` finds nothing to do.
 
 ## Unreleased
 
+### Anonymous AI search now has a default token budget
+
+**Who is affected:** a site that never configured an AI token budget for the
+`anonymous user` role (`/admin/system/ai-budgets`, or `ai_token_budgets` in
+`site_config`), and relies on anonymous visitors getting unlimited AI query
+expansion, summaries and follow-ups from `/api/v1/search/*`.
+
+**What changed.** The three AI search endpoints ask for the `use ai`
+permission, which a default install grants to anonymous visitors. With no
+budget configured for the anonymous role, a call used to be allowed without
+limit, the per-IP rate limiter being the only brake. The anonymous role now
+gets a default cap of 100,000 tokens per budget period (monthly, unless a
+budget period is configured) when no explicit limit is set for it on a
+provider. Every other role is unaffected: an absent entry for it still reads
+as unlimited, and an explicit limit for the anonymous role — including an
+explicit `0`, which still means unlimited — keeps its configured meaning.
+
+**How to find out.** If `/admin/system/ai-budgets` shows no configured limit
+for the `anonymous user` role, this cap now applies. To keep anonymous AI
+search unlimited, set an explicit `0` for the `anonymous user` role on each
+provider in that screen (or in `ai_token_budgets` under `site_config`); to
+tighten or loosen it, set the limit you want the same way.
+
 ### `AdminNavDefinition` is `#[non_exhaustive]`, with a new `keywords` field
 
 **Who is affected:** a plugin that builds `trovato_sdk::types::AdminNavDefinition`

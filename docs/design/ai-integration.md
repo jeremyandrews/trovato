@@ -365,6 +365,14 @@ Key points:
 - Per-role defaults keep config manageable; per-user overrides handle exceptions
 - `action_on_limit` gives flexibility: hard deny, soft warning, or queue for later
 - The usage log (already part of `ai_request()` observability) feeds the budget tracker
+- Every other role, authenticated or not, reads an absent entry as unlimited —
+  except the `anonymous user` role, which the kernel caps at
+  `DEFAULT_ANONYMOUS_TOKEN_BUDGET` (100,000 tokens per period) when the site
+  has set no explicit limit for it on a provider. A default install grants
+  `use ai` to anonymous visitors, and the per-IP rate limiter is the only other
+  brake on their spend, so an unconfigured anonymous role is a cap, not
+  unlimited. An explicit limit for the anonymous role, `0` included, keeps its
+  configured meaning (`0` is still unlimited when written deliberately).
 
 ### D4: Local models supported by kernel, not shipped
 

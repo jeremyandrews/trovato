@@ -319,7 +319,7 @@
       </div>`;
 
     const topN = results.slice(0, CONFIG.AI_SUMMARY_TOP_N);
-    const context = buildLLMContext(topN);
+    const resultsPayload = resultUrls(topN);
 
     try {
       const fullQuery = expandedTerms.length > 0
@@ -329,7 +329,7 @@
       const resp = await fetch(endpoints.summarize, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: fullQuery, context }),
+        body: JSON.stringify({ query: fullQuery, results: resultsPayload }),
         signal: abortController?.signal,
       });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
@@ -338,9 +338,8 @@
         summaryEl.className = "scolta-ai-summary";
         const formatted = formatSummary(data.summary);
 
-        const userContext = `Search query: ${fullQuery}\n\nSearch result excerpts:\n${context}`;
         conversationMessages = [
-          { role: 'user', content: userContext },
+          { role: 'user', content: fullQuery },
           { role: 'assistant', content: data.summary },
         ];
 
@@ -430,20 +429,15 @@
     return t.replace(/_/g, " ").replace(/\b\w/g, function (c) { return c.toUpperCase(); });
   }
 
-  // Build LLM context string from an array of scored results.
-  // Top 2 results get full page content for depth; remaining get excerpts.
-  function buildLLMContext(results) {
-    const CONFIG = getConfig();
-    return results.map((r, i) => {
-      const title = r.data.meta?.title || "Untitled";
-      const url = r.data.meta?.url || "";
-      const useFullContent = i < 2;
-      const text = useFullContent
-        ? stripHtml(r.data.content || r.data.excerpt || "")
-        : stripHtml(r.data.excerpt || "");
-      const trimmed = text.substring(0, CONFIG.AI_SUMMARY_MAX_CHARS);
-      return `[${i + 1}] ${title}\n${url}\n${trimmed}`;
-    }).join("\n\n");
+  // The server builds the AI context itself, from its own copy of each
+  // result's item: the browser sends only the result URLs it found, never
+  // their text. `meta.url` is the item's path (an alias or `/item/<uuid>`),
+  // not its Pagefind content.
+  function resultUrls(results) {
+    return results
+      .map(r => r.data.meta?.url || "")
+      .filter(url => url)
+      .map(url => ({ url }));
   }
 
   // Convert lightweight markdown from Claude's summary into safe HTML.
@@ -471,6 +465,24 @@
     return html;
   }
 
+  // A link is rendered only when its URL is `http:`/`https:` (parsed with
+  // `new URL`, so a schemeless or malformed one fails this) or a single
+  // leading slash (not `//`, which is scheme-relative and resolves to
+  // whatever host the browser is on). Everything else — `javascript:`,
+  // `data:`, `//evil.example` — is not a link, however the AI's answer
+  // spelled it: the model's own output can carry a planted link through
+  // prompt injection, and markdown gives it no other way to point at a
+  // destination.
+  function isSafeLinkUrl(url) {
+    if (/^\/(?!\/)/.test(url)) return true;
+    try {
+      const protocol = new URL(url).protocol;
+      return protocol === 'http:' || protocol === 'https:';
+    } catch {
+      return false;
+    }
+  }
+
   // Apply inline formatting: **bold** and [text](url) links.
   // Links are only rendered if the URL matches allowedLinkDomains
   // (empty list = allow all links).
@@ -479,6 +491,7 @@
     return text
       .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
       .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, linkText, url) => {
+        if (!isSafeLinkUrl(url)) return linkText;
         if (allowedDomains.length === 0) {
           return `<a href="${url}" target="_blank" rel="noopener">${linkText}</a>`;
         }
@@ -488,16 +501,20 @@
           if (allowedDomains.some(d => host === d || host.endsWith('.' + d))) {
             return `<a href="${url}" target="_blank" rel="noopener">${linkText}</a>`;
           }
-        } catch {}
-        // Non-allowed or invalid URL — show text only, no link
+        } catch {
+          // A single-leading-slash path has no host to check against
+          // allowedDomains: it is always same-site, so it is allowed.
+          return `<a href="${url}" target="_blank" rel="noopener">${linkText}</a>`;
+        }
+        // Non-allowed URL — show text only, no link
         return linkText;
       });
   }
 
   // --- Follow-up conversation ---
 
-  async function searchForFollowUpContext(question) {
-    if (!pagefind) return '';
+  async function searchForFollowUpResults(question) {
+    if (!pagefind) return [];
     const terms = extractSearchTerms(question);
     const searchQuery = terms.length > 0 ? terms.join(' ') : question;
     try {
@@ -509,16 +526,15 @@
         );
         return { toLoad, loaded };
       });
-      if (toLoad === 0) return '';
+      if (toLoad === 0) return [];
       const scored = scoreResults(loaded, searchQuery, 1.0);
       scored.sort((a, b) => b.score - a.score);
       const best = scored.slice(0, 5);
-      const context = buildLLMContext(best);
       console.log(`[scolta:followup] Found ${best.length} additional results for: ${searchQuery} (from ${toLoad} candidates)`);
-      return context;
+      return resultUrls(best);
     } catch (e) {
       console.warn("[scolta:followup] context search failed:", e);
-      return '';
+      return [];
     }
   }
 
@@ -563,7 +579,7 @@
     threadEl.appendChild(turnEl);
     turnEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 
-    const extraContext = await searchForFollowUpContext(question);
+    const extraResults = await searchForFollowUpResults(question);
 
     // Discard if a new search started while we were fetching context
     if (followUpVersion !== searchVersion) {
@@ -571,17 +587,13 @@
       return;
     }
 
-    const userMessage = extraContext
-      ? `${question}\n\nAdditional search results for this follow-up:\n${extraContext}`
-      : question;
-
-    conversationMessages.push({ role: 'user', content: userMessage });
+    conversationMessages.push({ role: 'user', content: question });
 
     try {
       const resp = await fetch(endpoints.followup, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: conversationMessages }),
+        body: JSON.stringify({ messages: conversationMessages, results: extraResults }),
         signal: abortController?.signal,
       });
 
@@ -1441,7 +1453,15 @@
     doSearch,
     showMore,
     // The text and HTML rules, exposed for static/js/test/scolta.test.js.
-    _text: { escapeHtml, htmlToText, highlightText, truncateExcerpt, bestExcerpt },
+    _text: {
+      escapeHtml,
+      htmlToText,
+      highlightText,
+      truncateExcerpt,
+      bestExcerpt,
+      isSafeLinkUrl,
+      formatInline,
+    },
     // The index reload, exposed for static/js/test/scolta.test.js.
     _index: {
       withIndexReload,

@@ -1,8 +1,8 @@
 //! Scolta AI search endpoints.
 //!
 //! `POST /api/v1/search/expand` — AI query expansion (returns alternative terms).
-//! `POST /api/v1/search/summarize` — AI summary of search results (SSE stream).
-//! `POST /api/v1/search/followup` — Follow-up conversation (SSE stream).
+//! `POST /api/v1/search/summarize` — AI summary of search results (JSON response).
+//! `POST /api/v1/search/followup` — Follow-up conversation (JSON response).
 //!
 //! All endpoints ask for the `use ai` permission, and require the `trovato_ai`
 //! plugin to be enabled and an AI provider configured for Chat operations.
@@ -12,41 +12,67 @@
 //! or provider work, so switching a stage off stops the spending and not just
 //! the stock page's use of it. The follow-up endpoint also enforces the turn cap
 //! there.
+//!
+//! The browser never supplies the text the model reads. Summarize and
+//! follow-up take result **URLs**, not excerpts: each URL is resolved to an
+//! item on the Live stage, loaded, and run through
+//! [`crate::content::ItemService::filter_page_for_view`] for the calling
+//! viewer, so a URL naming an unpublished item, or a field the viewer may not
+//! see, contributes nothing. What survives is cut to `ai_summary_max_chars`
+//! before it reaches the prompt. A request body over [`MAX_BODY_BYTES`] is
+//! refused before any of this runs.
 
 use axum::Json;
 use axum::extract::State;
+use axum::extract::rejection::JsonRejection;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
+use uuid::Uuid;
 
+use crate::content::page_meta::text_of;
 use crate::error::AppError;
-use crate::models::SiteConfig;
+use crate::models::{Item, SiteConfig, UrlAlias};
 use crate::search::analytics::Counter;
-use crate::search::{SearchSettings, normalize_query, prompts};
+use crate::search::{MAX_QUERY_LENGTH, SearchSettings, normalize_query, prompts};
 use crate::services::ai_provider::{
     AiCallError, AiCaller, AiOperationType, AiProviderService, ChatRequest, ResolvedProvider,
 };
 use crate::state::AppState;
+use crate::tap::UserContext;
+
+/// The most a search endpoint's request body may be: a query, a handful of
+/// result URLs or conversation turns, never the whole page content a browser
+/// used to be able to stuff in.
+const MAX_BODY_BYTES: usize = 64 * 1024;
 
 /// Build the Scolta search API router.
 pub fn api() -> super::api::ApiRoutes {
+    use axum::extract::DefaultBodyLimit;
+    use axum::routing::post;
     use super::api::doc;
+
+    let limit = || DefaultBodyLimit::max(MAX_BODY_BYTES);
+
     super::api::ApiRoutes::new("search")
-        .post(
+        .route(
+            axum::http::Method::POST,
             "/search/expand",
-            expand_query,
+            post(expand_query).layer(limit()),
             doc("AI query expansion — returns alternative search terms"),
         )
-        .post(
+        .route(
+            axum::http::Method::POST,
             "/search/summarize",
-            summarize,
-            doc("AI summary of search results (SSE stream)").stream(),
+            post(summarize).layer(limit()),
+            doc("AI summary of search results, built server-side from result URLs"),
         )
-        .post(
+        .route(
+            axum::http::Method::POST,
             "/search/followup",
-            followup,
-            doc("Follow-up conversation about search results (SSE stream)").stream(),
+            post(followup).layer(limit()),
+            doc("Follow-up conversation about search results"),
         )
 }
 
@@ -68,42 +94,41 @@ struct ExpandResponse {
 
 /// Request for AI summary.
 ///
-/// Accepts `excerpts` (structured) or `context` (plain text from scolta.js).
+/// `results` names what the summary reads; the server resolves each URL to an
+/// item and builds the text itself ([`context_for_results`]). `deny_unknown_fields`
+/// so an old client still sending `context` or `excerpts` — the browser's own
+/// text — gets a 400 rather than being silently ignored.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct SummarizeRequest {
     query: String,
     #[serde(default)]
-    excerpts: Vec<Excerpt>,
-    /// Plain text context from scolta.js (alternative to excerpts).
-    #[serde(default)]
-    context: Option<String>,
+    results: Vec<ResultRef>,
 }
 
 /// Request for follow-up conversation.
 ///
-/// scolta.js sends `{ messages: [...] }` with conversation history.
+/// The only shape `scolta.js` sends: a conversation and, optionally, result
+/// URLs for whatever this follow-up searched up. `deny_unknown_fields` so the
+/// retired `query`/`history` shape is refused rather than silently accepted.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct FollowupRequest {
-    #[serde(default)]
-    query: Option<String>,
-    #[serde(default)]
-    history: Vec<Message>,
-    #[serde(default)]
-    excerpts: Vec<Excerpt>,
-    /// Conversation messages from scolta.js (alternative to query+history).
-    #[serde(default)]
     messages: Vec<Message>,
+    #[serde(default)]
+    results: Vec<ResultRef>,
 }
 
-/// A search result excerpt for AI context.
+/// A search result named by its URL, the only thing the browser tells the
+/// server about a result. The server resolves it to an item and reads the
+/// item's own stored text, never text carried in the request.
 #[derive(Debug, Deserialize)]
-struct Excerpt {
-    title: String,
+struct ResultRef {
     url: String,
-    text: String,
 }
 
-/// A conversation message.
+/// A conversation message. `role` must be `user` or `assistant`
+/// (case-insensitive); anything else is refused.
 #[derive(Debug, Deserialize)]
 struct Message {
     role: String,
@@ -131,13 +156,16 @@ async fn expand_query(
     if !settings.expand {
         return stage_off("Query expansion");
     }
-    let caller = match ai_caller(&state, &session).await {
-        Ok(caller) => caller,
+    let (_viewer, caller) = match ai_caller(&state, &session).await {
+        Ok(pair) => pair,
         Err(refusal) => return refusal,
     };
 
     if body.query.trim().is_empty() {
         return AppError::bad_request("Query cannot be empty").into_response();
+    }
+    if let Some(refusal) = query_too_long(&body.query) {
+        return refusal;
     }
 
     // Everything the prompt is built from, so a site rename or a provider change
@@ -259,34 +287,47 @@ pub fn expansion_cache_key(query: &str, site_name: &str, site_slogan: &str) -> S
     format!("{EXPANSION_CACHE_TAG}:{:x}", hasher.finalize())
 }
 
-/// Summarize search results via AI with SSE streaming.
+/// Summarize search results via AI.
 ///
 /// No CSRF required — read-only search enhancement.
 async fn summarize(
     State(state): State<AppState>,
     session: Session,
-    Json(body): Json<SummarizeRequest>,
+    body: Result<Json<SummarizeRequest>, JsonRejection>,
 ) -> Response {
+    let body = match parse_json(body) {
+        Ok(body) => body,
+        Err(refusal) => return refusal,
+    };
     let settings = SearchSettings::load(state.db(), state.cache()).await;
     if !settings.summarize {
         return stage_off("The search summary");
     }
-    let caller = match ai_caller(&state, &session).await {
-        Ok(caller) => caller,
+    let (viewer, caller) = match ai_caller(&state, &session).await {
+        Ok(pair) => pair,
         Err(refusal) => return refusal,
-    };
-
-    // Accept either structured excerpts or plain text context from scolta.js
-    let context_text = if let Some(ref ctx) = body.context {
-        ctx.clone()
-    } else if !body.excerpts.is_empty() {
-        build_excerpt_context(&body.excerpts)
-    } else {
-        return AppError::bad_request("Query and excerpts/context required").into_response();
     };
 
     if body.query.trim().is_empty() {
         return AppError::bad_request("Query cannot be empty").into_response();
+    }
+    if let Some(refusal) = query_too_long(&body.query) {
+        return refusal;
+    }
+
+    let context_text = context_for_results(
+        &state,
+        &viewer,
+        &body.results,
+        settings.ai_summary_top_n as usize,
+        settings.ai_summary_max_chars as usize,
+    )
+    .await;
+
+    // Nothing the viewer may read survived resolution: answer with an empty
+    // summary rather than spend a provider call on an empty prompt.
+    if context_text.is_empty() {
+        return Json(serde_json::json!({ "summary": "" })).into_response();
     }
 
     let user_prompt = format!(
@@ -297,24 +338,53 @@ async fn summarize(
     json_ai_response(&state, &caller, prompts::SUMMARIZE, &user_prompt).await
 }
 
-/// Handle follow-up conversation via AI with SSE streaming.
+/// Handle follow-up conversation via AI.
 ///
 /// No CSRF required — read-only search enhancement.
 async fn followup(
     State(state): State<AppState>,
     session: Session,
-    Json(body): Json<FollowupRequest>,
+    body: Result<Json<FollowupRequest>, JsonRejection>,
 ) -> Response {
+    let body = match parse_json(body) {
+        Ok(body) => body,
+        Err(refusal) => return refusal,
+    };
     let settings = SearchSettings::load(state.db(), state.cache()).await;
     if !settings.followup {
         return stage_off("Follow-up");
     }
-    let caller = match ai_caller(&state, &session).await {
-        Ok(caller) => caller,
+    let (viewer, caller) = match ai_caller(&state, &session).await {
+        Ok(pair) => pair,
         Err(refusal) => return refusal,
     };
+
+    for message in &body.messages {
+        if !message.role.eq_ignore_ascii_case("user") && !message.role.eq_ignore_ascii_case("assistant")
+        {
+            return AppError::bad_request("Message role must be \"user\" or \"assistant\"")
+                .into_response();
+        }
+    }
+    // The newest question is the one thing here shaped like a search query;
+    // the rest of the conversation is bounded by the per-message and
+    // whole-conversation character caps below instead.
+    if let Some(last) = body.messages.last()
+        && last.role.eq_ignore_ascii_case("user")
+        && let Some(refusal) = query_too_long(&last.content)
+    {
+        return refusal;
+    }
+
+    // The turn cap counts `user` turns only after every role has been
+    // checked, so a role other than user/assistant cannot buy extra turns.
+    let user_turns = body
+        .messages
+        .iter()
+        .filter(|m| m.role.eq_ignore_ascii_case("user"))
+        .count();
     // The opening question plus `max_followups` follow-ups.
-    if user_turns(&body) > settings.max_followups as usize + 1 {
+    if user_turns > settings.max_followups as usize + 1 {
         return AppError::bad_request(format!(
             "A conversation may hold at most {} follow-up questions",
             settings.max_followups
@@ -322,29 +392,31 @@ async fn followup(
         .into_response();
     }
 
-    // Build conversation context from either messages (scolta.js) or query+history
-    let user_prompt = if !body.messages.is_empty() {
-        body.messages
-            .iter()
-            .map(|m| format!("{}: {}", m.role, m.content))
-            .collect::<Vec<_>>()
-            .join("\n\n")
-    } else if let Some(ref query) = body.query {
-        let mut prompt = String::new();
-        for msg in &body.history {
-            prompt.push_str(&format!("{}: {}\n\n", msg.role, msg.content));
-        }
-        prompt.push_str(&format!("User: {query}\n"));
-        if !body.excerpts.is_empty() {
-            let context = build_excerpt_context(&body.excerpts);
-            prompt.push_str(&format!(
-                "\nAdditional search results for this follow-up:\n{context}",
-            ));
-        }
-        prompt
-    } else {
-        return AppError::bad_request("Query or messages required").into_response();
-    };
+    let max_chars = settings.ai_summary_max_chars as usize;
+    let mut conversation = String::new();
+    for message in &body.messages {
+        conversation.push_str(&truncate_chars(&message.content, max_chars));
+        conversation.push_str("\n\n");
+    }
+    // The whole conversation, capped: `max_followups` turns plus the opening
+    // summary, each worth at most one message's share. Previous assistant
+    // turns are still client-supplied text — this is what bounds them, not a
+    // resolution against stored content.
+    let conversation_budget = (settings.max_followups as usize + 1) * max_chars;
+    let mut user_prompt = truncate_chars(&conversation, conversation_budget);
+
+    let results_context = context_for_results(
+        &state,
+        &viewer,
+        &body.results,
+        settings.ai_summary_top_n as usize,
+        max_chars,
+    )
+    .await;
+    if !results_context.is_empty() {
+        user_prompt.push_str("\nAdditional search results for this follow-up:\n");
+        user_prompt.push_str(&results_context);
+    }
 
     let response = json_ai_response_with_key(
         &state,
@@ -359,7 +431,7 @@ async fn followup(
     if response.status().is_success()
         && settings.sentiment_enabled
         && settings.analytics_enabled
-        && let Some((question, previous_answer)) = last_exchange(&body)
+        && let Some((question, previous_answer)) = last_exchange(&body.messages)
     {
         state.sentiment().submit(question, previous_answer);
     }
@@ -371,6 +443,23 @@ async fn followup(
 // Helpers
 // ============================================================================
 
+/// Turn a failed `Json<T>` extraction into the same 400 shape every other
+/// refusal on these routes answers with, rather than axum's default 422: an
+/// old client sending a retired field (`context`, `excerpts`, the
+/// `query`/`history` follow-up shape) gets a refusal in the family these
+/// endpoints already use. A body over [`MAX_BODY_BYTES`] keeps its 413 —
+/// that refusal is about size, not shape, and belongs with the other oversize
+/// refusals, not folded into this one.
+fn parse_json<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, Response> {
+    body.map(|Json(body)| body).map_err(|rejection| {
+        if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
+            rejection.into_response()
+        } else {
+            AppError::bad_request(rejection.body_text()).into_response()
+        }
+    })
+}
+
 /// The answer for a stage the search settings switched off: 404, with a short
 /// JSON error, before any cache or provider work.
 fn stage_off(stage: &str) -> Response {
@@ -381,48 +470,167 @@ fn stage_off(stage: &str) -> Response {
     .into_response()
 }
 
-/// User turns in a follow-up request, counted on whichever shape it came in:
-/// `messages` as sent, or `history` plus the new `query`.
-fn user_turns(body: &FollowupRequest) -> usize {
-    let is_user = |m: &&Message| m.role.eq_ignore_ascii_case("user");
-    if body.messages.is_empty() {
-        body.history.iter().filter(is_user).count() + usize::from(body.query.is_some())
+/// The refusal for a query longer than [`MAX_QUERY_LENGTH`], the same bound
+/// `/api/v1/search` enforces: `None` when the query is within it.
+fn query_too_long(query: &str) -> Option<Response> {
+    if query.len() > MAX_QUERY_LENGTH {
+        Some(
+            AppError::bad_request(format!(
+                "query exceeds maximum length of {MAX_QUERY_LENGTH} characters"
+            ))
+            .into_response(),
+        )
     } else {
-        body.messages.iter().filter(is_user).count()
+        None
     }
 }
 
-/// The visitor's newest message and the assistant answer before it, from
-/// whichever shape the request came in. The search context `scolta.js` appends
-/// to a follow-up is cut off: it is search results, not the visitor's words.
-fn last_exchange(body: &FollowupRequest) -> Option<(&str, &str)> {
-    let (question, earlier): (&str, &[Message]) = if body.messages.is_empty() {
-        (body.query.as_deref()?, &body.history)
+/// Cut `s` to at most `max_chars` **characters** (not bytes), so a multi-byte
+/// character is never split.
+fn truncate_chars(s: &str, max_chars: usize) -> String {
+    if s.chars().count() <= max_chars {
+        s.to_string()
     } else {
-        let (last, earlier) = body.messages.split_last()?;
-        if !last.role.eq_ignore_ascii_case("user") {
-            return None;
-        }
-        (&last.content, earlier)
-    };
+        s.chars().take(max_chars).collect()
+    }
+}
+
+/// The visitor's newest message and the assistant answer before it.
+fn last_exchange(messages: &[Message]) -> Option<(&str, &str)> {
+    let (last, earlier) = messages.split_last()?;
+    if !last.role.eq_ignore_ascii_case("user") {
+        return None;
+    }
     let previous = earlier
         .iter()
         .rev()
         .find(|m| m.role.eq_ignore_ascii_case("assistant"))?;
-    let question = question
-        .split_once("\n\nAdditional search results for this follow-up:")
-        .map_or(question, |(own, _)| own);
-    Some((question, previous.content.as_str()))
+    Some((last.content.as_str(), previous.content.as_str()))
 }
 
-/// Build excerpt context string from a list of excerpts.
-fn build_excerpt_context(excerpts: &[Excerpt]) -> String {
-    excerpts
+/// Resolve at most `top_n` result URLs to items the viewer may see, and build
+/// their text context: each surviving item's title and the text of the
+/// fields the viewer may read, cut to `max_chars`. A URL that does not
+/// resolve, or resolves to an item the viewer cannot see at all or has
+/// nothing left to show after field filtering, contributes nothing — dropped
+/// silently rather than refused, since a stale or guessed URL is routine (a
+/// result the browser saw a moment ago may since have been unpublished).
+async fn context_for_results(
+    state: &AppState,
+    viewer: &UserContext,
+    results: &[ResultRef],
+    top_n: usize,
+    max_chars: usize,
+) -> String {
+    let mut candidates = Vec::new();
+    for result in results.iter().take(top_n) {
+        if let Some(item) = resolve_item_for_url(state, &result.url).await {
+            candidates.push(item);
+        }
+    }
+    let page_size = candidates.len();
+    let visible = state
+        .items()
+        .filter_page_for_view(candidates, viewer, "view", page_size)
+        .await;
+
+    visible
         .iter()
         .enumerate()
-        .map(|(i, e)| format!("Result {} - {} ({})\n{}\n", i + 1, e.title, e.url, e.text))
+        .filter_map(|(i, item)| {
+            let text = item_text(item, max_chars)?;
+            Some(format!("[{}] {}\n{}", i + 1, item.title, text))
+        })
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("\n\n")
+}
+
+/// Resolve a result URL to the item it names: `/item/<uuid>` directly, else
+/// through the kernel's URL alias lookup on the Live stage — the same
+/// resolution a browser's request for that path would get.
+async fn resolve_item_for_url(state: &AppState, url: &str) -> Option<Item> {
+    let path = request_path(url);
+    if path.is_empty() {
+        return None;
+    }
+    let id = if let Some(rest) = path.strip_prefix("/item/") {
+        Uuid::parse_str(rest).ok()?
+    } else {
+        let found = UrlAlias::resolve_path(
+            state.db(),
+            &[path],
+            crate::models::stage::LIVE_STAGE_ID,
+            "en",
+        )
+        .await
+        .ok()??;
+        found
+            .alias
+            .source
+            .strip_prefix("/item/")
+            .and_then(|s| Uuid::parse_str(s).ok())?
+    };
+    state.items().load(id).await.ok().flatten()
+}
+
+/// The path a URL names: everything from the first `/` after a `scheme://`
+/// host, or the whole string when it carries no scheme, with any query string
+/// or fragment dropped.
+fn request_path(url: &str) -> &str {
+    let path = match url.split_once("://") {
+        Some((_, rest)) => rest.find('/').map_or("", |i| &rest[i..]),
+        None => url,
+    };
+    path.split(['?', '#']).next().unwrap_or("")
+}
+
+/// The text an item contributes to a summary or follow-up prompt: its title
+/// and the text of every field still present on it, tags stripped, cut to
+/// `max_chars` characters. `None` when nothing is left to show — an item with
+/// no visible text is dropped rather than contributing an empty entry.
+///
+/// Called after [`crate::content::ItemService::filter_page_for_view`], so
+/// `item.fields` already holds only the fields this viewer may see; reading
+/// every field present is reading exactly what the viewer may read.
+fn item_text(item: &Item, max_chars: usize) -> Option<String> {
+    let mut text = item.title.clone();
+    if let Some(fields) = item.fields.as_object() {
+        for value in fields.values() {
+            collect_field_text(value, &mut text);
+        }
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(truncate_chars(text, max_chars))
+    }
+}
+
+/// Append one field value's plain text to `out`, space-separated: a string
+/// value, a structured `{value, summary}` field, or an array of either,
+/// recursively.
+fn collect_field_text(value: &serde_json::Value, out: &mut String) {
+    match value {
+        serde_json::Value::String(s) => {
+            out.push(' ');
+            out.push_str(&text_of(s));
+        }
+        serde_json::Value::Object(obj) => {
+            for key in ["value", "summary"] {
+                if let Some(serde_json::Value::String(s)) = obj.get(key) {
+                    out.push(' ');
+                    out.push_str(&text_of(s));
+                }
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for v in values {
+                collect_field_text(v, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// Return an AI response as JSON with `{ summary: "..." }`.
@@ -477,7 +685,8 @@ const SEARCH_MAX_TOKENS: u32 = 500;
 pub(crate) const SEARCH_USAGE_SOURCE: &str = "kernel_search";
 
 /// Who an AI search call is made for, or the refusal for a visitor who may
-/// not make one.
+/// not make one. The viewer is handed back too: summarize and follow-up use
+/// it again, to decide which items and fields the prompt may be built from.
 ///
 /// The three endpoints ask for `use ai`, as every other AI route does. A
 /// default install grants it to every role that may search (migration
@@ -485,7 +694,7 @@ pub(crate) const SEARCH_USAGE_SOURCE: &str = "kernel_search";
 /// gets expansion, summaries and follow-ups. A signed-in person's calls count
 /// against their token budget; an anonymous visitor's against the site-level
 /// anonymous cap.
-async fn ai_caller(state: &AppState, session: &Session) -> Result<AiCaller, Response> {
+async fn ai_caller(state: &AppState, session: &Session) -> Result<(UserContext, AiCaller), Response> {
     let viewer = crate::routes::item::get_user_context(session, state).await;
     if !viewer.can(USE_AI_PERMISSION) {
         return Err(super::helpers::refusal_for(
@@ -494,11 +703,12 @@ async fn ai_caller(state: &AppState, session: &Session) -> Result<AiCaller, Resp
         )
         .into_response());
     }
-    Ok(if viewer.authenticated {
+    let caller = if viewer.authenticated {
         AiCaller::user(viewer.id, SEARCH_USAGE_SOURCE)
     } else {
         AiCaller::anonymous(SEARCH_USAGE_SOURCE)
-    })
+    };
+    Ok((viewer, caller))
 }
 
 /// The permission the AI search endpoints ask for.
