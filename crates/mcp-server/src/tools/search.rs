@@ -41,17 +41,18 @@ pub async fn search(
 
     let window = crate::tools::window(params.page, params.per_page, params.limit, params.offset);
 
+    // The same visibility rule `/search` uses (B248): the total this tool
+    // reports and the rows it returns are built from the same predicate.
+    let visibility = state
+        .items()
+        .search_visibility(user_ctx, &[LIVE_STAGE_ID])
+        .await;
+
     // Unrecorded: search analytics counts what visitors type into the site's
     // search, and a tool call from an MCP client is not that.
     let mut results = state
         .search()
-        .search_unrecorded(
-            query,
-            &[LIVE_STAGE_ID],
-            Some(user_ctx.id),
-            window.per_page,
-            window.offset,
-        )
+        .search_unrecorded(query, &visibility, window.per_page, window.offset)
         .await
         .map_err(internal_err)?;
 

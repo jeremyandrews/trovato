@@ -495,7 +495,12 @@ async fn make_item(app: &TestApp, item_type: &str, title: &str) -> Uuid {
 async fn ranked_ids(app: &TestApp, term: &str) -> Vec<Uuid> {
     app.state
         .search()
-        .search(term, &[LIVE_STAGE_ID], None, 10, 0)
+        .search(
+            term,
+            &trovato_kernel::search::SearchVisibility::public([LIVE_STAGE_ID]),
+            10,
+            0,
+        )
         .await
         .expect("search")
         .results

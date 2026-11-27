@@ -282,22 +282,15 @@ impl ChatService {
             return String::new();
         }
 
-        // The coarse SQL's `status = 1 OR author_id = $user` arm, so a viewer's
-        // own drafts are candidates; the seam below decides what of that they
-        // may actually be told.
-        let user_id = viewer.authenticated.then_some(viewer.id);
-
-        let stage_ids = vec![LIVE_STAGE_ID];
+        // The same visibility rule `/search` uses (B248), so the candidate set
+        // is already close to what `viewer` may see; the seam below is still
+        // the authority (it also drops a plugin-tap denial this coarse
+        // predicate cannot know about).
+        let visibility = items.search_visibility(viewer, &[LIVE_STAGE_ID]).await;
         // Unrecorded: retrieval for the chat is not a visitor's search.
         let results = match self
             .search
-            .search_unrecorded(
-                query,
-                &stage_ids,
-                user_id,
-                i64::from(config.rag_max_results),
-                0,
-            )
+            .search_unrecorded(query, &visibility, i64::from(config.rag_max_results), 0)
             .await
         {
             Ok(r) => r,

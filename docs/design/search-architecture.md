@@ -79,7 +79,7 @@ The LLM returns expanded terms. These go back to the client, which runs them thr
 - **Expansion runs server-side** because it needs `ai_request()` and the LLM API. But the expanded terms feed back into Pagefind on the client -- the actual search is still client-side.
 - **Cache aggressively.** The same query always produces similar expansions. Cache the expansion results (KV store, in-memory, or even a simple lookup table) to avoid redundant LLM calls. The article recommends this explicitly.
 - **Filter aggressively.** Early implementations found that generic expansions ("technology", "software") pollute results. The prompt constrains this, and a blocklist of overly-generic terms provides a safety net.
-- **This is where tsvector could optionally supplement.** If there are Items not in the Pagefind index (content on internal-visibility stages visible to editors, recently-created content before re-index), a parallel tsvector query with the expanded terms catches them. The results merge client-side.
+- **This is where tsvector could optionally supplement.** If there are Items not in the Pagefind index (content on a stage other than Live, which server search reads for a `use stages` holder, or content created since the last re-index), a parallel tsvector query with the expanded terms catches them. The results merge client-side.
 
 ### Stage 3: Result Merging & Re-ranking
 
@@ -396,7 +396,7 @@ boost = 1.0
 
 ### Permissions
 
-No new permissions needed. Search itself is public (same as today) -- Pagefind indexes live-stage content with public visibility only. The AI-enhanced stages (2-4) require `use ai` permission for authenticated users. Anonymous users can be configured to receive AI features or not (site-wide toggle).
+Server search needs `search content` and `access content` ([admin-permissions.md](../admin-permissions.md#search)). Pagefind indexes live-stage content with public visibility only. The AI-enhanced stages (2-4) require `use ai` permission for authenticated users. Anonymous users can be configured to receive AI features or not (site-wide toggle).
 
 ### Rate Limiting
 
@@ -478,7 +478,8 @@ index is a set of static files any visitor downloads, so it is built as the
 anonymous role, through the same item and field access seam a page view uses: an
 unpublished item, an item on an internal stage, a field `tap_field_access`
 denies to anonymous visitors, and an unpublished or held comment are never in
-it. Server side search applies the searching user's own access instead.
+it. Server side search applies the rule in
+[admin-permissions.md](../admin-permissions.md#search) instead.
 
 #### The two switches
 
@@ -513,7 +514,7 @@ current inside the write's own transaction.
 
 Pagefind supports custom metadata per page, which is how we inject ranking signals into the client-side index.
 
-For editor search (items on internal-visibility stages + live stage), the tsvector fallback handles it server-side with stage-scoped queries -- same as the existing stage-aware kernel search. **The Pagefind index is Live only:** it is built from published Live items and served as static files to everyone, so it never contains a stage's content. Server-side search reads a stage only for a holder of `use stages` who switched to it (`routes::helpers::read_stages`; see `docs/design/stage-workflow.md` §8); everyone else, and every Pagefind query, reads Live.
+Searching a stage other than Live is server side, with stage-scoped queries; items on an internal-visibility stage are found only by a superuser ([admin-permissions.md](../admin-permissions.md#search)). **The Pagefind index is Live only:** it is built from published Live items and served as static files to everyone, so it never contains a stage's content. Server-side search reads a stage only for a holder of `use stages` who switched to it (`routes::helpers::read_stages`; see `docs/design/stage-workflow.md` §8); everyone else, and every Pagefind query, reads Live.
 
 ### Rust/WASM Synergy
 

@@ -62,10 +62,15 @@ async fn search_as(
     term: &str,
     viewer: &UserContext,
 ) -> Vec<trovato_kernel::search::SearchResult> {
+    let visibility = app
+        .state
+        .items()
+        .search_visibility(viewer, &[LIVE_STAGE_ID])
+        .await;
     let raw = app
         .state
         .search()
-        .search(term, &[LIVE_STAGE_ID], None, 50, 0)
+        .search(term, &visibility, 50, 0)
         .await
         .expect("search");
     app.state
@@ -112,12 +117,17 @@ fn search_includes_restricted_item_for_admin() {
         let published = make_item(app, &admin, &format!("{term} public"), 1).await;
         let draft = make_item(app, &admin, &format!("{term} draft"), 0).await;
 
-        // Admin passes user_id so the coarse SQL includes own/all drafts; the
-        // seam's admin bypass keeps both.
+        // The admin's `SearchVisibility` bypasses status entirely, so both the
+        // published item and the draft are candidates.
+        let visibility = app
+            .state
+            .items()
+            .search_visibility(&admin, &[LIVE_STAGE_ID])
+            .await;
         let raw = app
             .state
             .search()
-            .search(&term, &[LIVE_STAGE_ID], Some(admin.id), 50, 0)
+            .search(&term, &visibility, 50, 0)
             .await
             .expect("search");
         let results = app
@@ -199,10 +209,15 @@ fn search_snippet_escapes_html_in_source() {
             .await
             .expect("create");
 
+        let visibility = app
+            .state
+            .items()
+            .search_visibility(&anon_with_access(), &[LIVE_STAGE_ID])
+            .await;
         let raw = app
             .state
             .search()
-            .search(&term, &[LIVE_STAGE_ID], None, 50, 0)
+            .search(&term, &visibility, 50, 0)
             .await
             .expect("search");
         let hit = raw

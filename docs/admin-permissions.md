@@ -319,6 +319,34 @@ cannot be changed.
 | `/admin/content/{id}/translate/{lang}` | GET, POST | `translate content` |
 | `/admin/content/{id}/translate/{lang}/delete` | POST | `translate content` |
 
+## Search
+
+`/search` and `/api/v1/search` need `search content` and `access content`.
+
+Server search covers Live and, for a `use stages` holder, the stage they
+switched to. It skips a stage whose Visibility is Internal, the default for a
+new stage. On the stages it covers, a visitor finds:
+
+- every published item (a plugin cannot refuse one to a visitor with
+  `access content`);
+- their own unpublished items, if they are signed in and hold
+  `view own unpublished content`, `view own content` or `view any content`.
+
+If a plugin denies an author their own unpublished item, the page hides it but
+the total counts it.
+
+A superuser finds every item on those stages, internal or not, published or
+not.
+
+No one else finds or counts another author's unpublished item, even with
+`view any content`, nor an unpublished item, their own included, that only a
+type-specific permission or a plugin opens.
+
+Once the browser loads the Pagefind index, `/search` lists its results instead
+for every visitor allowed to search: the published Live items `anonymous user`
+could view when each was last indexed. Taking `access content` from that role
+empties it only after `trovato search rebuild` and the next cron run.
+
 ## Superuser only
 
 Two routes keep `require_admin` and are not delegable by permission, because

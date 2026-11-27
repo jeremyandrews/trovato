@@ -320,6 +320,9 @@ GET /api/v1/search?q=hello&page=1&per_page=10
 The one JSON search: `/api/search` is its deprecated alias. An empty `q`
 answers an empty page.
 
+Needs `search content` and `access content`; what it returns and counts is in
+[admin-permissions.md](admin-permissions.md#search).
+
 **Response (200):**
 ```json
 {

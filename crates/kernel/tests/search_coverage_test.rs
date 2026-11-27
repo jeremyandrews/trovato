@@ -393,7 +393,12 @@ fn the_postgres_search_covers_every_text_field_and_published_comments() {
             let raw = app
                 .state
                 .search()
-                .search_unrecorded(&word, &[LIVE_STAGE_ID], None, 50, 0)
+                .search_unrecorded(
+                    &word,
+                    &trovato_kernel::search::SearchVisibility::public([LIVE_STAGE_ID]),
+                    50,
+                    0,
+                )
                 .await
                 .expect("search");
             raw.results.into_iter().map(|r| r.id).collect::<Vec<Uuid>>()
