@@ -24,158 +24,25 @@
         - /url: /admin
     - listitem:
       - heading "Content" [level=2]:
-        - button "Content" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/content/overview
-        - listitem:
-          - link "Content":
-            - /url: /admin/content
-        - listitem:
-          - link "Add content":
-            - /url: /admin/content/add
-        - listitem:
-          - link "Moderated content":
-            - /url: /admin/content/moderated
-        - listitem:
-          - link "Comments":
-            - /url: /admin/content/comments
-        - listitem:
-          - link "Files":
-            - /url: /admin/content/files
-        - listitem:
-          - link "Media":
-            - /url: /admin/media
+        - button "Content"
     - listitem:
       - heading "Structure" [level=2]:
-        - button "Structure" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/structure/overview
-        - listitem:
-          - link "Content types":
-            - /url: /admin/structure/types
-        - listitem:
-          - link "Record types":
-            - /url: /admin/structure/records
-        - listitem:
-          - link "Gathers":
-            - /url: /admin/gather
-        - listitem:
-          - link "Menus":
-            - /url: /admin/structure/menus
-        - listitem:
-          - link "Tiles":
-            - /url: /admin/structure/tiles
-        - listitem:
-          - link "Categories":
-            - /url: /admin/structure/categories
-        - listitem:
-          - link "URL aliases":
-            - /url: /admin/structure/aliases
-        - listitem:
-          - link "URL alias patterns":
-            - /url: /admin/config/pathauto
+        - button "Structure"
     - listitem:
       - heading "Appearance" [level=2]:
-        - button "Appearance" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/appearance/overview
-        - listitem:
-          - link "Themes":
-            - /url: /admin/appearance
+        - button "Appearance"
     - listitem:
       - heading "People" [level=2]:
-        - button "People" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/people/overview
-        - listitem:
-          - link "Users":
-            - /url: /admin/people
-        - listitem:
-          - link "Roles":
-            - /url: /admin/people/roles
-        - listitem:
-          - link "Permissions":
-            - /url: /admin/people/permissions
-        - listitem:
-          - link "Access rules":
-            - /url: /admin/people/rules
+        - button "People"
     - listitem:
       - heading "Extend" [level=2]:
-        - button "Extend" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/extend/overview
-        - listitem:
-          - link "Plugins":
-            - /url: /admin/plugins
-        - listitem:
-          - link "AI providers":
-            - /url: /admin/system/ai-providers
-        - listitem:
-          - link "AI budgets":
-            - /url: /admin/system/ai-budgets
-        - listitem:
-          - link "AI chat":
-            - /url: /admin/system/ai-chat
-        - listitem:
-          - link "AI assistant":
-            - /url: /admin/system/ai-assistant
+        - button "Extend"
     - listitem:
       - heading "Configuration" [level=2]:
-        - button "Configuration" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/config/overview
-        - listitem:
-          - link "Site settings":
-            - /url: /admin/config/site
-        - listitem:
-          - link "Text formats":
-            - /url: /admin/config/formats
-        - listitem:
-          - link "Search settings":
-            - /url: /admin/config/search
-        - listitem:
-          - link "Stages":
-            - /url: /admin/structure/stages
-        - listitem:
-          - link "Redirects":
-            - /url: /admin/config/redirects
-        - listitem:
-          - link "Account recovery":
-            - /url: /admin/recovery
+        - button "Configuration"
     - listitem:
       - heading "Reports" [level=2]:
-        - button "Reports" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/reports/overview
-        - listitem:
-          - link "Recent log messages":
-            - /url: /admin/reports/log
-        - listitem:
-          - link "Audit log":
-            - /url: /admin/reports/audit
-        - listitem:
-          - link "Cron":
-            - /url: /admin/reports/cron
-        - listitem:
-          - link "Search report":
-            - /url: /admin/reports/search
-        - listitem:
-          - link "Accessibility":
-            - /url: /admin/reports/accessibility
+        - button "Reports"
 - main:
   - heading "Dashboard" [level=1]
   - paragraph: What needs your attention, and a way into every area you may use.
@@ -184,14 +51,15 @@
     - paragraph: You have not written anything yet.
   - region "Waiting for you":
     - heading "Waiting for you" [level=2]
-    - paragraph: Nothing is waiting for you.
+    - paragraph: 7 things wait for you.
     - list:
       - listitem:
         - link "0 drafts to review":
           - /url: /admin/content/moderated?state=draft
       - listitem:
-        - link "0 comments waiting for approval":
+        - link "7 comments waiting for moderation":
           - /url: /admin/content/comments?status=2
+          - paragraph: 7 comments waiting for moderation
   - region "Scheduled tasks":
     - heading "Scheduled tasks" [level=2]
     - paragraph: Scheduled tasks are working.
@@ -202,161 +70,79 @@
       - listitem: 0 queued jobs stopped after failing repeatedly
   - region "Recent errors":
     - heading "Recent errors" [level=2]
-    - paragraph: 1 error in the last 24 hours.
+    - paragraph: 4 errors in the last 24 hours
     - list:
+      - listitem:
+        - link "Could not deliver a message to the mail server (attempt 3)":
+          - /url: /admin/reports/log?level=error&q=Could%20not%20deliver%20a%20message%20to%20the%20mail%20server%20%28attempt%203%29
+        - text: mail, 2026-11-26 13:46 UTC
+      - listitem:
+        - link "Could not deliver a message to the mail server (attempt 2)":
+          - /url: /admin/reports/log?level=error&q=Could%20not%20deliver%20a%20message%20to%20the%20mail%20server%20%28attempt%202%29
+        - text: mail, 2026-11-26 13:56 UTC
+      - listitem:
+        - link "Could not deliver a message to the mail server (attempt 1)":
+          - /url: /admin/reports/log?level=error&q=Could%20not%20deliver%20a%20message%20to%20the%20mail%20server%20%28attempt%201%29
+        - text: mail, 2026-11-26 14:06 UTC
       - listitem:
         - link "JWT_SECRET is not configured; OAuth2 disabled":
           - /url: /admin/reports/log?level=error&q=JWT_SECRET%20is%20not%20configured%3B%20OAuth2%20disabled
-        - text: state, 2026-11-26 06:36 UTC
+        - text: state, 2026-11-26 14:09 UTC
     - paragraph:
       - link "All errors in the log":
         - /url: /admin/reports/log?level=error
   - heading "Areas you may use" [level=2]
   - region "Content":
-    - heading "Content" [level=3]
-    - paragraph: Write, find, review and publish what the site says, and the files it uses.
-    - list:
-      - listitem:
-        - link "Content":
-          - /url: /admin/content
-      - listitem:
-        - link "Add content":
-          - /url: /admin/content/add
-      - listitem:
-        - link "Moderated content":
-          - /url: /admin/content/moderated
-      - listitem:
-        - link "Comments":
-          - /url: /admin/content/comments
-      - listitem:
-        - link "Files":
-          - /url: /admin/content/files
-      - listitem:
-        - link "Media":
-          - /url: /admin/media
+    - heading "Content" [level=3]:
+      - link "Content":
+        - /url: /admin/content/overview
+    - paragraph: 4 unpublished items
+    - paragraph:
+      - link "Add content":
+        - /url: /admin/content/add
   - region "Structure":
-    - heading "Structure" [level=3]
-    - paragraph: "Shape the site: content types and fields, listings, menus, regions, categories and addresses."
-    - list:
-      - listitem:
-        - link "Content types":
-          - /url: /admin/structure/types
-      - listitem:
-        - link "Record types":
-          - /url: /admin/structure/records
-      - listitem:
-        - link "Gathers":
-          - /url: /admin/gather
-      - listitem:
-        - link "Menus":
-          - /url: /admin/structure/menus
-      - listitem:
-        - link "Tiles":
-          - /url: /admin/structure/tiles
-      - listitem:
-        - link "Categories":
-          - /url: /admin/structure/categories
-      - listitem:
-        - link "URL aliases":
-          - /url: /admin/structure/aliases
-      - listitem:
-        - link "URL alias patterns":
-          - /url: /admin/config/pathauto
+    - heading "Structure" [level=3]:
+      - link "Structure":
+        - /url: /admin/structure/overview
+    - paragraph:
+      - link "Add content type":
+        - /url: /admin/structure/types/add
   - region "Appearance":
-    - heading "Appearance" [level=3]
-    - paragraph: Choose how the site and this administration look.
-    - list:
-      - listitem:
-        - link "Themes":
-          - /url: /admin/appearance
+    - heading "Appearance" [level=3]:
+      - link "Appearance":
+        - /url: /admin/appearance/overview
   - region "People":
-    - heading "People" [level=3]
-    - paragraph: Accounts, roles, what each role may do, and who may register.
-    - list:
-      - listitem:
-        - link "Users":
-          - /url: /admin/people
-      - listitem:
-        - link "Roles":
-          - /url: /admin/people/roles
-      - listitem:
-        - link "Permissions":
-          - /url: /admin/people/permissions
-      - listitem:
-        - link "Access rules":
-          - /url: /admin/people/rules
+    - heading "People" [level=3]:
+      - link "People":
+        - /url: /admin/people/overview
+    - paragraph: 0 blocked accounts
+    - paragraph:
+      - link "Add user":
+        - /url: /admin/people/add
   - region "Extend":
-    - heading "Extend" [level=3]
-    - paragraph: Plugins, the pages they add, and the AI services the site may call.
-    - list:
-      - listitem:
-        - link "Plugins":
-          - /url: /admin/plugins
-      - listitem:
-        - link "AI providers":
-          - /url: /admin/system/ai-providers
-      - listitem:
-        - link "AI budgets":
-          - /url: /admin/system/ai-budgets
-      - listitem:
-        - link "AI chat":
-          - /url: /admin/system/ai-chat
-      - listitem:
-        - link "AI assistant":
-          - /url: /admin/system/ai-assistant
+    - heading "Extend" [level=3]:
+      - link "Extend":
+        - /url: /admin/extend/overview
   - region "Configuration":
-    - heading "Configuration" [level=3]
-    - paragraph: "Site wide settings: identity, text formats, search, editorial stages and account recovery."
-    - list:
-      - listitem:
-        - link "Site settings":
-          - /url: /admin/config/site
-      - listitem:
-        - link "Text formats":
-          - /url: /admin/config/formats
-      - listitem:
-        - link "Search settings":
-          - /url: /admin/config/search
-      - listitem:
-        - link "Stages":
-          - /url: /admin/structure/stages
-      - listitem:
-        - link "Redirects":
-          - /url: /admin/config/redirects
-      - listitem:
-        - link "Account recovery":
-          - /url: /admin/recovery
+    - heading "Configuration" [level=3]:
+      - link "Configuration":
+        - /url: /admin/config/overview
   - region "Reports":
-    - heading "Reports" [level=3]
-    - paragraph: "What the site has been doing: its log, audit trail, scheduled tasks and searches."
-    - list:
-      - listitem:
-        - link "Recent log messages":
-          - /url: /admin/reports/log
-      - listitem:
-        - link "Audit log":
-          - /url: /admin/reports/audit
-      - listitem:
-        - link "Cron":
-          - /url: /admin/reports/cron
-      - listitem:
-        - link "Search report":
-          - /url: /admin/reports/search
-      - listitem:
-        - link "Accessibility":
-          - /url: /admin/reports/accessibility
+    - heading "Reports" [level=3]:
+      - link "Reports":
+        - /url: /admin/reports/overview
   - region "Create":
     - heading "Create" [level=3]
     - list:
       - listitem:
-        - link "Add Basic Page":
-          - /url: /item/add/page
+        - link "Add Blog Post":
+          - /url: /item/add/blog
       - listitem:
         - link "Add Media":
           - /url: /item/add/media
       - listitem:
-        - link "Add Blog Post":
-          - /url: /item/add/blog
+        - link "Add Basic Page":
+          - /url: /item/add/page
   - region "You":
     - heading "You" [level=3]
     - paragraph: Signed in as gen_admin.

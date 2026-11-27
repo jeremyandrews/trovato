@@ -11,12 +11,14 @@
         - option "Add content Administration › Content"
         - option "Moderated content Administration › Content"
         - option "Content types Administration › Structure"
+        - option "Add content type Administration › Structure"
         - option "Comments Administration › Content"
         - option "Files Administration › Content"
         - option "Media Administration › Content"
         - option "Gathers Administration › Structure"
         - option "Categories Administration › Structure"
         - option "URL alias patterns Administration › Structure"
+        - option "Languages Administration › Configuration"
         - option "Stages Administration › Configuration"
       - group "Settings":
         - text: Settings
@@ -29,6 +31,6 @@
         - option "trovato_blog Plugin, enabled"
         - option "trovato_content_locking Plugin, enabled"
         - option "trovato_content_translation Plugin, enabled"
-    - status: 18 results
+    - status: 20 results
     - button "All results"
     - button "Close"

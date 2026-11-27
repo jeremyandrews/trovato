@@ -49,133 +49,22 @@
             - /url: /admin/media
     - listitem:
       - heading "Structure" [level=2]:
-        - button "Structure" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/structure/overview
-        - listitem:
-          - link "Content types":
-            - /url: /admin/structure/types
-        - listitem:
-          - link "Record types":
-            - /url: /admin/structure/records
-        - listitem:
-          - link "Gathers":
-            - /url: /admin/gather
-        - listitem:
-          - link "Menus":
-            - /url: /admin/structure/menus
-        - listitem:
-          - link "Tiles":
-            - /url: /admin/structure/tiles
-        - listitem:
-          - link "Categories":
-            - /url: /admin/structure/categories
-        - listitem:
-          - link "URL aliases":
-            - /url: /admin/structure/aliases
-        - listitem:
-          - link "URL alias patterns":
-            - /url: /admin/config/pathauto
+        - button "Structure"
     - listitem:
       - heading "Appearance" [level=2]:
-        - button "Appearance" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/appearance/overview
-        - listitem:
-          - link "Themes":
-            - /url: /admin/appearance
+        - button "Appearance"
     - listitem:
       - heading "People" [level=2]:
-        - button "People" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/people/overview
-        - listitem:
-          - link "Users":
-            - /url: /admin/people
-        - listitem:
-          - link "Roles":
-            - /url: /admin/people/roles
-        - listitem:
-          - link "Permissions":
-            - /url: /admin/people/permissions
-        - listitem:
-          - link "Access rules":
-            - /url: /admin/people/rules
+        - button "People"
     - listitem:
       - heading "Extend" [level=2]:
-        - button "Extend" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/extend/overview
-        - listitem:
-          - link "Plugins":
-            - /url: /admin/plugins
-        - listitem:
-          - link "AI providers":
-            - /url: /admin/system/ai-providers
-        - listitem:
-          - link "AI budgets":
-            - /url: /admin/system/ai-budgets
-        - listitem:
-          - link "AI chat":
-            - /url: /admin/system/ai-chat
-        - listitem:
-          - link "AI assistant":
-            - /url: /admin/system/ai-assistant
+        - button "Extend"
     - listitem:
       - heading "Configuration" [level=2]:
-        - button "Configuration" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/config/overview
-        - listitem:
-          - link "Site settings":
-            - /url: /admin/config/site
-        - listitem:
-          - link "Text formats":
-            - /url: /admin/config/formats
-        - listitem:
-          - link "Search settings":
-            - /url: /admin/config/search
-        - listitem:
-          - link "Stages":
-            - /url: /admin/structure/stages
-        - listitem:
-          - link "Redirects":
-            - /url: /admin/config/redirects
-        - listitem:
-          - link "Account recovery":
-            - /url: /admin/recovery
+        - button "Configuration"
     - listitem:
       - heading "Reports" [level=2]:
-        - button "Reports" [expanded]
-      - list:
-        - listitem:
-          - link "Overview":
-            - /url: /admin/reports/overview
-        - listitem:
-          - link "Recent log messages":
-            - /url: /admin/reports/log
-        - listitem:
-          - link "Audit log":
-            - /url: /admin/reports/audit
-        - listitem:
-          - link "Cron":
-            - /url: /admin/reports/cron
-        - listitem:
-          - link "Search report":
-            - /url: /admin/reports/search
-        - listitem:
-          - link "Accessibility":
-            - /url: /admin/reports/accessibility
+        - button "Reports"
 - main:
   - navigation "Breadcrumb":
     - list:
@@ -198,9 +87,9 @@
     - text: Type
     - combobox "Type":
       - option "- Any -" [selected]
-      - option "Basic Page"
-      - option "Media"
       - option "Blog Post"
+      - option "Media"
+      - option "Basic Page"
     - text: Status
     - combobox "Status":
       - option "- Any -" [selected]
@@ -295,7 +184,7 @@
             - 'link "Revisions of Post 3: velvet grove cobalt"':
               - /url: /item/ef7713e2-49ac-ba8b-b56f-fa008947754f/revisions
             - 'button "Delete Post 3: velvet grove cobalt"'
-        - 'row "Select Post 4: tundra thistle atlas Post 4: tundra thistle atlas blog gen_user_5 Published 2025-12-31 23:56 Edit Post 4: tundra thistle atlas Revisions of Post 4: tundra thistle atlas Delete Post 4: tundra thistle atlas"':
+        - 'row "Select Post 4: tundra thistle atlas Post 4: tundra thistle atlas blog gen_user_5 Unpublished 2025-12-31 23:56 Edit Post 4: tundra thistle atlas Revisions of Post 4: tundra thistle atlas Delete Post 4: tundra thistle atlas"':
           - 'cell "Select Post 4: tundra thistle atlas"':
             - 'checkbox "Select Post 4: tundra thistle atlas"'
             - text: "Select Post 4: tundra thistle atlas"
@@ -304,7 +193,7 @@
               - /url: /admin/content/0940c26c-1e81-ba17-9efb-bf47da95393e/edit
           - cell "blog"
           - cell "gen_user_5"
-          - cell "Published"
+          - cell "Unpublished"
           - cell "2025-12-31 23:56"
           - 'cell "Edit Post 4: tundra thistle atlas Revisions of Post 4: tundra thistle atlas Delete Post 4: tundra thistle atlas"':
             - 'link "Edit Post 4: tundra thistle atlas"':
@@ -346,7 +235,7 @@
             - 'link "Revisions of Post 6: dune orchard thistle"':
               - /url: /item/56ef67ee-c778-dd8f-5ca5-7f42d731d864/revisions
             - 'button "Delete Post 6: dune orchard thistle"'
-        - 'row "Select Post 7: linen juniper summit Post 7: linen juniper summit blog gen_user_8 Published 2025-12-31 23:53 Edit Post 7: linen juniper summit Revisions of Post 7: linen juniper summit Delete Post 7: linen juniper summit"':
+        - 'row "Select Post 7: linen juniper summit Post 7: linen juniper summit blog gen_user_8 Unpublished 2025-12-31 23:53 Edit Post 7: linen juniper summit Revisions of Post 7: linen juniper summit Delete Post 7: linen juniper summit"':
           - 'cell "Select Post 7: linen juniper summit"':
             - 'checkbox "Select Post 7: linen juniper summit"'
             - text: "Select Post 7: linen juniper summit"
@@ -355,7 +244,7 @@
               - /url: /admin/content/12a5a331-6d0b-cea0-858b-f3c454b1410e/edit
           - cell "blog"
           - cell "gen_user_8"
-          - cell "Published"
+          - cell "Unpublished"
           - cell "2025-12-31 23:53"
           - 'cell "Edit Post 7: linen juniper summit Revisions of Post 7: linen juniper summit Delete Post 7: linen juniper summit"':
             - 'link "Edit Post 7: linen juniper summit"':
@@ -380,7 +269,7 @@
             - 'link "Revisions of Post 8: sable hollow nectar"':
               - /url: /item/da57c3b8-156e-2979-30e5-79b937c2ef9b/revisions
             - 'button "Delete Post 8: sable hollow nectar"'
-        - 'row "Select Post 9: atlas umber marble Post 9: atlas umber marble blog gen_user_10 Published 2025-12-31 23:51 Edit Post 9: atlas umber marble Revisions of Post 9: atlas umber marble Delete Post 9: atlas umber marble"':
+        - 'row "Select Post 9: atlas umber marble Post 9: atlas umber marble blog gen_user_10 Unpublished 2025-12-31 23:51 Edit Post 9: atlas umber marble Revisions of Post 9: atlas umber marble Delete Post 9: atlas umber marble"':
           - 'cell "Select Post 9: atlas umber marble"':
             - 'checkbox "Select Post 9: atlas umber marble"'
             - text: "Select Post 9: atlas umber marble"
@@ -389,7 +278,7 @@
               - /url: /admin/content/0edac9e7-b53d-2347-2894-c4069fad3d4f/edit
           - cell "blog"
           - cell "gen_user_10"
-          - cell "Published"
+          - cell "Unpublished"
           - cell "2025-12-31 23:51"
           - 'cell "Edit Post 9: atlas umber marble Revisions of Post 9: atlas umber marble Delete Post 9: atlas umber marble"':
             - 'link "Edit Post 9: atlas umber marble"':
@@ -414,7 +303,7 @@
             - 'link "Revisions of Post 10: willow signal hollow"':
               - /url: /item/8a52ec78-319d-929a-1997-8980eee96634/revisions
             - 'button "Delete Post 10: willow signal hollow"'
-        - 'row "Select Post 11: violet compass canvas Post 11: violet compass canvas blog gen_user_12 Published 2025-12-31 23:49 Edit Post 11: violet compass canvas Revisions of Post 11: violet compass canvas Delete Post 11: violet compass canvas"':
+        - 'row "Select Post 11: violet compass canvas Post 11: violet compass canvas blog gen_user_12 Unpublished 2025-12-31 23:49 Edit Post 11: violet compass canvas Revisions of Post 11: violet compass canvas Delete Post 11: violet compass canvas"':
           - 'cell "Select Post 11: violet compass canvas"':
             - 'checkbox "Select Post 11: violet compass canvas"'
             - text: "Select Post 11: violet compass canvas"
@@ -423,7 +312,7 @@
               - /url: /admin/content/0d00c89c-afa0-a463-c672-8e95f1cca4df/edit
           - cell "blog"
           - cell "gen_user_12"
-          - cell "Published"
+          - cell "Unpublished"
           - cell "2025-12-31 23:49"
           - 'cell "Edit Post 11: violet compass canvas Revisions of Post 11: violet compass canvas Delete Post 11: violet compass canvas"':
             - 'link "Edit Post 11: violet compass canvas"':

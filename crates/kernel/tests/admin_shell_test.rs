@@ -60,6 +60,31 @@ fn dashboard_links(html: &str) -> Vec<String> {
     hrefs_in(html, r#"<div class="dashboard-grid">"#, "</main>")
 }
 
+/// Everything the dashboard offers `cookies`' viewer: its own links, and the
+/// pages on each group landing page its cards lead to (B245: a card leads to
+/// its landing page rather than listing the group's pages). Every landing
+/// page it links to must open.
+async fn dashboard_offers(app: &TestApp, cookies: &str) -> Vec<String> {
+    let (status, html) = get(app, cookies, "/admin").await;
+    assert_eq!(status, StatusCode::OK);
+    let mut links = dashboard_links(&html);
+    let landings: Vec<String> = links
+        .iter()
+        .filter(|l| l.ends_with("/overview"))
+        .cloned()
+        .collect();
+    assert!(
+        !landings.is_empty(),
+        "the dashboard leads to no area: {links:?}"
+    );
+    for landing in landings {
+        let (status, page) = get(app, cookies, &landing).await;
+        assert_eq!(status, StatusCode::OK, "{landing}");
+        links.extend(hrefs_in(&page, r#"<div class="page-header">"#, "</main>"));
+    }
+    links
+}
+
 async fn admin_cookies(app: &TestApp, prefix: &str) -> String {
     let name = common::username(prefix);
     app.create_and_login_admin(
@@ -107,9 +132,16 @@ fn the_dashboard_lists_only_what_the_viewer_may_open() {
             &["access administration pages", "edit any content"],
         )
         .await;
-        let (status, html) = get(app, &cookies, "/admin").await;
-        assert_eq!(status, StatusCode::OK);
-        let links = dashboard_links(&html);
+        let (_, html) = get(app, &cookies, "/admin").await;
+        assert_eq!(
+            dashboard_links(&html)
+                .iter()
+                .filter(|l| l.ends_with("/overview"))
+                .collect::<Vec<_>>(),
+            vec!["/admin/content/overview"],
+            "only the Content area"
+        );
+        let links = dashboard_offers(app, &cookies).await;
         assert!(links.iter().any(|l| l == "/admin/content"), "{links:?}");
         for absent in [
             "/admin/people",
@@ -131,8 +163,7 @@ fn the_dashboard_lists_only_what_the_viewer_may_open() {
         app.ensure_plugin_enabled("trovato_comments").await;
         app.ensure_plugin_enabled("trovato_categories").await;
         let admin = admin_cookies(app, "b107dashadm").await;
-        let (_, html) = get(app, &admin, "/admin").await;
-        let links = dashboard_links(&html);
+        let links = dashboard_offers(app, &admin).await;
         for expected in [
             "/admin/content",
             "/admin/content/comments",

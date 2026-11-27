@@ -359,59 +359,219 @@ fn preferences_set_the_theme_and_the_admin_language_and_direction() {
     });
 }
 
-/// The sidebar's open and closed groups are remembered per user, so the
-/// next page is drawn that way; a request from another site is refused.
+/// Whether the sidebar group `slug` is drawn open: its button says expanded
+/// and its list is not marked collapsed.
+fn group_open(html: &str, slug: &str) -> bool {
+    let expanded = html.contains(&format!(
+        "aria-expanded=\"true\" aria-controls=\"admin-nav-{slug}\""
+    ));
+    let collapsed = html.contains(&format!("id=\"admin-nav-{slug}\" data-collapsed"));
+    assert_ne!(
+        expanded, collapsed,
+        "{slug}: the button and the list disagree"
+    );
+    expanded
+}
+
+/// Only the current page's group is open by default, and the Dashboard
+/// opens none. A group the viewer opens by hand is remembered, per user, on
+/// every page, until they close it; an unknown group and a request from
+/// another site are refused.
 #[test]
-fn the_sidebar_remembers_which_groups_are_collapsed() {
+fn the_sidebar_opens_where_you_are_and_remembers_groups_opened_by_hand() {
     run_test(async {
         let app = shared_app().await;
-        let cookies = admin(app, "b199nav").await;
-        let status = post(
-            app,
-            &cookies,
-            "/admin/preferences/nav",
-            "application/json",
-            r#"{"collapsed":["reports","nonsense"]}"#.to_string(),
-            &[("sec-fetch-site", "same-origin")],
-        )
-        .await;
-        assert_eq!(status, StatusCode::NO_CONTENT);
-        let (_, html) = get(app, &cookies, "/admin/content").await;
-        assert!(html.contains("id=\"admin-nav-reports\" data-collapsed"));
-        assert!(
-            !html.contains("id=\"admin-nav-content\" data-collapsed"),
-            "the group holding the current page is always open"
-        );
-        assert!(html.contains("aria-controls=\"admin-nav-reports\""));
+        let cookies = admin(app, "b245nav").await;
+        let slugs = [
+            "content",
+            "structure",
+            "appearance",
+            "people",
+            "extend",
+            "config",
+            "reports",
+        ];
 
-        let status = post(
-            app,
-            &cookies,
-            "/admin/preferences/nav",
-            "application/json",
-            r#"{"collapsed":[]}"#.to_string(),
-            &[("sec-fetch-site", "cross-site")],
-        )
-        .await;
-        assert_eq!(status, StatusCode::FORBIDDEN);
+        let (_, html) = get(app, &cookies, "/admin").await;
+        for slug in slugs {
+            assert!(
+                !group_open(&html, slug),
+                "the Dashboard opens no group: {slug}"
+            );
+        }
+        let (_, html) = get(app, &cookies, "/admin/content").await;
+        for slug in slugs {
+            assert_eq!(group_open(&html, slug), slug == "content", "{slug}");
+        }
+        assert!(html.contains("data-group=\"content\" data-current>"));
+        assert!(html.contains("data-group=\"reports\">"));
+
+        let toggle = |group: &str, open: bool, site: &'static str| {
+            let body = format!(r#"{{"group":"{group}","open":{open}}}"#);
+            let cookies = cookies.clone();
+            async move {
+                post(
+                    app,
+                    &cookies,
+                    "/admin/preferences/nav",
+                    "application/json",
+                    body,
+                    &[("sec-fetch-site", site)],
+                )
+                .await
+            }
+        };
+        assert_eq!(
+            toggle("reports", true, "same-origin").await,
+            StatusCode::NO_CONTENT
+        );
+        let (_, html) = get(app, &cookies, "/admin/content").await;
+        assert!(group_open(&html, "reports"), "opened by hand");
+        assert!(group_open(&html, "content"), "the current group");
+        assert!(!group_open(&html, "people"));
+        let (_, html) = get(app, &cookies, "/admin").await;
+        assert!(group_open(&html, "reports"), "remembered on every page");
+        assert!(!group_open(&html, "content"));
+
+        assert_eq!(
+            toggle("nonsense", true, "same-origin").await,
+            StatusCode::BAD_REQUEST
+        );
+        assert_eq!(
+            toggle("reports", false, "cross-site").await,
+            StatusCode::FORBIDDEN
+        );
+        let (_, html) = get(app, &cookies, "/admin").await;
+        assert!(
+            group_open(&html, "reports"),
+            "the refused request changed nothing"
+        );
+
+        assert_eq!(
+            toggle("reports", false, "same-origin").await,
+            StatusCode::NO_CONTENT
+        );
+        let (_, html) = get(app, &cookies, "/admin/reports/log").await;
+        assert!(group_open(&html, "reports"), "the current group stays open");
+        let (_, html) = get(app, &cookies, "/admin/content").await;
+        assert!(!group_open(&html, "reports"), "closed by hand");
 
         let status = post(
             app,
             "",
             "/admin/preferences/nav",
             "application/json",
-            r#"{"collapsed":[]}"#.to_string(),
+            r#"{"group":"reports","open":true}"#.to_string(),
             &[],
         )
         .await;
         assert_eq!(status, StatusCode::UNAUTHORIZED);
-        forget(app, "b199nav").await;
+        forget(app, "b245nav").await;
     });
 }
 
-/// The preferences form (theme, language) and the sidebar's remembered
-/// groups are saved by different requests. Saved at the same moment, neither
-/// puts back the other's old value: each writes only its own fields.
+/// The stored preferences object of `user`, as saved.
+async fn stored_prefs(app: &TestApp, user: uuid::Uuid) -> Option<serde_json::Value> {
+    sqlx::query_scalar("SELECT prefs FROM admin_preference WHERE user_id = $1")
+        .bind(user)
+        .fetch_optional(&app.db)
+        .await
+        .unwrap()
+}
+
+/// `toggle_group` writes one group in one statement whatever the row holds:
+/// no row, a row with no `expanded` key (the theme survives, and the pre-B245
+/// `collapsed` list goes), a slug not yet in the list and one already in it.
+#[test]
+fn toggling_a_group_saves_only_that_group_for_any_stored_row() {
+    run_test(async {
+        use trovato_kernel::routes::admin_nav::Preferences;
+        let app = shared_app().await;
+        let make = |_label: &'static str| async move {
+            let name = common::username("b245tog");
+            app.create_test_admin(
+                &name,
+                "correct-horse-battery-staple",
+                &format!("{name}@test.local"),
+            )
+            .await;
+            common::user_id_of(app, &name).await
+        };
+
+        // No row at all.
+        let fresh = make("a").await;
+        assert_eq!(stored_prefs(app, fresh).await, None);
+        Preferences::toggle_group(&app.db, fresh, "people", true)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored_prefs(app, fresh).await,
+            Some(serde_json::json!({ "expanded": ["people"] }))
+        );
+
+        // A row with no `expanded` key, opening: the theme survives and the
+        // old `collapsed` list is dropped.
+        let opener = make("b").await;
+        Preferences::merge(
+            &app.db,
+            opener,
+            serde_json::json!({ "theme": "dark", "collapsed": ["reports"] }),
+        )
+        .await
+        .unwrap();
+        Preferences::toggle_group(&app.db, opener, "reports", true)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored_prefs(app, opener).await,
+            Some(serde_json::json!({ "theme": "dark", "expanded": ["reports"] }))
+        );
+
+        // A row with no `expanded` key, closing: an empty list, never null.
+        let closer = make("c").await;
+        Preferences::merge(&app.db, closer, serde_json::json!({ "theme": "light" }))
+            .await
+            .unwrap();
+        Preferences::toggle_group(&app.db, closer, "config", false)
+            .await
+            .unwrap();
+        assert_eq!(
+            stored_prefs(app, closer).await,
+            Some(serde_json::json!({ "theme": "light", "expanded": [] }))
+        );
+        let prefs = Preferences::load(&app.db, closer).await;
+        assert_eq!(prefs.theme.as_deref(), Some("light"));
+        assert!(prefs.expanded.is_empty());
+
+        // A slug not in the list is appended; one already in it is not
+        // added twice; closing removes only it.
+        Preferences::toggle_group(&app.db, fresh, "reports", true)
+            .await
+            .unwrap();
+        Preferences::toggle_group(&app.db, fresh, "people", true)
+            .await
+            .unwrap();
+        assert_eq!(
+            Preferences::load(&app.db, fresh).await.expanded,
+            vec!["people".to_string(), "reports".to_string()]
+        );
+        Preferences::toggle_group(&app.db, fresh, "extend", false)
+            .await
+            .unwrap();
+        Preferences::toggle_group(&app.db, fresh, "people", false)
+            .await
+            .unwrap();
+        assert_eq!(
+            Preferences::load(&app.db, fresh).await.expanded,
+            vec!["reports".to_string()]
+        );
+        forget(app, "b245tog").await;
+    });
+}
+
+/// The preferences form (theme, language) and the sidebar's opened groups
+/// are saved by different requests. Saved at the same moment, neither puts
+/// back the other's old value: each writes only its own fields.
 #[test]
 fn saving_the_sidebar_state_and_the_theme_together_keeps_both() {
     run_test(async {
@@ -428,14 +588,14 @@ fn saving_the_sidebar_state_and_the_theme_together_keeps_both() {
 
         for round in 0..25 {
             let theme = if round % 2 == 0 { "dark" } else { "light" };
-            let group = if round % 2 == 0 { "people" } else { "reports" };
+            let open = round % 2 == 0;
             let (a, b) = tokio::join!(
                 Preferences::merge(
                     &app.db,
                     user,
                     serde_json::json!({ "theme": theme, "language": null })
                 ),
-                Preferences::merge(&app.db, user, serde_json::json!({ "collapsed": [group] })),
+                Preferences::toggle_group(&app.db, user, "people", open),
             );
             a.unwrap();
             b.unwrap();
@@ -445,9 +605,13 @@ fn saving_the_sidebar_state_and_the_theme_together_keeps_both() {
                 Some(theme),
                 "round {round}: the theme was lost"
             );
+            let expected: Vec<String> = if open {
+                vec!["people".to_string()]
+            } else {
+                Vec::new()
+            };
             assert_eq!(
-                prefs.collapsed,
-                vec![group.to_string()],
+                prefs.expanded, expected,
                 "round {round}: the groups were lost"
             );
         }

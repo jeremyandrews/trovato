@@ -1,4 +1,7 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/icons.html" as icons %}
+{% import "admin/macros/list.html" as list %}
+{% import "admin/macros/status.html" as status %}
 
 {% block content %}
 {% if update_status %}
@@ -21,12 +24,12 @@
     {% for panel in dashboard_panels %}
     <section class="admin-card dashboard-panel" aria-labelledby="dashboard-panel-{{ panel.key }}">
         <h2 id="dashboard-panel-{{ panel.key }}">{{ t(s=panel.title) }}</h2>
-        <p class="dashboard-panel__summary">{{ t_message(m=panel.summary) }}</p>
+        {% if panel.summary_line %}{{ status::render_status_line(line=panel.summary_line) }}{% else %}<p class="dashboard-panel__summary">{{ t_message(m=panel.summary) }}</p>{% endif %}
         {% if panel.rows %}
         <ul class="dashboard-panel__rows">
             {% for row in panel.rows %}
             <li>
-                {% if row.href %}<a href="{{ row.href }}">{{ t_message(m=row.text) }}</a>{% else %}{{ t_message(m=row.text) }}{% endif %}
+                {% if row.status_line %}<a href="{{ row.href }}">{{ status::render_status_line(line=row.status_line) }}</a>{% elif row.href %}<a href="{{ row.href }}">{{ t_message(m=row.text) }}</a>{% else %}{{ t_message(m=row.text) }}{% endif %}
                 {% if row.detail %}<span class="dashboard-panel__detail">{{ t_message(m=row.detail) }}</span>{% endif %}
             </li>
             {% endfor %}
@@ -40,20 +43,20 @@
 
 <h2 class="visually-hidden">{{ t(s="Areas you may use") }}</h2>
 <div class="dashboard-grid">
-    {#- Built by `routes::admin_nav::dashboard`: one card per group the viewer
-        may use, each link under the same gate and plugin check as the sidebar.
-        The dashboard is admission to the section, not authority inside it, so
-        a role delegated one page is shown that page and not a door that
-        answers 403. -#}
+    {#- Built by `routes::admin_nav::dashboard`: one compact card per group
+        the viewer may use, under the same gate and plugin check as the
+        sidebar: the group's chip, its title linking to its landing page
+        (which lists its pages), its status lines and its main action. A
+        plugin card is the Extend chip, its title linking to its page, and its
+        description. The dashboard is admission to the section, not authority
+        inside it, so a role delegated one page is shown that page's area and
+        not a door that answers 403. -#}
     {% for card in dashboard_cards | default(value=[]) %}
     <section class="admin-card dashboard-card" aria-labelledby="dashboard-card-{{ loop.index }}">
-        <h3 id="dashboard-card-{{ loop.index }}">{{ t(s=card.title) }}</h3>
-        <p class="dashboard-card__description">{{ t(s=card.description) }}</p>
-        <ul class="dashboard-card__links">
-            {% for link in card.links %}
-            <li><a href="{{ link.href | safe }}">{{ t(s=link.label) }}</a></li> {# SAFE: each href is either a constant in `routes::admin_nav::LINKS` or a plugin's own `tap_admin_nav` declaration, validated at boot — never user text #}
-            {% endfor %}
-        </ul>
+        <h3 id="dashboard-card-{{ loop.index }}"><span class="icon-chip" aria-hidden="true">{{ icons::icon(name=card.icon) }}</span><a href="{{ card.href | safe }}">{{ t(s=card.title) }}</a></h3> {# SAFE: a landing page address built from a constant group slug, or a plugin's own `tap_admin_nav` declaration, validated at boot — never user text #}
+        {% if card.description %}<p class="dashboard-card__description">{{ t(s=card.description) }}</p>{% endif %}
+        {% for line in card.status_lines %}{{ status::render_status_line(line=line) }}{% endfor %}
+        {% if card.primary %}<p class="dashboard-card__action">{{ list::add_link(url=card.primary.href, label=t(s=card.primary.label), icon=card.primary.icon) }}</p>{% endif %}
     </section>
     {% endfor %}
 

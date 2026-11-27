@@ -1,0 +1,6 @@
+{#- A status line (routes::admin_nav::status_line): one sentence of state
+    under a landing tile, on a dashboard card or in a dashboard panel. The
+    one place a StatusLine is drawn. When work waits the line itself is the
+    badge: the same element and words, styled, never a second element, so a
+    screen reader hears the count once. -#}
+{% macro render_status_line(line) %}<p class="status-line{% if line.waiting %} status-line--waiting{% endif %}">{{ t_message(m=line.message) }}</p>{% endmacro render_status_line %}

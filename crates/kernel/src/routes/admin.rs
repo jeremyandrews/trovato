@@ -170,15 +170,25 @@ async fn dashboard(State(state): State<AppState>, session: Session) -> Response 
     // check the sidebar uses, so a viewer is offered no screen that answers
     // 403 or 404.
     let enabled: Vec<String> = state.enabled_plugins().into_iter().collect();
-    context.insert(
-        "dashboard_cards",
-        &super::admin_nav::dashboard(
-            &viewer,
-            &enabled,
-            state.plugin_admin_nav().links(),
-            state.plugin_admin_nav().cards(),
-        ),
-    );
+    let nav = state.plugin_admin_nav();
+    let mut cards = super::admin_nav::dashboard(&viewer, &enabled, nav.links(), nav.cards());
+    // Each group card's status lines, from its offered pages, skipping what
+    // a panel below already reports; awaited one after another in this
+    // request's own task, so the request profile counts every statement.
+    let pages = super::admin_nav::offered_pages(&viewer, &enabled, &[], &[]);
+    for card in &mut cards {
+        let Some(group) = card.group else { continue };
+        for page in pages.iter().filter(|p| p.group == Some(group)) {
+            let Some(status) = page.status else { continue };
+            if super::admin_nav::DASHBOARD_PANEL_STATUSES.contains(&status) {
+                continue;
+            }
+            if let Some(line) = super::admin_nav::status_line(status, &viewer, &state).await {
+                card.status_lines.push(line);
+            }
+        }
+    }
+    context.insert("dashboard_cards", &cards);
     // What needs the viewer now: each panel only for someone who may open
     // the page it is about.
     context.insert(
