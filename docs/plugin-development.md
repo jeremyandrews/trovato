@@ -1248,10 +1248,15 @@ fn tap_admin_nav() -> Vec<AdminNavDefinition> {
             "/admin/groups",         // must start with /admin
             "administer groups",     // permission that gates the link and card
         )
-        .card("Manage user groups."), // optional: also show a dashboard card
+        .card("Manage user groups.") // optional: also show a dashboard card
+        .with_keywords(["teams", "cohorts"]), // optional: other search words
     ]
 }
 ```
+
+`AdminNavDefinition` is `#[non_exhaustive]`: build it with `new` and the
+builders above, never a struct literal, so a field added later never breaks
+your plugin's build.
 
 `permission` is display filtering only, exactly like every kernel sidebar
 link: a viewer who does not hold it does not see the link or the card, but
@@ -1274,7 +1279,7 @@ filtered to viewers who hold `permission` while the plugin is enabled:
 | Sidebar | a link under its group: the `section` names the group (`Structure`, `People`, …, or `System` for Configuration); any other name joins Extend |
 | The group's landing page (`/admin/{group}/overview`) | a tile with the group's icon, the link, and `card_description` as its line when set |
 | Dashboard | a card titled `label` linking to `href`, with the Extend icon and `card_description`, when `card_description` is set; without one, the link still gives its group a card for whoever may open it |
-| Admin search and the command palette | a result under "Plugins", found by `label`, `section` and `card_description` |
+| Admin search and the command palette | a result under "Plugins", found by `label`, `section`, `card_description` and `keywords` |
 | Breadcrumb and `<title>` of your page and the pages below it | Administration › group › `label` |
 | "Who can do this?" | `permission`, and the roles that hold it |
 
@@ -1291,10 +1296,11 @@ same way as a kernel page (`docs/admin/design.md`): one `h1`, an intro
 sentence, and the form and table patterns.
 
 Admin search (`/admin/search` and the command palette) finds the entry by
-its label, its section and its card description, and lists it under
-"Plugins", for the same viewers who see the link. The plugins page's row for
-the plugin is also found by the plugin's name and description, for whoever
-may manage plugins.
+its label, its section, its card description and its keywords, and lists it
+under "Plugins", for the same viewers who see the link. `keywords` is for a
+word a viewer might search by that never appears in the other three, written
+in English like them. The plugins page's row for the plugin is also found by
+the plugin's name and description, for whoever may manage plugins.
 
 `href` must be the plugin's own path below `/admin/` (`/admin/groups`, not
 `/administrator` or `/admin/../groups`: no empty, `.` or `..` segments, encoded or
