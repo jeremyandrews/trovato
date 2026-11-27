@@ -57,7 +57,10 @@ let was_there = host::timer_cancel(&format!("close:{poll_id}"))?;  // bool
 
 Setting a name that exists replaces it: a new time, repeat and payload, its
 attempts reset. That is how a changed date moves a timer. A timer an
-administrator paused stays paused when its owner sets it again.
+administrator paused stays paused when its owner sets it again. Replacing a
+timer adds none, so it is never refused for the per-plugin limit: an owner
+over a limit the site lowered can still move the timers it holds, and only a
+new name is refused.
 
 When it is due the kernel calls `tap_timer` on the owner:
 
@@ -95,7 +98,9 @@ Every server runs a scheduler. A due timer is claimed in one statement
 claim carries a token: the result of a run is recorded only if the timer was
 not replaced, paused or cancelled while it ran. A server that dies while a
 handler runs leaves a claim that lapses after the background wall clock limit
-(16 minutes by default), and another server runs it again.
+(16 minutes by default), and another server runs it again. A server shutting
+down starts nothing it has not started: claims it took as the shutdown came
+are given back at once, uncounted, for another server to fire.
 
 The one way a handler runs twice is that last one: the server dies after the
 handler's work is done but before its result is recorded. Write handlers that
@@ -108,9 +113,9 @@ to do.
 | Code | Constant | Meaning |
 |------|----------|---------|
 | -95 | `ERR_TIMER_INVALID` | The name is empty, longer than 255 bytes or has a control character; or the time is not a valid second |
-| -96 | `ERR_TIMER_PAYLOAD_TOO_LARGE` | The payload's JSON is over the site's limit (4096 bytes by default) |
+| -96 | `ERR_TIMER_PAYLOAD_TOO_LARGE` | The payload's JSON is over the site's limit (4096 bytes by default, at most 65536) |
 | -97 | `ERR_TIMER_REPEAT_TOO_SHORT` | The repeat interval is under the site's minimum (60 seconds by default) |
-| -98 | `ERR_TIMER_LIMIT` | The plugin holds as many timers as the site allows (10,000 by default) |
+| -98 | `ERR_TIMER_LIMIT` | A new name, and the plugin holds as many timers as the site allows (10,000 by default); replacing a timer it holds is never refused for this |
 | -12 | `ERR_SQL_FAILED` | The database refused the write |
 | -14 | `ERR_PARAM_DESERIALIZE` | The request is not valid JSON of its shape |
 
@@ -158,7 +163,7 @@ The throttles form (`/admin/reports/timers/settings`) sets:
 | Timers firing at once, per server | 4 | `TIMER_MAX_CONCURRENT` |
 | Timers per plugin | 10,000 | `TIMER_MAX_PER_PLUGIN` |
 | Shortest repeat interval (seconds) | 60 | `TIMER_MIN_REPEAT_SECS` |
-| Largest payload (bytes) | 4096 | `TIMER_MAX_PAYLOAD_BYTES` |
+| Largest payload (bytes), at most 65536 | 4096 | `TIMER_MAX_PAYLOAD_BYTES` |
 
 A variable that is set overrides the form, which then shows the value read
 only. Every change made on these pages is checked against the permission,

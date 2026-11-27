@@ -604,3 +604,39 @@ fn the_cron_report_and_the_timers_report_link_each_other() {
         );
     });
 }
+
+/// The throttles form will not raise the payload limit past what a plugin
+/// can read back.
+#[test]
+fn the_throttles_form_refuses_a_payload_limit_past_the_ceiling() {
+    run_test(async {
+        let app = shared_app().await;
+        let (_, cookies) = admin(app, "b278cap").await;
+        let before = timer::saved_settings(&app.db).await.unwrap();
+        let (_, html) = get(app, &cookies, "/admin/reports/timers/settings").await;
+        let response = post(
+            app,
+            &cookies,
+            "/admin/reports/timers/settings",
+            format!(
+                "_token={}&max_concurrent={}&max_per_plugin={}&min_repeat_secs={}&max_payload_bytes=300000",
+                token(&html),
+                before.max_concurrent,
+                before.max_per_plugin,
+                before.min_repeat_secs
+            ),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK, "re-rendered");
+        let html = body_string(response).await;
+        assert!(
+            html.contains("The largest payload can be at most 65536 bytes."),
+            "{html}"
+        );
+        assert_eq!(
+            timer::saved_settings(&app.db).await.unwrap(),
+            before,
+            "nothing saved"
+        );
+    });
+}

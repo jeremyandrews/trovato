@@ -47,9 +47,9 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock, RwLock};
-use std::time::Duration;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, RwLock, Weak};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -93,6 +93,26 @@ pub const MAX_NAME_BYTES: usize = 255;
 /// The claim lease when no plugin runtime says how long a background tap may
 /// run: the shipped background wall clock ceiling (900 seconds) and a minute.
 const DEFAULT_LEASE_SECS: u64 = 960;
+
+/// The longest error kept on a timer, in bytes: enough for any message, and
+/// small enough that a timer read back fits a plugin's output buffer.
+pub const MAX_ERROR_BYTES: usize = 2048;
+
+/// `text` cut to at most `max` bytes, on a character boundary.
+fn clip(text: &str, max: usize) -> String {
+    if text.len() <= max {
+        return text.to_string();
+    }
+    let mut end = max;
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    text[..end].to_string()
+}
+
+/// How long the scheduler keeps the concurrency throttle before reading it
+/// again while timers are due.
+const SETTINGS_REREAD: Duration = Duration::from_secs(1);
 
 /// Largest repeat interval: what fits the column.
 const MAX_REPEAT_SECS: i64 = i32::MAX as i64;
@@ -152,6 +172,11 @@ pub struct TimerSettings {
     pub max_payload_bytes: u32,
 }
 
+/// The largest payload limit a site may set, in bytes. A plugin reads a timer
+/// back through a fixed output buffer (256 KiB in the SDK); a payload up to
+/// this, with the name and the error kept on the timer, always fits it.
+pub const MAX_PAYLOAD_LIMIT: u32 = 65_536;
+
 impl Default for TimerSettings {
     fn default() -> Self {
         Self {
@@ -200,11 +225,15 @@ impl TimerOverrides {
                 },
             }
         };
+        let max_payload_bytes = read(Self::VARIABLES[3])?;
+        if max_payload_bytes.is_some_and(|n| n > MAX_PAYLOAD_LIMIT) {
+            anyhow::bail!("{} must be at most {MAX_PAYLOAD_LIMIT}", Self::VARIABLES[3]);
+        }
         Ok(Self {
             max_concurrent: read(Self::VARIABLES[0])?,
             max_per_plugin: read(Self::VARIABLES[1])?,
             min_repeat_secs: read(Self::VARIABLES[2])?,
-            max_payload_bytes: read(Self::VARIABLES[3])?,
+            max_payload_bytes,
         })
     }
 
@@ -255,7 +284,8 @@ pub async fn saved_settings(pool: &PgPool) -> Result<TimerSettings> {
         max_concurrent: or(saved.max_concurrent, defaults.max_concurrent),
         max_per_plugin: or(saved.max_per_plugin, defaults.max_per_plugin),
         min_repeat_secs: or(saved.min_repeat_secs, defaults.min_repeat_secs),
-        max_payload_bytes: or(saved.max_payload_bytes, defaults.max_payload_bytes),
+        max_payload_bytes: or(saved.max_payload_bytes, defaults.max_payload_bytes)
+            .min(MAX_PAYLOAD_LIMIT),
     })
 }
 
@@ -448,11 +478,9 @@ pub async fn set(
     let size = serde_json::to_string(&payload)
         .map(|s| s.len())
         .unwrap_or(usize::MAX);
-    if size > settings.max_payload_bytes as usize {
-        return Err(TimerRefused::PayloadTooLarge {
-            size,
-            max: settings.max_payload_bytes,
-        });
+    let max = settings.max_payload_bytes.min(MAX_PAYLOAD_LIMIT);
+    if size > max as usize {
+        return Err(TimerRefused::PayloadTooLarge { size, max });
     }
 
     let mut tx = pool.begin().await?;
@@ -463,14 +491,18 @@ pub async fn set(
             .bind(owner)
             .execute(&mut *tx)
             .await?;
-        let held: i64 = sqlx::query_scalar(
-            "SELECT count(*) FROM scheduled_timer WHERE owner = $1 AND name <> $2",
+        // Replacing a timer the owner holds adds none, so only a new name is
+        // held to the limit: an owner over a lowered limit can still move the
+        // timers it has.
+        let (held, exists): (i64, bool) = sqlx::query_as(
+            "SELECT count(*), coalesce(bool_or(name = $2), false) \
+             FROM scheduled_timer WHERE owner = $1",
         )
         .bind(owner)
         .bind(&request.name)
         .fetch_one(&mut *tx)
         .await?;
-        if held >= i64::from(settings.max_per_plugin) {
+        if !exists && held >= i64::from(settings.max_per_plugin) {
             return Err(TimerRefused::TooMany {
                 owner: owner.to_string(),
                 max: settings.max_per_plugin,
@@ -498,7 +530,44 @@ pub async fn set(
     .await?;
     notify(&mut tx, timer.run_at).await?;
     tx.commit().await?;
+    wake_local(timer.run_at.timestamp_millis());
     Ok(timer)
+}
+
+// =============================================================================
+// Waking the loops in this process
+// =============================================================================
+
+/// A running scheduler loop in this process: its wake-up and the time it
+/// will next look.
+struct LocalLoop {
+    notify: Weak<Notify>,
+    wake_at_ms: Weak<AtomicI64>,
+}
+
+/// Every scheduler loop running in this process.
+static LOCAL_LOOPS: Mutex<Vec<LocalLoop>> = Mutex::new(Vec::new());
+
+/// Wake each loop in this process that would next look after `at_ms`.
+///
+/// Every write that can move a timer earlier calls this after its commit, so
+/// a timer set on this server (a plugin's, through the host interface, or an
+/// administrator's) wakes this server's loop at once even when its `LISTEN`
+/// connection is down. The `NOTIFY` in the same write reaches the other
+/// servers.
+fn wake_local(at_ms: i64) {
+    let Ok(mut loops) = LOCAL_LOOPS.lock() else {
+        return;
+    };
+    loops.retain(|l| {
+        let (Some(notify), Some(wake_at)) = (l.notify.upgrade(), l.wake_at_ms.upgrade()) else {
+            return false;
+        };
+        if at_ms < wake_at.load(Ordering::SeqCst) {
+            notify.notify_one();
+        }
+        true
+    });
 }
 
 /// Send the wake-up for a write due at `at`, in the write's transaction.
@@ -715,6 +784,9 @@ pub async fn admin_change(
     };
     notify(&mut tx, after.as_ref().map_or(before.run_at, |t| t.run_at)).await?;
     tx.commit().await?;
+    if let Some(t) = &after {
+        wake_local(t.run_at.timestamp_millis());
+    }
     Ok((before, after))
 }
 
@@ -786,6 +858,11 @@ pub struct TimerService {
     retry: RwLock<(i64, i64)>,
     /// Timers this service has fired, whatever became of them.
     fired: AtomicU64,
+    /// Whether the loop listens for other servers' writes (tests turn it off
+    /// to show what the in-process wake-up does alone).
+    listen: AtomicBool,
+    /// Called just before each claim (tests use it to land a shutdown there).
+    before_claim: RwLock<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl std::fmt::Debug for TimerService {
@@ -814,6 +891,8 @@ impl TimerService {
             settings_override: RwLock::new(None),
             retry: RwLock::new((RETRY_BASE_SECS, RETRY_CAP_SECS)),
             fired: AtomicU64::new(0),
+            listen: AtomicBool::new(true),
+            before_claim: RwLock::new(None),
         }
     }
 
@@ -871,6 +950,19 @@ impl TimerService {
         }
     }
 
+    /// Turn off listening for other servers' writes (tests). Takes effect
+    /// for a loop started afterwards.
+    pub fn set_listen(&self, on: bool) {
+        self.listen.store(on, Ordering::SeqCst);
+    }
+
+    /// Run `hook` just before each claim (tests).
+    pub fn set_before_claim_hook(&self, hook: Option<Arc<dyn Fn() + Send + Sync>>) {
+        if let Ok(mut current) = self.before_claim.write() {
+            *current = hook;
+        }
+    }
+
     /// The throttles this service applies.
     pub async fn settings(&self) -> Result<TimerSettings> {
         if let Some(settings) = self.settings_override.read().ok().and_then(|s| *s) {
@@ -879,13 +971,11 @@ impl TimerService {
         effective_settings(&self.pool).await
     }
 
-    /// Register or replace `owner`'s timer, and wake this server's loop if it
-    /// is now due before the loop would look.
+    /// Register or replace `owner`'s timer, with this service's throttles. Like
+    /// every write, it wakes the loops in this process that would look later.
     pub async fn set(&self, owner: &str, request: &TimerRequest) -> Result<Timer, TimerRefused> {
         let settings = self.settings().await?;
-        let timer = set(&self.pool, owner, request, &settings).await?;
-        self.wake_if_before(timer.run_at.timestamp_millis());
-        Ok(timer)
+        set(&self.pool, owner, request, &settings).await
     }
 
     /// Cancel `owner`'s timer `name`.
@@ -898,18 +988,14 @@ impl TimerService {
         get(&self.pool, owner, name).await
     }
 
-    /// An administrator's change, with the loop woken for it.
+    /// An administrator's change, with this service's throttles.
     pub async fn admin_change(
         &self,
         id: i64,
         change: &AdminChange,
     ) -> Result<(Timer, Option<Timer>), TimerRefused> {
         let settings = self.settings().await?;
-        let (before, after) = admin_change(&self.pool, id, change, &settings).await?;
-        if let Some(t) = &after {
-            self.wake_if_before(t.run_at.timestamp_millis());
-        }
-        Ok((before, after))
+        admin_change(&self.pool, id, change, &settings).await
     }
 
     /// Wake the loop if `at_ms` is before the time it will next look.
@@ -1075,6 +1161,7 @@ impl TimerService {
     /// registered again, paused or cancelled while it ran is left as that
     /// change left it.
     async fn settle(&self, claimed: &Claimed, outcome: Result<(), String>) -> Result<()> {
+        let outcome = outcome.map_err(|e| clip(&e, MAX_ERROR_BYTES));
         let mut tx = self.pool.begin().await?;
         let next: Option<DateTime<Utc>> = match outcome {
             Ok(()) if claimed.repeat_secs.is_none() => {
@@ -1088,13 +1175,16 @@ impl TimerService {
                 .await?;
                 None
             }
-            // The next slot after now, in whole intervals from this one.
+            // The next slot after now, in whole intervals from this one. A
+            // timer run before its slot (Run now on a repeating timer whose
+            // first slot is still ahead) keeps that slot: never a negative
+            // count of intervals, which would schedule it before its start.
             Ok(()) => sqlx::query_scalar(
                 "UPDATE scheduled_timer SET status = 'scheduled', \
                      run_at = slot_at + make_interval(secs => repeat_secs * \
-                         (floor(EXTRACT(EPOCH FROM (clock_timestamp() - slot_at)) / repeat_secs) + 1)), \
+                         GREATEST(floor(EXTRACT(EPOCH FROM (clock_timestamp() - slot_at)) / repeat_secs) + 1, 0)), \
                      slot_at = slot_at + make_interval(secs => repeat_secs * \
-                         (floor(EXTRACT(EPOCH FROM (clock_timestamp() - slot_at)) / repeat_secs) + 1)), \
+                         GREATEST(floor(EXTRACT(EPOCH FROM (clock_timestamp() - slot_at)) / repeat_secs) + 1, 0)), \
                      attempts = 0, last_error = NULL, claim_token = NULL, claimed_by = NULL, \
                      claimed_until = NULL, changed = now() \
                  WHERE id = $1 AND status = 'running' AND claim_token = $2 \
@@ -1145,6 +1235,45 @@ impl TimerService {
         Ok(())
     }
 
+    /// Give back claims this server will not run (it is shutting down): each
+    /// timer is scheduled again at the time it was due, its attempt not
+    /// counted, and the other servers are told.
+    async fn release(&self, claimed: &[Claimed]) {
+        if claimed.is_empty() {
+            return;
+        }
+        let ids: Vec<i64> = claimed.iter().map(|c| c.id).collect();
+        let tokens: Vec<Uuid> = claimed.iter().map(|c| c.claim_token).collect();
+        let released = async {
+            let mut tx = self.pool.begin().await?;
+            sqlx::query(
+                "UPDATE scheduled_timer t SET status = 'scheduled', \
+                 attempts = GREATEST(t.attempts - 1, 0), claim_token = NULL, \
+                 claimed_by = NULL, claimed_until = NULL, changed = now() \
+                 FROM unnest($1::bigint[], $2::uuid[]) AS c(id, token) \
+                 WHERE t.id = c.id AND t.status = 'running' AND t.claim_token = c.token",
+            )
+            .bind(&ids)
+            .bind(&tokens)
+            .execute(&mut *tx)
+            .await?;
+            if let Some(at) = claimed.iter().map(|c| c.run_at).min() {
+                notify(&mut tx, at).await?;
+            }
+            tx.commit().await?;
+            Ok::<_, anyhow::Error>(())
+        };
+        match released.await {
+            Ok(()) => info!(
+                count = ids.len(),
+                "timer scheduler stopping: claims given back"
+            ),
+            Err(e) => {
+                warn!(error = %e, "timer scheduler could not give back its claims; their lease returns them");
+            }
+        }
+    }
+
     /// The scheduler loop: one per process, until `shutdown`.
     ///
     /// Sleeps until the next timer is due (at most [`SAFETY_RECHECK`]), fires
@@ -1153,14 +1282,25 @@ impl TimerService {
     /// timers already firing are done, so the caller bounds that wait by its
     /// shutdown deadline.
     pub async fn run_scheduler(self: Arc<Self>, shutdown: CancellationToken) {
-        let listener = tokio::spawn(listen(
-            self.pool.clone(),
-            self.notify.clone(),
-            self.wake_at_ms.clone(),
-            shutdown.clone(),
-        ));
+        let listener = self.listen.load(Ordering::SeqCst).then(|| {
+            tokio::spawn(listen(
+                self.pool.clone(),
+                self.notify.clone(),
+                self.wake_at_ms.clone(),
+                shutdown.clone(),
+            ))
+        });
+        if let Ok(mut loops) = LOCAL_LOOPS.lock() {
+            loops.push(LocalLoop {
+                notify: Arc::downgrade(&self.notify),
+                wake_at_ms: Arc::downgrade(&self.wake_at_ms),
+            });
+        }
         let mut in_flight: JoinSet<()> = JoinSet::new();
-        let mut max_concurrent = None;
+        // The concurrency throttle and when it was read: reread at most every
+        // [`SETTINGS_REREAD`], so a change applies within it even while a
+        // backlog keeps timers due without a break.
+        let mut max_concurrent: Option<(u32, Instant)> = None;
         info!(instance = %self.instance, "Timer scheduler started");
         loop {
             if shutdown.is_cancelled() {
@@ -1183,18 +1323,30 @@ impl TimerService {
                 .map_or(SAFETY_RECHECK.as_millis() as i64, |ms| ms.max(0))
                 .min(SAFETY_RECHECK.as_millis() as i64);
             if delay.is_some_and(|ms| ms <= 0) {
-                if max_concurrent.is_none() {
-                    max_concurrent = Some(
-                        self.settings()
-                            .await
-                            .map(|s| s.max_concurrent.max(1))
-                            .unwrap_or(TimerSettings::default().max_concurrent),
-                    );
+                if max_concurrent.is_none_or(|(_, read)| read.elapsed() >= SETTINGS_REREAD) {
+                    let cap = self
+                        .settings()
+                        .await
+                        .map(|s| s.max_concurrent.max(1))
+                        .unwrap_or(TimerSettings::default().max_concurrent);
+                    max_concurrent = Some((cap, Instant::now()));
                 }
-                let cap = max_concurrent.unwrap_or(1) as usize;
+                let cap = max_concurrent.map_or(1, |(cap, _)| cap) as usize;
                 let room = cap.saturating_sub(in_flight.len());
                 if room > 0 {
+                    let hook = self.before_claim.read().ok().and_then(|h| h.clone());
+                    if let Some(hook) = hook {
+                        hook();
+                    }
                     match self.claim(room as i64).await {
+                        // Shutdown came while this server was reading or
+                        // claiming: start nothing, and give the claims back
+                        // so another server fires them now rather than
+                        // after the lease.
+                        Ok(claimed) if shutdown.is_cancelled() => {
+                            self.release(&claimed).await;
+                            break;
+                        }
                         Ok(claimed) => {
                             let took = claimed.len();
                             for c in claimed {
@@ -1242,7 +1394,9 @@ impl TimerService {
             );
         }
         while in_flight.join_next().await.is_some() {}
-        listener.abort();
+        if let Some(listener) = listener {
+            listener.abort();
+        }
         info!(instance = %self.instance, "Timer scheduler stopped");
     }
 }
@@ -1301,6 +1455,28 @@ async fn listen(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_payload_override_has_a_ceiling() {
+        let at = |v: &'static str| {
+            TimerOverrides::from_lookup(move |name| {
+                (name == "TIMER_MAX_PAYLOAD_BYTES").then(|| v.to_string())
+            })
+        };
+        assert_eq!(
+            at("65536").unwrap().max_payload_bytes,
+            Some(MAX_PAYLOAD_LIMIT)
+        );
+        assert!(at("65537").is_err(), "past what a plugin can read back");
+    }
+
+    #[test]
+    fn a_long_error_is_clipped_on_a_character_boundary() {
+        assert_eq!(clip("short", 10), "short");
+        let long = "é".repeat(10);
+        let clipped = clip(&long, 5);
+        assert_eq!(clipped, "éé", "4 bytes: the third é would split");
+    }
 
     #[test]
     fn overrides_read_whole_numbers_and_refuse_the_rest() {

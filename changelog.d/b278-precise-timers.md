@@ -12,7 +12,9 @@ set earlier, and otherwise reads the table once a minute; nothing runs while
 nothing is due. A due timer is claimed with `FOR UPDATE SKIP LOCKED` and a claim
 token, so two servers never both fire it and a run's result is recorded only if
 the timer was not replaced, paused or cancelled meanwhile. A server that dies
-mid-run leaves a claim that lapses and is taken by another. A repeating timer
+mid-run leaves a claim that lapses and is taken by another; one shutting down
+gives back at once the claims it has not started. A timer set on a server wakes
+that server's own scheduler directly as well as the others through `NOTIFY`. A repeating timer
 keeps its cadence from its first slot and fires once after an outage, not once
 per missed slot. A failure is retried twice with backoff, then the timer is
 `failed` with its error.
@@ -20,10 +22,12 @@ per missed slot. A failure is retried twice with backoff, then the timer is
 Plugins declare the new `timer` host interface (`set`, `cancel`, `get`, only
 ever on their own timers) and implement `tap_timer`. Four throttles bound them:
 timers firing at once per server, timers per plugin, the shortest repeat and the
-largest payload, each refused with its own error code (-95 to -98) and a log
-line naming the limit. `trovato_scheduled_publishing` sets a timer for each
+largest payload (at most 64 KiB), each refused with its own error code (-95 to -98) and a log
+line naming the limit; a plugin over a lowered limit can still move the timers
+it holds. `trovato_scheduled_publishing` sets a timer for each
 publish and unpublish date when an item is saved, moves it when the date
-changes and cancels it when the date is cleared or the item deleted; its
+changes and cancels it when the date is cleared or the item deleted. A publish
+that fails to save keeps its date and is tried again. The plugin's
 `tap_cron` sweep stays as the backstop for anything a timer did not handle.
 
 `/admin/reports/timers` lists every timer with its next run in the viewer's

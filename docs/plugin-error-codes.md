@@ -127,6 +127,9 @@ write or read fails and `-14` for a request that is not valid JSON.
 ## Timer Errors
 
 Returned by `host::timer_set` (`trovato:kernel/timer` `set`, added by B278).
+`get` returns `-103` (`ERR_SDK_OUTPUT_BUFFER_EXCEEDED`) rather than a timer cut
+short if it does not fit the output buffer, which a payload within the
+ceiling always does.
 `set` also returns `-12` when the write fails and `-14` for a request that is
 not valid JSON; `cancel` and `get` return `-12` when the read or write fails.
 See [plugin-timers.md](plugin-timers.md).
@@ -134,9 +137,9 @@ See [plugin-timers.md](plugin-timers.md).
 | Code | Constant | Meaning | Recovery |
 |------|----------|---------|----------|
 | -95 | `ERR_TIMER_INVALID` | The name is empty, longer than 255 bytes or has a control character, or the time is not a valid second | Fix the request |
-| -96 | `ERR_TIMER_PAYLOAD_TOO_LARGE` | The payload's JSON is over the site's `max_payload_bytes` (default 4096) | Carry an id and read the rest in the handler |
+| -96 | `ERR_TIMER_PAYLOAD_TOO_LARGE` | The payload's JSON is over the site's `max_payload_bytes` (default 4096, at most 65536) | Carry an id and read the rest in the handler |
 | -97 | `ERR_TIMER_REPEAT_TOO_SHORT` | The repeat interval is under the site's `min_repeat_secs` (default 60) | Repeat less often, or use cron |
-| -98 | `ERR_TIMER_LIMIT` | The plugin holds as many timers as the site's `max_per_plugin` (default 10,000) | Cancel timers it no longer needs, or ask the operator to raise the limit |
+| -98 | `ERR_TIMER_LIMIT` | A new name, and the plugin holds as many timers as the site's `max_per_plugin` (default 10,000); replacing a timer it holds is never refused for this | Cancel timers it no longer needs, or ask the operator to raise the limit |
 
 ## User Directory Errors
 

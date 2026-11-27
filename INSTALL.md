@@ -84,7 +84,7 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 | `TIMER_MAX_CONCURRENT` | *(none)* | Most timers one server fires at once, overriding the timers throttle (default 4). See [Timers](#timers). |
 | `TIMER_MAX_PER_PLUGIN` | *(none)* | Most timers one plugin may hold, overriding the throttle (default 10,000). |
 | `TIMER_MIN_REPEAT_SECS` | *(none)* | Shortest repeat interval a timer may have, in seconds, overriding the throttle (default 60). |
-| `TIMER_MAX_PAYLOAD_BYTES` | *(none)* | Largest JSON payload a timer may carry, overriding the throttle (default 4096). |
+| `TIMER_MAX_PAYLOAD_BYTES` | *(none)* | Largest JSON payload a timer may carry, overriding the throttle (default 4096, at most 65536). |
 | `JWT_SECRET` | *(none)* | Required for OAuth2 plugin (min 32 bytes) |
 | `WEBHOOK_ENCRYPTION_KEY` | *(none)* | Encrypts webhook secrets (min 32 bytes, recommended) |
 | `UPDATE_CHECK` | `1` | Whether the kernel may check for Trovato releases. Set to `0` (or `false`/`off`/`no`) for a deployment that must make no outbound requests at all. See "Update checks" below. |

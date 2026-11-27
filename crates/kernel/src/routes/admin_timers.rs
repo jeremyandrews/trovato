@@ -632,7 +632,7 @@ fn throttles(
         (
             "max_payload_bytes",
             "Largest payload (bytes)",
-            "The most JSON a timer may carry to its handler.",
+            "The most JSON a timer may carry to its handler, up to 65536.",
             saved.max_payload_bytes,
             effective.max_payload_bytes,
             defaults.max_payload_bytes,
@@ -737,6 +737,13 @@ async fn save_settings(
         min_repeat_secs: read(2, "min_repeat_secs", before.min_repeat_secs),
         max_payload_bytes: read(3, "max_payload_bytes", before.max_payload_bytes),
     };
+    if !set[3] && after.max_payload_bytes > crate::timer::MAX_PAYLOAD_LIMIT {
+        errors.push(FieldError::on(
+            "max_payload_bytes",
+            UiMessage::new("The largest payload can be at most {max} bytes.")
+                .arg("max", crate::timer::MAX_PAYLOAD_LIMIT.to_string()),
+        ));
+    }
     if !errors.is_empty() {
         return render_settings(&state, &session, &user, Some(&form), &errors).await;
     }

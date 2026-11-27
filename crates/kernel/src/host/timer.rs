@@ -178,6 +178,12 @@ pub fn register_timer_functions(linker: &mut Linker<PluginState>) -> Result<()> 
                     let plugin = caller.data().plugin_name.clone();
                     let db = caller.data().request.db().clone();
                     match get_for(&db, &plugin, &name).await {
+                        // Never a truncated timer: JSON cut short is no timer.
+                        Ok(Some(json))
+                            if json.len() > usize::try_from(out_max_len).unwrap_or(0) =>
+                        {
+                            host_errors::ERR_SDK_OUTPUT_BUFFER_EXCEEDED
+                        }
                         Ok(Some(json)) => write_string_to_memory(
                             &memory,
                             &mut caller,

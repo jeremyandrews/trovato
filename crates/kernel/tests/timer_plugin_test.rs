@@ -653,3 +653,188 @@ fn scheduled_publishing_lands_at_the_second() {
         );
     });
 }
+
+/// When the save that applies a scheduled publish fails, the date is put
+/// back and the timer tries again: the item goes live on the retry, and
+/// nothing is lost if every attempt fails (the cron sweep still finds it).
+#[test]
+fn a_failed_scheduled_publish_keeps_its_date_and_is_tried_again() {
+    serial(async {
+        let app = publisher_app().await;
+        let timers = app.state.timers().clone();
+        timers.set_owner_scope(Some(vec![PUBLISHER.to_string()]));
+        timers.set_retry_backoff(1, 1);
+        let pool = app.db.clone();
+
+        let publish_at = Utc::now().timestamp() + 1;
+        let item = app
+            .state
+            .items()
+            .create(
+                CreateItem {
+                    item_type: "page".to_string(),
+                    title: "Its first save fails".to_string(),
+                    author_id: Uuid::nil(),
+                    status: Some(0),
+                    promote: Some(0),
+                    sticky: Some(0),
+                    fields: Some(json!({ "field_publish_on": publish_at })),
+                    stage_id: Some(LIVE_STAGE_ID),
+                    language: Some("en".to_string()),
+                    log: Some("B278 fixture".to_string()),
+                },
+                &admin(),
+            )
+            .await
+            .expect("create");
+        // Refuse any change to this item's status until the trigger goes.
+        let suffix = Uuid::new_v4().simple().to_string();
+        let function = format!("b278_refuse_{}", &suffix[..12]);
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE FUNCTION {function}() RETURNS trigger LANGUAGE plpgsql AS \
+             $$ BEGIN RAISE EXCEPTION 'refused for the test'; END $$"
+        )))
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "CREATE TRIGGER {function} BEFORE UPDATE ON item FOR EACH ROW \
+             WHEN (NEW.id = '{}' AND OLD.status IS DISTINCT FROM NEW.status) \
+             EXECUTE FUNCTION {function}()",
+            item.id
+        )))
+        .execute(&pool)
+        .await
+        .unwrap();
+        {
+            let (pool, function, id) = (pool.clone(), function.clone(), item.id);
+            common::defer_cleanup(move || async move {
+                let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DROP TRIGGER IF EXISTS {function} ON item"
+                )))
+                .execute(&pool)
+                .await;
+                let _ = sqlx::query(sqlx::AssertSqlSafe(format!(
+                    "DROP FUNCTION IF EXISTS {function}()"
+                )))
+                .execute(&pool)
+                .await;
+                let _ =
+                    sqlx::query("DELETE FROM scheduled_timer WHERE owner = $1 AND name LIKE $2")
+                        .bind(PUBLISHER)
+                        .bind(format!("%:{id}"))
+                        .execute(&pool)
+                        .await;
+                let _ = sqlx::query("DELETE FROM item WHERE id = $1")
+                    .bind(id)
+                    .execute(&pool)
+                    .await;
+            });
+        }
+
+        let name = format!("publish:{}", item.id);
+        let (token, handle) = start(&timers);
+        let until = tokio::time::Instant::now() + Duration::from_secs(15);
+        let failed = loop {
+            let t = timer::get(&pool, PUBLISHER, &name).await.unwrap();
+            if let Some(t) = t.filter(|t| t.last_error.is_some()) {
+                break t;
+            }
+            assert!(
+                tokio::time::Instant::now() < until,
+                "the first attempt never failed"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        };
+        // Lift the refusal before the retry.
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP TRIGGER {function} ON item"
+        )))
+        .execute(&pool)
+        .await
+        .unwrap();
+        let error = failed.last_error.clone().unwrap();
+        assert!(error.contains("its date is kept"), "{error}");
+        assert_eq!(failed.status, "scheduled", "to be tried again, not done");
+        let date: Option<Value> =
+            sqlx::query_scalar("SELECT fields->'field_publish_on' FROM item WHERE id = $1")
+                .bind(item.id)
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        // Read well before the retry (a second away) could take it again.
+        assert_eq!(
+            date,
+            Some(json!(publish_at)),
+            "the date is back on the item"
+        );
+
+        let until = tokio::time::Instant::now() + Duration::from_secs(15);
+        while item_status(&pool, item.id).await == 0 && tokio::time::Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        stop(token, handle).await;
+        assert_eq!(
+            item_status(&pool, item.id).await,
+            1,
+            "published on the retry"
+        );
+        assert!(
+            timer::get(&pool, PUBLISHER, &name).await.unwrap().is_none(),
+            "and the timer is done"
+        );
+    });
+}
+
+/// A timer whose payload is as large as the site may allow reads back whole
+/// through the plugin interface.
+#[test]
+fn a_plugin_reads_back_a_timer_at_the_payload_ceiling() {
+    serial(async {
+        let app = common::shared_app().await;
+        let pool = app.db.clone();
+        let timers = fixture_service(&pool);
+        let ceiling = TimerSettings {
+            max_payload_bytes: timer::MAX_PAYLOAD_LIMIT,
+            ..TimerSettings::default()
+        };
+        let big = name(&pool, "big");
+        let blob = "x".repeat(timer::MAX_PAYLOAD_LIMIT as usize - 64);
+        timer::set(
+            &pool,
+            FIXTURE,
+            &TimerRequest {
+                name: big.clone(),
+                run_at: Utc::now().timestamp() + 3600,
+                repeat_secs: None,
+                payload: json!({ "blob": blob }),
+            },
+            &ceiling,
+        )
+        .await
+        .expect("a payload at the ceiling is accepted");
+
+        let probe = name(&pool, "probe-big");
+        timers
+            .set(
+                FIXTURE,
+                &TimerRequest {
+                    name: probe.clone(),
+                    run_at: Utc::now().timestamp(),
+                    repeat_secs: None,
+                    payload: json!({ "probe": big }),
+                },
+            )
+            .await
+            .unwrap();
+        let (token, handle) = start(&timers);
+        let seen = report(&pool, &probe, Duration::from_secs(15)).await;
+        stop(token, handle).await;
+        let seen = seen.expect("tap_timer ran");
+        assert_eq!(
+            seen["probe"]["seen"],
+            json!(big),
+            "read back and parsed whole, not cut short"
+        );
+    });
+}

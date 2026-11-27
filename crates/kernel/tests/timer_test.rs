@@ -627,3 +627,281 @@ fn registering_the_same_name_again_replaces_the_timer() {
         assert_eq!(t.payload, serde_json::json!({ "v": 2 }));
     });
 }
+
+/// Shutdown that lands while the loop is claiming starts no handler, and
+/// gives the claim back: the timer is scheduled again, its attempt not
+/// counted, for the next server to fire.
+#[test]
+fn shutdown_during_a_claim_starts_nothing_and_gives_the_claim_back() {
+    common::run_test(async {
+        let app = common::shared_app().await;
+        let owner = owner();
+        cleanup(&app.db, &owner);
+        let log: Log = Arc::default();
+        let timers = service(&app.db, &owner);
+        timers.register_handler(&owner, "due", recorder(&log, 0));
+        timers
+            .set(&owner, &request("due", in_secs(-1)))
+            .await
+            .unwrap();
+
+        let token = CancellationToken::new();
+        let on_claim = token.clone();
+        timers.set_before_claim_hook(Some(Arc::new(move || on_claim.cancel())));
+        let handle = tokio::spawn(timers.clone().run_scheduler(token.clone()));
+        tokio::time::timeout(Duration::from_secs(10), handle)
+            .await
+            .expect("the scheduler stops")
+            .expect("the scheduler did not panic");
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        assert!(
+            log.lock().unwrap().is_empty(),
+            "no handler started after shutdown"
+        );
+        let (status, attempts, claimed): (String, i32, Option<Uuid>) = sqlx::query_as(
+            "SELECT status, attempts, claim_token FROM scheduled_timer WHERE owner = $1 AND name = 'due'",
+        )
+        .bind(&owner)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+        assert_eq!(
+            status, "scheduled",
+            "given back, not left running until its lease"
+        );
+        assert_eq!(attempts, 0, "the attempt that never ran is not counted");
+        assert_eq!(claimed, None);
+    });
+}
+
+/// A timer set on this server, through the plugin host interface, wakes this
+/// server's sleeping loop even with no `LISTEN` connection.
+#[test]
+fn a_plugin_timer_set_here_wakes_this_servers_loop_without_listen() {
+    common::run_test(async {
+        let app = common::shared_app().await;
+        let owner = owner();
+        cleanup(&app.db, &owner);
+        let log: Log = Arc::default();
+        let timers = service(&app.db, &owner);
+        timers.set_listen(false);
+        timers.register_handler(&owner, "w", recorder(&log, 0));
+        timers
+            .set(&owner, &request("w:far", in_secs(3600)))
+            .await
+            .unwrap();
+        let (token, handle) = start(&timers);
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
+        let at = in_secs(2);
+        let code = trovato_kernel::host::timer::set_for(
+            &app.db,
+            &owner,
+            &serde_json::json!({ "name": "w:near", "run_at": at }).to_string(),
+        )
+        .await;
+        assert_eq!(code, 0, "set");
+        wait_for(&log, 1, Duration::from_secs(20)).await;
+        stop(token, handle).await;
+
+        let fires = log.lock().unwrap().clone();
+        assert_eq!(fires.len(), 1, "{fires:?}");
+        let late = (fires[0].seen_at - fires[0].run_at).num_milliseconds();
+        assert!(
+            (0..1000).contains(&late),
+            "woke for it: {late} ms late, where the safety recheck would be up to a minute"
+        );
+    });
+}
+
+/// Lowering the concurrency throttle takes effect while a backlog keeps
+/// timers due without a break, not only once it clears.
+#[test]
+fn a_lowered_concurrency_applies_during_a_backlog() {
+    common::run_test(async {
+        let app = common::shared_app().await;
+        let owner = owner();
+        cleanup(&app.db, &owner);
+        let timers = service(&app.db, &owner);
+        timers.set_settings_override(Some(TimerSettings {
+            max_concurrent: 4,
+            ..test_settings()
+        }));
+        let active = Arc::new(AtomicUsize::new(0));
+        // Each start: when, and how many were running with it.
+        let starts: Arc<Mutex<Vec<(tokio::time::Instant, usize)>>> = Arc::default();
+        {
+            let (active, starts) = (active.clone(), starts.clone());
+            timers.register_handler(
+                &owner,
+                "b",
+                Arc::new(move |_t: FiredTimer| {
+                    let (active, starts) = (active.clone(), starts.clone());
+                    Box::pin(async move {
+                        let now = active.fetch_add(1, Ordering::SeqCst) + 1;
+                        starts
+                            .lock()
+                            .unwrap()
+                            .push((tokio::time::Instant::now(), now));
+                        tokio::time::sleep(Duration::from_millis(150)).await;
+                        active.fetch_sub(1, Ordering::SeqCst);
+                        Ok(())
+                    })
+                }),
+            );
+        }
+        for i in 0..80 {
+            timers
+                .set(&owner, &request(&format!("b:{i:02}"), in_secs(-1)))
+                .await
+                .unwrap();
+        }
+        let (token, handle) = start(&timers);
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        timers.set_settings_override(Some(TimerSettings {
+            max_concurrent: 1,
+            ..test_settings()
+        }));
+        let lowered = tokio::time::Instant::now();
+        let until = lowered + Duration::from_secs(30);
+        while starts.lock().unwrap().len() < 80 && tokio::time::Instant::now() < until {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        stop(token, handle).await;
+
+        let starts = starts.lock().unwrap().clone();
+        assert_eq!(starts.len(), 80, "every timer fired");
+        assert!(
+            starts.iter().any(|(_, running)| *running > 1),
+            "four at once before the change"
+        );
+        // Read again within a second, and the four already running finish.
+        let settled = lowered + Duration::from_millis(1500);
+        let after: Vec<usize> = starts
+            .iter()
+            .filter(|(at, _)| *at > settled)
+            .map(|(_, running)| *running)
+            .collect();
+        assert!(!after.is_empty(), "the backlog outlasted the change");
+        assert!(
+            after.iter().all(|running| *running == 1),
+            "one at a time once lowered: {after:?}"
+        );
+    });
+}
+
+/// Running a repeating timer now, before its first slot, does not move its
+/// schedule earlier: the next run is still that first slot.
+#[test]
+fn running_a_repeating_timer_early_keeps_its_first_slot() {
+    common::run_test(async {
+        let app = common::shared_app().await;
+        let owner = owner();
+        cleanup(&app.db, &owner);
+        let log: Log = Arc::default();
+        let timers = service(&app.db, &owner);
+        timers.register_handler(&owner, "daily", recorder(&log, 0));
+        let first = in_secs(10 * 86_400);
+        let set = timers
+            .set(
+                &owner,
+                &TimerRequest {
+                    repeat_secs: Some(86_400),
+                    ..request("daily", first)
+                },
+            )
+            .await
+            .unwrap();
+        timers
+            .admin_change(set.id, &trovato_kernel::timer::AdminChange::RunNow)
+            .await
+            .unwrap();
+        let (token, handle) = start(&timers);
+        wait_for(&log, 1, Duration::from_secs(10)).await;
+        // Let the run be recorded.
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        stop(token, handle).await;
+
+        assert_eq!(log.lock().unwrap().len(), 1, "ran now");
+        let next: DateTime<Utc> =
+            sqlx::query_scalar("SELECT run_at FROM scheduled_timer WHERE id = $1")
+                .bind(set.id)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        assert_eq!(
+            next.timestamp(),
+            first,
+            "the next run is the first slot, not a day from now"
+        );
+    });
+}
+
+/// An owner over a limit lowered below what it holds can still replace the
+/// timers it has; only a new name is refused.
+#[test]
+fn an_owner_over_a_lowered_limit_can_still_replace_its_timers() {
+    common::run_test(async {
+        let app = common::shared_app().await;
+        let owner = owner();
+        cleanup(&app.db, &owner);
+        let timers = service(&app.db, &owner);
+        for name in ["a", "b", "c"] {
+            timers
+                .set(&owner, &request(name, in_secs(3600)))
+                .await
+                .unwrap();
+        }
+        timers.set_settings_override(Some(TimerSettings {
+            max_per_plugin: 2,
+            ..test_settings()
+        }));
+
+        let later = in_secs(7200);
+        let moved = timers.set(&owner, &request("b", later)).await;
+        assert_eq!(
+            moved
+                .expect("replacing a held timer adds none")
+                .run_at
+                .timestamp(),
+            later
+        );
+        let new = timers.set(&owner, &request("d", in_secs(3600))).await;
+        assert!(
+            matches!(new, Err(TimerRefused::TooMany { max: 2, .. })),
+            "a new name is refused: {new:?}"
+        );
+    });
+}
+
+/// The payload limit cannot be raised past what a plugin can read back: a
+/// larger payload is refused whatever the throttle says.
+#[test]
+fn the_payload_limit_has_a_ceiling() {
+    common::run_test(async {
+        let app = common::shared_app().await;
+        let owner = owner();
+        cleanup(&app.db, &owner);
+        let timers = service(&app.db, &owner);
+        timers.set_settings_override(Some(TimerSettings {
+            max_payload_bytes: 1_000_000,
+            ..test_settings()
+        }));
+        let big = TimerRequest {
+            payload: serde_json::json!({ "blob": "x".repeat(70_000) }),
+            ..request("big", in_secs(3600))
+        };
+        let refused = timers.set(&owner, &big).await;
+        assert!(
+            matches!(
+                refused,
+                Err(TimerRefused::PayloadTooLarge {
+                    max: trovato_kernel::timer::MAX_PAYLOAD_LIMIT,
+                    ..
+                })
+            ),
+            "{refused:?}"
+        );
+    });
+}
