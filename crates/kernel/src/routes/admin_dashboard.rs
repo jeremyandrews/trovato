@@ -215,13 +215,24 @@ async fn waiting(
     let mut rows = Vec::new();
     let mut total = 0;
     if may_review {
-        let drafts = crate::models::Item::list_moderated(
-            state.db(),
-            Some(crate::content::moderation::DRAFT),
-            200,
-        )
-        .await
-        .unwrap_or_default();
+        // "To review" is every state with `default_revision: false`: a save
+        // into it over a published item waits beside it rather than
+        // replacing it, which is what makes it something to review. The
+        // built-in workflow has exactly one, Draft; a site's own workflow can
+        // have more (an "in review" or "approved" step).
+        let drafts = crate::models::Item::list_moderated(state.db(), None, 200)
+            .await
+            .unwrap_or_default();
+        let type_workflows = super::admin_content::type_workflows(state).await;
+        let drafts: Vec<_> = drafts
+            .into_iter()
+            .filter(|d| {
+                type_workflows
+                    .get(&d.item_type)
+                    .and_then(|w| w.state(&d.state))
+                    .is_some_and(|s| !s.default_revision)
+            })
+            .collect();
         let ids: Vec<uuid::Uuid> = drafts.iter().map(|d| d.id).collect();
         let items = crate::models::Item::find_by_ids(state.db(), &ids)
             .await

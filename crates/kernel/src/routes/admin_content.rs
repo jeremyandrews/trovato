@@ -201,11 +201,46 @@ async fn list_content(
     render_admin_template(&state, &viewer, "admin/content-list.html", context).await
 }
 
+/// The workflow each moderated type in the database uses, keyed by type:
+/// read once per request, since the moderated list and its filter both need
+/// it. A type naming a workflow that no longer exists reads as the built-in
+/// editorial workflow, as `ItemService::moderation_workflow` falls back.
+pub(super) async fn type_workflows(
+    state: &AppState,
+) -> std::collections::HashMap<String, crate::content::moderation::ModerationWorkflow> {
+    use crate::content::moderation;
+
+    let rows: Vec<(String, serde_json::Value)> = sqlx::query_as(
+        "SELECT type, settings FROM item_type WHERE settings -> 'moderation' = 'true'::jsonb",
+    )
+    .fetch_all(state.db())
+    .await
+    .unwrap_or_default();
+    if rows.is_empty() {
+        return std::collections::HashMap::new();
+    }
+    let value = crate::models::SiteConfig::get(state.db(), moderation::WORKFLOWS_KEY)
+        .await
+        .ok()
+        .flatten();
+    let all = moderation::resolve_workflows(value.as_ref());
+    rows.into_iter()
+        .map(|(item_type, settings)| {
+            let id = moderation::workflow_setting(&settings);
+            let workflow = moderation::workflow_by_id(&all, id)
+                .cloned()
+                .unwrap_or_else(moderation::builtin_editorial);
+            (item_type, workflow)
+        })
+        .collect()
+}
+
 /// The moderated content list: every item of a moderated type whose latest
-/// revision is a Draft or Archived, newest change first.
+/// revision is not published, newest change first.
 ///
-/// GET /admin/content/moderated, `?state=draft` or `?state=archived` to narrow
-/// it. For a holder of `view latest version` or `edit any content`.
+/// GET /admin/content/moderated, `?state=<id>` to narrow it to one state of
+/// a workflow in use. For a holder of `view latest version` or
+/// `edit any content`.
 async fn list_moderated(
     State(state): State<AppState>,
     session: Session,
@@ -220,18 +255,42 @@ async fn list_moderated(
             Ok(_) => render_forbidden("You may not see the moderated content list."),
         };
     }
+
+    let type_workflows = type_workflows(&state).await;
+    let mut used: Vec<&moderation::ModerationWorkflow> = Vec::new();
+    for workflow in type_workflows.values() {
+        if !used.iter().any(|w| w.id == workflow.id) {
+            used.push(workflow);
+        }
+    }
+    let multiple_workflows = used.len() > 1;
+    let mut state_options: Vec<(String, String)> = Vec::new();
+    for workflow in &used {
+        for s in workflow.states.iter().filter(|s| !s.published) {
+            if state_options.iter().any(|(id, _)| id == &s.id) {
+                continue;
+            }
+            let label = if multiple_workflows {
+                format!("{}: {}", workflow.label, s.label)
+            } else {
+                s.label.clone()
+            };
+            state_options.push((s.id.clone(), label));
+        }
+    }
     let state_filter = params
         .get("state")
-        .and_then(|s| moderation::state(s))
-        .filter(|s| *s != moderation::PUBLISHED);
+        .filter(|s| state_options.iter().any(|(id, _)| id == *s))
+        .cloned();
 
-    let rows = match crate::models::Item::list_moderated(state.db(), state_filter, 200).await {
-        Ok(rows) => rows,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to list moderated content");
-            return render_server_error("Failed to load moderated content.");
-        }
-    };
+    let rows =
+        match crate::models::Item::list_moderated(state.db(), state_filter.as_deref(), 200).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to list moderated content");
+                return render_server_error("Failed to load moderated content.");
+            }
+        };
     let mut ids: Vec<uuid::Uuid> = rows.iter().map(|r| r.id).collect();
     ids.sort_unstable();
     ids.dedup();
@@ -276,7 +335,10 @@ async fn list_moderated(
                 "author": authors.get(&r.author_id).cloned().unwrap_or_else(|| {
                     crate::models::user::ANONYMOUS_DISPLAY_NAME.to_string()
                 }),
-                "state": moderation::label(&r.state),
+                "state": type_workflows
+                    .get(&r.item_type)
+                    .map(|w| w.label(&r.state))
+                    .unwrap_or_else(|| moderation::display_label(&r.state)),
                 "ahead": r.ahead,
                 "changed": chrono::DateTime::from_timestamp(r.changed, 0)
                     .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
@@ -287,11 +349,8 @@ async fn list_moderated(
 
     let mut context = tera::Context::new();
     context.insert("items", &listed);
-    context.insert("state_filter", &state_filter.unwrap_or(""));
-    context.insert(
-        "state_options",
-        &[("draft", "Draft"), ("archived", "Archived")],
-    );
+    context.insert("state_filter", &state_filter.unwrap_or_default());
+    context.insert("state_options", &state_options);
     context.insert("path", "/admin/content/moderated");
     render_admin_template(&state, &viewer, "admin/content-moderated.html", context).await
 }

@@ -129,7 +129,8 @@ pub struct ModeratedItem {
     pub author_id: Uuid,
     /// When the latest revision was saved, a Unix timestamp.
     pub changed: i64,
-    /// The latest revision's state: `draft` or `archived`.
+    /// The latest revision's state: any state of its type's workflow except
+    /// a published one.
     pub state: String,
     /// Whether the latest revision is a draft ahead of the published one.
     pub ahead: bool,
@@ -655,12 +656,26 @@ impl Item {
     /// The items of moderated types whose latest revision is not published,
     /// newest change first: the moderated content list. `state` narrows it to
     /// one state. A revision saved before its type was moderated reads its
-    /// state from its status, as `content::moderation::state_of` does.
+    /// state from its status, as `content::moderation::ModerationWorkflow::state_of`
+    /// does. "Published" is every state any workflow in `moderation.workflows`
+    /// marks `published: true`, read fresh (never cached), as every use of
+    /// that variable is.
     pub async fn list_moderated(
         pool: &PgPool,
         state: Option<&str>,
         limit: i64,
     ) -> Result<Vec<ModeratedItem>> {
+        let value = super::SiteConfig::get(pool, crate::content::moderation::WORKFLOWS_KEY).await?;
+        let workflows = crate::content::moderation::resolve_workflows(value.as_ref());
+        let published: Vec<String> = {
+            let mut ids: Vec<String> = workflows
+                .iter()
+                .flat_map(|w| w.states.iter().filter(|s| s.published).map(|s| s.id.clone()))
+                .collect();
+            ids.sort_unstable();
+            ids.dedup();
+            ids
+        };
         sqlx::query_as::<_, ModeratedItem>(
             "SELECT id, item_type, title, author_id, changed, state, ahead FROM ( \
                  SELECT i.id, i.type AS item_type, r.title, r.author_id, r.created AS changed, \
@@ -675,9 +690,10 @@ impl Item {
                      ORDER BY created DESC, id DESC LIMIT 1 \
                  ) r ON true \
              ) latest \
-             WHERE state <> 'published' AND ($1::text IS NULL OR state = $1) \
-             ORDER BY changed DESC, id DESC LIMIT $2",
+             WHERE NOT (state = ANY($1)) AND ($2::text IS NULL OR state = $2) \
+             ORDER BY changed DESC, id DESC LIMIT $3",
         )
+        .bind(&published)
         .bind(state)
         .bind(limit)
         .fetch_all(pool)

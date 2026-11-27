@@ -1693,7 +1693,7 @@ struct GridPermission {
 /// This is also the exact set the save is allowed to revoke, which is why both
 /// sides go through one function. A permission missing from here is one the
 /// screen cannot show, cannot grant, and must not take away.
-fn grid_permissions(state: &AppState) -> Vec<GridPermission> {
+async fn grid_permissions(state: &AppState) -> Vec<GridPermission> {
     let mut rows: Vec<GridPermission> = KERNEL_PERMISSIONS
         .iter()
         .map(|name| GridPermission {
@@ -1714,6 +1714,41 @@ fn grid_permissions(state: &AppState) -> Vec<GridPermission> {
                 provider: "Text formats".to_string(),
                 description: format!("Use the {} text format.", format.name),
             });
+        }
+    }
+
+    // `use <workflow id> transition <id>` for each transition of each stored
+    // moderation workflow (B301): a site's own workflows are granted here
+    // too, the way its text formats are above.
+    {
+        use crate::content::moderation;
+        let value = crate::models::SiteConfig::get(state.db(), moderation::WORKFLOWS_KEY)
+            .await
+            .ok()
+            .flatten();
+        for workflow in moderation::resolve_workflows(value.as_ref()) {
+            for transition in &workflow.transitions {
+                let permission = workflow.permission(transition);
+                if rows.iter().any(|r| r.name == permission) {
+                    continue;
+                }
+                rows.push(GridPermission {
+                    name: permission,
+                    provider: "Moderation workflows".to_string(),
+                    description: format!(
+                        "Move a {} item from {} to {} ({}).",
+                        workflow.label,
+                        transition
+                            .from
+                            .iter()
+                            .map(|f| workflow.label(f))
+                            .collect::<Vec<_>>()
+                            .join(" or "),
+                        workflow.label(&transition.to),
+                        transition.label,
+                    ),
+                });
+            }
         }
     }
 
@@ -1762,7 +1797,7 @@ async fn permissions_matrix(State(state): State<AppState>, session: Session) -> 
     let mut context = tera::Context::new();
     context.insert("roles", &roles);
     context.insert("role_permissions", &role_permissions);
-    context.insert("available_permissions", &grid_permissions(&state));
+    context.insert("available_permissions", &grid_permissions(&state).await);
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("path", "/admin/people/permissions");
@@ -1837,7 +1872,7 @@ async fn save_permissions(
     // A permission the actor does not hold is dropped for a non-superuser, so
     // it is neither granted nor revoked on any role: the grid is the
     // `apply_role_membership` rule applied one box at a time.
-    let known: std::collections::HashSet<String> = grid_permissions(&state)
+    let known: std::collections::HashSet<String> = grid_permissions(&state).await
         .into_iter()
         .map(|p| p.name)
         .collect();

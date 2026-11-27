@@ -43,7 +43,9 @@
             {{ form::checkbox(name="revision_default", label=t(s="Create new revision by default"), checked=values.revision_default | default(value=false), errors=errs) }}
             {{ form::checkbox(name="promote_default", label=t(s="Promoted to front page by default"), checked=values.promote_default | default(value=false), errors=errs) }}
             {{ form::checkbox(name="sticky_default", label=t(s="Sticky at top of lists by default"), checked=values.sticky_default | default(value=false), errors=errs) }}
-            {{ form::checkbox(name="moderation", label=t(s="Moderate content of this type"), checked=values.moderation | default(value=false), hint=t(s="Items move between Draft, Published and Archived by transitions each role is granted ({permission}). A draft saved over a published item waits beside it: visitors keep seeing the published version until the draft is published.", permission="use editorial transition …"), errors=errs) }}
+            {{ form::checkbox(name="moderation", label=t(s="Moderate content of this type"), checked=values.moderation | default(value=false), hint=t(s="Items move between the workflow's states by transitions each role is granted. A save into a state that is not the default revision waits beside the published item: visitors keep seeing the published version until that state is published."), errors=errs) }}
+            {% if values.moderation_workflow is defined and values.moderation_workflow %}{% set moderation_workflow = values.moderation_workflow %}{% else %}{% set moderation_workflow = "editorial" %}{% endif %}
+            {{ form::select(name="moderation_workflow", label=t(s="Moderation workflow"), options=workflow_options, value=moderation_workflow, hint=t(s="Which workflow a moderated item of this type moves through. New workflows are added by config import."), errors=errs) }}
         {{ form::fieldset_end() }}
 
         {{ form::actions(submit_label=t(s="Save content type"), cancel_url="/admin/structure/types") }}

@@ -75,7 +75,12 @@ pub(crate) async fn build(
     let mut extra = extra;
     if let Some(moderation) = &moderation {
         let text = super::admin_nav::AdminText::for_page(state, user, action).await;
-        extra.push(moderation_element(user, &text, moderation.state));
+        extra.push(moderation_element(
+            user,
+            &text,
+            &moderation.workflow,
+            &moderation.state,
+        ));
     }
     extra.extend(publishing_element(state, user, type_name, item).await);
     let mode = preview_mode(state, type_name).await;
@@ -320,8 +325,10 @@ fn record_reference_placeholders(
 
 /// What the item form needs of content moderation, on a moderated type.
 pub(crate) struct ModerationContext {
-    /// The state the item is in: Draft for a new item.
-    pub state: &'static str,
+    /// The state the item is in: the workflow's default state for a new item.
+    pub state: String,
+    /// The workflow the item's type uses.
+    pub workflow: crate::content::moderation::ModerationWorkflow,
     /// The item as an editor works on it ([`ItemService::load_for_moderation`]);
     /// `None` for a new item.
     ///
@@ -337,24 +344,28 @@ pub(crate) async fn moderation_context(
     item: Option<&Item>,
 ) -> Option<ModerationContext> {
     match item {
-        None => state
-            .items()
-            .is_moderated(type_name)
-            .await
-            .then_some(ModerationContext {
-                state: crate::content::moderation::DRAFT,
+        None => {
+            let workflow = state.items().moderation_workflow(type_name).await?;
+            Some(ModerationContext {
+                state: workflow.default_state.clone(),
+                workflow,
                 working: None,
-            }),
-        Some(item) => match state.items().load_for_moderation(item).await {
-            Ok(found) => found.map(|(state, working)| ModerationContext {
-                state,
-                working: Some(working),
-            }),
-            Err(e) => {
-                tracing::warn!(error = %e, item_id = %item.id, "loading the latest revision failed");
-                None
+            })
+        }
+        Some(item) => {
+            let workflow = state.items().moderation_workflow(&item.item_type).await?;
+            match state.items().load_for_moderation(item).await {
+                Ok(found) => found.map(|(state, working)| ModerationContext {
+                    state,
+                    workflow,
+                    working: Some(working),
+                }),
+                Err(e) => {
+                    tracing::warn!(error = %e, item_id = %item.id, "loading the latest revision failed");
+                    None
+                }
             }
-        },
+        }
     }
 }
 
@@ -364,12 +375,11 @@ pub(crate) async fn moderation_context(
 fn moderation_element(
     user: &UserContext,
     text: &super::admin_nav::AdminText,
-    current: &'static str,
+    workflow: &crate::content::moderation::ModerationWorkflow,
+    current: &str,
 ) -> (String, FormElement) {
-    use crate::content::moderation;
-
-    let targets = moderation::targets(current, user);
-    let current_label = moderation::label(current);
+    let targets = workflow.targets(current, user);
+    let current_label = workflow.label(current);
     let mut fieldset = FormElement::fieldset()
         .title("Moderation state")
         .weight(crate::content::STATUS_WEIGHT)
@@ -379,7 +389,7 @@ fn moderation_element(
             FormElement::markup(format!(
                 r#"<p class="moderation-current">{} <strong>{}</strong></p>"#,
                 text.html("Current state:", &[]),
-                text.html(current_label, &[])
+                text.html(&current_label, &[])
             ))
             .weight(0),
         );
@@ -395,9 +405,11 @@ fn moderation_element(
     } else {
         let options: Vec<(String, String)> = targets
             .iter()
-            .map(|s| ((*s).to_string(), moderation::label(s).to_string()))
+            .map(|s| (s.id.clone(), s.label.clone()))
             .collect();
-        let default = moderation::default_target(current, user).unwrap_or(current);
+        let default = workflow
+            .default_target(current, user)
+            .unwrap_or_else(|| current.to_string());
         let mut select = FormElement::select(options)
             .title("Change to")
             .default_value(default)

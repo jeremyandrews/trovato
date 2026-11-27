@@ -69,6 +69,21 @@ fn insert_options(context: &mut tera::Context) {
     context.insert("comment_order_options", COMMENT_ORDER_OPTIONS);
 }
 
+/// The stored moderation workflows, as the `moderation_workflow` select's
+/// options: id and label, read fresh (never cached), like every use of
+/// `moderation.workflows`.
+async fn workflow_options(state: &AppState) -> Vec<(String, String)> {
+    let value =
+        crate::models::SiteConfig::get(state.db(), crate::content::moderation::WORKFLOWS_KEY)
+            .await
+            .ok()
+            .flatten();
+    crate::content::moderation::resolve_workflows(value.as_ref())
+        .into_iter()
+        .map(|w| (w.id, w.label))
+        .collect()
+}
+
 /// Content type form data.
 #[derive(Debug, Deserialize)]
 struct ContentTypeFormData {
@@ -85,6 +100,7 @@ struct ContentTypeFormData {
     promote_default: Option<String>,
     sticky_default: Option<String>,
     moderation: Option<String>,
+    moderation_workflow: Option<String>,
     preview_mode: Option<String>,
     comment_mode: Option<String>,
     comment_threading: Option<String>,
@@ -117,6 +133,17 @@ impl ContentTypeFormData {
         }
     }
 
+    /// The workflow this submission names, trimmed; [`moderation::EDITORIAL`]
+    /// when blank.
+    fn moderation_workflow(&self) -> String {
+        self.moderation_workflow
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .unwrap_or(crate::content::moderation::EDITORIAL)
+            .to_string()
+    }
+
     /// The settings this submission stores, merged into what the type holds.
     fn settings(&self) -> serde_json::Value {
         let mut settings = serde_json::Map::new();
@@ -134,6 +161,10 @@ impl ContentTypeFormData {
                 serde_json::Value::Bool(self.switch(key)),
             );
         }
+        settings.insert(
+            crate::content::moderation::WORKFLOW_SETTING.to_string(),
+            serde_json::Value::from(self.moderation_workflow()),
+        );
         settings.insert(
             crate::content::preview::SETTING.to_string(),
             serde_json::Value::from(self.preview_mode().as_str()),
@@ -177,6 +208,8 @@ impl ContentTypeFormData {
         for key in DEFAULT_SWITCHES {
             values[*key] = serde_json::Value::Bool(self.switch(key));
         }
+        values[crate::content::moderation::WORKFLOW_SETTING] =
+            serde_json::Value::from(self.moderation_workflow());
         values[crate::content::preview::SETTING] =
             serde_json::Value::from(self.preview_mode().as_str());
         for (key, value) in self.comment_settings().to_settings() {
@@ -256,6 +289,7 @@ async fn add_content_type_form(State(state): State<AppState>, session: Session) 
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &false);
     insert_options(&mut context);
+    context.insert("workflow_options", &workflow_options(&state).await);
     context.insert("values", &serde_json::json!({}));
     context.insert("path", "/admin/structure/types/add");
 
@@ -364,6 +398,7 @@ async fn render_add_form_with_errors(
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &false);
     insert_options(&mut context);
+    context.insert("workflow_options", &workflow_options(state).await);
     context.insert("errors", &errors);
     context.insert("values", &form.values());
     context.insert("path", "/admin/structure/types/add");
@@ -405,6 +440,7 @@ async fn edit_content_type_form(
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &true);
     insert_options(&mut context);
+    context.insert("workflow_options", &workflow_options(&state).await);
     // Load the database model to access settings (not available on ContentTypeDefinition)
     let db_type = crate::models::ItemType::find_by_type(state.db(), &type_name)
         .await
@@ -429,6 +465,13 @@ async fn edit_content_type_form(
                 .unwrap_or(false),
         );
     }
+    values[crate::content::moderation::WORKFLOW_SETTING] = serde_json::Value::from(
+        db_type
+            .as_ref()
+            .map_or(crate::content::moderation::EDITORIAL, |it| {
+                crate::content::moderation::workflow_setting(&it.settings)
+            }),
+    );
     values[crate::content::preview::SETTING] = serde_json::Value::from(
         crate::content::preview::PreviewMode::of(db_type.as_ref().map(|it| &it.settings)).as_str(),
     );
@@ -493,6 +536,7 @@ async fn edit_content_type_submit(
         context.insert("form_build_id", &form_build_id);
         context.insert("editing", &true);
         insert_options(&mut context);
+        context.insert("workflow_options", &workflow_options(&state).await);
         context.insert("errors", &errors);
         context.insert("values", &form.values());
         context.insert("path", &format!("/admin/structure/types/{type_name}/edit"));

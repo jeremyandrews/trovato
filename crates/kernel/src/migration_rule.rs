@@ -723,4 +723,26 @@ mod tests {
             failures.join("\n")
         );
     }
+
+    /// `20261211000001_moderation_workflows.sql` seeds `moderation.workflows`
+    /// with exactly `content::moderation::builtin_editorial()`, so an upgraded
+    /// site reads the same workflow it always had.
+    #[test]
+    fn moderation_workflows_migration_seeds_the_built_in_workflow() {
+        let sql = include_str!("../migrations/20261211000001_moderation_workflows.sql");
+        let start = sql.find("'{").expect("the seeded JSON literal") + 1;
+        let end = sql[start..].find("}'::jsonb").expect("the end of the JSON literal") + start + 1;
+        let value: serde_json::Value =
+            serde_json::from_str(&sql[start..end]).expect("the seeded value must be valid JSON");
+        #[derive(serde::Deserialize)]
+        struct Seeded {
+            workflows: Vec<crate::content::moderation::ModerationWorkflow>,
+        }
+        let seeded: Seeded =
+            serde_json::from_value(value).expect("the seeded value must parse as workflows");
+        assert_eq!(
+            seeded.workflows,
+            vec![crate::content::moderation::builtin_editorial()]
+        );
+    }
 }

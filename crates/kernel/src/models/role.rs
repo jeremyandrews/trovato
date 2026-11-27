@@ -88,16 +88,14 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     // (B160, `content::view_counter`). Drupal's statistics permission of the
     // same name. Granted by no migration.
     "view post access counter",
-    // Content moderation (B158, `content::moderation`): one permission per
-    // transition of the Editorial workflow, named as Drupal names them, and
-    // the latest (draft) revision of an item ahead of its published one, with
-    // the moderated content list. Granted by no migration; an administrator
-    // holds them implicitly.
-    "use editorial transition create_new_draft",
-    "use editorial transition publish",
-    "use editorial transition archive",
-    "use editorial transition archived_draft",
-    "use editorial transition archived_published",
+    // Content moderation (B158, B301, `content::moderation`): the latest
+    // (draft) revision of an item ahead of its published one, with the
+    // moderated content list. Granted by no migration; an administrator
+    // holds it implicitly. The transition permissions themselves
+    // (`use <workflow id> transition <id>`) are not here: they are derived
+    // from every workflow a site's `moderation.workflows` variable holds, one
+    // per transition, the way `use <format>` is derived from the text formats
+    // a site stores (`grid_permissions`, `config_storage::yaml::known_permissions`).
     "view latest version",
     // `/admin/content` without `edit any content`: the list of what the viewer
     // may see, with Edit and Delete where the item allows them. Drupal's
