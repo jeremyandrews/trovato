@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+- **K5, page H1.** A Hero could never be a page's level one heading:
+  `validate_accessibility` and the field checker refused `headingLevel: 1` on
+  every component, and the page template always printed its own `<h1>` from
+  the item's title regardless of what the page builder content held. A
+  component definition may now declare `may_be_page_heading` (Hero does); a
+  `headingLevel: 1` on it is accepted, a second one anywhere on the page is
+  refused on save, and `page_root.has_page_heading` tells the item templates
+  whether one rendered, so they skip their own title heading when it did.
+- **K7, embeds.** The default CSP had no `frame-src` and `img-src 'self'
+  data:`, so every iframe embed (YouTube, Captivate, HubSpot) and every
+  external thumbnail was blocked outright, with no way for a site to allow
+  one without widening the policy by hand. Two settings, `CSP_FRAME_SRC` and
+  `CSP_IMG_SRC` (comma or whitespace separated host sources, validated as a
+  scheme plus a host with an optional `*.` wildcard subdomain — no path, no
+  port, no quote, no `*` or `data:`), append to `frame-src 'self' ...` and
+  extend the existing `img-src` directive. Empty or absent, the sent policy
+  is unchanged, byte for byte.
+- **K8, sanitizer.** The page builder's Ammonia sanitizer stripped `id` and
+  every `aria-*` attribute but `aria-label`, so an accordion's own
+  `aria-controls`/`aria-expanded`/`aria-labelledby` pairing and any in page
+  anchor never survived sanitization. `id` is now kept when it matches a safe
+  anchor value (a letter, then letters, digits, `_` or `-`), and
+  `aria-controls`, `aria-expanded`, `aria-labelledby`, `aria-hidden` and
+  `aria-describedby` are kept on every element; `<script>` and event handler
+  attributes are still stripped.
+- **K9, alt check.** The alt text check only looked at a component's own top
+  level props, so a `CardGrid` card's or a `LogoRow` logo's image — nested in
+  a `list` field — was never checked at all, and `BlockquoteExtended` had no
+  way to mark its avatar decorative, so any avatar blocked the whole
+  component. The check is now one recursive heuristic, shared by save time
+  and render time validation, that walks every array and object in a
+  component's props; `BlockquoteExtended` gained a hidden `isDecorative`
+  field.
+- **K11, stored JSON validation.** Confirmed (not a gap): `ComponentRegistry::validate_page`
+  already runs on create, update and `trovato import` alike, through
+  `ItemService::validate_page_builder_fields` and `::check_imported_fields`.
+  Added a test exercising all three paths with an unknown component.
+
 ## v0.105.0 — 2026-11-25
 
 Trovato is at 0.105.0 and the plugin API is `(0, 105)`. A plugin that declares

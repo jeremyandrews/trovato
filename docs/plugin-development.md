@@ -1965,6 +1965,7 @@ stylesheets = ["promo-cards.css"]    # optional; paths under the plugin's static
 classes = ["promo-cards--two", "promo-cards--three"]  # every class a select may add
 # zones = ["main"]             # optional: named areas other components drop into
 # in_editor = false            # optional: validate and render it, but do not offer it
+# may_be_page_heading = true   # optional: this component may set headingLevel: 1 (the page's H1)
 
 [[fields]]
 name = "heading"
@@ -1993,7 +1994,7 @@ shows it above the editor, and the JSON API returns it in a 422.
 | `text` | string | `max_length`, `min_length`, `multiline` (a textarea in the editor) | length in characters | the string, autoescaped by Tera |
 | `rich_text` | Markdown string | `max_length`, `min_heading` (default 2) | length of the Markdown | the string, and `<name>_html`: the kernel's sanitized rendering, headings shifted to start at `min_heading` |
 | `number` | number | `min`, `max`, `integer` | range, whole number | the number |
-| `heading_level` | 2 to 6 | none | 2 to 6 (the page title is the level 1 heading) | the number |
+| `heading_level` | 2 to 6 (1 to 6 on a `may_be_page_heading` component) | none | 2 to 6 (the page title is the level 1 heading), or 1 to 6 on a `may_be_page_heading` component — see [below](#the-pages-level-one-heading) | the number |
 | `url` | string | none | relative, or `http`, `https`, `mailto`, `tel`; no whitespace | the URL, or nothing if unsafe |
 | `image` | `{ src, alt, decorative }` | `alt_max_length` (default 250) | `src` is a safe URL; `alt` is required unless `decorative` is true (WCAG 1.1.1) | `{ src, alt, decorative }`, with `alt` empty when decorative |
 | `link` | `{ url, label, new_tab }` | `label_max_length` (default 120) | `url` is safe; a link has a label a screen reader can announce | `{ url, label, new_tab }` |
@@ -2055,11 +2056,14 @@ The template's context holds:
 
 Everything a template outputs goes through the page builder's HTML sanitizer.
 It has **no `style` attribute**: a component expresses a colour, a spacing or a
-layout as a declared class, never as inline CSS from a prop. `class`,
-`aria-label`, `role` and `lang` survive on any element, along with ammonia's
-default structural tags and attributes (`href`, `src`, `alt` and the like) and
-`section`, `article`, `aside`, `nav`, `figure`, `details` and `summary`;
-scripts, event handlers and `javascript:` URLs do not. `target="_blank"` is
+layout as a declared class, never as inline CSS from a prop. `class`, `id`,
+`aria-label`, `aria-controls`, `aria-expanded`, `aria-labelledby`,
+`aria-hidden`, `aria-describedby`, `role` and `lang` survive on any element,
+along with ammonia's default structural tags and attributes (`href`, `src`,
+`alt` and the like) and `section`, `article`, `aside`, `nav`, `figure`,
+`details` and `summary`; scripts, event handlers and `javascript:` URLs do
+not. `id` is kept only when it looks like a safe anchor value (a letter, then
+letters, digits, `_` or `-`); anything else is stripped. `target="_blank"` is
 the one `target` kept, and such a link gets `rel="noopener noreferrer"`.
 
 ```html+jinja
@@ -2081,7 +2085,31 @@ the one `target` kept, and such a link gets `rel="noopener noreferrer"`.
 The kernel's accessibility checks apply to plugin components too: an `image`
 field without alt text that is not marked decorative is refused on save, and
 the component renders as an accessibility error rather than as an unlabelled
-image. A page whose headings skip a level is logged as a warning.
+image. This is checked recursively — an image nested in a `list` field's
+entries (a card's or a logo's) is held to the same rule as the component's
+own top level image — not just at the top level. A page whose headings skip a
+level is logged as a warning.
+
+### The page's level one heading
+
+A component normally declares `heading_level` fields at 2 to 6: the page
+template owns the page's `<h1>`, printed from the item's title. A component
+that is itself a page opener — a hero band — may ask to be the exception by
+setting `may_be_page_heading = true` next to its other top level keys:
+
+```toml
+type = "Hero"
+may_be_page_heading = true   # this component may render the page's H1
+```
+
+A `heading_level` field on a `may_be_page_heading` component accepts `1`
+alongside 2 to 6; on every other component the rule is unchanged. At most one
+component on a page may actually set `headingLevel: 1` — a second one
+anywhere on the page, including nested in a zone, is refused on save. A
+theme's item template can tell whether one did: `page_root.has_page_heading`
+is `true` when the rendered page builder content printed an `<h1>`, so the
+template can skip printing the item's title as its own heading and avoid two
+`<h1>`s on one page.
 
 ### Stylesheets
 

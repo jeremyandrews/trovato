@@ -264,6 +264,25 @@ Permissions-Policy: camera=(), microphone=(), geolocation=()
 Strict-Transport-Security: max-age=31536000; includeSubDomains  (HTTPS only)
 ```
 
+The default policy has no `frame-src` (every iframe is blocked by
+`default-src 'self'`) and `img-src 'self' data:` (no external image host). A
+site that embeds YouTube, Captivate or HubSpot, or pulls a thumbnail from one,
+sets `CSP_FRAME_SRC` and/or `CSP_IMG_SRC` to a comma or whitespace separated
+list of host sources — a scheme plus a host, an optional `*.` wildcard
+subdomain, no path, port or quote:
+
+```bash
+CSP_FRAME_SRC="https://www.youtube-nocookie.com https://player.captivate.fm"
+CSP_IMG_SRC="https://*.hubspot.net"
+```
+
+`CSP_FRAME_SRC` is appended to a new `frame-src 'self' ...` directive;
+`CSP_IMG_SRC` extends the existing `img-src 'self' data: ...` directive. An
+entry that is not a valid host source (`*`, `'unsafe-inline'`, `data:`, or
+anything with a path) is dropped with a warning in the log rather than
+widening the policy or breaking it. Neither setting configured sends the
+default policy unchanged.
+
 ---
 
 ## Step 6: Testing

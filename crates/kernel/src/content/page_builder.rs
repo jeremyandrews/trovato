@@ -966,8 +966,8 @@ mod tests {
             }]
         }))
         .unwrap();
-        let rendered = render_puck_page(&page, &tera, &registry, &ResolvedReferences::default())
-            .unwrap();
+        let rendered =
+            render_puck_page(&page, &tera, &registry, &ResolvedReferences::default()).unwrap();
         assert!(rendered.html.contains("<h1"), "{}", rendered.html);
         assert!(!rendered.html.contains("<h2"), "{}", rendered.html);
         assert_eq!(rendered.root["has_page_heading"], true);
@@ -984,8 +984,8 @@ mod tests {
             }]
         }))
         .unwrap();
-        let rendered = render_puck_page(&page, &tera, &registry, &ResolvedReferences::default())
-            .unwrap();
+        let rendered =
+            render_puck_page(&page, &tera, &registry, &ResolvedReferences::default()).unwrap();
         assert_eq!(rendered.root["has_page_heading"], false);
     }
 

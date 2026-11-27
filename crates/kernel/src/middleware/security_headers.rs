@@ -186,9 +186,7 @@ impl SecurityHeaders {
                     }
                 })
             }
-            _ if widened => {
-                HeaderValue::from_str(&policy).unwrap_or_else(|_| DEFAULT_CSP.clone())
-            }
+            _ if widened => HeaderValue::from_str(&policy).unwrap_or_else(|_| DEFAULT_CSP.clone()),
             _ => DEFAULT_CSP.clone(),
         };
 
@@ -491,7 +489,9 @@ mod tests {
         )]);
         let csp = headers.csp.to_str().unwrap();
         assert!(
-            csp.contains("frame-src 'self' https://www.youtube-nocookie.com https://player.captivate.fm"),
+            csp.contains(
+                "frame-src 'self' https://www.youtube-nocookie.com https://player.captivate.fm"
+            ),
             "{csp}"
         );
         // Every other directive is exactly as the default sends it.
@@ -517,12 +517,18 @@ mod tests {
             "https://www.youtube-nocookie.com, *, 'unsafe-inline', data:",
         )]);
         let csp = headers.csp.to_str().unwrap();
-        assert!(
-            csp.contains("frame-src 'self' https://www.youtube-nocookie.com"),
-            "{csp}"
-        );
-        assert!(!csp.contains(" * "), "{csp}");
-        assert!(!csp.contains("unsafe-inline"), "{csp}");
+        // Exactly the one valid entry made it into `frame-src`: not `*`, not
+        // `'unsafe-inline'` (a substring of `style-src`'s value, for reasons
+        // unrelated to this setting — this checks `frame-src`'s own value,
+        // not the whole policy), not `data:`.
+        let frame_src = csp
+            .split("frame-src ")
+            .nth(1)
+            .unwrap_or_default()
+            .split(';')
+            .next()
+            .unwrap();
+        assert_eq!(frame_src, "'self' https://www.youtube-nocookie.com", "{csp}");
     }
 
     #[test]
@@ -539,6 +545,9 @@ mod tests {
         ]);
         let csp = headers.csp.to_str().unwrap();
         assert!(csp.contains("frame-src 'self' https://www.youtube-nocookie.com"));
-        assert!(csp.ends_with("; report-uri https://csp.example.com/report"), "{csp}");
+        assert!(
+            csp.ends_with("; report-uri https://csp.example.com/report"),
+            "{csp}"
+        );
     }
 }
