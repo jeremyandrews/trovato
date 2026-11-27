@@ -177,7 +177,7 @@ Trovato integrates **Scolta** for AI-powered search that works **without any vec
 1. **Pagefind** builds a static search index from published content on the Live stage (via cron). It is Live only: an editor reading another stage finds that stage's items through the server-side search, never through Pagefind
 2. **scolta.js** runs client-side scoring: recency decay, title/content match boost, deduplication
 3. **AI query expansion** — "performance issues" also finds "site speed optimization"
-4. **AI summary** — A streaming answer appears above results, citing sources
+4. **AI summary** — An answer appears above results, citing sources. The browser sends only the URLs of the results it found; the server resolves each one to an item and builds the summary's context itself, from the fields the visitor may see
 5. **Follow-up conversation** — Users can ask follow-up questions
 
 ### Enable Search Indexing
@@ -217,7 +217,7 @@ When AI is configured, scolta.js automatically uses these endpoints:
 | Endpoint | Method | What It Does |
 |---|---|---|
 | `/api/v1/search/expand` | POST | Returns alternative search terms |
-| `/api/v1/search/summarize` | POST | Streams an AI summary of top results |
+| `/api/v1/search/summarize` | POST | Returns an AI summary built from the given result URLs |
 | `/api/v1/search/followup` | POST | Handles follow-up conversation |
 
 ---

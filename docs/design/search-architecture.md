@@ -205,9 +205,28 @@ next index build.
 
 `/api/v1/search/expand`, `/summarize` and `/followup` read the settings first
 and answer 404 with a short JSON error when their stage is off, before any cache
-or provider work. `/followup` answers 400 to a conversation holding more user
-turns than `max_followups` plus one (the opening question), counted on `messages`
-or on `history` plus `query`, whichever it received.
+or provider work. `/followup` answers 400 to a conversation holding more `user`
+turns than `max_followups` plus one (the opening question), and to a message
+whose role is anything but `user` or `assistant`.
+
+Both answer plain JSON, not an SSE stream: an earlier draft of this document
+described them as streaming, which they have never done in the kernel's
+implementation.
+
+`/summarize` and `/followup` do not take the browser's text at all. Each
+takes result **URLs** — `{ "results": [{ "url": "..." }] }` — never excerpt
+text or page content; `/summarize` also answers 200 with an empty summary,
+spending no provider call, when none of its URLs resolve to an item the
+caller may see. The server resolves each URL to an item on the Live stage
+(`/item/<uuid>` directly, or through the URL alias table), runs it through
+the same item- and field-level access check every other read path uses
+(`ItemService::filter_page_for_view`), and builds the prompt from the title
+and the fields of whatever survives, each item cut to `ai_summary_max_chars`.
+A URL naming an unpublished item, or a field the caller may not see, puts
+nothing into the prompt. This closed two defects in the original design: a
+caller could send any text it liked as "excerpts" for the model to read, and
+the summary could describe content the caller had no right to see in the
+first place.
 
 ---
 
@@ -285,9 +304,10 @@ the small piece.
 
 When `sentiment_enabled` and `analytics_enabled` are both on (sentiment is off by
 default), `/api/v1/search/followup`, after it has built a successful answer,
-`try_send`s the visitor's newest message (without the search context
-`scolta.js` appends to it) and the assistant answer before it to a bounded
-channel (256 jobs) and returns. One background worker, owned by `AppState`
+`try_send`s the visitor's newest message and the assistant answer before it to
+a bounded channel (256 jobs) and returns. The search results a follow-up
+searches up travel as a separate `results` field, not text appended to the
+message, so there is nothing to strip out of it here any more. One background worker, owned by `AppState`
 (`search::sentiment::SentimentQueue`), drains it: it re-reads the settings,
 resolves the Chat provider the same way the endpoints do, sends the
 `CLASSIFY_SENTIMENT` prompt (`search/prompts.rs`, resolved through
