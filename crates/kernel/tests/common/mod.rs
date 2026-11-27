@@ -24,7 +24,7 @@ pub mod smtp_sink;
 
 use axum::Router;
 use axum::body::Body;
-use axum::http::{Request, header};
+use axum::http::{Request, StatusCode, header};
 use axum::response::Response;
 use sqlx::PgPool;
 use tower::ServiceExt;
@@ -1404,5 +1404,70 @@ impl TestApp {
             "test mail was held by a sending limit (a long-lived database? recreate it): {stats:?}"
         );
         stats
+    }
+}
+
+/// A visitor on the account recovery page (`/user/recover`), posting its steps
+/// as the page does: the CSRF token the page was served with in
+/// `X-CSRF-Token`, and after each answer the next token that answer carries.
+pub struct RecoveryVisit {
+    /// The visitor's cookies, updated from every answer that sets one.
+    pub cookies: String,
+    token: String,
+    ip: String,
+}
+
+impl RecoveryVisit {
+    /// Open the recovery page from `ip`.
+    pub async fn open(app: &TestApp, ip: &str) -> Self {
+        let response = app
+            .request(
+                Request::get("/user/recover")
+                    .header("x-forwarded-for", ip)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK, "GET /user/recover");
+        let cookies = extract_cookies(&response);
+        let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
+            .await
+            .unwrap();
+        let html = String::from_utf8_lossy(&bytes);
+        let marker = "name=\"csrf-token\" content=\"";
+        let start = html.find(marker).expect("the recovery page holds a token") + marker.len();
+        let end = start + html[start..].find('"').unwrap();
+        Self {
+            cookies,
+            token: html[start..end].to_string(),
+            ip: ip.to_string(),
+        }
+    }
+
+    /// POST one step of the flow with a JSON body.
+    pub async fn post(&mut self, app: &TestApp, path: &str, body: String) -> Response {
+        let response = app
+            .request_with_cookies(
+                Request::post(path)
+                    .header("content-type", "application/json")
+                    .header("x-forwarded-for", &self.ip)
+                    .header("x-csrf-token", &self.token)
+                    .body(Body::from(body))
+                    .unwrap(),
+                &self.cookies,
+            )
+            .await;
+        let cookies = extract_cookies(&response);
+        if !cookies.is_empty() {
+            self.cookies = cookies;
+        }
+        if let Some(next) = response
+            .headers()
+            .get("x-csrf-token")
+            .and_then(|v| v.to_str().ok())
+        {
+            self.token = next.to_string();
+        }
+        response
     }
 }

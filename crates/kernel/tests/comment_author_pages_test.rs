@@ -159,10 +159,10 @@ async fn get(app: &TestApp, cookies: &str, uri: &str) -> (StatusCode, String, St
     (status, location, text_of(response).await)
 }
 
-/// The `_csrf` value of the first form on `html`.
+/// The `_token` value of the first form on `html`.
 fn csrf_field(html: &str) -> String {
-    let marker = "name=\"_csrf\" value=\"";
-    let start = html.find(marker).expect("a _csrf field") + marker.len();
+    let marker = "name=\"_token\" value=\"";
+    let start = html.find(marker).expect("a _token field") + marker.len();
     html[start..].split('"').next().unwrap().to_string()
 }
 
@@ -285,7 +285,7 @@ fn the_reply_page_offers_a_form_for_the_item_and_for_a_comment() {
             app,
             &cookies,
             &format!("/api/v1/item/{item_id}/comments"),
-            format!("_csrf={token}&parent_id={parent}&body=A+reply+from+the+page"),
+            format!("_token={token}&parent_id={parent}&body=A+reply+from+the+page"),
         )
         .await;
         assert!(status.is_redirection(), "{status}");
@@ -360,7 +360,7 @@ fn an_author_edits_their_own_comment() {
             app,
             &author,
             &format!("/comment/{mine}/edit"),
-            "_csrf=wrong&body=Forged".to_string(),
+            "_token=wrong&body=Forged".to_string(),
         )
         .await;
         assert!(!status.is_redirection(), "{status}");
@@ -370,7 +370,7 @@ fn an_author_edits_their_own_comment() {
             app,
             &author,
             &format!("/comment/{mine}/edit"),
-            format!("_csrf={}&body=After+the+edit", csrf_field(&form)),
+            format!("_token={}&body=After+the+edit", csrf_field(&form)),
         )
         .await;
         assert!(status.is_redirection(), "{status}");
@@ -423,7 +423,7 @@ fn an_author_deletes_their_own_comment_after_confirming() {
             app,
             &author,
             &format!("/comment/{mine}/delete"),
-            "_csrf=wrong".to_string(),
+            "_token=wrong".to_string(),
         )
         .await;
         assert!(!status.is_redirection(), "{status}");
@@ -433,7 +433,7 @@ fn an_author_deletes_their_own_comment_after_confirming() {
             app,
             &author,
             &format!("/comment/{mine}/delete"),
-            format!("_csrf={}", csrf_field(&confirm)),
+            format!("_token={}", csrf_field(&confirm)),
         )
         .await;
         assert!(status.is_redirection(), "{status}");
@@ -452,7 +452,7 @@ fn an_author_deletes_their_own_comment_after_confirming() {
             app,
             &plain,
             &format!("/comment/{kept}/delete"),
-            format!("_csrf={}", csrf_field(&page)),
+            format!("_token={}", csrf_field(&page)),
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN);
