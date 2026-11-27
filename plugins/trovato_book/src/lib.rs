@@ -117,7 +117,7 @@ pub fn tap_menu() -> Vec<MenuRoute> {
 #[plugin_tap]
 pub fn tap_api(request: ApiRequest) -> ApiResponse {
     match request.callback.as_str() {
-        "book_list" => book_list(),
+        "book_list" => book_list(&request),
         "book_tree" => book_tree(&request),
         "book_create" => book_create(&request),
         "book_place" => book_place(&request),
@@ -200,8 +200,20 @@ pub fn tap_item_view(item: Item) -> String {
 
 // ─── Admin screens ───────────────────────────────────────────────────
 
+/// The hidden field every form on these screens posts its CSRF token in.
+///
+/// The kernel checks a plugin route's POST for `_token` (or an
+/// `X-CSRF-Token` header) before the plugin sees it, so a form without one
+/// is refused with a 403.
+fn token_field(request: &ApiRequest) -> String {
+    format!(
+        "<input type=\"hidden\" name=\"_token\" value=\"{}\">",
+        escape_html(&request.csrf_token)
+    )
+}
+
 /// Every book, with its page count.
-fn book_list() -> ApiResponse {
+fn book_list(request: &ApiRequest) -> ApiResponse {
     let books = load_books();
 
     let mut body = String::new();
@@ -224,15 +236,17 @@ fn book_list() -> ApiResponse {
         body.push_str("</tbody>\n</table>\n");
     }
 
-    body.push_str(
+    body.push_str(&format!(
         "<h2>Create a book</h2>\n\
          <form method=\"post\" action=\"/admin/structure/books/create\">\n\
+         {token}\n\
          <label for=\"item_id\">Root page item id</label>\n\
          <input type=\"text\" id=\"item_id\" name=\"item_id\" required>\n\
          <button type=\"submit\">Create book</button>\n\
          </form>\n\
          <p>The item becomes the book's first page. Any item type can be a page.</p>\n",
-    );
+        token = token_field(request),
+    ));
 
     admin_page("Books", &body)
 }
@@ -257,7 +271,7 @@ fn book_tree(request: &ApiRequest) -> ApiResponse {
         body.push_str(&format!(
             "<tr><td>{n}</td><td>{indent}<a href=\"/item/{id}\">{title}</a></td>\
              <td>{depth}</td><td>{weight}</td><td>\
-             <form method=\"post\" action=\"/admin/structure/books/{book}/remove\">\
+             <form method=\"post\" action=\"/admin/structure/books/{book}/remove\">{token}\
              <input type=\"hidden\" name=\"item_id\" value=\"{id}\">\
              <button type=\"submit\">Remove</button></form></td></tr>\n",
             n = index + 1,
@@ -267,6 +281,7 @@ fn book_tree(request: &ApiRequest) -> ApiResponse {
             depth = page.depth,
             weight = page.weight,
             book = escape_html(book_id),
+            token = token_field(request),
         ));
     }
     body.push_str("</tbody>\n</table>\n");
@@ -274,6 +289,7 @@ fn book_tree(request: &ApiRequest) -> ApiResponse {
     body.push_str(&format!(
         "<h2>Place a page</h2>\n\
          <form method=\"post\" action=\"/admin/structure/books/{book}/place\">\n\
+         {token}\n\
          <label for=\"item_id\">Item id</label>\n\
          <input type=\"text\" id=\"item_id\" name=\"item_id\" required>\n\
          <label for=\"parent_item_id\">Parent page item id (blank for top level)</label>\n\
@@ -285,6 +301,7 @@ fn book_tree(request: &ApiRequest) -> ApiResponse {
          <p>Placing a page that is already in this book moves it. A page cannot be \
          placed under itself or under one of its own descendants.</p>\n",
         book = escape_html(book_id),
+        token = token_field(request),
     ));
 
     admin_page("Book", &body)

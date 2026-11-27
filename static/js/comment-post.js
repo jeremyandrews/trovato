@@ -2,7 +2,7 @@
  * Comment posting, as a progressive enhancement.
  *
  * The form works without this file: it posts form-encoded with the CSRF token in
- * a hidden `_csrf` input, and the route redirects back to the item. What this
+ * a hidden `_token` input, and the route redirects back to the item. What this
  * adds is posting JSON with the `X-CSRF-Token` header instead, so the page does
  * not reload and the reader is told what happened to their comment in place —
  * including the case where the site holds comments for review.

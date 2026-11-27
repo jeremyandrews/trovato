@@ -14,6 +14,9 @@
 //!                                (so cycle_id fires) and burn the nonce
 //! ```
 //!
+//! Every step is a POST from the recovery page and checks its `X-CSRF-Token`
+//! header (`recovery_csrf`); each answer carries the next token.
+//!
 //! # Why a plugin cannot skip a step
 //!
 //! Each transition is gated on kernel state a plugin never sees: the flow nonce
@@ -1020,14 +1023,39 @@ async fn save_recovery_config(state: &AppState, email: bool, codes: bool) -> Res
     Ok(())
 }
 
+/// The CSRF gate on the four steps of the flow.
+///
+/// `GET /user/recover` mints a token and the page posts each step with it in
+/// `X-CSRF-Token`. Tokens are single use, so every answer past the gate, a
+/// refusal included, carries the next one in the same header, and the page
+/// takes it for its next step (the pattern `/admin/ajax` uses).
+async fn recovery_csrf(
+    session: Session,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if let Err(refusal) = require_csrf_header(&session, request.headers()).await {
+        return refusal.into_response();
+    }
+    let mut response = next.run(request).await;
+    let token = crate::form::csrf::generate_csrf_token(&session).await;
+    if let Ok(value) = axum::http::HeaderValue::from_str(&token) {
+        response.headers_mut().insert("X-CSRF-Token", value);
+    }
+    response
+}
+
 /// The recovery router.
 pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/user/recover", get(recover_page))
+    let steps = Router::new()
         .route("/user/recover/start", post(recover_start))
         .route("/user/recover/choose", post(recover_choose))
         .route("/user/recover/verify", post(recover_verify))
         .route("/user/recover/reset", post(recover_reset))
+        .route_layer(axum::middleware::from_fn(recovery_csrf));
+    Router::new()
+        .route("/user/recover", get(recover_page))
+        .merge(steps)
         .route(
             "/user/recovery-codes/generate",
             post(generate_recovery_codes),

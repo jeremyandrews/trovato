@@ -2040,12 +2040,18 @@ async fn previous_release_serves_on_this_schema() {
     old.stop().await;
 }
 
-/// Run the web installer: an administrator, then the site name.
+/// Run the web installer: an administrator, then the site name, each form
+/// fetched first for its CSRF token and the session cookie that holds it.
 async fn install(base: &str, admin: &str, password: &str) {
     let client = http();
+    let mut cookies = String::new();
+    let (token, jar) = installer_form(&client, base, "/install/admin", &cookies).await;
+    cookies = jar;
     let response = client
         .post(format!("{base}/install/admin"))
+        .header("cookie", &cookies)
         .form(&[
+            ("_token", token.as_str()),
             ("username", admin),
             ("email", "admin@rollback.test"),
             ("password", password),
@@ -2059,9 +2065,11 @@ async fn install(base: &str, admin: &str, password: &str) {
         "install admin: {}",
         response.status()
     );
+    let (token, _) = installer_form(&client, base, "/install/site", &cookies).await;
     let response = client
         .post(format!("{base}/install/site"))
-        .form(&[("site_name", "Rollback")])
+        .header("cookie", &cookies)
+        .form(&[("_token", token.as_str()), ("site_name", "Rollback")])
         .send()
         .await
         .unwrap();
@@ -2070,4 +2078,44 @@ async fn install(base: &str, admin: &str, password: &str) {
         "install site: {}",
         response.status()
     );
+}
+
+/// GET an installer form: its `_token` (empty if it has none) and the cookies
+/// to send with it, `cookies` updated by any the answer set. The session
+/// cookie is `Secure`, so a reqwest cookie store would not send it back over
+/// plain HTTP; it is carried by hand.
+async fn installer_form(
+    client: &reqwest::Client,
+    base: &str,
+    path: &str,
+    cookies: &str,
+) -> (String, String) {
+    let response = client
+        .get(format!("{base}{path}"))
+        .header("cookie", cookies)
+        .send()
+        .await
+        .unwrap();
+    let set: Vec<String> = response
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .filter_map(|v| v.split(';').next())
+        .map(str::to_string)
+        .collect();
+    let jar = if set.is_empty() {
+        cookies.to_string()
+    } else {
+        set.join("; ")
+    };
+    let html = response.text().await.unwrap();
+    let marker = "name=\"_token\" value=\"";
+    let token = html
+        .find(marker)
+        .map(|at| &html[at + marker.len()..])
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_default()
+        .to_string();
+    (token, jar)
 }

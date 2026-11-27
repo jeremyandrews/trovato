@@ -484,12 +484,59 @@ impl Server {
         body
     }
 
-    /// POST a form-urlencoded body, following no redirect: the caller reads
-    /// the status the handler itself answered with.
+    /// Submit the form served at `path` as a browser would: GET it for its
+    /// `_token` and the session cookie holding it, then POST `fields` with
+    /// both, following no redirect, so the caller reads the status the
+    /// handler itself answered with.
     async fn post_form(&self, path: &str, fields: &[(&str, &str)]) -> u16 {
+        let (token, cookies) = self.form(path, "").await;
+        self.submit(path, &cookies, &token, fields).await
+    }
+
+    /// GET the form at `path` with `cookies`: its `_token` (empty if it has
+    /// none) and the cookies to send back, updated by any the answer set. The
+    /// session cookie is `Secure`, which a cookie store would not send back
+    /// over plain HTTP, so it is carried by hand.
+    async fn form(&self, path: &str, cookies: &str) -> (String, String) {
+        let page = http()
+            .get(format!("{}{path}", self.base))
+            .header("cookie", cookies)
+            .send()
+            .await
+            .expect("get the form");
+        let set: Vec<String> = page
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .filter_map(|v| v.split(';').next())
+            .map(str::to_string)
+            .collect();
+        let jar = if set.is_empty() {
+            cookies.to_string()
+        } else {
+            set.join("; ")
+        };
+        let html = page.text().await.expect("the form's body");
+        let marker = "name=\"_token\" value=\"";
+        let token = html
+            .find(marker)
+            .map(|at| &html[at + marker.len()..])
+            .and_then(|rest| rest.split('"').next())
+            .unwrap_or_default()
+            .to_string();
+        (token, jar)
+    }
+
+    /// POST `fields` and `_token` to `path` with `cookies`, following no
+    /// redirect.
+    async fn submit(&self, path: &str, cookies: &str, token: &str, fields: &[(&str, &str)]) -> u16 {
+        let mut body: Vec<(&str, &str)> = vec![("_token", token)];
+        body.extend_from_slice(fields);
         http()
             .post(format!("{}{path}", self.base))
-            .form(fields)
+            .header("cookie", cookies)
+            .form(&body)
             .send()
             .await
             .expect("post")
@@ -741,6 +788,84 @@ async fn installer_admin_step_audits_account_created() {
     assert_eq!(details["path"], "installer");
     assert_eq!(details["active"], true);
     assert_eq!(details["by"], "operator");
+
+    server.stop().await;
+}
+
+/// The installer's forms carry a CSRF token and refuse a post without it, and
+/// the site step, which finishes the installation, belongs to the session that
+/// created the administrator: another session is asked to sign in as that
+/// administrator first (B83b).
+#[tokio::test]
+async fn installer_forms_check_csrf_and_the_site_step_belongs_to_the_admin() {
+    let db = migrated("cli_installer_csrf").await;
+    let server = Server::start(&db.url()).await;
+    let admin_fields = [
+        ("username", "installer_csrf"),
+        ("email", "installer_csrf@example.com"),
+        ("password", PASSWORD),
+        ("password_confirm", PASSWORD),
+    ];
+
+    // No token: refused, and nothing written.
+    let status = server.submit("/install/admin", "", "", &admin_fields).await;
+    assert_eq!(status, 400, "an admin post without a token is refused");
+    assert!(
+        account(db.pool(), "installer_csrf").await.is_none(),
+        "a refused post creates no account"
+    );
+
+    // The browser that creates the administrator.
+    let (token, owner) = server.form("/install/admin", "").await;
+    assert!(!token.is_empty(), "the admin form carries a _token");
+    let status = server
+        .submit("/install/admin", &owner, &token, &admin_fields)
+        .await;
+    assert_eq!(status, 303, "the admin form as served is accepted");
+
+    // A second browser reaching the site step is asked to sign in, and is
+    // refused without the administrator's password.
+    let (token, stranger) = server.form("/install/site", "").await;
+    let (_, page) = server.get("/install/site").await.unwrap();
+    assert!(
+        page.contains("name=\"admin_name\""),
+        "another session is asked for the administrator"
+    );
+    let status = server
+        .submit(
+            "/install/site",
+            &stranger,
+            &token,
+            &[("site_name", "Hijacked"), ("admin_name", "installer_csrf")],
+        )
+        .await;
+    assert_eq!(status, 200, "the form is shown again with its error");
+    assert!(
+        !trovato_kernel::models::SiteConfig::is_installed(db.pool())
+            .await
+            .unwrap(),
+        "a stranger cannot finish the installation"
+    );
+
+    // The session that created the administrator finishes it, no sign in.
+    let (token, owner) = server.form("/install/site", &owner).await;
+    let status = server
+        .submit(
+            "/install/site",
+            &owner,
+            &token,
+            &[("site_name", "Installed")],
+        )
+        .await;
+    assert_eq!(
+        status, 303,
+        "the administrator's session finishes the install"
+    );
+    assert!(
+        trovato_kernel::models::SiteConfig::is_installed(db.pool())
+            .await
+            .unwrap()
+    );
 
     server.stop().await;
 }
