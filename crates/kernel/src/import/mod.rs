@@ -13,6 +13,7 @@
 
 mod alias;
 mod comment;
+mod file;
 mod item;
 mod record;
 mod tile;
@@ -245,6 +246,7 @@ async fn apply(run: &mut Run<'_>, record: Record) -> Result<Outcome> {
         Record::Redirect(r) => alias::import_redirect(run, r).await,
         Record::User(r) => user::import_user(run, r).await,
         Record::Tile(r) => tile::import_tile(run, r).await,
+        Record::File(r) => file::import_file(run, r).await,
     }
 }
 
