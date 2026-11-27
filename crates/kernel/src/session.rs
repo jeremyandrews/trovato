@@ -78,14 +78,18 @@ pub async fn create_session_layer(
     let config = Config::from_url(redis_url).context("failed to parse Redis URL")?;
 
     // Reconnect after Redis restarts, forever, every half second, and give
-    // up on a command after five seconds rather than wait on a connection
+    // up on a connect or a command after the same bounds every other kernel
+    // Redis connection has (`redis_conn`), rather than wait on a connection
     // that is gone. Without a policy the pool never reconnects, and every
     // request that touches its session hangs from the restart on.
     let mut builder = Builder::from_config(config);
     builder
         .set_policy(ReconnectPolicy::new_constant(0, 500))
+        .with_connection_config(|connection| {
+            connection.connection_timeout = crate::redis_conn::REDIS_CONNECT_TIMEOUT;
+        })
         .with_performance_config(|performance| {
-            performance.default_command_timeout = std::time::Duration::from_secs(5);
+            performance.default_command_timeout = crate::redis_conn::REDIS_RESPONSE_TIMEOUT;
         });
     let pool = builder
         .build_pool(1)
