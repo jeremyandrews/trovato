@@ -11,7 +11,8 @@
 //!
 //! The installer and `trovato user create` are covered by
 //! `zz_operator_cli_test.rs`, which already runs the real binary; this file
-//! covers the two paths reachable through the shared `TestApp` router.
+//! covers the paths reachable through the shared `TestApp` router
+//! (registration by form and by JSON, and the admin "Add user" form).
 //!
 //! Requires Postgres + Redis (the shared `TestApp`); runs in CI.
 
@@ -200,6 +201,77 @@ fn registration_writes_one_account_created_event() {
             .fetch_one(&app.db)
             .await
             .expect("the account exists");
+
+        assert_eq!(
+            account_created_count(app, user_id).await,
+            1,
+            "exactly one account.created event"
+        );
+        let details = account_created_event(app, user_id)
+            .await
+            .expect("an account.created row");
+        assert_eq!(details["path"], "registration");
+        assert_eq!(details["active"], false, "pending e-mail verification");
+        assert_eq!(details["by"], "self");
+    });
+}
+
+/// Public registration through the HTML form (`POST /user/register`, the
+/// route a visitor's browser uses) writes the same single `account.created`
+/// event as the JSON endpoint: both call the same `do_register`, which calls
+/// `UserService`, and the event is written there.
+#[test]
+fn registration_form_writes_one_account_created_event() {
+    run_test(async {
+        let app = shared_app().await;
+        open_registration(app).await;
+
+        let name = common::username("acctcreatedform");
+        delete_user_on_exit(app, &name);
+        let ip = common::test_ip_for(&name);
+        app.state.rate_limiter().reset("register", &ip).await.ok();
+
+        let page = app
+            .request(
+                Request::get("/user/register")
+                    .header("x-forwarded-for", &ip)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(page.status(), StatusCode::OK);
+        let cookies = common::extract_cookies(&page);
+        let html = body_string(page).await;
+        let pairs = form_pairs(&html, "/user/register");
+
+        let response = app
+            .request_with_cookies(
+                Request::post("/user/register")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header("x-forwarded-for", &ip)
+                    .body(Body::from(format!(
+                        "{pairs}&username={}&mail={}\
+                         &password=correct-horse-battery-staple\
+                         &confirm_password=correct-horse-battery-staple",
+                        urlencoding::encode(&name),
+                        urlencoding::encode(&format!("{name}@example.com"))
+                    )))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        let status = response.status();
+        let body = body_string(response).await;
+        assert!(
+            status.is_success() || status.is_redirection(),
+            "the form must accept the registration: {status} {body}"
+        );
+
+        let user_id: Uuid = sqlx::query_scalar("SELECT id FROM users WHERE name = $1")
+            .bind(&name)
+            .fetch_one(&app.db)
+            .await
+            .unwrap_or_else(|e| panic!("the account exists ({e}): {body}"));
 
         assert_eq!(
             account_created_count(app, user_id).await,
