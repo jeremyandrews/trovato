@@ -206,10 +206,11 @@ every time a forty-sixth is added.
 Two events are not already tap-dispatched and need one new call each, both
 small:
 
-- **`moderation.transition`**: `content/moderation.rs`'s `TRANSITIONS` table
-  (Draft/Published/Archived, B158) is consulted by whatever write path moves
-  `item_revision.moderation_state`, which today fires no tap at all. That call
-  site gains one `dispatcher.dispatch("tap_item_update", envelope)` call,
+- **`moderation.transition`**: `content/moderation.rs`'s transitions (a
+  site's own, configurable since B301; the built-in Editorial workflow's
+  Draft/Published/Archived, B158, by default) are consulted by whatever write
+  path moves `item_revision.moderation_state`, which today fires no tap at
+  all. That call site gains one `dispatcher.dispatch("tap_item_update", envelope)` call,
   enriched with `moderation_from`/`moderation_to`, mirroring exactly how the
   stage selector already rides `Item::update`'s own transaction and its
   existing tap dispatch (`docs/design/stage-workflow.md` section 6).

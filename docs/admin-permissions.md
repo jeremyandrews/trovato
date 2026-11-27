@@ -123,6 +123,30 @@ database even if the service check above it did not.
 `view revisions` and `delete revisions` are granted by no migration; an
 administrator holds both implicitly, as every permission here.
 
+### Content moderation
+
+| Route | Method | Permission |
+|---|---|---|
+| `/admin/content/moderated` | GET | `view latest version` or `edit any content` |
+| `/item/{id}/latest` | GET | `view latest version`, `view revisions`, or edit access to the item |
+
+A moderated type's items move between the states of its workflow
+(`moderation.workflows`, `docs/design/moderation-workflows.md`) by
+transitions, each its own permission: `use <workflow id> transition <id>`,
+named as Drupal's Editorial workflow names its own (`use editorial transition
+publish`, and so on) for the built-in workflow every site starts with. These
+are not in `KERNEL_PERMISSIONS` — they are derived from whatever
+`moderation.workflows` actually stores, the way a text format's `use <format>`
+permission is derived from the stored formats rather than declared
+(`routes/admin_user.rs::grid_permissions` lists one per transition of every
+stored workflow; `config_storage/yaml.rs::known_permissions` accepts the same
+set, plus any workflow arriving in the same `config import`, so a role file
+and a new workflow can be imported together). `view latest version` is
+unchanged and still here: the latest (draft) revision of an item ahead of its
+published one, and the moderated content list, for a user who may not hold
+full edit access. Granted by no migration; an administrator holds every
+transition and `view latest version` implicitly.
+
 ## Comments, files and media
 
 | Route | Method | Permission |

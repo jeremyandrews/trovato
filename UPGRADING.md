@@ -97,6 +97,38 @@ applied, so `trovato migrate` finds nothing to do.
 
 ## Unreleased
 
+### Moderation states and transitions are configurable (`moderation.workflows`)
+
+**Who is affected:** nobody, if your site keeps Draft, Published and Archived.
+A site that wants its own workflow (a review step before publishing, say)
+reads on to add one.
+
+**What changed.** The three content moderation states and five transitions
+were compiled into the kernel; they are now read from one site configuration
+variable, `moderation.workflows`, holding every workflow a site defines:
+states (with their machine name, label, whether the state is published, and
+whether a save into it over a published item replaces what visitors see or
+waits beside it as a forward revision) and transitions (an id, a label, the
+states it leaves from and the one it arrives at, each granted by its own
+permission). The migration seeds this variable with exactly the old built-in
+workflow, under the id `editorial`, so an upgraded site reads the same
+workflow it always had. The five permission names
+(`use editorial transition create_new_draft`, `publish`, `archive`,
+`archived_draft`, `archived_published`) are unchanged; they are no longer in
+the kernel's static permission list, but are derived from the stored workflow
+instead, the way a text format's `use <format>` permission already was. A
+content type is assigned a workflow by a new `moderation_workflow` setting,
+defaulting to `editorial` when absent, so an existing type's settings need no
+change. The `item_revision.moderation_state` column's check constraint, which
+only ever refused values the kernel never wrote, is dropped.
+
+**How to find out.** You do not need to do anything if you keep the built-in
+three states. To add a workflow, `config import` a `moderation.workflows`
+variable listing your states and transitions beside (not instead of) the
+`editorial` workflow, assign it to a content type with a
+`moderation_workflow` setting, and grant roles the transition permissions it
+derives. See `docs/design/moderation-workflows.md`.
+
 ### `AdminNavDefinition` is `#[non_exhaustive]`, with a new `keywords` field
 
 **Who is affected:** a plugin that builds `trovato_sdk::types::AdminNavDefinition`
