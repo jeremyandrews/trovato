@@ -848,56 +848,44 @@ fn a_recovery_reset_ends_prior_sessions() {
             .await
             .ok();
 
-        let post = |path: &'static str, body: serde_json::Value, cookies: String| {
-            let ip = ip.clone();
-            async move {
-                app.request_with_cookies(
-                    Request::post(path)
-                        .header("content-type", "application/json")
-                        .header("x-forwarded-for", ip)
-                        .body(Body::from(body.to_string()))
-                        .unwrap(),
-                    &cookies,
-                )
-                .await
-            }
-        };
-
-        let start = post(
-            "/user/recover/start",
-            serde_json::json!({ "identifier": username }),
-            String::new(),
-        )
-        .await;
+        let mut flow = common::RecoveryVisit::open(app, &ip).await;
+        let start = flow
+            .post(
+                app,
+                "/user/recover/start",
+                serde_json::json!({ "identifier": username }).to_string(),
+            )
+            .await;
         assert_eq!(start.status(), StatusCode::OK);
-        let cookies = common::extract_cookies(&start);
-        let choose = post(
-            "/user/recover/choose",
-            serde_json::json!({ "method_id": "trovato_recovery_codes:code" }),
-            cookies.clone(),
-        )
-        .await;
+        let choose = flow
+            .post(
+                app,
+                "/user/recover/choose",
+                serde_json::json!({ "method_id": "trovato_recovery_codes:code" }).to_string(),
+            )
+            .await;
         assert_eq!(choose.status(), StatusCode::OK);
-        let verify = post(
-            "/user/recover/verify",
-            serde_json::json!({ "response": codes[0] }),
-            cookies.clone(),
-        )
-        .await;
+        let verify = flow
+            .post(
+                app,
+                "/user/recover/verify",
+                serde_json::json!({ "response": codes[0] }).to_string(),
+            )
+            .await;
         assert_eq!(verify.status(), StatusCode::OK);
-        let cookies = cookies_after(&verify, &cookies);
-        let reset = post(
-            "/user/recover/reset",
-            serde_json::json!({ "new_password": NEW_PASSWORD }),
-            cookies.clone(),
-        )
-        .await;
+        let reset = flow
+            .post(
+                app,
+                "/user/recover/reset",
+                serde_json::json!({ "new_password": NEW_PASSWORD }).to_string(),
+            )
+            .await;
         assert_eq!(
             reset.status(),
             StatusCode::OK,
             "the recovery reset succeeds"
         );
-        let recovered = cookies_after(&reset, &cookies);
+        let recovered = flow.cookies.clone();
 
         assert_eq!(
             profile_status(app, &prior, UA_CHROME).await,

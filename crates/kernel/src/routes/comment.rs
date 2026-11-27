@@ -108,7 +108,7 @@ pub struct UpdateCommentRequest {
 ///
 /// - `application/json` → the existing body; CSRF from the `X-CSRF-Token`
 ///   header.
-/// - `application/x-www-form-urlencoded` → CSRF from the `_csrf` hidden input,
+/// - `application/x-www-form-urlencoded` → CSRF from the `_token` hidden input,
 ///   and the response is a redirect rather than JSON, because the caller is a
 ///   browser following a form submission.
 #[derive(Debug, Default)]
@@ -150,7 +150,11 @@ impl CommentSubmission {
                 .map(|v| v.trim())
                 .filter(|v| !v.is_empty())
                 .and_then(|v| v.parse().ok()),
-            body_csrf: Some(form.get("_csrf").cloned().unwrap_or_default()),
+            body_csrf: Some(
+                form.get(crate::routes::helpers::CSRF_FORM_FIELD)
+                    .cloned()
+                    .unwrap_or_default(),
+            ),
             wants_redirect: true,
         }
     }
@@ -996,7 +1000,7 @@ pub(crate) async fn render_thread(
     context.insert("comment_page", &page);
     context.insert("comment_pages", &pages);
     if can_comment {
-        // The form posts this in `_csrf`; the JS layer reads the meta tag in the
+        // The form posts this in `_token`; the JS layer reads the meta tag in the
         // head instead. Only generated for a viewer who can post.
         let token = crate::form::csrf::generate_csrf_token(session).await;
         context.insert("csrf_token", &token);
@@ -1024,8 +1028,8 @@ pub(crate) async fn render_thread(
 /// The form body of the edit and delete pages.
 #[derive(Debug, Deserialize)]
 pub struct CommentPageForm {
-    /// CSRF token, from the hidden `_csrf` input.
-    #[serde(rename = "_csrf", default)]
+    /// CSRF token, from the hidden `_token` input.
+    #[serde(rename = "_token", default)]
     pub csrf: String,
     /// The new comment text (the edit page only).
     #[serde(default)]
@@ -1755,7 +1759,7 @@ mod tests {
     /// cannot set a header. That is why posting the rendered form used to fail.
     #[test]
     fn a_form_submission_takes_its_csrf_token_from_the_body() {
-        let submission = form(&[("body", "Hello"), ("_csrf", "token-value")]);
+        let submission = form(&[("body", "Hello"), ("_token", "token-value")]);
 
         assert_eq!(submission.body, "Hello");
         assert_eq!(submission.body_csrf.as_deref(), Some("token-value"));
@@ -1786,7 +1790,7 @@ mod tests {
         assert_eq!(submission.parent_id, Some(parent));
     }
 
-    /// A missing `_csrf` still routes to the body check rather than falling
+    /// A missing `_token` still routes to the body check rather than falling
     /// through to the header one, so a form post cannot skip CSRF by omitting the
     /// field.
     #[test]

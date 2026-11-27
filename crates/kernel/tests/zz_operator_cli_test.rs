@@ -446,6 +446,11 @@ impl Server {
             // explain a fresh read inside this test.
             .env("CACHE_TTL", "3600")
             .env("CACHE_TTL_ITEMS", "3600")
+            // Every server here is reached from 127.0.0.1 and the tests run at
+            // once, so the per-address sign-in bucket (which counts the
+            // installer's site step) would refuse one test for another's
+            // posts. The account lockout is unaffected.
+            .env("TROVATO_RATE_LIMIT_LOGIN", "1000")
             .stdout(Stdio::null())
             .stderr(Stdio::inherit())
             .spawn()
@@ -484,12 +489,59 @@ impl Server {
         body
     }
 
-    /// POST a form-urlencoded body, following no redirect: the caller reads
-    /// the status the handler itself answered with.
+    /// Submit the form served at `path` as a browser would: GET it for its
+    /// `_token` and the session cookie holding it, then POST `fields` with
+    /// both, following no redirect, so the caller reads the status the
+    /// handler itself answered with.
     async fn post_form(&self, path: &str, fields: &[(&str, &str)]) -> u16 {
+        let (token, cookies) = self.form(path, "").await;
+        self.submit(path, &cookies, &token, fields).await
+    }
+
+    /// GET the form at `path` with `cookies`: its `_token` (empty if it has
+    /// none) and the cookies to send back, updated by any the answer set. The
+    /// session cookie is `Secure`, which a cookie store would not send back
+    /// over plain HTTP, so it is carried by hand.
+    async fn form(&self, path: &str, cookies: &str) -> (String, String) {
+        let page = http()
+            .get(format!("{}{path}", self.base))
+            .header("cookie", cookies)
+            .send()
+            .await
+            .expect("get the form");
+        let set: Vec<String> = page
+            .headers()
+            .get_all("set-cookie")
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .filter_map(|v| v.split(';').next())
+            .map(str::to_string)
+            .collect();
+        let jar = if set.is_empty() {
+            cookies.to_string()
+        } else {
+            set.join("; ")
+        };
+        let html = page.text().await.expect("the form's body");
+        let marker = "name=\"_token\" value=\"";
+        let token = html
+            .find(marker)
+            .map(|at| &html[at + marker.len()..])
+            .and_then(|rest| rest.split('"').next())
+            .unwrap_or_default()
+            .to_string();
+        (token, jar)
+    }
+
+    /// POST `fields` and `_token` to `path` with `cookies`, following no
+    /// redirect.
+    async fn submit(&self, path: &str, cookies: &str, token: &str, fields: &[(&str, &str)]) -> u16 {
+        let mut body: Vec<(&str, &str)> = vec![("_token", token)];
+        body.extend_from_slice(fields);
         http()
             .post(format!("{}{path}", self.base))
-            .form(fields)
+            .header("cookie", cookies)
+            .form(&body)
             .send()
             .await
             .expect("post")
@@ -742,6 +794,264 @@ async fn installer_admin_step_audits_account_created() {
     assert_eq!(details["active"], true);
     assert_eq!(details["by"], "operator");
 
+    server.stop().await;
+}
+
+/// The installer's forms carry a CSRF token and refuse a post without it, and
+/// the site step, which finishes the installation, belongs to the session that
+/// created the administrator: another session is asked to sign in as that
+/// administrator first (B83b).
+#[tokio::test]
+async fn installer_forms_check_csrf_and_the_site_step_belongs_to_the_admin() {
+    let db = migrated("cli_installer_csrf").await;
+    let server = Server::start(&db.url()).await;
+    let admin_fields = [
+        ("username", "installer_csrf"),
+        ("email", "installer_csrf@example.com"),
+        ("password", PASSWORD),
+        ("password_confirm", PASSWORD),
+    ];
+
+    // No token: refused, and nothing written.
+    let status = server.submit("/install/admin", "", "", &admin_fields).await;
+    assert_eq!(status, 400, "an admin post without a token is refused");
+    assert!(
+        account(db.pool(), "installer_csrf").await.is_none(),
+        "a refused post creates no account"
+    );
+
+    // The browser that creates the administrator.
+    let (token, owner) = server.form("/install/admin", "").await;
+    assert!(!token.is_empty(), "the admin form carries a _token");
+    let status = server
+        .submit("/install/admin", &owner, &token, &admin_fields)
+        .await;
+    assert_eq!(status, 303, "the admin form as served is accepted");
+
+    // A second browser reaching the site step is asked to sign in, and is
+    // refused without the administrator's password.
+    let (token, stranger) = server.form("/install/site", "").await;
+    let (_, page) = server.get("/install/site").await.unwrap();
+    assert!(
+        page.contains("name=\"admin_name\""),
+        "another session is asked for the administrator"
+    );
+    let status = server
+        .submit(
+            "/install/site",
+            &stranger,
+            &token,
+            &[("site_name", "Hijacked"), ("admin_name", "installer_csrf")],
+        )
+        .await;
+    assert_eq!(status, 200, "the form is shown again with its error");
+    assert!(
+        !trovato_kernel::models::SiteConfig::is_installed(db.pool())
+            .await
+            .unwrap(),
+        "a stranger cannot finish the installation"
+    );
+
+    // The session that created the administrator finishes it, no sign in.
+    let (token, owner) = server.form("/install/site", &owner).await;
+    let status = server
+        .submit(
+            "/install/site",
+            &owner,
+            &token,
+            &[("site_name", "Installed")],
+        )
+        .await;
+    assert_eq!(
+        status, 303,
+        "the administrator's session finishes the install"
+    );
+    assert!(
+        trovato_kernel::models::SiteConfig::is_installed(db.pool())
+            .await
+            .unwrap()
+    );
+
+    server.stop().await;
+}
+
+/// A name unique to this run, so a lockout left in the shared Redis by an
+/// earlier run cannot reach this one.
+fn unique_name(prefix: &str) -> String {
+    format!("{prefix}_{}", &Uuid::now_v7().simple().to_string()[24..])
+}
+
+/// The number of administrators, the anonymous account aside.
+async fn admin_count(pool: &PgPool) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM users WHERE is_admin AND id != '00000000-0000-0000-0000-000000000000'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// Submissions of the administrator form that arrive together create one
+/// administrator, not one each: hashing the password leaves a wide gap
+/// between seeing no administrator and writing one.
+#[tokio::test]
+async fn concurrent_installer_admin_submissions_create_one_administrator() {
+    let db = migrated("cli_installer_race").await;
+    let server = Server::start(&db.url()).await;
+
+    let submit = |n: usize| {
+        let server = &server;
+        async move {
+            let name = unique_name(&format!("racer{n}"));
+            let mail = format!("{name}@example.com");
+            let (token, cookies) = server.form("/install/admin", "").await;
+            server
+                .submit(
+                    "/install/admin",
+                    &cookies,
+                    &token,
+                    &[
+                        ("username", name.as_str()),
+                        ("email", mail.as_str()),
+                        ("password", PASSWORD),
+                        ("password_confirm", PASSWORD),
+                    ],
+                )
+                .await
+        }
+    };
+    let statuses = tokio::join!(
+        submit(0),
+        submit(1),
+        submit(2),
+        submit(3),
+        submit(4),
+        submit(5)
+    );
+    for status in [
+        statuses.0, statuses.1, statuses.2, statuses.3, statuses.4, statuses.5,
+    ] {
+        assert_eq!(status, 303, "every submission goes on to the site step");
+    }
+    assert_eq!(
+        admin_count(db.pool()).await,
+        1,
+        "concurrent submissions create exactly one administrator"
+    );
+
+    server.stop().await;
+}
+
+/// A session that did not create the administrator finishes the installation
+/// by signing in as them on the site form: a wrong password is refused, the
+/// right one is accepted. Wrong passwords count toward the same lockout as the
+/// sign-in form, so after five, even the right one is refused for a while.
+#[tokio::test]
+async fn the_installer_site_step_signs_in_another_session_under_the_lockout() {
+    let db = migrated("cli_installer_signin").await;
+    let server = Server::start(&db.url()).await;
+    let name = unique_name("inst_admin");
+    let mail = format!("{name}@example.com");
+    let status = server
+        .post_form(
+            "/install/admin",
+            &[
+                ("username", name.as_str()),
+                ("email", mail.as_str()),
+                ("password", PASSWORD),
+                ("password_confirm", PASSWORD),
+            ],
+        )
+        .await;
+    assert_eq!(status, 303);
+
+    let attempt = |password: &'static str| {
+        let (server, name) = (&server, name.clone());
+        async move {
+            let (token, cookies) = server.form("/install/site", "").await;
+            server
+                .submit(
+                    "/install/site",
+                    &cookies,
+                    &token,
+                    &[
+                        ("site_name", "Signed in"),
+                        ("admin_name", name.as_str()),
+                        ("admin_password", password),
+                    ],
+                )
+                .await
+        }
+    };
+    let installed = || async {
+        trovato_kernel::models::SiteConfig::is_installed(db.pool())
+            .await
+            .unwrap()
+    };
+
+    // A wrong password is refused, and an administrator who knows theirs
+    // finishes from any browser.
+    assert_eq!(attempt("not-the-password").await, 200);
+    assert!(!installed().await, "a wrong password does not finish");
+    assert_eq!(attempt(PASSWORD).await, 303, "the right password finishes");
+    assert!(installed().await);
+    server.stop().await;
+
+    // A second site, where the password is guessed instead.
+    let db = migrated("cli_installer_lockout").await;
+    let server = Server::start(&db.url()).await;
+    let name = unique_name("inst_locked");
+    let mail = format!("{name}@example.com");
+    let status = server
+        .post_form(
+            "/install/admin",
+            &[
+                ("username", name.as_str()),
+                ("email", mail.as_str()),
+                ("password", PASSWORD),
+                ("password_confirm", PASSWORD),
+            ],
+        )
+        .await;
+    assert_eq!(status, 303);
+    let attempt = |password: &'static str| {
+        let (server, name) = (&server, name.clone());
+        async move {
+            let (token, cookies) = server.form("/install/site", "").await;
+            server
+                .submit(
+                    "/install/site",
+                    &cookies,
+                    &token,
+                    &[
+                        ("site_name", "Guessed"),
+                        ("admin_name", name.as_str()),
+                        ("admin_password", password),
+                    ],
+                )
+                .await
+        }
+    };
+    for guess in [
+        "guess-one",
+        "guess-two",
+        "guess-three",
+        "guess-four",
+        "guess-five",
+    ] {
+        assert_eq!(attempt(guess).await, 200, "a wrong guess is refused");
+    }
+    assert_eq!(
+        attempt(PASSWORD).await,
+        200,
+        "after five wrong guesses even the right password is refused"
+    );
+    assert!(
+        !trovato_kernel::models::SiteConfig::is_installed(db.pool())
+            .await
+            .unwrap(),
+        "the locked out guesser did not finish the installation"
+    );
     server.stop().await;
 }
 

@@ -788,3 +788,122 @@ fn a_page_must_be_an_item_that_exists() {
         );
     });
 }
+
+/// The `_token` value of the first form on `html`.
+fn form_token(html: &str) -> Option<String> {
+    let pos = html.find("name=\"_token\" value=\"")? + "name=\"_token\" value=\"".len();
+    let end = html[pos..].find('"')? + pos;
+    Some(html[pos..end].to_string())
+}
+
+/// GET `path` and return its HTML.
+async fn page_html(app: &TestApp, cookies: &str, path: &str) -> String {
+    let response = app
+        .request_with_cookies(Request::get(path).body(Body::empty()).unwrap(), cookies)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK, "GET {path}");
+    body_text(response).await
+}
+
+/// POST `fields` form-encoded with no CSRF header, as a browser submits the
+/// screen's own form: the token can only come from the form itself.
+async fn submit_form(
+    app: &TestApp,
+    cookies: &str,
+    path: &str,
+    fields: &[(&str, &str)],
+) -> axum::response::Response {
+    let body = fields
+        .iter()
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect::<Vec<_>>()
+        .join("&");
+    app.request_with_cookies(
+        Request::post(path)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap(),
+        cookies,
+    )
+    .await
+}
+
+/// Every form on the Book admin screens carries the `_token` the kernel checks,
+/// so a browser submitting the form as served is not refused with a 403 (B83b).
+#[test]
+fn the_book_admin_forms_post_their_own_csrf_token() {
+    common::run_test(async {
+        let app = app();
+        let admin = book_admin(app).await;
+        let root = seed_item(app, "Token Book").await;
+        let child = seed_item(app, "Token Page").await;
+
+        // Create, with the token the list screen served.
+        let html = page_html(app, &admin, "/admin/structure/books").await;
+        let create_at = html.find("/create\"").expect("the list has a create form");
+        let create_end = create_at + html[create_at..].find("</form>").unwrap();
+        let token = form_token(&html[create_at..create_end])
+            .expect("the create form carries a _token field");
+        let response = submit_form(
+            app,
+            &admin,
+            "/admin/structure/books/create",
+            &[("_token", &token), ("item_id", &root.to_string())],
+        )
+        .await;
+        assert!(
+            response.status().is_redirection(),
+            "the create form as served must be accepted, got {}",
+            response.status()
+        );
+
+        // Place, with the token the tree screen served.
+        let tree = format!("/admin/structure/books/{root}");
+        let html = page_html(app, &admin, &tree).await;
+        let place_at = html.find("/place\"").expect("the tree has a place form");
+        let place_end = place_at + html[place_at..].find("</form>").unwrap();
+        let token =
+            form_token(&html[place_at..place_end]).expect("the place form carries a _token");
+        let response = submit_form(
+            app,
+            &admin,
+            &format!("{tree}/place"),
+            &[
+                ("_token", &token),
+                ("item_id", &child.to_string()),
+                ("parent_item_id", &root.to_string()),
+                ("weight", "0"),
+            ],
+        )
+        .await;
+        assert!(
+            response.status().is_redirection(),
+            "the place form as served must be accepted, got {}",
+            response.status()
+        );
+
+        // Remove, with the token on the page's own row.
+        let html = page_html(app, &admin, &tree).await;
+        let row = html
+            .find(&format!("value=\"{child}\""))
+            .expect("the placed page has a remove form");
+        let form_start = html[..row].rfind("<form").unwrap();
+        let form_end = form_start + html[form_start..].find("</form>").unwrap();
+        let token = form_token(&html[form_start..form_end])
+            .expect("the page's own remove form carries a _token");
+        let response = submit_form(
+            app,
+            &admin,
+            &format!("{tree}/remove"),
+            &[("_token", &token), ("item_id", &child.to_string())],
+        )
+        .await;
+        assert!(
+            response.status().is_redirection(),
+            "the remove form as served must be accepted, got {}",
+            response.status()
+        );
+
+        drop_book(app, root).await;
+    });
+}

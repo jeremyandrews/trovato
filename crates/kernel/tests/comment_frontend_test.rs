@@ -222,10 +222,14 @@ fn an_item_page_renders_its_comment_thread() {
             page.contains("data-comment-form"),
             "a permitted viewer gets the form"
         );
+        let form = &page[page.find("data-comment-form").unwrap()..];
+        let form = &form[..form.find("</form>").unwrap()];
         assert!(
-            page.contains("name=\"_csrf\""),
-            "the form must carry a CSRF field, which is what the orphan template lacked"
+            form.contains("name=\"_token\""),
+            "the form must carry its CSRF token in `_token`, the one field name every \
+             form uses, form was:\n{form}"
         );
+        assert!(!form.contains("_csrf"), "no second CSRF field name");
     });
 }
 
@@ -264,7 +268,7 @@ fn a_form_encoded_post_creates_the_comment_and_redirects() {
         let (cookies, token) = csrf(app, &cookies).await;
 
         let body = format!(
-            "body={}&parent_id=&_csrf={}",
+            "body={}&parent_id=&_token={}",
             urlencode("Posted without JavaScript"),
             urlencode(&token)
         );
@@ -368,7 +372,7 @@ fn a_form_post_with_a_bad_token_is_refused() {
         let (cookies, _) = csrf(app, &cookies).await;
 
         let body = format!(
-            "body={}&parent_id=&_csrf=not-a-real-token",
+            "body={}&parent_id=&_token=not-a-real-token",
             urlencode("Should never appear")
         );
         let response = app
