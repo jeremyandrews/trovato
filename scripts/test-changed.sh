@@ -27,8 +27,9 @@
 # files. Rule 3 does not need a change at all — naming a target always
 # selects it.
 #
-# Always ends with:
-#   Inner loop only: run scripts/test-all.sh before you finish.
+# Always ends with a reminder that this is the inner loop, not the full gate:
+# run the whole suite (CONTRIBUTING.md's "The local gate is stronger than CI")
+# before opening the pull request.
 #
 # Bash 3.2 safe (macOS), like scripts/ci-test-shard.sh. Needs cargo, jq, git.
 set -euo pipefail
@@ -147,7 +148,7 @@ CHANGED_FILES
 if [ "$RUN_ALL" -eq 1 ]; then
   echo "Running everything:"
   printf '%b' "$RUN_ALL_WHY"
-  echo "Inner loop only: run scripts/test-all.sh before you finish."
+  echo "Inner loop only: run the full suite before you finish (see CONTRIBUTING.md)."
   exec env RUST_TEST_THREADS=4 cargo test --all --no-fail-fast
 fi
 
@@ -271,5 +272,5 @@ $SELECTED_TARGETS
 SEL
 fi
 
-echo "Inner loop only: run scripts/test-all.sh before you finish."
+echo "Inner loop only: run the full suite before you finish (see CONTRIBUTING.md)."
 exec env RUST_TEST_THREADS=4 cargo test "${ARGS[@]}"

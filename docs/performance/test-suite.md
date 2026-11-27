@@ -206,10 +206,13 @@ arguments instead of running one), the same way
 `scripts/ci-test-shard.sh`'s partition is tested — all under a second,
 builds nothing, touches no database.
 
-Real run, a one-line comment change to `crates/kernel/src/services/redirect.rs`:
+Real run, a one-line comment change to `crates/kernel/src/services/redirect.rs`
+(driven through `TEST_CHANGED_OVERRIDE`, the same seam `ci-scripts-test.sh`
+uses, because this branch's own commits otherwise dominate its diff against
+`origin/main`; see the script's header):
 
 ```
-$ ./scripts/test-changed.sh
+$ time env TEST_CHANGED_OVERRIDE="crates/kernel/src/services/redirect.rs" ./scripts/test-changed.sh
 Changed files:
   crates/kernel/src/services/redirect.rs
 Selected:
@@ -218,14 +221,26 @@ Selected:
   integration target redirect_query_match_test (trovato-kernel): matches changed crates/kernel/src/services/redirect.rs
   integration target redirect_query_test (trovato-kernel): matches changed crates/kernel/src/services/redirect.rs
   integration target redirect_writes_test (trovato-kernel): matches changed crates/kernel/src/services/redirect.rs
-Inner loop only: run scripts/test-all.sh before you finish.
+Inner loop only: run the full suite before you finish (see CONTRIBUTING.md).
+...
+test result: ok. 7 passed; 0 failed ... (feed_test)
+test result: ok. 1 passed; 0 failed ... (redirect_query_test)
+test result: ok. 6 passed; 0 failed ... (redirect_writes_test)
+
+real    20m4.265s
 ```
 
-(wall time and the "run scripts/test-all.sh" line are stale — written while
-that script still existed; see "Not shipped" below. The selection itself is
-exactly what rule 4 promises: `redirect.rs`'s stem matches the three
-`redirect_*_test` targets by name, and `feed_test` by its source naming
-`services::redirect`.)
+The selection is exactly what rule 4 promises: `redirect.rs`'s stem matches
+the three `redirect_*_test` targets by name, and `feed_test` by its source
+naming `services::redirect`; every selected target and the kernel's unit
+tests passed. The 20-minute wall time is almost entirely `trovato-kernel`
+recompiling for this exact combination of packages and flags, not the tests
+themselves (each target finished in single-digit seconds) — this pod pays a
+real, large cache-invalidation cost whenever an invocation's package/feature
+selection differs from whatever shape last touched `target/`, independent of
+anything this change does (see the `scripts/test-all.sh` section below,
+where the same cost shows up again). A second run with nothing changed
+finishes in seconds.
 
 ## Not shipped, and why
 
