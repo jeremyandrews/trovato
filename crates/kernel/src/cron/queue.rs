@@ -27,17 +27,31 @@ pub trait Queue: Send + Sync {
 /// Redis-backed queue implementation.
 pub struct RedisQueue {
     redis: RedisClient,
+    /// Prepended to every key, so `email:send` lives at `{prefix}email:send`.
+    prefix: String,
 }
 
 impl RedisQueue {
     /// Create a new Redis queue.
     pub fn new(redis: RedisClient) -> Self {
-        Self { redis }
+        Self::with_key_prefix(redis, "queue:")
+    }
+
+    /// A queue whose keys start with `prefix` instead of `queue:`.
+    ///
+    /// For a test that drives the real queue names (`process_queues` pops
+    /// `email:send` and `search:reindex` by name) without touching the site's
+    /// own queues on a shared Redis: it gives each run keys of its own.
+    pub fn with_key_prefix(redis: RedisClient, prefix: impl Into<String>) -> Self {
+        Self {
+            redis,
+            prefix: prefix.into(),
+        }
     }
 
     /// Get the full queue key with prefix.
     fn queue_key(&self, queue: &str) -> String {
-        format!("queue:{queue}")
+        format!("{}{queue}", self.prefix)
     }
 }
 
@@ -134,5 +148,15 @@ mod tests {
         let queue = RedisQueue::new(client);
         assert_eq!(queue.queue_key("test"), "queue:test");
         assert_eq!(queue.queue_key("email:send"), "queue:email:send");
+    }
+
+    /// A prefixed queue keeps every key under its prefix, so a test that
+    /// drives `email:send` this way never reads or deletes the real one.
+    #[test]
+    fn a_prefixed_queue_keeps_its_keys_to_itself() {
+        let client = RedisClient::open(trovato_test_utils::env::redis_url()).unwrap();
+        let queue = RedisQueue::with_key_prefix(client, "test:run-1:");
+        assert_eq!(queue.queue_key("email:send"), "test:run-1:email:send");
+        assert!(!queue.queue_key("search:reindex").starts_with("queue:"));
     }
 }
