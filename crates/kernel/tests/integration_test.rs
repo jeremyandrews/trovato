@@ -7168,11 +7168,10 @@ fn e2e_search_includes_active_stage() {
             .search()
             .search(
                 &search_term,
-                &[
+                &trovato_kernel::search::SearchVisibility::public([
                     nonlive_stage_id,
                     trovato_kernel::models::stage::LIVE_STAGE_ID,
-                ],
-                None,
+                ]),
                 10,
                 0,
             )
@@ -7192,8 +7191,9 @@ fn e2e_search_includes_active_stage() {
             .search()
             .search(
                 &search_term,
-                &[trovato_kernel::models::stage::LIVE_STAGE_ID],
-                None,
+                &trovato_kernel::search::SearchVisibility::public([
+                    trovato_kernel::models::stage::LIVE_STAGE_ID,
+                ]),
                 10,
                 0,
             )
@@ -7267,8 +7267,9 @@ fn e2e_search_snippet_includes_body() {
             .search()
             .search(
                 &search_term,
-                &[trovato_kernel::models::stage::LIVE_STAGE_ID],
-                None,
+                &trovato_kernel::search::SearchVisibility::public([
+                    trovato_kernel::models::stage::LIVE_STAGE_ID,
+                ]),
                 10,
                 0,
             )

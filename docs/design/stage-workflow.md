@@ -199,8 +199,11 @@ page N starts at the raw position of the visible row that opens it. The
 backfill loop and its `access_capped` signal are unchanged. Past the cap the
 count is of what was scanned, so it can under-report but never counts a row the
 caller cannot see. A record gather's published filter is an exact SQL predicate,
-so it keeps its SQL count. Search keeps its SQL count: it is bounded by the
-stages the resolver allows, and its per-row filter is a separate change.
+so it keeps its SQL count. Search kept its SQL count too, bounded by the
+stages the resolver allows, with a separate per-row filter that could still
+disagree with it; B248 closed that gap by building the count itself from
+`ItemService::search_visibility`, the same rule the per-row filter now checks
+against, so the two cannot drift apart.
 
 **Pagefind is Live only.** The static index is built from published Live items
 (`cron/pagefind.rs`) and served to everyone, so it never contains a stage's

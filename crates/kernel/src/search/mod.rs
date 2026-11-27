@@ -113,6 +113,46 @@ pub struct SearchResult {
     pub snippet: Option<String>,
 }
 
+/// What a search may return to a viewer: the single statement the count query
+/// and the page query are both built from, so they agree by construction and
+/// a total can never count a row the page does not show (B248).
+///
+/// Resolved once per request by
+/// [`crate::content::ItemService::search_visibility`] — never per row, and
+/// never again for a later page of the same query. See that method's docs for
+/// the rule itself; this struct is only its answer.
+#[derive(Debug, Clone)]
+pub struct SearchVisibility {
+    /// An administrator or the background principal: every status, on every
+    /// requested stage, as [`crate::content::ItemService::check_access`]'s own
+    /// first rule grants them.
+    pub admin_bypass: bool,
+    /// The stages a published item may be found on. Already narrowed to drop
+    /// an Internal-visibility stage for anyone but an administrator; see
+    /// [`crate::content::ItemService::search_visibility`].
+    pub stage_ids: Vec<Uuid>,
+    /// The viewer's own id, when they hold the permission that lets
+    /// `check_access` show them their own unpublished items — `None`
+    /// otherwise, including for an anonymous visitor.
+    pub own_unpublished_author: Option<Uuid>,
+}
+
+impl SearchVisibility {
+    /// Published content on exactly `stage_ids`, with no admin bypass and no
+    /// own-unpublished inclusion: the shape
+    /// [`crate::content::ItemService::search_visibility`] resolves for an
+    /// anonymous visitor. For a caller that has already decided the stage
+    /// list itself — a test, or a retrieval path with its own narrower rule —
+    /// rather than a visitor's request.
+    pub fn public(stage_ids: impl Into<Vec<Uuid>>) -> Self {
+        Self {
+            admin_bypass: false,
+            stage_ids: stage_ids.into(),
+            own_unpublished_author: None,
+        }
+    }
+}
+
 /// Collection of search results with pagination.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SearchResults {
@@ -174,14 +214,13 @@ impl SearchService {
     pub async fn search(
         &self,
         query: &str,
-        stage_ids: &[Uuid],
-        user_id: Option<Uuid>,
+        visibility: &SearchVisibility,
         limit: i64,
         offset: i64,
     ) -> Result<SearchResults> {
         let settings = self.settings().await;
         let results = self
-            .search_with(&settings, query, stage_ids, user_id, limit, offset)
+            .search_with(&settings, query, visibility, limit, offset)
             .await?;
         if offset == 0 {
             self.analytics
@@ -195,13 +234,12 @@ impl SearchService {
     pub async fn search_unrecorded(
         &self,
         query: &str,
-        stage_ids: &[Uuid],
-        user_id: Option<Uuid>,
+        visibility: &SearchVisibility,
         limit: i64,
         offset: i64,
     ) -> Result<SearchResults> {
         let settings = self.settings().await;
-        self.search_with(&settings, query, stage_ids, user_id, limit, offset)
+        self.search_with(&settings, query, visibility, limit, offset)
             .await
     }
 
@@ -212,15 +250,16 @@ impl SearchService {
     /// (1.0 for a type not listed). The boosts are bound as two parallel arrays
     /// and joined in the same query, never one query per type.
     ///
-    /// Results are filtered to only include items whose `stage_id` is in
-    /// `stage_ids`. If `user_id` is provided, also includes the user's
-    /// draft items (still stage-filtered).
+    /// `visibility` is the one statement of what the viewer may be shown
+    /// (B248, [`crate::content::ItemService::search_visibility`]): the count
+    /// query and the ranked page query below are built from the same
+    /// predicate, so they agree by construction and `total` can never count a
+    /// row the page does not show.
     async fn search_with(
         &self,
         settings: &SearchSettings,
         query: &str,
-        stage_ids: &[Uuid],
-        user_id: Option<Uuid>,
+        visibility: &SearchVisibility,
         limit: i64,
         offset: i64,
     ) -> Result<SearchResults> {
@@ -255,9 +294,28 @@ impl SearchService {
         debug!(query = %query_clean, ts_query = %ts_query, "executing search");
 
         let (boost_types, boost_values) = settings.type_boost_arrays();
+        let stage_ids = visibility.stage_ids.as_slice();
 
-        // Get total count
-        let (total, terms): (i64, i32) = if let Some(uid) = user_id {
+        // Get total count. Three predicates, one per `SearchVisibility` shape
+        // — never a per-row check: an administrator (or the background
+        // principal) bypasses `status` entirely, a holder of
+        // `view own unpublished content` adds their own drafts, and everyone
+        // else sees only what is published on a requested stage.
+        let (total, terms): (i64, i32) = if visibility.admin_bypass {
+            sqlx::query_as(
+                r#"
+                SELECT COUNT(*), numnode(websearch_to_tsquery('english', $1))
+                FROM item
+                WHERE search_vector @@ websearch_to_tsquery('english', $1)
+                  AND stage_id = ANY($2)
+                "#,
+            )
+            .bind(ts_query)
+            .bind(stage_ids)
+            .fetch_one(&self.pool)
+            .await
+            .context("failed to count search results")?
+        } else if let Some(author_id) = visibility.own_unpublished_author {
             sqlx::query_as(
                 r#"
                 SELECT COUNT(*), numnode(websearch_to_tsquery('english', $1))
@@ -268,7 +326,7 @@ impl SearchService {
                 "#,
             )
             .bind(ts_query)
-            .bind(uid)
+            .bind(author_id)
             .bind(stage_ids)
             .fetch_one(&self.pool)
             .await
@@ -290,10 +348,52 @@ impl SearchService {
             .context("failed to count search results")?
         };
 
-        // Get ranked results. The snippet is `ts_headline` over the title and
-        // body with tags stripped, highlighted with fixed markers that
-        // [`snippet::render`] escapes and turns into `<mark>` (B123).
-        let results = if let Some(uid) = user_id {
+        // Get ranked results — the same three predicates as the count above,
+        // so the two agree by construction. The snippet is `ts_headline` over
+        // the title and body with tags stripped, highlighted with fixed
+        // markers that [`snippet::render`] escapes and turns into `<mark>`
+        // (B123).
+        let results = if visibility.admin_bypass {
+            sqlx::query_as::<_, SearchResultRow>(
+                // Built from compile-time constants only: no input in the text.
+                AssertSqlSafe(format!(
+                    r#"
+                SELECT
+                    id,
+                    type,
+                    title,
+                    ts_rank(search_vector, websearch_to_tsquery('english', $1))
+                        * COALESCE(boost.factor, 1.0::real) AS rank,
+                    ts_headline(
+                        'english',
+                        -- B123: tags stripped from the source before
+                        -- highlighting; see crate::search::snippet.
+                        {source},
+                        websearch_to_tsquery('english', $1),
+                        '{options}'
+                    ) as snippet
+                FROM item
+                LEFT JOIN unnest($5::text[], $6::real[]) AS boost(item_type, factor)
+                    ON boost.item_type = item.type
+                WHERE search_vector @@ websearch_to_tsquery('english', $1)
+                  AND stage_id = ANY($2)
+                ORDER BY rank DESC, created DESC
+                LIMIT $3 OFFSET $4
+                "#,
+                    source = snippet::SOURCE_SQL,
+                    options = snippet::HEADLINE_OPTIONS,
+                )),
+            )
+            .bind(ts_query)
+            .bind(stage_ids)
+            .bind(limit)
+            .bind(offset)
+            .bind(&boost_types)
+            .bind(&boost_values)
+            .fetch_all(&self.pool)
+            .await
+            .context("failed to execute search query")?
+        } else if let Some(author_id) = visibility.own_unpublished_author {
             sqlx::query_as::<_, SearchResultRow>(
                 // Built from compile-time constants only: no input in the text.
                 AssertSqlSafe(format!(
@@ -326,7 +426,7 @@ impl SearchService {
                 )),
             )
             .bind(ts_query)
-            .bind(uid)
+            .bind(author_id)
             .bind(stage_ids)
             .bind(limit)
             .bind(offset)

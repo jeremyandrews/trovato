@@ -522,7 +522,12 @@ fn a_user_holding_the_transition_permission_moves_an_item() {
         let found_on_target = app
             .state
             .search()
-            .search(&word, &[to.id], None, 10, 0)
+            .search(
+                &word,
+                &trovato_kernel::search::SearchVisibility::public([to.id]),
+                10,
+                0,
+            )
             .await
             .expect("search the target stage");
         assert!(
@@ -532,7 +537,12 @@ fn a_user_holding_the_transition_permission_moves_an_item() {
         let found_on_source = app
             .state
             .search()
-            .search(&word, &[from.id], None, 10, 0)
+            .search(
+                &word,
+                &trovato_kernel::search::SearchVisibility::public([from.id]),
+                10,
+                0,
+            )
             .await
             .expect("search the source stage");
         assert!(
