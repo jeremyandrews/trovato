@@ -235,6 +235,7 @@ impl PermissionService {
     pub fn invalidate_all(&self) {
         self.clear_local();
         bump(CacheKind::Permissions);
+        crate::cache::purge::purge(&[crate::cache::tags::SITE]);
     }
 
     /// Clear this server's cache only: what another server's bump does here.

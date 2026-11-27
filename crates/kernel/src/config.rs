@@ -431,6 +431,10 @@ pub struct RuntimeConfig {
     /// `0`, which turns the scheduler off): this wins outright, the same
     /// precedence `UPDATE_CHECK` gives the environment over a site setting.
     pub cron_interval_override: Option<u64>,
+
+    /// Whether and how an anonymous page may be cached by a CDN (B303). See
+    /// [`crate::middleware::edge_cache::EdgeCacheConfig`].
+    pub edge_cache: crate::middleware::edge_cache::EdgeCacheConfig,
 }
 
 /// The SMTP configuration mail is sent with, as an administrator may see it.
@@ -963,6 +967,7 @@ impl Config {
                 .map(|raw| raw.trim().parse::<u64>())
                 .transpose()
                 .context("CRON_INTERVAL_SECS must be a valid non-negative integer")?,
+            edge_cache: crate::middleware::edge_cache::EdgeCacheConfig::from_lookup(get)?,
         };
 
         Ok(Self {

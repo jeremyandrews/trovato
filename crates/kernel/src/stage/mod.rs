@@ -813,6 +813,11 @@ impl StageService {
         crate::menu::invalidate_config_menus();
         // ... and items: every server's item cache holds them on the old stage.
         crate::cache::generation::bump(crate::cache::generation::CacheKind::Items);
+        // A publish moves items, aliases and menus onto Live all at once: no
+        // set of tags describes what changed as precisely as "everything"
+        // does, so the CDN is told to drop its whole cache for this site
+        // (B303).
+        crate::cache::purge::purge_all();
 
         let mut result = PublishResult::success_with_conflicts(
             stage_id,

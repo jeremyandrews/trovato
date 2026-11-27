@@ -4,6 +4,8 @@
 //! invalidated by one server is gone for all of them at once.
 
 pub mod generation;
+pub mod purge;
+pub mod tags;
 
 use crate::redis_conn::BoundedRedis;
 use std::sync::Arc;

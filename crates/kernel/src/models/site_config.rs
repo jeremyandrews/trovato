@@ -211,8 +211,23 @@ impl SiteConfig {
         .context("failed to set site config")?;
         // Every server drops its in-memory site config (the front page path).
         crate::cache::generation::bump(crate::cache::generation::CacheKind::SiteConfig);
+        Self::purge_if_visible(key);
 
         Ok(())
+    }
+
+    /// Purge the CDN's `site` tag for a `site_config` write a visitor could
+    /// notice, which is every key except the ones in
+    /// [`crate::config_storage::RUNTIME_STATE_KEYS`] (what the site found,
+    /// not what it is configured to do) and a plugin's own variables
+    /// (`plugin.<name>.<key>`, written through the `variables` host
+    /// interface — out of scope per B303, and usually written from cron,
+    /// which has no public response to purge for anyway).
+    fn purge_if_visible(key: &str) {
+        if crate::config_storage::RUNTIME_STATE_KEYS.contains(&key) || key.starts_with("plugin.") {
+            return;
+        }
+        crate::cache::purge::purge(&[crate::cache::tags::SITE]);
     }
 
     /// Get a config value with secret reference resolution.
@@ -281,6 +296,7 @@ impl SiteConfig {
             .await
             .context("failed to delete site config")?;
         crate::cache::generation::bump(crate::cache::generation::CacheKind::SiteConfig);
+        Self::purge_if_visible(key);
 
         Ok(result.rows_affected() > 0)
     }

@@ -203,6 +203,7 @@ pub async fn save_active(
     crate::models::SiteConfig::set(pool, ADMIN_THEME_KEY, serde_json::json!(active.admin)).await?;
     engine.set_active(active.clone());
     crate::cache::generation::bump(crate::cache::generation::CacheKind::Themes);
+    crate::cache::purge::purge(&[crate::cache::tags::SITE]);
     Ok(())
 }
 

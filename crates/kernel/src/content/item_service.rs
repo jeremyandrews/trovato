@@ -959,6 +959,13 @@ impl ItemService {
         self.dispatch_write_tap("tap_item_insert", &item_json, user)
             .await;
 
+        // A new item may appear on any gather listing, and is itself a new
+        // page (B303).
+        crate::cache::purge::purge(&[
+            &crate::cache::tags::item_tag(item.id),
+            crate::cache::tags::ITEMS,
+        ]);
+
         // Fire tap_item_update_index and regenerate the kernel embedding so the
         // new item is searchable via the SemanticSimilarity gather operator.
         self.index_item(&item, user).await;
@@ -1136,6 +1143,7 @@ impl ItemService {
     pub async fn load(&self, id: Uuid) -> Result<Option<Item>> {
         // Check cache first
         if let Some(item) = self.cached_item(id) {
+            crate::cache::tags::record_item(id);
             return Ok(Some(item));
         }
 
@@ -1145,6 +1153,7 @@ impl ItemService {
         // Cache if found
         if let Some(ref i) = item {
             self.inner.cache.insert(id, i.clone());
+            crate::cache::tags::record_item(id);
         }
 
         Ok(item)
@@ -1163,6 +1172,7 @@ impl ItemService {
         if let Some(item) = self.cached_item(id) {
             // Verify the item's stage is in our overlay list
             if stage_ids.contains(&item.stage_id) {
+                crate::cache::tags::record_item(id);
                 return Ok(Some(item));
             }
         }
@@ -1174,6 +1184,7 @@ impl ItemService {
             // Only return if the item is in one of the visible stages
             if stage_ids.contains(&i.stage_id) {
                 self.inner.cache.insert(id, i.clone());
+                crate::cache::tags::record_item(id);
                 return Ok(Some(i.clone()));
             }
         }
@@ -3353,6 +3364,7 @@ impl ItemService {
     pub fn invalidate(&self, id: Uuid) {
         self.inner.cache.invalidate(&id);
         bump(CacheKind::Items);
+        crate::cache::purge::purge(&[&crate::cache::tags::item_tag(id), crate::cache::tags::ITEMS]);
     }
 
     /// Clear all cached items, here and on every other server.

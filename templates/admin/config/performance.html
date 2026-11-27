@@ -10,6 +10,12 @@
     {{ clear_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </section>
 
+<section class="admin-card" aria-labelledby="performance-purge">
+    <h2 id="performance-purge" class="report-heading">{{ t(s="Purge the CDN") }}</h2>
+    <p>{{ t(s="A CDN in front of this site caches public pages on its own. Use this when a change needs to reach visitors before the page's s-maxage runs out: everything, or the specific tags a write recorded (see docs/deployment/cdn.md).") }}</p>
+    {{ purge_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+</section>
+
 <section class="admin-card" aria-labelledby="performance-kinds">
     <h2 id="performance-kinds" class="report-heading">{{ t(s="What is cleared") }}</h2>
     <ul class="report-list">

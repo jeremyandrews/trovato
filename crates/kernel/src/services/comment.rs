@@ -118,6 +118,10 @@ impl CommentService {
         info!(comment_id = %comment.id, item_id = %comment.item_id, "comment created");
         self.audit("create", comment.id, Some(comment.item_id), user)
             .await;
+        crate::cache::purge::purge(&[
+            &crate::cache::tags::item_tag(comment.item_id),
+            crate::cache::tags::ITEMS,
+        ]);
         Ok(())
     }
 
@@ -175,6 +179,10 @@ impl CommentService {
 
             info!(comment_id = %c.id, "comment updated");
             self.audit("update", c.id, Some(c.item_id), user).await;
+            crate::cache::purge::purge(&[
+                &crate::cache::tags::item_tag(c.item_id),
+                crate::cache::tags::ITEMS,
+            ]);
         }
         Ok(())
     }
@@ -198,6 +206,12 @@ impl CommentService {
             info!(comment_id = %id, "comment deleted");
             self.audit("delete", id, existing.as_ref().map(|c| c.item_id), user)
                 .await;
+            if let Some(item_id) = existing.as_ref().map(|c| c.item_id) {
+                crate::cache::purge::purge(&[
+                    &crate::cache::tags::item_tag(item_id),
+                    crate::cache::tags::ITEMS,
+                ]);
+            }
         }
         Ok(deleted)
     }

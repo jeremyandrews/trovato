@@ -1,0 +1,17 @@
+[package]
+name = "trovato_cdn_purge_http"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Plain HTTP POST CDN purge delivery for Trovato"
+
+[lints]
+workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+trovato-sdk = { path = "../../crates/plugin-sdk" }
+serde = { workspace = true }
+serde_json = { workspace = true }

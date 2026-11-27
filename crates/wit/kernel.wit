@@ -647,6 +647,17 @@ world plugin {
     export tap-queue-info: func() -> string;
     export tap-queue-worker: func(item-json: string) -> result<_, string>;
 
+    // Edge-cache purge (B303). Dispatched once per drain of the kernel's
+    // pending-purge set (about once a second, when at least one enabled
+    // plugin implements this tap), with purge-json a JSON object
+    // {"tags": [string...], "all": bool}: every cache tag a write invalidated
+    // since the last drain, or {"tags": [], "all": true} when that write was
+    // a stage publish, an admin "purge everything", or more than 500 tags
+    // were pending. The tap only enqueues the payload for delivery (typically
+    // via `queue_push`/`queue_enqueue`); the plugin's own `tap_queue_worker`
+    // does the actual network call, under the queue's retry and backoff.
+    export tap-cache-purge: func(purge-json: string) -> result<_, string>;
+
     // User lifecycle — the login/logout/register/update/delete taps all receive
     // a JSON object carrying the affected user's id (`{"user_id": "..."}`).
     export tap-user-login: func(user-json: string) -> result<_, string>;

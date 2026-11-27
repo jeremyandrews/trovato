@@ -348,6 +348,54 @@ pub fn register_http_functions(linker: &mut Linker<PluginState>) -> Result<()> {
     Ok(())
 }
 
+/// Exact loopback URLs a test has allowed past the SSRF fence.
+///
+/// Mirrors [`crate::services::ai_provider::allow_loopback_provider_for_tests`]
+/// exactly, for the same reason: a kernel test driving a real queue-worker
+/// delivery against a local mock server (a purge plugin's `tap_queue_worker`
+/// POSTing to `127.0.0.1`, B303) needs plugin HTTP to reach it, and nothing
+/// else may ever reach a loopback address through this fence.
+static TEST_LOOPBACK_HTTP: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+/// Allow one loopback URL past the plugin HTTP SSRF fence.
+///
+/// `pub` but `#[doc(hidden)]` solely for tests. Nothing in production or
+/// configuration reaches it, and it accepts only an
+/// `http://127.0.0.1:<port>[/path]` URL, exactly: every other private
+/// address, and every other loopback URL, is still refused.
+///
+/// # Panics
+///
+/// Panics if `url` does not have scheme `http` and host `127.0.0.1` with a
+/// port.
+#[doc(hidden)]
+pub fn allow_loopback_http_for_tests(url: &str) {
+    let parsed = Url::parse(url).ok();
+    let is_loopback_literal = parsed.as_ref().is_some_and(|u| {
+        u.scheme() == "http"
+            && u.host() == Some(url::Host::Ipv4(std::net::Ipv4Addr::LOCALHOST))
+            && u.port().is_some()
+    });
+    assert!(
+        is_loopback_literal,
+        "only an http://127.0.0.1:<port>[/path] URL may be allowed, got {url}"
+    );
+    TEST_LOOPBACK_HTTP
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(url.trim_end_matches('/').to_string());
+}
+
+/// Whether `parsed` is an exact URL a test has allowed past the fence.
+fn loopback_allowed_for_tests(parsed: &Url) -> bool {
+    TEST_LOOPBACK_HTTP
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(parsed.as_str().trim_end_matches('/'))
+}
+
 /// The reason a URL failed the string/literal SSRF policy, for logging.
 enum UrlPolicyReject {
     /// The scheme is not `http`/`https`.
@@ -422,6 +470,10 @@ fn validate_url(raw_url: &str, plugin_name: &str) -> std::result::Result<(), i32
         warn!(plugin = %plugin_name, url = %raw_url, "malformed URL");
         host_errors::ERR_HTTP_INVALID_URL
     })?;
+
+    if loopback_allowed_for_tests(&parsed) {
+        return Ok(());
+    }
 
     check_url_policy(&parsed).map_err(|reason| {
         let detail = match reason {

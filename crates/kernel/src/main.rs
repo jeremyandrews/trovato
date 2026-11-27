@@ -618,6 +618,31 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         });
     }
 
+    // Drain the pending edge-cache purge once a second and dispatch it to
+    // every plugin implementing `tap_cache_purge` (B303). Costs nothing more
+    // than a set lookup when no such plugin is enabled: `drain_cache_purge_now`
+    // checks the tap registry before building any dispatch state.
+    {
+        let cron = state.cron().clone();
+        let token = shutdown_token.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(crate::cache::purge::DRAIN_INTERVAL);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        cron.drain_cache_purge_now().await;
+                    }
+                    _ = token.cancelled() => {
+                        // One last drain, so a purge recorded just before
+                        // shutdown still reaches the CDN.
+                        cron.drain_cache_purge_now().await;
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
     // Spawn the resident plugin-queue runner (P11d / D-46), but only when it is
     // enabled in site_config at boot. The default deployment runs no queue
     // runner and drains the queue on the cron cadence (the built-in scheduler's
@@ -797,7 +822,8 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
             }
         })
         // Middleware layers (last added = first executed in request flow):
-        // TraceLayer → track_request_timing → security_headers → CORS → session → rate_limit(per-IP) →
+        // TraceLayer → track_request_timing → security_headers → edge_cache →
+        // CORS → session → rate_limit(per-IP) →
         // bearer_auth → api_token → rate_limit(per-user) → install_check →
         // negotiate_language → redirect → routes
         .layer(axum::middleware::from_fn_with_state(
@@ -867,6 +893,14 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         .layer(axum::middleware::from_fn(crate::middleware::scope_theme))
         .layer(session_layer)
         .layer(cors)
+        // Edge-cache headers (B303): outside the session layer, so it sees
+        // the `Set-Cookie` a login or a flash message just added, and inside
+        // security headers, so `Cache-Control`/`Vary`/the tag header reach the
+        // client alongside CSP and the rest.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::edge_cache_headers,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::inject_security_headers,

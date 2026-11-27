@@ -68,11 +68,18 @@ pub const RUNTIME_STATE_KEYS: &[&str] = &[
 ///
 /// - `plugin.trovato_captcha.turnstile_secret_key`: the Turnstile secret
 ///   `trovato_captcha` reads through `host::variables_get`.
+/// - `plugin.trovato_cdn_purge_http.secret`: the bearer token
+///   `trovato_cdn_purge_http` sends with its purge POST (B303).
+/// - `plugin.trovato_cdn_purge_cloudflare.api_token`: the Cloudflare API
+///   token `trovato_cdn_purge_cloudflare` authenticates its purge calls with
+///   (B303).
 /// - `smtp_password`: no longer written or read (B26 moved SMTP to the
 ///   environment and deleted the key), but a database restored from an older
 ///   export may hold it again, and export must never write it.
 pub const SECRET_VARIABLE_KEYS: &[&str] = &[
     "plugin.trovato_captcha.turnstile_secret_key",
+    "plugin.trovato_cdn_purge_http.secret",
+    "plugin.trovato_cdn_purge_cloudflare.api_token",
     "smtp_password",
 ];
 

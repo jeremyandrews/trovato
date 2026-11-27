@@ -392,6 +392,7 @@ impl GatherService {
         // Cache in memory, and tell every other server to read the queries again.
         self.queries.insert(query_id, query);
         bump(CacheKind::Gather);
+        crate::cache::purge::purge(&[crate::cache::tags::SITE]);
 
         Ok(())
     }
@@ -1090,6 +1091,7 @@ impl GatherService {
     ) -> Result<GatherResult> {
         // Gander's gather choke point: every `execute*` lands here.
         crate::telemetry::profile::count_gather();
+        crate::cache::tags::record_gather();
         let span = tracing::trace_span!(
             target: crate::telemetry::TARGET,
             "gather.execute",

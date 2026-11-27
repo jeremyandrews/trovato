@@ -583,6 +583,12 @@ impl TestApp {
                 state.clone(),
                 trovato_kernel::middleware::resolve_client_ip,
             ))
+            // Edge-cache headers (B303), outside the session layer and inside
+            // security headers, as in `main.rs`.
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                trovato_kernel::middleware::edge_cache_headers,
+            ))
             // Security response headers, outside the session layer as in
             // production. Without it no test could see the CSP a browser
             // enforces, which is how an inline script the policy blocks shipped

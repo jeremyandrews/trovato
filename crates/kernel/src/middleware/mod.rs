@@ -6,6 +6,7 @@
 pub mod api_token;
 pub mod audit_actor;
 pub mod bearer_auth;
+pub mod edge_cache;
 pub mod error_page;
 pub mod install_check;
 pub mod language;
@@ -23,6 +24,7 @@ pub mod theme_scope;
 pub use api_token::authenticate_api_token;
 pub use audit_actor::scope_audit_actor;
 pub use bearer_auth::authenticate_bearer_token;
+pub use edge_cache::{EdgeCacheConfig, edge_cache_headers};
 pub use error_page::{ErrorPage, PluginBody, render_error_pages};
 pub use install_check::check_installation;
 pub use language::negotiate_language;

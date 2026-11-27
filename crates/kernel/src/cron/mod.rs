@@ -2475,6 +2475,40 @@ impl CronService {
         services
     }
 
+    /// Dispatch `tap_cache_purge` with `payload_json` to every enabled plugin
+    /// that implements it (B303). A notification: a handler's own error is
+    /// logged by the dispatcher and never reaches the caller. `false` when no
+    /// plugin implements the tap (or no tap dispatcher is wired at all, as in
+    /// a narrow test harness), so the background drain below can tell whether
+    /// anything actually ran.
+    async fn dispatch_cache_purge(&self, payload_json: &str) -> bool {
+        let Some(dispatcher) = &self.tap_dispatcher else {
+            return false;
+        };
+        if dispatcher.registry().handler_count("tap_cache_purge") == 0 {
+            return false;
+        }
+        let state = self.background_state(dispatcher);
+        let results = dispatcher
+            .dispatch("tap_cache_purge", payload_json, state)
+            .await;
+        !results.is_empty()
+    }
+
+    /// Drain the pending edge-cache purge ([`crate::cache::purge`]) and
+    /// dispatch it once, if there is anything pending: `true` when a plugin
+    /// actually received it. Called every
+    /// [`crate::cache::purge::DRAIN_INTERVAL`] by the background task spawned
+    /// in `main.rs`, by the admin "Purge the CDN" action
+    /// (`routes::admin_performance`) so a manual purge is sent at once rather
+    /// than waiting out the interval, and by tests for the same reason.
+    pub async fn drain_cache_purge_now(&self) -> bool {
+        let Some(payload) = crate::cache::purge::take_pending_json() else {
+            return false;
+        };
+        self.dispatch_cache_purge(&payload).await
+    }
+
     /// Load the resident queue-runner config from `site_config` (default off).
     ///
     /// Read fresh by the cron drain (to decide whether to step aside) and by the

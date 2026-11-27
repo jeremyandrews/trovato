@@ -1,8 +1,9 @@
 //! Cache host functions for WASM plugins.
 //!
-//! Provides a two-tier cache (Moka L1 + Redis L2) accessible from WASM
-//! plugins. Cache keys are namespaced by plugin name and bin to prevent
-//! collisions: `plugin:{plugin_name}:{bin}:{key}`.
+//! Provides a Redis-backed cache ([`crate::cache::CacheLayer`]; there is no
+//! in-process tier) accessible from WASM plugins. Cache keys are namespaced
+//! by plugin name and bin to prevent collisions:
+//! `plugin:{plugin_name}:{bin}:{key}`.
 //!
 //! When no cache service is available (background/test contexts), `get`
 //! returns a cache miss and `set`/`invalidate-tag` are silent no-ops.

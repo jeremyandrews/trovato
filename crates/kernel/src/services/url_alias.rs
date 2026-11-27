@@ -58,6 +58,7 @@ impl UrlAliasService {
         input.alias = normalize_path(&input.alias);
         let alias = UrlAlias::create(&self.pool, input).await?;
         self.audit("create", &alias).await;
+        crate::cache::purge::purge(&[crate::cache::tags::SITE]);
         Ok(alias)
     }
 
@@ -68,6 +69,7 @@ impl UrlAliasService {
         let alias = UrlAlias::update(&self.pool, id, input).await?;
         if let Some(alias) = &alias {
             self.audit("update", alias).await;
+            crate::cache::purge::purge(&[crate::cache::tags::SITE]);
         }
         Ok(alias)
     }
@@ -79,6 +81,7 @@ impl UrlAliasService {
             self.audit
                 .record("delete", "url_alias", id, None, serde_json::json!({}))
                 .await;
+            crate::cache::purge::purge(&[crate::cache::tags::SITE]);
         }
         Ok(deleted)
     }

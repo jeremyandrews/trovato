@@ -590,6 +590,7 @@ use `tap_form_validate` for that.
 | `tap_cron` | None | `Result<(), String>` | Background tasks |
 | `tap_queue_info` | None | `[{name, concurrency}]` | Declare owned queues + worker concurrency ([queue docs](plugin-queue.md)) |
 | `tap_queue_worker` | Job payload | Any (return) / trap (fail) | Process one queued job — **must be idempotent** ([queue docs](plugin-queue.md)) |
+| `tap_cache_purge` | `{"tags": [string...], "all": bool}` | `Result<(), String>` | A CDN purge is pending — enqueue it for delivery ([CDN docs](deployment/cdn.md)); notification, dispatched about once a second |
 | `tap_install` | None | `Result<(), String>` | First-time setup |
 | `tap_enable` | None | `Result<(), String>` | On plugin enable |
 | `tap_disable` | None | `Result<(), String>` | On plugin disable |

@@ -62,6 +62,29 @@ pub fn text_direction_for_language(lang: &str) -> &'static str {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedLanguage(pub String);
 
+/// How [`negotiate_language`] decided the request's language.
+///
+/// Stored in request extensions alongside [`ResolvedLanguage`] (B303). The
+/// edge-cache middleware reads it to decide whether a page's language is the
+/// same for every anonymous visitor to this exact URL, which is the only case
+/// it may mark a response shareable: a language chosen from a session
+/// override or the `Accept-Language` header varies by visitor even though the
+/// URL does not, so a cache keyed on the URL alone would serve one visitor's
+/// language to everyone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LanguageSource {
+    /// Matched a `/{lang}` URL prefix (the default language's own prefix
+    /// included): the same language for every visitor to this URL.
+    UrlPrefix,
+    /// The signed-in session's `active_language` override.
+    Session,
+    /// A negotiator that reads the request rather than the URL (today, only
+    /// `Accept-Language`).
+    Header,
+    /// Nothing matched; the site's default language.
+    Default,
+}
+
 /// Trait for language negotiation strategies.
 ///
 /// Implementations inspect the request and return a language code if they
@@ -378,7 +401,10 @@ pub async fn negotiate_language(
         request
             .extensions_mut()
             .insert(ResolvedLanguage(default_language.to_string()));
-        return next.run(request).await;
+        request.extensions_mut().insert(LanguageSource::Default);
+        let mut response = next.run(request).await;
+        response.extensions_mut().insert(LanguageSource::Default);
+        return response;
     }
 
     let negotiators = languages.negotiators();
@@ -441,7 +467,7 @@ pub async fn negotiate_language(
         .flatten()
         .flatten();
 
-    let language = select_language(
+    let (language, source) = select_language(
         session_lang.as_deref(),
         url_language.as_deref(),
         &known_languages,
@@ -451,8 +477,15 @@ pub async fn negotiate_language(
     );
 
     request.extensions_mut().insert(ResolvedLanguage(language));
+    request.extensions_mut().insert(source);
 
-    next.run(request).await
+    // Carried back out on the response's extensions too (not only the
+    // request's), because the edge-cache middleware sits outside this layer
+    // and only sees the response `next.run` returns — the same shape
+    // `track_request_timing` uses for its own per-request snapshot (B303).
+    let mut response = next.run(request).await;
+    response.extensions_mut().insert(source);
+    response
 }
 
 /// `path` without a leading `/{language}`: `/en/about` is `/about`, `/en` is
@@ -482,11 +515,11 @@ fn select_language(
     negotiators: &[std::sync::Arc<dyn LanguageNegotiator>],
     request: &Request<Body>,
     default_language: &str,
-) -> String {
+) -> (String, LanguageSource) {
     // Check session override first, but validate against known languages
     if let Some(lang) = session_lang {
         if known_languages.iter().any(|k| k == lang) {
-            return lang.to_string();
+            return (lang.to_string(), LanguageSource::Session);
         }
         tracing::warn!(
             session_language = %lang,
@@ -497,7 +530,7 @@ fn select_language(
     // Use URL prefix language (validated against known languages for consistency)
     if let Some(lang) = url_language {
         if known_languages.iter().any(|k| k == lang) {
-            return lang.to_string();
+            return (lang.to_string(), LanguageSource::UrlPrefix);
         }
         tracing::warn!(
             url_language = %lang,
@@ -513,7 +546,7 @@ fn select_language(
         if let Some(lang) = negotiator.negotiate(request) {
             // Validate negotiator result against known languages (Fix #5)
             if known_languages.iter().any(|k| k == &lang) {
-                return lang;
+                return (lang, LanguageSource::Header);
             }
             tracing::warn!(
                 negotiator_language = %lang,
@@ -523,7 +556,7 @@ fn select_language(
     }
 
     // Fall back to default
-    default_language.to_string()
+    (default_language.to_string(), LanguageSource::Default)
 }
 
 /// Rewrite a URI to a new path while preserving query string.
@@ -777,7 +810,7 @@ mod tests {
         let langs = known();
         let req = empty_request();
         let result = select_language(Some("fr"), None, &langs, &[], &req, "en");
-        assert_eq!(result, "fr");
+        assert_eq!(result, ("fr".to_string(), LanguageSource::Session));
     }
 
     #[test]
@@ -786,7 +819,7 @@ mod tests {
         let req = empty_request();
         // Session has "xx" which is not in known — should fall to default
         let result = select_language(Some("xx"), None, &langs, &[], &req, "en");
-        assert_eq!(result, "en");
+        assert_eq!(result, ("en".to_string(), LanguageSource::Default));
     }
 
     #[test]
@@ -803,7 +836,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let result = select_language(None, Some("fr"), &langs, &negotiators, &req, "en");
-        assert_eq!(result, "fr");
+        assert_eq!(result, ("fr".to_string(), LanguageSource::UrlPrefix));
     }
 
     #[test]
@@ -820,7 +853,7 @@ mod tests {
             .unwrap();
         // URL has "xx" which is unknown — should fall through to Accept-Language "de"
         let result = select_language(None, Some("xx"), &langs, &negotiators, &req, "en");
-        assert_eq!(result, "de");
+        assert_eq!(result, ("de".to_string(), LanguageSource::Header));
     }
 
     #[test]
@@ -829,7 +862,7 @@ mod tests {
         let req = empty_request();
         // Both session and URL set, session wins
         let result = select_language(Some("de"), Some("fr"), &langs, &[], &req, "en");
-        assert_eq!(result, "de");
+        assert_eq!(result, ("de".to_string(), LanguageSource::Session));
     }
 
     #[test]
@@ -838,7 +871,7 @@ mod tests {
         let req = empty_request();
         // Nothing set — falls to default
         let result = select_language(None, None, &langs, &[], &req, "en");
-        assert_eq!(result, "en");
+        assert_eq!(result, ("en".to_string(), LanguageSource::Default));
     }
 
     #[test]
@@ -854,7 +887,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let result = select_language(None, None, &langs, &negotiators, &req, "en");
-        assert_eq!(result, "en");
+        assert_eq!(result, ("en".to_string(), LanguageSource::Default));
     }
 
     // --- Other tests ---

@@ -44,6 +44,7 @@ impl MenuLinkService {
     pub async fn create(&self, input: CreateMenuLink) -> Result<MenuLink> {
         let link = MenuLink::create(&self.pool, input).await?;
         self.audit("create", &link).await;
+        crate::cache::purge::purge(&[crate::cache::tags::SITE]);
         Ok(link)
     }
 
@@ -52,6 +53,7 @@ impl MenuLinkService {
         let link = MenuLink::update(&self.pool, id, input).await?;
         if let Some(link) = &link {
             self.audit("update", link).await;
+            crate::cache::purge::purge(&[crate::cache::tags::SITE]);
         }
         Ok(link)
     }
@@ -74,6 +76,7 @@ impl MenuLinkService {
             self.audit
                 .record("delete", "menu_link", id, None, serde_json::json!({}))
                 .await;
+            crate::cache::purge::purge(&[crate::cache::tags::SITE]);
         }
         Ok(deleted)
     }

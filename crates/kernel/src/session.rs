@@ -15,6 +15,15 @@ use tower_sessions_redis_store::RedisStore;
 /// Default session expiry (24 hours).
 pub const DEFAULT_SESSION_EXPIRY_HOURS: i64 = 24;
 
+/// The session cookie's name.
+///
+/// `create_session_layer` never calls `with_name`, so this is tower-sessions'
+/// own default (`"id"`, chosen there against session-id cookie-name
+/// fingerprinting). Named here so a caller that needs to recognise the
+/// session cookie on a request (the edge-cache middleware, deciding whether a
+/// response may be made public) reads one constant rather than a literal.
+pub const SESSION_COOKIE_NAME: &str = "id";
+
 /// Extended session expiry for "remember me" (30 days).
 #[allow(dead_code)]
 pub const REMEMBER_ME_SESSION_EXPIRY_DAYS: i64 = 30;
