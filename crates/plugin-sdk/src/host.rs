@@ -211,6 +211,17 @@ unsafe extern "C" {
 }
 
 #[cfg(target_arch = "wasm32")]
+#[link(wasm_import_module = "trovato:kernel/timer")]
+unsafe extern "C" {
+    #[link_name = "set"]
+    fn __timer_set(req_ptr: i32, req_len: i32) -> i32;
+    #[link_name = "cancel"]
+    fn __timer_cancel(name_ptr: i32, name_len: i32) -> i32;
+    #[link_name = "get"]
+    fn __timer_get(name_ptr: i32, name_len: i32, out_ptr: i32, out_max_len: i32) -> i32;
+}
+
+#[cfg(target_arch = "wasm32")]
 #[link(wasm_import_module = "trovato:kernel/query")]
 unsafe extern "C" {
     #[link_name = "run"]
@@ -1260,6 +1271,59 @@ pub fn list_owned_vocabularies(
     serde_json::from_slice(&buf).map_err(|_| crate::host_errors::ERR_SDK_DESERIALIZE)
 }
 
+/// Set one of this plugin's precise timers (B278), replacing any of the same
+/// name. Needs the `timer` host interface. When it is due the kernel calls
+/// this plugin's `tap_timer`, once across every server.
+///
+/// Refused with
+/// [`ERR_TIMER_INVALID`](crate::host_errors::ERR_TIMER_INVALID),
+/// [`ERR_TIMER_PAYLOAD_TOO_LARGE`](crate::host_errors::ERR_TIMER_PAYLOAD_TOO_LARGE),
+/// [`ERR_TIMER_REPEAT_TOO_SHORT`](crate::host_errors::ERR_TIMER_REPEAT_TOO_SHORT) or
+/// [`ERR_TIMER_LIMIT`](crate::host_errors::ERR_TIMER_LIMIT).
+#[cfg(target_arch = "wasm32")]
+pub fn timer_set(request: &crate::types::TimerRequest) -> Result<(), i32> {
+    let json = serde_json::to_string(request).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)?;
+    let result = unsafe { __timer_set(json.as_ptr() as i32, json.len() as i32) };
+    if result < 0 { Err(result) } else { Ok(()) }
+}
+
+/// Cancel one of this plugin's timers (B278). Returns whether it had one of
+/// that name. Needs the `timer` host interface.
+#[cfg(target_arch = "wasm32")]
+pub fn timer_cancel(name: &str) -> Result<bool, i32> {
+    let result = unsafe { __timer_cancel(name.as_ptr() as i32, name.len() as i32) };
+    if result < 0 {
+        Err(result)
+    } else {
+        Ok(result == 1)
+    }
+}
+
+/// One of this plugin's timers (B278), or `None`. Needs the `timer` host
+/// interface; another plugin's timers are never visible.
+#[cfg(target_arch = "wasm32")]
+pub fn timer_get(name: &str) -> Result<Option<crate::types::TimerInfo>, i32> {
+    let mut buf = vec![0u8; MAX_OUTPUT_BUFFER];
+    let result = unsafe {
+        __timer_get(
+            name.as_ptr() as i32,
+            name.len() as i32,
+            buf.as_mut_ptr() as i32,
+            buf.len() as i32,
+        )
+    };
+    if result < 0 {
+        return Err(result);
+    }
+    if result == 0 {
+        return Ok(None);
+    }
+    buf.truncate(result as usize);
+    serde_json::from_slice(&buf)
+        .map(Some)
+        .map_err(|_| crate::host_errors::ERR_SDK_DESERIALIZE)
+}
+
 /// Check if the current user has a specific permission.
 ///
 /// Returns `true` if the user has the permission, `false` otherwise
@@ -1527,6 +1591,25 @@ pub fn list_owned_vocabularies(
     _owner_id: &str,
 ) -> Result<Vec<crate::types::Vocabulary>, i32> {
     Ok(Vec::new())
+}
+
+/// Set a timer (stub for native testing): there is no kernel, so nothing is
+/// set, and the call succeeds.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn timer_set(_request: &crate::types::TimerRequest) -> Result<(), i32> {
+    Ok(())
+}
+
+/// Cancel a timer (stub for native testing): there was none.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn timer_cancel(_name: &str) -> Result<bool, i32> {
+    Ok(false)
+}
+
+/// Read a timer (stub for native testing): none.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn timer_get(_name: &str) -> Result<Option<crate::types::TimerInfo>, i32> {
+    Ok(None)
 }
 
 /// Filter text through a text format (stub for native testing).

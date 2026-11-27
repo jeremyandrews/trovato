@@ -53,6 +53,7 @@ PLUGINS=(
   test_form_taps
   test_form_taps_b
   test_owned_vocabulary
+  test_timer
 )
 
 if [ "${1:-}" = "--list" ]; then

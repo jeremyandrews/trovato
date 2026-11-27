@@ -1,0 +1,101 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
+{% import "admin/macros/list.html" as list %}
+
+{#- Precise timers (routes::admin_timers). `list` is the filter, sort and
+    page; `timers` the rows, each with its next run in the viewer's zone
+    (`zone`) and as a relative time; `may_administer` shows the row actions
+    and the links to edit and to the throttles. The shell renders `flash`. -#}
+
+{% block page_title %}{{ t(s="Timers") }}{% endblock page_title %}
+
+{% block content %}
+<p>{{ t(s="Timers run work due at a known second, such as a scheduled publish. Routine sweeps belong to cron.") }} <a href="/admin/reports/cron">{{ t(s="Cron") }}</a></p>
+
+<div class="admin-card">
+    {{ list::filter_start(action=path, label=t(s="Filter the timers")) }}
+        {{ form::field(name="q", type="search", label=t(s="Name contains"), value=list.q, width="20", wrapper="filter-item") }}
+        {{ form::select(name="owner", label=t(s="Owner"), options=owner_options, value=owner_filter, empty=t(s="- Any -"), wrapper="filter-item") }}
+        {{ form::select(name="status", label=t(s="Status"), options=status_options, value=status_filter, empty=t(s="- Any -"), translate_options=true, wrapper="filter-item") }}
+    {{ list::filter_end(list=list, action=path) }}
+</div>
+{{ list::sort_form(list=list, action=path) }}
+
+{% if timers %}
+<div class="admin-card">
+    {{ list::count(list=list) }}
+    <div class="table-scroll" role="region" aria-labelledby="timers-caption" tabindex="0">
+        <table class="table table--stack">
+            <caption id="timers-caption">{{ t(s="Timers, times in {zone}", zone=zone) }}</caption>
+            <thead>
+                <tr>
+                    {{ list::sort_th(label=t(s="Name"), key="name", list=list) }}
+                    {{ list::sort_th(label=t(s="Owner"), key="owner", list=list) }}
+                    {{ list::sort_th(label=t(s="Next run"), key="next", list=list) }}
+                    <th scope="col">{{ t(s="Repeat") }}</th>
+                    {{ list::sort_th(label=t(s="Status"), key="status", list=list) }}
+                    {{ list::sort_th(label=t(s="Last fired"), key="fired", list=list) }}
+                    <th scope="col">{{ t(s="Attempts") }}</th>
+                    <th scope="col">{{ t(s="Last error") }}</th>
+                    {% if may_administer %}<th scope="col">{{ t(s="Operations") }}</th>{% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for timer in timers %}
+                <tr>
+                    <th scope="row"><code>{{ timer.name }}</code></th>
+                    <td>{{ timer.owner }}</td>
+                    <td>
+                        <time datetime="{{ timer.next_utc }}">{{ timer.next_local }}</time><br>
+                        <span class="form-item__description">{% set r = timer.next_relative %}{% if r.future %}{% if r.unit == "second" %}{{ t(s="in {count} second", plural="in {count} seconds", count=r.count) }}{% elif r.unit == "minute" %}{{ t(s="in {count} minute", plural="in {count} minutes", count=r.count) }}{% elif r.unit == "hour" %}{{ t(s="in {count} hour", plural="in {count} hours", count=r.count) }}{% else %}{{ t(s="in {count} day", plural="in {count} days", count=r.count) }}{% endif %}{% else %}{% if r.unit == "second" %}{{ t(s="{count} second ago", plural="{count} seconds ago", count=r.count) }}{% elif r.unit == "minute" %}{{ t(s="{count} minute ago", plural="{count} minutes ago", count=r.count) }}{% elif r.unit == "hour" %}{{ t(s="{count} hour ago", plural="{count} hours ago", count=r.count) }}{% else %}{{ t(s="{count} day ago", plural="{count} days ago", count=r.count) }}{% endif %}{% endif %}</span>
+                    </td>
+                    <td>{% if timer.repeat_secs %}{{ t(s="every {count} second", plural="every {count} seconds", count=timer.repeat_secs) }}{% else %}{{ t(s="once") }}{% endif %}</td>
+                    <td>{% if timer.status == "scheduled" %}{{ t(s="Scheduled") }}{% elif timer.status == "paused" %}{{ t(s="Paused") }}{% elif timer.status == "running" %}{{ t(s="Running") }}{% else %}<strong>{{ t(s="Failed") }}</strong>{% endif %}</td>
+                    <td>{% if timer.last_fired_local %}{{ timer.last_fired_local }}{% if timer.last_lateness_ms is number %}<br><span class="form-item__description">{{ t(s="{ms} ms late", ms=timer.last_lateness_ms) }}</span>{% endif %}{% else %}{{ t(s="Never") }}{% endif %}</td>
+                    <td>{{ timer.attempts }}</td>
+                    <td>{% if timer.last_error %}{{ timer.last_error }}{% else %}{{ t(s="None") }}{% endif %}</td>
+                    {% if may_administer %}
+                    <td class="operations">
+                        <a href="/admin/reports/timers/{{ timer.id }}/edit">{{ t(s="Edit {name}", name=timer.name) }}</a>
+                        {% if timer.status == "paused" or timer.status == "failed" %}
+                        <form method="post" action="/admin/reports/timers/{{ timer.id }}/resume" class="inline-form">
+                            {{ form::csrf(csrf_token=csrf_token) }}
+                            <button type="submit" class="link-button">{{ t(s="Resume {name}", name=timer.name) }}</button>
+                        </form>
+                        {% else %}
+                        <form method="post" action="/admin/reports/timers/{{ timer.id }}/pause" class="inline-form">
+                            {{ form::csrf(csrf_token=csrf_token) }}
+                            <button type="submit" class="link-button">{{ t(s="Pause {name}", name=timer.name) }}</button>
+                        </form>
+                        {% endif %}
+                        <form method="post" action="/admin/reports/timers/{{ timer.id }}/run" class="inline-form">
+                            {{ form::csrf(csrf_token=csrf_token) }}
+                            <button type="submit" class="link-button">{{ t(s="Run {name} now", name=timer.name) }}</button>
+                        </form>
+                        {{ list::delete_button(action="/admin/reports/timers/" ~ timer.id ~ "/cancel", label=t(s="Cancel {name}", name=timer.name), confirm_text=t(s="Cancel the timer {name}? Its owner is not told, and it does not run again unless its owner sets it again.", name=timer.name), csrf_token=csrf_token) }}
+                    </td>
+                    {% endif %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {{ list::pager(list=list, action=path, label=t(s="Pages of timers")) }}
+</div>
+{% elif list.filtered %}
+{{ list::empty(message=t(s="No timer matches this filter."), add_url=path, add_label=t(s="Clear filter")) }}
+{% else %}
+{{ list::empty(message=t(s="No timer is set. Code sets timers; there is nothing to add here.")) }}
+{% endif %}
+
+<section class="admin-card" aria-labelledby="timer-throttles">
+    <h2 id="timer-throttles" class="report-heading">{{ t(s="Throttles") }}</h2>
+    <ul class="report-list">
+        <li>{{ t(s="Timers firing at once, per server: {n}", n=settings.max_concurrent) }}</li>
+        <li>{{ t(s="Timers per plugin: {n}", n=settings.max_per_plugin) }}</li>
+        <li>{{ t(s="Shortest repeat interval: {n} seconds", n=settings.min_repeat_secs) }}</li>
+        <li>{{ t(s="Largest payload: {n} bytes", n=settings.max_payload_bytes) }}</li>
+    </ul>
+    {% if may_administer %}<p><a href="/admin/reports/timers/settings">{{ t(s="Change the throttles") }}</a></p>{% endif %}
+</section>
+{% endblock content %}

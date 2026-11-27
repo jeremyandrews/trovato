@@ -197,6 +197,16 @@ pub enum SecurityEventKind {
     /// A role's permission grants changed. `details.granted` and
     /// `details.revoked` list what changed.
     RolePermissionsChanged,
+
+    // ── Timers (B278) ─────────────────────────────────────────────────────
+    /// An administrator changed a timer on `/admin/reports/timers`:
+    /// `details.action` is `pause`, `resume`, `run_now`, `cancel` or `edit`;
+    /// `details.owner` and `details.name` name the timer, and `details.before`
+    /// and `details.after` hold its next run, repeat and status either side.
+    TimerChanged,
+    /// An administrator changed the timer throttles. `details.before` and
+    /// `details.after` are the settings either side.
+    TimerSettingsChanged,
 }
 
 impl SecurityEventKind {
@@ -239,6 +249,8 @@ impl SecurityEventKind {
             Self::RoleChanged => "role.changed",
             Self::RoleDeleted => "role.deleted",
             Self::RolePermissionsChanged => "role.permissions_changed",
+            Self::TimerChanged => "timer.changed",
+            Self::TimerSettingsChanged => "timer.settings_changed",
         }
     }
 }
@@ -695,6 +707,8 @@ mod tests {
             SecurityEventKind::RoleChanged,
             SecurityEventKind::RoleDeleted,
             SecurityEventKind::RolePermissionsChanged,
+            SecurityEventKind::TimerChanged,
+            SecurityEventKind::TimerSettingsChanged,
         ];
         let mut seen = std::collections::HashSet::new();
         for k in kinds {

@@ -104,6 +104,9 @@ members = [
     # the `vocabulary` host interface and administered by the club's managers
     # through tap_vocabulary_owner_access; built with --target wasm32-wasip1.
     "plugins/test_owned_vocabulary",
+    # B278 precise-timer fixture: tap_timer and the `timer` host interface,
+    # confined to its own timers; built with --target wasm32-wasip1.
+    "plugins/test_timer",
 ]
 # B216 dev tool: decodes Pagefind indexes and proves per page tokenizing
 # matches a full CLI build. Its own workspace and lockfile, not a member: the

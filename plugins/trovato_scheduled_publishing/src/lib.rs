@@ -3,13 +3,21 @@
 //! Allows scheduling items for future publish/unpublish via
 //! field_publish_on and field_unpublish_on JSONB fields.
 //!
-//! Implements `tap_cron` to process scheduled publish/unpublish
-//! operations each cron cycle: a raw read finds what is due, a conditional
-//! statement claims each item by removing the date it applies, and an item API
-//! save changes its status.
+//! An item saved with a future `field_publish_on` or `field_unpublish_on`
+//! gets a precise timer for that second (B278): `publish:<id>` or
+//! `unpublish:<id>`, replaced when the date changes and cancelled when it is
+//! cleared or the item is deleted. When it fires, `tap_timer` claims the item
+//! by removing the date it applies, with a conditional statement, and an item
+//! API save changes its status, so the item goes live at the second.
+//!
+//! `tap_cron` stays as the backstop: each run it finds whatever is due and
+//! was not handled by a timer (an item scheduled before timers existed, a
+//! date written straight to the table, a timer that failed), and applies it
+//! the same way.
 
 use trovato_sdk::host;
 use trovato_sdk::prelude::*;
+use trovato_sdk::types::{TimerInput, TimerRequest};
 
 #[plugin_tap]
 pub fn tap_perm() -> Vec<PermissionDefinition> {
@@ -136,6 +144,135 @@ pub fn tap_cron(input: CronInput) -> serde_json::Value {
         "Scheduled unpublish",
     );
     serde_json::json!({"published": published, "unpublished": unpublished})
+}
+
+/// The two scheduled changes: the date field each reads, the status the item
+/// must have for it to apply, the status it sets, the claim, the revision log
+/// and the timer name prefix.
+struct Change {
+    field: &'static str,
+    from_status: i64,
+    to_status: i64,
+    claim: &'static str,
+    log: &'static str,
+    prefix: &'static str,
+}
+
+const PUBLISH: Change = Change {
+    field: "field_publish_on",
+    from_status: 0,
+    to_status: 1,
+    claim: CLAIM_PUBLISH,
+    log: "Scheduled publish",
+    prefix: "publish",
+};
+
+const UNPUBLISH: Change = Change {
+    field: "field_unpublish_on",
+    from_status: 1,
+    to_status: 0,
+    claim: CLAIM_UNPUBLISH,
+    log: "Scheduled unpublish",
+    prefix: "unpublish",
+};
+
+/// A date field's value: Unix seconds, stored as a number or as digits.
+fn date(fields: Option<&serde_json::Value>, field: &str) -> Option<i64> {
+    match fields?.get(field)? {
+        serde_json::Value::Number(n) => n.as_i64(),
+        serde_json::Value::String(s) if !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit()) => {
+            s.parse().ok()
+        }
+        _ => None,
+    }
+}
+
+/// The timer name for `change` on item `id`.
+fn timer_name(change: &Change, id: &str) -> String {
+    format!("{}:{id}", change.prefix)
+}
+
+/// Keep an item's timers in step with its dates: a date its status can use
+/// gets a timer for that second (setting it again replaces it, so a changed
+/// date moves it), and no such date cancels it.
+fn sync_timers(item: &serde_json::Value) {
+    let Some(id) = item.get("id").and_then(|v| v.as_str()) else {
+        return;
+    };
+    let status = item.get("status").and_then(|v| v.as_i64()).unwrap_or(0);
+    for change in [&PUBLISH, &UNPUBLISH] {
+        let name = timer_name(change, id);
+        match date(item.get("fields"), change.field).filter(|_| status == change.from_status) {
+            Some(at) => {
+                let request = TimerRequest {
+                    name: name.clone(),
+                    run_at: at,
+                    repeat_secs: None,
+                    payload: serde_json::json!({ "item": id }),
+                };
+                if let Err(code) = host::timer_set(&request) {
+                    // The cron sweep still applies it, at the next run.
+                    host::log(
+                        "warn",
+                        "trovato_scheduled_publishing",
+                        &format!(
+                            "could not set timer {name}: host error {code}; cron will apply it"
+                        ),
+                    );
+                }
+            }
+            None => {
+                let _ = host::timer_cancel(&name);
+            }
+        }
+    }
+}
+
+/// An item was created: time its dates.
+#[plugin_tap]
+pub fn tap_item_insert(item: serde_json::Value) -> serde_json::Value {
+    sync_timers(&item);
+    serde_json::json!({})
+}
+
+/// An item was saved: move, set or cancel its timers to match its dates.
+#[plugin_tap]
+pub fn tap_item_update(item: serde_json::Value) -> serde_json::Value {
+    sync_timers(&item);
+    serde_json::json!({})
+}
+
+/// An item is being deleted: cancel its timers.
+#[plugin_tap]
+pub fn tap_item_delete(item: serde_json::Value) -> serde_json::Value {
+    if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+        for change in [&PUBLISH, &UNPUBLISH] {
+            let _ = host::timer_cancel(&timer_name(change, id));
+        }
+    }
+    serde_json::json!({})
+}
+
+/// A date's timer fired: apply it to that item, through the same claim and
+/// item API save as the cron sweep, at the time the timer fired.
+#[plugin_tap]
+pub fn tap_timer(input: TimerInput) -> serde_json::Value {
+    let Some((prefix, id)) = input.name.split_once(':') else {
+        return serde_json::json!({ "skipped": input.name });
+    };
+    let change = match prefix {
+        "publish" => &PUBLISH,
+        "unpublish" => &UNPUBLISH,
+        _ => return serde_json::json!({ "skipped": input.name }),
+    };
+    let saved = apply(
+        &[id.to_string()],
+        change.claim,
+        input.fired_at,
+        change.to_status,
+        change.log,
+    );
+    serde_json::json!({ "item": id, "status": change.to_status, "saved": saved })
 }
 
 #[cfg(test)]

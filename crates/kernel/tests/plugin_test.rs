@@ -685,6 +685,8 @@ async fn every_known_host_interface_except_pending_is_registered() {
         (func (param i32 i32 i32 i32 i32 i32) (result i32)))
       (import "trovato:kernel/vocabulary" "create-owned"
         (func (param i32 i32 i32 i32) (result i32)))
+      (import "trovato:kernel/timer" "set"
+        (func (param i32 i32) (result i32)))
       (memory (export "memory") 1))
     "#;
 
@@ -715,6 +717,7 @@ async fn every_known_host_interface_except_pending_is_registered() {
         "text-format",
         "query",
         "vocabulary",
+        "timer",
     ]
     .into_iter()
     .collect();
