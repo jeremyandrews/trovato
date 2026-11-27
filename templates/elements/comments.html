@@ -62,33 +62,12 @@
     {% if can_comment %}
     <div class="comment-form-wrapper" id="comment-form">
         <h3 class="comment-form__title">Add a Comment</h3>
-        {# Posts form-encoded with the token in `_token`, which works with no
+        {# The form `comment_form`, built through the forms pipeline. It posts
+           form-encoded with its token in `_token`, which works with no
            JavaScript at all; comment-post.js upgrades it to a JSON post with the
            X-CSRF-Token header and updates the page in place. The route accepts
            both encodings. #}
-        <form class="comment-form" method="post" action="/api/v1/item/{{ item_id }}/comments" data-comment-form>
-            <input type="hidden" name="_token" value="{{ csrf_token }}">
-            <input type="hidden" name="parent_id" id="comment-parent-id" value="">
-
-            <div class="form-group">
-                <label for="comment-subject" class="sr-only">Subject (optional)</label>
-                <input type="text" id="comment-subject" name="subject" placeholder="Subject (optional)" maxlength="255">
-            </div>
-
-            <div class="form-group">
-                <label for="comment-body" class="sr-only">Your comment</label>
-                <textarea id="comment-body" name="body" rows="4" placeholder="Write your comment..." required></textarea>
-            </div>
-
-            <div class="form-actions">
-                <button type="submit" class="button button--primary">Post Comment</button>
-                <span id="replying-to" class="replying-indicator" style="display: none;">
-                    Replying to comment <span id="reply-parent-id"></span>
-                    <button type="button" class="cancel-reply">Cancel</button>
-                </span>
-            </div>
-            <p class="comment-form__status" data-comment-status role="status" aria-live="polite"></p>
-        </form>
+        {{ comment_form | safe }} {# SAFE: kernel form renderer output — every value in it is escaped by the form templates #}
     </div>
     {% elif not comments_open %}
     <p class="comments__closed">Comments are closed.</p>

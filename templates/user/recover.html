@@ -12,12 +12,17 @@
 
     <div id="recover-message" role="status" style="display: none; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;"></div>
 
-    {# Step 1: identify the account. #}
+    {% if needs_script %}
+    <div class="message message--warning" role="status">
+        Recovering an account needs JavaScript, which this browser did not run.
+        Turn it on and start again, or <a href="/user/password-reset">reset your password by email</a>.
+    </div>
+    {% endif %}
+
+    {# Step 1: identify the account: the form `user_recover`, whose submission
+       account-recover.js takes and posts as the JSON step. #}
     <div id="step-identify">
-        <label for="identifier" class="form-item__label">Username or email</label>
-        <input type="text" id="identifier" class="form-text" autofocus
-               style="width: 100%; padding: 0.5rem; font-size: 1rem; margin-bottom: 0.75rem;">
-        <button type="button" id="start" style="padding: 0.6rem 1.2rem; cursor: pointer;">Continue</button>
+        {{ identify_form | safe }} {# SAFE: kernel form renderer output — every value in it is escaped by the form templates #}
     </div>
 
     {# Step 2: choose a method. Populated from the describe answers. #}

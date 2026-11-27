@@ -18,8 +18,11 @@ weight = 0
 
 [capabilities]
 host_interfaces = ["logging", "db", "user-api"]
-db_tables = ["b71_form_submits"]
+db_tables = ["b71_form_submits", "b83b_refuse_forms"]
 raw_sql = true
 
 [migrations]
-files = ["migrations/001_b71_form_submits.sql"]
+files = [
+    "migrations/001_b71_form_submits.sql",
+    "migrations/002_b83b_refuse_forms.sql",
+]

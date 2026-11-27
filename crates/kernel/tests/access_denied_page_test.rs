@@ -147,10 +147,10 @@ async fn sign_in_to(app: &TestApp, name: &str, destination: &str) -> Answer {
     let path = format!("/user/login?destination={}", urlencode(destination));
     let form = get(app, &path, "").await;
     assert_eq!(form.status, StatusCode::OK, "{}", form.body);
-    let token = hidden(&form.body, "_token").expect("csrf token");
     let carried = hidden(&form.body, "destination");
     let body = format!(
-        "username={name}&password=test-password-123&_token={token}&destination={}",
+        "username={name}&password=test-password-123&{}&destination={}",
+        common::form_fields(&form.body, "user_login"),
         urlencode(carried.as_deref().unwrap_or(destination))
     );
     app.state.lockout().clear_all(name).await.ok();

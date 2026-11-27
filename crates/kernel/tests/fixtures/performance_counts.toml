@@ -1234,14 +1234,18 @@ count = 1
 sql = 'with recursive comment_tree as ( select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth, array[lpad((case when $? then ? - created else created end)::text, ?) || id::text] as sort_path from comment where item_id = $? and parent_id is null and status = $? union all select c.id, c.item_id, c.parent_id, c.author_id, c.subject, c.body, c.body_format, c.status, c.created, c.changed, c.depth, ct.sort_path || (lpad(c.created::text, ?) || c.id::text) from comment c join comment_tree ct on c.parent_id = ct.id where c.status = $? ) select id, item_id, parent_id, author_id, subject, body, body_format, status, created, changed, depth from comment_tree order by sort_path collate "C"'
 
 ["login.anonymous.cold"]
-queries = 8
-cache_gets = 2
-cache_misses = 2
+queries = 9
+cache_gets = 3
+cache_misses = 3
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
 gathers = 0
 renders = 0
+
+["login.anonymous.cold".statements."insert:form_state_cache:56dca877"]
+count = 1
+sql = "insert into form_state_cache (form_build_id, form_id, state, created, updated) values ($?) on conflict (form_build_id) do update set state = excluded.state, updated = excluded.updated"
 
 ["login.anonymous.cold".statements."select:menu_link:17337ab4"]
 count = 1
@@ -1264,14 +1268,18 @@ count = 1
 sql = "select * from users where id = $?"
 
 ["login.anonymous.warm"]
-queries = 6
-cache_gets = 2
+queries = 7
+cache_gets = 3
 cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
 gathers = 0
 renders = 0
+
+["login.anonymous.warm".statements."insert:form_state_cache:56dca877"]
+count = 1
+sql = "insert into form_state_cache (form_build_id, form_id, state, created, updated) values ($?) on conflict (form_build_id) do update set state = excluded.state, updated = excluded.updated"
 
 ["login.anonymous.warm".statements."select:site_config:51f89970"]
 count = 1

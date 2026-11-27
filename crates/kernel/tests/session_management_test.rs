@@ -558,7 +558,7 @@ fn the_session_index_survives_a_cycle_id() {
             )
             .await;
         let html = html_of(profile).await;
-        let csrf = csrf_from(&html);
+        let fields = common::form_fields(&html, "user_password_change");
 
         let changed = app
             .request_with_cookies(
@@ -566,7 +566,7 @@ fn the_session_index_survives_a_cycle_id() {
                     .header("content-type", "application/x-www-form-urlencoded")
                     .header("user-agent", UA_CHROME)
                     .body(Body::from(format!(
-                        "_token={csrf}&current_password=test-password-123\
+                        "{fields}&current_password=test-password-123\
                          &new_password=cycled-password-456&confirm_password=cycled-password-456"
                     )))
                     .unwrap(),
@@ -755,16 +755,15 @@ fn a_password_change_ends_other_sessions_and_keeps_the_callers() {
             )
             .await;
         assert_eq!(profile.status(), StatusCode::OK);
-        let token = form_token_from(&html_of(profile).await);
+        let fields = common::form_fields(&html_of(profile).await, "user_password_change");
         let change = app
             .request_with_cookies(
                 Request::post("/user/password")
                     .header("content-type", "application/x-www-form-urlencoded")
                     .header("user-agent", UA_CHROME)
                     .body(Body::from(format!(
-                        "_token={}&current_password=test-password-123&new_password={NEW_PASSWORD}\
-                         &confirm_password={NEW_PASSWORD}",
-                        urlencoding::encode(&token)
+                        "{fields}&current_password=test-password-123&new_password={NEW_PASSWORD}\
+                         &confirm_password={NEW_PASSWORD}"
                     )))
                     .unwrap(),
                 &here,

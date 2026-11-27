@@ -1471,3 +1471,54 @@ impl RecoveryVisit {
         response
     }
 }
+
+// =============================================================================
+// Forms built through the forms pipeline
+// =============================================================================
+
+/// The `<form>` whose id is `form_id` on `html`, or `None`.
+pub fn form_in<'a>(html: &'a str, form_id: &str) -> Option<&'a str> {
+    let at = html.find(&format!(r#"<form id="{form_id}""#))?;
+    let end = html[at..].find("</form>")? + at;
+    Some(&html[at..end])
+}
+
+/// The value of the input named `name` on `html`, entities for `&` and `/`
+/// read back, or `None`.
+pub fn input_value_in(html: &str, name: &str) -> Option<String> {
+    let at = html.find(&format!(r#"name="{name}""#))?;
+    let start = html[..at].rfind('<')?;
+    let end = at + html[at..].find('>')?;
+    let tag = &html[start..end];
+    let vat = tag.find(r#"value=""#)? + 7;
+    let vend = tag[vat..].find('"')? + vat;
+    Some(tag[vat..vend].replace("&#x2F;", "/").replace("&amp;", "&"))
+}
+
+/// The build id of the form `form_id` on `html`: what a browser posts back
+/// as `_form_build_id` with the form's fields, since a pipeline form is
+/// refused as expired without it.
+///
+/// # Panics
+///
+/// Panics when the page has no such form.
+pub fn form_build_id(html: &str, form_id: &str) -> String {
+    let form = form_in(html, form_id).unwrap_or_else(|| panic!("no form {form_id} on the page"));
+    input_value_in(form, "_form_build_id").expect("the form carries a build id")
+}
+
+/// `_token=…&_form_build_id=…` for the form `form_id` on `html`, urlencoded,
+/// to start a submission body with.
+///
+/// # Panics
+///
+/// Panics when the page has no such form.
+pub fn form_fields(html: &str, form_id: &str) -> String {
+    let form = form_in(html, form_id).unwrap_or_else(|| panic!("no form {form_id} on the page"));
+    let token = input_value_in(form, "_token").expect("the form carries a CSRF token");
+    format!(
+        "_token={}&_form_build_id={}",
+        urlencoding::encode(&token),
+        urlencoding::encode(&form_build_id(html, form_id))
+    )
+}

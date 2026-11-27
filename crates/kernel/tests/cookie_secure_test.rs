@@ -125,7 +125,9 @@ async fn sign_in_see_profile_sign_out(app: &TestApp, prefix: &str) -> Vec<String
         anonymous.starts_with("id="),
         "the login form starts a session"
     );
-    let token = form_token(&body_text(form).await, "/user/login");
+    let html = body_text(form).await;
+    let token = form_token(&html, "/user/login");
+    let build = common::form_build_id(&html, "user_login");
 
     // Log in through the form.
     let login = app
@@ -134,7 +136,7 @@ async fn sign_in_see_profile_sign_out(app: &TestApp, prefix: &str) -> Vec<String
                 .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                 .header("x-forwarded-for", &ip)
                 .body(Body::from(format!(
-                    "username={name}&password={PASSWORD}&_token={token}"
+                    "username={name}&password={PASSWORD}&_token={token}&_form_build_id={build}"
                 )))
                 .unwrap(),
             &anonymous,

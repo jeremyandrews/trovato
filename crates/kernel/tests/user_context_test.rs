@@ -67,28 +67,6 @@ async fn body_text(response: axum::response::Response) -> String {
     String::from_utf8_lossy(&bytes).to_string()
 }
 
-/// Fetch a CSRF token from a rendered page.
-///
-/// Tokens are pooled per session and single-use, so any token the page carries
-/// verifies against any form in that session — but each POST needs its own GET.
-async fn csrf_token(app: &TestApp, path: &str, cookies: &str) -> String {
-    let response = app
-        .request_with_cookies(Request::get(path).body(Body::empty()).unwrap(), cookies)
-        .await;
-    let body = axum::body::to_bytes(response.into_body(), 2_000_000)
-        .await
-        .unwrap();
-    let html = String::from_utf8_lossy(&body);
-
-    let marker = r#"name="_token" value=""#;
-    let start = html
-        .find(marker)
-        .map(|p| p + marker.len())
-        .unwrap_or_else(|| panic!("no CSRF token on {path}"));
-    let end = start + html[start..].find('"').expect("unterminated token value");
-    html[start..end].to_string()
-}
-
 /// The profile form's CSRF token and build id, as the browser posts them back.
 async fn profile_form_tokens(app: &TestApp, cookies: &str) -> (String, String) {
     let response = app
@@ -224,9 +202,18 @@ fn a_self_service_password_change_succeeds_for_the_owner() {
             .create_and_login_user(&name, old_password, &format!("{name}@example.com"))
             .await;
 
-        let token = csrf_token(app, "/user/profile", &cookies).await;
+        let profile = app
+            .request_with_cookies(
+                Request::get("/user/profile").body(Body::empty()).unwrap(),
+                &cookies,
+            )
+            .await;
+        let html = axum::body::to_bytes(profile.into_body(), 2_000_000)
+            .await
+            .unwrap();
+        let fields = common::form_fields(&String::from_utf8_lossy(&html), "user_password_change");
         let body = format!(
-            "_token={token}&current_password={old_password}&new_password={new_password}\
+            "{fields}&current_password={old_password}&new_password={new_password}\
              &confirm_password={new_password}"
         );
         let response = app

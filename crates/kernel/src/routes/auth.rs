@@ -10,7 +10,6 @@ use tower_sessions::Session;
 use tracing::info;
 
 use crate::error::AppError;
-use crate::form::csrf::generate_csrf_token;
 use crate::middleware::language::SESSION_ACTIVE_LANGUAGE;
 use crate::models::email_verification::{
     EmailVerificationToken, PURPOSE_EMAIL_CHANGE, PURPOSE_REGISTRATION,
@@ -136,90 +135,161 @@ async fn login_form(
     render_login_page(
         &state,
         &session,
-        None,
+        &[],
         notice.as_deref(),
         query.destination.as_deref(),
     )
     .await
 }
 
-/// Form-based login request.
-#[derive(Deserialize)]
-pub struct LoginFormRequest {
-    pub username: String,
-    pub password: String,
-    #[serde(default)]
-    pub remember_me: Option<String>,
-    #[serde(rename = "_token")]
-    pub csrf_token: String,
-    /// The page to land on after signing in; `/` when absent or not local.
-    #[serde(default)]
-    pub destination: Option<String>,
+/// The login form, `user_login`, carrying `destination` when there is a
+/// safe one. Also the form the access-denied page offers nobody signed in
+/// (`middleware::error_page`).
+pub fn build_login_form(destination: Option<&str>) -> crate::form::Form {
+    use crate::form::{Form, FormElement};
+    let mut form = Form::new("user_login")
+        .action("/user/login")
+        .attribute("class", "login-form")
+        .element(
+            "username",
+            FormElement::textfield()
+                .title("Username or e-mail address")
+                .placeholder("Enter your username or e-mail address")
+                .required()
+                .attribute("autocomplete", "username")
+                .weight(0),
+        )
+        .element(
+            "password",
+            FormElement::password()
+                .title("Password")
+                .placeholder("Enter your password")
+                .required()
+                .attribute("autocomplete", "current-password")
+                .weight(1),
+        )
+        .element(
+            "remember_me",
+            FormElement::checkbox().title("Remember me").weight(2),
+        )
+        .element(
+            "forgot",
+            FormElement::markup(
+                r#"<a href="/user/password-reset" class="login-form__forgot">Forgot password?</a>"#,
+            )
+            .weight(3),
+        )
+        .element("op", FormElement::submit("Sign in").weight(100));
+    if let Some(destination) = destination.filter(|d| is_safe_destination(d)) {
+        form = form.element(
+            "destination",
+            FormElement::hidden().default_value(destination),
+        );
+    }
+    form
 }
 
 /// Form-based login handler.
 ///
 /// POST /user/login (form data)
+///
+/// The form goes through the forms pipeline first (CSRF, the saved form
+/// state, `tap_form_validate`); a refused submission is never tried as a
+/// sign in, so it neither signs anyone in nor counts toward a lockout.
 async fn login_form_submit(
     State(state): State<AppState>,
     session: Session,
     axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     headers: axum::http::HeaderMap,
-    Form(form): Form<LoginFormRequest>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
+    let posted = crate::content::submission::PostedForm(pairs);
     // The `login` bucket is counted once, per client IP, by the rate-limit
     // middleware (`categorize_path` puts this path in it). It used to be counted
     // here as well, which spent each attempt twice. The address is still the
     // lockout's key.
     let client_id = client_ip.0;
+    let destination = posted
+        .get("destination")
+        .filter(|d| is_safe_destination(d))
+        .map(str::to_string);
 
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.csrf_token).await {
-        return resp;
-    }
+    let viewer = super::helpers::get_user_context(&session, &state).await;
+    let form_state = match super::admin_form::check_as(
+        &state,
+        &session,
+        &viewer,
+        &posted,
+        "user_login",
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Err(refusal)) => return refusal,
+        Err(Ok(errors)) => {
+            return render_login_page(&state, &session, &errors, None, destination.as_deref())
+                .await;
+        }
+    };
 
     // Convert to internal request format
     let request = LoginRequest {
-        username: form.username,
-        password: form.password,
-        remember_me: form.remember_me.is_some(),
+        username: posted.get("username").unwrap_or_default().to_string(),
+        password: posted.get("password").unwrap_or_default().to_string(),
+        remember_me: posted.get("remember_me").is_some(),
     };
-    let destination = form
-        .destination
-        .as_deref()
-        .filter(|d| is_safe_destination(d));
 
     // Perform login
     match do_login(&state, &session, &request, &client_id, user_agent(&headers)).await {
-        Ok(_) => Redirect::to(destination.unwrap_or("/")).into_response(),
-        Err(e) => render_login_page(&state, &session, Some(e.message()), None, destination).await,
+        Ok(_) => {
+            state
+                .forms()
+                .submitted(
+                    &form_state,
+                    &posted,
+                    None,
+                    &super::item_form::tap_state(&state, &viewer),
+                )
+                .await;
+            Redirect::to(destination.as_deref().unwrap_or("/")).into_response()
+        }
+        Err(e) => {
+            let errors = [crate::form::ValidationError::form(e.message())];
+            render_login_page(&state, &session, &errors, None, destination.as_deref()).await
+        }
     }
 }
 
-/// Render the login form, with an error or a notice, keeping `destination`
+/// Render the login form, with its errors or a notice, keeping `destination`
 /// (when it is a safe one) for the next attempt.
 async fn render_login_page(
     state: &AppState,
     session: &Session,
-    error: Option<&str>,
+    errors: &[crate::form::ValidationError],
     notice: Option<&str>,
     destination: Option<&str>,
 ) -> Response {
-    let csrf_token = generate_csrf_token(session).await;
+    let viewer = super::helpers::get_user_context(session, state).await;
+    let mut form = build_login_form(destination);
+    // The login page is about this one field; the access-denied page, which
+    // offers the same form, is not.
+    if let Some(username) = form.elements.remove("username") {
+        form = form.element("username", username.attribute("autofocus", "autofocus"));
+    }
+    let form = match super::admin_form::render_as(state, session, &viewer, form, errors).await {
+        Ok(html) => html,
+        Err(refusal) => return refusal,
+    };
 
     let mut context = tera::Context::new();
-    context.insert("csrf_token", &csrf_token);
-    if let Some(error) = error {
-        context.insert("error", error);
-    }
+    context.insert("login_form", &form);
     if let Some(notice) = notice {
         context.insert("success", notice);
     }
-    if let Some(destination) = destination.filter(|d| is_safe_destination(d)) {
-        context.insert("destination", destination);
-    }
     context.insert("webauthn_available", &state.webauthn().is_some());
-    super::helpers::inject_site_context(state, session, &mut context, "/user/login").await;
+    super::helpers::inject_site_context_for(state, session, &viewer, &mut context, "/user/login")
+        .await;
 
     match state.theme().tera().render("user/login.html", &context) {
         Ok(html) => Html(html).into_response(),
@@ -659,17 +729,6 @@ async fn logout(
 
 // ─── Registration ────────────────────────────────────────────────────────────
 
-/// Registration form request (deserialized from form POST).
-#[derive(Deserialize)]
-struct RegisterFormRequest {
-    username: String,
-    mail: String,
-    password: String,
-    confirm_password: String,
-    #[serde(rename = "_token")]
-    csrf_token: String,
-}
-
 /// JSON registration request body.
 #[derive(Deserialize)]
 struct RegisterJsonRequest {
@@ -720,32 +779,97 @@ async fn register_form(State(state): State<AppState>, session: Session) -> Respo
         return registration_closed().into_response();
     }
 
-    let csrf_token = generate_csrf_token(&session).await;
-
-    render_register_form(&state, &session, &csrf_token, None, None, None).await
+    render_register_form(&state, &session, &[], None, None).await
 }
 
-/// Render the registration form with optional context.
+/// The registration form, `user_register`, showing `values` (username,
+/// mail) when it is shown again.
+fn build_register_form(values: Option<&serde_json::Value>) -> crate::form::Form {
+    use crate::form::{Form, FormElement};
+    let text = |key: &str| {
+        values
+            .and_then(|v| v.get(key))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    Form::new("user_register")
+        .action("/user/register")
+        .element(
+            "username",
+            FormElement::textfield()
+                .title("Username")
+                .required()
+                .default_value(text("username"))
+                .attribute("autofocus", "autofocus")
+                .attribute("autocomplete", "username")
+                .weight(0),
+        )
+        .element(
+            "mail",
+            FormElement::input("email")
+                .title("Email address")
+                .required()
+                .default_value(text("mail"))
+                .attribute("autocomplete", "email")
+                .weight(1),
+        )
+        .element(
+            "password",
+            FormElement::password()
+                .title("Password")
+                .required()
+                .attribute("minlength", "12")
+                .attribute("autocomplete", "new-password")
+                .weight(2),
+        )
+        .element(
+            "confirm_password",
+            FormElement::password()
+                .title("Confirm password")
+                .required()
+                .attribute("minlength", "12")
+                .attribute("autocomplete", "new-password")
+                .weight(3),
+        )
+        .element("op", FormElement::submit("Create new account").weight(100))
+}
+
+/// Render the registration page: the form with its errors and the values
+/// submitted, or, once an account is created, the `success` message alone.
 async fn render_register_form(
     state: &AppState,
     session: &Session,
-    csrf_token: &str,
-    errors: Option<&[String]>,
+    errors: &[crate::form::ValidationError],
     success: Option<&str>,
     values: Option<&serde_json::Value>,
 ) -> Response {
     let mut context = tera::Context::new();
-    context.insert("csrf_token", csrf_token);
-    if let Some(errors) = errors {
-        context.insert("errors", errors);
-    }
+    let viewer = super::helpers::get_user_context(session, state).await;
     if let Some(success) = success {
         context.insert("success", success);
+    } else {
+        match super::admin_form::render_as(
+            state,
+            session,
+            &viewer,
+            build_register_form(values),
+            errors,
+        )
+        .await
+        {
+            Ok(html) => context.insert("register_form", &html),
+            Err(refusal) => return refusal,
+        }
     }
-    if let Some(values) = values {
-        context.insert("values", values);
-    }
-    super::helpers::inject_site_context(state, session, &mut context, "/user/register").await;
+    super::helpers::inject_site_context_for(
+        state,
+        session,
+        &viewer,
+        &mut context,
+        "/user/register",
+    )
+    .await;
 
     match state.theme().tera().render("user/register.html", &context) {
         Ok(html) => Html(html).into_response(),
@@ -759,14 +883,16 @@ async fn render_register_form(
 /// Registration form submit handler.
 ///
 /// POST /user/register
-/// - Validates CSRF token, form input, uniqueness
+/// - Checks the form through the forms pipeline (CSRF, saved state,
+///   `tap_form_validate`), with the input, uniqueness and access rule checks
 /// - Creates inactive user, sends verification email
 async fn register_form_submit(
     State(state): State<AppState>,
     session: Session,
     axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
-    Form(form): Form<RegisterFormRequest>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
+    let posted = crate::content::submission::PostedForm(pairs);
     let mode = registration_mode(&state).await;
     if !mode.is_open() {
         return registration_closed().into_response();
@@ -776,82 +902,90 @@ async fn register_form_submit(
     // middleware (`categorize_path` puts this path in it). It used to be counted
     // here as well, which spent each attempt twice.
 
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.csrf_token).await {
-        return resp;
-    }
-
-    let username = form.username.trim().to_string();
-    let mail = form.mail.trim().to_string();
+    let viewer = super::helpers::get_user_context(&session, &state).await;
+    let password = posted.get("password").unwrap_or_default().to_string();
+    let username = posted
+        .get("username")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let mail = posted.get("mail").unwrap_or_default().trim().to_string();
 
     let values = serde_json::json!({
         "username": username,
         "mail": mail,
     });
 
+    // Verify CSRF token and the form state first, so nothing is looked up
+    // for a forged request.
+    let form_state = match super::admin_form::check_as(
+        &state,
+        &session,
+        &viewer,
+        &posted,
+        "user_register",
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => Ok(form_state),
+        Err(Err(refusal)) => return refusal,
+        Err(Ok(errors)) => Err(errors),
+    };
+
     // Validate input
-    let mut errors = Vec::new();
+    let mut messages = Vec::new();
     validate_registration_input(
         &state,
         &username,
         &mail,
-        &form.password,
+        &password,
         &client_ip.0,
-        &mut errors,
+        &mut messages,
     )
     .await;
 
-    if form.password != form.confirm_password {
-        errors.push("Passwords do not match.".to_string());
+    if password != posted.get("confirm_password").unwrap_or_default() {
+        messages.push("Passwords do not match.".to_string());
     }
 
-    if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await;
-        return render_register_form(
-            &state,
-            &session,
-            &csrf_token,
-            Some(&errors),
-            None,
-            Some(&values),
-        )
-        .await;
-    }
+    let mut errors = match &form_state {
+        Ok(_) => Vec::new(),
+        Err(errors) => errors.clone(),
+    };
+    errors.extend(messages.into_iter().map(crate::form::ValidationError::form));
+    let form_state = match form_state {
+        Ok(form_state) if errors.is_empty() => form_state,
+        _ => {
+            return render_register_form(&state, &session, &errors, None, Some(&values)).await;
+        }
+    };
 
     // Create inactive user
-    match do_register(
-        &state,
-        &username,
-        &mail,
-        &form.password,
-        mode.needs_approval(),
-    )
-    .await
-    {
+    match do_register(&state, &username, &mail, &password, mode.needs_approval()).await {
         Ok(result) => {
-            let csrf_token = generate_csrf_token(&session).await;
+            state
+                .forms()
+                .submitted(
+                    &form_state,
+                    &posted,
+                    None,
+                    &super::item_form::tap_state(&state, &viewer),
+                )
+                .await;
             let message = registration_message(&result);
-            render_register_form(&state, &session, &csrf_token, None, Some(&message), None).await
+            render_register_form(&state, &session, &[], Some(&message), None).await
         }
         Err(e) => {
             tracing::error!(error = %e, "registration failed");
-            let csrf_token = generate_csrf_token(&session).await;
             // Check for DB unique constraint violation (TOCTOU race)
             let msg = if is_unique_violation(&e) {
                 "Username or email is already in use."
             } else {
                 "An unexpected error occurred. Please try again later."
             };
-            let errors = vec![msg.to_string()];
-            render_register_form(
-                &state,
-                &session,
-                &csrf_token,
-                Some(&errors),
-                None,
-                Some(&values),
-            )
-            .await
+            let errors = [crate::form::ValidationError::form(msg)];
+            render_register_form(&state, &session, &errors, None, Some(&values)).await
         }
     }
 }
@@ -1502,16 +1636,6 @@ impl ProfileFormRequest {
     }
 }
 
-/// Password change form request.
-#[derive(Deserialize)]
-struct PasswordChangeRequest {
-    current_password: String,
-    new_password: String,
-    confirm_password: String,
-    #[serde(rename = "_token")]
-    csrf_token: String,
-}
-
 /// Get the current active user from session, or redirect to login.
 ///
 /// Returns the user only if they exist AND have an active account (status=1).
@@ -1569,26 +1693,71 @@ fn build_profile_form(values: &serde_json::Value) -> crate::form::Form {
         .element("op", FormElement::submit("Save profile").weight(100))
 }
 
-/// Render the profile page with context.
+/// The password change form on the profile page, `user_password_change`.
+/// Its inputs are all passwords, so a plugin is handed no values.
+fn build_password_form() -> crate::form::Form {
+    use crate::form::{Form, FormElement};
+    let password = |title: &str, weight: i32, autocomplete: &str| {
+        FormElement::password()
+            .title(title)
+            .required()
+            .attribute("autocomplete", autocomplete)
+            .weight(weight)
+    };
+    Form::new("user_password_change")
+        .action("/user/password")
+        .element(
+            "current_password",
+            password("Current password", 0, "current-password"),
+        )
+        .element(
+            "new_password",
+            password("New password", 1, "new-password").attribute("minlength", "12"),
+        )
+        .element(
+            "confirm_password",
+            password("Confirm new password", 2, "new-password").attribute("minlength", "12"),
+        )
+        .element("op", FormElement::submit("Change password").weight(100))
+}
+
+/// One "Resubscribe" form on the profile page, `user_mail_resubscribe`, for
+/// the plugin `plugin`.
+fn build_resubscribe_form(plugin: &str) -> crate::form::Form {
+    use crate::form::{Form, FormElement};
+    Form::new("user_mail_resubscribe")
+        .action("/user/mail/resubscribe")
+        .attribute("class", "mail-preferences__form")
+        .element("plugin", FormElement::hidden().default_value(plugin))
+        .element("op", FormElement::submit("Resubscribe").weight(100))
+}
+
+/// What the profile page shows besides the stored values: each form's errors,
+/// the values a refused profile submission carried, and a success message.
+#[derive(Default)]
+pub(crate) struct ProfilePage<'a> {
+    /// Errors on the profile form.
+    pub profile_errors: Vec<crate::form::ValidationError>,
+    /// Errors on the password change form.
+    pub password_errors: Vec<crate::form::ValidationError>,
+    /// Errors on a resubscribe form, shown on every one.
+    pub mail_errors: Vec<crate::form::ValidationError>,
+    /// What was saved.
+    pub success: Option<&'a str>,
+    /// The submitted profile values, shown in place of the stored ones.
+    pub values: Option<serde_json::Value>,
+}
+
+/// Render the profile page for `user`.
 ///
-/// When `values` is provided, those values override the user's stored values
-/// (used to preserve submitted form data on validation errors).
-///
-/// The profile form is built through the forms pipeline and carries its own
-/// token; the password form gets `password_csrf`, since tokens are single-use
-/// (consumed on verification).
-// Each optional param (errors/success/error/values) represents a distinct render
-// state; bundling them into a struct would obscure call-site intent.
-#[allow(clippy::too_many_arguments)]
-async fn render_profile(
+/// Every form on it (profile, password change, one resubscribe form per
+/// plugin the member opted out of) is built through the forms pipeline and
+/// shows its own errors.
+pub(crate) async fn render_profile(
     state: &AppState,
     session: &Session,
-    password_csrf: &str,
     user: &User,
-    errors: Option<&[String]>,
-    success: Option<&str>,
-    error: Option<&str>,
-    values: Option<&serde_json::Value>,
+    page: ProfilePage<'_>,
 ) -> Response {
     let stored = serde_json::json!({
         "name": user.name,
@@ -1596,53 +1765,45 @@ async fn render_profile(
         "timezone": user.timezone,
     });
     let user_ctx = super::helpers::user_context_for(state, user).await;
-    let mut form_state = crate::form::FormState::new("user_profile_form", "");
-    form_state.user_id = Some(user.id);
-    let form = match state
-        .forms()
-        .build(
-            build_profile_form(values.unwrap_or(&stored)),
-            session,
-            &crate::tap::RequestState::new(user_ctx, state.tap_services().clone()),
-            form_state,
-        )
-        .await
-        .and_then(|form| state.theme().render_form(&form))
+    let render =
+        |form, errors| super::admin_form::render_as(state, session, &user_ctx, form, errors);
+    let form = match render(
+        build_profile_form(page.values.as_ref().unwrap_or(&stored)),
+        &page.profile_errors,
+    )
+    .await
     {
         Ok(html) => html,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to build the profile form");
-            return super::helpers::render_server_error("The profile page could not be displayed.");
-        }
+        Err(refusal) => return refusal,
+    };
+    let password_form = match render(build_password_form(), &page.password_errors).await {
+        Ok(html) => html,
+        Err(refusal) => return refusal,
     };
 
     let mut context = tera::Context::new();
     context.insert("profile_form", &form);
-    context.insert("password_csrf_token", password_csrf);
-    if let Some(errors) = errors {
-        context.insert("errors", errors);
-    }
-    if let Some(success) = success {
+    context.insert("password_form", &password_form);
+    if let Some(success) = page.success {
         context.insert("success", success);
-    }
-    if let Some(error) = error {
-        context.insert("error", error);
     }
     // The plugins this member opted out of mailing them, each with a
     // Resubscribe button. Nothing is shown when there are none.
     match crate::models::user_mail_preference::opted_out_plugins(state.db(), user.id).await {
         Ok(plugins) if !plugins.is_empty() => {
-            let opt_outs: Vec<serde_json::Value> = plugins
-                .iter()
-                .map(|plugin| {
-                    serde_json::json!({
-                        "plugin": plugin,
-                        "label": super::mail_preference::plugin_label(state, plugin),
-                    })
-                })
-                .collect();
+            let mut opt_outs = Vec::new();
+            for plugin in &plugins {
+                let form = match render(build_resubscribe_form(plugin), &page.mail_errors).await {
+                    Ok(html) => html,
+                    Err(refusal) => return refusal,
+                };
+                opt_outs.push(serde_json::json!({
+                    "plugin": plugin,
+                    "label": super::mail_preference::plugin_label(state, plugin),
+                    "form": form,
+                }));
+            }
             context.insert("mail_opt_outs", &opt_outs);
-            context.insert("mail_csrf_token", &generate_csrf_token(session).await);
         }
         Ok(_) => {}
         Err(e) => tracing::warn!(error = %e, "failed to list mail opt outs"),
@@ -1667,18 +1828,7 @@ async fn profile_form(State(state): State<AppState>, session: Session) -> Respon
         Err(resp) => return resp,
     };
 
-    let password_csrf = generate_csrf_token(&session).await;
-    render_profile(
-        &state,
-        &session,
-        &password_csrf,
-        &user,
-        None,
-        None,
-        None,
-        None,
-    )
-    .await
+    render_profile(&state, &session, &user, ProfilePage::default()).await
 }
 
 /// Profile update handler.
@@ -1706,32 +1856,23 @@ async fn profile_update(
     }
 
     // CSRF, the form state, and `tap_form_validate`, through the pipeline.
-    let tap_state = crate::tap::RequestState::new(
-        super::helpers::user_context_for(&state, &user).await,
-        state.tap_services().clone(),
-    );
-    let (form_state, mut errors) = match state
-        .forms()
-        .process(
-            posted.get("_form_build_id").unwrap_or_default(),
-            &posted,
-            &session,
-            &tap_state,
-            |_| Ok(()),
-        )
-        .await
+    let user_ctx = super::helpers::user_context_for(&state, &user).await;
+    let tap_state = super::item_form::tap_state(&state, &user_ctx);
+    let (form_state, plugin_errors) = match super::admin_form::check_as(
+        &state,
+        &session,
+        &user_ctx,
+        &posted,
+        "user_profile_form",
+        Vec::new(),
+    )
+    .await
     {
-        Ok((form_state, ())) => (Some(form_state), Vec::new()),
-        Err(crate::form::ProcessError::Csrf) => {
-            return super::helpers::render_error(
-                "Invalid or expired form token. Please try again.",
-            );
-        }
-        Err(crate::form::ProcessError::Invalid(errors)) => (
-            None,
-            errors.into_iter().map(|e| e.message).collect::<Vec<_>>(),
-        ),
+        Ok(form_state) => (Some(form_state), Vec::new()),
+        Err(Err(refusal)) => return refusal,
+        Err(Ok(errors)) => (None, errors),
     };
+    let mut errors: Vec<String> = Vec::new();
     let form = ProfileFormRequest::from_posted(&posted);
 
     let name = form.name.trim();
@@ -1808,17 +1949,18 @@ async fn profile_update(
         errors.push("Username or email is already in use.".to_string());
     }
 
-    if !errors.is_empty() {
-        let pwc = generate_csrf_token(&session).await;
+    if !errors.is_empty() || form_state.is_none() {
+        let mut profile_errors = plugin_errors;
+        profile_errors.extend(errors.into_iter().map(crate::form::ValidationError::form));
         return render_profile(
             &state,
             &session,
-            &pwc,
             &user,
-            Some(&errors),
-            None,
-            None,
-            Some(&form_values),
+            ProfilePage {
+                profile_errors,
+                values: Some(form_values),
+                ..Default::default()
+            },
         )
         .await;
     }
@@ -1865,7 +2007,6 @@ async fn profile_update(
 
     // Profile update is a self-service action; the acting principal is the
     // owner, with their real permissions.
-    let user_ctx = super::helpers::user_context_for(&state, &user).await;
     match state.users().update(user.id, update, &user_ctx).await {
         Ok(Some(updated_user)) => {
             if let Some(form_state) = &form_state {
@@ -1923,7 +2064,6 @@ async fn profile_update(
                 }
             }
 
-            let pwc = generate_csrf_token(&session).await;
             let success_msg = if email_changing {
                 "Profile updated. A verification email has been sent to your new address. \
                  Your email will be updated after you confirm the change."
@@ -1933,41 +2073,38 @@ async fn profile_update(
             render_profile(
                 &state,
                 &session,
-                &pwc,
                 &updated_user,
-                None,
-                Some(success_msg),
-                None,
-                None,
+                ProfilePage {
+                    success: Some(success_msg),
+                    ..Default::default()
+                },
             )
             .await
         }
         Ok(None) => {
-            let pwc = generate_csrf_token(&session).await;
             render_profile(
                 &state,
                 &session,
-                &pwc,
                 &user,
-                None,
-                None,
-                Some("User not found."),
-                None,
+                ProfilePage {
+                    profile_errors: vec![crate::form::ValidationError::form("User not found.")],
+                    ..Default::default()
+                },
             )
             .await
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to update profile");
-            let pwc = generate_csrf_token(&session).await;
             render_profile(
                 &state,
                 &session,
-                &pwc,
                 &user,
-                None,
-                None,
-                Some("An error occurred while saving your profile."),
-                None,
+                ProfilePage {
+                    profile_errors: vec![crate::form::ValidationError::form(
+                        "An error occurred while saving your profile.",
+                    )],
+                    ..Default::default()
+                },
             )
             .await
         }
@@ -1981,8 +2118,9 @@ async fn password_change(
     State(state): State<AppState>,
     session: Session,
     axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
-    Form(form): Form<PasswordChangeRequest>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
+    let posted = crate::content::submission::PostedForm(pairs);
     let user = match get_current_user(&state, &session).await {
         Ok(u) => u,
         Err(resp) => return resp,
@@ -1997,19 +2135,34 @@ async fn password_change(
         return crate::middleware::rate_limit_response(retry_after);
     }
 
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.csrf_token).await {
-        return resp;
-    }
+    // CSRF, the form state, and `tap_form_validate`, through the pipeline.
+    let user_ctx = super::helpers::user_context_for(&state, &user).await;
+    let (form_state, plugin_errors) = match super::admin_form::check_as(
+        &state,
+        &session,
+        &user_ctx,
+        &posted,
+        "user_password_change",
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => (Some(form_state), Vec::new()),
+        Err(Err(refusal)) => return refusal,
+        Err(Ok(errors)) => (None, errors),
+    };
+    let current_password = posted.get("current_password").unwrap_or_default();
+    let new_password = posted.get("new_password").unwrap_or_default();
+    let confirm_password = posted.get("confirm_password").unwrap_or_default();
 
     let mut errors = Vec::new();
 
     // Check lockout before attempting password verification
     if let Ok(true) = state.lockout().is_locked(&user.name, &client_ip.0).await {
         errors.push("Account temporarily locked due to too many failed attempts.".to_string());
-    } else if form.current_password.is_empty() {
+    } else if current_password.is_empty() {
         errors.push("Current password is required.".to_string());
-    } else if !user.verify_password(&form.current_password) {
+    } else if !user.verify_password(current_password) {
         // Record failed attempt for lockout tracking
         if let Err(e) = state
             .lockout()
@@ -2021,38 +2174,50 @@ async fn password_change(
         errors.push("Current password is incorrect.".to_string());
     }
 
-    if let Err(msg) = validate_password(&form.new_password) {
+    if let Err(msg) = validate_password(new_password) {
         errors.push(msg.to_string());
     }
 
-    if form.new_password != form.confirm_password {
+    if new_password != confirm_password {
         errors.push("New passwords do not match.".to_string());
     }
 
-    if !errors.is_empty() {
-        let pwc = generate_csrf_token(&session).await;
-        return render_profile(
-            &state,
-            &session,
-            &pwc,
-            &user,
-            Some(&errors),
-            None,
-            None,
-            None,
-        )
-        .await;
-    }
+    let form_state = match form_state {
+        Some(form_state) if errors.is_empty() => form_state,
+        _ => {
+            let mut password_errors = plugin_errors;
+            password_errors.extend(errors.into_iter().map(crate::form::ValidationError::form));
+            return render_profile(
+                &state,
+                &session,
+                &user,
+                ProfilePage {
+                    password_errors,
+                    ..Default::default()
+                },
+            )
+            .await;
+        }
+    };
 
     // Password change is a self-service action; the acting principal is the
     // owner, with their real permissions.
-    let user_ctx = super::helpers::user_context_for(&state, &user).await;
     match state
         .users()
-        .update_password(user.id, &form.new_password, &user_ctx, "self_service")
+        .update_password(user.id, new_password, &user_ctx, "self_service")
         .await
     {
         Ok(true) => {
+            state
+                .forms()
+                .submitted(
+                    &form_state,
+                    &posted,
+                    None,
+                    &super::item_form::tap_state(&state, &user_ctx),
+                )
+                .await;
+
             // A changed password ends the account's sessions everywhere else:
             // whoever else held one held it under the old password. The
             // caller's own device is kept, so the change does not sign them
@@ -2082,30 +2247,28 @@ async fn password_change(
             // `UserService::update_password`'s, as it is for every other path
             // that sets a password.
 
-            let pwc = generate_csrf_token(&session).await;
             render_profile(
                 &state,
                 &session,
-                &pwc,
                 &user,
-                None,
-                Some("Password changed successfully."),
-                None,
-                None,
+                ProfilePage {
+                    success: Some("Password changed successfully."),
+                    ..Default::default()
+                },
             )
             .await
         }
         _ => {
-            let pwc = generate_csrf_token(&session).await;
             render_profile(
                 &state,
                 &session,
-                &pwc,
                 &user,
-                None,
-                None,
-                Some("An error occurred while changing your password."),
-                None,
+                ProfilePage {
+                    password_errors: vec![crate::form::ValidationError::form(
+                        "An error occurred while changing your password.",
+                    )],
+                    ..Default::default()
+                },
             )
             .await
         }

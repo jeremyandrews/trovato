@@ -238,15 +238,18 @@ async fn themed_page(
     context.insert("home_label", home_label);
     // An access-denied page offers nobody signed in the login form, posting to
     // `/user/login` with the page they asked for as its destination.
+    // The form is the login page's own (`user_login`), built through the
+    // forms pipeline, so the one route that takes it checks it the one way.
     if marker.status == StatusCode::FORBIDDEN && !viewer.authenticated {
-        let destination = destination.filter(|d| crate::routes::auth::is_safe_destination(d));
-        context.insert(
-            "login",
-            &serde_json::json!({
-                "csrf_token": crate::form::csrf::generate_csrf_token(session).await,
-                "destination": destination,
-            }),
-        );
+        let mut form = crate::routes::auth::build_login_form(destination);
+        form = form
+            .attribute("class", "error-page__login login-form")
+            .element("op", crate::form::FormElement::submit("Log in").weight(100));
+        form.elements.remove("remember_me");
+        match crate::routes::admin_form::render_as(state, session, &viewer, form, &[]).await {
+            Ok(html) => context.insert("login_form", &html),
+            Err(_) => tracing::warn!("the access-denied page's login form could not be built"),
+        }
     }
     let admin_path = crate::theme::ThemeEngine::is_admin_path(path);
     context.insert("admin_path", &admin_path);

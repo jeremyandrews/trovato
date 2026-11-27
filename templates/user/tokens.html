@@ -16,14 +16,14 @@
 
     <noscript>
         <div style="background: #fee; border: 1px solid #c00; padding: 1rem; border-radius: 4px;">
-            Creating and revoking tokens needs JavaScript.
+            Revoking tokens needs JavaScript.
         </div>
     </noscript>
 
     {# ── Shown once, after a create ─────────────────────────────────────── #}
-    <div id="api-token-created" hidden style="background: #efe; border: 1px solid #0a0; padding: 1rem; border-radius: 4px; margin-bottom: 1.5rem;">
+    <div id="api-token-created"{% if not created_token %} hidden{% endif %} style="background: #efe; border: 1px solid #0a0; padding: 1rem; border-radius: 4px; margin-bottom: 1.5rem;">
         <p style="margin-top: 0;"><strong>Your new token</strong></p>
-        <input type="text" id="api-token-value" class="form-text" readonly
+        <input type="text" id="api-token-value" class="form-text" readonly{% if created_token %} value="{{ created_token }}"{% endif %}
                aria-label="Your new API token"
                style="width: 100%; padding: 0.5rem; font-family: monospace; font-size: 0.95rem;">
         <p style="margin-bottom: 0.75rem;">
@@ -71,21 +71,7 @@
     {% if tokens | length >= max_tokens %}
     <p style="color: #a60;">You have {{ max_tokens }} tokens, the most an account can hold. Revoke one to create another.</p>
     {% else %}
-    <form id="api-token-create" style="margin-top: 0.5rem;">
-        <div class="form-item" style="margin-bottom: 0.75rem;">
-            <label for="api-token-name" class="form-item__label">Name</label>
-            <input type="text" id="api-token-name" name="name" class="form-text" required maxlength="255"
-                   placeholder="e.g. Deploy script"
-                   style="width: 100%; padding: 0.5rem; font-size: 1rem;">
-        </div>
-        <div class="form-item" style="margin-bottom: 0.75rem;">
-            <label for="api-token-expiry" class="form-item__label">Expires after (days)</label>
-            <input type="number" id="api-token-expiry" name="expires_in_days" class="form-text" min="1" max="3650"
-                   placeholder="Leave empty for a token that does not expire"
-                   style="width: 100%; padding: 0.5rem; font-size: 1rem;">
-        </div>
-        <button type="submit" style="padding: 0.6rem 1.2rem; font-size: 1rem; cursor: pointer;">Create token</button>
-    </form>
+    {{ create_form | safe }} {# SAFE: kernel form renderer output — every value in it is escaped by the form templates #}
     {% endif %}
 
     <p style="margin-top: 2rem;"><a href="/user/profile">Back to my account</a></p>

@@ -12,11 +12,7 @@
             <h1 class="login-card__title">Unsubscribe</h1>
             <p class="login-card__subtitle">Stop receiving mail from <strong>{{ plugin_label }}</strong> on {{ site_name }}.</p>
         </div>
-        {# The token is base64url, so it needs no escaping; written after a literal
-           path because autoescape would turn the path's slashes into &#x2F;. #}
-        <form method="post" action="/user/mail/unsubscribe/{{ token }}" class="login-form">
-            <button type="submit" class="login-form__submit">Unsubscribe</button>
-        </form>
+        {{ unsubscribe_form | safe }} {# SAFE: kernel form renderer output — every value in it is escaped by the form templates #}
         <div class="login-card__footer">
             You can turn it back on from your account page.
         </div>
