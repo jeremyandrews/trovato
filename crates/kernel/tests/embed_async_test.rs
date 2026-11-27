@@ -758,3 +758,38 @@ fn a_delete_racing_an_uncommitted_enqueue_removes_its_job() {
         clean(&pool).await;
     });
 }
+
+/// The embed drain stops claiming once its time budget is spent, as the plugin
+/// drain does.
+///
+/// It checked only the item cap, so a slow provider kept it claiming fresh
+/// batches until the cron run's outer bound cut it off, and every job in the
+/// batch it held then lost an attempt to work that was never allowed to
+/// finish. With the budget already spent, nothing may be claimed at all.
+#[test]
+fn the_embed_drain_claims_nothing_once_its_budget_is_spent() {
+    serial(async {
+        let pool = fresh_pool().await;
+        clean(&pool).await;
+        let id = insert_embed_job(&pool, Uuid::new_v4(), "whatever", 5).await;
+
+        let mut cron = embed_cron(pool.clone()).await;
+        cron.set_drain_budget(Duration::ZERO);
+        let stats = cron.drain_embed_jobs().await.unwrap();
+
+        let attempts: Option<i32> =
+            sqlx::query_scalar("SELECT attempts FROM plugin_queue WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&pool)
+                .await
+                .unwrap();
+        clean(&pool).await;
+
+        assert_eq!(stats.total(), 0, "a drain with no budget left ran jobs");
+        assert_eq!(
+            attempts,
+            Some(0),
+            "the job must still be waiting, unclaimed, with no attempt spent"
+        );
+    });
+}

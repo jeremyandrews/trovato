@@ -1,5 +1,6 @@
 //! Redis-backed queue for background task processing.
 
+use crate::redis_conn::BoundedRedis;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use redis::{AsyncCommands, Client as RedisClient};
@@ -47,7 +48,7 @@ impl Queue for RedisQueue {
 
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
 
@@ -62,11 +63,18 @@ impl Queue for RedisQueue {
     async fn pop(&self, queue: &str, timeout_secs: u64) -> Result<Option<String>> {
         let key = self.queue_key(queue);
 
-        let mut conn = self
-            .redis
-            .get_multiplexed_async_connection()
-            .await
-            .context("failed to get Redis connection")?;
+        // A blocking pop legitimately waits `timeout_secs` for its reply, so
+        // its connection's response timeout is that plus a margin; a plain pop
+        // gets the ordinary one. Either way a Redis that has stopped answering
+        // turns into an error here instead of an await that never returns.
+        let connection = if timeout_secs > 0 {
+            self.redis
+                .bounded_blocking_connection(std::time::Duration::from_secs(timeout_secs))
+                .await
+        } else {
+            self.redis.bounded_connection().await
+        };
+        let mut conn = connection.context("failed to get Redis connection")?;
 
         // BLPOP returns (key, value) tuple or nil
         let result: Option<(String, String)> = if timeout_secs > 0 {
@@ -95,7 +103,7 @@ impl Queue for RedisQueue {
 
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
 

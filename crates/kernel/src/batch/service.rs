@@ -1,5 +1,6 @@
 //! Batch operations service.
 
+use crate::redis_conn::BoundedRedis;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
@@ -63,7 +64,7 @@ impl BatchService {
 
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
 
@@ -184,7 +185,7 @@ impl BatchService {
 
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
 
@@ -201,7 +202,7 @@ impl BatchService {
 
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
 
