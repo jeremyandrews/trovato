@@ -23,6 +23,7 @@ mod common;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use common::{TestApp, run_test, shared_app, test_ip_for};
+use trovato_kernel::import::import;
 use trovato_kernel::models::CreateItem;
 use trovato_kernel::models::stage::LIVE_STAGE_ID;
 use trovato_kernel::tap::UserContext;
@@ -565,6 +566,84 @@ fn derivative_of_public_image_is_served_and_public() {
             cache_control(&resp).starts_with("public"),
             "public derivative is publicly cacheable, got {:?}",
             cache_control(&resp)
+        );
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert!(
+            image::load_from_memory(&body).is_ok(),
+            "the body is a decodable image"
+        );
+    });
+}
+
+/// A `file` import record (B184) registers an image already on disk; its
+/// derivative generates exactly as an uploaded original's does, because the
+/// derivative route reads the `file_managed` row and the bytes on disk, and
+/// does not care which path put either there.
+#[test]
+fn derivative_of_an_imported_image_is_generated() {
+    run_test(async {
+        let app = styles_app();
+        app.ensure_conference_type().await;
+        let owner = create_user(app).await;
+        let pool = app.db.clone();
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query("DELETE FROM users WHERE id = $1")
+                .bind(owner)
+                .execute(&pool)
+                .await;
+        });
+
+        let path = format!("b184-test/{}/photo.png", Uuid::now_v7().simple());
+        let full = uploads_dir().join(&path);
+        tokio::fs::create_dir_all(full.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&full, png_bytes()).await.unwrap();
+        let scratch_dir = full.parent().unwrap().to_path_buf();
+        common::defer_cleanup(move || async move {
+            let _ = tokio::fs::remove_dir_all(&scratch_dir).await;
+        });
+
+        let file_id = Uuid::now_v7();
+        let line = serde_json::json!({
+            "type": "file", "id": file_id, "owner_id": owner, "path": path,
+            "filename": "photo.png", "mime_type": "image/png", "created": 1_420_070_400,
+        });
+        let report = import(&app.state, format!("{line}\n").as_bytes(), false)
+            .await
+            .expect("import the file record");
+        assert_eq!(report.of("file").created, 1, "{report:?}");
+        let pool = app.db.clone();
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query("DELETE FROM file_managed WHERE id = $1")
+                .bind(file_id)
+                .execute(&pool)
+                .await;
+        });
+
+        let uri = format!("local://{path}");
+        let item_id = item_referencing(app, "Imported Picture", 1, &uri).await;
+        let pool = app.db.clone();
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query("UPDATE item SET current_revision_id = NULL WHERE id = $1")
+                .bind(item_id)
+                .execute(&pool)
+                .await;
+            let _ = sqlx::query("DELETE FROM item_revision WHERE item_id = $1")
+                .bind(item_id)
+                .execute(&pool)
+                .await;
+            let _ = sqlx::query("DELETE FROM item WHERE id = $1")
+                .bind(item_id)
+                .execute(&pool)
+                .await;
+        });
+
+        let resp = get(app, &format!("/files/styles/w400/{path}")).await;
+        assert_eq!(
+            resp.status(),
+            StatusCode::OK,
+            "derivative of an imported image is generated"
         );
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         assert!(

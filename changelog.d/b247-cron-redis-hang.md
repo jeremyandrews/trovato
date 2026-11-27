@@ -32,10 +32,10 @@ same way. Cutting a task off never throws work away: an item `process_queues`
 has already popped from Redis is handled on a task of its own and finishes
 anyway, the embed drain now stops claiming when its time budget is spent (as
 the plugin drain always did) and runs its jobs as tasks a cancelled pass does
-not abort, and the Pagefind rebuild, which writes its index in place, is waited
-on for one task bound and otherwise left to finish in the background, with a
-guard so a later run never starts a second rebuild over it. And a run
-that finds the lock held reads its age, which the lock value now records, and
-logs at warn naming that age when the holder has had it longer than
-`MAX_LOCK_RENEWAL_SECS`, or when the lock has no expiry at all. An ordinary
-overlap stays at debug.
+not abort, and the Pagefind rebuild, which would lose a requested full
+build if cut off part way, is waited on for one task bound and otherwise left
+to finish in the background, with a guard so a later run in the same process
+does not start a redundant second build. And a run that finds the lock held
+reads its age, which the lock value now records, and logs at warn naming that
+age when the holder has had it longer than `MAX_LOCK_RENEWAL_SECS`, or when
+the lock has no expiry at all. An ordinary overlap stays at debug.

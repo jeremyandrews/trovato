@@ -1676,12 +1676,17 @@ impl CronService {
         // Rebuild Pagefind index if the trovato_search plugin is enabled and requested it
         if self.pagefind_enabled {
             if let Some(items) = self.items.clone() {
-                // The rebuild writes the index in place, so it must never be
-                // cut off part way: that would publish a half-written index. It
-                // runs on a task of its own instead, and the run waits on it for
-                // one task's bound. A rebuild still going then carries on in the
-                // background and the run moves on; the guard keeps the next run
-                // from starting a second writer on the same directory meanwhile.
+                // A rebuild is never cut off part way. A requested full build
+                // clears its request before it starts and sets it again only
+                // when it ends without building, so a cancelled one would lose
+                // the request; and the work done so far would be thrown away.
+                // It runs on a task of its own instead, and the run waits on it
+                // for one task's bound, then moves on and leaves it to finish.
+                // Publishing is already safe against any other writer, in this
+                // process or another: every publish holds the `search_index`
+                // advisory lock and checks the index generation
+                // (`search_update`). The guard only spares this process a
+                // second, redundant build while the first is still going.
                 match PagefindRebuild::start() {
                     None => {
                         debug!("a pagefind rebuild is still running; not starting another");
@@ -2859,8 +2864,10 @@ static PAGEFIND_REBUILDING: std::sync::atomic::AtomicBool =
 ///
 /// A cron run waits on a rebuild for one task's bound and then leaves it running
 /// in the background (see `run`), so the next run can arrive while it is still
-/// writing. This keeps that run from starting a second writer on the same
-/// directory. Dropped when the rebuild ends, however it ends.
+/// building. This keeps that run from starting a second build that would only
+/// lose the publish race to the first. Correctness does not rest on it: the
+/// advisory lock and generation check in `search_update` serialize every
+/// publisher across processes. Dropped when the rebuild ends, however it ends.
 struct PagefindRebuild;
 
 impl PagefindRebuild {

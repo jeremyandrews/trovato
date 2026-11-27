@@ -151,8 +151,8 @@ impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
 }
 
 /// Plant a lock held by another run since `held_secs` ago, run cron, and
-/// return the result and what it logged.
-async fn skip_behind(held_secs: i64) -> (CronResult, String) {
+/// return the result, what it logged, and when the planted lock was taken.
+async fn skip_behind(held_secs: i64) -> (CronResult, String, i64) {
     let app = shared_app().await;
     let since = chrono::Utc::now().timestamp() - held_secs;
     let holder = format!("elsewhere:4242:t{since}");
@@ -184,7 +184,7 @@ async fn skip_behind(held_secs: i64) -> (CronResult, String) {
         cron.run().await
     };
     let logged = String::from_utf8(captured.0.lock().unwrap().clone()).unwrap();
-    (result, logged)
+    (result, logged, since)
 }
 
 /// A lock held far longer than any run should take is a stuck holder, and the
@@ -199,16 +199,26 @@ fn a_skip_behind_a_lock_held_too_long_warns_with_its_age() {
         common::hold_until_cleanup(CRON_LOCK.lock().await);
         defer_clear_lock();
 
-        let (result, logged) = skip_behind(2_000).await;
+        let (result, logged, since) = skip_behind(2_000).await;
+        // The run read the age somewhere between planting the lock and now, and
+        // the clock moves on in between, so the right answer is a range.
+        let upper = chrono::Utc::now().timestamp() - since;
         eprintln!("{logged}");
         assert!(matches!(result, CronResult::Skipped), "{result:?}");
         let warned = logged
             .lines()
             .find(|l| l.contains("WARN") && l.contains("cron lock has been held for"))
             .unwrap_or_else(|| panic!("no warn about the old lock in:\n{logged}"));
+        let reported: i64 = warned
+            .split("held_secs=")
+            .nth(1)
+            .and_then(|rest| rest.split_whitespace().next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("the warn must name the lock's age: {warned}"));
         assert!(
-            warned.contains("held_secs=2000") || warned.contains("held_secs=2001"),
-            "the warn must name the lock's age: {warned}"
+            (2_000..=upper).contains(&reported),
+            "the warn named {reported}s for a lock taken between 2000 and {upper} \
+             seconds ago: {warned}"
         );
     });
 }
@@ -222,7 +232,7 @@ fn a_skip_behind_a_fresh_lock_stays_at_debug() {
         common::hold_until_cleanup(CRON_LOCK.lock().await);
         defer_clear_lock();
 
-        let (result, logged) = skip_behind(5).await;
+        let (result, logged, _) = skip_behind(5).await;
         eprintln!("{logged}");
         assert!(matches!(result, CronResult::Skipped), "{result:?}");
         assert!(
@@ -272,15 +282,18 @@ fn an_item_popped_before_a_task_timeout_is_still_handled() {
         });
 
         let redis = redis::Client::open(trovato_test_utils::env::redis_url()).unwrap();
-        let queue = Arc::new(RedisQueue::new(redis));
-        // Nothing else in this binary uses these queues; start them empty.
-        for key in ["queue:email:send", "queue:search:reindex"] {
-            let _: () = redis::cmd("DEL")
-                .arg(key)
-                .query_async(&mut redis_conn().await)
-                .await
-                .unwrap();
-        }
+        // Keys of this run's own, so the site's real `email:send` and
+        // `search:reindex` on a shared Redis are neither drained nor deleted.
+        let prefix = format!("test:b247:{}:", uuid::Uuid::new_v4().simple());
+        let queue = Arc::new(RedisQueue::with_key_prefix(redis, prefix.clone()));
+        common::defer_cleanup(move || async move {
+            for name in ["email:send", "search:reindex"] {
+                let _: Result<(), _> = redis::cmd("DEL")
+                    .arg(format!("{prefix}{name}"))
+                    .query_async(&mut redis_conn().await)
+                    .await;
+            }
+        });
         queue
             .push("search:reindex", &item_id.to_string())
             .await
