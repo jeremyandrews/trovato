@@ -272,3 +272,50 @@ fn prune_removes_entries_older_than_the_retention() {
             .unwrap();
     });
 }
+
+/// A scheduler interval that is not a whole number of seconds is refused on
+/// the report with that reason, and the saved setting is left alone.
+#[test]
+fn an_invalid_scheduler_interval_says_why_it_was_refused() {
+    run_test(async {
+        let app = shared_app().await;
+        let cookies = admin_cookies(app, "b178cron").await;
+        let before = trovato_kernel::models::SiteConfig::get(
+            &app.db,
+            trovato_kernel::cron::CRON_INTERVAL_CONFIG_KEY,
+        )
+        .await
+        .expect("read the setting");
+
+        let (status, html) = get(app, &cookies, "/admin/reports/cron").await;
+        assert_eq!(status, StatusCode::OK);
+        let body = format!(
+            "{}&interval_secs=5m&op=Save+scheduler+setting",
+            form_pairs(&html, "/admin/reports/cron/scheduler")
+        );
+        let response = post_form(app, &cookies, "/admin/reports/cron/scheduler", body).await;
+        assert!(
+            response.status().is_redirection(),
+            "an invalid interval goes back to the report, got {}",
+            response.status()
+        );
+
+        let (_, html) = get(app, &cookies, "/admin/reports/cron").await;
+        assert!(
+            html.contains("Enter a whole number of seconds, 0 or more."),
+            "the report says why the value was refused"
+        );
+        assert!(html.contains("notice--error"), "as an error");
+        assert!(
+            !html.contains("The form has expired"),
+            "not as an expired form"
+        );
+        let after = trovato_kernel::models::SiteConfig::get(
+            &app.db,
+            trovato_kernel::cron::CRON_INTERVAL_CONFIG_KEY,
+        )
+        .await
+        .expect("read the setting");
+        assert_eq!(before, after, "nothing was saved");
+    });
+}
