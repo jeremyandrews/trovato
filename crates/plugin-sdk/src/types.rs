@@ -2324,6 +2324,36 @@ impl VocabularyOwnerAccess {
     }
 }
 
+/// The JWS header fields a plugin may set when calling
+/// [`crate::host::crypto_sign_jwt_es256`] (B273).
+///
+/// `alg` is not here: the host always sets it to `ES256` and refuses to sign
+/// if the raw header JSON names anything else.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct JwtHeader {
+    /// The JWS type, e.g. `"JWT"`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub typ: Option<String>,
+    /// Key id, naming which of the operator's keys signed this JWT to a
+    /// verifier — APNs requires this.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kid: Option<String>,
+    /// Content type.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cty: Option<String>,
+}
+
+impl JwtHeader {
+    /// A header naming only `kid`, the common case (APNs and similar
+    /// provider tokens).
+    pub fn with_kid(kid: impl Into<String>) -> Self {
+        Self {
+            kid: Some(kid.into()),
+            ..Self::default()
+        }
+    }
+}
+
 #[cfg(test)]
 // Tests are allowed to use unwrap/expect freely.
 #[allow(clippy::unwrap_used, clippy::expect_used)]

@@ -1056,7 +1056,12 @@ impl AppState {
         .with_field_access_cache(field_access_cache)
         // Arms the per-plugin `mail` bucket on every request-path dispatch; the
         // cron and queue-worker paths get it from `CronService` below.
-        .with_rate_limiter(rate_limiter.clone());
+        .with_rate_limiter(rate_limiter.clone())
+        // One registry for the whole process, so its parsed-key cache (B273)
+        // is shared across every request-path plugin call.
+        .with_crypto_keys(Arc::new(services::crypto_keys::CryptoKeyRegistry::new(
+            db.clone(),
+        )));
         if let Some(ref email) = email {
             tap_services = tap_services.with_email(email.clone());
         }

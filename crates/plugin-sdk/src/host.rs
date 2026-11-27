@@ -134,6 +134,18 @@ unsafe extern "C" {
 
     #[link_name = "constant-time-eq"]
     fn __crypto_constant_time_eq(a_ptr: i32, a_len: i32, b_ptr: i32, b_len: i32) -> i32;
+
+    #[link_name = "sign-jwt-es256"]
+    fn __crypto_sign_jwt_es256(
+        key_ref_ptr: i32,
+        key_ref_len: i32,
+        header_ptr: i32,
+        header_len: i32,
+        claims_ptr: i32,
+        claims_len: i32,
+        out_ptr: i32,
+        out_max_len: i32,
+    ) -> i32;
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -1000,6 +1012,59 @@ pub fn crypto_constant_time_eq(a: &str, b: &str) -> bool {
     result == 1
 }
 
+/// Sign a JWT with ES256, using a key the operator mapped to this plugin
+/// (B273). The key material never crosses into WASM memory: `key_ref` names
+/// the key as the operator mapped it for this plugin in the
+/// `crypto_signing_keys` site config entry (see the plugin guide's "Signing
+/// a JWT" section), never a raw environment variable or file path of the
+/// plugin's own choosing.
+///
+/// `header` is the JWS header the plugin wants; the host sets `alg` to
+/// `ES256` regardless of what `header` carries. `claims` serializes to the
+/// JWT claim set. Returns the compact JWS (`header.claims.signature`).
+///
+/// # Errors
+///
+/// Returns a negative host error code: no key is mapped for this plugin
+/// under `key_ref` — the same answer for a key mapped to a different plugin
+/// ([`crate::host_errors::ERR_CRYPTO_KEY_UNMAPPED`]); the mapped key is not a
+/// usable P-256 key ([`crate::host_errors::ERR_CRYPTO_KEY_INVALID`]); or
+/// `claims` failed to serialize
+/// ([`crate::host_errors::ERR_SDK_SERIALIZE`]).
+#[cfg(target_arch = "wasm32")]
+pub fn crypto_sign_jwt_es256<T: serde::Serialize>(
+    key_ref: &str,
+    header: &crate::types::JwtHeader,
+    claims: &T,
+) -> Result<String, i32> {
+    let header_json =
+        serde_json::to_string(header).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)?;
+    let claims_json =
+        serde_json::to_string(claims).map_err(|_| crate::host_errors::ERR_SDK_SERIALIZE)?;
+    let mut buf = vec![0u8; MAX_OUTPUT_BUFFER];
+    let result = unsafe {
+        __crypto_sign_jwt_es256(
+            key_ref.as_ptr() as i32,
+            key_ref.len() as i32,
+            header_json.as_ptr() as i32,
+            header_json.len() as i32,
+            claims_json.as_ptr() as i32,
+            claims_json.len() as i32,
+            buf.as_mut_ptr() as i32,
+            buf.len() as i32,
+        )
+    };
+    if result < 0 {
+        return Err(result);
+    }
+    let len = result as usize;
+    if len >= MAX_OUTPUT_BUFFER {
+        return Err(crate::host_errors::ERR_SDK_OUTPUT_BUFFER_EXCEEDED);
+    }
+    buf.truncate(len);
+    String::from_utf8(buf).map_err(|_| crate::host_errors::ERR_SDK_UTF8)
+}
+
 /// Compute a SHA-256 hash (stub for native testing, returns empty string).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn crypto_sha256(_data: &str) -> Result<String, i32> {
@@ -1022,6 +1087,16 @@ pub fn crypto_random_bytes(_len: u32) -> Result<String, i32> {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn crypto_constant_time_eq(a: &str, b: &str) -> bool {
     a == b
+}
+
+/// Sign a JWT with ES256 (stub for native testing, returns empty string).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn crypto_sign_jwt_es256<T: serde::Serialize>(
+    _key_ref: &str,
+    _header: &crate::types::JwtHeader,
+    _claims: &T,
+) -> Result<String, i32> {
+    Ok(String::new())
 }
 
 /// Get the current user's ID as a string.

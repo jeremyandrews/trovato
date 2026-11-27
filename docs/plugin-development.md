@@ -971,6 +971,63 @@ ABI: a new function, `send-to-user`, in the existing `mail` interface and a
 new manifest capability, `mail_users` (B73, after 0.104.0). No existing
 signature changed.
 
+### Signing a JWT
+
+`host::crypto_sign_jwt_es256` signs a JWT with ES256, using a key the operator
+holds. The key material never crosses into WASM memory: the plugin names it by
+a short `key_ref`, never a raw environment variable or file path of its own
+choosing, and the host refuses a `key_ref` nothing maps for this plugin,
+parses and caches the key, signs, and returns the compact JWS. Needs
+`crypto-api` in `host_interfaces`; no manifest capability gates it, because
+what gates a plugin's use of a key is the operator's own mapping, below.
+
+```toml
+[capabilities]
+host_interfaces = ["crypto-api"]
+```
+
+The operator maps a plugin's `key_ref` to an environment variable or a file,
+each holding a PEM PKCS#8 P-256 private key (the `.p8` format Apple issues for
+APNs), in the `crypto_signing_keys` site config entry — a config set's
+`variable.crypto_signing_keys.yml`, imported with `config import` the way any
+other site variable is:
+
+```yaml
+key: crypto_signing_keys
+value:
+  - plugin: apns_bridge
+    key_name: apns_main
+    env_var: APNS_SIGNING_KEY
+```
+
+A plugin may use only the keys mapped for it: a `key_ref` nothing maps, and a
+`key_ref` mapped to a *different* plugin, both answer
+`ERR_CRYPTO_KEY_UNMAPPED` — the host never says which, so a refusal cannot be
+used to probe who a key belongs to.
+
+An APNs provider token names the key in the header's `kid` and the team and
+issue time in the claims:
+
+```rust
+let header = JwtHeader::with_kid("TEAM_KEY_ID");
+let claims = serde_json::json!({
+    "iss": "TEAM_ID",
+    "iat": now_unix_seconds(),
+});
+match host::crypto_sign_jwt_es256("apns_main", &header, &claims) {
+    Ok(jws) => { /* "bearer {jws}" in the APNs request's Authorization header */ }
+    Err(trovato_sdk::host_errors::ERR_CRYPTO_KEY_UNMAPPED) => { /* ask the operator to map it */ }
+    Err(code) => return Err(format!("sign-jwt-es256 failed: {code}")),
+}
+```
+
+`header` carries `typ`, `kid` and `cty` only: the host always signs with
+`alg: ES256` regardless, and a header built by hand (outside the SDK's typed
+wrapper) that names a different `alg` is refused rather than overridden.
+
+ABI: a new function, `sign-jwt-es256`, in the existing `crypto-api` interface;
+no existing signature changed (B273, after 0.105.0).
+
 ### Item Operations
 
 Declare `item-api` in `host_interfaces`. Every call acts as the user the plugin
