@@ -149,8 +149,19 @@ fn a_changed_imported_account_writes_one_event_per_change() {
         let seen = events(app, id).await;
         let names = of_kind(&seen, "user.name_changed");
         assert_eq!(names.len(), 1, "{seen:?}");
-        assert_eq!(names[0]["from"], before.as_str());
-        assert_eq!(names[0]["to"], after.as_str());
+        assert_eq!(
+            names[0]["from_hash"],
+            trovato_kernel::audit::hash_subject(&before)
+        );
+        assert_eq!(
+            names[0]["to_hash"],
+            trovato_kernel::audit::hash_subject(&after)
+        );
+        assert!(
+            !names[0].to_string().contains(&before),
+            "never the name: {}",
+            names[0]
+        );
         let mails = of_kind(&seen, "user.mail_changed");
         assert_eq!(mails.len(), 1, "{seen:?}");
         assert!(

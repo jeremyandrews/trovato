@@ -171,8 +171,10 @@ pub enum SecurityEventKind {
     /// A deletion was refused because it would have left the site with no active
     /// administrator.
     AccountDeletionBlocked,
-    /// An account's username changed. `details.from` and `details.to` are the
-    /// names before and after.
+    /// An account's username changed. `details.from_hash` and `details.to_hash`
+    /// are the [`hash_subject`] digests of the names before and after: enough to
+    /// confirm that a name in question was the one, never the names themselves,
+    /// which can be a person's own name and would outlive the account's erasure.
     UserNameChanged,
     /// An account's e-mail address changed. Never the addresses themselves —
     /// the event says only that it changed; the actor (absent when the

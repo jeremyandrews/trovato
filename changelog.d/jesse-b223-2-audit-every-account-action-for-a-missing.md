@@ -11,10 +11,14 @@ active, and who did it.
 The same audit swept up two more account actions with no event of their own:
 changing a username or an e-mail address wrote nothing beyond that same
 content-audit row, so `user.name_changed` and `user.mail_changed` are new.
+Neither carries a raw name or address: a rename records the old and new
+names only as hashes, as the stream records every other identifier.
 And an administrator deleting or cancelling someone else's account wrote no
 `account.deleted` either — only self-service deletion did, because the event
 lived at that route instead of in `UserService::delete`, the function both
-paths call. It has moved there, so both are recorded the same way now.
+paths call. It has moved there, so both are recorded the same way now, and
+`UserService::delete` ends the account's sessions itself so the event keeps
+its `sessions_revoked` count on every path.
 
 Signing out had no event either. A login wrote `auth.login_succeeded` and
 `session.created`, and a revocation wrote `session.revoked_by_user` or
@@ -39,4 +43,4 @@ and the revocation of every token an account holds when an administrator
 blocks it wrote the token row and nothing else. `api_token.created` and
 `api_token.revoked` are new, written from `services::api_token`, which those
 paths now all go through; each names the token by its hashed id, never its
-value.
+value, and never its label, which is free text its holder typed.

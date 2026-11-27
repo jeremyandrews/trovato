@@ -76,7 +76,7 @@ async fn event_count(app: &TestApp, kind: &str, user_id: Uuid) -> i64 {
 }
 
 /// A self-service rename, through `/user/profile`, writes one
-/// `user.name_changed` event naming the old and new names, with no actor:
+/// `user.name_changed` event carrying the old and new names hashed, with no actor:
 /// the account holder changed their own.
 #[test]
 fn self_service_rename_writes_one_user_name_changed_event() {
@@ -123,8 +123,18 @@ fn self_service_rename_writes_one_user_name_changed_event() {
         assert_eq!(rows.len(), 1, "exactly one event: {rows:?}");
         let (actor_id, details) = &rows[0];
         assert_eq!(*actor_id, None, "the account holder changed their own name");
-        assert_eq!(details["from"], old_name);
-        assert_eq!(details["to"], new_name);
+        assert_eq!(
+            details["from_hash"],
+            trovato_kernel::audit::hash_subject(&old_name)
+        );
+        assert_eq!(
+            details["to_hash"],
+            trovato_kernel::audit::hash_subject(&new_name)
+        );
+        assert!(
+            !details.to_string().contains(&old_name) && !details.to_string().contains(&new_name),
+            "never the names themselves: {details}"
+        );
     });
 }
 
@@ -302,8 +312,14 @@ fn admin_edit_writes_one_event_of_each_kind() {
         let name_rows = events(app, "user.name_changed", user_id).await;
         assert_eq!(name_rows.len(), 1, "{name_rows:?}");
         assert_eq!(name_rows[0].0, Some(admin_id));
-        assert_eq!(name_rows[0].1["from"], old_name);
-        assert_eq!(name_rows[0].1["to"], new_name);
+        assert_eq!(
+            name_rows[0].1["from_hash"],
+            trovato_kernel::audit::hash_subject(&old_name)
+        );
+        assert_eq!(
+            name_rows[0].1["to_hash"],
+            trovato_kernel::audit::hash_subject(&new_name)
+        );
 
         let mail_rows = events(app, "user.mail_changed", user_id).await;
         assert_eq!(mail_rows.len(), 1, "{mail_rows:?}");

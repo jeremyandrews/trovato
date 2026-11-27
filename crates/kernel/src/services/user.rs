@@ -160,7 +160,7 @@ impl<'a> From<&'a User> for AccountFields<'a> {
 }
 
 /// The security events a change from `before` to `after` writes: the
-/// username (`user.name_changed`), the e-mail address (`user.mail_changed`,
+/// username (`user.name_changed`, the names only hashed), the e-mail address (`user.mail_changed`,
 /// never the addresses), the blocked state (`user.status_changed`) and the
 /// administrator flag (`user.roles_changed`). Shared by every path that
 /// changes an account, so each records a change the same way.
@@ -177,8 +177,8 @@ pub(crate) fn account_change_events(
             SecurityEvent::new(SecurityEventKind::UserNameChanged)
                 .user(user_id)
                 .maybe_actor(other_actor)
-                .detail("from", before.name)
-                .detail("to", after.name),
+                .detail("from_hash", crate::audit::hash_subject(before.name))
+                .detail("to_hash", crate::audit::hash_subject(after.name)),
         );
     }
     if before.mail != after.mail {
