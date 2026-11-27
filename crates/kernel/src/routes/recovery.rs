@@ -697,7 +697,7 @@ async fn recover_reset(
         .into_response();
     }
 
-    if let Err(message) = validate_password(&body.new_password) {
+    if let Err(message) = validate_password(state.db(), &body.new_password).await {
         return crate::error::AppError::with_status(StatusCode::BAD_REQUEST, message)
             .into_response();
     }
@@ -762,9 +762,52 @@ async fn recover_reset(
         warn!(error = %e, "failed to burn a completed recovery flow");
     }
 
+    // B304: a confirmed TOTP enrolment survives the recovery (the recovered
+    // credential is the password; a second factor is a separate secret the
+    // mailbox takeover this flow defends against does not hand over). The
+    // same pending-second-factor state a password login uses, so whoever
+    // completed recovery still has to answer the authenticator before a
+    // session exists.
+    if crate::services::second_factor::has_confirmed_totp(&state, grant.user_id).await {
+        if let Err(e) =
+            crate::routes::auth::start_pending_second_factor(&session, grant.user_id, false, None)
+                .await
+        {
+            tracing::error!(error = %e, "failed to start the pending second factor after recovery");
+            return crate::error::AppError::with_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Password set, but sign-in failed. Try signing in.",
+            )
+            .into_response();
+        }
+        info!(user_id = %grant.user_id, "recovery completed, awaiting second factor");
+        state
+            .security_audit()
+            .emit(
+                SecurityEvent::new(SecurityEventKind::RecoveryCompleted)
+                    .user(grant.user_id)
+                    .subject(&grant.flow_id)
+                    .ip(ip)
+                    .user_agent(ua)
+                    .detail("granted", "scoped_credential_reset"),
+            )
+            .await;
+        notify(
+            &state,
+            grant.user_id,
+            "Your account was recovered",
+            "Your account was just recovered and its password was changed.\n\n\
+             If this was not you, act now: your account has been taken over.\n",
+        )
+        .await;
+        return Json(serde_json::json!({ "success": true, "next": "second_factor" }))
+            .into_response();
+    }
+
     // Only now does a real session exist, and it is established through the one
     // seam, so `cycle_id` fires (D-38's closing clause).
-    if let Err(e) = crate::routes::auth::setup_session(&session, grant.user_id, false).await {
+    if let Err(e) = crate::routes::auth::setup_session(&state, &session, grant.user_id, false).await
+    {
         tracing::error!(error = %e, "failed to establish a session after recovery");
         return crate::error::AppError::with_status(
             StatusCode::INTERNAL_SERVER_ERROR,

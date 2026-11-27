@@ -411,8 +411,8 @@ async fn install_admin_submit(
         return render_admin_form(&session, Some("Valid email is required")).await;
     }
 
-    if let Err(msg) = validate_password(&form.password) {
-        return render_admin_form(&session, Some(msg)).await;
+    if let Err(msg) = validate_password(state.db(), &form.password).await {
+        return render_admin_form(&session, Some(&msg)).await;
     }
 
     if form.password != form.password_confirm {

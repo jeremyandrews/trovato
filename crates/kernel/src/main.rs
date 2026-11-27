@@ -42,6 +42,7 @@ mod recovery;
 mod redis_conn;
 mod routes;
 mod search;
+mod secret_box;
 mod services;
 mod session;
 mod stage;
@@ -260,6 +261,14 @@ enum UserAction {
         username: String,
         /// New password (min 12 characters). If omitted, reads from stdin.
         password: Option<String>,
+    },
+    /// Reset a user's second factor (B304): delete any TOTP enrolment and
+    /// recovery codes and end every session of theirs. The way back for a
+    /// site whose only administrator lost their authenticator and recovery
+    /// codes.
+    ResetSecondFactor {
+        /// Username.
+        username: String,
     },
     /// Give a user a role.
     RoleAdd {
@@ -739,6 +748,7 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         .merge(routes::admin::router())
         .merge(routes::password_reset::router())
         .merge(routes::webauthn::router())
+        .merge(routes::two_factor::router())
         .merge(routes::sessions::router())
         .merge(routes::recovery::router())
         .merge(routes::health::router())
@@ -829,6 +839,13 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::check_installation,
+        ))
+        // B304: a forced enrolment or a forced password change, read from the
+        // session. Inside both authentication layers, so it knows whether
+        // this request carries a session at all (a token request never does).
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::enforce_pending_security_state,
         ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
@@ -1351,8 +1368,8 @@ async fn run_user_command(action: UserAction) -> Result<()> {
                 None => password_prompt::read_password_from_stdin("New password: ")?,
             };
 
-            if password.len() < 12 {
-                anyhow::bail!("Password must be at least 12 characters.");
+            if let Err(msg) = routes::helpers::validate_password(&pool, &password).await {
+                anyhow::bail!("{msg}");
             }
 
             let user = models::User::find_by_name(&pool, &username)
@@ -1373,6 +1390,30 @@ async fn run_user_command(action: UserAction) -> Result<()> {
             // be reached is reported rather than turned into a failure.
             println!("{}", end_sessions_from_cli(&config, user.id).await);
             println!("{}", bump_from_cli(&config, &[CacheKind::Users]).await);
+        }
+        UserAction::ResetSecondFactor { username } => {
+            let user = models::User::find_by_name(&pool, &username)
+                .await?
+                .context(format!("User '{username}' not found."))?;
+
+            let had_totp = models::user_totp::UserTotp::delete(&pool, user.id).await?;
+            models::user_totp::UserRecoveryCode::delete_all_for_user(&pool, user.id).await?;
+            if had_totp {
+                println!("Second factor reset for user '{username}'.");
+            } else {
+                println!("User '{username}' had no second factor to reset.");
+            }
+
+            println!("{}", end_sessions_from_cli(&config, user.id).await);
+
+            let audit = audit::SecurityAudit::new(pool.clone());
+            audit
+                .emit(
+                    audit::SecurityEvent::new(audit::SecurityEventKind::TotpResetByAdmin)
+                        .user(user.id)
+                        .detail("via", "cli"),
+                )
+                .await;
         }
         UserAction::RoleAdd { username, role } => {
             let (user, role) = find_user_and_role(&pool, &username, &role).await?;

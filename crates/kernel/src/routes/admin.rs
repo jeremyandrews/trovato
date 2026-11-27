@@ -1152,6 +1152,8 @@ pub fn router() -> Router<AppState> {
         .merge(super::admin_ai_assistant::router())
         // Site configuration
         .merge(super::admin_config::router())
+        // Password policy and the administrator second-factor setting (B304)
+        .merge(super::admin_security::router())
         // Clear all caches (B161)
         .merge(super::admin_performance::router())
         // Languages (B161)

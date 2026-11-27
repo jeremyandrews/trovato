@@ -47,6 +47,25 @@ pub const SESSION_ACTIVE_STAGE: &str = "active_stage";
 /// Session key for remember_me flag.
 pub const SESSION_REMEMBER_ME: &str = "remember_me";
 
+/// Session key (B304): set by [`setup_session`] when the signed-in account
+/// holds a role (or is an administrator with the site setting on) that
+/// requires a second factor and has neither a passkey nor a confirmed TOTP
+/// enrolment yet. Read by `middleware::second_factor::enforce_pending_security_state`,
+/// which redirects every request but a short allow-list to `/user/two-factor`
+/// until it is cleared (enrolling clears it).
+pub const SESSION_ENROLLMENT_REQUIRED: &str = "second_factor_enrollment_required";
+
+/// Session key (B304): set after a successful password login whose password
+/// has exceeded the site's maximum age. Read by the same enforcement
+/// middleware, which redirects to the profile page's change-password form
+/// until it is cleared (changing the password clears it).
+pub const SESSION_PASSWORD_CHANGE_REQUIRED: &str = "password_change_required";
+
+/// Session key (B304): the pending second-factor state a password login (or a
+/// completed account recovery) for a TOTP-enrolled account stores instead of
+/// establishing a session outright. See [`PendingSecondFactor`].
+pub const SESSION_PENDING_SECOND_FACTOR: &str = "pending_second_factor";
+
 /// Login request body.
 #[derive(Deserialize)]
 pub struct LoginRequest {
@@ -54,6 +73,11 @@ pub struct LoginRequest {
     pub password: String,
     #[serde(default)]
     pub remember_me: bool,
+    /// A TOTP or recovery code, for an account enrolled in a second factor
+    /// (B304). Only the JSON login takes this inline; the form path always
+    /// leaves it unset and is sent to `/user/login/verify` instead.
+    #[serde(default)]
+    pub code: Option<String>,
 }
 
 /// Typed login error for explicit status code mapping.
@@ -70,13 +94,17 @@ pub(crate) enum LoginError {
     Blocked(String),
     /// Internal server error — database failure, etc. (500).
     Internal(String),
+    /// The password was right but the TOTP or recovery code was not (401).
+    SecondFactorInvalid,
 }
 
 impl LoginError {
     pub(crate) fn status_code(&self) -> StatusCode {
         match self {
             LoginError::Locked(_) => StatusCode::TOO_MANY_REQUESTS,
-            LoginError::InvalidCredentials => StatusCode::UNAUTHORIZED,
+            LoginError::InvalidCredentials | LoginError::SecondFactorInvalid => {
+                StatusCode::UNAUTHORIZED
+            }
             LoginError::Blocked(_) => StatusCode::FORBIDDEN,
             LoginError::Internal(_) => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -88,8 +116,26 @@ impl LoginError {
             LoginError::InvalidCredentials => "Invalid username or password",
             LoginError::Blocked(msg) => msg,
             LoginError::Internal(msg) => msg,
+            LoginError::SecondFactorInvalid => "Invalid authentication code.",
         }
     }
+}
+
+/// What a successful [`attempt_login`] resolved to: a session was
+/// established, or the password checked out but a second factor still has to
+/// (B304).
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum LoginOutcome {
+    /// A session now exists. `method` is the security event's
+    /// `details.method`: `"password"`, `"password+totp"` or
+    /// `"password+recovery_code"`.
+    Established { method: &'static str },
+    /// The password was right; the account has a confirmed TOTP enrolment and
+    /// no code was given. No session, no lockout bookkeeping, nothing
+    /// written but the caller's own handling: a form redirects to
+    /// `/user/login/verify`, the JSON endpoint answers 401
+    /// `second_factor_required`.
+    NeedsSecondFactor { user_id: uuid::Uuid },
 }
 
 impl std::fmt::Display for LoginError {
@@ -178,11 +224,14 @@ async fn login_form_submit(
         return resp;
     }
 
-    // Convert to internal request format
+    // Convert to internal request format. The form never carries a second-
+    // factor code (there is no field for one): an account with a confirmed
+    // TOTP enrolment always lands on `/user/login/verify` instead.
     let request = LoginRequest {
         username: form.username,
         password: form.password,
         remember_me: form.remember_me.is_some(),
+        code: None,
     };
     let destination = form
         .destination
@@ -191,7 +240,19 @@ async fn login_form_submit(
 
     // Perform login
     match do_login(&state, &session, &request, &client_id, user_agent(&headers)).await {
-        Ok(_) => Redirect::to(destination.unwrap_or("/")).into_response(),
+        Ok(LoginOutcome::Established { .. }) => {
+            Redirect::to(destination.unwrap_or("/")).into_response()
+        }
+        Ok(LoginOutcome::NeedsSecondFactor { user_id }) => {
+            match start_pending_second_factor(&session, user_id, request.remember_me, destination)
+                .await
+            {
+                Ok(()) => Redirect::to("/user/login/verify").into_response(),
+                Err(e) => {
+                    render_login_page(&state, &session, Some(e.message()), None, destination).await
+                }
+            }
+        }
         Err(e) => render_login_page(&state, &session, Some(e.message()), None, destination).await,
     }
 }
@@ -239,6 +300,7 @@ async fn render_login_page(
 /// established after account recovery both call it for exactly that reason:
 /// the invariant holds with no new code on the seam.
 pub(crate) async fn setup_session(
+    state: &AppState,
     session: &Session,
     user_id: uuid::Uuid,
     remember_me: bool,
@@ -293,6 +355,26 @@ pub(crate) async fn setup_session(
             LoginError::Internal("Internal server error".to_string())
         })?;
 
+    // B304: decide once, here, whether the account must enrol a second
+    // factor. True for every session-establishing path (password, passkey,
+    // recovery) alike, so a role's requirement cannot be satisfied by signing
+    // in through whichever path happens not to check it.
+    let enrollment_required = match crate::models::User::find_by_id(state.db(), user_id).await {
+        Ok(Some(user)) => crate::services::second_factor::needs_enrolment(state, &user).await,
+        Ok(None) => false,
+        Err(e) => {
+            tracing::error!(error = %e, user_id = %user_id, "failed to load user for the second-factor check");
+            false
+        }
+    };
+    session
+        .insert(SESSION_ENROLLMENT_REQUIRED, enrollment_required)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to insert enrollment_required into session");
+            LoginError::Internal("Internal server error".to_string())
+        })?;
+
     Ok(())
 }
 
@@ -307,19 +389,27 @@ async fn do_login(
     request: &LoginRequest,
     client_ip: &str,
     user_agent: &str,
-) -> Result<(), LoginError> {
+) -> Result<LoginOutcome, LoginError> {
     let result = attempt_login(state, session, request, client_ip).await;
     audit_password_login(state, session, request, client_ip, user_agent, &result).await;
     match &result {
-        Ok(()) => info!(
+        Ok(LoginOutcome::Established { .. }) => info!(
             log_type = "user",
             username = %request.username,
             "user logged in"
         ),
+        // Password correct, second factor still pending: not yet a login,
+        // never logged as one.
+        Ok(LoginOutcome::NeedsSecondFactor { .. }) => {}
         Err(LoginError::InvalidCredentials) => info!(
             log_type = "user",
             username = %request.username,
             "login failed: wrong username or password"
+        ),
+        Err(LoginError::SecondFactorInvalid) => info!(
+            log_type = "user",
+            username = %request.username,
+            "login failed: wrong second-factor code"
         ),
         Err(LoginError::Locked(_)) => info!(
             log_type = "user",
@@ -351,22 +441,33 @@ async fn audit_password_login(
     request: &LoginRequest,
     client_ip: &str,
     user_agent: &str,
-    result: &Result<(), LoginError>,
+    result: &Result<LoginOutcome, LoginError>,
 ) {
     use crate::audit::{SecurityEvent, SecurityEventKind};
 
-    let event = match result {
-        Ok(()) => {
+    // No session exists yet and no credential was wrong: nothing to audit
+    // until the second factor is answered one way or the other.
+    if matches!(result, Ok(LoginOutcome::NeedsSecondFactor { .. })) {
+        return;
+    }
+
+    let (event, method) = match result {
+        Ok(LoginOutcome::Established { method }) => {
             let user_id = session
                 .get::<uuid::Uuid>(SESSION_USER_ID)
                 .await
                 .ok()
                 .flatten();
-            SecurityEvent::new(SecurityEventKind::LoginSucceeded).maybe_user(user_id)
+            (
+                SecurityEvent::new(SecurityEventKind::LoginSucceeded).maybe_user(user_id),
+                *method,
+            )
         }
+        Ok(LoginOutcome::NeedsSecondFactor { .. }) => unreachable!("returned above"),
         Err(e) => {
             let reason = match e {
                 LoginError::InvalidCredentials => "invalid_credentials",
+                LoginError::SecondFactorInvalid => "second_factor",
                 LoginError::Locked(_) => "locked",
                 LoginError::Blocked(_) => "access_rule",
                 LoginError::Internal(_) => "internal_error",
@@ -379,12 +480,15 @@ async fn audit_password_login(
                 .ok()
                 .flatten()
                 .map(|u| u.id);
-            SecurityEvent::failure(SecurityEventKind::LoginFailed)
-                .maybe_user(user_id)
-                .detail("reason", reason)
+            (
+                SecurityEvent::failure(SecurityEventKind::LoginFailed)
+                    .maybe_user(user_id)
+                    .detail("reason", reason),
+                "password",
+            )
         }
     };
-    let mut event = event.ip(client_ip).detail("method", "password");
+    let mut event = event.ip(client_ip).detail("method", method);
     if !user_agent.is_empty() {
         event = event.user_agent(user_agent);
     }
@@ -418,7 +522,7 @@ async fn attempt_login(
     session: &Session,
     request: &LoginRequest,
     client_ip: &str,
-) -> Result<(), LoginError> {
+) -> Result<LoginOutcome, LoginError> {
     // Check if sign-in is locked, for this address or for the account
     match state
         .lockout()
@@ -524,6 +628,54 @@ async fn attempt_login(
         return Err(LoginError::InvalidCredentials);
     }
 
+    // B304: an account subject to a second-factor requirement that already
+    // satisfies it with a passkey, and has no TOTP, does not get a session
+    // from its password alone — it signs in with the passkey instead. Checked
+    // before the TOTP branch below so it does not read as "needs a code".
+    if crate::services::second_factor::password_login_blocked_by_passkey_only(state, &user).await {
+        return Err(LoginError::Blocked(
+            crate::services::second_factor::PASSKEY_ONLY_MESSAGE.to_string(),
+        ));
+    }
+
+    // B304: a confirmed TOTP enrolment means the password alone is not
+    // enough. The JSON caller may supply `code` inline; the form path never
+    // does and is always sent to the verify page by its own handler.
+    if crate::services::second_factor::has_confirmed_totp(state, user.id).await {
+        let Some(code) = request.code.as_deref().filter(|c| !c.trim().is_empty()) else {
+            return Ok(LoginOutcome::NeedsSecondFactor { user_id: user.id });
+        };
+
+        let method = match verify_second_factor_code(state, user.id, code).await {
+            Some(method) => method,
+            None => {
+                if let Err(e) = state
+                    .lockout()
+                    .record_failed_attempt(&request.username, client_ip)
+                    .await
+                {
+                    tracing::warn!(error = %e, user_id = %user.id, "failed to record failed second-factor attempt");
+                }
+                return Err(LoginError::SecondFactorInvalid);
+            }
+        };
+
+        if let Err(e) = state
+            .lockout()
+            .clear_attempts(&request.username, client_ip)
+            .await
+        {
+            tracing::warn!(error = %e, user_id = %user.id, "failed to clear login attempts");
+        }
+        if let Err(e) = state.users().record_login(&user).await {
+            tracing::warn!(error = %e, user_id = %user.id, "failed to record login");
+        }
+        setup_session(state, session, user.id, request.remember_me).await?;
+        apply_password_age_flag(state, session, &user).await;
+        info!(user_id = %user.id, "user logged in");
+        return Ok(LoginOutcome::Established { method });
+    }
+
     // Successful login - clear any failed attempts
     if let Err(e) = state
         .lockout()
@@ -539,9 +691,112 @@ async fn attempt_login(
     }
 
     // Create session
-    setup_session(session, user.id, request.remember_me).await?;
+    setup_session(state, session, user.id, request.remember_me).await?;
+    apply_password_age_flag(state, session, &user).await;
 
     info!(user_id = %user.id, "user logged in");
+    Ok(LoginOutcome::Established { method: "password" })
+}
+
+/// Check `code` against `user_id`'s TOTP, then its recovery codes. Returns
+/// the security event's `details.method` on a match.
+async fn verify_second_factor_code(
+    state: &AppState,
+    user_id: uuid::Uuid,
+    code: &str,
+) -> Option<&'static str> {
+    if crate::services::totp::verify_code(state, user_id, code)
+        .await
+        .unwrap_or(false)
+    {
+        return Some("password+totp");
+    }
+    if crate::services::totp::verify_recovery_code(state, user_id, code)
+        .await
+        .unwrap_or(false)
+    {
+        state
+            .security_audit()
+            .emit(
+                crate::audit::SecurityEvent::new(
+                    crate::audit::SecurityEventKind::TotpRecoveryCodeUsed,
+                )
+                .user(user_id),
+            )
+            .await;
+        return Some("password+recovery_code");
+    }
+    None
+}
+
+/// Store "password change required" in the session when `user`'s password has
+/// exceeded the site's maximum age (B304). Errors loading the policy or
+/// writing the session are logged and otherwise ignored — this is a
+/// convenience nudge, not a security gate on its own session-establishment
+/// path.
+pub(crate) async fn apply_password_age_flag(state: &AppState, session: &Session, user: &User) {
+    let policy = crate::services::password_policy::PasswordPolicy::load(state.db()).await;
+    if policy.is_expired(user.pass_changed)
+        && let Err(e) = session.insert(SESSION_PASSWORD_CHANGE_REQUIRED, true).await
+    {
+        tracing::warn!(error = %e, user_id = %user.id, "failed to set the password-change-required flag");
+    }
+}
+
+/// The pending second-factor state a password login (or a completed account
+/// recovery) stores for a TOTP-enrolled account instead of establishing a
+/// session outright (B304). `/user/login/verify` reads it; it expires after
+/// [`PENDING_SECOND_FACTOR_TTL_SECS`].
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub(crate) struct PendingSecondFactor {
+    pub user_id: uuid::Uuid,
+    pub remember_me: bool,
+    pub destination: Option<String>,
+    pub created_at: i64,
+}
+
+/// How long a pending second-factor state lives before it must be started
+/// over from the login form.
+const PENDING_SECOND_FACTOR_TTL_SECS: i64 = 300;
+
+impl PendingSecondFactor {
+    /// Whether this pending state is still within its lifetime.
+    fn is_live(&self, now: i64) -> bool {
+        now - self.created_at <= PENDING_SECOND_FACTOR_TTL_SECS
+    }
+
+    /// [`Self::is_live`] against the current time.
+    pub(crate) fn is_live_now(&self) -> bool {
+        self.is_live(chrono::Utc::now().timestamp())
+    }
+}
+
+/// Cycle the session id and store a pending second-factor marker: the
+/// password (or recovery) check succeeded, but a confirmed TOTP enrolment
+/// still has to answer before a session exists.
+pub(crate) async fn start_pending_second_factor(
+    session: &Session,
+    user_id: uuid::Uuid,
+    remember_me: bool,
+    destination: Option<&str>,
+) -> Result<(), LoginError> {
+    session.cycle_id().await.map_err(|e| {
+        tracing::error!(error = %e, "failed to rotate session ID for a pending second factor");
+        LoginError::Internal("Internal server error".to_string())
+    })?;
+    let pending = PendingSecondFactor {
+        user_id,
+        remember_me,
+        destination: destination.map(str::to_string),
+        created_at: chrono::Utc::now().timestamp(),
+    };
+    session
+        .insert(SESSION_PENDING_SECOND_FACTOR, pending)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "failed to store the pending second-factor state");
+            LoginError::Internal("Internal server error".to_string())
+        })?;
     Ok(())
 }
 
@@ -564,17 +819,20 @@ async fn login(
     let client_id = client_ip.0;
 
     match do_login(&state, &session, &request, &client_id, user_agent(&headers)).await {
-        Ok(()) => Ok(Json(JsonSuccess {
+        Ok(LoginOutcome::Established { .. }) => Ok(Json(JsonSuccess {
             success: true,
             message: "Login successful".to_string(),
         })),
+        Ok(LoginOutcome::NeedsSecondFactor { .. }) => {
+            Err(AppError::unauthorized("second_factor_required"))
+        }
         Err(e) => Err(match e {
             LoginError::Locked(_) => AppError::RateLimited {
                 retry_after_secs: 60,
                 category: "login".into(),
             },
-            LoginError::InvalidCredentials => {
-                AppError::unauthorized("Invalid username or password")
+            LoginError::InvalidCredentials | LoginError::SecondFactorInvalid => {
+                AppError::unauthorized(e.message())
             }
             LoginError::Blocked(msg) => AppError::forbidden(msg),
             LoginError::Internal(msg) => AppError::internal_ctx(anyhow::anyhow!(msg), "login"),
@@ -895,8 +1153,8 @@ async fn validate_registration_input(
         errors.push("Please enter a valid email address.".to_string());
     }
 
-    if let Err(msg) = validate_password(password) {
-        errors.push(msg.to_string());
+    if let Err(msg) = validate_password(state.db(), password).await {
+        errors.push(msg);
     }
 
     // Uniqueness. A taken name is said to be taken, by name: names are public
@@ -2021,8 +2279,8 @@ async fn password_change(
         errors.push("Current password is incorrect.".to_string());
     }
 
-    if let Err(msg) = validate_password(&form.new_password) {
-        errors.push(msg.to_string());
+    if let Err(msg) = validate_password(state.db(), &form.new_password).await {
+        errors.push(msg);
     }
 
     if form.new_password != form.confirm_password {
@@ -2075,6 +2333,11 @@ async fn password_change(
             if let Err(e) = session.cycle_id().await {
                 tracing::warn!(error = %e, "failed to cycle session after password change");
             }
+            // A fresh password is never expired: clear the gate the
+            // enforcement middleware was holding this session to, if any.
+            let _ = session
+                .remove::<bool>(SESSION_PASSWORD_CHANGE_REQUIRED)
+                .await;
 
             info!(user_id = %user.id, "password changed via self-service");
 

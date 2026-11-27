@@ -85,6 +85,10 @@ async-stream = { workspace = true }
 futures-core = { workspace = true }
 similar = { workspace = true }
 lettre = { workspace = true }
+aes-gcm = { workspace = true }
+hkdf = { workspace = true }
+totp-rs = { workspace = true }
+qrcodegen = { workspace = true }
 
 [features]
 default = []

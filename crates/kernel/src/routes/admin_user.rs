@@ -76,6 +76,9 @@ struct RoleFormData {
     #[serde(rename = "_form_build_id")]
     form_build_id: String,
     name: String,
+    /// "Requires a second factor" checkbox (B304): present means checked.
+    #[serde(default)]
+    requires_second_factor: Option<String>,
 }
 
 /// Permission form data (for permission matrix).
@@ -312,7 +315,7 @@ pub(crate) async fn new_account_problems(
     }
 
     if let Some(password) = password
-        && let Err(msg) = validate_password(password)
+        && let Err(msg) = validate_password(state.db(), password).await
     {
         errors.push(FieldError::on("password", msg));
     }
@@ -585,6 +588,14 @@ async fn edit_user_form(
     );
     context.insert("roles", &state.roles().list().await.unwrap_or_default());
     context.insert("path", &format!("/admin/people/{user_id}/edit"));
+    context.insert(
+        "has_totp",
+        &crate::services::second_factor::has_confirmed_totp(&state, user_id).await,
+    );
+    context.insert(
+        "second_factor_csrf_token",
+        &generate_csrf_token(&session).await,
+    );
 
     // Local task tabs for user edit pages (hardcoded + plugin-registered)
     let current_path = format!("/admin/people/{user_id}/edit");
@@ -701,7 +712,7 @@ async fn edit_user_submit(
     // Validate password if provided
     if let Some(ref password) = form.password
         && !password.is_empty()
-        && let Err(msg) = validate_password(password)
+        && let Err(msg) = validate_password(state.db(), password).await
     {
         errors.push(FieldError::on("password", msg));
     }
@@ -855,6 +866,62 @@ async fn edit_user_submit(
             render_server_error("Failed to update user.")
         }
     }
+}
+
+/// Reset a user's second factor: delete their TOTP enrolment and recovery
+/// codes, end every session of theirs, and record it (B304).
+///
+/// POST /admin/people/{id}/second-factor/reset
+async fn reset_second_factor(
+    State(state): State<AppState>,
+    session: Session,
+    Path(user_id): Path<uuid::Uuid>,
+    Form(form): Form<CsrfOnlyForm>,
+) -> Response {
+    let current_user = match require_permission(&state, &session, "administer users").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    if let Err(resp) = require_csrf(&session, &form.token).await {
+        return resp;
+    }
+
+    let Some(_target_user) = state.users().find_by_id(user_id).await.ok().flatten() else {
+        return render_not_found();
+    };
+
+    if let Err(e) = crate::services::totp::remove_enrolment(state.db(), user_id).await {
+        tracing::error!(error = %e, user_id = %user_id, "failed to reset a user's second factor");
+        return render_server_error("Failed to reset the second factor.");
+    }
+    crate::services::session_registry::end_user_sessions(
+        &state,
+        user_id,
+        None,
+        Some(current_user.id),
+        "second_factor_reset",
+    )
+    .await;
+    state
+        .audit_trail()
+        .record(
+            "second_factor_reset",
+            "user",
+            user_id,
+            Some(current_user.id),
+            serde_json::json!({}),
+        )
+        .await;
+    state
+        .security_audit()
+        .emit(
+            crate::audit::SecurityEvent::new(crate::audit::SecurityEventKind::TotpResetByAdmin)
+                .user(user_id)
+                .actor(current_user.id),
+        )
+        .await;
+
+    Redirect::to(&format!("/admin/people/{user_id}/edit")).into_response()
 }
 
 /// Delete a user.
@@ -1278,7 +1345,10 @@ async fn add_role_form(State(state): State<AppState>, session: Session) -> Respo
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert("editing", &false);
-    context.insert("values", &serde_json::json!({}));
+    context.insert(
+        "values",
+        &serde_json::json!({ "requires_second_factor": false }),
+    );
     context.insert("path", "/admin/people/roles/add");
 
     render_admin_template(
@@ -1336,6 +1406,7 @@ async fn add_role_submit(
             "values",
             &serde_json::json!({
                 "name": form.name,
+                "requires_second_factor": form.requires_second_factor.is_some(),
             }),
         );
         context.insert("path", "/admin/people/roles/add");
@@ -1350,7 +1421,16 @@ async fn add_role_submit(
     }
 
     match state.roles().create(&form.name).await {
-        Ok(_) => {
+        Ok(role) => {
+            if let Err(e) = crate::models::Role::set_requires_second_factor(
+                state.db(),
+                role.id,
+                form.requires_second_factor.is_some(),
+            )
+            .await
+            {
+                tracing::error!(error = %e, "failed to save the role's second-factor requirement");
+            }
             tracing::info!(name = %form.name, "role created");
             Redirect::to("/admin/people/roles").into_response()
         }
@@ -1397,6 +1477,7 @@ async fn edit_role_form(
         "values",
         &serde_json::json!({
             "name": role.name,
+            "requires_second_factor": role.requires_second_factor,
         }),
     );
     context.insert("path", &format!("/admin/people/roles/{role_id}/edit"));
@@ -1470,6 +1551,7 @@ async fn edit_role_submit(
             "values",
             &serde_json::json!({
                 "name": form.name,
+                "requires_second_factor": form.requires_second_factor.is_some(),
             }),
         );
         context.insert("path", &format!("/admin/people/roles/{role_id}/edit"));
@@ -1485,6 +1567,15 @@ async fn edit_role_submit(
 
     match state.roles().update(role_id, &form.name).await {
         Ok(_) => {
+            if let Err(e) = crate::models::Role::set_requires_second_factor(
+                state.db(),
+                role_id,
+                form.requires_second_factor.is_some(),
+            )
+            .await
+            {
+                tracing::error!(error = %e, "failed to save the role's second-factor requirement");
+            }
             tracing::info!(role_id = %role_id, "role updated");
             Redirect::to("/admin/people/roles").into_response()
         }
@@ -1919,6 +2010,10 @@ pub fn router() -> Router<AppState> {
             get(edit_user_form).post(edit_user_submit),
         )
         .route("/admin/people/{id}/delete", post(delete_user))
+        .route(
+            "/admin/people/{id}/second-factor/reset",
+            post(reset_second_factor),
+        )
         .route("/user/{id}/cancel", get(cancel_form).post(cancel_submit))
         .route("/admin/people/roles", get(list_roles))
         .route(

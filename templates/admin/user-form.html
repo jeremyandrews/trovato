@@ -51,4 +51,15 @@
         {% endif %}
     </form>
 </div>
+
+{% if editing and has_totp %}
+<section class="admin-card" aria-labelledby="second-factor-heading">
+    <h2 id="second-factor-heading">{{ t(s="Second factor") }}</h2>
+    <p>{{ t(s="This account has an authenticator app enrolled.") }}</p>
+    <form method="post" action="/admin/people/{{ user_id }}/second-factor/reset">
+        <input type="hidden" name="_token" value="{{ second_factor_csrf_token }}">
+        <button type="submit" class="button button--secondary">{{ t(s="Reset second factor") }}</button>
+    </form>
+</section>
+{% endif %}
 {% endblock content %}

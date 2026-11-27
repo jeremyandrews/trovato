@@ -197,6 +197,22 @@ pub enum SecurityEventKind {
     /// A role's permission grants changed. `details.granted` and
     /// `details.revoked` list what changed.
     RolePermissionsChanged,
+
+    // ── TOTP second factor (B304) ───────────────────────────────────────────
+    /// An account enrolled a TOTP authenticator (confirmed with a right code).
+    TotpEnrolled,
+    /// An account's TOTP enrolment was removed, by the account holder.
+    TotpRemoved,
+    /// An administrator reset another account's second factor (TOTP and
+    /// recovery codes deleted, every session ended). `actor` is the admin.
+    TotpResetByAdmin,
+    /// A recovery code was spent to complete a sign-in.
+    TotpRecoveryCodeUsed,
+
+    // ── Password policy (B304) ──────────────────────────────────────────────
+    /// The site's password policy (length, character classes, maximum age) or
+    /// the "administrators require a second factor" setting changed.
+    PasswordPolicyChanged,
 }
 
 impl SecurityEventKind {
@@ -239,6 +255,11 @@ impl SecurityEventKind {
             Self::RoleChanged => "role.changed",
             Self::RoleDeleted => "role.deleted",
             Self::RolePermissionsChanged => "role.permissions_changed",
+            Self::TotpEnrolled => "totp.enrolled",
+            Self::TotpRemoved => "totp.removed",
+            Self::TotpResetByAdmin => "totp.reset_by_admin",
+            Self::TotpRecoveryCodeUsed => "totp.recovery_code_used",
+            Self::PasswordPolicyChanged => "password.policy_changed",
         }
     }
 }

@@ -309,6 +309,7 @@ mod tests {
             consent_date: None,
             consent_version: None,
             data_retention_days: None,
+            pass_changed: None,
         }
     }
 

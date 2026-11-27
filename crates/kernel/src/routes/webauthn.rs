@@ -650,7 +650,7 @@ async fn login_finish(
 
     // AC-2: the one and only session-establishment seam. `setup_session`'s first
     // act is `cycle_id`, so the fixation invariant holds here for free.
-    if let Err(e) = crate::routes::auth::setup_session(&session, user.id, false).await {
+    if let Err(e) = crate::routes::auth::setup_session(&state, &session, user.id, false).await {
         tracing::error!(error = %e, "failed to set up session after passkey authentication");
         return crate::error::AppError::with_status(
             StatusCode::INTERNAL_SERVER_ERROR,

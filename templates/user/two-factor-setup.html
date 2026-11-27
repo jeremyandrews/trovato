@@ -1,0 +1,35 @@
+{% extends "page.html" %}
+
+{% block title %}Set up an authenticator{% endblock %}
+
+{% block content %}
+<div class="profile-page">
+    <h1>Set up an authenticator app</h1>
+
+    {% if error %}
+    <div class="message message--error" role="status">{{ error | escape }}</div>
+    {% endif %}
+
+    <p>Scan this code with your authenticator app (such as Google Authenticator,
+    1Password, or Authy), or enter the key manually if you cannot scan a code.</p>
+
+    {% if qr_svg %}
+    <div class="two-factor-qr">{{ qr_svg | safe }}</div>
+    {# SAFE: qr_svg is server-generated SVG markup (qrcodegen), never user input. #}
+    {% endif %}
+
+    {% if manual_secret %}
+    <p>Manual entry key:</p>
+    <p><code>{{ manual_secret }}</code></p>
+    {% endif %}
+
+    <form method="post" action="/user/two-factor/confirm">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <label for="confirm-code">Enter the 6-digit code your app shows</label>
+        <input type="text" id="confirm-code" name="code" inputmode="numeric" autocomplete="one-time-code" required autofocus>
+        <button type="submit" class="button button--primary">Confirm</button>
+    </form>
+
+    <p><a href="/user/two-factor">Cancel</a></p>
+</div>
+{% endblock %}

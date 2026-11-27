@@ -372,8 +372,8 @@ async fn set_password(
             Ok(input) => input,
             Err(rejection) => return rejection.into_response(),
         };
-        if let Err(msg) = validate_password(&input.password) {
-            return AppError::bad_request(msg.to_string()).into_response();
+        if let Err(msg) = validate_password(state.db(), &input.password).await {
+            return AppError::bad_request(msg).into_response();
         }
         return match reset_password(&state, &token, &input.password).await {
             Ok(true) => Json(JsonSuccess {
@@ -404,8 +404,8 @@ async fn set_password(
         )
         .await;
     }
-    if let Err(msg) = validate_password(&form.password) {
-        return render_set_page(&state, &session, &token, true, Some(msg)).await;
+    if let Err(msg) = validate_password(state.db(), &form.password).await {
+        return render_set_page(&state, &session, &token, true, Some(&msg)).await;
     }
 
     match reset_password(&state, &token, &form.password).await {

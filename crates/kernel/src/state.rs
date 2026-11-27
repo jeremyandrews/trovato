@@ -241,6 +241,11 @@ struct AppStateInner {
     /// [`services::webauthn::build_webauthn`].
     webauthn: Option<Arc<webauthn_rs::Webauthn>>,
 
+    /// Derives per-purpose encryption keys from `ENCRYPTION_KEY` (B304).
+    /// `None` when the site has not set it, which is what disables TOTP
+    /// enrolment (`services::totp::enrolment_available`).
+    secret_box: Option<Arc<crate::secret_box::SecretBox>>,
+
     /// The per-user session index backing multi-device session management
     /// (FR-7b / D-36). Extends tower-sessions; does not fork it.
     session_registry: Arc<services::session_registry::SessionRegistry>,
@@ -1212,6 +1217,10 @@ impl AppState {
         let site_name = crate::models::SiteConfig::site_name(&db)
             .await
             .unwrap_or_else(|_| "Trovato".to_string());
+        let secret_box = config
+            .encryption_key
+            .map(|key| Arc::new(crate::secret_box::SecretBox::new(key)));
+
         let webauthn = match services::webauthn::build_webauthn(&config.site_url, &site_name) {
             Ok(w) => Some(Arc::new(w)),
             Err(e) => {
@@ -1430,6 +1439,7 @@ impl AppState {
                 menu_links,
                 security_audit,
                 webauthn,
+                secret_box,
                 session_registry,
                 recovery_flows,
                 recovery_providers,
@@ -1874,6 +1884,12 @@ impl AppState {
     /// for this run.
     pub fn webauthn(&self) -> Option<&Arc<webauthn_rs::Webauthn>> {
         self.inner.webauthn.as_ref()
+    }
+
+    /// Derives per-purpose encryption keys from `ENCRYPTION_KEY` (B304).
+    /// `None` when the site has not set it.
+    pub fn secret_box(&self) -> Option<&Arc<crate::secret_box::SecretBox>> {
+        self.inner.secret_box.as_ref()
     }
 
     /// The per-user session index (FR-7b / D-36).

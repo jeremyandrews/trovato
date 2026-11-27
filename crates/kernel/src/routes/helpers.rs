@@ -893,21 +893,18 @@ pub fn build_local_tasks(
     serde_json::Value::Array(tabs)
 }
 
-/// Validate a password meets length requirements.
+/// Validate a password against the site's password policy (B304): minimum
+/// length (never below 8, default 12), optional character-class rules, and
+/// the fixed 128-character maximum. Lengths count characters, not bytes.
 ///
-/// Checks: non-empty, minimum 12 characters, maximum 128 characters.
-/// Returns `Ok(())` on success, or `Err` with a human-readable error message.
-pub fn validate_password(password: &str) -> Result<(), &'static str> {
-    if password.is_empty() {
-        return Err("Password is required.");
-    }
-    if password.len() < 12 {
-        return Err("Password must be at least 12 characters.");
-    }
-    if password.len() > 128 {
-        return Err("Password must be 128 characters or fewer.");
-    }
-    Ok(())
+/// Every caller that can reject a password at the point it is set goes
+/// through this: registration, change-password, reset, recovery, the admin
+/// user forms and the installer. Returns `Ok(())` on success, or `Err` with a
+/// human-readable message.
+pub async fn validate_password(pool: &sqlx::PgPool, password: &str) -> Result<(), String> {
+    crate::services::password_policy::PasswordPolicy::load(pool)
+        .await
+        .validate(password)
 }
 
 /// Validate a username meets format requirements.
@@ -1604,18 +1601,9 @@ mod tests {
         assert!(!is_valid_timezone("a".repeat(65).as_str()));
     }
 
-    #[test]
-    fn test_validate_password_valid() {
-        assert!(validate_password("abcdefghijkl").is_ok());
-        assert!(validate_password("a".repeat(128).as_str()).is_ok());
-    }
-
-    #[test]
-    fn test_validate_password_invalid() {
-        assert!(validate_password("").is_err());
-        assert!(validate_password("short").is_err());
-        assert!(validate_password("a".repeat(129).as_str()).is_err());
-    }
+    // `validate_password` is now policy-aware and reads site config
+    // (`services::password_policy::PasswordPolicy`); its pure validation logic
+    // is unit-tested there, directly, without a database.
 
     #[test]
     fn test_validate_username_valid() {

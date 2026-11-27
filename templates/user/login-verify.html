@@ -1,0 +1,32 @@
+{% extends "page.html" %}
+
+{% block title %}Verify your sign-in{% endblock %}
+
+{% block content %}
+<div class="login-page">
+    <div class="login-card">
+        <div class="login-card__header">
+            <h1 class="login-card__title">Enter your authentication code</h1>
+            <p class="login-card__subtitle">
+                Your password checked out. Enter the code from your authenticator app,
+                or one of your recovery codes.
+            </p>
+        </div>
+
+        {% if error %}
+        <div class="message message--error" role="status">{{ error | escape }}</div>
+        {% endif %}
+
+        <form method="post" action="/user/login/verify" class="login-form">
+            <input type="hidden" name="_token" value="{{ csrf_token }}">
+
+            <div class="login-form__field">
+                <label for="code" class="login-form__label">Authentication or recovery code</label>
+                <input type="text" id="code" name="code" class="login-form__input" required autofocus autocomplete="one-time-code" placeholder="123456">
+            </div>
+
+            <button type="submit" class="login-form__submit">Verify</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

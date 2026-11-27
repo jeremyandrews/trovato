@@ -1,0 +1,35 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
+
+{% block page_title %}{{ t(s="Security") }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="The site's password policy and whether administrators require a second factor.") }}</p>{% endblock page_intro %}
+
+{% block content %}
+{% set errs = errors | default(value=[]) %}
+<div class="admin-card">
+    {% if flash %}
+    <div class="message message--success" role="status">{{ flash }}</div>
+    {% endif %}
+
+    <form method="post" action="/admin/config/people/security" novalidate>
+        {{ form::csrf(csrf_token=csrf_token) }}
+
+        {{ form::error_summary(errors=errs) }}
+
+        {{ form::fieldset_start(legend=t(s="Password policy")) }}
+            {{ form::field(name="min_length", type="number", label=t(s="Minimum length"), value=min_length, hint=t(s="Never enforced below {min} characters, however this is set.", min=minimum_min_length), errors=errs, width="4", attrs='min="8" max="128"') }}
+            {{ form::checkbox(name="require_lowercase", label=t(s="Require a lowercase letter"), checked=require_lowercase, errors=errs) }}
+            {{ form::checkbox(name="require_uppercase", label=t(s="Require an uppercase letter"), checked=require_uppercase, errors=errs) }}
+            {{ form::checkbox(name="require_digit", label=t(s="Require a digit"), checked=require_digit, errors=errs) }}
+            {{ form::checkbox(name="require_symbol", label=t(s="Require a symbol"), checked=require_symbol, errors=errs) }}
+            {{ form::field(name="max_age_days", type="number", label=t(s="Maximum password age, in days"), value=max_age_days, hint=t(s="Blank or 0 means no maximum. A password older than this is changed at the next sign-in."), errors=errs, width="6", attrs='min="0"') }}
+        {{ form::fieldset_end() }}
+
+        {{ form::fieldset_start(legend=t(s="Second factor")) }}
+            {{ form::checkbox(name="admin_requires_second_factor", label=t(s="Administrators require a second factor"), checked=admin_requires_second_factor, hint=t(s="Every administrator account must have a confirmed authenticator or a passkey before using the site past enrolment. A role's own second-factor requirement is set on that role's edit page."), errors=errs) }}
+        {{ form::fieldset_end() }}
+
+        {{ form::actions(submit_label=t(s="Save settings"), cancel_url="/admin") }}
+    </form>
+</div>
+{% endblock content %}

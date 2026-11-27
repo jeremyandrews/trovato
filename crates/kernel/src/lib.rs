@@ -40,6 +40,7 @@ pub mod recovery;
 pub mod redis_conn;
 pub mod routes;
 pub mod search;
+pub mod secret_box;
 pub mod services;
 pub mod session;
 pub mod stage;

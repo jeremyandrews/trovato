@@ -194,6 +194,12 @@ pub struct Role {
     /// may omit it the way it may for every other config entity.
     #[serde(default = "Utc::now")]
     pub created: DateTime<Utc>,
+    /// Whether a holder of this role must have a second factor (a confirmed
+    /// TOTP enrolment or a passkey) before using the site past enrolment
+    /// itself (B304). `#[serde(default)]`: a config file written before this
+    /// field existed loads as `false`.
+    #[serde(default)]
+    pub requires_second_factor: bool,
 }
 
 impl Role {
@@ -255,6 +261,38 @@ impl Role {
                 .context("failed to update role")?;
 
         Ok(result)
+    }
+
+    /// Set whether holders of this role must have a second factor (B304).
+    pub async fn set_requires_second_factor(pool: &PgPool, id: Uuid, value: bool) -> Result<bool> {
+        let result = sqlx::query("UPDATE roles SET requires_second_factor = $1 WHERE id = $2")
+            .bind(value)
+            .bind(id)
+            .execute(pool)
+            .await
+            .context("failed to update role's second-factor requirement")?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Whether any role marked `requires_second_factor` counts `user_id`
+    /// among its members.
+    pub async fn user_holds_second_factor_role(pool: &PgPool, user_id: Uuid) -> Result<bool> {
+        let held: bool = sqlx::query_scalar(
+            r#"
+            SELECT EXISTS(
+                SELECT 1 FROM roles r
+                JOIN user_roles ur ON r.id = ur.role_id
+                WHERE ur.user_id = $1 AND r.requires_second_factor
+            )
+            "#,
+        )
+        .bind(user_id)
+        .fetch_one(pool)
+        .await
+        .context("failed to check the user's second-factor-requiring roles")?;
+
+        Ok(held)
     }
 
     /// Delete a role.

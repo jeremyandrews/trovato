@@ -52,6 +52,14 @@ pub struct User {
     /// User-requested data retention period in days.
     #[serde(default)]
     pub data_retention_days: Option<i32>,
+
+    /// When the password was last set (B304). `None` for every account that
+    /// predates this column, and for one with no password at all; the
+    /// password-age policy treats a `None` as "changed when the maximum-age
+    /// setting was turned on", never as "never set", so turning the setting
+    /// on does not retroactively expire every existing password.
+    #[serde(default)]
+    pub pass_changed: Option<DateTime<Utc>>,
 }
 
 /// Input for creating a new user.
@@ -161,8 +169,8 @@ impl User {
 
         let user = sqlx::query_as::<_, User>(
             r#"
-            INSERT INTO users (id, name, pass, mail, is_admin)
-            VALUES ($1, $2, $3, $4, $5)
+            INSERT INTO users (id, name, pass, mail, is_admin, pass_changed)
+            VALUES ($1, $2, $3, $4, $5, CASE WHEN $3 <> '' THEN NOW() ELSE NULL END)
             RETURNING *
             "#,
         )
@@ -201,8 +209,8 @@ impl User {
         let id = Uuid::now_v7();
         let user = sqlx::query_as::<_, User>(
             r#"
-            INSERT INTO users (id, name, pass, mail, is_admin, status)
-            VALUES ($1, $2, $3, $4, $5, $6)
+            INSERT INTO users (id, name, pass, mail, is_admin, status, pass_changed)
+            VALUES ($1, $2, $3, $4, $5, $6, CASE WHEN $3 <> '' THEN NOW() ELSE NULL END)
             RETURNING *
             "#,
         )
@@ -302,7 +310,7 @@ impl User {
     pub async fn update_password(pool: &PgPool, id: Uuid, new_password: &str) -> Result<bool> {
         let pass = hash_password(new_password)?;
 
-        let result = sqlx::query("UPDATE users SET pass = $1 WHERE id = $2")
+        let result = sqlx::query("UPDATE users SET pass = $1, pass_changed = NOW() WHERE id = $2")
             .bind(&pass)
             .bind(id)
             .execute(pool)
@@ -317,7 +325,7 @@ impl User {
     /// Whether they may go without one is the caller's to decide
     /// (`AccountAccess::can_remove_password`).
     pub async fn clear_password(pool: &PgPool, id: Uuid) -> Result<bool> {
-        let result = sqlx::query("UPDATE users SET pass = '' WHERE id = $1")
+        let result = sqlx::query("UPDATE users SET pass = '', pass_changed = NULL WHERE id = $1")
             .bind(id)
             .execute(pool)
             .await

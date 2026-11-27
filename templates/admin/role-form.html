@@ -13,6 +13,8 @@
 
         {{ form::field(name="name", label=t(s="Role name"), value=values.name | default(value=""), hint=t(s="The human-readable name of this role."), required=true, errors=errors | default(value=[]), width="30") }}
 
+        {{ form::checkbox(name="requires_second_factor", label=t(s="Requires a second factor"), checked=values.requires_second_factor | default(value=false), hint=t(s="A holder of this role must have a confirmed authenticator or a passkey before using the site past enrolment."), errors=errors | default(value=[])) }}
+
         {% if editing %}
         {{ form::actions(submit_label=t(s="Save changes"), cancel_url="/admin/people/roles") }}
         {% else %}

@@ -557,6 +557,16 @@ pub struct Config {
     /// startup by `OAuthService`, so it never needs to reach a request handler.
     pub jwt_secret: Option<String>,
 
+    /// The 32-byte root key [`crate::secret_box::SecretBox`] derives every
+    /// purpose-specific key from (`ENCRYPTION_KEY`, 64 hex characters or
+    /// base64). `None` when the site has not set it, which disables TOTP
+    /// enrolment rather than failing startup — passkeys still satisfy a
+    /// role's second-factor requirement with no key configured. A key that is
+    /// set but malformed fails startup with a clear message (B304): a site
+    /// that thinks it has encryption at rest and does not is worse than one
+    /// that never claimed to.
+    pub encryption_key: Option<[u8; 32]>,
+
     /// How long graceful shutdown waits for in-flight work (default: 30s).
     pub shutdown_timeout: Duration,
 
@@ -876,6 +886,14 @@ impl Config {
 
         let jwt_secret = get("JWT_SECRET");
 
+        let encryption_key = match get("ENCRYPTION_KEY") {
+            None => None,
+            Some(raw) => Some(
+                crate::secret_box::parse_encryption_key(&raw)
+                    .map_err(|e| anyhow::anyhow!("ENCRYPTION_KEY: {e}"))?,
+            ),
+        };
+
         let shutdown_timeout = Duration::from_secs(parse_or(get, "SHUTDOWN_TIMEOUT_SECS", 30));
         // Strict: a typo must not quietly turn a single server into one that
         // waits, not ready, for a migration nobody runs.
@@ -989,6 +1007,7 @@ impl Config {
             themes_dirs,
             trusted_proxies,
             jwt_secret,
+            encryption_key,
             shutdown_timeout,
             migrate_on_start,
             shutdown_drain,
@@ -1501,6 +1520,40 @@ mod config_tests {
             Some("0123456789abcdef0123456789abcdef")
         );
         assert_eq!(config.shutdown_timeout, Duration::from_secs(5));
+    }
+
+    /// `ENCRYPTION_KEY` unset leaves TOTP enrolment unavailable rather than
+    /// failing startup; set and well-formed, it resolves to 32 bytes however
+    /// it was spelled; set and malformed, it fails startup with a clear
+    /// reason rather than silently disabling encryption a site believes it
+    /// configured.
+    #[test]
+    fn encryption_key_unset_is_none_and_malformed_fails_startup() {
+        assert!(with_db(&[]).encryption_key.is_none());
+
+        let hex_key = "ab".repeat(32);
+        assert_eq!(
+            with_db(&[("ENCRYPTION_KEY", &hex_key)])
+                .encryption_key
+                .map(|k| k.to_vec()),
+            Some(vec![0xab; 32])
+        );
+
+        use base64::Engine;
+        let b64_key = base64::engine::general_purpose::STANDARD.encode([3u8; 32]);
+        assert_eq!(
+            with_db(&[("ENCRYPTION_KEY", &b64_key)])
+                .encryption_key
+                .map(|k| k.to_vec()),
+            Some(vec![3u8; 32])
+        );
+
+        let err = config_from(&[
+            ("DATABASE_URL", "postgres://localhost/x"),
+            ("ENCRYPTION_KEY", "too-short"),
+        ])
+        .expect_err("a malformed ENCRYPTION_KEY must fail startup");
+        assert!(err.to_string().contains("ENCRYPTION_KEY"));
     }
 
     /// A zero-day retention window would prune the entire audit stream, so it

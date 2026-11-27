@@ -438,6 +438,7 @@ impl TestApp {
             .merge(trovato_kernel::routes::admin::router())
             .merge(trovato_kernel::routes::password_reset::router())
             .merge(trovato_kernel::routes::webauthn::router())
+            .merge(trovato_kernel::routes::two_factor::router())
             .merge(trovato_kernel::routes::sessions::router())
             .merge(trovato_kernel::routes::recovery::router())
             .merge(trovato_kernel::routes::health::router())
@@ -522,6 +523,12 @@ impl TestApp {
             .layer(axum::middleware::from_fn_with_state(
                 state.clone(),
                 trovato_kernel::middleware::check_maintenance,
+            ))
+            // B304: a forced enrolment or a forced password change, as in
+            // `main.rs`, inside both authentication layers.
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                trovato_kernel::middleware::enforce_pending_security_state,
             ));
         // The per-user check, inside both authentication layers as in `main.rs`,
         // so it sees the user a token request authenticated as.

@@ -674,6 +674,23 @@ pub const LINKS: &[Link] = &[
         )
     },
     Link {
+        synonyms: &[
+            "password policy",
+            "totp",
+            "two factor",
+            "2fa",
+            "authenticator",
+            "second factor",
+        ],
+        ..page(
+            Configuration,
+            "Security",
+            "/admin/config/people/security",
+            Permission("administer site"),
+            "The password policy and whether administrators require a second factor.",
+        )
+    },
+    Link {
         synonyms: &["cache", "clear cache", "flush", "speed", "rebuild"],
         ..page(
             Configuration,

@@ -1,0 +1,23 @@
+{% extends "page.html" %}
+
+{% block title %}Your recovery codes{% endblock %}
+
+{% block content %}
+<div class="profile-page">
+    <h1>Your recovery codes</h1>
+
+    <div class="message message--success" role="status">
+        Your authenticator app is set up. These recovery codes are shown only
+        once — save them somewhere safe. Each one lets you sign in a single
+        time if you lose access to your authenticator app.
+    </div>
+
+    <ul class="recovery-codes">
+        {% for code in recovery_codes %}
+        <li><code>{{ code }}</code></li>
+        {% endfor %}
+    </ul>
+
+    <p><a href="/user/two-factor">Continue</a></p>
+</div>
+{% endblock %}

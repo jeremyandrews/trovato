@@ -1,0 +1,47 @@
+{% extends "page.html" %}
+
+{% block title %}Two-factor authentication{% endblock %}
+
+{% block content %}
+<div class="profile-page">
+    <h1>Two-factor authentication</h1>
+
+    {% if error %}
+    <div class="message message--error" role="status">{{ error | escape }}</div>
+    {% endif %}
+
+    {% if not enrolment_available and not enrolled %}
+    <div class="message message--error" role="status">
+        An authenticator app cannot be set up on this site: the site owner has not
+        configured ENCRYPTION_KEY. A passkey can still be used as a second factor.
+    </div>
+    {% endif %}
+
+    {% if requires_second_factor %}
+    <p>Your role on this site requires a second factor: a confirmed authenticator
+    app or a passkey.</p>
+    {% endif %}
+
+    {% if enrolled %}
+    <p>An authenticator app is set up on this account. You have
+    <strong>{{ recovery_codes_remaining }}</strong> unused recovery code{% if recovery_codes_remaining != 1 %}s{% endif %} left.</p>
+
+    <form method="post" action="/user/two-factor/remove">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <label for="remove-code">Enter a current code to remove the authenticator</label>
+        <input type="text" id="remove-code" name="code" inputmode="numeric" autocomplete="one-time-code" required>
+        <button type="submit" class="button button--secondary">Remove authenticator</button>
+    </form>
+    {% else %}
+    {% if enrolment_available %}
+    <form method="post" action="/user/two-factor/setup">
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <button type="submit" class="button button--primary">Set up an authenticator app</button>
+    </form>
+    {% endif %}
+    {% endif %}
+
+    <p><a href="/user/passkeys">Manage your passkeys</a> — a passkey also satisfies a
+    second-factor requirement.</p>
+</div>
+{% endblock %}
