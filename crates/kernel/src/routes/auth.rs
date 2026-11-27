@@ -615,6 +615,8 @@ async fn logout(
         .await
         .ok()
         .flatten();
+    // And the session's id, for `session.ended`: `flush` clears it too.
+    let session_id = session.id().map(|id| id.to_string());
 
     // Record logout (dispatches tap_user_logout)
     if let Some(uid) = user_id {
@@ -639,9 +641,17 @@ async fn logout(
 
     // `flush` removed the session record but not the device's entry in the
     // user's session index, which would otherwise stay on `/user/sessions`
-    // until the index expired.
+    // until the index expired. Dropping it also writes `session.ended`, now
+    // that the sign-out has actually happened.
     if let Some(uid) = user_id {
-        crate::services::session_registry::forget_ended_session(&state, uid, device_id).await;
+        crate::services::session_registry::session_ended(
+            &state,
+            uid,
+            device_id,
+            session_id.as_deref(),
+            "logout",
+        )
+        .await;
     }
 
     Redirect::to("/user/login").into_response()

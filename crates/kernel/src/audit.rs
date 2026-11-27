@@ -110,6 +110,14 @@ pub enum SecurityEventKind {
     /// A session id was cycled (the fixation defence firing on an auth-state
     /// change). `subject_hash` is the hash of the **new** id.
     SessionIdCycled,
+    /// A session ended without being revoked: the account holder signed out
+    /// (`details.reason` = `"logout"`), or the session of an account found
+    /// blocked was signed out on its next request (`"blocked"`).
+    /// `subject_hash` is the hash of the ended session's id.
+    ///
+    /// Emitted after the session is flushed, so a sign-out that failed leaves
+    /// no record claiming the session is over.
+    SessionEnded,
 
     // ── Account recovery (Story 4.6) ────────────────────────────────────────
     /// A recovery flow was initiated for an account.
@@ -195,6 +203,7 @@ impl SecurityEventKind {
             Self::SessionRevokedByUser => "session.revoked_by_user",
             Self::SessionRevokedByAdmin => "session.revoked_by_admin",
             Self::SessionIdCycled => "session.id_cycled",
+            Self::SessionEnded => "session.ended",
             Self::RecoveryInitiated => "recovery.initiated",
             Self::RecoveryMethodInitiated => "recovery.method_initiated",
             Self::RecoveryVerdict => "recovery.verdict",
@@ -648,6 +657,7 @@ mod tests {
             SecurityEventKind::SessionRevokedByUser,
             SecurityEventKind::SessionRevokedByAdmin,
             SecurityEventKind::SessionIdCycled,
+            SecurityEventKind::SessionEnded,
             SecurityEventKind::RecoveryInitiated,
             SecurityEventKind::RecoveryMethodInitiated,
             SecurityEventKind::RecoveryVerdict,

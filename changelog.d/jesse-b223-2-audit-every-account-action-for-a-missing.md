@@ -15,3 +15,11 @@ And an administrator deleting or cancelling someone else's account wrote no
 `account.deleted` either — only self-service deletion did, because the event
 lived at that route instead of in `UserService::delete`, the function both
 paths call. It has moved there, so both are recorded the same way now.
+
+Signing out had no event either. A login wrote `auth.login_succeeded` and
+`session.created`, and a revocation wrote `session.revoked_by_user` or
+`session.revoked_by_admin`, but logging out — and the sign-out of a blocked
+account's session on its next request — ended the session with nothing in
+the security log to say so. `session.ended` is new, written once the session
+is actually flushed, with `details.reason` saying which (`logout` or
+`blocked`) and the session id hashed as for every other session event.
