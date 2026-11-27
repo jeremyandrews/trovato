@@ -242,8 +242,8 @@ fn a_skip_behind_a_fresh_lock_stays_at_debug() {
 /// `LPOP` removes the item from Redis, so before each item was handled on its
 /// own task, a timeout landing while the handler waited on the database dropped
 /// the item for good: nothing left in Redis, nothing claimed to retry. Here the
-/// reindex handler is held on a row lock past the task's bound, the lock is then
-/// let go, and the item must still be reindexed.
+/// reindex handler is kept waiting for a database connection past the task's
+/// bound, the connection is then let go, and the item must still be reindexed.
 #[test]
 fn an_item_popped_before_a_task_timeout_is_still_handled() {
     use trovato_kernel::cron::{CronTasks, Queue, RedisQueue};
@@ -285,20 +285,23 @@ fn an_item_popped_before_a_task_timeout_is_still_handled() {
             .push("search:reindex", &item_id.to_string())
             .await
             .unwrap();
-        let tasks = CronTasks::new(app.db.clone(), queue.clone());
-
-        // Hold the row so the handler's UPDATE waits on it.
-        let mut blocker = app.db.begin().await.unwrap();
-        sqlx::query("SELECT 1 FROM item WHERE id = $1 FOR UPDATE")
-            .bind(item_id)
-            .execute(&mut *blocker)
+        // The tasks get a pool of one connection, and the test holds it, so the
+        // handler waits for a connection before its UPDATE is ever sent. (A
+        // statement already sent would finish on the server whatever became of
+        // the future that sent it, so a lock on the row would prove nothing.)
+        let one = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(1)
+            .acquire_timeout(Duration::from_secs(60))
+            .connect(&trovato_test_utils::env::database_url())
             .await
             .unwrap();
+        let tasks = CronTasks::new(one.clone(), queue.clone());
+        let blocker = one.acquire().await.unwrap();
 
         let cut_off = tokio::time::timeout(Duration::from_secs(1), tasks.process_queues()).await;
         assert!(
             cut_off.is_err(),
-            "the handler was meant to be stuck on the row lock: {cut_off:?}"
+            "the handler was meant to be waiting for a connection: {cut_off:?}"
         );
         assert_eq!(
             queue.len("search:reindex").await.unwrap(),
@@ -306,7 +309,7 @@ fn an_item_popped_before_a_task_timeout_is_still_handled() {
             "the item was popped before the task was cut off"
         );
 
-        blocker.commit().await.unwrap();
+        drop(blocker);
 
         let mut changed = 1;
         for _ in 0..100 {
