@@ -158,9 +158,16 @@ pub(crate) async fn import_user(run: &mut Run<'_>, r: UserRecord) -> Result<Outc
     }
 
     if stored.is_some() {
+        // `pass_changed` moves only when the hash actually changes (the old
+        // row's `pass`, read before this statement's own write, differs from
+        // the new one): a row whose hash is unchanged keeps its existing
+        // `pass_changed`, and a row whose new hash is empty (password
+        // cleared) gets `NULL`, matching `User::clear_password`.
         sqlx::query(
             "UPDATE users SET name = $2, mail = $3, status = $4, created = to_timestamp($5), \
-             pass = $6 WHERE id = $1",
+             pass = $6, pass_changed = CASE WHEN pass IS DISTINCT FROM $6 \
+             THEN (CASE WHEN $6 = '' THEN NULL ELSE NOW() END) ELSE pass_changed END \
+             WHERE id = $1",
         )
         .bind(r.id)
         .bind(&wanted.name)
@@ -173,8 +180,9 @@ pub(crate) async fn import_user(run: &mut Run<'_>, r: UserRecord) -> Result<Outc
         .context("failed to update the user")?;
     } else {
         sqlx::query(
-            "INSERT INTO users (id, name, pass, mail, is_admin, status, created) \
-             VALUES ($1, $2, $3, $4, false, $5, to_timestamp($6))",
+            "INSERT INTO users (id, name, pass, mail, is_admin, status, created, pass_changed) \
+             VALUES ($1, $2, $3, $4, false, $5, to_timestamp($6), \
+             CASE WHEN $3 <> '' THEN NOW() ELSE NULL END)",
         )
         .bind(r.id)
         .bind(&wanted.name)
