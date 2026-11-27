@@ -636,7 +636,7 @@ fn the_admin_plugin_listing_marks_raw_sql() {
 
         let row = |plugin: &str| {
             html.split("<tr>")
-                .find(|row| row.contains(&format!("<code>{plugin}</code>")))
+                .find(|row| row.contains(&format!(r#"<code id="row-{plugin}">{plugin}</code>"#)))
                 .unwrap_or_else(|| panic!("no row for {plugin}"))
                 .to_string()
         };
