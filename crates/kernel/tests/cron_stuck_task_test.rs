@@ -235,3 +235,137 @@ fn a_skip_behind_a_fresh_lock_stays_at_debug() {
         );
     });
 }
+
+/// An item `process_queues` has already popped is handled even when the task
+/// is cut off while handling it.
+///
+/// `LPOP` removes the item from Redis, so before each item was handled on its
+/// own task, a timeout landing while the handler waited on the database dropped
+/// the item for good: nothing left in Redis, nothing claimed to retry. Here the
+/// reindex handler is held on a row lock past the task's bound, the lock is then
+/// let go, and the item must still be reindexed.
+#[test]
+fn an_item_popped_before_a_task_timeout_is_still_handled() {
+    use trovato_kernel::cron::{CronTasks, Queue, RedisQueue};
+
+    run_test(async {
+        common::hold_until_cleanup(CRON_LOCK.lock().await);
+        let app = shared_app().await;
+
+        let item_id = uuid::Uuid::now_v7();
+        sqlx::query(
+            "INSERT INTO item (id, type, title, author_id, status, created, changed, promote, \
+             sticky, fields, language) \
+             VALUES ($1, 'page', 'B247 reindex', $2, 1, 1, 1, 0, 0, '{}'::jsonb, 'en')",
+        )
+        .bind(item_id)
+        .bind(uuid::Uuid::nil())
+        .execute(&app.db)
+        .await
+        .unwrap();
+        let pool = app.db.clone();
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query("DELETE FROM item WHERE id = $1")
+                .bind(item_id)
+                .execute(&pool)
+                .await;
+        });
+
+        let redis = redis::Client::open(trovato_test_utils::env::redis_url()).unwrap();
+        let queue = Arc::new(RedisQueue::new(redis));
+        // Nothing else in this binary uses these queues; start them empty.
+        for key in ["queue:email:send", "queue:search:reindex"] {
+            let _: () = redis::cmd("DEL")
+                .arg(key)
+                .query_async(&mut redis_conn().await)
+                .await
+                .unwrap();
+        }
+        queue
+            .push("search:reindex", &item_id.to_string())
+            .await
+            .unwrap();
+        let tasks = CronTasks::new(app.db.clone(), queue.clone());
+
+        // Hold the row so the handler's UPDATE waits on it.
+        let mut blocker = app.db.begin().await.unwrap();
+        sqlx::query("SELECT 1 FROM item WHERE id = $1 FOR UPDATE")
+            .bind(item_id)
+            .execute(&mut *blocker)
+            .await
+            .unwrap();
+
+        let cut_off = tokio::time::timeout(Duration::from_secs(1), tasks.process_queues()).await;
+        assert!(
+            cut_off.is_err(),
+            "the handler was meant to be stuck on the row lock: {cut_off:?}"
+        );
+        assert_eq!(
+            queue.len("search:reindex").await.unwrap(),
+            0,
+            "the item was popped before the task was cut off"
+        );
+
+        blocker.commit().await.unwrap();
+
+        let mut changed = 1;
+        for _ in 0..100 {
+            changed = sqlx::query_scalar::<_, i64>("SELECT changed FROM item WHERE id = $1")
+                .bind(item_id)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+            if changed > 1 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(
+            changed > 1,
+            "the popped item was never reindexed: a task timeout dropped it, and with \
+             it the only copy of the request"
+        );
+    });
+}
+
+/// A cron run whose database read of the queue-runner setting cannot finish
+/// times that read out, carries on, and gives the lock back.
+///
+/// The read sat outside every task bound, so a stalled database held the run,
+/// and with it the cron lock, for as long as the stall lasted.
+#[test]
+fn a_stalled_queue_runner_config_read_is_timed_out() {
+    run_test(async {
+        common::hold_until_cleanup(CRON_LOCK.lock().await);
+        let app = shared_app().await;
+        clear_lock().await;
+        defer_clear_lock();
+
+        let mut cron = CronService::new(
+            redis::Client::open(trovato_test_utils::env::redis_url()).unwrap(),
+            app.db.clone(),
+        );
+        cron.set_task_timeout(Duration::from_secs(1));
+
+        // Nothing can read site_config while this is held.
+        let mut blocker = app.db.begin().await.unwrap();
+        sqlx::query("LOCK TABLE site_config IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut *blocker)
+            .await
+            .unwrap();
+
+        let result = tokio::time::timeout(Duration::from_secs(120), cron.run()).await;
+        let holder = lock_holder().await;
+        blocker.rollback().await.unwrap();
+
+        let result = result.expect("the run never came back: a stalled read holds the whole run");
+        let CronResult::Completed { tasks_run, .. } = &result else {
+            panic!("the run did not complete: {result:?}");
+        };
+        assert!(
+            tasks_run.iter().any(|t| t == "queue_runner_config:TIMEOUT"),
+            "the stalled read must be recorded as timed out: {tasks_run:?}"
+        );
+        assert_eq!(holder, None, "the run must give the lock back at once");
+    });
+}

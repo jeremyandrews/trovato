@@ -98,6 +98,34 @@ async fn a_blocking_pop_from_a_silent_redis_comes_back() {
     queue_pop(Mode::SilentOnCommand, 2).await;
 }
 
+/// A blocking pop is allowed its whole block time plus a margin, not the
+/// ordinary five-second response timeout: a `BLPOP` for ten seconds on an empty
+/// list legitimately answers at ten. The fake answers with the same nil an
+/// empty list gives, but at eight seconds, after the ordinary timeout and well
+/// inside the blocking one, so a pop given the ordinary timeout fails here.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_blocking_pop_waits_out_its_block_time() {
+    let _serial = SERIAL.lock().await;
+    let url = fake_redis(Mode::ReplyAfter(Duration::from_secs(8))).await;
+    let queue = RedisQueue::new(redis::Client::open(url.as_str()).unwrap());
+    let started = Instant::now();
+    let result = must_return(
+        "RedisQueue::pop(timeout_secs = 10) against a reply at 8 s",
+        queue.pop("b247:slow", 10),
+    )
+    .await;
+    assert!(
+        matches!(result, Ok(None)),
+        "an empty-list answer inside the pop's own block time is an empty queue, \
+         not an error: {result:?}"
+    );
+    assert!(
+        started.elapsed() >= Duration::from_secs(8),
+        "the pop came back before the reply was sent, in {:?}",
+        started.elapsed()
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_pop_from_a_redis_that_resets_comes_back() {
     queue_pop(Mode::ResetOnCommand, 0).await;

@@ -23,6 +23,9 @@ pub enum Mode {
     SilentOnCommand,
     /// Answer the setup, then reset the connection mid-command.
     ResetOnCommand,
+    /// Answer the setup, then answer the command with a nil reply (what a
+    /// `BLPOP` that timed out on an empty list sends) after this long.
+    ReplyAfter(Duration),
 }
 
 /// Start the fake Redis and return its URL.
@@ -60,6 +63,13 @@ async fn serve(mut socket: TcpStream, mode: Mode) {
                 continue;
             }
             match mode {
+                Mode::ReplyAfter(delay) => {
+                    tokio::time::sleep(delay).await;
+                    if socket.write_all(b"*-1\r\n").await.is_err() {
+                        return;
+                    }
+                    continue;
+                }
                 Mode::ResetOnCommand => {
                     // Linger zero turns the close into a reset.
                     let _ = socket.set_zero_linger();

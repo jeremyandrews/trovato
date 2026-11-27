@@ -1417,7 +1417,17 @@ impl CronService {
         // and follows the same resident-runner hand-off, but is independent of
         // any plugin `tap_queue_worker`, so it runs even when no plugin
         // implements one.
-        let runner_owns_drain = self.queue_runner_config().await.enabled;
+        // A config read that cannot finish counts as "runner off", the answer a
+        // failed read already gives: the cron drain then runs, and the `SKIP
+        // LOCKED` claims make that safe even if a runner is draining too.
+        let runner_owns_drain = bounded(
+            "queue_runner_config",
+            self.task_timeout,
+            &mut tasks_run,
+            self.queue_runner_config(),
+        )
+        .await
+        .is_some_and(|config| config.enabled);
         if runner_owns_drain {
             debug!("resident queue-runner enabled; cron skips queue drains (D-46)");
         } else {
@@ -1458,40 +1468,83 @@ impl CronService {
         }
 
         // Prune search analytics past the retention window, at most once a day.
+        // One DELETE, so cutting it off at the task bound loses nothing: the
+        // rows it did not reach are pruned on a later day.
         if let Some(ref search) = self.search {
-            match self.claim_daily(SEARCH_ANALYTICS_PRUNE_KEY).await {
-                Ok(true) => {
-                    let retention = search.settings().await.analytics_retention_days;
-                    match search.analytics().prune(retention).await {
-                        Ok(count) => {
-                            tasks_run.push(format!("prune_search_analytics: {count}"));
+            let prune = async {
+                match self.claim_daily(SEARCH_ANALYTICS_PRUNE_KEY).await {
+                    Ok(true) => {
+                        let retention = search.settings().await.analytics_retention_days;
+                        match search.analytics().prune(retention).await {
+                            Ok(count) => Some(format!("prune_search_analytics: {count}")),
+                            Err(e) => {
+                                warn!(error = %e, "failed to prune search analytics");
+                                None
+                            }
                         }
-                        Err(e) => warn!(error = %e, "failed to prune search analytics"),
+                    }
+                    Ok(false) => None,
+                    Err(e) => {
+                        warn!(error = %e, "failed to claim the daily search analytics prune");
+                        None
                     }
                 }
-                Ok(false) => {}
-                Err(e) => warn!(error = %e, "failed to claim the daily search analytics prune"),
+            };
+            if let Some(Some(entry)) = bounded(
+                "prune_search_analytics",
+                self.task_timeout,
+                &mut tasks_run,
+                prune,
+            )
+            .await
+            {
+                tasks_run.push(entry);
             }
         }
 
         // Rebuild Pagefind index if the trovato_search plugin is enabled and requested it
         if self.pagefind_enabled {
             if let Some(items) = self.items.clone() {
-                let compaction = match self.search {
-                    Some(ref search) => search.settings().await.index_compaction_percent,
-                    None => DEFAULT_COMPACTION_PERCENT,
-                };
-                match pagefind::maybe_rebuild_index(
-                    &self.pool,
-                    &self.pagefind_output_dir,
-                    &items,
-                    compaction,
-                )
-                .await
-                {
-                    Ok(true) => tasks_run.push("pagefind_rebuild".to_string()),
-                    Ok(false) => {}
-                    Err(e) => warn!(error = %e, "pagefind index rebuild failed"),
+                // The rebuild writes the index in place, so it must never be
+                // cut off part way: that would publish a half-written index. It
+                // runs on a task of its own instead, and the run waits on it for
+                // one task's bound. A rebuild still going then carries on in the
+                // background and the run moves on; the guard keeps the next run
+                // from starting a second writer on the same directory meanwhile.
+                match PagefindRebuild::start() {
+                    None => {
+                        debug!("a pagefind rebuild is still running; not starting another");
+                    }
+                    Some(guard) => {
+                        let pool = self.pool.clone();
+                        let output_dir = self.pagefind_output_dir.clone();
+                        let search = self.search.clone();
+                        let rebuild = tokio::spawn(async move {
+                            let _guard = guard;
+                            let compaction = match search {
+                                Some(ref search) => {
+                                    search.settings().await.index_compaction_percent
+                                }
+                                None => DEFAULT_COMPACTION_PERCENT,
+                            };
+                            pagefind::maybe_rebuild_index(&pool, &output_dir, &items, compaction)
+                                .await
+                        });
+                        match bounded(
+                            "pagefind_rebuild",
+                            self.task_timeout,
+                            &mut tasks_run,
+                            rebuild,
+                        )
+                        .await
+                        {
+                            Some(Ok(Ok(true))) => tasks_run.push("pagefind_rebuild".to_string()),
+                            Some(Ok(Ok(false))) => {}
+                            Some(Ok(Err(e))) => warn!(error = %e, "pagefind index rebuild failed"),
+                            Some(Err(e)) => warn!(error = %e, "pagefind index rebuild panicked"),
+                            None => {}
+                        }
+                    }
                 }
             } else {
                 warn!(
@@ -1932,8 +1985,21 @@ impl CronService {
             warn!(error = %e, "failed to reap exhausted embed queue items");
         }
 
+        // The same time budget the plugin drain keeps, checked before each
+        // claim. Without it the only stop was the item cap, so a slow provider
+        // kept this pass claiming fresh batches until the cron run's outer
+        // bound cut it off, and every job in the batch it was holding then
+        // spent an attempt on work that was never allowed to finish.
+        let deadline = std::time::Instant::now() + self.drain_budget;
         let mut processed: i64 = 0;
         while processed < MAX_QUEUE_ITEMS_PER_CYCLE {
+            if std::time::Instant::now() >= deadline {
+                debug!(
+                    budget_secs = self.drain_budget.as_secs(),
+                    "embed drain budget spent; remaining jobs wait for the next cycle"
+                );
+                break;
+            }
             let batch =
                 KERNEL_EMBED_CONCURRENCY.min((MAX_QUEUE_ITEMS_PER_CYCLE - processed) as usize);
             let claimed = self
@@ -1944,16 +2010,24 @@ impl CronService {
             }
             processed += claimed.len() as i64;
 
-            let mut set = tokio::task::JoinSet::new();
-            for job in claimed {
-                let pool = self.pool.clone();
-                let ai = self.ai_providers.clone();
-                let vs = self.vector_store.clone();
-                set.spawn(async move { run_embed_job(pool, ai, vs, job).await });
-            }
+            // Plain spawned tasks, not a `JoinSet`: dropping a `JoinSet` aborts
+            // its tasks, so a pass cancelled from outside (the cron run's bound
+            // on this drain) used to abort claimed jobs part way and leave each
+            // with an attempt spent and no outcome recorded. A dropped
+            // `JoinHandle` only stops waiting; the job finishes and records its
+            // own outcome.
+            let handles: Vec<_> = claimed
+                .into_iter()
+                .map(|job| {
+                    let pool = self.pool.clone();
+                    let ai = self.ai_providers.clone();
+                    let vs = self.vector_store.clone();
+                    tokio::spawn(async move { run_embed_job(pool, ai, vs, job).await })
+                })
+                .collect();
 
-            while let Some(joined) = set.join_next().await {
-                match joined {
+            for handle in handles {
+                match handle.await {
                     Ok(Ok(outcome)) => stats.record(outcome),
                     Ok(Err(e)) => {
                         warn!(error = %e, "embed job bookkeeping failed");
@@ -2406,6 +2480,39 @@ async fn bounded<T>(
             tasks_run.push(format!("{task}:TIMEOUT"));
             None
         }
+    }
+}
+
+/// Whether this process has a Pagefind rebuild in flight.
+static PAGEFIND_REBUILDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// The one Pagefind rebuild this process may have running at a time.
+///
+/// A cron run waits on a rebuild for one task's bound and then leaves it running
+/// in the background (see `run`), so the next run can arrive while it is still
+/// writing. This keeps that run from starting a second writer on the same
+/// directory. Dropped when the rebuild ends, however it ends.
+struct PagefindRebuild;
+
+impl PagefindRebuild {
+    /// Claim the slot, or `None` if a rebuild is already running.
+    fn start() -> Option<Self> {
+        PAGEFIND_REBUILDING
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for PagefindRebuild {
+    fn drop(&mut self) {
+        PAGEFIND_REBUILDING.store(false, std::sync::atomic::Ordering::Release);
     }
 }
 

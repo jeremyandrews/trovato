@@ -306,6 +306,16 @@ impl CronTasks {
     /// Currently processes:
     /// - email:send - Send queued emails
     /// - search:reindex - Reindex items for search
+    ///
+    /// `LPOP` takes an item off its list for good, so an item popped and then
+    /// handled inline was lost whenever this future was dropped between the
+    /// two, which is exactly what the cron run's task timeout does to a task
+    /// stuck on a slow database. Each popped item is therefore handled on a
+    /// task of its own: dropping this future stops further pops, and the item
+    /// already taken finishes on its own task. What remains is the pop's own
+    /// round trip: dropped while an `LPOP` reply is in flight, that one item is
+    /// gone, as it always was. Closing that would take a processing list
+    /// (`LMOVE`), which these two legacy queues do not justify.
     pub async fn process_queues(&self) -> Result<u64> {
         use super::Queue;
 
@@ -315,7 +325,9 @@ impl CronTasks {
         for _ in 0..50 {
             match self.queue.pop("email:send", 0).await? {
                 Some(item) => {
-                    if let Err(e) = self.process_email_item(&item).await {
+                    let email = self.email.clone();
+                    let handled = tokio::spawn(Self::process_email_item(email, item)).await;
+                    if let Err(e) = handled.map_err(anyhow::Error::from).and_then(|r| r) {
                         info!(error = %e, "failed to process email queue item");
                     }
                     total_processed += 1;
@@ -328,7 +340,9 @@ impl CronTasks {
         for _ in 0..100 {
             match self.queue.pop("search:reindex", 0).await? {
                 Some(item) => {
-                    if let Err(e) = self.process_reindex_item(&item).await {
+                    let pool = self.pool.clone();
+                    let handled = tokio::spawn(Self::process_reindex_item(pool, item)).await;
+                    if let Err(e) = handled.map_err(anyhow::Error::from).and_then(|r| r) {
                         info!(error = %e, "failed to process reindex queue item");
                     }
                     total_processed += 1;
@@ -388,9 +402,12 @@ impl CronTasks {
     ///
     /// Expects JSON with `to`, `subject`, and `body` fields.
     /// Drops the email with a debug log if no email service is configured.
-    async fn process_email_item(&self, item: &str) -> Result<()> {
+    async fn process_email_item(
+        email: Option<Arc<services::email::EmailService>>,
+        item: String,
+    ) -> Result<()> {
         let email_data: serde_json::Value =
-            serde_json::from_str(item).context("failed to parse email item")?;
+            serde_json::from_str(&item).context("failed to parse email item")?;
 
         let to = email_data
             .get("to")
@@ -405,7 +422,7 @@ impl CronTasks {
             .and_then(|v| v.as_str())
             .context("email item missing 'body' field")?;
 
-        let Some(ref email_service) = self.email else {
+        let Some(ref email_service) = email else {
             debug!(to = %to, subject = %subject, "email service not configured, dropping queued email");
             return Ok(());
         };
@@ -465,7 +482,7 @@ impl CronTasks {
     }
 
     /// Process a single reindex queue item.
-    async fn process_reindex_item(&self, item: &str) -> Result<()> {
+    async fn process_reindex_item(pool: PgPool, item: String) -> Result<()> {
         // Item is just the UUID of the item to reindex
         let item_id: uuid::Uuid = item.parse().context("invalid item ID")?;
 
@@ -479,7 +496,7 @@ impl CronTasks {
         )
         .bind(item_id)
         .bind(chrono::Utc::now().timestamp())
-        .execute(&self.pool)
+        .execute(&pool)
         .await
         .context("failed to reindex item")?;
         crate::cache::generation::bump(crate::cache::generation::CacheKind::Items);

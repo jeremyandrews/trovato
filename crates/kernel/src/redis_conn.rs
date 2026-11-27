@@ -97,18 +97,72 @@ async fn connect(
 mod tests {
     use std::path::Path;
 
-    /// The calls that open a Redis connection without our timeouts. This file
-    /// is the one place allowed to name them.
+    /// What a call that opens a Redis connection without our timeouts looks
+    /// like. Prefixes and fragments rather than whole names, so a variant
+    /// (`_with_timeouts`, `_async_std_`, a `_manager_with_backoff`) is caught
+    /// without being listed. This file is the one place allowed to use them.
     const UNBOUNDED_CALLS: &[&str] = &[
-        "get_multiplexed_async_connection",
-        "get_multiplexed_tokio_connection",
+        "get_multiplexed_",
+        "create_multiplexed_",
         "get_async_connection",
+        "get_async_std_connection",
         "get_tokio_connection",
-        "get_connection_manager",
+        "connection_manager",
         "ConnectionManager",
         "get_async_pubsub",
+        "get_async_monitor",
         "get_connection(",
+        "get_connection_with_timeout",
     ];
+
+    /// Every `redis::Client` method that opens a connection, at the locked
+    /// version (0.27.6, `src/client.rs`). Kept by hand: when the crate is
+    /// upgraded, compare this with the new `Client` and add what is new.
+    const CLIENT_CONNECTION_METHODS: &[&str] = &[
+        "get_connection",
+        "get_connection_with_timeout",
+        "get_async_connection",
+        "get_tokio_connection",
+        "get_async_std_connection",
+        "get_multiplexed_async_connection",
+        "get_multiplexed_async_connection_with_timeouts",
+        "get_multiplexed_async_connection_with_config",
+        "get_multiplexed_tokio_connection_with_response_timeouts",
+        "get_multiplexed_tokio_connection",
+        "get_multiplexed_async_std_connection_with_timeouts",
+        "get_multiplexed_async_std_connection",
+        "create_multiplexed_tokio_connection_with_response_timeout",
+        "create_multiplexed_tokio_connection",
+        "create_multiplexed_async_std_connection_with_response_timeout",
+        "create_multiplexed_async_std_connection",
+        "get_tokio_connection_manager",
+        "get_connection_manager",
+        "get_tokio_connection_manager_with_backoff",
+        "get_tokio_connection_manager_with_backoff_and_timeouts",
+        "get_connection_manager_with_backoff_and_timeouts",
+        "get_connection_manager_with_config",
+        "get_connection_manager_with_backoff",
+        "get_async_pubsub",
+        "get_async_monitor",
+    ];
+
+    /// The guard below is only as good as its patterns: each way the locked
+    /// crate offers to open a connection, written as a call, must match one.
+    #[test]
+    fn the_guard_catches_every_way_the_redis_client_opens_a_connection() {
+        let missed: Vec<&str> = CLIENT_CONNECTION_METHODS
+            .iter()
+            .copied()
+            .filter(|method| {
+                let call = format!("client.{method}().await");
+                !UNBOUNDED_CALLS.iter().any(|pattern| call.contains(pattern))
+            })
+            .collect();
+        assert!(
+            missed.is_empty(),
+            "the guard would let these through unbounded: {missed:?}"
+        );
+    }
 
     fn rust_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
         for entry in std::fs::read_dir(dir).unwrap() {
