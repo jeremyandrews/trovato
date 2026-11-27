@@ -123,7 +123,11 @@ fn every_listing_answers_every_sort_key_both_ways() {
         // Three listings belong to plugins: each answers only while its plugin
         // is on, and reads tables that, on a fresh database, exist only once
         // the plugin's migrations have run.
-        for plugin in ["trovato_audit_log", "trovato_categories", "trovato_comments"] {
+        for plugin in [
+            "trovato_audit_log",
+            "trovato_categories",
+            "trovato_comments",
+        ] {
             common::ensure_plugin_tables(app, plugin);
             app.ensure_plugin_enabled(plugin).await;
         }
