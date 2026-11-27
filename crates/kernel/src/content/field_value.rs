@@ -97,9 +97,21 @@ pub fn form_text(field_type: &FieldType, value: Option<&Value>) -> String {
             other => scalar_text(other).unwrap_or_default(),
         },
         FieldType::Date => date_text(scalar_of(value)),
-        FieldType::Text { .. } | FieldType::TextLong | FieldType::Email | FieldType::File => {
-            scalar_text(scalar_of(value)).unwrap_or_default()
-        }
+        FieldType::Text { .. }
+        | FieldType::TextLong
+        | FieldType::Email
+        | FieldType::File
+        | FieldType::List => scalar_text(scalar_of(value)).unwrap_or_default(),
+        // The entered text, not the number: `scalar_of` already reads a
+        // `{"value": …}` wrapper, which is exactly how a Telephone is stored.
+        FieldType::Telephone => scalar_text(scalar_of(value)).unwrap_or_default(),
+        // A Link has no `value` key to read with `scalar_of`: its text widget
+        // shows the `uri`.
+        FieldType::Link => value
+            .get("uri")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
         // `FieldType` is `#[non_exhaustive]`: a kind this kernel has no arm
         // for yet shows as text (see `trovato_sdk::types::FieldType`).
         _ => scalar_text(scalar_of(value)).unwrap_or_default(),
@@ -142,6 +154,26 @@ pub fn form_format(value: Option<&Value>) -> String {
     }
 }
 
+/// The title a Link widget's sibling text input shows for a stored value.
+pub fn form_link_title(value: Option<&Value>) -> String {
+    value
+        .filter(|v| !v.is_null())
+        .and_then(|v| v.get("title"))
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// Whether a Link widget's sibling "open in a new tab" checkbox shows
+/// checked for a stored value.
+pub fn form_link_new_tab(value: Option<&Value>) -> bool {
+    value
+        .filter(|v| !v.is_null())
+        .and_then(|v| v.get("new_tab"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+}
+
 /// The values a multi value field's widgets show, one per stored value: a
 /// stored list in order, a single stored value as one, nothing as none.
 pub fn form_values(value: Option<&Value>) -> Vec<&Value> {
@@ -167,6 +199,247 @@ pub fn reference_id(value: &Value) -> String {
             .unwrap_or_default()
             .to_string(),
         _ => String::new(),
+    }
+}
+
+/// The maximum length of a Link's `uri`.
+const MAX_LINK_URI_LENGTH: usize = 2048;
+
+/// The maximum length of a Link's `title`.
+const MAX_LINK_TITLE_LENGTH: usize = 255;
+
+/// The maximum length of a Telephone's entered text.
+const MAX_TELEPHONE_LENGTH: usize = 32;
+
+/// Whether `uri` is a Link field's allowed shape: an absolute `http` or
+/// `https` URL with a host, or a local path ([`crate::routes::front::is_local_path`],
+/// which covers an item reference written as `/item/<uuid>`).
+///
+/// Refused outright: `javascript:`, `data:`, `mailto:` and any other scheme,
+/// a protocol-relative `//host`, a bare `example.com` with no path, and any
+/// whitespace or control character. The one place this rule lives; the form
+/// parser, the JSON check and the one write check every path reaches all call
+/// it.
+pub fn is_valid_link_uri(uri: &str) -> bool {
+    if uri.is_empty() || uri.len() > MAX_LINK_URI_LENGTH {
+        return false;
+    }
+    if uri.chars().any(|c| c.is_control() || c.is_whitespace()) {
+        return false;
+    }
+    match url::Url::parse(uri) {
+        Ok(parsed) => matches!(parsed.scheme(), "http" | "https") && parsed.host().is_some(),
+        Err(_) => crate::routes::front::is_local_path(uri),
+    }
+}
+
+/// The allowed keys of a `List` field, in order, read from
+/// `settings.allowed_values` (`[{"key": "...", "label": "..."}]`).
+pub fn list_options(field: &FieldDefinition) -> Vec<(String, String)> {
+    field
+        .settings
+        .get("allowed_values")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(|v| {
+                    let key = v.get("key")?.as_str()?.to_string();
+                    let label = v
+                        .get("label")
+                        .and_then(Value::as_str)
+                        .map_or_else(|| key.clone(), str::to_string);
+                    Some((key, label))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether `key` is one of `field`'s allowed values: the one place a List
+/// write is judged against its allowed keys.
+pub fn is_valid_list_key(field: &FieldDefinition, key: &str) -> bool {
+    list_options(field).iter().any(|(k, _)| k == key)
+}
+
+/// The label shown for a List field's stored `key`, or `None` when the key is
+/// no longer one of the field's allowed values.
+pub fn list_label_for(field: &FieldDefinition, key: &str) -> Option<String> {
+    list_options(field)
+        .into_iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, label)| label)
+}
+
+/// Whether `text` holds only the characters a telephone number may be entered
+/// with: digits, spaces, and `+ ( ) - . /`.
+pub fn is_valid_telephone_text(text: &str) -> bool {
+    !text.is_empty()
+        && text.chars().count() <= MAX_TELEPHONE_LENGTH
+        && text
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, ' ' | '+' | '(' | ')' | '-' | '.' | '/'))
+}
+
+/// The E.164 form of an entered telephone number, when it has an explicit
+/// country prefix: a leading `+` or `00`, whose remainder is 7 to 15 digits,
+/// the first of them not `0`. Anything else (a national number with no
+/// country prefix) has no E.164 form: it is stored as entered.
+///
+/// The one place this normalisation lives: every write path fills `e164` with
+/// it before the value is checked, and the check refuses a written `e164`
+/// that disagrees with it.
+pub fn telephone_e164(entered: &str) -> Option<String> {
+    let cleaned: String = entered
+        .trim()
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '(' | ')' | '-' | '.' | '/'))
+        .collect();
+    let digits = if let Some(rest) = cleaned.strip_prefix('+') {
+        rest
+    } else if let Some(rest) = cleaned.strip_prefix("00") {
+        rest
+    } else {
+        return None;
+    };
+    if digits.len() < 7 || digits.len() > 15 {
+        return None;
+    }
+    if !digits.chars().all(|c| c.is_ascii_digit()) || digits.starts_with('0') {
+        return None;
+    }
+    Some(format!("+{digits}"))
+}
+
+/// The value-shape rule for a Link, List or Telephone field: the one place it
+/// is judged, called from the form parser ([`parse`] builds its own value, but
+/// uses the same predicates), the JSON check ([`check_one`]) and the one write
+/// check every path reaches
+/// ([`crate::content::field_values::check_field_values`]).
+///
+/// `None` means the value is valid (null is always valid: it clears the
+/// field); `Some` is the refusal, without the field's label, which the caller
+/// prefixes.
+pub fn check_new_kind(field: &FieldDefinition, value: &Value) -> Option<String> {
+    if value.is_null() {
+        return None;
+    }
+    match &field.field_type {
+        FieldType::List => {
+            let ok = matches!(value, Value::String(key) if is_valid_list_key(field, key));
+            (!ok).then(|| "is not one of the allowed values.".to_string())
+        }
+        FieldType::Link => {
+            let (uri, title, new_tab) = match value {
+                Value::Object(obj) => (
+                    obj.get("uri").and_then(Value::as_str),
+                    obj.get("title"),
+                    obj.get("new_tab"),
+                ),
+                Value::String(s) => (Some(s.as_str()), None, None),
+                _ => (None, None, None),
+            };
+            if !uri.is_some_and(is_valid_link_uri) {
+                return Some("is not a valid link.".to_string());
+            }
+            if let Some(title) = title
+                && !title
+                    .as_str()
+                    .is_some_and(|s| s.chars().count() <= MAX_LINK_TITLE_LENGTH)
+            {
+                return Some(format!(
+                    "title must be at most {MAX_LINK_TITLE_LENGTH} characters."
+                ));
+            }
+            if let Some(new_tab) = new_tab
+                && !new_tab.is_boolean()
+            {
+                return Some("new_tab must be true or false.".to_string());
+            }
+            None
+        }
+        FieldType::Telephone => {
+            let (entered, e164) = match value {
+                Value::String(s) => (Some(s.as_str()), None),
+                Value::Object(obj) => (obj.get("value").and_then(Value::as_str), obj.get("e164")),
+                _ => (None, None),
+            };
+            let Some(entered) = entered else {
+                return Some("is not a valid telephone number.".to_string());
+            };
+            if !is_valid_telephone_text(entered) {
+                return Some("must hold only digits, spaces and + ( ) - . /".to_string());
+            }
+            if let Some(e164) = e164 {
+                let expected = telephone_e164(entered);
+                let matches =
+                    matches!(e164, Value::String(s) if Some(s.as_str()) == expected.as_deref());
+                if !matches {
+                    return Some("has an e164 that does not match its value.".to_string());
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Fill `e164` on every `Telephone` value `fields` holds, before the write is
+/// checked: the one point every write path (`ItemService` create and update,
+/// `trovato import`) passes a value through, so a caller that sends a bare
+/// string or `{"value": …}` with no `e164` gets the canonical object stored,
+/// and [`check_new_kind`] never sees a value it would otherwise refuse for a
+/// missing `e164`. A field the write leaves unchanged (`previous` holds the
+/// same value) is left alone.
+pub fn canonicalize_field_values(
+    fields: &mut Value,
+    definitions: &[FieldDefinition],
+    previous: Option<&Value>,
+) {
+    let Some(map) = fields.as_object_mut() else {
+        return;
+    };
+    for field in definitions
+        .iter()
+        .filter(|f| matches!(f.field_type, FieldType::Telephone))
+    {
+        let name = &field.field_name;
+        if previous.is_some_and(|p| p.get(name) == map.get(name)) {
+            continue;
+        }
+        let Some(value) = map.get_mut(name) else {
+            continue;
+        };
+        canonicalize_telephone_value(value);
+    }
+}
+
+/// Canonicalise one Telephone value (or array of values) in place: a bare
+/// string or a `{"value": …}` object missing `e164` gets it filled in from
+/// [`telephone_e164`]; anything else is left for [`check_new_kind`] to refuse.
+fn canonicalize_telephone_value(value: &mut Value) {
+    match value {
+        Value::Array(values) => {
+            for v in values.iter_mut() {
+                canonicalize_telephone_value(v);
+            }
+        }
+        Value::String(s) => {
+            let entered = s.trim().to_string();
+            let mut obj = serde_json::json!({ "value": entered });
+            if let Some(e164) = telephone_e164(&entered) {
+                obj["e164"] = Value::String(e164);
+            }
+            *value = obj;
+        }
+        Value::Object(obj) if obj.contains_key("value") && !obj.contains_key("e164") => {
+            if let Some(entered) = obj.get("value").and_then(Value::as_str)
+                && let Some(e164) = telephone_e164(entered)
+            {
+                obj.insert("e164".to_string(), Value::String(e164));
+            }
+        }
+        _ => {}
     }
 }
 
@@ -201,7 +474,7 @@ fn normalized(field_type: &FieldType, text: &str) -> String {
     match field_type {
         FieldType::TextLong => text.replace("\r\n", "\n").replace('\r', "\n"),
         FieldType::Email => text.replace(['\r', '\n'], "").trim().to_string(),
-        FieldType::Integer | FieldType::Float => text.trim().to_string(),
+        FieldType::Integer | FieldType::Float | FieldType::Telephone => text.trim().to_string(),
         _ => text.replace(['\r', '\n'], ""),
     }
 }
@@ -347,6 +620,37 @@ pub fn parse(
                 ValidationError::field(name, format!("{}: invalid page data.", field.label))
             })
         }
+        FieldType::List => {
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            if !is_valid_list_key(field, trimmed) {
+                return Err(ValidationError::field(
+                    name,
+                    format!("{} is not one of the allowed values.", field.label),
+                ));
+            }
+            Ok(Some(Value::String(trimmed.to_string())))
+        }
+        FieldType::Telephone => {
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            if !is_valid_telephone_text(trimmed) {
+                return Err(ValidationError::field(
+                    name,
+                    format!(
+                        "{} must hold only digits, spaces and + ( ) - . /",
+                        field.label
+                    ),
+                ));
+            }
+            let mut value = serde_json::json!({ "value": trimmed });
+            if let Some(e164) = telephone_e164(trimmed) {
+                value["e164"] = Value::String(e164);
+            }
+            Ok(Some(value))
+        }
         FieldType::Text { .. }
         | FieldType::Date
         | FieldType::File
@@ -443,6 +747,10 @@ fn check_one(
             wrapped_scalar
         }
         FieldType::Text { .. } | FieldType::Date | FieldType::File => wrapped_scalar,
+        FieldType::List | FieldType::Link | FieldType::Telephone => {
+            return check_new_kind(field, value)
+                .map_or(Ok(()), |message| Err(format!("{label}: {message}")));
+        }
         // `FieldType` is `#[non_exhaustive]`: an unknown kind takes a scalar.
         _ => wrapped_scalar,
     };
@@ -471,6 +779,9 @@ fn type_name(field_type: &FieldType) -> &'static str {
         FieldType::Compound { .. } => "compound value",
         FieldType::Blocks => "list of blocks",
         FieldType::PageBuilder => "page",
+        FieldType::Link => "link",
+        FieldType::List => "list value",
+        FieldType::Telephone => "telephone number",
         _ => "value",
     }
 }

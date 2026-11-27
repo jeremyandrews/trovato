@@ -147,6 +147,17 @@ pub fn check_field_values(
             errors.push(refuse(message));
         }
 
+        if matches!(
+            field.field_type,
+            FieldType::Link | FieldType::List | FieldType::Telephone
+        ) {
+            for v in crate::content::field_value::form_values(Some(value)) {
+                if let Some(message) = crate::content::field_value::check_new_kind(field, v) {
+                    errors.push(refuse(format!("{}: {message}", field.label)));
+                }
+            }
+        }
+
         let FieldType::CategoryReference(category) = &field.field_type else {
             continue;
         };
