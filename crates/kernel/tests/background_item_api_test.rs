@@ -540,6 +540,61 @@ fn without_item_background_query_is_still_refused() {
     });
 }
 
+/// A startup that succeeds hands the pending `tap_install` task its services
+/// only once gather is fully bound, and the task then claims the hook.
+///
+/// `AppState::new` asserts at the hand-off that gather's item-access seam,
+/// record registry and user service are all in place. The install task runs
+/// on another worker as soon as it is woken, so a hand-off above any of those
+/// bindings would let a `query` from `tap_install` read rows that skipped one,
+/// such as rows without `author`. Here a hand-off placed too early panics
+/// startup instead of racing it.
+#[test]
+fn a_successful_startup_hands_tap_install_a_fully_bound_gather() {
+    const NAME: &str = "test_item_background_install_ok";
+    run_test(async {
+        let (pool, lock) = locked().await;
+        let saved = save_status(&pool, NAME).await;
+        trovato_kernel::plugin::status::install_plugin(&pool, NAME, "1.0.0")
+            .await
+            .expect("enable the fixture");
+        sqlx::query("UPDATE plugin_status SET tap_install_called = FALSE WHERE name = $1")
+            .bind(NAME)
+            .execute(&pool)
+            .await
+            .expect("mark tap_install pending");
+
+        let dir = fixture_dir(NAME, true);
+        let plugins = dir.clone();
+        let app = TestApp::with_config(move |config| {
+            config.plugins_dirs = vec![plugins];
+            config.database_max_connections = APP_MAX_CONNECTIONS;
+        })
+        .await;
+
+        let mut called = false;
+        for _ in 0..80 {
+            called =
+                sqlx::query_scalar("SELECT tap_install_called FROM plugin_status WHERE name = $1")
+                    .bind(NAME)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("read the claim");
+            if called {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        restore_status(&pool, NAME, saved).await;
+        unlock(pool, lock).await;
+        std::fs::remove_dir_all(&dir).ok();
+        drop(app);
+
+        assert!(called, "the install task never claimed tap_install");
+    });
+}
+
 /// A startup that fails after the `tap_install` task is spawned leaves every
 /// pending hook pending.
 ///

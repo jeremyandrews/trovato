@@ -1101,13 +1101,6 @@ impl AppState {
         // a gather naming a `record_type` resolves it to its table + field map.
         gather.set_record_types(record_types.clone());
 
-        // Only now is the install task handed both: gather has its item-access
-        // seam and record registry, so a `query` from `tap_install` reads
-        // through the same checks a request does.
-        if let Some(tx) = tap_install_items.take() {
-            let _ = tx.send((items.clone(), gather.clone()));
-        }
-
         // Create cron service with file service for proper cleanup
         let mut cron = CronService::with_file_service(redis.clone(), db.clone(), files.clone());
 
@@ -1141,6 +1134,20 @@ impl AppState {
         // before UserService, so it holds a OnceLock this fills, same as the
         // item-access seam above.
         gather.set_user_service(users.clone());
+
+        // Only now is the install task handed both. This is the last of
+        // gather's late bindings (item access, record types, users), and the
+        // task runs on another worker the moment it is woken: handed gather any
+        // earlier, a `query` from `tap_install` could run with a seam still
+        // unset, its rows missing `author` or worse. The assertion keeps a
+        // later binding from landing below this line unnoticed.
+        if let Some(tx) = tap_install_items.take() {
+            debug_assert!(
+                gather.late_bindings_complete(),
+                "gather handed to tap_install before every late binding"
+            );
+            let _ = tx.send((items.clone(), gather.clone()));
+        }
 
         // Create role service (depends on permission service for cache invalidation)
         let roles = Arc::new(services::role::RoleService::new(
