@@ -5,8 +5,11 @@
 //! uses all three at once, so this file is where they are proven to work
 //! *together* rather than one at a time:
 //!
-//! - the form posts with no JavaScript, carrying a `_token` field the kernel
-//!   minted and handed to the plugin in `ApiRequest::csrf_token`;
+//! - the form is the kernel's: the plugin describes it in `ApiResponse::form`,
+//!   the kernel builds it through `FormService` (its `_token` and
+//!   `_form_build_id`), renders it with the site's form templates, and checks
+//!   a submission before the plugin hears of it (B83b). It posts with no
+//!   JavaScript;
 //! - the page arrives inside the site's theme, with the site header and
 //!   navigation around it;
 //! - the message is delivered through the `mail` host interface to the site's
@@ -111,8 +114,27 @@ async fn text_body(response: axum::response::Response) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// GET the form: the session cookie, the page, and the token out of it.
-async fn get_form(app: &TestApp) -> (String, String) {
+/// The value of the hidden input `name` in `html`.
+fn hidden(html: &str, name: &str) -> String {
+    let needle = format!(r#"name="{name}" value=""#);
+    let start = html
+        .find(&needle)
+        .unwrap_or_else(|| panic!("no {name} in the form: {html}"))
+        + needle.len();
+    let end = start + html[start..].find('"').expect("value end");
+    html[start..end].to_string()
+}
+
+/// What a visitor holds after loading the form: the session cookie, and the
+/// form's token and build id.
+struct Loaded {
+    cookies: String,
+    token: String,
+    build_id: String,
+}
+
+/// GET the form.
+async fn get_form(app: &TestApp) -> Loaded {
     let response = app
         .request(
             Request::get("/contact")
@@ -128,13 +150,11 @@ async fn get_form(app: &TestApp) -> (String, String) {
     );
     let cookies = common::extract_cookies(&response);
     let html = text_body(response).await;
-    let needle = r#"name="_token" value=""#;
-    let start = html
-        .find(needle)
-        .unwrap_or_else(|| panic!("no _token in the form: {html}"))
-        + needle.len();
-    let end = start + html[start..].find('"').expect("token end");
-    (cookies, html[start..end].to_string())
+    Loaded {
+        cookies,
+        token: hidden(&html, "_token"),
+        build_id: hidden(&html, "_form_build_id"),
+    }
 }
 
 /// POST the form with the given body, under the given session.
@@ -155,13 +175,13 @@ async fn post_form(app: &TestApp, cookies: &str, body: String) -> (StatusCode, S
     (status, text_body(response).await)
 }
 
-/// A valid submission body carrying `token`, with a unique subject so the test
-/// can find its own message in the sink.
-fn submission(token: &str, subject: &str, attach: bool) -> String {
+/// A valid submission body carrying `token` and `build_id`, with a unique
+/// subject so the test can find its own message in the sink.
+fn submission(token: &str, build_id: &str, subject: &str, attach: bool) -> String {
     format!(
-        "_token={token}&name=Ada+Lovelace&email=ada%40example.test&subject={subject}\
-         &message=Please+get+in+touch&attach={}",
-        if attach { "1" } else { "0" }
+        "_token={token}&_form_build_id={build_id}&name=Ada+Lovelace&email=ada%40example.test\
+         &subject={subject}&message=Please+get+in+touch{}",
+        if attach { "&attach=1" } else { "" }
     )
 }
 
@@ -189,11 +209,11 @@ fn a_visitor_with_no_account_sends_a_message_to_the_site_owner() {
         common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
 
-        let (cookies, token) = get_form(&fixture.app).await;
+        let form = get_form(&fixture.app).await;
         let (status, html) = post_form(
             &fixture.app,
-            &cookies,
-            submission(&token, "AllThree", false),
+            &form.cookies,
+            submission(&form.token, &form.build_id, "AllThree", false),
         )
         .await;
 
@@ -269,12 +289,15 @@ fn the_form_is_rendered_into_the_site_theme() {
         // carries the site's own `trovato.js`, and the claim here is that *the
         // form* needs no scripting, not that the site ships none.
         assert!(
-            html.contains(r#"<form method="post" action="/contact""#),
-            "{html}"
+            html.contains(r#"<form id="trovato_contact_message" action="/contact" method="post""#),
+            "the kernel's form templates drew it: {html}"
         );
         assert!(html.contains(r#"name="message""#), "{html}");
+        assert!(html.contains(r#"name="_form_build_id""#), "{html}");
 
-        let form_start = html.find("<form method=\"post\"").expect("the form");
+        let form_start = html
+            .find("<form id=\"trovato_contact_message\"")
+            .expect("the form");
         let form_end = html[form_start..].find("</form>").expect("the form's end") + form_start;
         let form = &html[form_start..form_end];
         assert!(!form.contains("<script"), "no script in the form: {form}");
@@ -316,7 +339,9 @@ fn the_themed_page_renders_its_title_as_the_page_heading() {
         // Exactly one, and it precedes the plugin's body.
         assert_eq!(html.matches("<h1").count(), 1, "one h1 per page: {html}");
         let heading = html.find("<h1").expect("the heading");
-        let form = html.find("<form method=\"post\"").expect("the form");
+        let form = html
+            .find("<form id=\"trovato_contact_message\"")
+            .expect("the form");
         assert!(heading < form, "the heading comes before the form");
     });
 }
@@ -330,9 +355,12 @@ fn a_submission_with_no_token_is_refused_and_sends_nothing() {
         common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
 
-        let (cookies, _) = get_form(&fixture.app).await;
-        let body = "name=Ada&email=ada%40example.test&subject=NoToken&message=hello".to_string();
-        let (status, _) = post_form(&fixture.app, &cookies, body).await;
+        let form = get_form(&fixture.app).await;
+        let body = format!(
+            "_form_build_id={}&name=Ada&email=ada%40example.test&subject=NoToken&message=hello",
+            form.build_id
+        );
+        let (status, _) = post_form(&fixture.app, &form.cookies, body).await;
 
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(
@@ -350,11 +378,11 @@ fn a_submission_with_a_forged_token_is_refused_and_sends_nothing() {
         common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
 
-        let (cookies, _) = get_form(&fixture.app).await;
+        let form = get_form(&fixture.app).await;
         let (status, _) = post_form(
             &fixture.app,
-            &cookies,
-            submission("not-a-real-token", "Forged", false),
+            &form.cookies,
+            submission("not-a-real-token", &form.build_id, "Forged", false),
         )
         .await;
 
@@ -366,9 +394,10 @@ fn a_submission_with_a_forged_token_is_refused_and_sends_nothing() {
     });
 }
 
-/// Invalid input comes back as the form, with the errors and a fresh token, and
-/// that fresh token works — which is the part that makes a rejected submission
-/// recoverable rather than a dead end.
+/// Invalid input comes back as the form, with the errors, what the visitor
+/// typed and a fresh token, and that fresh form works — which is the part that
+/// makes a rejected submission recoverable rather than a dead end. The empty
+/// message is the kernel's required check; the plugin never hears of it.
 #[test]
 fn an_invalid_submission_can_be_corrected_and_resubmitted() {
     common::run_test(async {
@@ -376,14 +405,23 @@ fn an_invalid_submission_can_be_corrected_and_resubmitted() {
         common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
 
-        let (cookies, token) = get_form(&fixture.app).await;
+        let form = get_form(&fixture.app).await;
 
         // No message: understood, and not acted on.
-        let bad =
-            format!("_token={token}&name=Ada&email=ada%40example.test&subject=Retry&message=");
-        let (status, html) = post_form(&fixture.app, &cookies, bad).await;
+        let bad = format!(
+            "_token={}&_form_build_id={}&name=Ada&email=ada%40example.test&subject=Retry&message=",
+            form.token, form.build_id
+        );
+        let (status, html) = post_form(&fixture.app, &form.cookies, bad).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{html}");
-        assert!(html.contains("Please write a message."), "{html}");
+        assert!(html.contains("Message is required."), "{html}");
+        assert!(
+            html.contains(r#"value="Retry""#),
+            "what was typed stays: {html}"
+        );
+        for marker in THEME_CHROME {
+            assert!(html.contains(marker), "missing {marker}: {html}");
+        }
         assert!(
             messages_for(&fixture.sink, "Retry").is_empty(),
             "an invalid submission must not send mail"
@@ -391,16 +429,73 @@ fn an_invalid_submission_can_be_corrected_and_resubmitted() {
 
         // The re-rendered form carries a fresh token, because the submitted one
         // was spent verifying the request that failed validation.
-        let needle = r#"name="_token" value=""#;
-        let start = html.find(needle).expect("fresh token in the re-render") + needle.len();
-        let end = start + html[start..].find('"').unwrap();
-        let fresh = &html[start..end];
-        assert_ne!(fresh, token, "the re-render must not reuse a spent token");
+        let fresh = hidden(&html, "_token");
+        assert_ne!(
+            fresh, form.token,
+            "the re-render must not reuse a spent token"
+        );
+        let build_id = hidden(&html, "_form_build_id");
 
-        let (status, html) =
-            post_form(&fixture.app, &cookies, submission(fresh, "Retry", false)).await;
+        let (status, html) = post_form(
+            &fixture.app,
+            &form.cookies,
+            submission(&fresh, &build_id, "Retry", false),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{html}");
         assert_eq!(messages_for(&fixture.sink, "Retry").len(), 1);
+    });
+}
+
+/// The plugin's own rule, run by the kernel through `tap_form_validate`: an
+/// address with no `@` is refused on the form, beside its field.
+#[test]
+fn the_plugins_own_check_is_shown_on_the_form() {
+    common::run_test(async {
+        let fixture = fixture();
+        common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
+        set_site_contact(&fixture.app).await;
+
+        let form = get_form(&fixture.app).await;
+        let body = format!(
+            "_token={}&_form_build_id={}&name=Ada&email=nope&subject=BadAddress&message=hi",
+            form.token, form.build_id
+        );
+        let (status, html) = post_form(&fixture.app, &form.cookies, body).await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{html}");
+        assert!(
+            html.contains("That email address does not look right."),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"id="error-email""#),
+            "beside its field: {html}"
+        );
+        assert!(messages_for(&fixture.sink, "BadAddress").is_empty());
+    });
+}
+
+/// A post shaped like the old hand written form (a token, no build id) is let
+/// through the token check and reaches the plugin with no checked values, and
+/// the plugin sends nothing: it acts only on what the kernel checked.
+#[test]
+fn a_post_without_the_kernels_form_sends_nothing() {
+    common::run_test(async {
+        let fixture = fixture();
+        common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
+        set_site_contact(&fixture.app).await;
+
+        let form = get_form(&fixture.app).await;
+        let body = format!(
+            "_token={}&name=Ada&email=ada%40example.test&subject=NoBuildId&message=hi",
+            form.token
+        );
+        let (status, html) = post_form(&fixture.app, &form.cookies, body).await;
+
+        assert_eq!(status, StatusCode::OK, "{html}");
+        assert!(html.contains(r#"id="trovato_contact_message""#), "{html}");
+        assert!(messages_for(&fixture.sink, "NoBuildId").is_empty());
     });
 }
 
@@ -413,9 +508,13 @@ fn a_visitor_can_attach_a_copy_of_the_message() {
         common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
 
-        let (cookies, token) = get_form(&fixture.app).await;
-        let (status, html) =
-            post_form(&fixture.app, &cookies, submission(&token, "Attached", true)).await;
+        let form = get_form(&fixture.app).await;
+        let (status, html) = post_form(
+            &fixture.app,
+            &form.cookies,
+            submission(&form.token, &form.build_id, "Attached", true),
+        )
+        .await;
         assert_eq!(status, StatusCode::OK, "{html}");
 
         let messages = messages_for(&fixture.sink, "Attached");
@@ -426,9 +525,8 @@ fn a_visitor_can_attach_a_copy_of_the_message() {
     });
 }
 
-/// What a stranger types is escaped on the way back out. The plugin escapes it,
-/// because the kernel does not sanitize a plugin's HTML — so this pins the
-/// plugin's own escaping through the whole stack rather than in a unit test.
+/// What a stranger types is escaped on the way back out, by the kernel's form
+/// templates, which now draw the form.
 #[test]
 fn markup_a_visitor_types_comes_back_escaped() {
     common::run_test(async {
@@ -436,13 +534,14 @@ fn markup_a_visitor_types_comes_back_escaped() {
         common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
 
-        let (cookies, token) = get_form(&fixture.app).await;
+        let form = get_form(&fixture.app).await;
         // Invalid on purpose (no message), so the values come back in the form.
         let body = format!(
-            "_token={token}&name=%3Cscript%3Ealert(1)%3C%2Fscript%3E\
-             &email=nope&subject=Escaped&message="
+            "_token={}&_form_build_id={}&name=%3Cscript%3Ealert(1)%3C%2Fscript%3E\
+             &email=nope&subject=Escaped&message=",
+            form.token, form.build_id
         );
-        let (status, html) = post_form(&fixture.app, &cookies, body).await;
+        let (status, html) = post_form(&fixture.app, &form.cookies, body).await;
 
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
         assert!(

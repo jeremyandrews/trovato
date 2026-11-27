@@ -707,7 +707,7 @@ pub async fn require_csrf_header_or_resolved_field(
 ///
 /// Matches on the media type alone, so a `charset` parameter does not change the
 /// answer.
-fn is_form_urlencoded(headers: &axum::http::HeaderMap) -> bool {
+pub(crate) fn is_form_urlencoded(headers: &axum::http::HeaderMap) -> bool {
     headers
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())

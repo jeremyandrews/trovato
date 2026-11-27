@@ -8,14 +8,16 @@
 //!
 //! # What it does
 //!
-//! - `GET /contact` serves a form with no JavaScript in it, carrying the
-//!   kernel-minted token from [`ApiRequest::csrf_token`] in a hidden `_token`
-//!   input, rendered into the site's page template.
-//! - `POST /contact` validates, sends the message to the site's configured
-//!   contact address through the `mail` host interface, and renders a themed
-//!   confirmation. On invalid input it re-renders the form with the errors, the
-//!   values the visitor typed, and a **fresh** token, because a token is
-//!   single-use and the one that arrived has been spent.
+//! - `GET /contact` describes its form in [`ApiResponse::form`]. The kernel
+//!   builds it (token, `tap_form_alter`), renders it with the site's form
+//!   templates into the site's page template, and checks it when it comes
+//!   back. It has no JavaScript in it.
+//! - `POST /contact` receives a submission the kernel has already checked:
+//!   the token, the required fields, and this plugin's own rules in
+//!   [`tap_form_validate`]. It sends the message to the site's configured
+//!   contact address through the `mail` host interface and renders a themed
+//!   confirmation. A submission that fails a check never reaches it: the
+//!   kernel shows the form again with the errors and what the visitor typed.
 //!
 //! # What it deliberately does not do
 //!
@@ -34,12 +36,16 @@
 
 use trovato_sdk::host;
 use trovato_sdk::prelude::*;
+use trovato_sdk::render::escape_html;
 use trovato_sdk::types::{ApiRequest, ApiResponse, MailAttachment, MenuRoute};
 
 /// Where the form lives. One path, two methods, so the form posts to the URL it
-/// was served from — which is what a plain `<form method="post">` with no
-/// `action` would do anyway.
+/// was served from.
 const PATH: &str = "/contact";
+
+/// The form's id: the kernel requires a plugin's form ids to start with the
+/// plugin's name.
+const FORM_ID: &str = "trovato_contact_message";
 
 /// Longest name accepted.
 const MAX_NAME: usize = 100;
@@ -72,10 +78,29 @@ pub fn tap_menu() -> Vec<MenuRoute> {
 #[plugin_tap]
 pub fn tap_api(request: ApiRequest) -> ApiResponse {
     match request.callback.as_str() {
-        "show" => show(&request),
+        "show" => show(),
         "submit" => submit(&request),
         other => ApiResponse::error(404, &format!("no such callback: {other}")),
     }
+}
+
+/// This plugin's own rules for its form, beyond the required fields the
+/// kernel checks: lengths and the shape of the address.
+///
+/// Every problem at once rather than the first: a visitor who has typed a long
+/// message should not discover the problems one round-trip at a time.
+#[plugin_tap]
+pub fn tap_form_validate(input: serde_json::Value) -> serde_json::Value {
+    if input["form_id"].as_str() != Some(FORM_ID) {
+        return serde_json::json!({});
+    }
+    let submission = Submission::from_values(input["values"].as_object());
+    let errors: Vec<serde_json::Value> = submission
+        .errors()
+        .into_iter()
+        .map(|(field, message)| serde_json::json!({"field": field, "message": message}))
+        .collect();
+    serde_json::json!({ "errors": errors })
 }
 
 /// What the visitor typed.
@@ -89,46 +114,51 @@ struct Submission {
 }
 
 impl Submission {
-    /// Read a submission out of a form-urlencoded body.
-    fn from_body(body: &str) -> Self {
+    /// Read a submission out of the form's values, as the kernel passes them.
+    fn from_values(values: Option<&serde_json::Map<String, serde_json::Value>>) -> Self {
+        let text = |name: &str| {
+            values
+                .and_then(|v| v.get(name))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
         Self {
-            name: field(body, "name"),
-            email: field(body, "email"),
-            subject: field(body, "subject"),
-            message: field(body, "message"),
-            attach: field(body, "attach") == "1",
+            name: text("name"),
+            email: text("email"),
+            subject: text("subject"),
+            message: text("message"),
+            attach: text("attach") == "1",
         }
     }
 
-    /// Everything wrong with it, in the order the fields appear.
-    ///
-    /// All of them at once rather than the first: a visitor who has typed a long
-    /// message should not discover the problems one round-trip at a time.
-    fn errors(&self) -> Vec<String> {
+    /// Everything wrong with it that the kernel does not already check, as
+    /// `(field, message)`, in the order the fields appear. An empty required
+    /// field is the kernel's to report, so it is not reported twice.
+    fn errors(&self) -> Vec<(&'static str, String)> {
         let mut errors = Vec::new();
-        if self.name.trim().is_empty() {
-            errors.push("Please give your name.".to_string());
-        } else if self.name.chars().count() > MAX_NAME {
-            errors.push(format!("Your name is longer than {MAX_NAME} characters."));
-        }
-
-        if self.email.trim().is_empty() {
-            errors.push("Please give your email address.".to_string());
-        } else if !looks_like_email(self.email.trim()) {
-            errors.push("That email address does not look right.".to_string());
-        }
-
-        if self.subject.chars().count() > MAX_SUBJECT {
-            errors.push(format!(
-                "Your subject is longer than {MAX_SUBJECT} characters."
+        if self.name.chars().count() > MAX_NAME {
+            errors.push((
+                "name",
+                format!("Your name is longer than {MAX_NAME} characters."),
             ));
         }
-
-        if self.message.trim().is_empty() {
-            errors.push("Please write a message.".to_string());
-        } else if self.message.chars().count() > MAX_MESSAGE {
-            errors.push(format!(
-                "Your message is longer than {MAX_MESSAGE} characters."
+        if !self.email.trim().is_empty() && !looks_like_email(self.email.trim()) {
+            errors.push((
+                "email",
+                "That email address does not look right.".to_string(),
+            ));
+        }
+        if self.subject.chars().count() > MAX_SUBJECT {
+            errors.push((
+                "subject",
+                format!("Your subject is longer than {MAX_SUBJECT} characters."),
+            ));
+        }
+        if self.message.chars().count() > MAX_MESSAGE {
+            errors.push((
+                "message",
+                format!("Your message is longer than {MAX_MESSAGE} characters."),
             ));
         }
         errors
@@ -163,27 +193,18 @@ impl Submission {
 }
 
 /// Serve the form.
-fn show(request: &ApiRequest) -> ApiResponse {
-    ApiResponse::themed(
-        "Contact",
-        form_html(&request.csrf_token, &Submission::default(), &[]),
-    )
+fn show() -> ApiResponse {
+    ApiResponse::themed("Contact", "").with_form(form(&Submission::default()))
 }
 
-/// Validate and send.
+/// Send a submission the kernel has checked.
 fn submit(request: &ApiRequest) -> ApiResponse {
-    let submission = Submission::from_body(&request.body);
-    let errors = submission.errors();
-    if !errors.is_empty() {
-        // 422 rather than 200: the request was understood and not acted on. The
-        // token is the fresh one the kernel minted for *this* request, because
-        // the one the visitor submitted has been spent.
-        return ApiResponse::themed_with_status(
-            422,
-            "Contact",
-            form_html(&request.csrf_token, &submission, &errors),
-        );
+    // A post that did not come from the form (no build id, so the kernel
+    // checked only its token) gets the form.
+    if request.form_values.is_none() {
+        return show();
     }
+    let submission = Submission::from_values(request.form_values.as_ref());
 
     let attachments = if submission.attach {
         vec![MailAttachment::text(
@@ -211,59 +232,44 @@ fn submit(request: &ApiRequest) -> ApiResponse {
             ApiResponse::themed_with_status(
                 500,
                 "Contact",
-                format!(
-                    "{}{}",
-                    "<p class=\"contact-error\">Your message could not be sent. \
-                     Please try again later.</p>",
-                    form_html(&request.csrf_token, &submission, &[]),
-                ),
+                "<p class=\"contact-error\">Your message could not be sent. \
+                 Please try again later.</p>",
             )
+            .with_form(form(&submission))
         }
     }
 }
 
-/// The form, with the values the visitor typed and any errors above it.
-///
-/// Every interpolation is escaped: this is a public form, so everything in it
-/// arrived from a stranger, and the kernel does not sanitize a plugin's HTML.
-fn form_html(token: &str, values: &Submission, errors: &[String]) -> String {
-    let mut html = String::new();
-
-    if !errors.is_empty() {
-        html.push_str("<div class=\"contact-errors\"><ul>");
-        for error in errors {
-            html.push_str(&format!("<li>{}</li>", escape_html(error)));
+/// The form, holding `values`. The kernel escapes everything in it.
+fn form(values: &Submission) -> serde_json::Value {
+    serde_json::json!({
+        "form_id": FORM_ID,
+        "attributes": {"class": "contact-form"},
+        "elements": {
+            "name": {
+                "type": "textfield", "max_length": MAX_NAME, "title": "Your name",
+                "required": true, "default_value": values.name, "weight": 0
+            },
+            "email": {
+                "type": "input", "input_type": "email", "title": "Your email",
+                "required": true, "default_value": values.email, "weight": 1
+            },
+            "subject": {
+                "type": "textfield", "max_length": MAX_SUBJECT, "title": "Subject",
+                "default_value": values.subject, "weight": 2
+            },
+            "message": {
+                "type": "textarea", "rows": 10, "title": "Message", "required": true,
+                "default_value": values.message, "weight": 3,
+                "attributes": {"maxlength": MAX_MESSAGE.to_string()}
+            },
+            "attach": {
+                "type": "checkbox", "title": "Attach a copy of my message as a file",
+                "default_value": values.attach, "weight": 4
+            },
+            "send": {"type": "submit", "value": "Send message", "weight": 10}
         }
-        html.push_str("</ul></div>");
-    }
-
-    html.push_str(&format!(
-        r#"<form method="post" action="{path}" class="contact-form">
-<input type="hidden" name="_token" value="{token}">
-<p><label for="contact-name">Your name</label>
-<input type="text" id="contact-name" name="name" value="{name}" maxlength="{max_name}" required></p>
-<p><label for="contact-email">Your email</label>
-<input type="email" id="contact-email" name="email" value="{email}" required></p>
-<p><label for="contact-subject">Subject</label>
-<input type="text" id="contact-subject" name="subject" value="{subject}" maxlength="{max_subject}"></p>
-<p><label for="contact-message">Message</label>
-<textarea id="contact-message" name="message" rows="10" maxlength="{max_message}" required>{message}</textarea></p>
-<p><label><input type="checkbox" name="attach" value="1"{attach_checked}> Attach a copy of my message as a file</label></p>
-<p><button type="submit">Send message</button></p>
-</form>"#,
-        path = escape_html(PATH),
-        token = escape_html(token),
-        name = escape_html(&values.name),
-        email = escape_html(&values.email),
-        subject = escape_html(&values.subject),
-        message = escape_html(&values.message),
-        max_name = MAX_NAME,
-        max_subject = MAX_SUBJECT,
-        max_message = MAX_MESSAGE,
-        attach_checked = if values.attach { " checked" } else { "" },
-    ));
-
-    html
+    })
 }
 
 /// The confirmation.
@@ -272,35 +278,6 @@ fn sent_html(submission: &Submission) -> String {
         "<p class=\"contact-sent\">Thank you, {name}. Your message has been sent.</p>",
         name = escape_html(submission.name.trim()),
     )
-}
-
-/// Read one field out of a URL-encoded body, first occurrence winning.
-fn field(body: &str, name: &str) -> String {
-    body.split('&')
-        .filter_map(|pair| pair.split_once('='))
-        .find(|(key, _)| *key == name)
-        .map(|(_, value)| percent_decode(&value.replace('+', " ")))
-        .unwrap_or_default()
-}
-
-/// Percent-decode a form value, leaving an invalid escape as written.
-fn percent_decode(raw: &str) -> String {
-    let bytes = raw.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
-            if let Ok(byte) = u8::from_str_radix(hex, 16) {
-                out.push(byte);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(bytes[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
 }
 
 /// Collapse a string to one line, for a value that becomes a mail header.
@@ -333,26 +310,29 @@ fn looks_like_email(value: &str) -> bool {
         && !domain.contains("..")
 }
 
-/// Escape text for an HTML body or a double-quoted attribute.
-///
-/// The kernel does not sanitize a plugin's response body, which is the contract
-/// every view tap has, so the plugin does it. Both quote forms are covered
-/// because these values land in attributes as well as in text.
-fn escape_html(raw: &str) -> String {
-    raw.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\'', "&#x27;")
-}
-
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
 
-    fn valid_body() -> String {
-        "name=Ada+Lovelace&email=ada%40example.test&subject=Hello&message=A+message".to_string()
+    fn values(pairs: &[(&str, &str)]) -> serde_json::Map<String, serde_json::Value> {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), serde_json::json!(v)))
+            .collect()
+    }
+
+    fn submit_request(pairs: &[(&str, &str)]) -> ApiRequest {
+        let mut request = ApiRequest::new("submit", "POST", PATH, "", false);
+        request.form_values = Some(values(pairs));
+        request
+    }
+
+    fn validate(pairs: &[(&str, &str)]) -> serde_json::Value {
+        __inner_tap_form_validate(serde_json::json!({
+            "form_id": FORM_ID,
+            "values": values(pairs),
+        }))
     }
 
     #[test]
@@ -371,40 +351,40 @@ mod tests {
     }
 
     #[test]
-    fn the_form_asks_for_the_theme_and_carries_the_kernel_token() {
-        let mut request = ApiRequest::new("show", "GET", PATH, "", false);
-        request.csrf_token = "tok123".to_string();
-
-        let response = __inner_tap_api(request);
+    fn the_page_is_themed_and_hands_the_kernel_its_form() {
+        let response = __inner_tap_api(ApiRequest::new("show", "GET", PATH, "", false));
 
         assert_eq!(response.status, 200);
         assert!(response.theme, "a public page must be themed");
         assert_eq!(response.title, "Contact");
-        assert!(
-            response
-                .body
-                .contains(r#"<input type="hidden" name="_token" value="tok123">"#),
-            "{}",
-            response.body
+        let form = response.form.expect("the page carries its form");
+        assert_eq!(form["form_id"], FORM_ID);
+        for required in ["name", "email", "message"] {
+            assert_eq!(form["elements"][required]["required"], true, "{required}");
+        }
+        assert_eq!(
+            form["elements"]["subject"]["required"],
+            serde_json::Value::Null
         );
-        // No JavaScript anywhere in it: that is the point of the form.
-        assert!(!response.body.contains("<script"), "{}", response.body);
-        assert!(!response.body.contains("onsubmit"), "{}", response.body);
+        // The plugin writes no markup of its own for the form, and no token.
+        assert!(!response.body.contains("<form"), "{}", response.body);
     }
 
     #[test]
-    fn a_valid_submission_is_sent_and_confirmed() {
-        let mut request = ApiRequest::new("submit", "POST", PATH, "", false);
-        request.body = valid_body();
-        request.csrf_token = "fresh".to_string();
-
-        let response = __inner_tap_api(request);
+    fn a_checked_submission_is_sent_and_confirmed() {
+        let response = __inner_tap_api(submit_request(&[
+            ("name", "Ada Lovelace"),
+            ("email", "ada@example.test"),
+            ("subject", "Hello"),
+            ("message", "A message"),
+        ]));
 
         // The native SDK stub accepts the send, so this asserts the plugin's own
-        // path: validation passed and the confirmation was rendered.
+        // path: the confirmation was rendered.
         assert_eq!(response.status, 200);
         assert!(response.theme);
         assert_eq!(response.title, "Message sent");
+        assert!(response.form.is_none());
         assert!(
             response.body.contains("Thank you, Ada Lovelace"),
             "{}",
@@ -413,54 +393,71 @@ mod tests {
     }
 
     #[test]
-    fn an_invalid_submission_comes_back_as_the_form_with_its_errors() {
+    fn a_post_that_did_not_come_from_the_form_gets_the_form() {
         let mut request = ApiRequest::new("submit", "POST", PATH, "", false);
-        request.body = "name=&email=nope&message=".to_string();
-        request.csrf_token = "fresh".to_string();
+        request.body = "name=Ada&message=hi".to_string();
 
         let response = __inner_tap_api(request);
 
-        assert_eq!(response.status, 422, "understood, and not acted on");
-        assert!(response.theme);
-        assert!(response.body.contains("Please give your name."));
-        assert!(response.body.contains("does not look right"));
-        assert!(response.body.contains("Please write a message."));
-        // And it carries the fresh token, because the submitted one is spent.
+        assert_eq!(response.title, "Contact");
         assert!(
-            response.body.contains(r#"name="_token" value="fresh""#),
+            response.form.is_some(),
+            "nothing is sent without the kernel's checks"
+        );
+    }
+
+    #[test]
+    fn the_confirmation_escapes_the_name() {
+        let response = __inner_tap_api(submit_request(&[
+            ("name", "\"><script>alert(1)</script>"),
+            ("email", "ada@example.test"),
+            ("message", "hi"),
+        ]));
+
+        assert!(!response.body.contains("<script"), "{}", response.body);
+        assert!(
+            response.body.contains("&lt;script&gt;"),
             "{}",
             response.body
         );
     }
 
     #[test]
-    fn a_rejected_submission_keeps_what_the_visitor_typed() {
-        let mut request = ApiRequest::new("submit", "POST", PATH, "", false);
-        request.body = "name=Ada&email=nope&subject=Hi&message=Keep+this".to_string();
-        request.csrf_token = "fresh".to_string();
-
-        let body = __inner_tap_api(request).body;
-
-        assert!(body.contains(r#"value="Ada""#), "{body}");
-        assert!(body.contains(r#"value="Hi""#), "{body}");
-        assert!(body.contains(">Keep this</textarea>"), "{body}");
+    fn validation_reports_each_problem_against_its_field() {
+        let long = "x".repeat(MAX_MESSAGE + 1);
+        let result = validate(&[
+            ("name", "Ada"),
+            ("email", "nope"),
+            ("subject", ""),
+            ("message", &long),
+        ]);
+        let errors = result["errors"].as_array().unwrap();
+        let fields: Vec<&str> = errors
+            .iter()
+            .map(|e| e["field"].as_str().unwrap())
+            .collect();
+        assert_eq!(fields, ["email", "message"], "{result}");
+        assert!(
+            errors[1]["message"]
+                .as_str()
+                .unwrap()
+                .contains("longer than")
+        );
     }
 
-    /// The form is public, so every value in it came from a stranger.
     #[test]
-    fn everything_a_visitor_typed_is_escaped_on_the_way_back_out() {
-        let mut request = ApiRequest::new("submit", "POST", PATH, "", false);
-        request.body =
-            "name=%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E&email=nope&message=%3Cimg+src%3Dx%3E"
-                .to_string();
-        request.csrf_token = "fresh".to_string();
+    fn validation_leaves_empty_required_fields_to_the_kernel() {
+        let result = validate(&[("name", ""), ("email", ""), ("message", "")]);
+        assert_eq!(result["errors"], serde_json::json!([]), "{result}");
+    }
 
-        let body = __inner_tap_api(request).body;
-
-        assert!(!body.contains("<script"), "{body}");
-        assert!(!body.contains("<img"), "{body}");
-        assert!(body.contains("&lt;script&gt;"), "{body}");
-        assert!(body.contains("&quot;&gt;"), "{body}");
+    #[test]
+    fn validation_ignores_every_other_form() {
+        let result = __inner_tap_form_validate(serde_json::json!({
+            "form_id": "user_login",
+            "values": {"email": "nope"},
+        }));
+        assert_eq!(result, serde_json::json!({}));
     }
 
     #[test]
@@ -513,22 +510,6 @@ mod tests {
     }
 
     #[test]
-    fn an_over_long_field_is_refused_with_a_reason() {
-        let long = "x".repeat(MAX_MESSAGE + 1);
-        let submission = Submission {
-            name: "Ada".to_string(),
-            email: "ada@example.test".to_string(),
-            subject: String::new(),
-            message: long,
-            attach: false,
-        };
-
-        let errors = submission.errors();
-        assert_eq!(errors.len(), 1, "{errors:?}");
-        assert!(errors[0].contains("longer than"), "{errors:?}");
-    }
-
-    #[test]
     fn email_shapes_that_pass_and_shapes_that_do_not() {
         for good in [
             "ada@example.test",
@@ -552,17 +533,9 @@ mod tests {
     }
 
     #[test]
-    fn a_field_reads_percent_and_plus_encoding() {
-        let body = "name=Ada+Lovelace&email=ada%40example.test";
-        assert_eq!(field(body, "name"), "Ada Lovelace");
-        assert_eq!(field(body, "email"), "ada@example.test");
-        assert_eq!(field(body, "absent"), "");
-    }
-
-    #[test]
     fn the_attachment_checkbox_is_off_unless_it_says_one() {
-        assert!(!Submission::from_body("attach=0").attach);
-        assert!(!Submission::from_body("").attach);
-        assert!(Submission::from_body("attach=1").attach);
+        assert!(!Submission::from_values(Some(&values(&[("attach", "0")]))).attach);
+        assert!(!Submission::from_values(Some(&values(&[]))).attach);
+        assert!(Submission::from_values(Some(&values(&[("attach", "1")]))).attach);
     }
 }
