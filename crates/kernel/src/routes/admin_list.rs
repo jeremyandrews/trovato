@@ -19,6 +19,18 @@ use std::collections::HashMap;
 
 use serde::Serialize;
 
+/// A sort expression in natural order: `natural!("lower(title)")` is
+/// `lower(title) COLLATE trovato_natural`, so "Post 2" sorts before
+/// "Post 10" (the collation is migration `20261211000001`). Only in sort
+/// expressions, never a column's collation: the `q` filter's `ILIKE` and the
+/// name prefix index depend on the default.
+macro_rules! natural {
+    ($e:literal) => {
+        concat!($e, " COLLATE trovato_natural")
+    };
+}
+pub(crate) use natural;
+
 /// Rows per page on a paged admin listing.
 pub const PER_PAGE: i64 = 50;
 
@@ -212,14 +224,64 @@ pub struct ListView {
 }
 
 /// Sort `rows` in memory by the key `sort` names; `keys` gives each allowed
-/// column's sort text for a row. Text is compared without regard to case.
+/// column's sort text for a row. Text is compared in natural order, as the
+/// SQL listings sort through `natural!`: without regard to case or
+/// accents, with each run of digits compared as the number it spells
+/// ("Post 2" before "Post 10"). Rows whose natural keys are equal ("Éclair"
+/// and "eclair", "Post 02" and "Post 2") are ordered by the bytes of their
+/// lowercased text, as Postgres breaks a tie under a deterministic
+/// collation. Zero padded numbers (a weight, a count) order as before.
 pub fn sort_rows<T>(rows: &mut [T], sort: &Sort<'_>, keys: &[(&str, fn(&T) -> String)]) {
     if let Some((_, key)) = keys.iter().find(|(k, _)| *k == sort.key) {
-        rows.sort_by_cached_key(|row| key(row).to_lowercase());
+        rows.sort_by_cached_key(|row| {
+            let lower = key(row).to_lowercase();
+            (natural_key(&lower), lower)
+        });
         if sort.desc {
             rows.reverse();
         }
     }
+}
+
+/// `text`'s natural sort key, as a string whose byte order is the natural
+/// order: non-ASCII letters transliterated (`deunicode`) and lowercased, and
+/// each run of digits written as `0`, its length (after leading zeros) in
+/// five digits, then its digits, so numbers compare by length, then by
+/// digit. ASCII is kept as it is, so a separator such as `\0` between two
+/// numbers stays one.
+pub fn natural_key(text: &str) -> String {
+    let mut plain = String::with_capacity(text.len());
+    for c in text.chars() {
+        if c.is_ascii() {
+            plain.push(c);
+        } else if let Some(ascii) = deunicode::deunicode_char(c) {
+            plain.push_str(ascii);
+        }
+    }
+    let plain = plain.to_lowercase();
+    let mut out = String::with_capacity(plain.len() + 8);
+    let mut digits = String::new();
+    let flush = |digits: &mut String, out: &mut String| {
+        if digits.is_empty() {
+            return;
+        }
+        let trimmed = digits.trim_start_matches('0');
+        let number = if trimmed.is_empty() { "0" } else { trimmed };
+        out.push('0');
+        out.push_str(&format!("{:05}", number.len()));
+        out.push_str(number);
+        digits.clear();
+    };
+    for c in plain.chars() {
+        if c.is_ascii_digit() {
+            digits.push(c);
+        } else {
+            flush(&mut digits, &mut out);
+            out.push(c);
+        }
+    }
+    flush(&mut digits, &mut out);
+    out
 }
 
 /// How loudly a listing shows a row's state (docs/admin/design.md, "Icons
@@ -547,6 +609,39 @@ mod tests {
             seen[index(state)] += 1;
         }
         assert_eq!(seen, [1; 16]);
+    }
+
+    /// Natural order: numbers by value, case and accents ignored, ties by
+    /// the lowercased bytes.
+    #[test]
+    fn rows_sort_in_natural_order() {
+        let mut rows: Vec<String> = [
+            "Post 10", "Zebra", "post 1", "Éclair", "Post 2", "eclair", "Post 02",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        let sort = Sort {
+            key: "name",
+            desc: false,
+            sql: "name",
+        };
+        sort_rows(&mut rows, &sort, &[("name", |r: &String| r.clone())]);
+        assert_eq!(
+            rows,
+            [
+                "eclair", "Éclair", "post 1", "Post 02", "Post 2", "Post 10", "Zebra"
+            ]
+        );
+        // "Post 1: …" before "Post 10".
+        let mut titles = vec!["Post 10: b".to_string(), "Post 1: a".to_string()];
+        sort_rows(&mut titles, &sort, &[("name", |r: &String| r.clone())]);
+        assert_eq!(titles, ["Post 1: a", "Post 10: b"]);
+        // Zero padded numbers keep their order, and a separator between two
+        // numbers is kept.
+        assert!(natural_key("040001\u{0}9") > natural_key("040000\u{0}99"));
+        assert!(natural_key("000000\u{0}a") < natural_key("039999\u{0}a"));
+        assert_eq!(natural_key("Æble 007"), natural_key("aeble 7"));
     }
 
     #[test]

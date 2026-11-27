@@ -231,7 +231,7 @@ async fn dashboard(State(state): State<AppState>, session: Session) -> Response 
 
 /// The file listing's sortable columns: key and SQL.
 const FILE_SORTS: &[(&str, &str)] = &[
-    ("name", "lower(filename)"),
+    ("name", super::admin_list::natural!("lower(filename)")),
     ("type", "filemime"),
     ("size", "filesize"),
     ("status", "status"),
@@ -694,7 +694,7 @@ const COMMENT_STATUS_FILTERS: [CommentStatus; 4] = [
 /// The comment listing's sortable columns: key and SQL (`c` is the comment,
 /// `u` its author).
 const COMMENT_SORTS: &[(&str, &str)] = &[
-    ("author", "lower(u.name)"),
+    ("author", super::admin_list::natural!("lower(u.name)")),
     ("status", "c.status"),
     ("posted", "c.created"),
 ];

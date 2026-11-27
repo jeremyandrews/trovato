@@ -5960,6 +5960,7 @@ dependencies = [
  "chrono-tz",
  "clap",
  "dashmap",
+ "deunicode",
  "dotenvy",
  "feed-rs",
  "fred",

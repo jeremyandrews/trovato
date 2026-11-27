@@ -1,0 +1,11 @@
+-- no-transaction
+-- The people list sorts by name by default (B246), in natural order:
+-- `lower(name) COLLATE trovato_natural`. idx_users_name_unique orders by the
+-- default collation, so it cannot serve that sort; without this index the
+-- first page of a large site sorts every account to show fifty. The
+-- expression is the one `USER_SORTS` writes (a unit test in
+-- routes::admin_user holds the two to each other).
+--
+-- CONCURRENTLY, alone in this no-transaction file, so building it does not
+-- block writes to `users` for the build's duration.
+CREATE INDEX CONCURRENTLY idx_users_name_natural ON users ((lower(name) COLLATE trovato_natural));

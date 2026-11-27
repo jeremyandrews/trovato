@@ -206,8 +206,8 @@ const ACCESS_RULE_WARNING_KEY: &str = "admin_user_access_rule_warning";
 
 /// The people listing's sortable columns: key and SQL.
 const USER_SORTS: &[(&str, &str)] = &[
-    ("name", "lower(name)"),
-    ("email", "lower(mail)"),
+    ("name", super::admin_list::natural!("lower(name)")),
+    ("email", super::admin_list::natural!("lower(mail)")),
     ("status", "status"),
 ];
 
@@ -1950,6 +1950,39 @@ pub fn router() -> Router<AppState> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The people list's default sort is served by its index: the collation
+    /// the migration creates is the one `natural!` names, and the index's
+    /// expression is `USER_SORTS`' name SQL.
+    #[test]
+    fn the_name_sort_is_the_natural_index_expression() {
+        let collation =
+            include_str!("../../migrations/20261211000001_trovato_natural_collation.sql");
+        let index = include_str!("../../migrations/20261211000002_users_name_natural_index.sql");
+        let name_sql = USER_SORTS
+            .iter()
+            .find(|(k, _)| *k == "name")
+            .map(|(_, sql)| *sql)
+            .unwrap_or_default();
+        let named = super::super::admin_list::natural!("x")
+            .strip_prefix("x COLLATE ")
+            .unwrap_or_default();
+        assert_eq!(named, "trovato_natural");
+        assert!(
+            collation.contains(&format!(
+                "CREATE COLLATION IF NOT EXISTS {named} (provider = icu, locale = 'und-u-kn-true')"
+            )),
+            "{collation}"
+        );
+        assert_eq!(name_sql, "lower(name) COLLATE trovato_natural");
+        assert!(index.starts_with("-- no-transaction\n"), "{index}");
+        assert!(
+            index.contains(&format!(
+                "CREATE INDEX CONCURRENTLY idx_users_name_natural ON users (({name_sql}));"
+            )),
+            "{index}"
+        );
+    }
 
     fn held(names: &[&str]) -> Authority {
         Authority::Holds(names.iter().map(|n| (*n).to_string()).collect())

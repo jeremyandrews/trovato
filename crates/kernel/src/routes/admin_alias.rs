@@ -19,8 +19,8 @@ use super::helpers::{
 
 /// The alias listing's sortable columns: key and SQL.
 const ALIAS_SORTS: &[(&str, &str)] = &[
-    ("alias", "lower(alias)"),
-    ("source", "lower(source)"),
+    ("alias", super::admin_list::natural!("lower(alias)")),
+    ("source", super::admin_list::natural!("lower(source)")),
     ("language", "language"),
     ("created", "created"),
 ];

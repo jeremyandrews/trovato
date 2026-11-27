@@ -34,7 +34,7 @@ const CONTENT_FLASH_KEY: &str = "content_admin_flash";
 /// GET /admin/content
 /// The content listing's sortable columns: key and SQL.
 const CONTENT_SORTS: &[(&str, &str)] = &[
-    ("title", "lower(title)"),
+    ("title", super::admin_list::natural!("lower(title)")),
     ("type", "type"),
     ("status", "status"),
     ("changed", "changed"),

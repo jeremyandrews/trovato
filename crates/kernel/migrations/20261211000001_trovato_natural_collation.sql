@@ -1,0 +1,11 @@
+-- Titles in the order a person expects (B246): "Post 2" before "Post 10".
+-- The ICU collation with numeric ordering (`kn`): a run of digits compares as
+-- the number it spells. Deterministic, like the default collation, so two
+-- strings compare equal only when their bytes are equal, and a tie is broken
+-- the same way every time.
+--
+-- Used only in the admin listings' sort expressions
+-- (`routes::admin_list::natural!`) and in the index that serves the people
+-- list's default sort. No column's collation changes: the `q` filter's ILIKE
+-- and `idx_users_name_prefix` depend on the default.
+CREATE COLLATION IF NOT EXISTS trovato_natural (provider = icu, locale = 'und-u-kn-true');

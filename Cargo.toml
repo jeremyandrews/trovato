@@ -175,6 +175,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 # Admin dates in the viewer's timezone (B246); the version already in Cargo.lock.
 chrono-tz = "0.9"
+# Natural order for in-memory admin listings (B246); the version already in Cargo.lock.
+deunicode = "1.6"
 thiserror = "2"
 uuid = { version = "1", features = ["v7", "serde"] }
 anyhow = "1"

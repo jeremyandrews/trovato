@@ -465,6 +465,10 @@ sql = "select r.* from roles r join user_roles ur on r.id = ur.role_id where ur.
 count = 2
 sql = "select value from site_config where key = $? and tenant_id = $?"
 
+["admin_people.admin.cold".statements."select:users:13e5f275"]
+count = 1
+sql = "select * from users order by lower(name) collate trovato_natural asc, id limit $? offset $?"
+
 ["admin_people.admin.cold".statements."select:users:37216782"]
 count = 2
 sql = "select * from users where id = $?"
@@ -472,10 +476,6 @@ sql = "select * from users where id = $?"
 ["admin_people.admin.cold".statements."select:users:45110680"]
 count = 1
 sql = "select count(*) from users"
-
-["admin_people.admin.cold".statements."select:users:eeab8537"]
-count = 1
-sql = "select * from users order by lower(name) asc, id limit $? offset $?"
 
 ["admin_people.admin.warm"]
 queries = 6
@@ -495,6 +495,10 @@ sql = "select prefs from admin_preference where user_id = $?"
 count = 2
 sql = "select value from site_config where key = $? and tenant_id = $?"
 
+["admin_people.admin.warm".statements."select:users:13e5f275"]
+count = 1
+sql = "select * from users order by lower(name) collate trovato_natural asc, id limit $? offset $?"
+
 ["admin_people.admin.warm".statements."select:users:37216782"]
 count = 1
 sql = "select * from users where id = $?"
@@ -502,10 +506,6 @@ sql = "select * from users where id = $?"
 ["admin_people.admin.warm".statements."select:users:45110680"]
 count = 1
 sql = "select count(*) from users"
-
-["admin_people.admin.warm".statements."select:users:eeab8537"]
-count = 1
-sql = "select * from users order by lower(name) asc, id limit $? offset $?"
 
 ["admin_people_landing.admin.cold"]
 queries = 8

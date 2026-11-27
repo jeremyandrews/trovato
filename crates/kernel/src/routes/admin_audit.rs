@@ -29,7 +29,7 @@ const PERMISSION: &str = "view audit log";
 /// The audit log's sortable columns: key and SQL.
 const AUDIT_SORTS: &[(&str, &str)] = &[
     ("time", "a.created"),
-    ("user", "lower(u.name)"),
+    ("user", super::admin_list::natural!("lower(u.name)")),
     ("action", "a.action"),
     ("type", "a.entity_type"),
 ];
