@@ -269,6 +269,38 @@ pub enum FieldType {
     /// Added in 0.105 (B72). Additive: a plugin that matches on `FieldType`
     /// needs a `_` arm or this one.
     CategoryReference(String),
+    /// A hyperlink: a URI with an optional title and an optional "open in a
+    /// new tab" flag.
+    ///
+    /// Storage format: `{"uri": "<url>", "title": "<text>", "new_tab": true}`,
+    /// `title` omitted when empty and `new_tab` omitted when false. `uri` is
+    /// either an absolute `http`/`https` URL with a host, or a local path
+    /// (`/item/<uuid>` included).
+    ///
+    /// Added in the next release. Additive: a plugin that matches on
+    /// `FieldType` needs a `_` arm or this one.
+    Link,
+    /// A single choice from a fixed list of values, named by its key.
+    ///
+    /// Storage format: the chosen key as a JSON string. The allowed choices
+    /// live in `FieldDefinition::settings.allowed_values`, an ordered array of
+    /// `{"key": "...", "label": "..."}` (see
+    /// [`FieldDefinition::allowed_values`]). Single or multiple values is the
+    /// field's ordinary `cardinality`.
+    ///
+    /// Added in the next release. Additive: a plugin that matches on
+    /// `FieldType` needs a `_` arm or this one.
+    List,
+    /// A telephone number, as entered, with an E.164 form when one could be
+    /// derived from it.
+    ///
+    /// Storage format: `{"value": "<as entered, trimmed>", "e164":
+    /// "+<digits>"}`, `e164` omitted when the number has no recognisable
+    /// country prefix.
+    ///
+    /// Added in the next release. Additive: a plugin that matches on
+    /// `FieldType` needs a `_` arm or this one.
+    Telephone,
 }
 
 /// A content type definition returned by `tap_item_info`.
@@ -370,6 +402,23 @@ impl FieldDefinition {
 
     pub fn cardinality(mut self, n: i32) -> Self {
         self.cardinality = n;
+        self
+    }
+
+    /// The choices a `List` field offers, stored as `settings.allowed_values`:
+    /// an ordered array of `{"key": "...", "label": "..."}`, in the order
+    /// given.
+    pub fn allowed_values(mut self, values: &[(&str, &str)]) -> Self {
+        if !self.settings.is_object() {
+            self.settings = serde_json::Value::Object(Default::default());
+        }
+        if let Some(settings) = self.settings.as_object_mut() {
+            let values: Vec<serde_json::Value> = values
+                .iter()
+                .map(|(key, label)| serde_json::json!({ "key": key, "label": label }))
+                .collect();
+            settings.insert("allowed_values".into(), serde_json::Value::Array(values));
+        }
         self
     }
 }
@@ -2441,10 +2490,16 @@ mod tests {
                 | FieldType::Email
                 | FieldType::Compound { .. }
                 | FieldType::Blocks
-                | FieldType::PageBuilder => {}
+                | FieldType::PageBuilder
+                | FieldType::Link
+                | FieldType::List
+                | FieldType::Telephone => {}
             }
         }
         handled(&FieldType::CategoryReference("topics".into()));
+        handled(&FieldType::Link);
+        handled(&FieldType::List);
+        handled(&FieldType::Telephone);
     }
 
     #[test]

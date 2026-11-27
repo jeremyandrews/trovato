@@ -147,6 +147,17 @@ pub fn check_field_values(
             errors.push(refuse(message));
         }
 
+        if matches!(
+            field.field_type,
+            FieldType::Link | FieldType::List | FieldType::Telephone
+        ) {
+            for v in crate::content::field_value::form_values(Some(value)) {
+                if let Some(message) = crate::content::field_value::check_new_kind(field, v) {
+                    errors.push(refuse(format!("{}: {message}", field.label)));
+                }
+            }
+        }
+
         let FieldType::CategoryReference(category) = &field.field_type else {
             continue;
         };
@@ -300,5 +311,51 @@ mod tests {
         assert!(stores_a_list(&tags));
         assert!(!stores_a_list(&field("x", "X", FieldType::Integer, 1)));
         assert!(stores_a_list(&field("x", "X", FieldType::Integer, 2)));
+    }
+
+    #[test]
+    fn the_write_check_refuses_a_bad_link_value() {
+        let link = field("l", "Link", FieldType::Link, 1);
+        let ok = json!({ "l": {"uri": "https://example.org/", "title": "Site"} });
+        assert!(check_field_values(&ok, &[link.clone()], None, &HashMap::new()).is_empty());
+
+        let bad = json!({ "l": {"uri": "javascript:alert(1)"} });
+        let errors = check_field_values(&bad, &[link], None, &HashMap::new());
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].message.contains("Link"), "{:?}", errors[0]);
+    }
+
+    #[test]
+    fn the_write_check_refuses_a_list_key_outside_the_allowed_values() {
+        let choice = field("choice", "Choice", FieldType::List, 1)
+            .allowed_values(&[("gold", "Gold"), ("silver", "Silver")]);
+        let ok = json!({ "choice": "gold" });
+        assert!(check_field_values(&ok, &[choice.clone()], None, &HashMap::new()).is_empty());
+
+        let bad = json!({ "choice": "platinum" });
+        let errors = check_field_values(&bad, &[choice], None, &HashMap::new());
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].message.contains("platinum"), "{:?}", errors[0]);
+    }
+
+    #[test]
+    fn the_write_check_refuses_a_telephone_with_a_mismatched_e164() {
+        let tel = field("t", "Tel", FieldType::Telephone, 1);
+        let ok = json!({ "t": {"value": "+39 0583 123456", "e164": "+390583123456"} });
+        assert!(check_field_values(&ok, &[tel.clone()], None, &HashMap::new()).is_empty());
+
+        let bad = json!({ "t": {"value": "+39 0583 123456", "e164": "+10000000000"} });
+        let errors = check_field_values(&bad, &[tel], None, &HashMap::new());
+        assert_eq!(errors.len(), 1, "{errors:?}");
+    }
+
+    #[test]
+    fn the_write_check_covers_every_value_of_a_multi_value_list() {
+        let choice =
+            field("choice", "Choice", FieldType::List, -1).allowed_values(&[("gold", "Gold")]);
+        let bad = json!({ "choice": ["gold", "platinum"] });
+        let errors = check_field_values(&bad, &[choice], None, &HashMap::new());
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].message.contains("platinum"));
     }
 }

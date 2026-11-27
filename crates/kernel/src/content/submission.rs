@@ -39,6 +39,18 @@ impl PostedForm {
         self.0.iter().any(|(k, _)| k == name)
     }
 
+    /// Every value posted under `name[]` (the checkboxes group convention), in
+    /// the order posted. A field whose widget is a checkboxes group, not the
+    /// repeating container, posts its selection this way.
+    pub fn checkbox_values(&self, name: &str) -> Vec<&str> {
+        let bracketed = format!("{name}[]");
+        self.0
+            .iter()
+            .filter(|(k, _)| *k == bracketed || k == name)
+            .map(|(_, v)| v.as_str())
+            .collect()
+    }
+
     /// Every value posted for a multi value field, in delta order: `name[0]`,
     /// `name[1]`, … sorted by index, then any bare `name` repeats in the order
     /// they came. A non numeric index is ignored.
@@ -199,6 +211,89 @@ pub fn build_item_fields(
                 json_inputs.insert(name.clone(), Value::String(raw.to_string()));
             }
             json_defs.push(field.clone());
+            continue;
+        }
+
+        // A Link is single valued only (admin refuses another cardinality on
+        // the field edit form): its three parts are read from their own
+        // posted keys, the `_format` sibling pattern extended to two
+        // siblings, and the canonical object is always rebuilt from them.
+        if matches!(field.field_type, FieldType::Link) {
+            let uri = posted.get(name).unwrap_or("").trim();
+            let title_name = format!("{name}_title");
+            let new_tab_name = format!("{name}_new_tab");
+            let title = posted.get(&title_name).unwrap_or("").trim();
+            let new_tab = posted.get(&new_tab_name).is_some_and(is_truthy);
+
+            if uri.is_empty() {
+                if field.required {
+                    errors.push(required_error(field));
+                } else {
+                    out.remove(name);
+                }
+                continue;
+            }
+            if !field_value::is_valid_link_uri(uri) {
+                errors.push(ValidationError::field(
+                    name,
+                    format!("{} must be a web address or a local path.", field.label),
+                ));
+                continue;
+            }
+            if title.chars().count() > 255 {
+                errors.push(ValidationError::field(
+                    name,
+                    format!("{} title must be at most 255 characters.", field.label),
+                ));
+                continue;
+            }
+            let mut link = Map::new();
+            link.insert("uri".to_string(), Value::String(uri.to_string()));
+            if !title.is_empty() {
+                link.insert("title".to_string(), Value::String(title.to_string()));
+            }
+            if new_tab {
+                link.insert("new_tab".to_string(), Value::Bool(true));
+            }
+            out.insert(name.clone(), Value::Object(link));
+            continue;
+        }
+
+        // A multi value List is a single checkboxes group, not the repeating
+        // container: every selection is posted as `name[]` at once, so the
+        // array is rebuilt from the current selection rather than from
+        // per-delta deltas.
+        if matches!(field.field_type, FieldType::List)
+            && crate::content::field_values::stores_a_list(field)
+        {
+            let raws = posted.checkbox_values(name);
+            let shown: Vec<&str> = field_value::form_values(prior)
+                .into_iter()
+                .filter_map(|v| v.as_str())
+                .collect();
+            if editing && raws == shown {
+                if field.required && raws.is_empty() {
+                    errors.push(required_error(field));
+                }
+                continue;
+            }
+            let mut values = Vec::new();
+            for raw in raws {
+                match field_value::parse(field, raw, None, permitted_formats) {
+                    Ok(Some(v)) => values.push(v),
+                    Ok(None) => {}
+                    Err(e) => errors.push(e),
+                }
+            }
+            if let Some(message) =
+                crate::content::field_values::too_many_values(field, values.len())
+            {
+                errors.push(ValidationError::field(name, message));
+            }
+            if field.required && values.is_empty() {
+                errors.push(required_error(field));
+            }
+            out.insert(name.clone(), Value::Array(values));
             continue;
         }
 

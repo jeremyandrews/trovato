@@ -80,6 +80,18 @@ fn probe_fields() -> Vec<trovato_sdk::types::FieldDefinition> {
         FieldDefinition::new("f_nums", FieldType::Integer)
             .label("Numbers")
             .cardinality(3),
+        FieldDefinition::new("f_link", FieldType::Link).label("Link"),
+        FieldDefinition::new("f_list", FieldType::List)
+            .label("List")
+            .allowed_values(&[("gold", "Gold"), ("silver", "Silver"), ("bronze", "Bronze")]),
+        FieldDefinition::new("f_list_multi", FieldType::List)
+            .label("List (multi)")
+            .cardinality(-1)
+            .allowed_values(&[("gold", "Gold"), ("silver", "Silver"), ("bronze", "Bronze")]),
+        FieldDefinition::new("f_tel", FieldType::Telephone).label("Telephone"),
+        FieldDefinition::new("f_tel_multi", FieldType::Telephone)
+            .label("Telephone (multi)")
+            .cardinality(-1),
     ]
 }
 
@@ -199,6 +211,14 @@ fn cases(target: Uuid, other: Uuid, file: Uuid) -> Vec<(&'static str, Value)> {
                 "f_tags": ["one", "two"],
                 "f_refs": [target.to_string(), other.to_string()],
                 "f_nums": [1, 2],
+                "f_link": {"uri": format!("/item/{target}"), "title": "Target one", "new_tab": true},
+                "f_list": "gold",
+                "f_list_multi": ["gold", "silver"],
+                "f_tel": {"value": "+39 0583 123456", "e164": "+390583123456"},
+                "f_tel_multi": [
+                    {"value": "+39 0583 123456", "e164": "+390583123456"},
+                    {"value": "0583 123456"}
+                ],
                 "plugin_meta": {"written_by": "a plugin"},
             }),
         ),
@@ -216,6 +236,9 @@ fn cases(target: Uuid, other: Uuid, file: Uuid) -> Vec<(&'static str, Value)> {
                 "f_tags": "single",
                 "f_refs": [{"target_id": target.to_string()}, {"target_id": other.to_string()}],
                 "f_nums": 7,
+                "f_link": {"uri": "https://example.org/a?b#c", "title": "External"},
+                "f_list": "silver",
+                "f_tel": {"value": "0583 123456"},
             }),
         ),
         (
@@ -230,6 +253,7 @@ fn cases(target: Uuid, other: Uuid, file: Uuid) -> Vec<(&'static str, Value)> {
                 "f_date": 1_763_769_600,
                 "f_email": " padded@example.com ",
                 "f_nums": ["4", 5],
+                "f_tel": "0039 0583 123456",
             }),
         ),
     ]

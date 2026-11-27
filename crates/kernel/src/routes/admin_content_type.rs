@@ -34,6 +34,9 @@ const FIELD_TYPE_OPTIONS: &[(&str, &str)] = &[
     ("email", "Email"),
     ("record_reference", "Reference"),
     ("category_reference", "Category reference (tags)"),
+    ("link", "Link"),
+    ("list", "List (fixed choices)"),
+    ("telephone", "Telephone"),
 ];
 
 /// The preview choices of a content type: value and English label,
@@ -768,6 +771,53 @@ struct FieldEditFormData {
     /// A category reference field's category.
     #[serde(default)]
     category: Option<String>,
+    /// A List field's allowed values, one `key|label` per line.
+    #[serde(default)]
+    allowed_values: Option<String>,
+}
+
+/// Parse a List field's "Allowed values" textarea: one `key|label` per line,
+/// blank lines skipped, a line with no `|` using its text as both. Keys must
+/// be non empty, at most 255 characters, hold no `|` and be unique; labels
+/// must be non empty. Returns every refused line's message, or the parsed
+/// pairs.
+fn parse_allowed_values(text: &str) -> Result<Vec<(String, String)>, String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut values = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (key, label) = match line.split_once('|') {
+            Some((k, l)) => (k.trim(), l.trim()),
+            None => (line, line),
+        };
+        if key.is_empty() {
+            return Err(format!("\"{line}\": the key must not be empty."));
+        }
+        if key.chars().count() > 255 {
+            return Err(format!("\"{key}\": the key must be at most 255 characters."));
+        }
+        if label.is_empty() {
+            return Err(format!("\"{key}\": the label must not be empty."));
+        }
+        if !seen.insert(key.to_string()) {
+            return Err(format!("\"{key}\": every key must be unique."));
+        }
+        values.push((key.to_string(), label.to_string()));
+    }
+    Ok(values)
+}
+
+/// A List field's allowed values as the edit form's textarea shows them, one
+/// `key|label` per line.
+fn allowed_values_text(field: &trovato_sdk::types::FieldDefinition) -> String {
+    crate::content::field_value::list_options(&field.settings)
+        .into_iter()
+        .map(|(key, label)| format!("{key}|{label}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The category a field holds tags of, when it is a category reference.
@@ -810,6 +860,11 @@ async fn edit_field_form(
     context.insert("field", field);
     context.insert("field_category", &field_category(field));
     context.insert("category_options", &category_options(&state).await);
+    context.insert(
+        "is_list_field",
+        &matches!(field.field_type, trovato_sdk::types::FieldType::List),
+    );
+    context.insert("allowed_values_text", &allowed_values_text(field));
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
     context.insert(
@@ -868,7 +923,32 @@ async fn edit_field_submit(
             "edit_field_cardinality",
             "Number of values must be 1 or more, or -1 for unlimited.",
         ));
+    } else if matches!(field.field_type, trovato_sdk::types::FieldType::Link) && cardinality != 1 {
+        errors.push(FieldError::on(
+            "edit_field_cardinality",
+            "A Link field holds a single value: Number of values must be 1.",
+        ));
     }
+
+    let is_list_field = matches!(field.field_type, trovato_sdk::types::FieldType::List);
+    let allowed_values = if is_list_field {
+        match parse_allowed_values(form.allowed_values.as_deref().unwrap_or_default()) {
+            Ok(values) if values.is_empty() => {
+                errors.push(FieldError::on(
+                    "edit_field_allowed_values",
+                    "At least one allowed value is required.",
+                ));
+                None
+            }
+            Ok(values) => Some(values),
+            Err(message) => {
+                errors.push(FieldError::on("edit_field_allowed_values", message));
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // A category reference keeps a category: the one chosen, which must exist.
     let category = match field_category(field) {
@@ -908,6 +988,11 @@ async fn edit_field_submit(
         context.insert("field", &edited_field);
         context.insert("field_category", &category);
         context.insert("category_options", &category_options(&state).await);
+        context.insert("is_list_field", &is_list_field);
+        context.insert(
+            "allowed_values_text",
+            form.allowed_values.as_deref().unwrap_or_default(),
+        );
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
         context.insert("errors", &errors);
@@ -934,6 +1019,16 @@ async fn edit_field_submit(
             .await
     {
         tracing::error!(error = %e, "failed to change the field's category");
+        return render_server_error("Failed to update field.");
+    }
+
+    if let Some(values) = allowed_values
+        && let Err(e) = state
+            .content_types()
+            .set_field_allowed_values(&type_name, &field_name, &values)
+            .await
+    {
+        tracing::error!(error = %e, "failed to change the field's allowed values");
         return render_server_error("Failed to update field.");
     }
 

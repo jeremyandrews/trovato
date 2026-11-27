@@ -13,6 +13,7 @@ use sqlx::PgPool;
 use tracing::{info, warn};
 use uuid::Uuid;
 
+use super::field_value;
 use super::field_values;
 use super::file_refs::{self, FileReferences};
 use super::moderation;
@@ -931,6 +932,15 @@ impl ItemService {
         self.validate_owned_terms(&input.item_type, input.fields.as_ref(), None)
             .await?;
 
+        // A Telephone value is filled in with its E.164 form, when it has
+        // one, before the write is checked: the one point this write path
+        // passes every field through.
+        if let Some(fields) = input.fields.as_mut() {
+            let mut conn = self.inner.pool.acquire().await?;
+            let definitions = file_refs::load_field_definitions(&mut conn, &input.item_type).await?;
+            field_value::canonicalize_field_values(fields, &definitions, None);
+        }
+
         // The field values pass the one check every write runs, then the
         // files the item will reference: any it may not attach refuse the
         // write, and the rest are indexed and promoted in the item's own
@@ -1721,6 +1731,15 @@ impl ItemService {
             Some(&existing.fields),
         )
         .await?;
+
+        // A Telephone value is filled in with its E.164 form, when it has
+        // one, before the write is checked.
+        if let Some(fields) = input.fields.as_mut() {
+            let mut conn = self.inner.pool.acquire().await?;
+            let definitions =
+                file_refs::load_field_definitions(&mut conn, &existing.item_type).await?;
+            field_value::canonicalize_field_values(fields, &definitions, Some(&existing.fields));
+        }
 
         // A write that replaces `fields` has its changed values checked and
         // replaces the item's file references, in the same transaction; one
