@@ -269,6 +269,24 @@
 //!   - `-90`: the owner type is not one this plugin declared
 //!   - `≥ 0`: bytes written (a JSON array of vocabularies)
 //!
+//! ## Crypto API JWT signing (`trovato:kernel/crypto-api` `sign-jwt-es256`)
+//!
+//! Added by B273, after 0.105.0: a new function in the existing `crypto-api`
+//! interface; no existing signature changed. The key material never crosses
+//! into WASM memory.
+//!
+//! - **`sign-jwt-es256(key_ref_ptr, key_ref_len, header_ptr, header_len, claims_ptr, claims_len, out_ptr, out_max_len) → i32`**
+//!   - `-1`: memory missing, `-2`: key-ref read failed, `-3`: header JSON read
+//!     failed, `-4`: claims JSON read failed
+//!   - `-10`: no services in this context
+//!   - `-93`: no key is mapped for this plugin under `key-ref` ([`ERR_CRYPTO_KEY_UNMAPPED`]) —
+//!     the same answer for a key mapped to a different plugin, so a refusal
+//!     cannot be used to probe who owns a key-ref
+//!   - `-94`: the mapped key is not a usable P-256 PKCS#8 private key ([`ERR_CRYPTO_KEY_INVALID`])
+//!   - `-95`: `header-json` or `claims-json` is not valid JSON ([`ERR_CRYPTO_JWT_INVALID_JSON`])
+//!   - `-96`: the header names an `alg` other than `ES256` ([`ERR_CRYPTO_JWT_ALG_OVERRIDE`])
+//!   - `≥ 0`: bytes written (the compact JWS)
+//!
 //! ## SDK-side Errors (client-side, before/after WASM boundary)
 //!
 //! These errors are produced by the SDK wrapper functions in `host.rs`, not by host functions:
@@ -506,6 +524,38 @@ pub const ERR_VOCABULARY_INVALID: i32 = -91;
 ///
 /// Added by B108, after 0.104.0.
 pub const ERR_VOCABULARY_EXISTS: i32 = -92;
+
+// =============================================================================
+// Crypto API JWT signing errors (`trovato:kernel/crypto-api` `sign-jwt-es256`)
+// =============================================================================
+
+/// No key is mapped for the calling plugin under the given `key-ref`.
+///
+/// The same code answers a `key-ref` that names no mapping at all and one
+/// mapped to a *different* plugin: the host never says which, so a refusal
+/// cannot be used to probe whether a key-ref belongs to someone else.
+///
+/// Added by B273, after 0.105.0.
+pub const ERR_CRYPTO_KEY_UNMAPPED: i32 = -93;
+
+/// The key-ref resolved to key material that is not a usable P-256 PKCS#8
+/// private key: the wrong curve, or not a key at all. Nothing was signed.
+///
+/// Added by B273, after 0.105.0.
+pub const ERR_CRYPTO_KEY_INVALID: i32 = -94;
+
+/// `header-json` or `claims-json` was not valid JSON (or `header-json` was
+/// not a JSON object). Nothing was signed.
+///
+/// Added by B273, after 0.105.0.
+pub const ERR_CRYPTO_JWT_INVALID_JSON: i32 = -95;
+
+/// `header-json` named an `alg` other than `ES256`. The host always signs
+/// with ES256 and refuses to sign under a different name instead of silently
+/// overriding it.
+///
+/// Added by B273, after 0.105.0.
+pub const ERR_CRYPTO_JWT_ALG_OVERRIDE: i32 = -96;
 
 // =============================================================================
 // HTTP API errors (`trovato:kernel/http`)

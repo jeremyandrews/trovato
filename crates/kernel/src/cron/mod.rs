@@ -1948,7 +1948,13 @@ impl CronService {
             self.ai_budgets.clone(),
             self.http.clone(),
         )
-        .with_plugin_runtime(dispatcher.runtime().clone());
+        .with_plugin_runtime(dispatcher.runtime().clone())
+        // A fresh registry per background dispatch, not a shared one: a
+        // background drain is not the hot path `sign-jwt-es256` is for, and
+        // `CronService` has no long-lived place to hold one of its own.
+        .with_crypto_keys(Arc::new(
+            crate::services::crypto_keys::CryptoKeyRegistry::new(self.pool.clone()),
+        ));
         if let Some(limiter) = self.rate_limiter.clone() {
             services = services.with_rate_limiter(limiter);
         }

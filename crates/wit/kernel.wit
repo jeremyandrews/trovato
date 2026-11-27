@@ -244,9 +244,9 @@ interface ai-api {
 }
 
 /// Cryptographic primitives — SHA-256, HMAC-SHA256, secure random bytes,
-/// and constant-time comparison. Plugins use these instead of bundling
-/// their own crypto into WASM (large, slow, and risky). All byte outputs
-/// are hex-encoded strings.
+/// constant-time comparison, and ES256 JWT signing with an operator-held
+/// key. Plugins use these instead of bundling their own crypto into WASM
+/// (large, slow, and risky). All byte outputs are hex-encoded strings.
 ///
 /// ABI note (PF-3 / D-21): the registered host import field names now match
 /// these kebab-case identifiers exactly (`sha256`, `hmac-sha256`,
@@ -266,6 +266,34 @@ interface crypto-api {
 
     /// Constant-time equality of two byte strings (timing-attack safe).
     constant-time-eq: func(a: string, b: string) -> bool;
+
+    /// Sign a JWT with ES256, using a key the operator holds and mapped to
+    /// this plugin. The key material never crosses into WASM memory: the
+    /// plugin names it by `key-ref`, a short id the operator chose, never a
+    /// raw environment variable or file path of the plugin's own choosing.
+    ///
+    /// The operator maps `(plugin name, key-ref)` to an environment variable
+    /// or a file holding a PEM PKCS#8 P-256 private key (the `.p8` format
+    /// Apple issues for APNs), in the `crypto_signing_keys` site config entry
+    /// (see the plugin guide's "Signing a JWT" section). A plugin may use
+    /// only the keys mapped for it; the host parses and caches the key and
+    /// never returns it, logs it or puts it in an error.
+    ///
+    /// `header-json` is the JWS header the plugin wants, typically just
+    /// `{"kid": "..."}`: the host sets `alg` to `ES256` and refuses a header
+    /// that names a different one. `claims-json` is the JWT claim set,
+    /// unexamined beyond being valid JSON. Returns the compact JWS
+    /// (`header.claims.signature`, each part base64url-encoded).
+    ///
+    /// Refused, each with its own code: no key mapped for this plugin under
+    /// `key-ref` (also the answer for a key mapped to a different plugin, so
+    /// a refusal cannot be used to probe who owns a key-ref), the mapped key
+    /// is not a usable P-256 key, `header-json` or `claims-json` is not valid
+    /// JSON, and a header that names an `alg` other than `ES256`.
+    ///
+    /// Added by B273, after 0.105.0: a new function in an existing
+    /// interface; no existing signature changed.
+    sign-jwt-es256: func(key-ref: string, header-json: string, claims-json: string) -> result<string, s32>;
 }
 
 /// Outbound HTTP — the kernel performs the request on the plugin's behalf,

@@ -20,6 +20,7 @@ use crate::models::stage::LIVE_STAGE_ID;
 use crate::plugin::PluginRuntime;
 use crate::services::ai_provider::AiProviderService;
 use crate::services::ai_token_budget::AiTokenBudgetService;
+use crate::services::crypto_keys::CryptoKeyRegistry;
 
 /// Build a field-access decision cache with the canonical FR-8 sizing
 /// (10k entries, 5-minute TTL — design §3).
@@ -323,6 +324,12 @@ pub struct RequestServices {
     /// the limiter fails open on a Redis error for the same reason, and a mail
     /// bucket that refuses when it cannot count would take mail down with Redis.
     pub rate_limiter: Option<Arc<crate::middleware::RateLimiter>>,
+
+    /// The registry of operator-held signing keys, for `crypto-api`'s
+    /// `sign-jwt-es256` (B273). `None` in serviceless and test contexts, where
+    /// the host function reports the key as unmapped rather than pretending
+    /// one is configured — see [`CryptoKeyRegistry`].
+    pub crypto_keys: Option<Arc<CryptoKeyRegistry>>,
 }
 
 impl RequestServices {
@@ -349,6 +356,7 @@ impl RequestServices {
             rate_limiter: None,
             item_service: Arc::new(std::sync::OnceLock::new()),
             gather_service: Arc::new(std::sync::OnceLock::new()),
+            crypto_keys: None,
         }
     }
 
@@ -372,6 +380,7 @@ impl RequestServices {
             rate_limiter: None,
             item_service: Arc::new(std::sync::OnceLock::new()),
             gather_service: Arc::new(std::sync::OnceLock::new()),
+            crypto_keys: None,
         }
     }
 
@@ -450,6 +459,18 @@ impl RequestServices {
         self
     }
 
+    /// Attach the registry of operator-held signing keys, enabling
+    /// `crypto-api`'s `sign-jwt-es256` (B273).
+    ///
+    /// Builder-style, applied on the `AppState` template so every production
+    /// tap dispatch shares the one registry — and therefore its parsed-key
+    /// cache, the same reason [`Self::with_email`] shares one `EmailService`.
+    #[must_use]
+    pub fn with_crypto_keys(mut self, crypto_keys: Arc<CryptoKeyRegistry>) -> Self {
+        self.crypto_keys = Some(crypto_keys);
+        self
+    }
+
     /// Get the plugin runtime handle, if one was attached.
     pub fn plugin_runtime(&self) -> Option<&Arc<PluginRuntime>> {
         self.plugin_runtime.as_ref()
@@ -477,6 +498,10 @@ impl std::fmt::Debug for RequestServices {
             )
             .field("field_access_cache", &"Cache<String, bool>")
             .field("email", &self.email.as_ref().map(|_| "EmailService"))
+            .field(
+                "crypto_keys",
+                &self.crypto_keys.as_ref().map(|_| "CryptoKeyRegistry"),
+            )
             .finish()
     }
 }

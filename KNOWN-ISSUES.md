@@ -1,7 +1,7 @@
 # Known issues
 
 <!-- version:begin -->
-What is outstanding in 0.105.0.
+What is outstanding in 0.106.0.
 <!-- version:end -->
 This is the list that would otherwise be a surprise, so it is written down
 rather than discovered.
