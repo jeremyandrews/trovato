@@ -399,7 +399,7 @@ pub async fn search(
     if may_open("/admin/people") {
         let (users, total) = state
             .users()
-            .admin_page(like.as_deref(), "name ASC", DATA_LIMIT, 0)
+            .admin_page(like.as_deref(), None, "name ASC", DATA_LIMIT, 0)
             .await
             .unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "admin search: people");

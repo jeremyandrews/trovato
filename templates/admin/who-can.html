@@ -1,7 +1,9 @@
 {% extends "page--admin.html" %}
 {#- "Who can do this?" for one admin page (routes::admin_who_can). Context:
     target_path (none when the path is not an admin page the registry
-    knows), entry, permissions, roles (id, name, holds, everyone, members). -#}
+    knows), entry, permissions, roles (id, name, holds, everyone, members,
+    names, more), show_names (whether the viewer may open the People listing,
+    so names rather than only a count are safe to show). -#}
 
 {% block page_title %}{% if target_path %}{{ t(s="Who can open {page}", page=t(s=entry)) }}{% else %}{{ t(s="Who can do this?") }}{% endif %}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="The roles whose members may open an administration page. Change them on the Permissions page.") }}</p>{% endblock page_intro %}
@@ -65,7 +67,22 @@
             {% for role in roles %}
             <tr>
                 <th scope="row"><a href="/admin/people/roles/{{ role.id }}/edit">{{ role.name }}</a></th>
-                <td>{% if role.everyone %}{{ t(s=role.everyone) }}{% else %}{{ t(s="{count} person", plural="{count} people", count=role.members) }}{% endif %}</td>
+                <td>
+                    {% if role.everyone %}
+                    {{ t(s=role.everyone) }}
+                    {% elif show_names %}
+                        {% if role.names %}
+                        <ul class="who-can-names">
+                            {% for member in role.names %}<li><a href="/admin/people/{{ member.id }}/edit">{{ member.name }}</a></li>{% endfor %}
+                        </ul>
+                        {% if role.more > 0 %}<a href="/admin/people?role={{ role.id }}">{{ t(s="and {count} more", count=role.more) }}</a>{% endif %}
+                        {% else %}
+                        {{ t(s="Nobody") }}
+                        {% endif %}
+                    {% else %}
+                    {{ t(s="{count} person", plural="{count} people", count=role.members) }}
+                    {% endif %}
+                </td>
                 <td>{{ role.holds | join(sep=", ") }}</td>
             </tr>
             {% endfor %}

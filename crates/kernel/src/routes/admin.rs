@@ -1169,7 +1169,8 @@ pub fn router() -> Router<AppState> {
         .merge(super::admin_text_format::router())
         // Appearance: the default and admin themes (B108)
         .merge(super::admin_appearance::router())
-        // Plugin-queue dead-letter admin (P11d / D-46)
+        // Plugin-queue dead-letter admin (P11d / D-46, B252)
+        .merge(super::admin_dead_jobs::router())
         // Async auto-embed lifecycle admin (P11f / D-51, D-52)
         .merge(super::admin_embed::router())
         // AJAX endpoint

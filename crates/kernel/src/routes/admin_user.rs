@@ -211,7 +211,7 @@ const USER_SORTS: &[(&str, &str)] = &[
     ("status", "status"),
 ];
 
-/// List users, a page at a time, filtered by name or email address.
+/// List users, a page at a time, filtered by name, email address or role.
 ///
 /// GET /admin/people
 async fn list_users(
@@ -226,10 +226,19 @@ async fn list_users(
     let query = ListQuery::from_params(&params);
     let sort = query.sort(USER_SORTS, ("name", false));
     let like = query.like();
+    let role_filter = params
+        .get("role")
+        .and_then(|r| uuid::Uuid::parse_str(r).ok());
 
     let (users, total) = match state
         .users()
-        .admin_page(like.as_deref(), &sort.order_by(), PER_PAGE, query.offset())
+        .admin_page(
+            like.as_deref(),
+            role_filter,
+            &sort.order_by(),
+            PER_PAGE,
+            query.offset(),
+        )
         .await
     {
         Ok(page) => page,
@@ -239,6 +248,12 @@ async fn list_users(
         }
     };
 
+    let roles = state.roles().list().await.unwrap_or_default();
+    let role_options: Vec<(String, String)> = roles
+        .into_iter()
+        .map(|r| (r.id.to_string(), r.name))
+        .collect();
+
     let csrf_token = generate_csrf_token(&session).await;
     let warning: Option<String> = session.remove(ACCESS_RULE_WARNING_KEY).await.ok().flatten();
 
@@ -246,6 +261,11 @@ async fn list_users(
     context.insert("warning", &warning);
     context.insert("users", &users);
     context.insert("list", &query.view(total, users.len(), Some(&sort)));
+    context.insert("role_options", &role_options);
+    context.insert(
+        "role_filter",
+        &role_filter.map(|r| r.to_string()).unwrap_or_default(),
+    );
     context.insert("csrf_token", &csrf_token);
     context.insert("path", "/admin/people");
 

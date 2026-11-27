@@ -14,6 +14,7 @@ pub mod admin_confirm;
 pub mod admin_content;
 pub mod admin_content_type;
 pub mod admin_dashboard;
+pub mod admin_dead_jobs;
 #[cfg(test)]
 mod admin_design_tests;
 pub mod admin_embed;

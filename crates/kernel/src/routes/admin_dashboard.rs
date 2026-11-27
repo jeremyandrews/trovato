@@ -96,7 +96,7 @@ pub async fn panels(state: &AppState, viewer: &UserContext) -> Vec<Panel> {
         panels.push(panel);
     }
     if may_open("/admin/reports/cron") {
-        panels.push(tasks(state).await);
+        panels.push(tasks(state, may_open("/admin/reports/dead-jobs")).await);
     }
     if may_open("/admin/reports/log")
         && let Some(panel) = errors(state, viewer).await
@@ -303,7 +303,9 @@ fn waiting_summary(total: i64, uncounted: bool) -> UiMessage {
 }
 
 /// Whether the last cron run worked, and dead plugin queue jobs.
-async fn tasks(state: &AppState) -> Panel {
+/// `may_open_dead_jobs` is whether the viewer may open the dead jobs report,
+/// by the same rule as every other panel row.
+async fn tasks(state: &AppState, may_open_dead_jobs: bool) -> Panel {
     let last = state.cron().last_run().await.ok().flatten();
     let dead: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM plugin_queue WHERE status = 'dead'")
         .fetch_one(state.db())
@@ -336,9 +338,8 @@ async fn tasks(state: &AppState) -> Panel {
                 "{count} queued job stopped after failing repeatedly",
                 "{count} queued jobs stopped after failing repeatedly",
             ),
-            detail: (dead > 0)
-                .then(|| UiMessage::new("Listed by the dead-letter API, /api/v1/queue/dlq.")),
-            href: None,
+            detail: None,
+            href: may_open_dead_jobs.then(|| "/admin/reports/dead-jobs".to_string()),
             status_line: None,
         },
     ];

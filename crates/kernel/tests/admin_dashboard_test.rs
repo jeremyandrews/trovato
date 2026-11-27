@@ -293,7 +293,16 @@ fn who_can_do_this_names_the_permission_and_the_roles_holding_it() {
             r#"<a href="/admin/people/roles/{}/edit">{}</a>"#,
             role.id, role.name
         )));
-        assert!(html.contains("1 person"));
+        // The viewer is a site administrator, so the role's one member is
+        // named (B252), not only counted.
+        let member_name: String = sqlx::query_scalar("SELECT name FROM users WHERE id = $1")
+            .bind(member)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        assert!(html.contains(&format!(
+            r#"<a href="/admin/people/{member}/edit">{member_name}</a>"#
+        )));
 
         // The page does not link to itself.
         assert!(!html.contains("who-can?path=/admin/people/who-can"));

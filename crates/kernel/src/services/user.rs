@@ -711,11 +711,12 @@ impl UserService {
     pub async fn admin_page(
         &self,
         like: Option<&str>,
+        role_id: Option<Uuid>,
         order_by: &str,
         limit: i64,
         offset: i64,
     ) -> Result<(Vec<User>, i64)> {
-        User::admin_page(&self.inner.pool, like, order_by, limit, offset).await
+        User::admin_page(&self.inner.pool, like, role_id, order_by, limit, offset).await
     }
 
     /// List users with pagination.
