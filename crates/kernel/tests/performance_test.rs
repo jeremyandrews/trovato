@@ -617,7 +617,11 @@ const WRITE_PASSWORDS: [&str; 2] = ["Perf-Write-Password-1", "Perf-Write-Passwor
 async fn own_member(site: &PerfSite, prefix: &str) -> (uuid::Uuid, String, String) {
     let name = format!("{prefix}_{}", uuid::Uuid::now_v7().simple());
     site.app
-        .create_test_user(&name, WRITE_PASSWORDS[0], &format!("{name}@perf.example.test"))
+        .create_test_user(
+            &name,
+            WRITE_PASSWORDS[0],
+            &format!("{name}@perf.example.test"),
+        )
         .await;
     let id = common::user_id_of(&site.app, &name).await;
     let cookies = site.app.login(&name, WRITE_PASSWORDS[0]).await;
@@ -668,7 +672,12 @@ fn change_password(html: &str, from: &str, to: &str) -> axum::http::Request<axum
 }
 
 /// The administrator's edit form for the account `name`, saved with `mail`.
-fn admin_edit(html: &str, id: uuid::Uuid, name: &str, mail: &str) -> axum::http::Request<axum::body::Body> {
+fn admin_edit(
+    html: &str,
+    id: uuid::Uuid,
+    name: &str,
+    mail: &str,
+) -> axum::http::Request<axum::body::Body> {
     axum::http::Request::post(format!("/admin/people/{id}/edit"))
         .header("content-type", "application/x-www-form-urlencoded")
         .body(axum::body::Body::from(format!(
@@ -709,9 +718,13 @@ fn password_change() {
         let site = shared_site();
         let (id, _, cookies) = own_member(site, "perf_pw").await;
         let written = site
-            .write("password_change.user.post", &cookies, "/user/profile", true, |html| {
-                change_password(html, WRITE_PASSWORDS[0], WRITE_PASSWORDS[1])
-            })
+            .write(
+                "password_change.user.post",
+                &cookies,
+                "/user/profile",
+                true,
+                |html| change_password(html, WRITE_PASSWORDS[0], WRITE_PASSWORDS[1]),
+            )
             .await;
         assert_eq!(events_of(site, "password.changed", id).await, 1);
         check(&written.visit);
@@ -745,7 +758,13 @@ fn api_token_create() {
         let site = shared_site();
         let (id, _, cookies) = own_member(site, "perf_token").await;
         let written = site
-            .write("api_token_create.user.post", &cookies, "/user/tokens", true, create_token)
+            .write(
+                "api_token_create.user.post",
+                &cookies,
+                "/user/tokens",
+                true,
+                create_token,
+            )
             .await;
         assert_eq!(events_of(site, "api_token.created", id).await, 1);
         check_answered(&written.visit, 201);

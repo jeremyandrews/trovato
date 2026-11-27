@@ -73,19 +73,24 @@ pub async fn resolve(state: &AppState, raw_token: &str) -> Result<Option<TokenHo
 /// caller shows it once. The event names the token by its hashed id, never
 /// the value.
 ///
+/// The token and its event commit together.
+///
 /// # Errors
 ///
-/// When the insert fails; then no token exists and nothing is recorded.
+/// When the insert or the event fails; then no token exists and nothing is
+/// recorded.
 pub async fn create(
     state: &AppState,
     user_id: Uuid,
     name: &str,
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<(ApiToken, String)> {
-    let (token, raw) = ApiToken::create(state.db(), user_id, name, expires_at).await?;
+    let mut tx = state.db().begin().await?;
+    let (token, raw) = ApiToken::create(&mut *tx, user_id, name, expires_at).await?;
     state
         .audit_trail()
-        .security(
+        .security_in(
+            &mut tx,
             SecurityEvent::new(SecurityEventKind::ApiTokenCreated)
                 .user(user_id)
                 .subject(&token.id.to_string())
@@ -93,46 +98,60 @@ pub async fn create(
                 // hold anything, an address or a secret included.
                 .detail("expires", token.expires_at.is_some()),
         )
-        .await;
+        .await?;
+    tx.commit().await?;
     Ok((token, raw))
 }
 
 /// Revoke `user_id`'s token `id`, at its holder's request, and record
 /// `api_token.revoked`. Returns whether there was such a token.
 ///
+/// The delete and its event commit together.
+///
 /// # Errors
 ///
-/// When the delete fails; then the token remains and nothing is recorded.
+/// When the delete or the event fails; then the token remains and nothing is
+/// recorded.
 pub async fn revoke(state: &AppState, id: Uuid, user_id: Uuid) -> Result<bool> {
-    let deleted = ApiToken::delete(state.db(), id, user_id).await?;
+    let mut tx = state.db().begin().await?;
+    let deleted = ApiToken::delete(&mut *tx, id, user_id).await?;
     if deleted {
         state
             .audit_trail()
-            .security(revoked_event(user_id, id, None, "self"))
-            .await;
+            .security_in(&mut tx, revoked_event(user_id, id, None, "self"))
+            .await?;
     }
+    tx.commit().await?;
     Ok(deleted)
 }
 
 /// Revoke every token `user_id` holds, recording one `api_token.revoked`
 /// per token (`actor` did it, for `reason`). Returns how many went.
 ///
+/// The deletes and their events commit together.
+///
 /// # Errors
 ///
-/// When the delete fails; then the tokens remain and nothing is recorded.
+/// When the delete or an event fails; then the tokens remain and nothing is
+/// recorded.
 pub async fn revoke_all_for_user(
     state: &AppState,
     user_id: Uuid,
     actor: Option<Uuid>,
     reason: &str,
 ) -> Result<usize> {
-    let ids = ApiToken::delete_all_for_user(state.db(), user_id).await?;
-    for id in &ids {
-        state
-            .audit_trail()
-            .security(revoked_event(user_id, *id, actor, reason))
-            .await;
-    }
+    let mut tx = state.db().begin().await?;
+    let ids = ApiToken::delete_all_for_user(&mut *tx, user_id).await?;
+    state
+        .audit_trail()
+        .security_all_in(
+            &mut tx,
+            ids.iter()
+                .map(|id| revoked_event(user_id, *id, actor, reason))
+                .collect::<Vec<_>>(),
+        )
+        .await?;
+    tx.commit().await?;
     Ok(ids.len())
 }
 

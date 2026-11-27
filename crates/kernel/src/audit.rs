@@ -477,12 +477,22 @@ pub struct SecurityAuditRow {
 
 /// The append-only security audit stream.
 ///
-/// Writes are best-effort at the call site: an audit failure must never break
-/// the security operation it is recording (refusing a login because the audit
-/// table is unreachable would turn an observability outage into an availability
-/// outage). Use [`SecurityAudit::record`] when the caller can handle an error,
-/// and [`SecurityAudit::emit`] at the many call sites that just want the event
-/// written and a loud log line if it could not be.
+/// Two kinds of event, written two ways:
+///
+/// - **An event that records a stored change** (an account created, updated
+///   or deleted, a password, a passkey, an API token, a role, a recovery
+///   step) is written with [`SecurityAudit::record_in`] inside the
+///   transaction that makes the change, so the change and its event commit
+///   together or not at all. A failed event write fails the change: the log
+///   is complete for every change it records.
+/// - **An event with no stored change behind it** (a login success or
+///   failure, a refusal, a rate limit hit, a session that lives only in
+///   Redis) has nothing to be atomic with. It is written best effort with
+///   [`SecurityAudit::emit`]: an audit failure must never break the
+///   operation it is recording (refusing a login because the audit table is
+///   unreachable would turn an observability outage into an availability
+///   outage). [`SecurityAudit::record`] is the same write, returning the
+///   error.
 #[derive(Clone)]
 pub struct SecurityAudit {
     pool: PgPool,
@@ -503,8 +513,36 @@ impl SecurityAudit {
         Self { pool, ip_storage }
     }
 
-    /// Append one event, returning an error if the write failed.
+    /// Append one event on the pool, returning an error if the write failed.
+    ///
+    /// For an event with no stored change behind it (a login, a refusal, a
+    /// rate limit hit) and for a change that writes no rows of its own (a
+    /// session revoked in Redis). An event that records a stored change is
+    /// written with [`Self::record_in`], in that change's transaction.
     pub async fn record(&self, event: SecurityEvent) -> Result<()> {
+        self.insert(&self.pool, &event).await
+    }
+
+    /// Append one event on `conn`, inside the transaction that makes the
+    /// change it records, so the two commit together or not at all.
+    ///
+    /// The row is the one [`Self::record`] writes: the same address handling
+    /// and the same v7 id. An error here must fail the caller's transaction:
+    /// a change whose event cannot be written does not happen.
+    pub async fn record_in(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        event: SecurityEvent,
+    ) -> Result<()> {
+        self.insert(conn, &event).await
+    }
+
+    /// The one insert both entry points run.
+    async fn insert<'e, E: sqlx::PgExecutor<'e>>(
+        &self,
+        executor: E,
+        event: &SecurityEvent,
+    ) -> Result<()> {
         // Anything that is not an address is stored as `"invalid"`, never verbatim.
         let ip = event
             .ip_address
@@ -529,7 +567,7 @@ impl SecurityAudit {
         // A v7 id, so events in the same second read back in the order they
         // happened (`created` is whole seconds).
         .bind(Uuid::now_v7())
-        .execute(&self.pool)
+        .execute(executor)
         .await
         .context("failed to append security audit event")?;
 
@@ -538,9 +576,9 @@ impl SecurityAudit {
 
     /// Append one event, logging loudly on failure instead of propagating.
     ///
-    /// This is the shape almost every call site wants: the security operation
-    /// has already happened, and losing its audit row is serious enough to log
-    /// at `error` but never serious enough to fail the request.
+    /// For an event with no stored change behind it: the attempt or refusal
+    /// has already happened, and losing its audit row is serious enough to
+    /// log at `error` but never serious enough to fail the request.
     pub async fn emit(&self, event: SecurityEvent) {
         let kind = event.kind;
         if let Err(e) = self.record(event).await {

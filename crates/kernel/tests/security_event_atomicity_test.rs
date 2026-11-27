@@ -272,7 +272,10 @@ fn an_admin_delete_whose_event_fails_keeps_the_account() {
                 Request::post(format!("/admin/people/{target}/delete"))
                     .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                     .header(header::USER_AGENT, &agent)
-                    .body(Body::from(format!("_token={}", urlencoding::encode(&token))))
+                    .body(Body::from(format!(
+                        "_token={}",
+                        urlencoding::encode(&token)
+                    )))
                     .unwrap(),
                 &admin,
             )
@@ -291,7 +294,10 @@ fn an_admin_delete_whose_event_fails_keeps_the_account() {
             .fetch_one(&app.db)
             .await
             .unwrap();
-        assert!(exists, "the account was deleted with no account.deleted event");
+        assert!(
+            exists,
+            "the account was deleted with no account.deleted event"
+        );
     });
 }
 
@@ -329,12 +335,18 @@ fn an_api_token_whose_event_fails_is_not_issued() {
             StatusCode::INTERNAL_SERVER_ERROR,
             "a token whose event failed must answer as a failed create: {body}"
         );
-        assert!(!body.contains("\"token\""), "the raw token was handed out: {body}");
+        assert!(
+            !body.contains("\"token\""),
+            "the raw token was handed out: {body}"
+        );
         let tokens: i64 = sqlx::query_scalar("SELECT count(*) FROM api_tokens WHERE user_id = $1")
             .bind(id)
             .fetch_one(&app.db)
             .await
             .unwrap();
-        assert_eq!(tokens, 0, "the token was issued with no api_token.created event");
+        assert_eq!(
+            tokens, 0,
+            "the token was issued with no api_token.created event"
+        );
     });
 }

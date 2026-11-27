@@ -33,8 +33,8 @@ impl ApiToken {
     /// Create a new API token for a user.
     ///
     /// Returns `(ApiToken, raw_token)`. The raw token is shown once and never stored.
-    pub async fn create(
-        pool: &PgPool,
+    pub async fn create<'e, E: sqlx::PgExecutor<'e>>(
+        pool: E,
         user_id: Uuid,
         name: &str,
         expires_at: Option<DateTime<Utc>>,
@@ -127,7 +127,11 @@ impl ApiToken {
     ///
     /// Returns whether a token was deleted. The next lookup of that token, in
     /// any process, finds nothing.
-    pub async fn delete(pool: &PgPool, id: Uuid, user_id: Uuid) -> Result<bool> {
+    pub async fn delete<'e, E: sqlx::PgExecutor<'e>>(
+        pool: E,
+        id: Uuid,
+        user_id: Uuid,
+    ) -> Result<bool> {
         let result = sqlx::query("DELETE FROM api_tokens WHERE id = $1 AND user_id = $2")
             .bind(id)
             .bind(user_id)
@@ -143,7 +147,10 @@ impl ApiToken {
     ///
     /// For when the account itself changes in a way that should end all of its
     /// credentials, such as being blocked.
-    pub async fn delete_all_for_user(pool: &PgPool, user_id: Uuid) -> Result<Vec<Uuid>> {
+    pub async fn delete_all_for_user<'e, E: sqlx::PgExecutor<'e>>(
+        pool: E,
+        user_id: Uuid,
+    ) -> Result<Vec<Uuid>> {
         sqlx::query_scalar("DELETE FROM api_tokens WHERE user_id = $1 RETURNING id")
             .bind(user_id)
             .fetch_all(pool)

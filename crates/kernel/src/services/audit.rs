@@ -249,12 +249,75 @@ impl AuditTrail {
 
     /// Emit one security event, filling in the request's actor, address and
     /// `User-Agent` where the event does not already name them.
+    ///
+    /// Best effort, on the pool: for an event with no stored change behind
+    /// it. An event that records a change is written with
+    /// [`Self::security_in`].
     pub async fn security(&self, event: SecurityEvent) {
         let Some(inner) = &self.inner else { return };
         inner
             .security
             .emit(event.with_request_context(&AuditActor::current()))
             .await;
+    }
+
+    /// Write one security event on `conn`, inside the transaction that makes
+    /// the change it records, filling in the request's actor, address and
+    /// `User-Agent` as [`Self::security`] does. The change and its event
+    /// commit together or not at all.
+    ///
+    /// # Errors
+    ///
+    /// When the insert fails. The caller must then fail its transaction: a
+    /// change whose event cannot be written does not happen. A trail that
+    /// records nothing ([`Self::disabled`]) writes nothing and succeeds.
+    pub async fn security_in(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        event: SecurityEvent,
+    ) -> anyhow::Result<()> {
+        let Some(inner) = &self.inner else {
+            return Ok(());
+        };
+        inner
+            .security
+            .record_in(conn, event.with_request_context(&AuditActor::current()))
+            .await
+    }
+
+    /// [`Self::security_in`] without the request's context: the event is
+    /// written exactly as the caller built it, for a caller that names every
+    /// field its event carries (a route that writes the address it vetted
+    /// and no `User-Agent`).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::security_in`].
+    pub async fn security_as_built_in(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        event: SecurityEvent,
+    ) -> anyhow::Result<()> {
+        let Some(inner) = &self.inner else {
+            return Ok(());
+        };
+        inner.security.record_in(conn, event).await
+    }
+
+    /// [`Self::security_in`] for each of `events`, in order.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::security_in`], at the first event that fails.
+    pub async fn security_all_in(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        events: impl IntoIterator<Item = SecurityEvent>,
+    ) -> anyhow::Result<()> {
+        for event in events {
+            self.security_in(conn, event).await?;
+        }
+        Ok(())
     }
 }
 

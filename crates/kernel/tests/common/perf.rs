@@ -550,7 +550,11 @@ impl PerfSite {
             .app
             .request(get.body(Body::empty()).expect("request"))
             .await;
-        assert_eq!(response.status().as_u16(), 200, "{key}: {page} did not load");
+        assert_eq!(
+            response.status().as_u16(),
+            200,
+            "{key}: {page} did not load"
+        );
         let html = to_bytes(response.into_body(), usize::MAX)
             .await
             .map(|b| String::from_utf8_lossy(&b).into_owned())
