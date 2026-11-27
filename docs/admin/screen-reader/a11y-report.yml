@@ -80,6 +80,9 @@
   - region "Images without a text alternative":
     - heading "Images without a text alternative" [level=2]
     - paragraph: Every image has a text alternative.
+  - region "In content":
+    - heading "In content" [level=2]
+    - paragraph: No content has an image without a text alternative.
   - region "Your settings":
     - heading "Your settings" [level=2]
     - list:

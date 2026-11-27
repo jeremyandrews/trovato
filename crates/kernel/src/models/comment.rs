@@ -77,16 +77,6 @@ impl CommentStatus {
         }
     }
 
-    /// CSS class suffix for the admin status badge.
-    pub fn css_suffix(self) -> &'static str {
-        match self {
-            Self::Unpublished => "unpublished",
-            Self::Published => "published",
-            Self::Pending => "pending",
-            Self::Spam => "spam",
-        }
-    }
-
     /// The status a newly posted comment gets, from the `comment_default_status`
     /// site setting.
     ///
@@ -843,10 +833,6 @@ mod tests {
     fn unpublished_and_pending_have_distinct_labels() {
         assert_eq!(CommentStatus::Unpublished.label(), "Unpublished");
         assert_eq!(CommentStatus::Pending.label(), "Pending review");
-        assert_ne!(
-            CommentStatus::Unpublished.css_suffix(),
-            CommentStatus::Pending.css_suffix()
-        );
     }
 
     /// No subject submitted at all.

@@ -26,7 +26,7 @@
             {% for stage in stages %}
             <tr>
                 <th scope="row">
-                    <a href="/admin/structure/stages/{{ stage.id }}/edit">{{ stage.label }}</a>
+                    <a id="row-{{ stage.id }}" href="/admin/structure/stages/{{ stage.id }}/edit">{{ stage.label }}</a>
                     {% if stage.is_live %}<span class="badge">{{ t(s="Live") }}</span>{% endif %}
                     {% if stage.description %}<br><small>{{ stage.description }}</small>{% endif %}
                 </th>
@@ -36,15 +36,15 @@
                 <td>{{ stage.weight }}</td>
                 <td>{{ stage.references_summary }}</td>
                 <td class="operations">
-                    <a href="/admin/structure/stages/{{ stage.id }}/edit">{{ t(s="Edit {name}", name=stage.label) }}</a>
+                    {{ list::row_action(href="/admin/structure/stages/" ~ stage.id ~ "/edit", text=t(s="Edit", ctx="row action"), id="act-edit-" ~ stage.id, row_id="row-" ~ stage.id) }}
                     {% if stage.deletable %}
                     {% if stage.references.items > 0 or stage.references.url_aliases > 0 or stage.references.menu_links > 0 or stage.references.tiles > 0 %}
-                    {{ list::delete_button(action="/admin/structure/stages/" ~ stage.id ~ "/delete", label=t(s="Delete {name}", name=stage.label), confirm_text=t(s="This stage is still used by {uses}. Deleting it will be refused until that content is moved. Try anyway?", uses=stage.references_summary), csrf_token=csrf_token) }}
+                    {{ list::delete_button(action="/admin/structure/stages/" ~ stage.id ~ "/delete", label=t(s="Delete {name}", name=stage.label), confirm_text=t(s="This stage is still used by {uses}. Deleting it will be refused until that content is moved. Try anyway?", uses=stage.references_summary), csrf_token=csrf_token, text=t(s="Delete", ctx="row action"), id="act-delete-" ~ stage.id, row_id="row-" ~ stage.id) }}
                     {% else %}
-                    {{ list::delete_button(action="/admin/structure/stages/" ~ stage.id ~ "/delete", label=t(s="Delete {name}", name=stage.label), confirm_text=t(s="Delete the {name} stage?", name=stage.label), csrf_token=csrf_token) }}
+                    {{ list::delete_button(action="/admin/structure/stages/" ~ stage.id ~ "/delete", label=t(s="Delete {name}", name=stage.label), confirm_text=t(s="Delete the {name} stage?", name=stage.label), csrf_token=csrf_token, text=t(s="Delete", ctx="row action"), id="act-delete-" ~ stage.id, row_id="row-" ~ stage.id) }}
                     {% endif %}
                     {% else %}
-                    <span>{{ t(s="Not deletable: the Live stage, the default stage and the public stage stay.") }}</span>
+                    <span class="operations__note">{{ t(s="Not deletable: the Live stage, the default stage and the public stage stay.") }}</span>
                     {% endif %}
                 </td>
             </tr>

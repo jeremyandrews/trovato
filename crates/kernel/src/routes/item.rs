@@ -1901,18 +1901,39 @@ async fn revision_authors(
     names
 }
 
+/// Each revision's place among those saved in the same second, oldest first,
+/// and how many there are: `(1, 1)` for a revision alone in its second. The
+/// revision list names each revision's actions by its date to the second;
+/// two saved in one second would otherwise share every name, so the list
+/// adds "1 of 2" and "2 of 2". The list is newest first, so the last of a
+/// second is its oldest.
+fn same_second_places(revisions: &[crate::models::ItemRevision]) -> Vec<(usize, usize)> {
+    let mut totals: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    for revision in revisions {
+        *totals.entry(revision.created).or_default() += 1;
+    }
+    let mut seen: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    let mut places = vec![(1, 1); revisions.len()];
+    for (i, revision) in revisions.iter().enumerate().rev() {
+        let n = seen.entry(revision.created).or_default();
+        *n += 1;
+        places[i] = (*n, totals[&revision.created]);
+    }
+    places
+}
+
 /// A revision as the revision templates show it.
 fn revision_summary(
     revision: &crate::models::ItemRevision,
     authors: &std::collections::HashMap<Uuid, String>,
     current: Option<Uuid>,
 ) -> serde_json::Value {
-    let date = chrono::DateTime::from_timestamp(revision.created, 0)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_else(|| "Unknown".to_string());
     serde_json::json!({
         "id": revision.id,
-        "date": date,
+        // Unix seconds: the templates write it with `admin_time` (or
+        // `admin_time_text` inside a sentence), in the viewer's timezone,
+        // with seconds, since the revision actions are named by it.
+        "created": revision.created,
         "title": revision.title,
         "log": revision.log,
         "author": authors.get(&revision.author_id),
@@ -1942,10 +1963,15 @@ async fn list_revisions(
         };
 
     let authors = revision_authors(&state, &revisions).await;
-    let rev_data: Vec<serde_json::Value> = revisions
+    let mut rev_data: Vec<serde_json::Value> = revisions
         .iter()
         .map(|rev| revision_summary(rev, &authors, item.current_revision_id))
         .collect();
+    for (row, (n, of)) in rev_data.iter_mut().zip(same_second_places(&revisions)) {
+        if of > 1 {
+            row["same_second"] = serde_json::json!({ "n": n.to_string(), "of": of.to_string() });
+        }
+    }
 
     // What each row offers. A revert is an edit of the item; a delete needs
     // `delete revisions` and delete access. The submit decides both again.

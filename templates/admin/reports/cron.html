@@ -10,7 +10,7 @@
     <table class="table report-facts">
         <caption class="visually-hidden">{{ t(s="Last run") }}</caption>
         <tbody>
-            <tr><th scope="row">{{ t(s="When") }}</th><td>{{ t(s="{time} UTC", time=last_run.timestamp | format_date(format="%Y-%m-%d %H:%M:%S")) }}</td></tr>
+            <tr><th scope="row">{{ t(s="When") }}</th><td>{{ admin_time(ts=last_run.timestamp, seconds=true) }}</td></tr>
             <tr><th scope="row">{{ t(s="Server") }}</th><td>{{ last_run.hostname }}</td></tr>
             <tr><th scope="row">{{ t(s="Result") }}</th><td>{% if last_run.status %}{{ t(s=last_run.status) }}{% else %}{{ last_run.result }}{% endif %}</td></tr>
             {% if last_run.duration_ms is number %}

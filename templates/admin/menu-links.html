@@ -46,7 +46,7 @@
                 <th scope="row">
                     {%- for i in range(end=row.depth) %}<span class="menu-tree__indent" aria-hidden="true">&nbsp;&nbsp;&nbsp;&nbsp;</span>{% endfor -%}
                     {%- if row.depth > 0 %}<span aria-hidden="true">&#8735;</span> {% endif -%}
-                    {{ row.title }}
+                    <span id="row-{{ row.id }}">{{ row.title }}</span>
                 </th>
                 <td><code>{{ row.path }}</code></td>
                 <td>{{ row.weight }}</td>
@@ -60,14 +60,14 @@
                 </td>
                 <td class="operations">
                     {% if row.editable %}
-                    <a href="/admin/structure/menus/{{ menu_name }}/{{ row.id }}/edit">{{ t(s="Edit {name}", name=row.title) }}</a>
+                    {{ list::row_action(href="/admin/structure/menus/" ~ menu_name ~ "/" ~ row.id ~ "/edit", text=t(s="Edit", ctx="row action"), id="act-edit-" ~ row.id, row_id="row-" ~ row.id) }}
                     {% if row.children > 0 %}
-                    {{ list::delete_button(action="/admin/structure/menus/" ~ menu_name ~ "/" ~ row.id ~ "/delete", label=t(s="Delete {name}", name=row.title), confirm_text=t(s="Delete this link? Its {count} child link will be promoted to its parent.", plural="Delete this link? Its {count} child links will be promoted to its parent.", count=row.children), csrf_token=csrf_token) }}
+                    {{ list::delete_button(action="/admin/structure/menus/" ~ menu_name ~ "/" ~ row.id ~ "/delete", label=t(s="Delete {name}", name=row.title), confirm_text=t(s="Delete this link? Its {count} child link will be promoted to its parent.", plural="Delete this link? Its {count} child links will be promoted to its parent.", count=row.children), csrf_token=csrf_token, text=t(s="Delete", ctx="row action"), id="act-delete-" ~ row.id, row_id="row-" ~ row.id) }}
                     {% else %}
-                    {{ list::delete_button(action="/admin/structure/menus/" ~ menu_name ~ "/" ~ row.id ~ "/delete", label=t(s="Delete {name}", name=row.title), confirm_text=t(s="Delete this link?"), csrf_token=csrf_token) }}
+                    {{ list::delete_button(action="/admin/structure/menus/" ~ menu_name ~ "/" ~ row.id ~ "/delete", label=t(s="Delete {name}", name=row.title), confirm_text=t(s="Delete this link?"), csrf_token=csrf_token, text=t(s="Delete", ctx="row action"), id="act-delete-" ~ row.id, row_id="row-" ~ row.id) }}
                     {% endif %}
                     {% else %}
-                    <span>{{ t(s="Not editable here") }}</span>
+                    <span class="operations__note">{{ t(s="Not editable here") }}</span>
                     {% endif %}
                 </td>
             </tr>

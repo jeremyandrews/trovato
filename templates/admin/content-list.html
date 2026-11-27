@@ -60,25 +60,23 @@
                     <tr>
                         <td class="th-check"><input type="checkbox" name="ids[]" value="{{ item.id }}" id="select-{{ item.id }}" data-select-row><label class="visually-hidden" for="select-{{ item.id }}">{{ t(s="Select {title}", title=item.title) }}</label></td>
                         <th scope="row">
-                            <a href="{% if ops.edit == "admin" %}/admin/content/{{ item.id }}/edit{% elif ops.edit == "item" %}/item/{{ item.id }}/edit{% else %}/item/{{ item.id }}{% endif %}">{{ item.title }}</a>
+                            <a id="row-{{ item.id }}" href="{% if ops.edit == "admin" %}/admin/content/{{ item.id }}/edit{% elif ops.edit == "item" %}/item/{{ item.id }}/edit{% else %}/item/{{ item.id }}{% endif %}">{{ item.title }}</a>
                         </th>
                         <td>{{ item.type }}</td>
                         <td>{% if author %}{{ author }}{% else %}{{ t(s="Unknown") }}{% endif %}</td>
                         <td>
-                            {% if item.status == 1 %}
-                            <span class="status status--published">{{ t(s="Published") }}</span>
-                            {% else %}
-                            <span class="status status--unpublished">{{ t(s="Unpublished") }}</span>
-                            {% endif %}
+                            {% set state = states[item.id] %}{{ list::status(label=t(s=state.label), kind=state.kind) }}
                         </td>
-                        <td>{{ item.changed | date(format="%Y-%m-%d %H:%M") }}</td>
+                        <td>{{ admin_time(ts=item.changed) }}</td>
                         <td class="operations">
                             {% if ops.edit %}
-                            <a href="{% if ops.edit == "admin" %}/admin/content/{{ item.id }}/edit{% else %}/item/{{ item.id }}/edit{% endif %}">{{ t(s="Edit {title}", title=item.title) }}</a>
-                            <a href="/item/{{ item.id }}/revisions">{{ t(s="Revisions of {title}", title=item.title) }}</a>
+                            {% if ops.edit == "admin" %}{% set edit_href = "/admin/content/" ~ item.id ~ "/edit" %}{% else %}{% set edit_href = "/item/" ~ item.id ~ "/edit" %}{% endif %}
+                            {{ list::row_action(href=edit_href, text=t(s="Edit", ctx="row action"), id="act-edit-" ~ item.id, row_id="row-" ~ item.id) }}
+                            {{ list::row_action(href="/item/" ~ item.id ~ "/revisions", text=t(s="Revisions", ctx="row action"), id="act-revisions-" ~ item.id, row_id="row-" ~ item.id) }}
                             {% endif %}
                             {% if ops.delete %}
-                            <button type="submit" form="delete-{{ item.id }}" class="link-button link-button--danger">{{ t(s="Delete {title}", title=item.title) }}</button>
+                            {#- Outside #bulk-form's nesting: it submits the form below through `form`. -#}
+                            <button type="submit" form="delete-{{ item.id }}" id="act-delete-{{ item.id }}" aria-labelledby="act-delete-{{ item.id }} row-{{ item.id }}" class="link-button link-button--danger">{{ t(s="Delete", ctx="row action") }}</button>
                             {% endif %}
                         </td>
                     </tr>

@@ -35,14 +35,15 @@
                     <td>-</td>
                 </tr>
                 {% for field in fields %}
+                {% if field.field_name is matching("^[a-z0-9_-]+$") %}{% set key = field.field_name %}{% else %}{% set key = "pos." ~ loop.index %}{% endif %}
                 <tr data-field="{{ field.field_name }}">
-                    <th scope="row">{{ field.label }}</th>
+                    <th scope="row"><span id="row-{{ key }}">{{ field.label }}</span></th>
                     <td><code>{{ field.field_name }}</code></td>
                     <td>{{ t(s=field.field_type | field_type_label) }}</td>
                     <td>{% if field.required %}{{ t(s="Yes") }}{% else %}{{ t(s="No") }}{% endif %}</td>
                     <td class="operations">
-                        <a href="/admin/structure/types/{{ content_type.machine_name }}/fields/{{ field.field_name }}/edit">{{ t(s="Edit {name}", name=field.label) }}</a>
-                        {{ list::delete_button(action="/admin/structure/types/" ~ content_type.machine_name ~ "/fields/" ~ field.field_name ~ "/delete", label=t(s="Delete {name}", name=field.label), confirm_text=t(s="Are you sure you want to delete the {name} field?", name=field.label), csrf_token=csrf_token) }}
+                        {{ list::row_action(href="/admin/structure/types/" ~ content_type.machine_name ~ "/fields/" ~ field.field_name ~ "/edit", text=t(s="Edit", ctx="row action"), id="act-edit-" ~ key, row_id="row-" ~ key) }}
+                        {{ list::delete_button(action="/admin/structure/types/" ~ content_type.machine_name ~ "/fields/" ~ field.field_name ~ "/delete", label=t(s="Delete {name}", name=field.label), confirm_text=t(s="Are you sure you want to delete the {name} field?", name=field.label), csrf_token=csrf_token, text=t(s="Delete", ctx="row action"), id="act-delete-" ~ key, row_id="row-" ~ key) }}
                     </td>
                 </tr>
                 {% endfor %}

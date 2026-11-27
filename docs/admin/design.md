@@ -412,6 +412,40 @@ query and `templates/admin/macros/list.html` draws it:
   filters, and the filter form keeps the sort. The address names the column
   (`sort=title`, `sort=-title`). The SQL comes only from each listing's own
   list of allowed columns.
+
+  Text sorts in natural order, the order a person expects: ignoring case,
+  numbers by value ("Post 2" before "Post 10"), an accented letter beside
+  its plain one ("eclair", "Éclair"). In SQL, `admin_list::natural!` adds
+  `COLLATE trovato_natural`, an ICU collation (`und-u-kn-true`) the
+  migrations create, to the sort expression only, never to a column, so
+  `ILIKE` filters and existing indexes keep the default collation. The
+  people and content title sorts have an index on that exact expression,
+  so their first page reads from the index in either direction; a unit
+  test holds each index to its listing's sort SQL. A listing sorted in
+  memory (`admin_list::sort_rows`) builds a key that gives the same order:
+  each non-ASCII letter transliterated (`deunicode`), lowercased, every run
+  of digits by value; a test holds SQL and `sort_rows` to the same order.
+  A known difference: punctuation. ICU puts every punctuation mark before
+  digits and letters; the in-memory key orders it by byte value, so `_`
+  and `~` come after the digits there ("a b, a-b, a.b, a1, a_b, ab, a~b"
+  in memory against "a b, a_b, a-b, a.b, a~b, a1, ab" in SQL). Space,
+  hyphen and full stop agree. Titles that differ only in such a mark are
+  rare enough that we have not matched the two.
+- **Dates.** A date in a listing is written in the viewer's own timezone
+  (`users.timezone`; UTC when it is empty or not a known zone) and language:
+  "Today, 14:05", "Yesterday, 09:30", "3 Nov 2026, 05:20". Templates write
+  `admin_time(ts=…)`, a `time` element whose `datetime` holds the full ISO
+  time with its offset; `admin_time_text` gives the words alone, for a
+  sentence or an accessible name. Rust passes the timestamp, never a
+  formatted string, and `UiMessage::time` puts one into a message. In a
+  right-to-left language the text is isolated so its digits keep their
+  order.
+- **Thumbnails.** An image row in Files shows a 48-pixel thumbnail
+  (`list-thumbnail`) beside its name, from the image styles plugin's
+  `thumbnail` style. It is decorative (`alt=""`): the name beside it says
+  what it is. Without the plugin there is no thumbnail and no broken image.
+  The thumbnail loads lazily, and its width and height are set, so the
+  table does not move as it loads.
 - **Count.** "N results" (and "page P of Q" when there are several) sits
   above the table. After a filter or sort the same words are put into a
   polite live region, so a screen reader hears what the filter found.
@@ -425,9 +459,31 @@ query and `templates/admin/macros/list.html` draws it:
   us"). A select-all box checks every row and shows "mixed" when some are
   checked. A polite live region counts the selection ("Selected: 3"). The
   action is a labelled select with an Apply button.
-- **Row actions.** Visible text links and buttons whose names include the
-  object: "Edit About us", "Delete About us", never a column of bare
-  "Edit".
+- **Row actions.** Each action shows its verb alone ("Edit", "Delete",
+  translated with `ctx="row action"`), so the actions column stays narrow
+  and the eye scans titles, not repeated titles. Its accessible name is
+  the verb and the row's name ("Edit About us"): `aria-labelledby` names
+  the action's own id, then the id of the element inside the row's
+  `th scope="row"` that holds only the row's name (the title link, or a
+  `span` around it), never the `th` itself, which may hold a badge or a
+  description too. So a screen reader's list of links is never a column of
+  identical "Edit"s, and what is seen is the start of what is heard
+  (WCAG 2.5.3). Ids are `act-{verb}-{key}` and `row-{key}`: `{verb}` a
+  fixed English slug, `{key}` the row's database id, or its machine name
+  when it matches `^[a-z0-9_-]+$`, or else `pos.` and the loop index, never
+  text a person typed, because `aria-labelledby` splits on spaces. The `.`
+  keeps the two kinds apart: a machine name `2` and the second row's
+  fallback would otherwise both be `row-2`. `list::row_action` draws a link,
+  `list::row_button` a form that posts at once and `list::delete_button`
+  (with `text`, `id` and `row_id`) a Delete that asks first. Every action
+  stays visible inline. A listing whose row's name would be only a
+  language code, a number or a date (an item's translations, its
+  revisions) keeps a full sentence for each action ("Revert to the
+  revision of …"). The actions column is as wide as its content on a wide
+  screen. `tests/admin-a11y/specs/row-actions.spec.mjs` holds every
+  listing to this.
+- **State.** A row's state is a `list::status` pill, quiet unless the row
+  needs someone: see "Icons and status" (section 12).
 - **Asking first.** A destructive action asks on a page of its own
   (`routes::admin_confirm`), the same with JavaScript on or off. Its form
   posts to its usual address with `?confirm`; the layer keeps the fields in
@@ -604,3 +660,24 @@ that same element is the badge (`--text` on `--warning-surface`, with a
 transparent border that forced colours draw as a box), never a second
 element beside it, so a listener hears the count once, and the words, not
 the colour, carry the meaning.
+
+**A row's state.** Every listing that shows a row's state (published,
+blocked, pending review, a log level) draws it with one macro,
+`list::status(label, kind)` in `templates/admin/macros/list.html`: one pill
+holding the translated word, in `--text` with a `--border-strong` border.
+The word carries the meaning; the colour only repeats it, and only where
+the row needs someone, so the common state is quiet and the rare one
+stands out. There are three kinds:
+
+- `problem`, on `--danger-surface`: something failed or was refused;
+- `attention`, on `--warning-surface`: something waits for a person;
+- `done`, a quiet neutral pill: the ordinary state.
+
+`admin_list::ListState::kind()` is the one place a state's kind is set,
+with an exhaustive `match`; each model value reaches a `ListState` through
+one function per source (`ListState::of_comment`, `of_log_level`, …), so the
+same state looks the same on every page. The waiting status line above is
+not a `ListState` and keeps its own rule (`.status-line--waiting`); it and
+the `attention` pill share the `--warning-surface` token. Other badges (a
+language's "Default", a role's "Built-in", an AI provider's key) are not
+states of the row and stay badges.

@@ -128,6 +128,8 @@ fn provider_view(config: &AiProviderConfig) -> serde_json::Value {
         })).collect::<Vec<_>>(),
         "rate_limit_rpm": config.rate_limit_rpm,
         "enabled": config.enabled,
+        // Its state, as every listing shows one (`ListState`).
+        "state": super::admin_list::ListState::of_enabled(config.enabled).view(),
     })
 }
 

@@ -8,14 +8,14 @@
 {% block content %}
 <div class="admin-card">
     <p>
-        {{ t(s="From the revision of {date} by {author}.", date=from.date, author=from.author) }}
+        {{ t(s="From the revision of {date} by {author}.", date=admin_time_text(ts=from.created, seconds=true), author=from.author) }}
         {% if from.is_current %}<span class="badge badge--success">{{ t(s="current") }}</span>{% endif %}
-        <a href="/item/{{ item_id }}/revisions/{{ from.id }}">{{ t(s="View the revision of {date}", date=from.date) }}</a>
+        <a href="/item/{{ item_id }}/revisions/{{ from.id }}">{{ t(s="View the revision of {date}", date=admin_time_text(ts=from.created, seconds=true)) }}</a>
     </p>
     <p>
-        {{ t(s="To the revision of {date} by {author}.", date=to.date, author=to.author) }}
+        {{ t(s="To the revision of {date} by {author}.", date=admin_time_text(ts=to.created, seconds=true), author=to.author) }}
         {% if to.is_current %}<span class="badge badge--success">{{ t(s="current") }}</span>{% endif %}
-        <a href="/item/{{ item_id }}/revisions/{{ to.id }}">{{ t(s="View the revision of {date}", date=to.date) }}</a>
+        <a href="/item/{{ item_id }}/revisions/{{ to.id }}">{{ t(s="View the revision of {date}", date=admin_time_text(ts=to.created, seconds=true)) }}</a>
     </p>
     <p class="diff-legend"><del class="diff-removed">{{ t(s="removed") }}</del> <ins class="diff-added">{{ t(s="added") }}</ins></p>
 </div>

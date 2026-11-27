@@ -106,9 +106,22 @@ the page's one level-1 heading and its intro sentence.
   checked; every row checkbox is named for its item. Sortable column
   headers hold a button ("Title, button"), and the sorted one is announced
   "sorted ascending" or "descending". Each row starts with the item's title
-  as a row header. Its actions name the item: "Edit Post 3", "Delete Post
-  3". Last comes the "Pages of content" navigation, where the current page
-  is "current page".
+  as a row header. Its state is a word ("Published"), the same in every
+  row; nothing about it is spoken differently. Its date is the viewer's
+  own time, said as written ("31 Dec 2025, 23:59", "Today, 14:05"). Each
+  action shows only its verb, and is heard as the verb then the row's
+  name: "Edit Post 3, link", "Revisions Post 3, link", "Delete Post 3,
+  button". A screen reader's list of links therefore names every item,
+  and a voice-control user says the visible word ("click Edit") and is
+  offered one per row. The row itself is read as its cells in order,
+  ending with "Edit Revisions Delete". Last comes the "Pages of content"
+  navigation, where the current page is "current page".
+
+  Every listing row follows the same shape (design.md section 9): a row
+  header holding the row's name, the state as one word, dates in the
+  viewer's timezone, and actions named "verb, row". In Files an image row
+  starts with a thumbnail, which is silent (`alt=""`); the file's name
+  follows it.
 - **Confirmation** (after Delete, with or without JavaScript): "Delete Post
   3, heading level 1", a sentence saying to check what will happen, then the
   question, "Delete Post 3? This cannot be undone.". It is followed by a
@@ -236,11 +249,10 @@ without that second press.
   badges) was again written from the recorded trees: on the Mac Studio,
   turning on VoiceOver's AppleScript control and retrying still left every
   VoiceOver command waiting on an Automation permission that only a person
-  at the machine can grant.
-- **The Cron line in right to left.** "Last run {when} UTC" puts a
-  timestamp in a right to left sentence; in the right to left pseudo locale
-  its digits and dashes may display out of order. It is left as it is: the
-  words are right and a real translation can place the time.
+  at the machine can grant. The B246 pass (listing rows, their actions,
+  states and dates) was written from the trees for the same reason: with
+  VoiceOver's AppleScript control turned on, `osascript` still waited on
+  that permission until it timed out.
 - **Pages never opened.** The parameterised pages with nothing seeded to open
   (an access rule, a tile, a menu link, a record, an AI provider, a
   translation, a deletable text format) were not opened by the browser checks.

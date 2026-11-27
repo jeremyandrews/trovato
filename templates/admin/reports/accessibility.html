@@ -26,7 +26,7 @@
             {% for file in missing %}
             <tr>
                 <th scope="row">{% if may_fix %}<a href="/admin/content/files/{{ file.id }}">{{ t(s="Add a text alternative to {name}", name=file.filename) }}</a>{% else %}{{ file.filename }}{% endif %}</th>
-                <td>{{ file.created | format_date(format="%Y-%m-%d %H:%M") }}</td>
+                <td>{{ admin_time(ts=file.created) }}</td>
             </tr>
             {% endfor %}
         </tbody>

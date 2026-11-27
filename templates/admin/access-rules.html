@@ -24,13 +24,14 @@
         <tbody>
             {% for rule in rules %}
             <tr>
-                <th scope="row"><code>{{ rule.pattern }}</code></th>
-                <td><span class="access-rule-status access-rule-status--{{ rule.status }}">{{ t(s=rule.status | capitalize) }}</span></td>
+                <th scope="row"><code id="row-{{ rule.id }}">{{ rule.pattern }}</code></th>
+                <td>{{ list::status(label=t(s=rule.state.label), kind=rule.state.kind) }}</td>
                 <td>{{ t(s=rule.rule_type) }}</td>
-                <td>{{ rule.created | format_date(format="%Y-%m-%d %H:%M") }}</td>
+                <td>{{ admin_time(ts=rule.created) }}</td>
                 <td class="operations">
-                    <a href="/admin/people/rules/{{ rule.id }}/edit">{{ t(s="Edit {name}", name=rule.pattern) }}</a>
-                    <a href="/admin/people/rules/{{ rule.id }}/delete">{{ t(s="Delete {name}", name=rule.pattern) }}</a>
+                    {{ list::row_action(href="/admin/people/rules/" ~ rule.id ~ "/edit", text=t(s="Edit", ctx="row action"), id="act-edit-" ~ rule.id, row_id="row-" ~ rule.id) }}
+                    {#- Delete asks on a page of its own (a GET form), so it is a link. -#}
+                    {{ list::row_action(href="/admin/people/rules/" ~ rule.id ~ "/delete", text=t(s="Delete", ctx="row action"), id="act-delete-" ~ rule.id, row_id="row-" ~ rule.id) }}
                 </td>
             </tr>
             {% endfor %}

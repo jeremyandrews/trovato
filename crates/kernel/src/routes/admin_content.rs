@@ -34,7 +34,7 @@ const CONTENT_FLASH_KEY: &str = "content_admin_flash";
 /// GET /admin/content
 /// The content listing's sortable columns: key and SQL.
 const CONTENT_SORTS: &[(&str, &str)] = &[
-    ("title", "lower(title)"),
+    ("title", super::admin_list::natural!("lower(title)")),
     ("type", "type"),
     ("status", "status"),
     ("changed", "changed"),
@@ -117,15 +117,17 @@ async fn list_content(
     }
     let items = shown;
 
-    // Get authors for display
-    let mut authors: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for item in &items {
-        if !authors.contains_key(&item.author_id.to_string())
-            && let Ok(Some(user)) = state.users().find_by_id(item.author_id).await
-        {
-            authors.insert(item.author_id.to_string(), user.name);
-        }
-    }
+    // The authors' names, through the user cache: one statement at most for
+    // the page's uncached accounts together, never one per author.
+    let author_ids: Vec<uuid::Uuid> = items.iter().map(|i| i.author_id).collect();
+    let authors: std::collections::HashMap<String, String> = state
+        .users()
+        .find_many(&author_ids)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, user)| (id.to_string(), user.name))
+        .collect();
 
     let content_types = state.content_types().list_all().await;
 
@@ -152,6 +154,17 @@ async fn list_content(
     let mut context = tera::Context::new();
     context.insert("items", &items);
     context.insert("operations", &operations);
+    // Each row's state, as every listing shows one (`ListState`).
+    let states: std::collections::HashMap<String, super::admin_list::StateView> = items
+        .iter()
+        .map(|i| {
+            (
+                i.id.to_string(),
+                super::admin_list::ListState::of_item(i.status).view(),
+            )
+        })
+        .collect();
+    context.insert("states", &states);
     context.insert("authors", &authors);
     context.insert("content_types", &content_types);
     context.insert("stages", &stages);
@@ -278,9 +291,7 @@ async fn list_moderated(
                 }),
                 "state": moderation::label(&r.state),
                 "ahead": r.ahead,
-                "changed": chrono::DateTime::from_timestamp(r.changed, 0)
-                    .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
-                    .unwrap_or_default(),
+                "changed": r.changed,
             })
         })
         .collect();
@@ -1508,6 +1519,26 @@ mod tests {
 
     fn uuid(s: &str) -> uuid::Uuid {
         uuid::Uuid::parse_str(s).unwrap()
+    }
+
+    /// The title sort is the expression idx_item_title_natural indexes, so the
+    /// first page of a large site reads from the index in either direction.
+    #[test]
+    fn the_title_sort_is_the_natural_index_expression() {
+        let index = include_str!("../../migrations/20261211000003_item_title_natural_index.sql");
+        let title_sql = CONTENT_SORTS
+            .iter()
+            .find(|(k, _)| *k == "title")
+            .map(|(_, sql)| *sql)
+            .unwrap_or_default();
+        assert_eq!(title_sql, "lower(title) COLLATE trovato_natural");
+        assert!(index.starts_with("-- no-transaction\n"), "{index}");
+        assert!(
+            index.contains(&format!(
+                "CREATE INDEX CONCURRENTLY idx_item_title_natural ON item (({title_sql}));"
+            )),
+            "{index}"
+        );
     }
 
     #[test]

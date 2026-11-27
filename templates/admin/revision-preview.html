@@ -1,6 +1,6 @@
 {% extends "page--admin.html" %}
 
-{% block page_title %}{% if latest_state is defined %}{{ t(s="Latest version: {title}", title=revision.title) }}{% else %}{{ t(s="Revision of {date}: {title}", date=revision.date, title=revision.title) }}{% endif %}{% endblock page_title %}
+{% block page_title %}{% if latest_state is defined %}{{ t(s="Latest version: {title}", title=revision.title) }}{% else %}{{ t(s="Revision of {date}: {title}", date=admin_time_text(ts=revision.created, seconds=true), title=revision.title) }}{% endif %}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="One saved version of an item, shown as visitors would see it.") }}</p>{% endblock page_intro %}
 {% block page_actions %}<a href="/item/{{ item_id }}/revisions" class="button">{{ t(s="Back to history") }}</a>{% endblock page_actions %}
 
@@ -14,7 +14,7 @@
         {% else %}
         {{ t(s="This is not the current version of {title}.", title=item_title) }}
         {% endif %}
-        {{ t(s="Saved on {date} by {author}.", date=revision.date, author=revision.author) }}
+        {{ t(s="Saved by {author} ({date}).", author=revision.author, date=admin_time_text(ts=revision.created, seconds=true)) }}
         {% if revision.log %}{{ t(s="Log message: {log}", log=revision.log) }}{% endif %}
     </p>
     <p class="operations">

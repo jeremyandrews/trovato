@@ -38,6 +38,8 @@ struct PluginRow {
     /// The stored status differs from what this server is running: the
     /// change waits for a restart.
     pending_restart: bool,
+    /// The plugin's state, as every listing shows one (`ListState`).
+    state: super::admin_list::StateView,
 }
 
 #[derive(Debug, Deserialize)]
@@ -93,6 +95,8 @@ async fn list_plugins(State(state): State<AppState>, session: Session) -> Respon
             } else {
                 info.dependencies.join(", ")
             },
+            state: super::admin_list::ListState::of_plugin(is_installed, status_str == "Enabled")
+                .view(),
             status: status_str,
             is_installed,
             default_enabled: info.default_enabled,
@@ -116,6 +120,8 @@ async fn list_plugins(State(state): State<AppState>, session: Session) -> Respon
                 description: "Not found on disk".to_string(),
                 version: ps.version.clone(),
                 dependencies: "?".to_string(),
+                state: super::admin_list::ListState::of_plugin(true, status_str == "Enabled")
+                    .view(),
                 status: status_str.to_string(),
                 is_installed: true,
                 default_enabled: true,

@@ -51,15 +51,15 @@
     - paragraph: You have not written anything yet.
   - region "Waiting for you":
     - heading "Waiting for you" [level=2]
-    - paragraph: 7 things wait for you.
+    - paragraph: Nothing is waiting for you.
     - list:
       - listitem:
         - link "0 drafts to review":
           - /url: /admin/content/moderated?state=draft
       - listitem:
-        - link "7 comments waiting for moderation":
+        - link "0 comments waiting for moderation":
           - /url: /admin/content/comments?status=2
-          - paragraph: 7 comments waiting for moderation
+          - paragraph: 0 comments waiting for moderation
   - region "Scheduled tasks":
     - heading "Scheduled tasks" [level=2]
     - paragraph: Scheduled tasks are working.
@@ -70,24 +70,12 @@
       - listitem: 0 queued jobs stopped after failing repeatedly
   - region "Recent errors":
     - heading "Recent errors" [level=2]
-    - paragraph: 4 errors in the last 24 hours
+    - paragraph: 1 error in the last 24 hours
     - list:
-      - listitem:
-        - link "Could not deliver a message to the mail server (attempt 3)":
-          - /url: /admin/reports/log?level=error&q=Could%20not%20deliver%20a%20message%20to%20the%20mail%20server%20%28attempt%203%29
-        - text: mail, 2026-11-26 13:46 UTC
-      - listitem:
-        - link "Could not deliver a message to the mail server (attempt 2)":
-          - /url: /admin/reports/log?level=error&q=Could%20not%20deliver%20a%20message%20to%20the%20mail%20server%20%28attempt%202%29
-        - text: mail, 2026-11-26 13:56 UTC
-      - listitem:
-        - link "Could not deliver a message to the mail server (attempt 1)":
-          - /url: /admin/reports/log?level=error&q=Could%20not%20deliver%20a%20message%20to%20the%20mail%20server%20%28attempt%201%29
-        - text: mail, 2026-11-26 14:06 UTC
       - listitem:
         - link "JWT_SECRET is not configured; OAuth2 disabled":
           - /url: /admin/reports/log?level=error&q=JWT_SECRET%20is%20not%20configured%3B%20OAuth2%20disabled
-        - text: state, 2026-11-26 14:09 UTC
+        - text: state, Today, 12:34
     - paragraph:
       - link "All errors in the log":
         - /url: /admin/reports/log?level=error
@@ -96,7 +84,7 @@
     - heading "Content" [level=3]:
       - link "Content":
         - /url: /admin/content/overview
-    - paragraph: 4 unpublished items
+    - paragraph: 0 unpublished items
     - paragraph:
       - link "Add content":
         - /url: /admin/content/add
@@ -137,9 +125,6 @@
       - listitem:
         - link "Add Blog Post":
           - /url: /item/add/blog
-      - listitem:
-        - link "Add Media":
-          - /url: /item/add/media
       - listitem:
         - link "Add Basic Page":
           - /url: /item/add/page

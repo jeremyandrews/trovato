@@ -32,7 +32,7 @@
                 {% endif %}
             </dd>
             <dt>{{ t(s="Posted") }}</dt>
-            <dd>{{ comment.created | date(format="%Y-%m-%d %H:%M") }}</dd>
+            <dd>{{ admin_time(ts=comment.created) }}</dd>
             {% if comment.parent_id %}
             <dt>{{ t(s="Reply to") }}</dt>
             <dd>{{ t(s="Comment #{id}", id=comment.parent_id) }}</dd>

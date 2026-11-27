@@ -4621,8 +4621,10 @@ fn e2e_admin_plugin_list_shows_plugins() {
         // The plugin list page shows discovered plugins. In test environments,
         // only plugins with a .wasm file on disk are fully loaded. Check for
         // any plugin in the list rather than a specific one.
+        // Each row's name is a `code` element that its row actions are
+        // named by (B246), so it carries the row's id.
         assert!(
-            body.contains("<code>") && body.contains("</code>"),
+            body.contains(r#"<code id="row-"#) && body.contains("</code>"),
             "Plugin list should show at least one plugin"
         );
     });

@@ -24,7 +24,7 @@
             {% for role in roles %}
             <tr>
                 <th scope="row">
-                    <a href="/admin/people/roles/{{ role.id }}/edit">{{ role.name }}</a>
+                    <a id="row-{{ role.id }}" href="/admin/people/roles/{{ role.id }}/edit">{{ role.name }}</a>
                     {% if role.built_in %}
                     <span class="badge">{{ t(s="Built-in") }}</span>
                     {% endif %}
@@ -32,15 +32,15 @@
                 <td><a href="/admin/people/permissions">{{ role.permissions }}</a></td>
                 <td>{{ role.members }}</td>
                 <td class="operations">
-                    <a href="/admin/people/roles/{{ role.id }}/edit">{{ t(s="Edit {name}", name=role.name) }}</a>
+                    {{ list::row_action(href="/admin/people/roles/" ~ role.id ~ "/edit", text=t(s="Edit", ctx="row action"), id="act-edit-" ~ role.id, row_id="row-" ~ role.id) }}
                     {% if not role.built_in %}
                     {% if role.members > 0 %}
-                    {{ list::delete_button(action="/admin/people/roles/" ~ role.id ~ "/delete", label=t(s="Delete {name}", name=role.name), confirm_text=t(s="Delete the {name} role? {count} user(s) hold it and will lose it. Their accounts are not deleted, and no other role is affected.", name=role.name, count=role.members), csrf_token=csrf_token) }}
+                    {{ list::delete_button(action="/admin/people/roles/" ~ role.id ~ "/delete", label=t(s="Delete {name}", name=role.name), confirm_text=t(s="Delete the {name} role? {count} user(s) hold it and will lose it. Their accounts are not deleted, and no other role is affected.", name=role.name, count=role.members), csrf_token=csrf_token, text=t(s="Delete", ctx="row action"), id="act-delete-" ~ role.id, row_id="row-" ~ role.id) }}
                     {% else %}
-                    {{ list::delete_button(action="/admin/people/roles/" ~ role.id ~ "/delete", label=t(s="Delete {name}", name=role.name), confirm_text=t(s="Delete the {name} role? Nobody holds it.", name=role.name), csrf_token=csrf_token) }}
+                    {{ list::delete_button(action="/admin/people/roles/" ~ role.id ~ "/delete", label=t(s="Delete {name}", name=role.name), confirm_text=t(s="Delete the {name} role? Nobody holds it.", name=role.name), csrf_token=csrf_token, text=t(s="Delete", ctx="row action"), id="act-delete-" ~ role.id, row_id="row-" ~ role.id) }}
                     {% endif %}
                     {% else %}
-                    <span>{{ t(s="Not deletable: the kernel refers to the anonymous and authenticated roles by id.") }}</span>
+                    <span class="operations__note">{{ t(s="Not deletable: the kernel refers to the anonymous and authenticated roles by id.") }}</span>
                     {% endif %}
                 </td>
             </tr>

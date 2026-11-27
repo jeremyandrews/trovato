@@ -776,7 +776,8 @@ async fn themed_response(
     let rendered = match &shell {
         // In the viewer's admin language, with the heading copied into the
         // title, as every kernel admin page is (`AdminShell::render`).
-        Some(shell) => crate::i18n::scope(&shell.lang, render)
+        Some(shell) => shell
+            .scope(render)
             .map(|html| crate::routes::admin_nav::finish_page(&html)),
         None => render(),
     };

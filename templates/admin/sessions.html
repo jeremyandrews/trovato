@@ -1,4 +1,5 @@
 {% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
 {#- One account's active sessions, for an administrator. Each Sign out is an
     ordinary form, so it works with JavaScript off (routes::sessions accepts
     the form beside the JSON a script sends). Context: user, sessions,
@@ -25,17 +26,14 @@
         {% for s in sessions %}
             <tr>
                 <th scope="row">
-                    <span class="session-name">{{ s.device_name }}</span>
+                    <span class="session-name" id="row-{{ s.device_id }}">{{ s.device_name }}</span>
                     <br><small class="text-muted">{{ s.user_agent | truncate(length=90) }}</small>
                 </th>
                 <td>{{ s.ip }}</td>
-                <td>{{ s.created_at }}</td>
-                <td>{{ s.last_seen }}</td>
+                <td>{{ admin_time(ts=s.created_ts) }}</td>
+                <td>{{ admin_time(ts=s.last_seen_ts) }}</td>
                 <td class="operations">
-                    <form method="post" action="/admin/users/{{ user.id }}/sessions/{{ s.device_id }}/revoke" class="inline-form" novalidate>
-                        <input type="hidden" name="_token" value="{{ csrf_token }}">
-                        <button type="submit" class="link-button link-button--danger">{{ t(s="Sign out {device}", device=s.device_name) }}</button>
-                    </form>
+                    {{ list::row_button(action="/admin/users/" ~ user.id ~ "/sessions/" ~ s.device_id ~ "/revoke", text=t(s="Sign out", ctx="row action"), id="act-sign-out-" ~ s.device_id, row_id="row-" ~ s.device_id, csrf_token=csrf_token, btn_class="link-button link-button--danger") }}
                 </td>
             </tr>
         {% endfor %}

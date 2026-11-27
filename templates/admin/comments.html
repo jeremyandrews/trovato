@@ -44,7 +44,10 @@
                 <tr>
                     <th scope="row" class="comment-body">
                         {% if comment.subject %}
-                        <strong class="comment-preview__subject">{{ comment.subject }}</strong>
+                        <strong class="comment-preview__subject" id="row-{{ comment.id }}">{{ comment.subject }}</strong>
+                        {% else %}
+                        {#- The row actions' name for a comment with no subject. -#}
+                        <span id="row-{{ comment.id }}" hidden>{{ name }}</span>
                         {% endif %}
                         <div class="comment-preview">{{ comment.body | striptags | truncate(length=100) }}</div>
                         {% if comment.depth > 0 %}
@@ -60,30 +63,21 @@
                         {% endif %}
                     </td>
                     <td>
-                        <span class="status status--{{ comment.status_class }}">{{ t(s=comment.status_label) }}</span>
+                        {{ list::status(label=t(s=comment.state.label), kind=comment.state.kind) }}
                     </td>
-                    <td>{{ comment.created | date(format="%Y-%m-%d %H:%M") }}</td>
+                    <td>{{ admin_time(ts=comment.created) }}</td>
                     <td class="operations">
                         {% if comment.can_approve %}
-                        <form method="post" action="/admin/content/comments/{{ comment.id }}/approve" class="inline-form" novalidate>
-                            <input type="hidden" name="_token" value="{{ csrf_token }}">
-                            <button type="submit" class="link-button">{{ t(s="Approve {name}", name=name) }}</button>
-                        </form>
+                        {{ list::row_button(action="/admin/content/comments/" ~ comment.id ~ "/approve", text=t(s="Approve", ctx="row action"), id="act-approve-" ~ comment.id, row_id="row-" ~ comment.id, csrf_token=csrf_token) }}
                         {% endif %}
                         {% if comment.can_unpublish %}
-                        <form method="post" action="/admin/content/comments/{{ comment.id }}/unpublish" class="inline-form" novalidate>
-                            <input type="hidden" name="_token" value="{{ csrf_token }}">
-                            <button type="submit" class="link-button">{{ t(s="Unpublish {name}", name=name) }}</button>
-                        </form>
+                        {{ list::row_button(action="/admin/content/comments/" ~ comment.id ~ "/unpublish", text=t(s="Unpublish", ctx="row action"), id="act-unpublish-" ~ comment.id, row_id="row-" ~ comment.id, csrf_token=csrf_token) }}
                         {% endif %}
                         {% if comment.can_mark_spam %}
-                        <form method="post" action="/admin/content/comments/{{ comment.id }}/spam" class="inline-form" novalidate>
-                            <input type="hidden" name="_token" value="{{ csrf_token }}">
-                            <button type="submit" class="link-button">{{ t(s="Mark {name} as spam", name=name) }}</button>
-                        </form>
+                        {{ list::row_button(action="/admin/content/comments/" ~ comment.id ~ "/spam", text=t(s="Mark as spam", ctx="row action"), id="act-spam-" ~ comment.id, row_id="row-" ~ comment.id, csrf_token=csrf_token) }}
                         {% endif %}
-                        <a href="/admin/content/comments/{{ comment.id }}/edit">{{ t(s="Edit {name}", name=name) }}</a>
-                        {{ list::delete_button(action="/admin/content/comments/" ~ comment.id ~ "/delete", label=t(s="Delete {name}", name=name), confirm_text=t(s="Are you sure you want to delete this comment?"), csrf_token=csrf_token) }}
+                        {{ list::row_action(href="/admin/content/comments/" ~ comment.id ~ "/edit", text=t(s="Edit", ctx="row action"), id="act-edit-" ~ comment.id, row_id="row-" ~ comment.id) }}
+                        {{ list::delete_button(action="/admin/content/comments/" ~ comment.id ~ "/delete", label=t(s="Delete {name}", name=name), confirm_text=t(s="Are you sure you want to delete this comment?"), csrf_token=csrf_token, text=t(s="Delete", ctx="row action"), id="act-delete-" ~ comment.id, row_id="row-" ~ comment.id) }}
                     </td>
                 </tr>
                 {% endfor %}

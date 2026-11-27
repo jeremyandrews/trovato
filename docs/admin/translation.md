@@ -32,9 +32,19 @@ filled. The code is `crates/kernel/src/i18n.rs`.
 - **No markup inside a sentence.** A link goes after its sentence, as its own
   whole link text ("… <a>Edit the text formats</a>"); emphasis is dropped or
   becomes its own sentence. A code word is a placeholder value.
-- **Data is printed as is**: titles, names, machine names, paths, numbers and
-  dates are values, not interface text. A fixed English label that comes from
-  Rust (a status word) may be passed through `t(s=row.status)`.
+- **Data is printed as is**: titles, names, machine names, paths and numbers
+  are values, not interface text. A fixed English label that comes from Rust
+  (a status word) may be passed through `t(s=row.status)`.
+- **Dates go through `admin_time`.** A date is not printed as a value: its
+  words depend on the viewer. `admin_time(ts=…)` writes a `time` element in
+  the viewer's timezone and the page's language ("Today, {time}",
+  "Yesterday, {time}", "{day} {month} {year}, {time}", each translated, and
+  the short month names with `ctx="short month"`); `admin_time_text(ts=…)`
+  gives the same words as a string, to pass into a `t` argument. Rust passes
+  the timestamp, never a formatted date: a `UiMessage` takes it with
+  `.time("when", ts)`, and the message writes it in the language and
+  timezone of the page that shows it. Never format a date with Tera's
+  `date` filter on an admin page.
 - `t` returns a string and is escaped like any value; never pipe it to
   `safe`.
 

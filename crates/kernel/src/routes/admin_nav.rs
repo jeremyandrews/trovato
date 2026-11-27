@@ -997,8 +997,7 @@ pub async fn status_line_at(
                 waiting: true,
             }),
             Ok(Some(run)) => Some(StatusLine {
-                message: UiMessage::new("Last run {when} UTC")
-                    .arg("when", super::admin_dashboard::when(run.timestamp)),
+                message: UiMessage::new("Last run {when}").time("when", run.timestamp),
                 waiting: false,
             }),
         },
@@ -1772,17 +1771,36 @@ pub fn admin_language(state: &crate::state::AppState, prefs: &Preferences) -> St
 }
 
 /// What a render of the admin shell needs once the context is built.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AdminShell {
     /// The language `t` translates into for this render.
     pub lang: String,
+    /// The viewer's timezone (`users.timezone`, UTC when unset or unknown),
+    /// which every admin date is written in (`admin_time`).
+    pub tz: chrono_tz::Tz,
+    locale: Option<std::sync::Arc<crate::services::locale::LocaleService>>,
+}
+
+impl std::fmt::Debug for AdminShell {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AdminShell")
+            .field("lang", &self.lang)
+            .field("tz", &self.tz)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AdminShell {
-    /// Render with `f` in this shell's language, then finish the page: the
-    /// heading's text copied into the `<title>` and the breadcrumb.
+    /// Run `f` (a render) in this shell's language and timezone.
+    pub fn scope<R>(&self, f: impl FnOnce() -> R) -> R {
+        crate::i18n::scope_with_time(&self.lang, self.tz, self.locale.clone(), f)
+    }
+
+    /// Render with `f` in this shell's language and timezone, then finish
+    /// the page: the heading's text copied into the `<title>` and the
+    /// breadcrumb.
     pub fn render(&self, f: impl FnOnce() -> tera::Result<String>) -> tera::Result<String> {
-        crate::i18n::scope(&self.lang, f).map(|html| finish_page(&html))
+        self.scope(f).map(|html| finish_page(&html))
     }
 }
 
@@ -1823,6 +1841,15 @@ pub async fn insert_context(
     if let Some(locale) = state.locale() {
         locale.ensure_loaded(&lang).await;
     }
+    // The viewer's timezone, from the account `require_login` has already
+    // loaded through the user cache for this request: a cache read, no
+    // statement.
+    let tz = if viewer.authenticated {
+        let account = state.users().find_by_id(viewer.id).await.ok().flatten();
+        crate::i18n::timezone_named(account.as_ref().and_then(|u| u.timezone.as_deref()))
+    } else {
+        chrono_tz::Tz::UTC
+    };
 
     context.insert("admin_nav", &sections);
     context.insert("enabled_plugins", &enabled);
@@ -1851,7 +1878,11 @@ pub async fn insert_context(
             .unwrap_or_else(|_| "Trovato".to_string());
         context.insert("site_name", &site_name);
     }
-    AdminShell { lang }
+    AdminShell {
+        lang,
+        tz,
+        locale: state.locale().cloned(),
+    }
 }
 
 /// The stylesheets of the theme chosen as the admin theme (B108): every

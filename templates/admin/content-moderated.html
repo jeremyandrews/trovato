@@ -36,18 +36,18 @@
             <tr>
                 <th scope="row">
                     {% if item.ahead %}
-                    <a href="/item/{{ item.id }}/latest">{{ item.title }}</a>
+                    <a id="row-{{ item.id }}" href="/item/{{ item.id }}/latest">{{ item.title }}</a>
                     {% else %}
-                    <a href="/item/{{ item.id }}">{{ item.title }}</a>
+                    <a id="row-{{ item.id }}" href="/item/{{ item.id }}">{{ item.title }}</a>
                     {% endif %}
                 </th>
                 <td>{{ item.type }}</td>
                 <td>{{ item.author }}</td>
                 <td>{% if item.ahead %}{{ t(s="{state} (ahead of the published version)", state=t(s=item.state)) }}{% else %}{{ t(s=item.state) }}{% endif %}</td>
-                <td>{{ item.changed }}</td>
+                <td>{{ admin_time(ts=item.changed) }}</td>
                 <td class="operations">
-                    <a href="/item/{{ item.id }}/edit">{{ t(s="Edit {title}", title=item.title) }}</a>
-                    <a href="/item/{{ item.id }}/revisions">{{ t(s="Revisions of {title}", title=item.title) }}</a>
+                    {{ list::row_action(href="/item/" ~ item.id ~ "/edit", text=t(s="Edit", ctx="row action"), id="act-edit-" ~ item.id, row_id="row-" ~ item.id) }}
+                    {{ list::row_action(href="/item/" ~ item.id ~ "/revisions", text=t(s="Revisions", ctx="row action"), id="act-revisions-" ~ item.id, row_id="row-" ~ item.id) }}
                 </td>
             </tr>
             {% endfor %}

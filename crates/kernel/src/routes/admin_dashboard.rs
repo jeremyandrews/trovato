@@ -62,13 +62,6 @@ fn data(text: impl Into<String>) -> UiMessage {
     UiMessage::new("{text}").arg("text", text)
 }
 
-/// A time as the admin writes it, in UTC: `2026-11-26 14:05`.
-pub(crate) fn when(timestamp: i64) -> String {
-    chrono::DateTime::from_timestamp(timestamp, 0)
-        .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_default()
-}
-
 fn count(n: i64, one: &str, many: &str) -> UiMessage {
     UiMessage::new(one).plural(many, n)
 }
@@ -171,12 +164,12 @@ async fn your_content(state: &AppState, viewer: &UserContext) -> Option<Panel> {
             text: data(item.title.clone()),
             detail: Some(
                 if item.status == 1 {
-                    UiMessage::new("{type}, published, changed {time} UTC")
+                    UiMessage::new("{type}, published, changed {time}")
                 } else {
-                    UiMessage::new("{type}, not published, changed {time} UTC")
+                    UiMessage::new("{type}, not published, changed {time}")
                 }
                 .arg("type", item.item_type.clone())
-                .arg("time", when(item.changed)),
+                .time("time", item.changed),
             ),
             href,
             status_line: None,
@@ -313,15 +306,15 @@ async fn tasks(state: &AppState) -> Panel {
     let cron = match &last {
         None => UiMessage::new("Cron has not run yet."),
         Some(run) if run.status == "failed" => {
-            UiMessage::new("Error: the last cron run, at {time} UTC, failed.")
-                .arg("time", when(run.timestamp))
+            UiMessage::new("Error: the last cron run ({time}) failed.").time("time", run.timestamp)
         }
-        Some(run) if run.status == "skipped" => UiMessage::new(
-            "The last cron run, at {time} UTC, was skipped: another server was running it.",
-        )
-        .arg("time", when(run.timestamp)),
-        Some(run) => UiMessage::new("Cron last ran at {time} UTC and worked.")
-            .arg("time", when(run.timestamp)),
+        Some(run) if run.status == "skipped" => {
+            UiMessage::new("The last cron run ({time}) was skipped: another server was running it.")
+                .time("time", run.timestamp)
+        }
+        Some(run) => {
+            UiMessage::new("Cron last ran ({time}) and worked.").time("time", run.timestamp)
+        }
     };
     let rows = vec![
         PanelRow {
@@ -383,9 +376,9 @@ pub async fn errors_at(state: &AppState, viewer: &UserContext, now: i64) -> Opti
         .map(|(created, log_type, message)| PanelRow {
             text: data(shorten(&message, 120)),
             detail: Some(
-                UiMessage::new("{type}, {time} UTC")
+                UiMessage::new("{type}, {time}")
                     .arg("type", log_type)
-                    .arg("time", when(created)),
+                    .time("time", created),
             ),
             href: Some(format!(
                 "/admin/reports/log?level=error&q={}",
@@ -435,8 +428,27 @@ mod tests {
         );
     }
 
+    /// A panel's time is kept as a timestamp and written when the panel is
+    /// shown, in the viewer's timezone, never as UTC text.
     #[test]
-    fn a_time_is_written_as_text() {
-        assert_eq!(when(0), "1970-01-01 00:00");
+    fn a_time_is_written_in_the_viewers_timezone() {
+        let m = UiMessage::new("Cron last ran ({time}) and worked.").time("time", 0);
+        assert_eq!(m.times.get("time"), Some(&0));
+        assert!(m.args.is_empty(), "a time is not a fixed argument");
+        let utc =
+            crate::i18n::scope_with_time("en", chrono_tz::Tz::UTC, None, || m.text(None, "en"));
+        assert_eq!(utc, "Cron last ran (1 Jan 1970, 00:00) and worked.");
+        let tokyo =
+            crate::i18n::scope_with_time("en", chrono_tz::Asia::Tokyo, None, || m.text(None, "en"));
+        assert_eq!(tokyo, "Cron last ran (1 Jan 1970, 09:00) and worked.");
+        assert_eq!(
+            tokyo,
+            format!(
+                "Cron last ran ({}) and worked.",
+                crate::i18n::scope_with_time("en", chrono_tz::Asia::Tokyo, None, || {
+                    crate::i18n::admin_time_text_for(0, false)
+                })
+            )
+        );
     }
 }

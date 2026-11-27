@@ -37,6 +37,8 @@ tera = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 chrono = { workspace = true }
+chrono-tz = { workspace = true }
+deunicode = { workspace = true }
 thiserror = { workspace = true }
 uuid = { workspace = true }
 anyhow = { workspace = true }

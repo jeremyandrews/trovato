@@ -39,21 +39,17 @@
                 {% for user in users %}
                 <tr>
                     <th scope="row">
-                        <a href="/admin/people/{{ user.id }}/edit">{{ user.name }}</a>
+                        <a id="row-{{ user.id }}" href="/admin/people/{{ user.id }}/edit">{{ user.name }}</a>
                     </th>
                     <td>{{ user.mail }}</td>
                     <td>
-                        {% if user.status == 1 %}
-                        <span class="status status--active">{{ t(s="Active") }}</span>
-                        {% else %}
-                        <span class="status status--inactive">{{ t(s="Blocked") }}</span>
-                        {% endif %}
+                        {% set state = states[user.id] %}{{ list::status(label=t(s=state.label), kind=state.kind) }}
                     </td>
                     <td>{% if user.is_admin %}{{ t(s="Yes") }}{% else %}{{ t(s="No") }}{% endif %}</td>
                     <td class="operations">
-                        <a href="/admin/people/{{ user.id }}/edit">{{ t(s="Edit {name}", name=user.name) }}</a>
+                        {{ list::row_action(href="/admin/people/" ~ user.id ~ "/edit", text=t(s="Edit", ctx="row action"), id="act-edit-" ~ user.id, row_id="row-" ~ user.id) }}
                         {% if user.id != "00000000-0000-0000-0000-000000000000" %}
-                        {{ list::delete_button(action="/admin/people/" ~ user.id ~ "/delete", label=t(s="Delete {name}", name=user.name), confirm_text=t(s="Delete the user {name}?", name=user.name), csrf_token=csrf_token) }}
+                        {{ list::delete_button(action="/admin/people/" ~ user.id ~ "/delete", label=t(s="Delete {name}", name=user.name), confirm_text=t(s="Delete the user {name}?", name=user.name), csrf_token=csrf_token, text=t(s="Delete", ctx="row action"), id="act-delete-" ~ user.id, row_id="row-" ~ user.id) }}
                         {% endif %}
                     </td>
                 </tr>

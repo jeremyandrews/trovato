@@ -946,6 +946,24 @@
         margin-inline-start: var(--space-3);
     }
 
+    /* A listing's row actions are short verbs ("Edit", "Delete"), so their
+       column takes only the room they need and the title column the rest.
+       Wide screens only: the stacked narrow layout below is untouched. Text
+       there that is not an action (a "Not deletable" note) still wraps. */
+    @media (width > 40rem) {
+        th.operations,
+        td.operations {
+            inline-size: 1%;
+            white-space: nowrap;
+        }
+
+        .operations__note {
+            display: inline-block;
+            min-inline-size: min(14rem, 40vw);
+            white-space: normal;
+        }
+    }
+
     /* A link that is not part of a sentence (a row's operations, a "Back to"
        or "Cancel" link alone in its paragraph) is a target, and gets the
        24px a target needs (WCAG 2.5.8) whatever the font's line height. */
@@ -1568,9 +1586,7 @@
 
     /* Badges and statuses: always text. */
     .badge,
-    .status,
-    .access-rule-status,
-    .log-level,
+    .list-status,
     .theme-card__badge {
         display: inline-block;
         padding: 0 var(--space-2);
@@ -1589,24 +1605,28 @@
         margin-inline-start: var(--space-1);
     }
 
-    .badge--success,
-    .status--published,
-    .status--active,
-    .access-rule-status--allow {
+    .badge--success {
         background: var(--success-surface);
     }
 
-    .status--unpublished,
-    .status--inactive,
-    .access-rule-status--deny,
-    .log-level--error,
     .badge--error,
     .badge--raw-sql {
         background: var(--danger-surface);
     }
 
-    .log-level--warn {
+    /* A listing row's state (`list::status`, design.md "Icons and status"):
+       the word in --text inside a --border-strong pill, and colour only
+       where the row needs someone. `ListState::kind()` picks the kind. */
+    .list-status--problem {
+        background: var(--danger-surface);
+    }
+
+    .list-status--attention {
         background: var(--warning-surface);
+    }
+
+    .list-status--done {
+        font-weight: 400;
     }
 
     /* Icons (design.md "Icons and status"): decorative, drawn in the
@@ -1790,9 +1810,26 @@
         padding-inline-start: var(--space-5);
     }
 
+    /* A picture beside an image file's name in the Files listing: a hairline
+       frame on the sheet, no shadow. */
+    .list-thumbnail {
+        inline-size: 48px;
+        block-size: 48px;
+        object-fit: cover;
+        vertical-align: middle;
+        margin-inline-end: var(--space-2);
+        border: 1px solid var(--border);
+    }
+
     .log-time {
         white-space: nowrap;
         font-variant-numeric: tabular-nums;
+    }
+
+    /* An admin date (`admin_time`) keeps its own order inside a right to
+       left page: isolated, never given a `dir`. */
+    time {
+        unicode-bidi: isolate;
     }
 
     .log-context {
@@ -2041,7 +2078,8 @@
         .landing-list,
         .table-scroll,
         .button,
-        .badge {
+        .badge,
+        .list-status {
             border-color: CanvasText;
         }
 
@@ -2055,21 +2093,6 @@
 
 /* content, comments, files, media. */
 @layer components {
-    /* Comment and file statuses beyond the shared published/unpublished pair.
-       The words carry the meaning; the surface only reinforces it. */
-    .status--pending,
-    .status--temporary {
-        background: var(--warning-surface);
-    }
-
-    .status--spam {
-        background: var(--danger-surface);
-    }
-
-    .status--permanent {
-        background: var(--success-surface);
-    }
-
     /* Content list: the bulk selects size to their options, not the row. */
     .bulk-actions .bulk-action-select,
     .bulk-actions .form-select {

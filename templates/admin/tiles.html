@@ -47,14 +47,14 @@
         <tbody>
 {% endif %}
             <tr>
-                <th scope="row">{{ tile.label }}</th>
+                <th scope="row"><span id="row-{{ tile.id }}">{{ tile.label }}</span></th>
                 <td><code>{{ tile.machine_name }}</code></td>
                 <td><code>{{ tile.tile_type }}</code></td>
                 <td>{{ tile.weight }}</td>
                 <td>{% if tile.status == 1 %}{{ t(s="Active") }}{% else %}{{ t(s="Disabled") }}{% endif %}</td>
                 <td class="operations">
-                    <a href="/admin/structure/tiles/{{ tile.id }}/edit">{{ t(s="Edit {name}", name=tile.label) }}</a>
-                    {{ list::delete_button(action="/admin/structure/tiles/" ~ tile.id ~ "/delete", label=t(s="Delete {name}", name=tile.label), confirm_text=t(s="Delete this tile?"), csrf_token=csrf_token) }}
+                    {{ list::row_action(href="/admin/structure/tiles/" ~ tile.id ~ "/edit", text=t(s="Edit", ctx="row action"), id="act-edit-" ~ tile.id, row_id="row-" ~ tile.id) }}
+                    {{ list::delete_button(action="/admin/structure/tiles/" ~ tile.id ~ "/delete", label=t(s="Delete {name}", name=tile.label), confirm_text=t(s="Delete this tile?"), csrf_token=csrf_token, text=t(s="Delete", ctx="row action"), id="act-delete-" ~ tile.id, row_id="row-" ~ tile.id) }}
                 </td>
             </tr>
 {% if loop.last %}

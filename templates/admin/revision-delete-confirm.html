@@ -7,14 +7,14 @@
 {% block content %}
 <div class="admin-card">
     <p>
-        {{ t(s="Delete the revision of {date} by {author} ({title})?", date=revision.date, author=revision.author, title=revision.title) }}
+        {{ t(s="Delete the revision of {date} by {author} ({title})?", date=admin_time_text(ts=revision.created, seconds=true), author=revision.author, title=revision.title) }}
         {% if revision.log %}{{ t(s="Log message: {log}.", log=revision.log) }}{% endif %}
         {{ t(s="This cannot be undone.") }}
     </p>
     <form method="post" action="/item/{{ item_id }}/revisions/{{ revision.id }}/delete" novalidate>
         <input type="hidden" name="_token" value="{{ csrf_token }}">
         <div class="form-actions">
-            <button type="submit" class="button button--danger">{{ t(s="Delete the revision of {date}", date=revision.date) }}</button>
+            <button type="submit" class="button button--danger">{{ t(s="Delete the revision of {date}", date=admin_time_text(ts=revision.created, seconds=true)) }}</button>
             <a href="/item/{{ item_id }}/revisions" class="button button--secondary">{{ t(s="Cancel") }}</a>
         </div>
     </form>

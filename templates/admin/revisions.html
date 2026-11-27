@@ -30,34 +30,40 @@
         </thead>
         <tbody>
             {% for rev in revisions %}
+            {#- The revision's date, as its actions and radios are named: with
+                seconds, so two revisions saved in one minute are told apart,
+                and its place among those saved in the same second ("2 of 2"),
+                so two saved in one second are too. -#}
+            {% set date = admin_time_text(ts=rev.created, seconds=true) %}
+            {% if rev.same_second %}{% set date = t(s="{date}, {n} of {count}", date=date, n=rev.same_second.n, count=rev.same_second.of) %}{% endif %}
             <tr>
                 <td>
                     <input type="radio" name="from" value="{{ rev.id }}" form="revision-compare"
-                        aria-label="{{ t(s='Compare from the revision of {date}', date=rev.date) }}"
+                        aria-label="{{ t(s='Compare from the revision of {date}', date=date) }}"
                         {% if loop.index == 2 or (loop.first and loop.last) %}checked{% endif %}>
                 </td>
                 <td>
                     <input type="radio" name="to" value="{{ rev.id }}" form="revision-compare"
-                        aria-label="{{ t(s='Compare to the revision of {date}', date=rev.date) }}"
+                        aria-label="{{ t(s='Compare to the revision of {date}', date=date) }}"
                         {% if loop.first %}checked{% endif %}>
                 </td>
-                <th scope="row">{{ rev.date }}</th>
+                <th scope="row">{{ admin_time(ts=rev.created, seconds=true) }}</th>
                 <td>{{ rev.author }}</td>
                 <td>{{ rev.title }}{% if rev.state %} <span class="badge">{{ t(s=rev.state) }}</span>{% endif %}</td>
                 <td>{{ rev.log | default(value="-") }}</td>
                 <td class="operations">
-                    <a href="/item/{{ item_id }}/revisions/{{ rev.id }}" class="button button--small">{{ t(s="View the revision of {date}", date=rev.date) }}</a>
+                    <a href="/item/{{ item_id }}/revisions/{{ rev.id }}" class="button button--small">{{ t(s="View the revision of {date}", date=date) }}</a>
                     {% if rev.is_current %}
                     <em class="revision-current">{{ t(s="Current revision") }}</em>
                     {% else %}
                     {% if may_revert %}
                     <form method="post" action="/item/{{ item_id }}/revert/{{ rev.id }}" class="inline-form" novalidate>
                         <input type="hidden" name="_token" value="{{ csrf_token }}">
-                        <button type="submit" class="button button--small">{{ t(s="Revert to the revision of {date}", date=rev.date) }}</button>
+                        <button type="submit" class="button button--small">{{ t(s="Revert to the revision of {date}", date=date) }}</button>
                     </form>
                     {% endif %}
                     {% if may_delete %}
-                    <a href="/item/{{ item_id }}/revisions/{{ rev.id }}/delete" class="button button--small button--danger">{{ t(s="Delete the revision of {date}", date=rev.date) }}</a>
+                    <a href="/item/{{ item_id }}/revisions/{{ rev.id }}/delete" class="button button--small button--danger">{{ t(s="Delete the revision of {date}", date=date) }}</a>
                     {% endif %}
                     {% endif %}
                 </td>

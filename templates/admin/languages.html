@@ -25,14 +25,15 @@
         <tbody>
             {% for language in languages %}
             <tr>
-                <th scope="row" lang="{{ language.id }}">{{ language.label }}{% if language.is_default %} <span class="badge badge--success">{{ t(s="Default") }}</span>{% endif %}</th>
+                {% if language.id is matching("^[a-z0-9_-]+$") %}{% set key = language.id %}{% else %}{% set key = "pos." ~ loop.index %}{% endif %}
+                <th scope="row" lang="{{ language.id }}"><span id="row-{{ key }}">{{ language.label }}</span>{% if language.is_default %} <span class="badge badge--success">{{ t(s="Default") }}</span>{% endif %}</th>
                 <td><code>{{ language.id }}</code></td>
                 <td>{% if language.prefix %}<a href="{{ language.prefix }}"><code>{{ language.prefix }}/</code></a>{% else %}{{ t(s="None") }}{% endif %}</td>
                 <td>{% if language.direction == "rtl" %}{{ t(s="Right to left") }}{% else %}{{ t(s="Left to right") }}{% endif %}</td>
                 <td>{{ language.weight }}</td>
                 <td class="operations">
-                    <a href="/admin/config/languages/{{ language.id }}/edit">{{ t(s="Edit {name}", name=language.label) }}</a>
-                    {% if not language.is_default %}<a href="/admin/config/languages/{{ language.id }}/delete">{{ t(s="Delete {name}", name=language.label) }}</a>{% endif %}
+                    {{ list::row_action(href="/admin/config/languages/" ~ language.id ~ "/edit", text=t(s="Edit", ctx="row action"), id="act-edit-" ~ key, row_id="row-" ~ key) }}
+                    {% if not language.is_default %}{{ list::row_action(href="/admin/config/languages/" ~ language.id ~ "/delete", text=t(s="Delete", ctx="row action"), id="act-delete-" ~ key, row_id="row-" ~ key) }}{% endif %}
                 </td>
             </tr>
             {% endfor %}

@@ -231,7 +231,7 @@ async fn dashboard(State(state): State<AppState>, session: Session) -> Response 
 
 /// The file listing's sortable columns: key and SQL.
 const FILE_SORTS: &[(&str, &str)] = &[
-    ("name", "lower(filename)"),
+    ("name", super::admin_list::natural!("lower(filename)")),
     ("type", "filemime"),
     ("size", "filesize"),
     ("status", "status"),
@@ -278,13 +278,34 @@ async fn list_files(
         }
     };
 
-    // Get owners for display
-    let mut owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for file in &files {
-        if !owners.contains_key(&file.owner_id.to_string())
-            && let Ok(Some(user)) = state.users().find_by_id(file.owner_id).await
-        {
-            owners.insert(file.owner_id.to_string(), user.name);
+    // The owners' names, through the user cache: one statement at most for
+    // the page's uncached accounts together, never one per owner.
+    let owner_ids: Vec<uuid::Uuid> = files.iter().map(|f| f.owner_id).collect();
+    let owners: std::collections::HashMap<String, String> = state
+        .users()
+        .find_many(&owner_ids)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, user)| (id.to_string(), user.name))
+        .collect();
+
+    // A 48px picture beside each image's name, from the seeded `thumbnail`
+    // style, when image styles are on. Both checks are in memory, and the
+    // address is built, never looked up: the style is read only when the
+    // picture is fetched.
+    let mut thumbnails: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    if state.is_plugin_enabled("trovato_image_styles") && state.image_styles().is_some() {
+        for file in &files {
+            if let Some(path) = file.uri.strip_prefix("local://")
+                && file.filemime.starts_with("image/")
+            {
+                thumbnails.insert(
+                    file.id.to_string(),
+                    format!("/files/styles/thumbnail/{path}"),
+                );
+            }
         }
     }
 
@@ -292,6 +313,18 @@ async fn list_files(
 
     let mut context = tera::Context::new();
     context.insert("files", &files);
+    context.insert("thumbnails", &thumbnails);
+    // Each row's state, as every listing shows one (`ListState`).
+    let states: std::collections::HashMap<String, super::admin_list::StateView> = files
+        .iter()
+        .map(|f| {
+            (
+                f.id.to_string(),
+                super::admin_list::ListState::of_file(f.status).view(),
+            )
+        })
+        .collect();
+    context.insert("states", &states);
     context.insert("list", &query.view(total, files.len(), Some(&sort)));
     context.insert("owners", &owners);
     context.insert("status_filter", &status_filter.map(|s| s as i16));
@@ -331,6 +364,10 @@ async fn file_details(
     let mut context = tera::Context::new();
     context.insert("csrf_token", &csrf_token);
     context.insert("file", &file);
+    context.insert(
+        "file_state",
+        &super::admin_list::ListState::of_file(file.status).view(),
+    );
     context.insert("owner", &owner);
     context.insert("public_url", &public_url);
     context.insert("path", &format!("/admin/content/files/{file_id}"));
@@ -608,10 +645,8 @@ struct CommentSettingsForm {
 struct CommentRow<'a> {
     #[serde(flatten)]
     comment: &'a Comment,
-    /// Human-readable status.
-    status_label: &'static str,
-    /// CSS class suffix for the status badge.
-    status_class: &'static str,
+    /// The comment's state, as every listing shows one (`ListState`).
+    state: super::admin_list::StateView,
     /// Whether the approve action applies.
     can_approve: bool,
     /// Whether the unpublish action applies.
@@ -627,8 +662,7 @@ impl<'a> CommentRow<'a> {
         let status = CommentStatus::from_i16(comment.status).unwrap_or(CommentStatus::Unpublished);
         Self {
             comment,
-            status_label: status.label(),
-            status_class: status.css_suffix(),
+            state: super::admin_list::ListState::of_comment(status).view(),
             can_approve: !status.is_visible(),
             can_unpublish: status.is_visible(),
             can_mark_spam: status != CommentStatus::Spam,
@@ -660,7 +694,7 @@ const COMMENT_STATUS_FILTERS: [CommentStatus; 4] = [
 /// The comment listing's sortable columns: key and SQL (`c` is the comment,
 /// `u` its author).
 const COMMENT_SORTS: &[(&str, &str)] = &[
-    ("author", "lower(u.name)"),
+    ("author", super::admin_list::natural!("lower(u.name)")),
     ("status", "c.status"),
     ("posted", "c.created"),
 ];
@@ -701,16 +735,17 @@ async fn list_comments(
         }
     };
 
-    // Get author names
-    let mut authors: std::collections::HashMap<uuid::Uuid, String> =
-        std::collections::HashMap::new();
-    for comment in &comments {
-        if !authors.contains_key(&comment.author_id)
-            && let Ok(Some(user)) = state.users().find_by_id(comment.author_id).await
-        {
-            authors.insert(comment.author_id, user.name);
-        }
-    }
+    // The authors' names, through the user cache: one statement at most for
+    // the page's uncached accounts together, never one per author.
+    let author_ids: Vec<uuid::Uuid> = comments.iter().map(|c| c.author_id).collect();
+    let authors: std::collections::HashMap<uuid::Uuid, String> = state
+        .users()
+        .find_many(&author_ids)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, user)| (id, user.name))
+        .collect();
 
     // Get item titles
     let mut items: std::collections::HashMap<uuid::Uuid, String> = std::collections::HashMap::new();
