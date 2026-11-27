@@ -86,12 +86,14 @@
 
             fetch(form.action, {
                 method: 'POST',
-                body: new FormData(form)
+                body: new URLSearchParams(new FormData(form))
             })
             .then(function(r) { return r.json(); })
             .then(function(data) {
                 msgEl.textContent = (data.success ? '\u2705 ' : '\u274c ') + data.message;
-                latEl.textContent = fillTemplate(i18n.latency_template, { ms: data.latency_ms });
+                latEl.textContent = (typeof data.latency_ms === 'number')
+                    ? fillTemplate(i18n.latency_template, { ms: data.latency_ms })
+                    : '';
                 msgEl.style.color = data.success ? 'var(--success, green)' : 'var(--danger, red)';
             })
             .catch(function(err) {

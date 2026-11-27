@@ -1,6 +1,6 @@
 //! Admin routes for AI provider management.
 
-use axum::extract::{Path, State};
+use axum::extract::{FromRequest, Path, Request, State};
 use axum::response::{IntoResponse, Json, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Router};
@@ -553,16 +553,33 @@ async fn delete_provider(
 ///
 /// POST /admin/system/ai-providers/{id}/test
 ///
-/// Returns JSON in all cases (success, auth failure, CSRF failure).
+/// Returns JSON in all cases (success, auth failure, CSRF failure, a body
+/// the form extractor itself rejects): `Form` is taken out by hand so a
+/// rejection (the client sent `multipart/form-data`, say) answers in the
+/// same JSON shape as every other failure here, rather than axum's plain
+/// text rejection body.
 async fn test_provider(
     State(state): State<AppState>,
     session: Session,
     Path(provider_id): Path<String>,
-    Form(form): Form<CsrfOnlyForm>,
+    request: Request,
 ) -> Response {
     if let Err(refusal) = require_permission_json(&state, &session, "configure ai").await {
         return refusal.into_response();
     }
+
+    let form = match Form::<CsrfOnlyForm>::from_request(request, &state).await {
+        Ok(Form(form)) => form,
+        Err(rejection) => {
+            return Json(serde_json::json!({
+                "success": false,
+                "message": format!("Invalid request: {rejection}"),
+                "latency_ms": 0
+            }))
+            .into_response();
+        }
+    };
+
     if require_csrf(&session, &form.token).await.is_err() {
         return Json(serde_json::json!({
             "success": false,
