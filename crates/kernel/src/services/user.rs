@@ -116,11 +116,12 @@ pub(crate) fn password_event(
 /// `account.created`, as every path that makes an account writes it.
 ///
 /// `path` names where (`registration`, `admin`, `installer`, `cli`,
-/// `import`), `active` whether the account starts usable. `details.by` is the
-/// acting account's id when one is authenticated; otherwise `"operator"` for
-/// the installer, the command line and an import, where no site is running to
-/// have an authenticated acting user at all, and `"self"` for a visitor
-/// registering their own account.
+/// `import`, `generate`), `active` whether the account starts usable.
+/// `details.by` is the acting account's id when one is authenticated;
+/// otherwise `"operator"` for the installer, the command line, an import and
+/// `trovato generate`, where no site is running to have an authenticated
+/// acting user at all, and `"self"` for a visitor registering their own
+/// account.
 pub(crate) fn account_created_event(
     user_id: Uuid,
     actor: Option<Uuid>,
@@ -129,7 +130,9 @@ pub(crate) fn account_created_event(
 ) -> SecurityEvent {
     let by = match actor {
         Some(actor) => actor.to_string(),
-        None if matches!(path, "cli" | "installer" | "import") => "operator".to_string(),
+        None if matches!(path, "cli" | "installer" | "import" | "generate") => {
+            "operator".to_string()
+        }
         None => "self".to_string(),
     };
     SecurityEvent::new(SecurityEventKind::AccountCreated)

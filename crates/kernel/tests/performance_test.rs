@@ -441,6 +441,69 @@ fn generate_refuses_a_database_it_did_not_generate() {
     });
 }
 
+/// Every account the generator writes, the administrator too, has exactly one
+/// `account.created` event, shaped as the other creation paths shape theirs:
+/// `path` `generate`, `by` `operator`, no actor, no address, a v7 id, and
+/// `admin` on the administrator's alone.
+#[test]
+fn generate_records_every_account_it_creates() {
+    run_test(async {
+        let site = shared_site();
+        let db = &site.app.db;
+        let options = common::perf::site_options();
+
+        let accounts: Vec<(uuid::Uuid, String, bool)> = sqlx::query_as(
+            "SELECT id, name, is_admin FROM users WHERE name LIKE 'gen\\_%' ORDER BY name",
+        )
+        .fetch_all(db)
+        .await
+        .unwrap();
+        assert_eq!(accounts.len(), usize::try_from(options.users).unwrap() + 1);
+
+        let events: Vec<(uuid::Uuid, uuid::Uuid, serde_json::Value)> = sqlx::query_as(
+            "SELECT id, user_id, details FROM security_audit_log \
+             WHERE kind = 'account.created' AND details->>'path' = 'generate' \
+               AND outcome = 'success' AND actor_id IS NULL AND subject_hash IS NULL \
+               AND ip_address IS NULL AND user_agent IS NULL",
+        )
+        .fetch_all(db)
+        .await
+        .unwrap();
+        let any_shape: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM security_audit_log \
+             WHERE kind = 'account.created' AND details->>'path' = 'generate'",
+        )
+        .fetch_one(db)
+        .await
+        .unwrap();
+        assert_eq!(
+            any_shape,
+            i64::try_from(events.len()).unwrap(),
+            "a generated account's event has an actor, a subject, an address or a failure"
+        );
+        assert_eq!(
+            events.len(),
+            accounts.len(),
+            "one event per generated account"
+        );
+
+        for (id, name, is_admin) in &accounts {
+            let mine: Vec<_> = events.iter().filter(|(_, user, _)| user == id).collect();
+            assert_eq!(mine.len(), 1, "{name} has {} events", mine.len());
+            let (event_id, _, details) = mine[0];
+            assert_eq!(event_id.get_version_num(), 7, "{name}'s event id");
+            assert_eq!(details["by"], "operator", "{name}: {details}");
+            assert_eq!(details["active"], true, "{name}: {details}");
+            if *is_admin {
+                assert_eq!(name, "gen_admin");
+                assert_eq!(details["admin"], true, "{name}: {details}");
+            } else {
+                assert!(details.get("admin").is_none(), "{name}: {details}");
+            }
+        }
+    });
+}
+
 /// Signing up writes the account and queues its verification mail in one
 /// transaction (BG18): the queue adds one insert to the write, and the counts
 /// say so.
