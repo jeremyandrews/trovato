@@ -12,10 +12,10 @@ search index.
 The item form offers a "Comments" control to a holder of the new permission
 `set item comment status`, granted to no role by migration; an administrator
 holds it implicitly. A plugin reads and sets the override through the
-existing `get-item` and `save-item` host calls, so an importer built on them
-can carry a migrated site's per node setting across: Drupal 6's `node.comment`
-0 (disabled) maps to `hidden`, 1 (read only) to `closed`, 2 (read and write)
-to `open`.
+existing `get-item` and `save-item` host calls, and `trovato import`'s `item`
+record takes a `comment_mode` key, so a migrated site's per node setting
+carries across: Drupal 6's `node.comment` 0 (disabled) maps to `hidden`, 1
+(read only) to `closed`, 2 (read and write) to `open`.
 
 Not revisioned, the way `promote` and `sticky` are not: it is an
 administrative flag beside the item, not part of what the item says.

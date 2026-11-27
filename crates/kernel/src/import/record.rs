@@ -69,6 +69,12 @@ pub(crate) struct ItemRecord {
     /// That revision's log message.
     #[serde(default)]
     pub log: Option<String>,
+    /// This item's own override of its content type's comment setting
+    /// (B239): `inherit`, `open`, `closed` or `hidden`; default `inherit`.
+    /// A site migrated from Drupal 6 maps `node.comment`: 0 to `hidden`, 1
+    /// to `closed`, 2 to `open`.
+    #[serde(default)]
+    pub comment_mode: Option<String>,
 }
 
 /// A past revision of an item.

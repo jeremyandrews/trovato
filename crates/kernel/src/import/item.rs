@@ -19,7 +19,21 @@ use crate::models::Item;
 use crate::models::stage::LIVE_STAGE_ID;
 
 const ITEM_COLUMNS: &str = "id, current_revision_id, type, title, author_id, status, created, \
-     changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days";
+     changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, \
+     comment_mode";
+
+/// Check a comment mode as the item form does: `inherit` (or absent), `open`,
+/// `closed` or `hidden`. `inherit` and absent both normalise to `None`, the
+/// stored value that defers to the content type's own setting (B239).
+fn check_comment_mode(value: Option<&str>) -> Result<Option<String>> {
+    match value {
+        None | Some("inherit") => Ok(None),
+        Some(mode @ ("open" | "closed" | "hidden")) => Ok(Some(mode.to_string())),
+        Some(other) => anyhow::bail!(
+            "comment_mode must be 'inherit', 'open', 'closed' or 'hidden', not '{other}'"
+        ),
+    }
+}
 
 /// The stored item `id`, locked for the rest of the import.
 async fn stored_item(run: &mut Run<'_>, id: Uuid) -> Result<Option<Item>> {
@@ -117,6 +131,7 @@ pub(crate) async fn import_item(run: &mut Run<'_>, r: ItemRecord) -> Result<Outc
         .fields
         .clone()
         .unwrap_or_else(|| Value::Object(Default::default()));
+    let comment_mode = check_comment_mode(r.comment_mode.as_deref())?;
 
     let stored = stored_item(run, r.id).await?;
     if let Some(stored) = &stored
@@ -147,6 +162,7 @@ pub(crate) async fn import_item(run: &mut Run<'_>, r: ItemRecord) -> Result<Outc
         && stored.changed == r.changed
         && stored.language == language
         && stored.fields == fields
+        && stored.comment_mode == comment_mode
     {
         return Ok(Outcome::Unchanged);
     }
@@ -231,7 +247,8 @@ pub(crate) async fn import_item(run: &mut Run<'_>, r: ItemRecord) -> Result<Outc
 
     sqlx::query(
         "UPDATE item SET current_revision_id = $2, title = $3, author_id = $4, status = $5, \
-         promote = $6, sticky = $7, created = $8, changed = $9, language = $10, fields = $11 \
+         promote = $6, sticky = $7, created = $8, changed = $9, language = $10, fields = $11, \
+         comment_mode = $12 \
          WHERE id = $1",
     )
     .bind(r.id)
@@ -245,6 +262,7 @@ pub(crate) async fn import_item(run: &mut Run<'_>, r: ItemRecord) -> Result<Outc
     .bind(r.changed)
     .bind(&language)
     .bind(&fields)
+    .bind(&comment_mode)
     .execute(&mut *run.tx)
     .await
     .context("failed to update the item")?;

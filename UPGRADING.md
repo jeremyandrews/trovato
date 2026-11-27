@@ -118,9 +118,10 @@ holds it implicitly, as every permission does. A site that wants an editor to
 set it on their own items grants the permission to that editor's role.
 
 `get-item` and `save-item` carry `comment_mode` the same way they carry every
-other item field, so a plugin (or an importer built on these calls) can read
-and set it. A site migrated from Drupal 6 maps `node.comment`: `0` (disabled)
-to `hidden`, `1` (read only) to `closed`, `2` (read and write) to `open`.
+other item field, so a plugin can read and set it. `trovato import`'s `item`
+record takes a `comment_mode` key too, so a site migrated from Drupal 6
+carries `node.comment` across: `0` (disabled) maps to `hidden`, `1` (read
+only) to `closed`, `2` (read and write) to `open`.
 
 **How to find out.** Nothing to check before upgrading: the column is
 nullable with no default read by any released code, so every existing item

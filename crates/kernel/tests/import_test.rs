@@ -133,6 +133,14 @@ async fn dates_of(app: &TestApp, item: Uuid) -> Option<(i64, i64, String)> {
         .unwrap()
 }
 
+async fn comment_mode_of(app: &TestApp, item: Uuid) -> Option<String> {
+    sqlx::query_scalar("SELECT comment_mode FROM item WHERE id = $1")
+        .bind(item)
+        .fetch_one(&app.db)
+        .await
+        .unwrap()
+}
+
 async fn body_string(response: axum::response::Response) -> String {
     let bytes = axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024)
         .await
@@ -259,6 +267,73 @@ fn a_changed_item_gains_one_revision_dated_as_the_record_says() {
             "{failed}"
         );
         assert_eq!(revisions_of(app, item).await.len(), 4, "nothing written");
+    });
+}
+
+/// An item's own comment override (B239): absent is `inherit`, the only
+/// value an item held before this, and a value a site migrated from Drupal 6
+/// carries over (`node.comment`: 0 `hidden`, 1 `closed`, 2 `open`) through
+/// the same field `get-item`/`save-item` read and write.
+#[test]
+fn an_imported_item_carries_its_comment_mode() {
+    run_test(async {
+        let app = shared_app().await;
+        let writer = author(app, "b239_import").await;
+        let item = Uuid::now_v7();
+        forget_items(app, vec![item]);
+
+        // Absent is inherit: the column stays NULL, as it is for every item
+        // that predates B239.
+        let mut line = item_line(item, writer, "B239 import", Y2014);
+        run(app, &[line.clone()], false).await.expect("first run");
+        assert_eq!(comment_mode_of(app, item).await, None);
+
+        // Drupal 6's node.comment 0 maps to hidden.
+        line["changed"] = json!(Y2015);
+        line["comment_mode"] = json!("hidden");
+        let report = run(app, &[line.clone()], false).await.expect("imports");
+        assert_eq!(report.of("item").updated, 1);
+        assert_eq!(comment_mode_of(app, item).await, Some("hidden".to_string()));
+
+        // Unchanged, including comment_mode, is a no-op.
+        let again = run(app, &[line.clone()], false).await.expect("rerun");
+        assert_eq!(again.changes(), 0, "{:?}", again.counts);
+
+        // node.comment 1 maps to closed, 2 to open.
+        line["changed"] = json!(Y2016);
+        line["comment_mode"] = json!("closed");
+        run(app, &[line.clone()], false).await.expect("imports");
+        assert_eq!(comment_mode_of(app, item).await, Some("closed".to_string()));
+
+        line["changed"] = json!(Y2017);
+        line["comment_mode"] = json!("open");
+        run(app, &[line.clone()], false).await.expect("imports");
+        assert_eq!(comment_mode_of(app, item).await, Some("open".to_string()));
+
+        // inherit clears the override back to NULL.
+        line["changed"] = json!(Y2017 + 1);
+        line["comment_mode"] = json!("inherit");
+        run(app, &[line.clone()], false).await.expect("imports");
+        assert_eq!(comment_mode_of(app, item).await, None);
+    });
+}
+
+#[test]
+fn an_item_with_an_unrecognised_comment_mode_writes_nothing() {
+    run_test(async {
+        let app = shared_app().await;
+        let writer = author(app, "b239_bad_mode").await;
+        let item = Uuid::now_v7();
+        forget_items(app, vec![item]);
+        let mut line = item_line(item, writer, "B239 bad mode", Y2014);
+        line["comment_mode"] = json!("sideways");
+
+        let error = run(app, &[line], false).await.expect_err("refused");
+        let failed = error
+            .downcast_ref::<ImportFailed>()
+            .expect("an ImportFailed");
+        assert!(failed.message.contains("comment_mode"), "{failed}");
+        assert!(dates_of(app, item).await.is_none(), "nothing written");
     });
 }
 
