@@ -154,10 +154,12 @@ pub enum SecurityEventKind {
 
     // ── Account lifecycle ───────────────────────────────────────────────────
     /// An account was created. `details.path` names where (`registration`,
-    /// `admin`, `installer`, `cli`), `details.active` says whether it starts
-    /// usable, and `details.by` is the acting account's id, or `"self"`
-    /// (public registration) or `"operator"` (no site is running: the
-    /// installer or the command line).
+    /// `admin`, `installer`, `cli`, `import`, `generate`), `details.active`
+    /// says whether it starts usable, and `details.by` is the acting
+    /// account's id, or `"self"` (public registration) or `"operator"` (no
+    /// site is running: the installer, the command line, an import or
+    /// `trovato generate`). `trovato generate` adds `details.admin` for the
+    /// administrator it writes.
     ///
     /// Emitted after the insert succeeds, so a failed attempt leaves no record
     /// claiming an account exists.
@@ -609,6 +611,48 @@ impl SecurityAudit {
 
         Ok(result.rows_affected())
     }
+}
+
+/// A v7 id as a SQL expression, one per row it is evaluated for: the clock's
+/// milliseconds in the first 48 bits over a random v4 id, its version bits
+/// turned from 4 to 7. The id [`SecurityAudit::record`] writes with
+/// `Uuid::now_v7`, for a write made in Postgres. Rows written by one
+/// statement in the same millisecond are in no particular order among
+/// themselves.
+const UUID_V7_SQL: &str = "encode(set_bit(set_bit(overlay(uuid_send(gen_random_uuid()) \
+     placing substring(int8send(floor(extract(epoch FROM clock_timestamp()) * 1000)::bigint) \
+     FROM 3) FROM 1 FOR 6), 52, 1), 53, 1), 'hex')::uuid";
+
+/// Append `event` once for each account `accounts` selects, in one statement
+/// on `conn`, so a bulk write can put its events in its own transaction
+/// instead of making one round trip per account.
+///
+/// `accounts` is crate-written SQL selecting one `uuid` column of account
+/// ids; each row's `user_id` is that id, whatever account `event` names.
+/// Every other column is `event`'s, as [`SecurityAudit::record`] writes it,
+/// except the address: a bulk write has no request, so `ip_address` is NULL.
+/// Returns how many events were written.
+pub(crate) async fn record_for_each_account(
+    conn: &mut sqlx::PgConnection,
+    event: &SecurityEvent,
+    accounts: &str,
+) -> Result<u64> {
+    let result = sqlx::query(sqlx::AssertSqlSafe(format!(
+        "INSERT INTO security_audit_log \
+             (kind, user_id, actor_id, subject_hash, outcome, ip_address, user_agent, details, id) \
+         SELECT $1, account.id, $2, $3, $4, NULL, $5, $6, {UUID_V7_SQL} \
+         FROM ({accounts}) AS account (id)"
+    )))
+    .bind(event.kind.as_str())
+    .bind(event.actor_id)
+    .bind(&event.subject_hash)
+    .bind(event.outcome.as_str())
+    .bind(&event.user_agent)
+    .bind(&event.details)
+    .execute(conn)
+    .await
+    .context("failed to append security audit events")?;
+    Ok(result.rows_affected())
 }
 
 impl std::fmt::Debug for SecurityAudit {
