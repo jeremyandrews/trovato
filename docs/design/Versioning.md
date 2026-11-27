@@ -5,8 +5,8 @@ every plugin manifest, the plugin API tuple and the Docker tags all carry it,
 and they all move together.
 
 <!-- version:begin -->
-At 0.105.0 the plugin API is `(0, 105)` and every manifest declares
-`api_version = "0.105"`. At 1.0.0 the API becomes `(1, 0)` and every manifest
+At 0.106.0 the plugin API is `(0, 106)` and every manifest declares
+`api_version = "0.106"`. At 1.0.0 the API becomes `(1, 0)` and every manifest
 declares `"1.0"`. There is no case where one of these numbers moves and the
 others do not.
 <!-- version:end -->
@@ -24,7 +24,7 @@ The single source is `[workspace.package]` in the root `Cargo.toml`:
 <!-- version:begin -->
 ```toml
 [workspace.package]
-version = "0.105.0"
+version = "0.106.0"
 ```
 <!-- version:end -->
 
@@ -56,7 +56,7 @@ declared as `KERNEL_API_VERSION` in `crates/kernel/src/plugin/mod.rs`, where it
 is derived from the crate version rather than written out:
 
 <!-- version:begin -->
-`0.105.0` gives `(0, 105)`.
+`0.106.0` gives `(0, 106)`.
 <!-- version:end -->
 `crates/kernel/src/plugin/mod.rs`.
 
@@ -70,13 +70,13 @@ Plugin API MINOR <= Kernel API MINOR
 ```
 
 <!-- version:begin -->
-With a kernel at API 0.105:
+With a kernel at API 0.106:
 
 | Plugin API | Compatible? | Reason |
 |------------|-------------|--------|
-| 0.105 | Yes | Exact match |
+| 0.106 | Yes | Exact match |
 | 0.42 | Yes | Same major, older minor: the kernel provides everything it asks for |
-| 0.106 | No | Needs host functions this kernel may not export |
+| 0.107 | No | Needs host functions this kernel may not export |
 <!-- version:end -->
 | 1.0 | No | Major version mismatch |
 
@@ -110,8 +110,8 @@ Plugins declare both numbers in `.info.toml`:
 ```toml
 name = "my_plugin"
 description = "Example plugin"
-version = "0.105.0"
-api_version = "0.105"
+version = "0.106.0"
+api_version = "0.106"
 ```
 <!-- version:end -->
 

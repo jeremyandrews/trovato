@@ -22,8 +22,9 @@ use serde::Serialize;
 use tower_sessions::Session;
 
 use crate::content::submission::PostedForm;
-use crate::cron::CronResult;
-use crate::form::{FormElement, FormState, ProcessError};
+use crate::cron::{CRON_INTERVAL_CONFIG_KEY, CronIntervalSource, CronResult};
+use crate::form::{FormElement, FormState, ProcessError, ValidationError};
+use crate::models::SiteConfig;
 use crate::state::AppState;
 use crate::system_log::LogFilter;
 
@@ -51,6 +52,10 @@ const LEVELS: &[&str] = &["error", "warn", "info"];
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/admin/reports/cron", get(cron_report).post(run_cron_now))
+        .route(
+            "/admin/reports/cron/scheduler",
+            axum::routing::post(save_scheduler_settings),
+        )
         .route("/admin/reports/status", get(status_report))
         .route("/admin/reports/log", get(log_report))
         .route("/admin/reports/accessibility", get(accessibility_report))
@@ -77,6 +82,33 @@ fn run_now_form() -> crate::form::Form {
     crate::form::Form::new("cron_run_now_form")
         .action("/admin/reports/cron")
         .element("op", FormElement::submit("Run cron now").weight(0))
+}
+
+/// The scheduler settings form's id.
+const SCHEDULER_FORM_ID: &str = "cron_scheduler_settings_form";
+
+/// The built-in scheduler's one setting, through the forms pipeline.
+fn scheduler_settings_form(interval_secs: u64) -> crate::form::Form {
+    crate::form::Form::new(SCHEDULER_FORM_ID)
+        .action("/admin/reports/cron/scheduler")
+        .element(
+            "interval_secs",
+            FormElement::textfield()
+                .title("Scheduled interval (seconds)")
+                .description(
+                    "How often this server runs cron on its own, with no external caller \
+                     needed. The default is 300 (five minutes); 0 turns the built-in \
+                     scheduler off.",
+                )
+                .default_value(interval_secs.to_string())
+                .attribute("inputmode", "numeric")
+                .required()
+                .weight(0),
+        )
+        .element(
+            "op",
+            FormElement::submit("Save scheduler setting").weight(10),
+        )
 }
 
 /// GET /admin/reports/cron
@@ -124,11 +156,52 @@ async fn cron_report(State(state): State<AppState>, session: Session) -> Respons
         }
     };
 
-    let flash: Option<String> = session.remove(CRON_FLASH_KEY).await.ok().flatten();
+    // Changing the schedule is a site configuration decision, not merely
+    // running cron by hand: a viewer holding only `run cron` (B161) sees the
+    // current interval but not an edit form that `save_scheduler_settings`
+    // (gated on `PERMISSION` alone) would refuse anyway.
+    let scheduler_config = state.cron().scheduler_config().await;
+    // With `CRON_INTERVAL_SECS` set the saved setting has no effect, so the
+    // form is not offered; the page says where the interval comes from.
+    let may_configure_scheduler =
+        viewer.can(PERMISSION) && scheduler_config.source != CronIntervalSource::Environment;
+    let scheduler_form_html = if may_configure_scheduler {
+        let mut scheduler_form_state = FormState::new(SCHEDULER_FORM_ID, "");
+        scheduler_form_state.user_id = Some(user.id);
+        match state
+            .forms()
+            .build(
+                scheduler_settings_form(scheduler_config.interval_secs),
+                &session,
+                &super::item_form::tap_state(&state, &viewer),
+                scheduler_form_state,
+            )
+            .await
+            .and_then(|form| text.scope(|| state.theme().render_form(&form)))
+        {
+            Ok(html) => Some(html),
+            Err(e) => {
+                tracing::error!(error = %e, "failed to build the cron scheduler settings form");
+                return render_server_error("The cron report could not be displayed.");
+            }
+        }
+    } else {
+        None
+    };
+
+    let flash: Option<serde_json::Value> = session.remove(CRON_FLASH_KEY).await.ok().flatten();
 
     let mut context = tera::Context::new();
     context.insert("last_run", &last_run);
     context.insert("run_now_form", &form_html);
+    context.insert("scheduler_enabled", &scheduler_config.enabled());
+    context.insert("scheduler_interval_secs", &scheduler_config.interval_secs);
+    context.insert(
+        "scheduler_from_environment",
+        &(scheduler_config.source == CronIntervalSource::Environment),
+    );
+    context.insert("scheduler_form", &scheduler_form_html);
+    context.insert("may_configure_scheduler", &may_configure_scheduler);
     context.insert("flash", &flash);
     context.insert("path", "/admin/reports/cron");
     render_admin_template(&state, &viewer, "admin/reports/cron.html", context).await
@@ -189,6 +262,91 @@ async fn run_cron_now(
         }
         CronResult::Skipped => "Cron is already running on another server.".to_string(),
         CronResult::Failed(error) => format!("Cron failed: {error}"),
+    };
+    let _ = session.insert(CRON_FLASH_KEY, message).await;
+    Redirect::to("/admin/reports/cron").into_response()
+}
+
+/// POST /admin/reports/cron/scheduler: save the built-in scheduler's interval
+/// (B178), then back to the report.
+async fn save_scheduler_settings(
+    State(state): State<AppState>,
+    session: Session,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Response {
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, PERMISSION).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
+    let viewer = super::helpers::user_context_for(&state, &user).await;
+    let interval_secs = match state
+        .forms()
+        .process(
+            posted.get("_form_build_id").unwrap_or_default(),
+            &posted,
+            &session,
+            &super::item_form::tap_state(&state, &viewer),
+            |form_state| {
+                if form_state.form_id != SCHEDULER_FORM_ID {
+                    return Err(vec![ValidationError::form(crate::form::FORM_EXPIRED)]);
+                }
+                match posted
+                    .get("interval_secs")
+                    .unwrap_or_default()
+                    .trim()
+                    .parse::<u64>()
+                {
+                    Ok(n) => Ok(n),
+                    Err(_) => Err(vec![ValidationError::field(
+                        "interval_secs",
+                        "Enter a whole number of seconds, 0 or more.",
+                    )]),
+                }
+            },
+        )
+        .await
+    {
+        Ok((_, interval_secs)) => interval_secs,
+        Err(ProcessError::Csrf) => {
+            return render_error("Invalid or expired form token. Please try again.");
+        }
+        // A value that is not a whole number: say so on the report, where the
+        // form is, rather than calling the form expired.
+        Err(ProcessError::Invalid(errors)) => {
+            match errors.into_iter().find(|e| e.field.is_some()) {
+                Some(error) => {
+                    let flash = serde_json::json!({ "kind": "error", "message": error.message });
+                    let _ = session.insert(CRON_FLASH_KEY, flash).await;
+                    return Redirect::to("/admin/reports/cron").into_response();
+                }
+                None => {
+                    return render_error("The form has expired. Reload the page and try again.");
+                }
+            }
+        }
+    };
+
+    if let Err(e) = SiteConfig::set(
+        state.db(),
+        CRON_INTERVAL_CONFIG_KEY,
+        serde_json::json!(interval_secs),
+    )
+    .await
+    {
+        tracing::error!(error = %e, "failed to save the cron scheduler setting");
+        return render_server_error("The scheduler setting could not be saved.");
+    }
+
+    tracing::info!(
+        user_id = %user.id,
+        interval_secs,
+        "built-in cron scheduler setting changed"
+    );
+    let message = if interval_secs == 0 {
+        "Built-in cron scheduler turned off.".to_string()
+    } else {
+        format!("Built-in cron scheduler set to run every {interval_secs} seconds.")
     };
     let _ = session.insert(CRON_FLASH_KEY, message).await;
     Redirect::to("/admin/reports/cron").into_response()

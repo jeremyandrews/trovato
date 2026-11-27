@@ -138,18 +138,17 @@ impl ApiToken {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Delete (revoke) every token a user holds, returning how many went.
+    /// Delete (revoke) every token a user holds, returning the ids of those
+    /// that went (for the audit trail, which records each one).
     ///
     /// For when the account itself changes in a way that should end all of its
     /// credentials, such as being blocked.
-    pub async fn delete_all_for_user(pool: &PgPool, user_id: Uuid) -> Result<u64> {
-        let result = sqlx::query("DELETE FROM api_tokens WHERE user_id = $1")
+    pub async fn delete_all_for_user(pool: &PgPool, user_id: Uuid) -> Result<Vec<Uuid>> {
+        sqlx::query_scalar("DELETE FROM api_tokens WHERE user_id = $1 RETURNING id")
             .bind(user_id)
-            .execute(pool)
+            .fetch_all(pool)
             .await
-            .context("failed to delete a user's API tokens")?;
-
-        Ok(result.rows_affected())
+            .context("failed to delete a user's API tokens")
     }
 }
 

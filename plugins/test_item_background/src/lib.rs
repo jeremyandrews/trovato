@@ -1,18 +1,22 @@
-//! U40 test fixture: `item-api` writes from the two background paths.
+//! U40 test fixture: `item-api` writes and `query` reads from the two
+//! background paths.
 //!
 //! `tap_cron` and `tap_queue_worker` dispatch under the kernel's background
 //! principal, through services `CronService` builds for itself. This fixture
-//! makes one `item-api` call per dispatch from each, so the suite can drive the
-//! real cron cycle and the real queue drain and then look at the `item` table.
+//! makes one `item-api` or `query` call per dispatch from each, so the suite
+//! can drive the real cron cycle and the real queue drain and then look at the
+//! `item` table.
 //!
 //! A step is a JSON object: `{ "nonce", "op", "type", "title", "id" }`, where
-//! `op` is `create`, `update`, `get` or `delete` (a
-//! `get` of no item answers an empty title). `tap_cron` takes its step from the
-//! `step` variable and clears it, so a later cycle does nothing; the queue
-//! worker takes its step as the job payload. Each reports what the host said to
-//! the `cron_result` or `queue_result` variable, tagged with the step's nonce:
-//! `{ "nonce", "op", "code", "id", "title" }`, `code` being `0` or the host's
-//! error code.
+//! `op` is `create`, `update`, `get`, `delete` or `query` (a
+//! `get` of no item answers an empty title). A `query` runs a Gather
+//! definition over items of `type` titled `title` and answers the first row's
+//! id and title, plus `total`, the rows the viewer may see. `tap_cron` takes
+//! its step from the `step` variable and clears it, so a later cycle does
+//! nothing; the queue worker takes its step as the job payload. Each reports
+//! what the host said to the `cron_result` or `queue_result` variable, tagged
+//! with the step's nonce: `{ "nonce", "op", "code", "id", "title" }`, `code`
+//! being `0` or the host's error code.
 
 use serde_json::{Value, json};
 use trovato_sdk::host;
@@ -46,6 +50,29 @@ fn perform(step: &Value) -> Value {
             Ok(()) => answer(0, text("id"), ""),
             Err(code) => answer(code, text("id"), ""),
         },
+        "query" => {
+            let definition = json!({
+                "base_table": "item",
+                "item_type": text("type"),
+                "filters": [{ "field": "title", "operator": "equals", "value": text("title") }]
+            });
+            match host::query(&definition, &json!({})) {
+                Ok(result) => {
+                    let first = result.items.first();
+                    let field = |key: &str| {
+                        first
+                            .and_then(|row| row.get(key))
+                            .and_then(Value::as_str)
+                            .unwrap_or("")
+                            .to_string()
+                    };
+                    let mut reply = answer(0, &field("id"), &field("title"));
+                    reply["total"] = json!(result.total);
+                    reply
+                }
+                Err(code) => answer(code, "", ""),
+            }
+        }
         _ => answer(0, "", ""),
     }
 }

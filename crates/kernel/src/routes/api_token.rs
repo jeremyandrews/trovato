@@ -83,9 +83,10 @@ async fn create_token(
         .expires_in_days
         .map(|days| Utc::now() + Duration::days(i64::from(days)));
 
-    let (token_record, raw_token) = ApiToken::create(state.db(), user_id, name, expires_at)
-        .await
-        .map_err(|e| AppError::internal_ctx(e, "create API token"))?;
+    let (token_record, raw_token) =
+        crate::services::api_token::create(&state, user_id, name, expires_at)
+            .await
+            .map_err(|e| AppError::internal_ctx(e, "create API token"))?;
 
     Ok((
         StatusCode::CREATED,
@@ -141,7 +142,7 @@ async fn delete_token(
         .await
         .map_err(|_| AppError::forbidden("Invalid or missing CSRF token"))?;
 
-    let deleted = ApiToken::delete(state.db(), id, user_id)
+    let deleted = crate::services::api_token::revoke(&state, id, user_id)
         .await
         .map_err(|e| AppError::internal_ctx(e, "delete API token"))?;
 

@@ -444,6 +444,17 @@ fn a_password_account_deletes_itself_and_its_content_is_reattributed() {
             "the screen must offer the export before it is too late"
         );
 
+        // The seeded entry and the step-up session itself: more than one, so
+        // the event's count is told apart from "one" or "none".
+        let indexed = app
+            .state
+            .session_registry()
+            .list(account.id)
+            .await
+            .unwrap()
+            .len();
+        assert!(indexed >= 2, "two sessions indexed, got {indexed}");
+
         let response =
             post_form(app, &cookies, "/user/delete/confirm", &[("_token", &token)]).await;
         let status = response.status();
@@ -525,6 +536,10 @@ fn a_password_account_deletes_itself_and_its_content_is_reattributed() {
         assert_eq!(details["by"], "self");
         assert_eq!(details["items_reattributed"], 1);
         assert_eq!(details["comments_reattributed"], 1);
+        assert_eq!(
+            details["sessions_revoked"], indexed,
+            "the event counts every session the deletion ended"
+        );
 
         // And the raw id appears nowhere in the row.
         let raw_matches: i64 =
@@ -897,6 +912,116 @@ fn an_admin_can_delete_an_account_that_authored_content() {
     });
 }
 
+/// An administrator's deletion is audited as `account.deleted` exactly as a
+/// self-service deletion is.
+///
+/// Before this, `account.deleted` was emitted only by the self-service route;
+/// `UserService::delete` — the function both that route and this one call —
+/// carried no event of its own, so an administrator deleting an account left
+/// no trace of it in the security audit stream at all.
+#[test]
+fn an_admin_deletion_is_audited_as_account_deleted() {
+    run_test(async {
+        let app = shared_app().await;
+        let victim = seed_account(app, "deladmin4victim", false).await;
+        let admin = seed_account(app, "deladmin4", true).await;
+
+        let (cookies, token) = form_token(app, &admin.cookies, "/admin/people").await;
+        let response = post_form(
+            app,
+            &cookies,
+            &format!("/admin/people/{}/delete", victim.id),
+            &[("_token", &token)],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+
+        // As with self-service, the row is gone by the time the event is
+        // written, so it is found by the hashed subject, never the raw id.
+        let expected_hash = trovato_kernel::audit::hash_subject(&victim.id.to_string());
+        let (user_id, actor_id, details): (Option<Uuid>, Option<Uuid>, serde_json::Value) =
+            sqlx::query_as(
+                "SELECT user_id, actor_id, details FROM security_audit_log \
+                 WHERE kind = 'account.deleted' AND subject_hash = $1 \
+                 ORDER BY created DESC LIMIT 1",
+            )
+            .bind(&expected_hash)
+            .fetch_one(&app.db)
+            .await
+            .expect("an admin deletion must be audited under the hashed account id");
+        assert_eq!(user_id, None, "the row must not name the erased account");
+        assert_eq!(
+            actor_id,
+            Some(admin.id),
+            "the row must name the administrator who did it"
+        );
+        assert_eq!(details["by"], "admin");
+        assert_eq!(details["items_reattributed"], 1);
+        assert_eq!(details["comments_reattributed"], 1);
+
+        cleanup(app, &victim).await;
+        cleanup(app, &admin).await;
+    });
+}
+
+/// A deletion refused for lack of permission writes no `account.deleted` row:
+/// the account the attempt named is still there to prove it.
+#[test]
+fn a_deletion_refused_for_lack_of_permission_writes_no_account_deleted_event() {
+    run_test(async {
+        let app = shared_app().await;
+        let victim = seed_account(app, "delrefusedvictim", false).await;
+        let bystander = seed_account(app, "delrefusedbystander", false).await;
+        // Counted for this account only: other tests delete accounts in the
+        // same database at the same time.
+        let victim_hash = trovato_kernel::audit::hash_subject(&victim.id.to_string());
+
+        let before: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM security_audit_log \
+             WHERE kind = 'account.deleted' AND subject_hash = $1",
+        )
+        .bind(&victim_hash)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+
+        let (cookies, token) = form_token(app, &bystander.cookies, "/user/profile").await;
+        let response = post_form(
+            app,
+            &cookies,
+            &format!("/admin/people/{}/delete", victim.id),
+            &[("_token", &token)],
+        )
+        .await;
+        assert_ne!(
+            response.status(),
+            StatusCode::SEE_OTHER,
+            "a user without `administer users` must not be able to delete anyone"
+        );
+
+        let alive: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id = $1")
+            .bind(victim.id)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(alive, 1, "the refused account must still exist");
+
+        let after: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM security_audit_log \
+             WHERE kind = 'account.deleted' AND subject_hash = $1",
+        )
+        .bind(&victim_hash)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+        assert_eq!(before, 0, "no deletion of this account yet");
+        assert_eq!(after, 0, "a refused deletion must write no event");
+
+        cleanup(app, &victim).await;
+        cleanup(app, &bystander).await;
+    });
+}
+
 /// An administrator deleting an account ends that account's sessions and
 /// empties its session index, as self-service deletion does. Before, the admin
 /// path deleted the row and left every session and index entry in place, so the
@@ -944,6 +1069,16 @@ fn an_admin_deletion_ends_the_accounts_sessions_and_empties_its_index() {
             .await
             .unwrap();
         assert!(!record, "the deleted account's session record must be gone");
+
+        let details: serde_json::Value = sqlx::query_scalar(
+            "SELECT details FROM security_audit_log \
+             WHERE kind = 'account.deleted' AND subject_hash = $1",
+        )
+        .bind(trovato_kernel::audit::hash_subject(&victim.id.to_string()))
+        .fetch_one(&app.db)
+        .await
+        .expect("the deletion is audited");
+        assert_eq!(details["sessions_revoked"], before.len());
 
         cleanup(app, &victim).await;
         cleanup(app, &admin).await;

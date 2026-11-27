@@ -620,7 +620,8 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
 
     // Spawn the resident plugin-queue runner (P11d / D-46), but only when it is
     // enabled in site_config at boot. The default deployment runs no queue
-    // scheduler and keeps the external-cron cadence contract; enabling the
+    // runner and drains the queue on the cron cadence (the built-in scheduler's
+    // or an external caller's); enabling the
     // runner is an explicit, config-gated opt-in for sub-cron latency.
     //
     // Its token is cancelled when shutdown begins, not when the server has
@@ -643,6 +644,31 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
             );
         }
     }
+
+    // The built-in cron scheduler (B178): calls `CronService::run` on its own
+    // cadence, so a site runs cron (scheduled publishing, search rebuilds,
+    // session and temp-file cleanup) with no external caller configured.
+    // Always spawned, unlike the queue runner above: it rereads
+    // `cron_interval_secs` every time it wakes, so turning it off or on, or
+    // changing the interval, applies without a restart. `/cron/{key}` and the
+    // admin "Run now" control are unaffected: all three call the same `run`
+    // and share its Redis lock, so whichever arrives second is skipped.
+    //
+    // On `workers_token`, like the queue runner: it starts no new run from the
+    // signal on, and where a drain is configured the run in flight is waited
+    // for below, within the shutdown deadline.
+    let cron_scheduler = {
+        let cron = state.cron().clone();
+        let scheduler_config = cron.scheduler_config().await;
+        let token = workers_token.clone();
+        info!(
+            enabled = scheduler_config.enabled(),
+            interval_secs = scheduler_config.interval_secs,
+            source = ?scheduler_config.source,
+            "Built-in cron scheduler starting"
+        );
+        tokio::spawn(async move { cron.run_scheduler(token).await })
+    };
 
     // The mail workers (BG18): whenever a transport is configured, so a
     // queued message is sent within seconds with nothing else to enable. On the
@@ -943,6 +969,15 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         warn!(
             "The queue runner did not finish its batch; its claims are reclaimed when their leases expire"
         );
+    }
+    // Likewise the cron scheduler: it has stopped starting runs, and a run in
+    // flight that is cut off here leaves the lock to expire on its TTL.
+    if bound_in_flight
+        && tokio::time::timeout_at(deadline, cron_scheduler)
+            .await
+            .is_err()
+    {
+        warn!("The scheduled cron run did not finish; its lock expires on its own TTL");
     }
     // Always waited for, within the deadline: a mail worker stops after at most
     // the one send in flight, and putting its other claims back now saves them
@@ -1449,9 +1484,12 @@ async fn create_user_from_cli(
     };
     let nobody = tap::UserContext::anonymous();
     let user = if account.blocked {
-        state.users().create_with_status(input, 0, &nobody).await?
+        state
+            .users()
+            .create_with_status(input, 0, &nobody, "cli")
+            .await?
     } else {
-        state.users().create(input, &nobody).await?
+        state.users().create(input, &nobody, "cli").await?
     };
     // The account is committed before its roles, one grant at a time, as on
     // the form. A grant that fails (a role deleted since it was looked up, a

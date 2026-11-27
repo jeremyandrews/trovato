@@ -203,8 +203,8 @@ impl Tile {
         Ok(result.rows_affected() > 0)
     }
 
-    /// Check if this tile is visible for a given request path, user roles and
-    /// signed-in state.
+    /// Check if this tile is visible for a given request path, user roles,
+    /// signed-in state and the type of the item the page shows, if any.
     ///
     /// Visibility rules in JSON:
     /// - `{ "paths": ["/admin/*", "/user/*"] }` — show only on matching paths
@@ -216,8 +216,19 @@ impl Tile {
     ///   not from `user_roles` — every viewer, signed in or not, carries the
     ///   `anonymous user` role there, so a role rule alone cannot mean
     ///   "anonymous only".
+    /// - `{ "item_types": ["article", "recipe"] }` — show only on a page
+    ///   showing an item of one of these types (B186). A page showing no item
+    ///   — a gather listing, the front page, an admin screen — never matches:
+    ///   `item_type` is `None` there, not a type the rule could name. An empty
+    ///   list is no rule, as the tile form's blank field is.
     /// - `{}` — always visible
-    pub fn is_visible(&self, path: &str, user_roles: &[String], authenticated: bool) -> bool {
+    pub fn is_visible(
+        &self,
+        path: &str,
+        user_roles: &[String],
+        authenticated: bool,
+        item_type: Option<&str>,
+    ) -> bool {
         // Audience check
         if let Some(audience) = self.visibility.get("audience").and_then(|v| v.as_str()) {
             match audience {
@@ -234,6 +245,23 @@ impl Tile {
                 user_roles.iter().any(|ur| ur == required)
             });
             if !role_match {
+                return false;
+            }
+        }
+
+        // Item type check (B186). An empty list is no rule, the way the tile
+        // form shows and saves it ("blank for every page"): otherwise a tile
+        // imported with `[]` would be hidden everywhere until an unrelated
+        // edit saved the blank field and made it visible everywhere.
+        if let Some(item_types) = self
+            .visibility
+            .get("item_types")
+            .and_then(|v| v.as_array())
+            .filter(|types| !types.is_empty())
+        {
+            let type_match =
+                item_type.is_some_and(|t| item_types.iter().any(|v| v.as_str() == Some(t)));
+            if !type_match {
                 return false;
             }
         }
@@ -341,35 +369,35 @@ mod tests {
     #[test]
     fn empty_visibility_always_visible() {
         let tile = make_tile(serde_json::json!({}));
-        assert!(tile.is_visible("/", &[], false));
-        assert!(tile.is_visible("/admin", &[], false));
-        assert!(tile.is_visible("/", &[], true));
-        assert!(tile.is_visible("/admin", &[], true));
+        assert!(tile.is_visible("/", &[], false, None));
+        assert!(tile.is_visible("/admin", &[], false, None));
+        assert!(tile.is_visible("/", &[], true, None));
+        assert!(tile.is_visible("/admin", &[], true, None));
     }
 
     #[test]
     fn paths_include_filter() {
         let tile = make_tile(serde_json::json!({ "paths": ["/admin/*"] }));
-        assert!(tile.is_visible("/admin/people", &[], false));
-        assert!(!tile.is_visible("/user/login", &[], false));
-        assert!(tile.is_visible("/admin/people", &[], true));
-        assert!(!tile.is_visible("/user/login", &[], true));
+        assert!(tile.is_visible("/admin/people", &[], false, None));
+        assert!(!tile.is_visible("/user/login", &[], false, None));
+        assert!(tile.is_visible("/admin/people", &[], true, None));
+        assert!(!tile.is_visible("/user/login", &[], true, None));
     }
 
     #[test]
     fn paths_exclude_filter() {
         let tile = make_tile(serde_json::json!({ "paths_exclude": ["/admin/*"] }));
-        assert!(!tile.is_visible("/admin/people", &[], false));
-        assert!(tile.is_visible("/user/login", &[], false));
-        assert!(!tile.is_visible("/admin/people", &[], true));
-        assert!(tile.is_visible("/user/login", &[], true));
+        assert!(!tile.is_visible("/admin/people", &[], false, None));
+        assert!(tile.is_visible("/user/login", &[], false, None));
+        assert!(!tile.is_visible("/admin/people", &[], true, None));
+        assert!(tile.is_visible("/user/login", &[], true, None));
     }
 
     #[test]
     fn exact_path_match() {
         let tile = make_tile(serde_json::json!({ "paths": ["/about"] }));
-        assert!(tile.is_visible("/about", &[], false));
-        assert!(!tile.is_visible("/about/team", &[], false));
+        assert!(tile.is_visible("/about", &[], false, None));
+        assert!(!tile.is_visible("/about/team", &[], false, None));
     }
 
     #[test]
@@ -380,9 +408,9 @@ mod tests {
             "administrator".to_string(),
         ];
         let user_roles = vec!["authenticated user".to_string()];
-        assert!(tile.is_visible("/", &admin_roles, true));
-        assert!(!tile.is_visible("/", &user_roles, true));
-        assert!(!tile.is_visible("/", &[], false));
+        assert!(tile.is_visible("/", &admin_roles, true, None));
+        assert!(!tile.is_visible("/", &user_roles, true, None));
+        assert!(!tile.is_visible("/", &[], false, None));
     }
 
     #[test]
@@ -392,23 +420,23 @@ mod tests {
             "paths": ["/dashboard*"]
         }));
         let roles = vec!["authenticated user".to_string()];
-        assert!(tile.is_visible("/dashboard", &roles, true));
-        assert!(!tile.is_visible("/about", &roles, true));
-        assert!(!tile.is_visible("/dashboard", &[], false));
+        assert!(tile.is_visible("/dashboard", &roles, true, None));
+        assert!(!tile.is_visible("/about", &roles, true, None));
+        assert!(!tile.is_visible("/dashboard", &[], false, None));
     }
 
     #[test]
     fn audience_anonymous_shows_only_to_signed_out_visitors() {
         let tile = make_tile(serde_json::json!({ "audience": "anonymous" }));
-        assert!(tile.is_visible("/", &[], false));
-        assert!(!tile.is_visible("/", &["anonymous user".to_string()], true));
+        assert!(tile.is_visible("/", &[], false, None));
+        assert!(!tile.is_visible("/", &["anonymous user".to_string()], true, None));
     }
 
     #[test]
     fn audience_authenticated_shows_only_to_signed_in_users() {
         let tile = make_tile(serde_json::json!({ "audience": "authenticated" }));
-        assert!(!tile.is_visible("/", &[], false));
-        assert!(tile.is_visible("/", &["authenticated user".to_string()], true));
+        assert!(!tile.is_visible("/", &[], false, None));
+        assert!(tile.is_visible("/", &["authenticated user".to_string()], true, None));
     }
 
     #[test]
@@ -418,7 +446,7 @@ mod tests {
         // is decided from the `authenticated` flag, not that list, so a
         // signed-in viewer who still carries the role is still excluded.
         let tile = make_tile(serde_json::json!({ "audience": "anonymous" }));
-        assert!(!tile.is_visible("/", &["anonymous user".to_string()], true));
+        assert!(!tile.is_visible("/", &["anonymous user".to_string()], true, None));
     }
 
     #[test]
@@ -427,16 +455,55 @@ mod tests {
             "audience": "anonymous",
             "paths": ["/dashboard*"]
         }));
-        assert!(tile.is_visible("/dashboard", &[], false));
-        assert!(!tile.is_visible("/dashboard", &[], true));
-        assert!(!tile.is_visible("/about", &[], false));
+        assert!(tile.is_visible("/dashboard", &[], false, None));
+        assert!(!tile.is_visible("/dashboard", &[], true, None));
+        assert!(!tile.is_visible("/about", &[], false, None));
     }
 
     #[test]
     fn unknown_audience_value_is_ignored() {
         let tile = make_tile(serde_json::json!({ "audience": "everyone" }));
-        assert!(tile.is_visible("/", &[], false));
-        assert!(tile.is_visible("/", &[], true));
+        assert!(tile.is_visible("/", &[], false, None));
+        assert!(tile.is_visible("/", &[], true, None));
+    }
+
+    #[test]
+    fn item_types_visibility_shows_only_on_matching_item_pages() {
+        let tile = make_tile(serde_json::json!({ "item_types": ["article"] }));
+        assert!(tile.is_visible("/item/1", &[], false, Some("article")));
+        assert!(!tile.is_visible("/item/2", &[], false, Some("recipe")));
+        // A page with no item in view never matches: there is no type to
+        // compare the rule against.
+        assert!(!tile.is_visible("/", &[], false, None));
+    }
+
+    #[test]
+    fn empty_item_types_is_no_rule() {
+        // The tile form shows `[]` as a blank field and saves a blank field
+        // as no rule; the two must mean the same, or saving an unrelated
+        // edit flips a tile from hidden everywhere to shown everywhere.
+        let tile = make_tile(serde_json::json!({ "item_types": [] }));
+        assert!(tile.is_visible("/", &[], false, None));
+        assert!(tile.is_visible("/item/1", &[], false, Some("article")));
+        let blank = make_tile(serde_json::json!({}));
+        for (path, item_type) in [("/", None), ("/item/1", Some("article"))] {
+            assert_eq!(
+                tile.is_visible(path, &[], false, item_type),
+                blank.is_visible(path, &[], false, item_type)
+            );
+        }
+    }
+
+    #[test]
+    fn item_types_combines_with_roles() {
+        let tile = make_tile(serde_json::json!({
+            "item_types": ["article"],
+            "roles": ["administrator"]
+        }));
+        let admin_roles = vec!["administrator".to_string()];
+        assert!(tile.is_visible("/item/1", &admin_roles, true, Some("article")));
+        assert!(!tile.is_visible("/item/1", &[], false, Some("article")));
+        assert!(!tile.is_visible("/item/1", &admin_roles, true, Some("recipe")));
     }
 
     #[test]

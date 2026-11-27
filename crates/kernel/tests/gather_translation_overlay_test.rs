@@ -115,6 +115,7 @@ async fn first_row_fields(
         viewer: Some(admin()),
         url_args: HashMap::new(),
         language: language.map(str::to_string),
+        ..Default::default()
     };
 
     let result = app

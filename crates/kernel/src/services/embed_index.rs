@@ -25,7 +25,7 @@
 //! is maintained by a DB trigger inside the save transaction, so it is never
 //! deferred. An item is **findable-by-similarity only after its embed job
 //! runs**; that latency is bounded by the queue drain cadence documented in
-//! `docs/plugin-queue.md` (external cron by default; the opt-in resident runner
+//! `docs/plugin-queue.md` (the cron cadence by default; the opt-in resident runner
 //! for sub-cron latency). Semantic gather degrades correctly over not-yet-
 //! embedded items: they simply are not similarity candidates (they carry no
 //! `item_embeddings` row for the active model), never an error.

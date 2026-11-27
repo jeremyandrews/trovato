@@ -635,6 +635,7 @@ fn a_gather_filters_on_promote_and_sorts_sticky_first() {
             viewer: Some(service_admin()),
             url_args: HashMap::new(),
             language: None,
+            ..Default::default()
         };
         let result = app
             .state

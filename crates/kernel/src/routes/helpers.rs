@@ -55,8 +55,8 @@ pub async fn session_user(state: &AppState, session: &Session) -> Option<User> {
     Some(user)
 }
 
-/// End the session of a blocked account: flush it, and drop its device from
-/// the user's session index.
+/// End the session of a blocked account: flush it, drop its device from the
+/// user's session index, and record `session.ended` (reason `"blocked"`).
 ///
 /// `flush`, not `delete`: see `routes::auth::logout`. A session only deleted
 /// from the store is saved again by the session layer if this request writes to
@@ -69,8 +69,27 @@ async fn end_blocked_session(state: &AppState, session: &Session, user_id: Uuid)
         .await
         .ok()
         .flatten();
-    let _ = session.flush().await;
-    crate::services::session_registry::forget_ended_session(state, user_id, device_id).await;
+    let session_id = session.id().map(|id| id.to_string());
+    match session.flush().await {
+        Ok(()) => {
+            crate::services::session_registry::session_ended(
+                state,
+                user_id,
+                device_id,
+                session_id.as_deref(),
+                "blocked",
+            )
+            .await;
+        }
+        Err(e) => {
+            // Not ended, so not recorded as ended; the index entry still goes,
+            // as it always has, since a blocked account's sessions are refused
+            // on every request whatever the store holds.
+            tracing::warn!(error = %e, user_id = %user_id, "failed to flush a blocked account's session");
+            crate::services::session_registry::forget_ended_session(state, user_id, device_id)
+                .await;
+        }
+    }
 }
 
 /// Whether `user` holds `permission`; an administrator holds every permission.
@@ -462,6 +481,16 @@ pub async fn inject_site_context_for(
         .get("available_translations")
         .and_then(|value| serde_json::from_value(value.clone()).ok());
 
+    // The item this page shows (B186), when it shows one: the item route sets
+    // `item` in the context before calling this, the same way it sets
+    // `available_translations` above. Read back the same way, so a
+    // `gather_query` tile can filter out, or filter by a field of, the item
+    // it is rendered beside, and an `item_types` visibility rule has
+    // something to compare against.
+    let current_item: Option<crate::models::Item> = context
+        .get("item")
+        .and_then(|value| serde_json::from_value(value.clone()).ok());
+
     // Load tiles for all regions filtered by request path and user roles, each
     // rendered for this viewer, in this language, from the menus built above,
     // with the page's root values.
@@ -474,6 +503,7 @@ pub async fn inject_site_context_for(
         page_root: &page_root,
         current_path: &requested_path,
         translations: translations.as_deref(),
+        current_item: current_item.as_ref(),
     };
     for region in &["header", "navigation", "sidebar", "footer"] {
         let region_html = state
@@ -1376,6 +1406,7 @@ pub async fn render_page_builder_field(
                     viewer: Some(viewer.clone()),
                     url_args: std::collections::HashMap::new(),
                     language: None,
+                    ..Default::default()
                 };
                 let Ok(result) = state
                     .gather()

@@ -446,7 +446,7 @@ async fn add_user_submit(
     };
 
     let user_ctx = admin_user_context(&state, &current_user).await;
-    match state.users().create(input, &user_ctx).await {
+    match state.users().create(input, &user_ctx, "admin").await {
         Ok(user) => {
             apply_role_membership(&state, &current_user, user.id, &form.roles).await;
             tracing::info!(name = %form.name, "user created");
@@ -800,8 +800,13 @@ async fn edit_user_submit(
                     "account_blocked",
                 )
                 .await;
-                match crate::models::api_token::ApiToken::delete_all_for_user(state.db(), user_id)
-                    .await
+                match crate::services::api_token::revoke_all_for_user(
+                    &state,
+                    user_id,
+                    Some(admin_user_id),
+                    "account_blocked",
+                )
+                .await
                 {
                     Ok(n) => tracing::info!(
                         user_id = %user_id,
@@ -903,26 +908,15 @@ async fn delete_user(
     }
 
     let user_ctx = admin_user_context(&state, &current_user).await;
-    match state.users().delete(user_id, &user_ctx).await {
+    // Every session of the deleted account ends inside `delete`, as it does
+    // for a self-service deletion (`routes::user_delete`).
+    match state
+        .users()
+        .delete(user_id, &user_ctx, state.session_registry())
+        .await
+    {
         Ok(true) => {
-            // Every session of the deleted account ends, as it does for a
-            // self-service deletion (`routes::user_delete`). Revoked after the
-            // delete and without a per-session audit row: the audit log's
-            // `user_id` references `users`, and the account is gone.
-            let sessions_revoked = state
-                .session_registry()
-                .revoke_all_except(user_id, None)
-                .await
-                .map(|entries| entries.len())
-                .unwrap_or_else(|e| {
-                    tracing::error!(
-                        error = %e,
-                        user_id = %user_id,
-                        "failed to end a deleted account's sessions"
-                    );
-                    0
-                });
-            tracing::info!(user_id = %user_id, sessions_revoked, "user deleted");
+            tracing::info!(user_id = %user_id, "user deleted");
             Redirect::to("/admin/people").into_response()
         }
         Ok(false) => render_not_found(),
@@ -1178,6 +1172,15 @@ pub async fn cancel_account(
                     }
                 }
             }
+            // A blocked account keeps its row, so its sessions are ended here;
+            // the deleting methods end them inside `UserService::delete`.
+            if let Err(e) = state
+                .session_registry()
+                .revoke_all_except(target.id, None)
+                .await
+            {
+                tracing::error!(error = %e, user_id = %target.id, "failed to end a cancelled account's sessions");
+            }
         }
         CancelMethod::Reassign | CancelMethod::Delete => {
             if method == CancelMethod::Delete {
@@ -1189,15 +1192,12 @@ pub async fn cancel_account(
                     state.items().delete(item.id, acting).await?;
                 }
             }
-            state.users().delete(target.id, acting).await?;
+            // `delete` ends the account's sessions itself.
+            state
+                .users()
+                .delete(target.id, acting, state.session_registry())
+                .await?;
         }
-    }
-    if let Err(e) = state
-        .session_registry()
-        .revoke_all_except(target.id, None)
-        .await
-    {
-        tracing::error!(error = %e, user_id = %target.id, "failed to end a cancelled account's sessions");
     }
     Ok(())
 }

@@ -367,14 +367,21 @@ fn a_registration_queues_its_verification_with_the_account() {
         let result = app
             .state
             .users()
-            .create_with_status_and_mail(input(&refused, &refused_mail), 0, &system, &mail, |_| {
-                vec![NewMail::account(
-                    "registration_verify",
-                    "not an address",
-                    "Verify",
-                    "Body",
-                )]
-            })
+            .create_with_status_and_mail(
+                input(&refused, &refused_mail),
+                0,
+                &system,
+                &mail,
+                |_| {
+                    vec![NewMail::account(
+                        "registration_verify",
+                        "not an address",
+                        "Verify",
+                        "Body",
+                    )]
+                },
+                "registration",
+            )
             .await;
         assert!(result.is_err(), "the refused message fails the write");
         assert_eq!(
@@ -389,20 +396,27 @@ fn a_registration_queues_its_verification_with_the_account() {
         let user = app
             .state
             .users()
-            .create_with_status_and_mail(input(&name, &email), 0, &system, &mail, |user| {
-                vec![
-                    NewMail::account(
-                        "registration_verify",
-                        &email,
-                        "Verify your account",
-                        &format!("Visit http://localhost:3000/user/verify/{SECRET_MARKER}"),
-                    )
-                    .secret(MailSecret::Verification {
-                        user_id: user.id,
-                        purpose: "registration".to_string(),
-                    }),
-                ]
-            })
+            .create_with_status_and_mail(
+                input(&name, &email),
+                0,
+                &system,
+                &mail,
+                |user| {
+                    vec![
+                        NewMail::account(
+                            "registration_verify",
+                            &email,
+                            "Verify your account",
+                            &format!("Visit http://localhost:3000/user/verify/{SECRET_MARKER}"),
+                        )
+                        .secret(MailSecret::Verification {
+                            user_id: user.id,
+                            purpose: "registration".to_string(),
+                        }),
+                    ]
+                },
+                "registration",
+            )
             .await
             .unwrap();
         let rows: Vec<(String, String)> =

@@ -21,9 +21,12 @@ use std::collections::HashSet;
 use tracing::warn;
 use trovato_sdk::types::AdminNavDefinition;
 
-/// Longest label, section or description accepted, matching the admin theme's
-/// layout assumptions rather than any protocol limit.
+/// Longest label, section, description or keyword accepted, matching the
+/// admin theme's layout assumptions rather than any protocol limit.
 const MAX_TEXT_LEN: usize = 255;
+
+/// Most keywords kept from one declaration; any past it are dropped.
+const MAX_KEYWORDS: usize = 20;
 
 /// One sidebar link a plugin declared, with the plugin that declared it.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -33,6 +36,7 @@ pub struct PluginNavLink {
     pub label: String,
     pub href: String,
     pub permission: String,
+    pub keywords: Vec<String>,
 }
 
 /// One dashboard card a plugin declared, from an [`AdminNavDefinition`] that
@@ -116,6 +120,7 @@ impl AdminNavRegistry {
                     label: def.label.clone(),
                     href: def.href.clone(),
                     permission: def.permission.clone(),
+                    keywords: usable_keywords(&plugin, &def),
                 });
                 if let Some(description) = def.card_description {
                     registry.cards.push(PluginNavCard {
@@ -244,6 +249,37 @@ fn href_stays_under_admin(href: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The keywords of `def` that search can use: each one trimmed, a blank one
+/// or one longer than [`MAX_TEXT_LEN`] bytes left out, and at most
+/// [`MAX_KEYWORDS`] kept, in declaration order. A keyword only helps search
+/// find the page, so a bad one is dropped on its own, with a warning, and
+/// never costs the page its link or card.
+fn usable_keywords(plugin: &str, def: &AdminNavDefinition) -> Vec<String> {
+    let mut kept = Vec::new();
+    for keyword in &def.keywords {
+        let keyword = keyword.trim();
+        let reason = if keyword.is_empty() {
+            Some("it is blank".to_string())
+        } else if keyword.len() > MAX_TEXT_LEN {
+            Some(format!("it is longer than {MAX_TEXT_LEN} bytes"))
+        } else if kept.len() == MAX_KEYWORDS {
+            Some(format!("only the first {MAX_KEYWORDS} are kept"))
+        } else {
+            None
+        };
+        match reason {
+            Some(reason) => warn!(
+                plugin = %plugin,
+                href = %def.href,
+                %reason,
+                "dropping a plugin admin nav keyword"
+            ),
+            None => kept.push(keyword.to_string()),
+        }
+    }
+    kept
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
@@ -264,6 +300,48 @@ mod tests {
         assert_eq!(registry.links()[0].href, "/admin/groups");
         assert!(registry.cards().is_empty());
         assert!(registry.rejections().is_empty());
+    }
+
+    #[test]
+    fn keywords_reach_the_registered_link() {
+        let with_keywords = def("/admin/groups").with_keywords(["teams", "cohorts"]);
+        let registry = AdminNavRegistry::from_tap_results(vec![(
+            "groups".to_string(),
+            serde_json::to_string(&vec![with_keywords]).unwrap(),
+        )]);
+        assert_eq!(
+            registry.links()[0].keywords,
+            vec!["teams".to_string(), "cohorts".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_bad_keyword_is_dropped_and_the_link_kept() {
+        let long = "x".repeat(MAX_TEXT_LEN + 1);
+        let d = def("/admin/groups")
+            .card("Manage user groups.")
+            .with_keywords(["", "   ", long.as_str(), " teams "]);
+        let registry = AdminNavRegistry::from_tap_results(vec![(
+            "groups".to_string(),
+            serde_json::to_string(&vec![d]).unwrap(),
+        )]);
+        assert!(registry.rejections().is_empty());
+        assert_eq!(registry.links().len(), 1);
+        assert_eq!(registry.links()[0].keywords, vec!["teams".to_string()]);
+        assert_eq!(registry.cards().len(), 1);
+    }
+
+    #[test]
+    fn keywords_past_the_limit_are_dropped_and_the_link_kept() {
+        let words: Vec<String> = (0..=MAX_KEYWORDS).map(|i| format!("word{i}")).collect();
+        let d = def("/admin/groups").with_keywords(words.clone());
+        let registry = AdminNavRegistry::from_tap_results(vec![(
+            "groups".to_string(),
+            serde_json::to_string(&vec![d]).unwrap(),
+        )]);
+        assert!(registry.rejections().is_empty());
+        assert_eq!(registry.links().len(), 1);
+        assert_eq!(registry.links()[0].keywords, words[..MAX_KEYWORDS].to_vec());
     }
 
     #[test]

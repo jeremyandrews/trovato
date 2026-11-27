@@ -54,6 +54,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::content::ItemService;
 use crate::file::FileService;
+use crate::gather::GatherService;
 use crate::services::ai_provider::AiProviderService;
 use crate::services::ai_token_budget::AiTokenBudgetService;
 use crate::services::embed_index::{
@@ -70,6 +71,9 @@ const HEARTBEAT_INTERVAL_SECS: u64 = 60;
 
 /// Cron lock key in Redis.
 const CRON_LOCK_KEY: &str = "cron:lock";
+
+/// Redis key holding the last completed run ([`LastCronRun`]).
+const CRON_LAST_RUN_KEY: &str = "cron:last_run";
 
 /// Maximum items processed per plugin per drain cycle (P11d fairness cap): one
 /// plugin flooding its queue cannot starve another. Ratified value retained.
@@ -142,7 +146,7 @@ const CRON_TASK_TIMEOUT_SECS: u64 = LOCK_TTL_SECS / 2;
 
 /// Marks where a cron lock value records when its run took the lock.
 ///
-/// The value is `host:pid:t<unix seconds>`. The owner check compares the whole
+/// The value is `host:pid:uuid:t<unix seconds>`. The owner check compares the whole
 /// value, so the time costs nothing there; it is what lets a run that finds the
 /// lock held say how long the holder has had it. A value without the marker
 /// (written by an older kernel during a rolling deploy) still works as a lock,
@@ -275,7 +279,7 @@ impl QueueDrainStats {
 /// Resident queue-runner configuration (P11d / D-46 hybrid, opt-in).
 ///
 /// Read from the `queue_runner` `site_config` key. Absent or `enabled = false`
-/// (the default) keeps the external-cron cadence contract unchanged. When
+/// (the default) drains the queue on the cron cadence. When
 /// `enabled = true`, a boot-started background task drains the plugin queue on
 /// its own cadence (`poll_interval_secs`) and the in-request cron drain steps
 /// aside to avoid double-draining.
@@ -300,6 +304,116 @@ impl Default for QueueRunnerConfig {
             enabled: false,
             poll_interval_secs: default_poll_interval(),
         }
+    }
+}
+
+/// `site_config` key holding the built-in scheduler's interval, in seconds, as
+/// a bare JSON number (B178). Edited on the cron report (`/admin/reports/cron`).
+pub const CRON_INTERVAL_CONFIG_KEY: &str = "cron_interval_secs";
+
+/// Default built-in scheduler interval, seconds: five minutes, the cadence the
+/// stock sidecar pokers used, and equal to the cron lock TTL, so one lock
+/// comfortably covers a run end to end.
+///
+/// Non-zero on purpose: core has to be fully functional with nothing external
+/// configured, so a freshly installed site publishes scheduled content,
+/// rebuilds its search index and cleans up after itself on its own. A `0`
+/// default would leave a fresh install exactly as silent as it was before the
+/// scheduler existed. Sites that already run an external caller are unaffected
+/// either way: `/cron/{key}` keeps answering, and the lock in
+/// [`CronService::run`] makes a scheduled run and an external poke that land in
+/// the same window skip one another rather than double-run.
+pub const DEFAULT_CRON_INTERVAL_SECS: u64 = 300;
+
+/// The longest the scheduler loop sleeps before rereading its setting, so a
+/// change (an interval shortened from an hour to a minute, or the scheduler
+/// turned back on) applies within a minute without a restart.
+const SCHEDULER_MAX_POLL_SECS: u64 = 60;
+
+/// Where the built-in scheduler's interval came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CronIntervalSource {
+    /// No setting saved: [`DEFAULT_CRON_INTERVAL_SECS`].
+    Default,
+    /// The `cron_interval_secs` `site_config` row.
+    SiteConfig,
+    /// The `CRON_INTERVAL_SECS` environment variable, which wins outright.
+    Environment,
+}
+
+/// Built-in scheduler configuration (B178).
+///
+/// `interval_secs == 0` turns the built-in scheduler off: cron then runs on
+/// nothing but a request to `/cron/{key}` or the admin "Run now" control,
+/// exactly as before the scheduler existed. Any other value is how often
+/// [`CronService::run_scheduler`] calls `run` on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+pub struct CronSchedulerConfig {
+    /// Seconds between scheduled runs; `0` is off.
+    pub interval_secs: u64,
+    /// Where `interval_secs` came from.
+    pub source: CronIntervalSource,
+}
+
+impl Default for CronSchedulerConfig {
+    fn default() -> Self {
+        Self {
+            interval_secs: DEFAULT_CRON_INTERVAL_SECS,
+            source: CronIntervalSource::Default,
+        }
+    }
+}
+
+impl CronSchedulerConfig {
+    /// Whether the built-in scheduler calls `run` at all.
+    pub fn enabled(&self) -> bool {
+        self.interval_secs > 0
+    }
+
+    /// Read the interval out of a stored `site_config` value: a JSON number,
+    /// or a string holding one. Anything else is `None`, and the caller falls
+    /// back to the default rather than to off.
+    pub fn interval_from_value(value: &serde_json::Value) -> Option<u64> {
+        match value {
+            serde_json::Value::Number(n) => n.as_u64(),
+            serde_json::Value::String(s) => s.trim().parse().ok(),
+            _ => None,
+        }
+    }
+}
+
+/// Whether a scheduled run is due, given when the last run anywhere finished.
+///
+/// `last_finished` is the `cron:last_run` timestamp, written by whichever
+/// caller ran last: this server's scheduler, another server's, `/cron/{key}` or
+/// the admin button. A run that finished less than `interval_secs` ago means
+/// cron has already run in this window, so the tick is skipped. That is what
+/// keeps several kernel instances, each with its own scheduler, from running
+/// cron once per instance per interval: together they run it about once per
+/// interval. Both timestamps are whole seconds, and the run's finish is
+/// floored, so a run that finished exactly one interval ago counts as due.
+pub(crate) fn scheduled_run_due(now: i64, last_finished: Option<i64>, interval_secs: u64) -> bool {
+    match last_finished {
+        None => true,
+        Some(finished) => now.saturating_sub(finished) >= interval_secs as i64,
+    }
+}
+
+/// The setting the scheduler loop acts on after a read.
+///
+/// A successful read wins. A failed one keeps the setting last read, so a
+/// database error cannot turn on a scheduler an administrator turned off,
+/// nor change its interval; only a failure before anything was ever read
+/// falls back to the default.
+pub(crate) fn next_scheduler_config(
+    known: Option<CronSchedulerConfig>,
+    read: Result<CronSchedulerConfig>,
+) -> CronSchedulerConfig {
+    match (read, known) {
+        (Ok(cfg), _) => cfg,
+        (Err(_), Some(cfg)) => cfg,
+        (Err(_), None) => CronSchedulerConfig::default(),
     }
 }
 
@@ -804,6 +918,11 @@ pub struct CronService {
     /// world-readable file, so "no access model available" has to mean "publish
     /// nothing".
     items: Option<Arc<ItemService>>,
+    /// The gather service the background dispatch services carry for the
+    /// `query` host interface. `None` only in a harness that builds a
+    /// `CronService` on its own; a `query` call from `tap_cron` or
+    /// `tap_queue_worker` then gets `ERR_NO_SERVICES`.
+    gather: Option<Arc<GatherService>>,
     /// The directory the generated Pagefind index is written to.
     ///
     /// Defaults to `./static/pagefind` so a harness without a `Config` still has
@@ -835,6 +954,14 @@ pub struct CronService {
     /// Search, whose analytics tables cron prunes once a day. `None` in a
     /// harness that builds a `CronService` on its own.
     search: Option<Arc<crate::search::SearchService>>,
+    /// Process-level override of the built-in scheduler's interval
+    /// (`CRON_INTERVAL_SECS`), set by `apply_runtime_config`. `None`
+    /// in a harness that never calls it, where `site_config` alone decides.
+    scheduler_interval_override: Option<u64>,
+    /// Runs this process's built-in scheduler has completed. Other callers'
+    /// runs are not counted, which is what lets a test tell the scheduler's
+    /// runs apart from cron that other processes run on the same site.
+    scheduled_runs_completed: AtomicU64,
 }
 
 impl CronService {
@@ -853,6 +980,7 @@ impl CronService {
             vector_store: None,
             http: build_http_client(),
             items: None,
+            gather: None,
             pagefind_enabled: false,
             pagefind_output_dir: PathBuf::from("./static/pagefind"),
             rate_limiter: None,
@@ -862,6 +990,8 @@ impl CronService {
             job_ceiling: None,
             task_timeout: Duration::from_secs(CRON_TASK_TIMEOUT_SECS),
             search: None,
+            scheduler_interval_override: None,
+            scheduled_runs_completed: AtomicU64::new(0),
         }
     }
 
@@ -880,6 +1010,7 @@ impl CronService {
             vector_store: None,
             http: build_http_client(),
             items: None,
+            gather: None,
             pagefind_enabled: false,
             pagefind_output_dir: PathBuf::from("./static/pagefind"),
             rate_limiter: None,
@@ -889,6 +1020,8 @@ impl CronService {
             job_ceiling: None,
             task_timeout: Duration::from_secs(CRON_TASK_TIMEOUT_SECS),
             search: None,
+            scheduler_interval_override: None,
+            scheduled_runs_completed: AtomicU64::new(0),
         }
     }
 
@@ -1019,6 +1152,15 @@ impl CronService {
         self.items = Some(items);
     }
 
+    /// Set the gather service `tap_cron` and `tap_queue_worker` reach the
+    /// `query` host interface with.
+    ///
+    /// Wired from `AppState`, which owns the one `GatherService` request
+    /// dispatch already binds, so a background read runs the same seam.
+    pub fn set_gather_service(&mut self, gather: Arc<GatherService>) {
+        self.gather = Some(gather);
+    }
+
     /// Wire in search, so cron prunes its analytics past the retention window.
     pub fn set_search_service(&mut self, search: Arc<crate::search::SearchService>) {
         self.search = Some(search);
@@ -1056,6 +1198,7 @@ impl CronService {
                 }
             }));
         self.pagefind_output_dir = runtime.pagefind_output_dir.clone();
+        self.scheduler_interval_override = runtime.cron_interval_override;
     }
 
     /// Set optional plugin services for cron tasks.
@@ -1082,6 +1225,23 @@ impl CronService {
     /// Acquires a distributed lock before running to ensure only one
     /// instance executes cron at a time.
     pub async fn run(&self) -> CronResult {
+        self.run_with(None).await
+    }
+
+    /// Run all cron tasks unless a run finished less than `interval_secs` ago
+    /// (B178): the built-in scheduler's entry point.
+    ///
+    /// The scheduler decides a run is due before it calls this, but two
+    /// servers can both read the same old `cron:last_run`, both decide, and
+    /// then take the lock one after the other, the second one running cron
+    /// again right after the first. So the check is repeated here, after the
+    /// lock is held, where no other run can finish in between: a run that is
+    /// no longer due gives the lock back and is reported as skipped.
+    pub async fn run_if_due(&self, interval_secs: u64) -> CronResult {
+        self.run_with(Some(interval_secs)).await
+    }
+
+    async fn run_with(&self, due_after_secs: Option<u64>) -> CronResult {
         let start = std::time::Instant::now();
 
         // Try to acquire lock
@@ -1096,6 +1256,17 @@ impl CronService {
                 return CronResult::Failed(e.to_string());
             }
         };
+
+        if let Some(interval_secs) = due_after_secs {
+            let last_finished = self.last_run().await.ok().flatten().map(|r| r.timestamp);
+            if !scheduled_run_due(chrono::Utc::now().timestamp(), last_finished, interval_secs) {
+                debug!("cron ran less than an interval ago; giving the lock back");
+                if let Err(e) = self.release_lock(&lock_value).await {
+                    warn!(error = %e, "failed to release cron lock");
+                }
+                return CronResult::Skipped;
+            }
+        }
 
         info!("acquired cron lock, running tasks");
 
@@ -1410,8 +1581,8 @@ impl CronService {
         // After tap_cron runs, plugins may have pushed jobs via queue_push /
         // enqueue. When the opt-in resident queue-runner is enabled (D-46), it
         // owns draining and the in-request cron drain steps aside to avoid
-        // double-draining; otherwise the external-cron trigger drives the drain
-        // (the default cadence contract, unchanged).
+        // double-draining; otherwise this cron run, whoever triggered it, drives
+        // the drain (the default cadence contract).
         //
         // The kernel-internal embed queue (P11f) is drained on the same cadence
         // and follows the same resident-runner hand-off, but is independent of
@@ -1583,12 +1754,15 @@ impl CronService {
     ///
     /// Returns the lock value if acquired, None if already held.
     async fn acquire_lock(&self) -> Result<Option<String>> {
-        let lock_value = format!(
-            "{}:{}{LOCK_SINCE_MARKER}{}",
-            hostname(),
-            std::process::id(),
-            chrono::Utc::now().timestamp()
-        );
+        // Unique per run, not per process. The value used to be `host:pid`, so
+        // two runs in one process (the built-in scheduler and `/cron/{key}`,
+        // say) wrote the same value, and the owner check in `release_lock`
+        // could not tell them apart: a run that outlived its lock (renewal
+        // stops after `MAX_LOCK_RENEWAL_SECS`) would, on finishing, delete the
+        // lock a newer run in the same process had since taken, letting a
+        // third caller start alongside it. The host and pid stay as a prefix
+        // for whoever reads the key by hand.
+        let lock_value = new_lock_value();
 
         let mut conn = self
             .redis
@@ -2261,7 +2435,8 @@ impl CronService {
     ///
     /// One builder for `tap_cron` and `tap_queue_worker` both, so the per-plugin
     /// `mail` bucket and the email service cannot be attached on one background
-    /// path and missing from the other; the item service likewise.
+    /// path and missing from the other; the item service and the gather service
+    /// likewise.
     fn background_services(&self, dispatcher: &Arc<TapDispatcher>) -> crate::tap::RequestServices {
         let mut services = crate::tap::RequestServices::for_background(
             self.pool.clone(),
@@ -2283,6 +2458,14 @@ impl CronService {
         // `ERR_ITEM_SERVICE_UNAVAILABLE`.
         if let Some(items) = &self.items {
             services.set_item_service(items);
+        }
+        // The `query` host function runs with this. Unbound, every `query`
+        // from `tap_cron` and `tap_queue_worker` answered `ERR_NO_SERVICES`
+        // after the background access check had already let it through. The
+        // access rules are untouched: `query` still decides the background
+        // viewer and `item_background` before it reads this.
+        if let Some(gather) = &self.gather {
+            services.set_gather_service(gather);
         }
         services
     }
@@ -2362,6 +2545,191 @@ impl CronService {
         }
     }
 
+    /// Load the built-in scheduler config (B178), for display.
+    ///
+    /// As [`read_scheduler_config`](Self::read_scheduler_config), with a
+    /// failed database read shown as the default. The scheduler loop itself
+    /// does not use this: it keeps the last setting it read instead.
+    pub async fn scheduler_config(&self) -> CronSchedulerConfig {
+        match self.read_scheduler_config().await {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                warn!(error = %e, "failed to read cron_interval_secs; showing the default");
+                CronSchedulerConfig::default()
+            }
+        }
+    }
+
+    /// Read the built-in scheduler config (B178).
+    ///
+    /// `CRON_INTERVAL_SECS`, when set, wins outright: the process-level switch
+    /// a deployment needs without a database row being right. Otherwise the
+    /// `cron_interval_secs` `site_config` row, read fresh on every call so a
+    /// change (including turning the scheduler off) applies without a
+    /// restart. An absent or unparseable row is the default interval rather
+    /// than off: unlike [`queue_runner_config`](Self::queue_runner_config),
+    /// whose safe default is off, this scheduler's safe default is on, so a
+    /// broken row cannot silently turn a site back into one where cron never
+    /// runs. A failed read is an error, not a default, so the loop can keep
+    /// the setting it last read: a database blip must not turn on a scheduler
+    /// an administrator turned off.
+    pub async fn read_scheduler_config(&self) -> Result<CronSchedulerConfig> {
+        if let Some(interval_secs) = self.scheduler_interval_override {
+            return Ok(CronSchedulerConfig {
+                interval_secs,
+                source: CronIntervalSource::Environment,
+            });
+        }
+        let value = crate::models::SiteConfig::get(&self.pool, CRON_INTERVAL_CONFIG_KEY)
+            .await
+            .context("failed to read cron_interval_secs")?;
+        Ok(match value {
+            Some(value) => match CronSchedulerConfig::interval_from_value(&value) {
+                Some(interval_secs) => CronSchedulerConfig {
+                    interval_secs,
+                    source: CronIntervalSource::SiteConfig,
+                },
+                None => {
+                    warn!(
+                        value = %value,
+                        "cron_interval_secs is not a whole number of seconds; using the default"
+                    );
+                    CronSchedulerConfig::default()
+                }
+            },
+            None => CronSchedulerConfig::default(),
+        })
+    }
+
+    /// Run the built-in scheduler loop until `shutdown` fires (B178).
+    ///
+    /// Calls [`run_if_due`](Self::run_if_due) on its own cadence so a site
+    /// runs cron with no external caller configured. That is the same `run`,
+    /// under the same Redis lock, as `/cron/{key}` and the admin "Run now"
+    /// control: whichever arrives first runs cron, and any caller that arrives
+    /// while it runs gets [`CronResult::Skipped`], never a second run.
+    ///
+    /// The first run comes one interval after start, not at boot. After that a
+    /// run is attempted once `interval_secs` have passed since this loop's
+    /// last attempt finished *and* since the last run anywhere finished
+    /// (`scheduled_run_due`), so an external poke or another server's
+    /// scheduler that ran recently pushes this one's next run back instead of
+    /// adding to it. `run_if_due` checks the second condition again once it
+    /// holds the lock, so two servers that decide at the same moment still
+    /// run cron once.
+    ///
+    /// The setting is reread every time the loop wakes, which is at most a
+    /// minute apart, so a change (including turning the scheduler off, or back
+    /// on) applies without a restart. A read that fails keeps the setting last
+    /// read. Shutdown is honoured while a read is waiting as well as between
+    /// runs, and no run starts once it has fired. A failed run is logged and
+    /// the loop continues: one bad cycle must not stop the next.
+    pub async fn run_scheduler(self: Arc<Self>, shutdown: tokio_util::sync::CancellationToken) {
+        info!("built-in cron scheduler started");
+        let mut last_attempt = tokio::time::Instant::now();
+        let mut known: Option<CronSchedulerConfig> = None;
+        loop {
+            let tick = async {
+                let read = self.read_scheduler_config().await;
+                if let Err(e) = &read {
+                    warn!(error = %e, "keeping the last cron scheduler setting read");
+                }
+                let cfg = next_scheduler_config(known, read);
+                if !cfg.enabled() {
+                    return (cfg, None);
+                }
+                let interval = Duration::from_secs(cfg.interval_secs);
+                let since_attempt = last_attempt.elapsed();
+                if since_attempt < interval {
+                    let wait = (interval - since_attempt).as_secs_f64().ceil() as u64;
+                    return (cfg, Some(Err(wait)));
+                }
+                let now = chrono::Utc::now().timestamp();
+                let last_finished = match self.last_run().await {
+                    Ok(run) => run.map(|r| r.timestamp),
+                    Err(e) => {
+                        debug!(error = %e, "could not read the last cron run; treating the run as due");
+                        None
+                    }
+                };
+                if scheduled_run_due(now, last_finished, cfg.interval_secs) {
+                    (cfg, Some(Ok(())))
+                } else {
+                    // Cron ran elsewhere in this window: wait until that run
+                    // is one interval old, then check again.
+                    let age = now.saturating_sub(last_finished.unwrap_or(now)).max(0) as u64;
+                    debug!(
+                        age_secs = age,
+                        interval_secs = cfg.interval_secs,
+                        "scheduled cron run not due: cron ran recently elsewhere"
+                    );
+                    (cfg, Some(Err(cfg.interval_secs.saturating_sub(age))))
+                }
+            };
+            let (cfg, decision) = tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => break,
+                decided = tick => decided,
+            };
+            known = Some(cfg);
+            let wait_secs = match decision {
+                // Off: poll for it being turned back on.
+                None => SCHEDULER_MAX_POLL_SECS,
+                Some(Err(wait_secs)) => wait_secs,
+                Some(Ok(())) => {
+                    if shutdown.is_cancelled() {
+                        break;
+                    }
+                    self.run_scheduled_once(cfg.interval_secs).await;
+                    last_attempt = tokio::time::Instant::now();
+                    cfg.interval_secs
+                }
+            };
+            let wait = Duration::from_secs(wait_secs.clamp(1, SCHEDULER_MAX_POLL_SECS));
+            tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => break,
+                _ = tokio::time::sleep(wait) => {}
+            }
+        }
+        info!("built-in cron scheduler stopped");
+    }
+
+    /// How many runs this process's built-in scheduler has completed.
+    pub fn scheduled_runs_completed(&self) -> u64 {
+        self.scheduled_runs_completed
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// One scheduled call to [`run_if_due`](Self::run_if_due), logged.
+    ///
+    /// The run is spawned and awaited, not awaited inline, for the same reason
+    /// `/cron/{key}` spawns it: once started it finishes and releases its lock
+    /// even if this loop's task is dropped part way (a runtime shutting down).
+    async fn run_scheduled_once(self: &Arc<Self>, interval_secs: u64) {
+        let cron = Arc::clone(self);
+        let result = match tokio::spawn(async move { cron.run_if_due(interval_secs).await }).await {
+            Ok(result) => result,
+            Err(e) => CronResult::Failed(format!("cron task did not finish: {e}")),
+        };
+        match result {
+            CronResult::Completed {
+                tasks_run,
+                duration_ms,
+            } => {
+                info!(duration_ms, tasks = ?tasks_run, "scheduled cron run completed");
+                self.scheduled_runs_completed
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            CronResult::Skipped => {
+                info!("scheduled cron run skipped: another caller ran or is running cron");
+            }
+            CronResult::Failed(e) => {
+                warn!(error = %e, "scheduled cron run failed; the scheduler carries on");
+            }
+        }
+    }
+
     /// Claim a once-a-day task across every kernel process: true for the first
     /// caller in a 24 hour window, false for the rest.
     async fn claim_daily(&self, key: &str) -> Result<bool> {
@@ -2391,7 +2759,7 @@ impl CronService {
             .context("failed to get Redis connection")?;
 
         let data: Option<String> = conn
-            .get("cron:last_run")
+            .get(CRON_LAST_RUN_KEY)
             .await
             .context("failed to get last run")?;
 
@@ -2431,7 +2799,7 @@ impl CronService {
             .context("failed to get Redis connection")?;
 
         let json = serde_json::to_string(&run).context("failed to serialize run")?;
-        conn.set_ex::<_, _, ()>("cron:last_run", &json, 86400)
+        conn.set_ex::<_, _, ()>(CRON_LAST_RUN_KEY, &json, 86400)
             .await
             .context("failed to record run")?;
 
@@ -2688,6 +3056,20 @@ fn build_http_client() -> reqwest::Client {
         .expect("SSRF-hardened cron/queue HTTP client must build")
 }
 
+/// A fresh owner value for the cron lock: `host:pid:uuid:t<unix seconds>`,
+/// unique per run, and recording when the run took the lock (see
+/// [`LOCK_SINCE_MARKER`]). The uuid is plain hex, so the marker stays
+/// unambiguous.
+fn new_lock_value() -> String {
+    format!(
+        "{}:{}:{}{LOCK_SINCE_MARKER}{}",
+        hostname(),
+        std::process::id(),
+        uuid::Uuid::new_v4().simple(),
+        chrono::Utc::now().timestamp()
+    )
+}
+
 /// Get hostname for lock identification.
 fn hostname() -> String {
     hostname::get()
@@ -2724,6 +3106,72 @@ impl std::fmt::Debug for CronService {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// A gather service on a database that is never reached: the binding is
+    /// what is under test, not a read.
+    fn unreached_gather() -> Arc<GatherService> {
+        use crate::gather::{
+            CategoryService, GatherAccessConfig, GatherConfig, GatherExtensionRegistry,
+        };
+        let pool = PgPool::connect_lazy("postgres://nobody@127.0.0.1:1/none").expect("lazy pool");
+        let metrics = Arc::new(crate::metrics::Metrics::new());
+        GatherService::new(
+            pool.clone(),
+            CategoryService::new(pool, Duration::from_secs(60), metrics.clone()),
+            Arc::new(GatherExtensionRegistry::new()),
+            GatherConfig {
+                ttl: Duration::from_secs(60),
+                max_page_size: 100,
+                access: GatherAccessConfig::default(),
+            },
+            None,
+            None,
+            metrics,
+        )
+    }
+
+    /// The services `tap_cron` and `tap_queue_worker` dispatch with carry the
+    /// gather service `CronService` was given, and the background state built
+    /// from them carries it too. Before B249 the builder bound the item
+    /// service only, so `query` from either path answered `ERR_NO_SERVICES`.
+    #[tokio::test]
+    async fn background_services_carry_the_gather_service() {
+        use crate::plugin::{PluginConfig, PluginRuntime};
+        use crate::tap::TapRegistry;
+
+        let pool = PgPool::connect_lazy("postgres://nobody@127.0.0.1:1/none").expect("lazy pool");
+        let redis = RedisClient::open("redis://127.0.0.1:1/").expect("redis client");
+        let runtime = PluginRuntime::new(&PluginConfig::default()).expect("plugin runtime");
+        let registry = Arc::new(TapRegistry::from_plugins(&runtime));
+        let dispatcher = Arc::new(TapDispatcher::new(Arc::new(runtime), registry));
+
+        let mut cron = CronService::new(redis, pool);
+        assert!(
+            cron.background_services(&dispatcher)
+                .gather_service()
+                .is_none(),
+            "a harness that never wired gather carries none"
+        );
+
+        let gather = unreached_gather();
+        cron.set_gather_service(gather.clone());
+        let bound = cron
+            .background_services(&dispatcher)
+            .gather_service()
+            .expect("the background services carry the gather service");
+        assert!(
+            Arc::ptr_eq(&bound, &gather),
+            "the one gather service, not a copy"
+        );
+
+        let state = cron.background_state(&dispatcher);
+        assert!(state.user.is_background(), "still the background principal");
+        let carried = state
+            .services()
+            .and_then(|services| services.gather_service())
+            .expect("the background state carries the gather service");
+        assert!(Arc::ptr_eq(&carried, &gather));
+    }
 
     #[test]
     fn test_hostname() {
@@ -2843,6 +3291,16 @@ mod tests {
         assert_eq!(lock_held_since("web-1:42:t1700000000"), Some(1_700_000_000));
         assert_eq!(lock_held_since("web-1:42"), None);
         assert_eq!(lock_held_since("web-1:42:tsoon"), None);
+        // The value a run writes now, and the uuid-only form the release
+        // before it wrote.
+        let now = chrono::Utc::now().timestamp();
+        let since = lock_held_since(&new_lock_value()).expect("a fresh value has an age");
+        assert!((now - 1..=now + 1).contains(&since), "{since} vs {now}");
+        assert_eq!(
+            lock_held_since("web-1:42:0123456789abcdef0123456789abcdef"),
+            None
+        );
+        assert_ne!(new_lock_value(), new_lock_value());
     }
 
     #[test]
@@ -2872,6 +3330,178 @@ mod tests {
         );
         // No expiry is never an ordinary overlap, whatever the age.
         assert_eq!(classify_held_lock(&since(1), -1, now), HeldLock::NoExpiry);
+    }
+
+    // ── B178: the built-in scheduler ─────────────────────────────────────────
+
+    #[test]
+    fn cron_scheduler_config_defaults_to_on() {
+        // Opposite of the queue runner's safe default: a fresh install must run
+        // cron with no external caller, so the reading of a missing setting is
+        // the default interval, not off.
+        let cfg = CronSchedulerConfig::default();
+        assert!(cfg.enabled());
+        assert_eq!(cfg.interval_secs, DEFAULT_CRON_INTERVAL_SECS);
+        assert_eq!(cfg.source, CronIntervalSource::Default);
+    }
+
+    #[test]
+    fn cron_scheduler_config_zero_means_off() {
+        let cfg = CronSchedulerConfig {
+            interval_secs: 0,
+            source: CronIntervalSource::SiteConfig,
+        };
+        assert!(!cfg.enabled());
+    }
+
+    #[test]
+    fn cron_interval_reads_a_number_or_a_numeric_string() {
+        use serde_json::json;
+        assert_eq!(
+            CronSchedulerConfig::interval_from_value(&json!(60)),
+            Some(60)
+        );
+        assert_eq!(CronSchedulerConfig::interval_from_value(&json!(0)), Some(0));
+        assert_eq!(
+            CronSchedulerConfig::interval_from_value(&json!(" 90 ")),
+            Some(90)
+        );
+        assert_eq!(CronSchedulerConfig::interval_from_value(&json!(-5)), None);
+        assert_eq!(CronSchedulerConfig::interval_from_value(&json!(1.5)), None);
+        assert_eq!(
+            CronSchedulerConfig::interval_from_value(&json!("soon")),
+            None
+        );
+        assert_eq!(CronSchedulerConfig::interval_from_value(&json!({})), None);
+    }
+
+    #[test]
+    fn a_scheduled_run_waits_out_a_recent_run_from_any_caller() {
+        // Nothing has run: due.
+        assert!(scheduled_run_due(1_000, None, 300));
+        // Another server's scheduler or an external poke finished 100 s ago:
+        // not due, so N servers do not run cron N times per interval.
+        assert!(!scheduled_run_due(1_000, Some(900), 300));
+        // Exactly one interval ago: due.
+        assert!(scheduled_run_due(1_000, Some(700), 300));
+        // A record from a clock ahead of ours: not due until it is an interval old.
+        assert!(!scheduled_run_due(1_000, Some(1_010), 300));
+    }
+
+    #[test]
+    fn a_failed_settings_read_keeps_the_last_setting() {
+        let off = CronSchedulerConfig {
+            interval_secs: 0,
+            source: CronIntervalSource::SiteConfig,
+        };
+        let hourly = CronSchedulerConfig {
+            interval_secs: 3600,
+            source: CronIntervalSource::SiteConfig,
+        };
+        let failed = || Err(anyhow::anyhow!("connection refused"));
+        // Turned off, then the database blips: still off, not the default.
+        let cfg = next_scheduler_config(Some(off), failed());
+        assert!(!cfg.enabled(), "{cfg:?}");
+        assert_eq!(next_scheduler_config(Some(hourly), failed()), hourly);
+        // A successful read always wins.
+        assert_eq!(next_scheduler_config(Some(off), Ok(hourly)), hourly);
+        // Nothing read yet: the default.
+        assert_eq!(
+            next_scheduler_config(None, failed()),
+            CronSchedulerConfig::default()
+        );
+    }
+
+    /// The scheduler's run rechecks that cron is due once it holds the lock:
+    /// a run that finished in between (another server's, deciding from the
+    /// same old `cron:last_run`) makes it give the lock back and skip.
+    #[tokio::test]
+    async fn a_scheduled_run_skips_when_cron_finished_after_it_decided() {
+        let Ok(client) = redis::Client::open(trovato_test_utils::env::redis_url()) else {
+            return;
+        };
+        let Ok(mut conn) = client.bounded_connection().await else {
+            return; // No Redis in this environment.
+        };
+        // A pool that is never used: the skip happens before any task runs.
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://nobody@127.0.0.1:1/none")
+            .expect("lazy pool");
+        let cron = CronService::new(client, pool);
+        // Another run finished just now. Writing the site-wide record is safe
+        // here: it is what every completed run writes.
+        let now = chrono::Utc::now().timestamp();
+        let record = serde_json::json!({
+            "timestamp": now, "hostname": "elsewhere", "result": "Completed",
+            "status": "completed", "tasks": [], "duration_ms": 1
+        })
+        .to_string();
+        let _: () = conn
+            .set_ex(super::CRON_LAST_RUN_KEY, &record, 86_400)
+            .await
+            .expect("record a fresh run");
+
+        match cron.run_if_due(3600).await {
+            // Another process held the lock: also not a second run.
+            CronResult::Skipped => {}
+            other => panic!("a run that is no longer due executed: {other:?}"),
+        }
+        let held: Option<String> = conn.get(CRON_LOCK_KEY).await.unwrap_or(None);
+        assert!(
+            held.is_none_or(|v| !v.starts_with(&format!("{}:{}:", hostname(), std::process::id()))),
+            "the skipped run kept the cron lock"
+        );
+    }
+
+    #[test]
+    fn every_cron_run_owns_a_distinct_lock_value() {
+        // `host:pid` alone made two runs in one process indistinguishable to
+        // the owner checks in `release_lock` and the heartbeat.
+        let a = new_lock_value();
+        let b = new_lock_value();
+        assert_ne!(a, b);
+        assert!(a.starts_with(&format!("{}:{}:", hostname(), std::process::id())));
+    }
+
+    /// A run that outlived its lock must not release the lock a newer run in
+    /// the same process has since taken. Red while the value was `host:pid`:
+    /// both runs wrote the same value, so the stale run's owner-checked
+    /// release matched and deleted the newer run's lock.
+    #[tokio::test]
+    async fn a_stale_run_cannot_release_a_newer_runs_lock() {
+        let Ok(client) = redis::Client::open(trovato_test_utils::env::redis_url()) else {
+            return;
+        };
+        let Ok(mut conn) = client.bounded_connection().await else {
+            return; // No Redis in this environment; uniqueness is covered above.
+        };
+        let key = format!("cron:lock:test:{}", uuid::Uuid::new_v4());
+        let stale = new_lock_value();
+        let newer = new_lock_value();
+        // The stale run's lock expired and the newer run took it.
+        let _: () = redis::cmd("SET")
+            .arg(&key)
+            .arg(&newer)
+            .arg("EX")
+            .arg(60)
+            .query_async(&mut conn)
+            .await
+            .expect("seed the newer run's lock");
+
+        redis::Script::new(RELEASE_LOCK_SCRIPT)
+            .key(&key)
+            .arg(&stale)
+            .invoke_async::<()>(&mut conn)
+            .await
+            .expect("run the release script");
+
+        let held: Option<String> = conn.get(&key).await.expect("read the lock");
+        let _: () = conn.del(&key).await.unwrap_or(());
+        assert_eq!(
+            held.as_deref(),
+            Some(newer.as_str()),
+            "the stale run's release deleted the newer run's lock"
+        );
     }
 
     #[test]
