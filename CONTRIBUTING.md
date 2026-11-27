@@ -55,6 +55,31 @@ Or the steps by hand:
 2. `cargo clippy --workspace --all-targets -- -D warnings`
 3. `cargo test --all --lib` (unit tests; no database or Redis needed)
 
+### How to test fast
+
+Once per checkout, build the WASM fixture plugins integration tests load:
+
+```bash
+./scripts/build-test-plugins.sh
+```
+
+That, and PostgreSQL + Redis reachable at `$DATABASE_URL` / `$REDIS_URL` (see
+"Integration tests need PostgreSQL and Redis" below), is the only setup
+either command needs. Then, while iterating on a change:
+
+```bash
+./scripts/test-changed.sh
+```
+
+Runs only the tests your change touches — the unit tests of every crate with
+a changed file, plus whatever integration targets your change selects (see
+the script's header for the exact rules, or pass target names directly:
+`./scripts/test-changed.sh front_page_test`). Before opening the pull
+request, still run the full suite as "The local gate is stronger than CI"
+below describes; see `docs/performance/test-suite.md` for what was measured
+here and why a single parallel, multi-lane runner is not (yet) part of this
+repository.
+
 ### The local gate is stronger than CI
 
 CI splits the integration tests across three shards with three separate

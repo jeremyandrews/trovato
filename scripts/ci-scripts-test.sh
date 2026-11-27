@@ -152,7 +152,6 @@ else
   fail "shard: it is refused by name, before anything runs"; sed 's/^/     /' "$WORK/out"
 fi
 
-
 # ── ci-check-plugin-build-parity.sh ──────────────────────────────────────────
 
 parity() { "$ROOT/scripts/ci-check-plugin-build-parity.sh" "$1"; }
@@ -224,6 +223,131 @@ cat >> "$WORK/from-file.yml" <<'YML'
           for p in $PLUGINS; do cp "target/wasm32-wasip1/release/$p.wasm" "plugins/$p/"; done
 YML
 expect "parity: a build whose list is read from a file passes" 0 parity "$WORK/from-file.yml"
+
+# ── scripts/build-test-plugins.sh stays in lock-step with CI ────────────────
+#
+# CI's "Build WASM plugins" step is `./scripts/ci-build-plugins.sh`, which
+# holds the one list of plugins (B235, after Test and Coverage each kept a
+# hand-written copy and drifted apart). build-test-plugins.sh is the
+# agent-facing name used in CONTRIBUTING.md and AGENTS.md; it must delegate to
+# ci-build-plugins.sh rather than keep a second list that could drift the same
+# way B235 fixed.
+if grep -q 'ci-build-plugins\.sh"$' "$ROOT/scripts/build-test-plugins.sh"; then
+  pass "build-test-plugins: delegates to ci-build-plugins.sh instead of keeping its own list"
+else
+  fail "build-test-plugins: does not delegate to ci-build-plugins.sh"
+fi
+
+# ── scripts/test-changed.sh selection logic ─────────────────────────────────
+#
+# A made-up two-package workspace, entirely under $WORK: no real build, no
+# real git history. TEST_CHANGED_ROOT_OVERRIDE points the script at it instead
+# of this checkout; TEST_CHANGED_OVERRIDE supplies the "changed files" list
+# instead of git. The fake cargo answers `metadata` from a canned JSON and
+# logs a `test` invocation's arguments instead of building anything.
+TC_WS="$WORK/tc-ws"
+mkdir -p "$TC_WS/crates/kernel/tests" "$TC_WS/crates/search_index/tests" "$TC_WS/migrations"
+echo '// fixture' > "$TC_WS/crates/kernel/tests/redirect_query_test.rs"
+echo '// fixture' > "$TC_WS/crates/kernel/tests/front_page_test.rs"
+echo 'use services::redirect;' > "$TC_WS/crates/kernel/tests/feed_test.rs"
+echo '// fixture' > "$TC_WS/crates/search_index/tests/search_index_test.rs"
+
+cat > "$WORK/tc-metadata.json" <<EOF
+{"packages": [
+  {"name": "trovato-kernel", "manifest_path": "$TC_WS/crates/kernel/Cargo.toml", "targets": [
+    {"name": "redirect_query_test", "kind": ["test"], "src_path": "$TC_WS/crates/kernel/tests/redirect_query_test.rs"},
+    {"name": "front_page_test", "kind": ["test"], "src_path": "$TC_WS/crates/kernel/tests/front_page_test.rs"},
+    {"name": "feed_test", "kind": ["test"], "src_path": "$TC_WS/crates/kernel/tests/feed_test.rs"}
+  ]},
+  {"name": "trovato-search-index", "manifest_path": "$TC_WS/crates/search_index/Cargo.toml", "targets": [
+    {"name": "search_index_test", "kind": ["test"], "src_path": "$TC_WS/crates/search_index/tests/search_index_test.rs"}
+  ]}
+]}
+EOF
+
+mkdir -p "$WORK/tc-bin"
+cat > "$WORK/tc-bin/cargo" <<EOF
+#!/bin/sh
+if [ "\$1" = metadata ]; then
+  cat "$WORK/tc-metadata.json"
+elif [ "\$1" = test ]; then
+  shift
+  echo "cargo test \$*" >> "$WORK/tc-cargo-test.log"
+else
+  echo "fake cargo: \$*" >&2
+  exit 99
+fi
+EOF
+chmod +x "$WORK/tc-bin/cargo"
+
+changed() { # changed <changed-files> <args...>: run the script, capture stdout in $WORK/out
+  local files="$1"; shift
+  : > "$WORK/tc-cargo-test.log"
+  PATH="$WORK/tc-bin:$PATH" TEST_CHANGED_ROOT_OVERRIDE="$TC_WS" TEST_CHANGED_OVERRIDE="$files" \
+    "$ROOT/scripts/test-changed.sh" "$@" > "$WORK/out" 2>&1
+}
+
+changed "crates/kernel/src/services/redirect.rs"
+if grep -q "integration target redirect_query_test" "$WORK/out" \
+  && grep -q "integration target feed_test" "$WORK/out" \
+  && ! grep -q "integration target search_index_test" "$WORK/out" \
+  && grep -q "unit tests (--lib --bins): trovato-kernel" "$WORK/out"; then
+  pass "test-changed: a src/ change selects its crate's unit tests and matching targets"
+else
+  fail "test-changed: a src/ change selects its crate's unit tests and matching targets"; sed 's/^/     /' "$WORK/out"
+fi
+if grep -q "cargo test --no-fail-fast -p trovato-kernel --lib --bins --test redirect_query_test --test feed_test" "$WORK/tc-cargo-test.log"; then
+  pass "test-changed: it runs the selection in one cargo invocation"
+else
+  fail "test-changed: it runs the selection in one cargo invocation"; sed 's/^/     /' "$WORK/tc-cargo-test.log"
+fi
+
+changed "" front_page_test search_index_test
+if grep -q "integration target front_page_test (trovato-kernel): named on the command line" "$WORK/out" \
+  && grep -q "integration target search_index_test (trovato-search-index): named on the command line" "$WORK/out"; then
+  pass "test-changed: named targets are selected across packages with no change at all"
+else
+  fail "test-changed: named targets are selected across packages with no change at all"; sed 's/^/     /' "$WORK/out"
+fi
+
+changed "crates/kernel/tests/front_page_test.rs"
+if grep -q "integration target front_page_test (trovato-kernel): own file" "$WORK/out"; then
+  pass "test-changed: a target's own file changing selects it"
+else
+  fail "test-changed: a target's own file changing selects it"; sed 's/^/     /' "$WORK/out"
+fi
+
+changed "crates/kernel/tests/common/mod.rs"
+if grep -q "Running everything" "$WORK/out" && grep -q "cargo test --all --no-fail-fast" "$WORK/tc-cargo-test.log"; then
+  pass "test-changed: a shared-fixture change runs everything"
+else
+  fail "test-changed: a shared-fixture change runs everything"; sed 's/^/     /' "$WORK/out"
+fi
+
+changed "migrations/20260101000000_x.sql"
+if grep -q "Running everything" "$WORK/out" && grep -q "is a migration" "$WORK/out"; then
+  pass "test-changed: a migration change runs everything"
+else
+  fail "test-changed: a migration change runs everything"; sed 's/^/     /' "$WORK/out"
+fi
+
+changed "Cargo.lock"
+if grep -q "Running everything" "$WORK/out"; then
+  pass "test-changed: a Cargo.lock change anywhere runs everything"
+else
+  fail "test-changed: a Cargo.lock change anywhere runs everything"; sed 's/^/     /' "$WORK/out"
+fi
+
+changed ""
+if grep -qxF "Nothing in the change set selects a package or a target; nothing to run." "$WORK/out"; then
+  pass "test-changed: no changes and no named targets selects nothing"
+else
+  fail "test-changed: no changes and no named targets selects nothing"; sed 's/^/     /' "$WORK/out"
+fi
+
+expect "test-changed: an unknown named target is refused" 1 \
+  env PATH="$WORK/tc-bin:$PATH" TEST_CHANGED_ROOT_OVERRIDE="$TC_WS" TEST_CHANGED_OVERRIDE="" \
+  "$ROOT/scripts/test-changed.sh" no_such_target_xyz
 
 echo
 if [ "$FAILS" -ne 0 ]; then
