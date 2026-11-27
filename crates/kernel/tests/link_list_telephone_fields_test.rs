@@ -131,16 +131,6 @@ async fn item_page(app: &TestApp, cookies: &str, id: Uuid) -> String {
     body_string(response).await
 }
 
-async fn admin_cookies(app: &TestApp, prefix: &str) -> String {
-    let name = common::username(prefix);
-    app.create_and_login_admin(
-        &name,
-        "correct-horse-battery-staple",
-        &format!("{name}@test.local"),
-    )
-    .await
-}
-
 /// Every write path's check accepts a well formed value of each kind, with
 /// the e164 filled in on write for a Telephone with a country prefix.
 #[test]
@@ -241,7 +231,7 @@ fn the_item_page_renders_each_kind() {
         .expect("create item");
         forget_item(app, item.id);
 
-        let html = item_page(app, item.id).await;
+        let html = item_page(app, "", item.id).await;
         assert!(
             html.contains(r#"<a href="https://example.org/about" target="_blank" rel="noopener noreferrer">About us</a>"#),
             "{html}"
@@ -293,7 +283,7 @@ fn a_link_without_new_tab_has_no_target_and_an_item_reference_shows_its_alias() 
         .expect("create item");
         forget_item(app, item.id);
 
-        let html = item_page(app, item.id).await;
+        let html = item_page(app, "", item.id).await;
         assert!(
             html.contains(&format!(r#"<a href="{alias}">See target</a>"#)),
             "{html}"
@@ -336,7 +326,7 @@ fn a_stored_javascript_link_never_becomes_an_href() {
             .await
             .ok();
 
-        let html = item_page(app, item.id).await;
+        let html = item_page(app, "", item.id).await;
         assert!(
             !html.contains("href=\"javascript:"),
             "a javascript: uri must never become an href: {html}"

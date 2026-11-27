@@ -717,3 +717,82 @@ async fn config_export_carries_tag_slug() {
         .await
         .ok();
 }
+
+/// A content type holding a Link, a List (with `allowed_values`) and a
+/// Telephone field survives a config export then import unchanged (B302).
+#[tokio::test]
+async fn config_round_trip_keeps_link_list_telephone_settings_and_allowed_values() {
+    let app = TestApp::new().await;
+
+    let type_name = format!("b302cfg{}", &Uuid::now_v7().simple().to_string()[..8]);
+    let fields = vec![
+        trovato_sdk::types::FieldDefinition::new("field_link", trovato_sdk::types::FieldType::Link)
+            .label("Link"),
+        trovato_sdk::types::FieldDefinition::new("field_choice", trovato_sdk::types::FieldType::List)
+            .label("Choice")
+            .allowed_values(&[("gold", "Gold Medal"), ("silver", "Silver Medal")]),
+        trovato_sdk::types::FieldDefinition::new("field_tel", trovato_sdk::types::FieldType::Telephone)
+            .label("Telephone"),
+    ];
+    let settings = serde_json::json!({ "fields": serde_json::to_value(&fields).unwrap() });
+
+    let item_type = ItemType {
+        type_name: type_name.clone(),
+        label: "B302 Config Round Trip".to_string(),
+        description: Some("link/list/telephone config round trip".to_string()),
+        has_title: true,
+        title_label: Some("Title".to_string()),
+        plugin: "test".to_string(),
+        settings: settings.clone(),
+    };
+    app.config_storage()
+        .save(&ConfigEntity::ItemType(item_type))
+        .await
+        .expect("failed to save item type");
+
+    let dir = std::env::temp_dir().join(format!(
+        "trovato_b302_config_round_trip_{}",
+        Uuid::now_v7().simple()
+    ));
+    let export_result = trovato_kernel::config_storage::yaml::export_config(
+        app.config_storage().as_ref(),
+        &app.db,
+        &dir,
+        false,
+    )
+    .await;
+    if let Err(e) = &export_result {
+        std::fs::remove_dir_all(&dir).ok();
+        panic!("export failed: {e:#}");
+    }
+
+    // Delete the stored type, so import is the only thing that can put the
+    // settings back.
+    app.config_storage()
+        .delete(entity_types::ITEM_TYPE, &type_name)
+        .await
+        .expect("failed to delete item type before reimport");
+
+    let import_result =
+        trovato_kernel::config_storage::yaml::import_config(app.config_storage().as_ref(), &app.db, &dir, false)
+            .await;
+    std::fs::remove_dir_all(&dir).ok();
+    import_result.expect("failed to reimport the exported content type");
+
+    let loaded = app
+        .config_storage()
+        .load(entity_types::ITEM_TYPE, &type_name)
+        .await
+        .expect("failed to load item type")
+        .expect("item type should exist after reimport");
+    let loaded_type = loaded.as_item_type().expect("expected ItemType");
+    assert_eq!(
+        loaded_type.settings, settings,
+        "the field settings, including allowed_values, round trip byte for byte"
+    );
+
+    app.config_storage()
+        .delete(entity_types::ITEM_TYPE, &type_name)
+        .await
+        .ok();
+}

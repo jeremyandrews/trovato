@@ -242,6 +242,18 @@ impl GatherExtensionRegistry {
             Box::new(super::handlers::JsonbArrayContainsFilterHandler),
         );
 
+        // A query definition reaches `jsonb_array_contains` with
+        // `FilterOperator::Custom("jsonb_array_contains")` directly: a multi
+        // value List field's containment check (B302) is a kernel built-in,
+        // not a plugin extension, so it needs no plugin to declare it.
+        registry.filter_extensions.insert(
+            "jsonb_array_contains".to_string(),
+            FilterRegistration {
+                handler_name: "jsonb_array_contains".to_string(),
+                config: serde_json::Value::Null,
+            },
+        );
+
         registry
     }
 
