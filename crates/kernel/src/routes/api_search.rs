@@ -19,8 +19,8 @@
 //! [`crate::content::ItemService::filter_page_for_view`] for the calling
 //! viewer, so a URL naming an unpublished item, or a field the viewer may not
 //! see, contributes nothing. What survives is cut to `ai_summary_max_chars`
-//! before it reaches the prompt. A request body over [`MAX_BODY_BYTES`] is
-//! refused before any of this runs.
+//! before it reaches the prompt. A request body over 64 KiB is refused before
+//! any of this runs.
 
 use axum::Json;
 use axum::extract::State;
