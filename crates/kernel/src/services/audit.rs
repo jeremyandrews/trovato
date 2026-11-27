@@ -304,6 +304,19 @@ impl AuditTrail {
         inner.security.record_in(conn, event).await
     }
 
+    /// `event`, with the request's context as [`Self::security_in`] fills it
+    /// in, as the row it is written as: for a change made in one statement
+    /// that appends its event in the same statement. `None` for a trail that
+    /// records nothing.
+    pub(crate) fn event_row(&self, event: SecurityEvent) -> Option<crate::audit::EventRow> {
+        let inner = self.inner.as_ref()?;
+        Some(
+            inner
+                .security
+                .row(&event.with_request_context(&AuditActor::current())),
+        )
+    }
+
     /// [`Self::security_in`] for each of `events`, in order.
     ///
     /// # Errors

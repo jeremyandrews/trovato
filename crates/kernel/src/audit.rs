@@ -475,6 +475,71 @@ pub struct SecurityAuditRow {
     pub created: i64,
 }
 
+/// The columns a security event is written to, in the order
+/// [`EventRow::bind_to`] binds them.
+pub(crate) const EVENT_COLUMNS: &str =
+    "kind, user_id, actor_id, subject_hash, outcome, ip_address, user_agent, details, id";
+
+/// One event as the row it is written as ([`SecurityAudit::row`]).
+#[derive(Debug, Clone)]
+pub(crate) struct EventRow {
+    kind: &'static str,
+    user_id: Option<Uuid>,
+    actor_id: Option<Uuid>,
+    subject_hash: Option<String>,
+    outcome: &'static str,
+    ip_address: Option<String>,
+    user_agent: Option<String>,
+    details: serde_json::Value,
+    id: Uuid,
+}
+
+impl EventRow {
+    /// Bind the row's nine values after whatever `query` has bound already,
+    /// in [`EVENT_COLUMNS`] order.
+    pub(crate) fn bind_to<'q, Q: BindEvent<'q>>(&'q self, query: Q) -> Q {
+        query
+            .bind_value(self.kind)
+            .bind_value(self.user_id)
+            .bind_value(self.actor_id)
+            .bind_value(&self.subject_hash)
+            .bind_value(self.outcome)
+            .bind_value(&self.ip_address)
+            .bind_value(&self.user_agent)
+            .bind_value(&self.details)
+            .bind_value(self.id)
+    }
+}
+
+/// A sqlx query an [`EventRow`] can be bound to: a plain query, or one that
+/// reads its result back as a type.
+pub(crate) trait BindEvent<'q>: Sized {
+    /// `.bind(value)`.
+    fn bind_value<T>(self, value: T) -> Self
+    where
+        T: 'q + sqlx::Encode<'q, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>;
+}
+
+impl<'q> BindEvent<'q> for sqlx::query::Query<'q, sqlx::Postgres, sqlx::postgres::PgArguments> {
+    fn bind_value<T>(self, value: T) -> Self
+    where
+        T: 'q + sqlx::Encode<'q, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>,
+    {
+        self.bind(value)
+    }
+}
+
+impl<'q, O> BindEvent<'q>
+    for sqlx::query::QueryAs<'q, sqlx::Postgres, O, sqlx::postgres::PgArguments>
+{
+    fn bind_value<T>(self, value: T) -> Self
+    where
+        T: 'q + sqlx::Encode<'q, sqlx::Postgres> + sqlx::Type<sqlx::Postgres>,
+    {
+        self.bind(value)
+    }
+}
+
 /// The append-only security audit stream.
 ///
 /// Two kinds of event, written two ways:
@@ -543,35 +608,40 @@ impl SecurityAudit {
         executor: E,
         event: &SecurityEvent,
     ) -> Result<()> {
-        // Anything that is not an address is stored as `"invalid"`, never verbatim.
-        let ip = event
-            .ip_address
-            .as_deref()
-            .and_then(|ip| self.ip_storage.apply(ip));
-
-        sqlx::query(
-            r#"
-            INSERT INTO security_audit_log
-                (kind, user_id, actor_id, subject_hash, outcome, ip_address, user_agent, details, id)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-            "#,
-        )
-        .bind(event.kind.as_str())
-        .bind(event.user_id)
-        .bind(event.actor_id)
-        .bind(&event.subject_hash)
-        .bind(event.outcome.as_str())
-        .bind(&ip)
-        .bind(&event.user_agent)
-        .bind(&event.details)
-        // A v7 id, so events in the same second read back in the order they
-        // happened (`created` is whole seconds).
-        .bind(Uuid::now_v7())
+        let row = self.row(event);
+        row.bind_to(sqlx::query(sqlx::AssertSqlSafe(format!(
+            "INSERT INTO security_audit_log ({EVENT_COLUMNS}) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+        ))))
         .execute(executor)
         .await
         .context("failed to append security audit event")?;
 
         Ok(())
+    }
+
+    /// `event` as the row it is written as: its address reduced as
+    /// `CLIENT_IP_STORAGE` says and its v7 id drawn. For a statement that
+    /// makes a change and appends the event recording it in one (a data
+    /// modifying `WITH`), which needs no transaction around the two.
+    pub(crate) fn row(&self, event: &SecurityEvent) -> EventRow {
+        EventRow {
+            kind: event.kind.as_str(),
+            user_id: event.user_id,
+            actor_id: event.actor_id,
+            subject_hash: event.subject_hash.clone(),
+            outcome: event.outcome.as_str(),
+            // Anything that is not an address is stored as `"invalid"`, never verbatim.
+            ip_address: event
+                .ip_address
+                .as_deref()
+                .and_then(|ip| self.ip_storage.apply(ip)),
+            user_agent: event.user_agent.clone(),
+            details: event.details.clone(),
+            // A v7 id, so events in the same second read back in the order
+            // they happened (`created` is whole seconds).
+            id: Uuid::now_v7(),
+        }
     }
 
     /// Append one event, logging loudly on failure instead of propagating.

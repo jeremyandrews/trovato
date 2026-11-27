@@ -73,7 +73,8 @@ pub async fn resolve(state: &AppState, raw_token: &str) -> Result<Option<TokenHo
 /// caller shows it once. The event names the token by its hashed id, never
 /// the value.
 ///
-/// The token and its event commit together.
+/// The token and its event are written by one statement, so they persist
+/// together or not at all.
 ///
 /// # Errors
 ///
@@ -85,22 +86,20 @@ pub async fn create(
     name: &str,
     expires_at: Option<chrono::DateTime<chrono::Utc>>,
 ) -> Result<(ApiToken, String)> {
-    let mut tx = state.db().begin().await?;
-    let (token, raw) = ApiToken::create(&mut *tx, user_id, name, expires_at).await?;
-    state
-        .audit_trail()
-        .security_in(
-            &mut tx,
-            SecurityEvent::new(SecurityEventKind::ApiTokenCreated)
-                .user(user_id)
-                .subject(&token.id.to_string())
-                // Not the label: it is free text its holder typed, and may
-                // hold anything, an address or a secret included.
-                .detail("expires", token.expires_at.is_some()),
-        )
-        .await?;
-    tx.commit().await?;
-    Ok((token, raw))
+    // The id is drawn here, so the event naming it can be part of the insert.
+    let id = Uuid::now_v7();
+    let event = SecurityEvent::new(SecurityEventKind::ApiTokenCreated)
+        .user(user_id)
+        .subject(&id.to_string())
+        // Not the label: it is free text its holder typed, and may hold
+        // anything, an address or a secret included.
+        .detail("expires", expires_at.is_some());
+    match state.audit_trail().event_row(event) {
+        Some(row) => {
+            ApiToken::create_recording(state.db(), id, user_id, name, expires_at, &row).await
+        }
+        None => ApiToken::create(state.db(), user_id, name, expires_at).await,
+    }
 }
 
 /// Revoke `user_id`'s token `id`, at its holder's request, and record

@@ -62,6 +62,41 @@ impl ApiToken {
         Ok((record, raw_token))
     }
 
+    /// [`Self::create`], with the token's id `id` chosen by the caller, and
+    /// `event` (the `api_token.created` recording it) appended by the same
+    /// statement: one write, atomic on its own, so the token exists exactly
+    /// when its event does, with no transaction around the two.
+    pub(crate) async fn create_recording<'e, E: sqlx::PgExecutor<'e>>(
+        executor: E,
+        id: Uuid,
+        user_id: Uuid,
+        name: &str,
+        expires_at: Option<DateTime<Utc>>,
+        event: &crate::audit::EventRow,
+    ) -> Result<(Self, String)> {
+        let raw_token = generate_token();
+        let token_hash = hash_token(&raw_token);
+        let columns = crate::audit::EVENT_COLUMNS;
+        let query = sqlx::query_as::<_, ApiToken>(sqlx::AssertSqlSafe(format!(
+            "WITH event AS (INSERT INTO security_audit_log ({columns}) \
+                 VALUES ($6, $7, $8, $9, $10, $11, $12, $13, $14)) \
+             INSERT INTO api_tokens (id, user_id, name, token_hash, expires_at) \
+             VALUES ($1, $2, $3, $4, $5) RETURNING *"
+        )))
+        .bind(id)
+        .bind(user_id)
+        .bind(name)
+        .bind(&token_hash)
+        .bind(expires_at);
+        let record = event
+            .bind_to(query)
+            .fetch_one(executor)
+            .await
+            .context("failed to create API token")?;
+
+        Ok((record, raw_token))
+    }
+
     /// Look up a token by its raw value. Returns `None` if not found, expired,
     /// or owned by an account that is not active.
     ///
