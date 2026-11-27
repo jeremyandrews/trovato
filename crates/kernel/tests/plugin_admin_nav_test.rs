@@ -347,13 +347,15 @@ fn admin_search_finds_a_plugins_page_by_its_declared_keyword() {
             group.contains(&format!(r#"href="{DASHBOARD_PATH}""#)),
             "{group}"
         );
-        let (_, json) = get(app, &holder, "/admin/search/suggest?q=scratchpad").await;
+        let (status, json) = get(app, &holder, "/admin/search/suggest?q=scratchpad").await;
+        assert_eq!(status, StatusCode::OK, "{json}");
         assert!(json.contains(DASHBOARD_PATH), "{json}");
 
         let (status, html) = get(app, &other, "/admin/search?q=scratchpad").await;
         assert_eq!(status, StatusCode::OK);
         assert!(!html.contains(&format!(r#"href="{DASHBOARD_PATH}""#)));
-        let (_, json) = get(app, &other, "/admin/search/suggest?q=scratchpad").await;
+        let (status, json) = get(app, &other, "/admin/search/suggest?q=scratchpad").await;
+        assert_eq!(status, StatusCode::OK, "{json}");
         assert!(!json.contains(DASHBOARD_PATH), "{json}");
 
         disable_plugin(app).await;

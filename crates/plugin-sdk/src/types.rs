@@ -772,6 +772,10 @@ pub struct AdminNavDefinition {
     /// the quick search palette, in addition to `label`, `section` and
     /// `card_description`. Never widens who sees the link; `permission` still
     /// decides that.
+    ///
+    /// The kernel trims each keyword and keeps at most 20, each at most 255
+    /// bytes. A blank or longer one, or any past the twentieth, is dropped on
+    /// its own with a warning in the log; the link and card are kept.
     #[serde(default)]
     pub keywords: Vec<String>,
 }
@@ -799,7 +803,8 @@ impl AdminNavDefinition {
         self
     }
 
-    /// Other words a person might search for this page by.
+    /// Other words a person might search for this page by. See
+    /// [`AdminNavDefinition::keywords`] for the limits the kernel applies.
     pub fn with_keywords<I, S>(mut self, keywords: I) -> Self
     where
         I: IntoIterator<Item = S>,

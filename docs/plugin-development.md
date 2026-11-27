@@ -1299,7 +1299,9 @@ Admin search (`/admin/search` and the command palette) finds the entry by
 its label, its section, its card description and its keywords, and lists it
 under "Plugins", for the same viewers who see the link. `keywords` is for a
 word a viewer might search by that never appears in the other three, written
-in English like them. The plugins page's row for the plugin is also found by
+in English like them. Each keyword is trimmed; at most 20 are kept, each at
+most 255 bytes, and a blank or longer one, or any past the twentieth, is
+dropped with a warning while the entry itself is kept. The plugins page's row for the plugin is also found by
 the plugin's name and description, for whoever may manage plugins.
 
 `href` must be the plugin's own path below `/admin/` (`/admin/groups`, not

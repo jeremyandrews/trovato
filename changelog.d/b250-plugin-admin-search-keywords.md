@@ -16,7 +16,10 @@ palette exactly as it feeds a kernel admin page's own keywords: matched as
 written (kernel keywords are not translated either), and never widening who sees the link, which a viewer's permission
 still decides alone. `AdminNavDefinition` is also `#[non_exhaustive]` now, so
 a future field needs no second breaking bump; a plugin that builds one must
-use `new` and the builders rather than a struct literal.
+use `new` and the builders rather than a struct literal. Each keyword is
+trimmed and at most 20 are kept, each at most 255 bytes; a blank or longer
+one, or any past the twentieth, is dropped with a warning, and the page keeps
+its link, its card and its other keywords.
 
 `test_plugin_api`'s admin page, the fixture that already proved a plugin's own
 link reaches the sidebar, now also declares two keywords, and a kernel test
