@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-//! `item-api` from `tap_cron` and `tap_queue_worker`, on a real `AppState`.
+//! `item-api` and `query` from `tap_cron` and `tap_queue_worker`, on a real
+//! `AppState`.
 //!
 //! Every other item-api suite builds its `RequestServices` by hand and binds
 //! the item service itself, so none of them could see that the services
@@ -35,10 +36,18 @@ use uuid::Uuid;
 const FIXTURE: &str = "test_item_background";
 /// The same module under another name, without `item_background`.
 const NOCAP: &str = "test_item_background_nocap";
+/// The same fixture under a third and fourth name, for the `query` tests, so
+/// their steps never share a variable with the `item-api` tests running at
+/// the same time.
+const QUERY: &str = "test_item_background_query";
+const QUERY_NOCAP: &str = "test_item_background_query_nocap";
 
 /// Serializes enabling a fixture, building an app and disabling it again, so
 /// one test's restore cannot land between another's enable and its build.
 const FIXTURE_LOCK: i64 = 0x0040_0000_0001;
+
+/// The pool size each app in this file runs with; see [`app_with`].
+const APP_MAX_CONNECTIONS: u32 = 8;
 
 /// Copy the fixture into a fresh directory as plugin `name`, optionally
 /// without the `item_background` line, and return the directory.
@@ -152,7 +161,16 @@ async fn app_with(name: &'static str, item_background: bool) -> TestApp {
 
     let dir = fixture_dir(name, item_background);
     let plugins = dir.clone();
-    let app = TestApp::with_config(move |config| config.plugins_dirs = vec![plugins]).await;
+    // Every test in this file keeps its own app alive at once, in one process
+    // under libtest. At the harness default of 25 connections each, six apps
+    // ask CI's Postgres (100 clients) for more than it has, and the last app to
+    // start times out. Each app here runs one step at a time, so a few
+    // connections are plenty.
+    let app = TestApp::with_config(move |config| {
+        config.plugins_dirs = vec![plugins];
+        config.database_max_connections = APP_MAX_CONNECTIONS;
+    })
+    .await;
 
     restore_status(&pool, name, saved).await;
     unlock(pool, lock).await;
@@ -443,6 +461,137 @@ fn without_item_background_both_paths_are_refused() {
         let deleted = through_queue(&app, NOCAP, QUEUE, "delete", Some(any), "").await;
         assert_eq!(code(&deleted), denied, "tap_queue_worker delete: {deleted}");
         assert_eq!(titled(&app.db, &prefix).await, 0, "nothing was written");
+    });
+}
+
+/// Publish an item, so the background viewer is entitled to see it.
+async fn publish(pool: &PgPool, id: Uuid) {
+    sqlx::query("UPDATE item SET status = 1 WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .expect("publish the item");
+}
+
+/// `query` from `tap_cron` and `tap_queue_worker` runs and returns rows.
+///
+/// Before B249 the services both paths dispatch with bound the item service
+/// and not the gather service, so `query` answered `ERR_NO_SERVICES` (-10)
+/// from either one after `item_background` had already let it through.
+#[test]
+fn tap_cron_query_returns_rows_with_item_background() {
+    const QUEUE: &str = "b249_query";
+    run_test(async {
+        let app = app_with(QUERY, true).await;
+        let prefix = format!("b249 query {}", Uuid::now_v7().simple());
+        clean_up_after(
+            &app.db,
+            QUERY,
+            &["step", "cron_result", "queue_result"],
+            Some(QUEUE),
+            prefix.clone(),
+        );
+
+        let created = through_cron(&app, QUERY, "create", None, &prefix).await;
+        let id = created_id(&created);
+        publish(&app.db, id).await;
+
+        let no_services = i64::from(host_errors::ERR_NO_SERVICES);
+        let from_cron = through_cron(&app, QUERY, "query", None, &prefix).await;
+        assert_ne!(code(&from_cron), no_services, "tap_cron query: {from_cron}");
+        assert_eq!(code(&from_cron), 0, "tap_cron query: {from_cron}");
+        assert_eq!(from_cron["id"], json!(id.to_string()), "{from_cron}");
+        assert_eq!(title(&from_cron), prefix, "{from_cron}");
+        assert_eq!(from_cron["total"], json!(1), "{from_cron}");
+
+        let from_queue = through_queue(&app, QUERY, QUEUE, "query", None, &prefix).await;
+        assert_eq!(code(&from_queue), 0, "tap_queue_worker query: {from_queue}");
+        assert_eq!(from_queue["id"], json!(id.to_string()), "{from_queue}");
+        assert_eq!(from_queue["total"], json!(1), "{from_queue}");
+    });
+}
+
+/// Without `item_background`, `query` over content from either background
+/// path is still refused with the background denial, now that gather is
+/// bound: the binding widens nothing.
+#[test]
+fn without_item_background_query_is_still_refused() {
+    const QUEUE: &str = "b249_query_nocap";
+    run_test(async {
+        let app = app_with(QUERY_NOCAP, false).await;
+        let prefix = format!("b249 query nocap {}", Uuid::now_v7().simple());
+        clean_up_after(
+            &app.db,
+            QUERY_NOCAP,
+            &["step", "cron_result", "queue_result"],
+            Some(QUEUE),
+            prefix.clone(),
+        );
+        let denied = i64::from(host_errors::ERR_ITEM_BACKGROUND_DENIED);
+
+        let from_cron = through_cron(&app, QUERY_NOCAP, "query", None, &prefix).await;
+        assert_eq!(code(&from_cron), denied, "tap_cron query: {from_cron}");
+        let from_queue = through_queue(&app, QUERY_NOCAP, QUEUE, "query", None, &prefix).await;
+        assert_eq!(
+            code(&from_queue),
+            denied,
+            "tap_queue_worker query: {from_queue}"
+        );
+    });
+}
+
+/// A startup that succeeds hands the pending `tap_install` task its services
+/// only once gather is fully bound, and the task then claims the hook.
+///
+/// `AppState::new` asserts at the hand-off that gather's item-access seam,
+/// record registry and user service are all in place. The install task runs
+/// on another worker as soon as it is woken, so a hand-off above any of those
+/// bindings would let a `query` from `tap_install` read rows that skipped one,
+/// such as rows without `author`. Here a hand-off placed too early panics
+/// startup instead of racing it.
+#[test]
+fn a_successful_startup_hands_tap_install_a_fully_bound_gather() {
+    const NAME: &str = "test_item_background_install_ok";
+    run_test(async {
+        let (pool, lock) = locked().await;
+        let saved = save_status(&pool, NAME).await;
+        trovato_kernel::plugin::status::install_plugin(&pool, NAME, "1.0.0")
+            .await
+            .expect("enable the fixture");
+        sqlx::query("UPDATE plugin_status SET tap_install_called = FALSE WHERE name = $1")
+            .bind(NAME)
+            .execute(&pool)
+            .await
+            .expect("mark tap_install pending");
+
+        let dir = fixture_dir(NAME, true);
+        let plugins = dir.clone();
+        let app = TestApp::with_config(move |config| {
+            config.plugins_dirs = vec![plugins];
+            config.database_max_connections = APP_MAX_CONNECTIONS;
+        })
+        .await;
+
+        let mut called = false;
+        for _ in 0..80 {
+            called =
+                sqlx::query_scalar("SELECT tap_install_called FROM plugin_status WHERE name = $1")
+                    .bind(NAME)
+                    .fetch_one(&pool)
+                    .await
+                    .expect("read the claim");
+            if called {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+
+        restore_status(&pool, NAME, saved).await;
+        unlock(pool, lock).await;
+        std::fs::remove_dir_all(&dir).ok();
+        drop(app);
+
+        assert!(called, "the install task never claimed tap_install");
     });
 }
 

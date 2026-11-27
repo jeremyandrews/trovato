@@ -53,6 +53,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::content::ItemService;
 use crate::file::FileService;
+use crate::gather::GatherService;
 use crate::services::ai_provider::AiProviderService;
 use crate::services::ai_token_budget::AiTokenBudgetService;
 use crate::services::embed_index::{
@@ -892,6 +893,11 @@ pub struct CronService {
     /// world-readable file, so "no access model available" has to mean "publish
     /// nothing".
     items: Option<Arc<ItemService>>,
+    /// The gather service the background dispatch services carry for the
+    /// `query` host interface. `None` only in a harness that builds a
+    /// `CronService` on its own; a `query` call from `tap_cron` or
+    /// `tap_queue_worker` then gets `ERR_NO_SERVICES`.
+    gather: Option<Arc<GatherService>>,
     /// The directory the generated Pagefind index is written to.
     ///
     /// Defaults to `./static/pagefind` so a harness without a `Config` still has
@@ -945,6 +951,7 @@ impl CronService {
             vector_store: None,
             http: build_http_client(),
             items: None,
+            gather: None,
             pagefind_enabled: false,
             pagefind_output_dir: PathBuf::from("./static/pagefind"),
             rate_limiter: None,
@@ -973,6 +980,7 @@ impl CronService {
             vector_store: None,
             http: build_http_client(),
             items: None,
+            gather: None,
             pagefind_enabled: false,
             pagefind_output_dir: PathBuf::from("./static/pagefind"),
             rate_limiter: None,
@@ -1068,6 +1076,15 @@ impl CronService {
     /// field-access cache and a different tap dispatcher.
     pub fn set_item_service(&mut self, items: Arc<ItemService>) {
         self.items = Some(items);
+    }
+
+    /// Set the gather service `tap_cron` and `tap_queue_worker` reach the
+    /// `query` host interface with.
+    ///
+    /// Wired from `AppState`, which owns the one `GatherService` request
+    /// dispatch already binds, so a background read runs the same seam.
+    pub fn set_gather_service(&mut self, gather: Arc<GatherService>) {
+        self.gather = Some(gather);
     }
 
     /// Wire in search, so cron prunes its analytics past the retention window.
@@ -2102,7 +2119,8 @@ impl CronService {
     ///
     /// One builder for `tap_cron` and `tap_queue_worker` both, so the per-plugin
     /// `mail` bucket and the email service cannot be attached on one background
-    /// path and missing from the other; the item service likewise.
+    /// path and missing from the other; the item service and the gather service
+    /// likewise.
     fn background_services(&self, dispatcher: &Arc<TapDispatcher>) -> crate::tap::RequestServices {
         let mut services = crate::tap::RequestServices::for_background(
             self.pool.clone(),
@@ -2124,6 +2142,14 @@ impl CronService {
         // `ERR_ITEM_SERVICE_UNAVAILABLE`.
         if let Some(items) = &self.items {
             services.set_item_service(items);
+        }
+        // The `query` host function runs with this. Unbound, every `query`
+        // from `tap_cron` and `tap_queue_worker` answered `ERR_NO_SERVICES`
+        // after the background access check had already let it through. The
+        // access rules are untouched: `query` still decides the background
+        // viewer and `item_background` before it reads this.
+        if let Some(gather) = &self.gather {
+            services.set_gather_service(gather);
         }
         services
     }
@@ -2667,6 +2693,72 @@ impl std::fmt::Debug for CronService {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    /// A gather service on a database that is never reached: the binding is
+    /// what is under test, not a read.
+    fn unreached_gather() -> Arc<GatherService> {
+        use crate::gather::{
+            CategoryService, GatherAccessConfig, GatherConfig, GatherExtensionRegistry,
+        };
+        let pool = PgPool::connect_lazy("postgres://nobody@127.0.0.1:1/none").expect("lazy pool");
+        let metrics = Arc::new(crate::metrics::Metrics::new());
+        GatherService::new(
+            pool.clone(),
+            CategoryService::new(pool, Duration::from_secs(60), metrics.clone()),
+            Arc::new(GatherExtensionRegistry::new()),
+            GatherConfig {
+                ttl: Duration::from_secs(60),
+                max_page_size: 100,
+                access: GatherAccessConfig::default(),
+            },
+            None,
+            None,
+            metrics,
+        )
+    }
+
+    /// The services `tap_cron` and `tap_queue_worker` dispatch with carry the
+    /// gather service `CronService` was given, and the background state built
+    /// from them carries it too. Before B249 the builder bound the item
+    /// service only, so `query` from either path answered `ERR_NO_SERVICES`.
+    #[tokio::test]
+    async fn background_services_carry_the_gather_service() {
+        use crate::plugin::{PluginConfig, PluginRuntime};
+        use crate::tap::TapRegistry;
+
+        let pool = PgPool::connect_lazy("postgres://nobody@127.0.0.1:1/none").expect("lazy pool");
+        let redis = RedisClient::open("redis://127.0.0.1:1/").expect("redis client");
+        let runtime = PluginRuntime::new(&PluginConfig::default()).expect("plugin runtime");
+        let registry = Arc::new(TapRegistry::from_plugins(&runtime));
+        let dispatcher = Arc::new(TapDispatcher::new(Arc::new(runtime), registry));
+
+        let mut cron = CronService::new(redis, pool);
+        assert!(
+            cron.background_services(&dispatcher)
+                .gather_service()
+                .is_none(),
+            "a harness that never wired gather carries none"
+        );
+
+        let gather = unreached_gather();
+        cron.set_gather_service(gather.clone());
+        let bound = cron
+            .background_services(&dispatcher)
+            .gather_service()
+            .expect("the background services carry the gather service");
+        assert!(
+            Arc::ptr_eq(&bound, &gather),
+            "the one gather service, not a copy"
+        );
+
+        let state = cron.background_state(&dispatcher);
+        assert!(state.user.is_background(), "still the background principal");
+        let carried = state
+            .services()
+            .and_then(|services| services.gather_service())
+            .expect("the background state carries the gather service");
+        assert!(Arc::ptr_eq(&carried, &gather));
+    }
 
     #[test]
     fn test_hostname() {
