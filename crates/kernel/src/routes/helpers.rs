@@ -481,6 +481,16 @@ pub async fn inject_site_context_for(
         .get("available_translations")
         .and_then(|value| serde_json::from_value(value.clone()).ok());
 
+    // The item this page shows (B186), when it shows one: the item route sets
+    // `item` in the context before calling this, the same way it sets
+    // `available_translations` above. Read back the same way, so a
+    // `gather_query` tile can filter out, or filter by a field of, the item
+    // it is rendered beside, and an `item_types` visibility rule has
+    // something to compare against.
+    let current_item: Option<crate::models::Item> = context
+        .get("item")
+        .and_then(|value| serde_json::from_value(value.clone()).ok());
+
     // Load tiles for all regions filtered by request path and user roles, each
     // rendered for this viewer, in this language, from the menus built above,
     // with the page's root values.
@@ -493,6 +503,7 @@ pub async fn inject_site_context_for(
         page_root: &page_root,
         current_path: &requested_path,
         translations: translations.as_deref(),
+        current_item: current_item.as_ref(),
     };
     for region in &["header", "navigation", "sidebar", "footer"] {
         let region_html = state
@@ -1395,6 +1406,7 @@ pub async fn render_page_builder_field(
                     viewer: Some(viewer.clone()),
                     url_args: std::collections::HashMap::new(),
                     language: None,
+                    ..Default::default()
                 };
                 let Ok(result) = state
                     .gather()

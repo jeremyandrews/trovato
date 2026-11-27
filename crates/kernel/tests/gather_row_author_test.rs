@@ -164,6 +164,7 @@ async fn gather_rows(
         viewer: Some(viewer),
         url_args: HashMap::new(),
         language: None,
+        ..Default::default()
     };
 
     app.state
@@ -392,6 +393,7 @@ fn a_gathers_own_author_include_is_not_replaced() {
             viewer: Some(profile_viewer()),
             url_args: HashMap::new(),
             language: None,
+            ..Default::default()
         };
         let rows = app
             .state

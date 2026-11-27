@@ -1151,8 +1151,19 @@ impl GatherService {
             .resolve_exposed_filters(definition.clone(), exposed_filters)
             .await?;
 
-        // Resolve contextual values (CurrentUser, CurrentTime, UrlArg)
-        let resolved_definition = Self::resolve_contextual_values(resolved_definition, context);
+        // Resolve contextual values (CurrentUser, CurrentTime, UrlArg,
+        // CurrentItem/CurrentItemField).
+        let (resolved_definition, missing_current_item) =
+            Self::resolve_contextual_values(resolved_definition, context);
+
+        // A filter named the item the page shows, and there is none (B186): the
+        // gather must render nothing, not an unfiltered list. Short-circuit
+        // before the query builder ever sees the (now-Null) filter, the same
+        // way a missing current item makes a tile that asks for it invisible.
+        if missing_current_item {
+            let per_page = requested.min(max_page);
+            return Ok(GatherResult::empty(page, per_page));
+        }
 
         // Resolve `url` filters to the items they name, for the stages and
         // language this read is made in. A plugin's own table has no URLs.
@@ -2120,10 +2131,18 @@ impl GatherService {
 
     /// Resolve contextual values in filters, replacing `ContextualValue` variants
     /// with concrete `FilterValue`s based on the runtime context.
+    ///
+    /// Returns the rewritten definition and whether a filter named
+    /// [`ContextualValue::CurrentItem`] or [`ContextualValue::CurrentItemField`]
+    /// while `context` carries no current item (or, for a field, the item has
+    /// no value for it): the caller must then treat the whole gather as
+    /// unsatisfiable (B186) rather than run it with that one filter merely
+    /// unconstrained.
     fn resolve_contextual_values(
         mut definition: QueryDefinition,
         context: &QueryContext,
-    ) -> QueryDefinition {
+    ) -> (QueryDefinition, bool) {
+        let mut missing_current_item = false;
         for filter in definition.all_filters_mut() {
             if let FilterValue::Contextual(ref ctx_val) = filter.value {
                 filter.value = match ctx_val {
@@ -2154,10 +2173,42 @@ impl GatherService {
                         .filter(|v| !v.trim().is_empty())
                         .map(|v| FilterValue::String(v.clone()))
                         .unwrap_or(FilterValue::Null(())),
+                    ContextualValue::CurrentItem => match context.current_item_id {
+                        Some(id) => FilterValue::Uuid(id),
+                        None => {
+                            missing_current_item = true;
+                            FilterValue::Null(())
+                        }
+                    },
+                    ContextualValue::CurrentItemField(name) => match context.current_item_id {
+                        None => {
+                            missing_current_item = true;
+                            FilterValue::Null(())
+                        }
+                        // The item carries no value here (absent, null or an
+                        // empty list): nothing can match it, so the gather is
+                        // as unsatisfiable as with no item at all — "related
+                        // by tag" on an untagged recipe lists nothing, not
+                        // every recipe.
+                        Some(_) => match context
+                            .current_item_fields
+                            .as_ref()
+                            .and_then(|fields| fields.get(name))
+                            .map(filter_value_from_json)
+                            .filter(|value| !value.is_unset())
+                            .and_then(|value| usable_for_tag_operator(&filter.operator, value))
+                        {
+                            Some(value) => value,
+                            None => {
+                                missing_current_item = true;
+                                FilterValue::Null(())
+                            }
+                        },
+                    },
                 };
             }
         }
-        definition
+        (definition, missing_current_item)
     }
 
     /// Execute batched include sub-queries and distribute results into parent items.
@@ -2229,8 +2280,25 @@ impl GatherService {
                     widget: Default::default(),
                 });
 
-                // Resolve contextual values in child definition
-                let child_def = Self::resolve_contextual_values(child_def, context);
+                // Resolve contextual values in child definition. A filter naming
+                // the current item when the page shows none (B186) makes this
+                // include unsatisfiable, the same as finding no parent values
+                // above: embed empty results rather than run a query whose
+                // now-Null filter would no longer carry that constraint.
+                let (child_def, missing_current_item) =
+                    Self::resolve_contextual_values(child_def, context);
+                if missing_current_item {
+                    for item in parent_items.iter_mut() {
+                        if let Some(obj) = item.as_object_mut() {
+                            if include_def.singular {
+                                obj.insert(include_name.clone(), serde_json::Value::Null);
+                            } else {
+                                obj.insert(include_name.clone(), serde_json::json!([]));
+                            }
+                        }
+                    }
+                    continue;
+                }
 
                 // Split child includes before executing (they recurse separately)
                 let child_includes = child_def.includes.clone();
@@ -3097,6 +3165,53 @@ fn remove_record_field(row: &mut serde_json::Value, target: &str) {
 /// Maximum items per page (enforced by performance guardrails).
 pub const MAX_ITEMS_PER_PAGE: u32 = 100;
 
+/// A current-item field value in the shape a tag operator reads, or `None`
+/// when that operator could find no tag in it and would drop the filter.
+///
+/// `HasAnyTag`/`HasAllTags` read every uuid out of a list, so they need at
+/// least one. `HasTag`/`HasTagOrDescendants` read a single uuid: a field of
+/// one tag (a one-element list, as a category reference stores it) becomes
+/// that uuid; a field of several is not one tag, and with no constraint the
+/// gather would list every row, so it counts as no value (`has_any_tag` is the
+/// operator for "shares a tag"). Any other operator takes the value as it is.
+fn usable_for_tag_operator(operator: &FilterOperator, value: FilterValue) -> Option<FilterValue> {
+    match operator {
+        FilterOperator::HasAnyTag | FilterOperator::HasAllTags => {
+            (!value.as_uuid_list().is_empty()).then_some(value)
+        }
+        FilterOperator::HasTag | FilterOperator::HasTagOrDescendants => {
+            match value.as_uuid_list().as_slice() {
+                [only] => Some(FilterValue::Uuid(*only)),
+                _ => None,
+            }
+        }
+        _ => Some(value),
+    }
+}
+
+/// Convert a JSON value read out of an item's `fields` into the [`FilterValue`]
+/// a resolved [`ContextualValue::CurrentItemField`] carries.
+///
+/// A JSON array (a `CategoryReference` field's tag ids, stored as strings)
+/// becomes a [`FilterValue::List`], which `HasAnyTag`/`HasAllTags` already know
+/// how to read; a plain scalar becomes the matching `FilterValue` variant.
+fn filter_value_from_json(value: &serde_json::Value) -> FilterValue {
+    match value {
+        serde_json::Value::Null => FilterValue::Null(()),
+        serde_json::Value::Bool(b) => FilterValue::Boolean(*b),
+        serde_json::Value::Number(n) => n
+            .as_i64()
+            .map(FilterValue::Integer)
+            .or_else(|| n.as_f64().map(FilterValue::Float))
+            .unwrap_or(FilterValue::Null(())),
+        serde_json::Value::String(s) => FilterValue::String(s.clone()),
+        serde_json::Value::Array(items) => {
+            FilterValue::List(items.iter().map(filter_value_from_json).collect())
+        }
+        serde_json::Value::Object(_) => FilterValue::Null(()),
+    }
+}
+
 /// Extract a string value from a JSON item by field path.
 ///
 /// Handles top-level fields (`"id"`), single-level JSONB paths (`"fields.story_id"`),
@@ -3364,6 +3479,7 @@ mod tests {
             viewer: None,
             url_args: HashMap::new(),
             language: None,
+            ..Default::default()
         };
 
         let def = QueryDefinition {
@@ -3378,7 +3494,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = GatherService::resolve_contextual_values(def, &context);
+        let (resolved, _) = GatherService::resolve_contextual_values(def, &context);
         match &resolved.filters[0].value {
             FilterValue::Uuid(u) => assert_eq!(*u, user_id),
             other => panic!("expected Uuid, got {other:?}"),
@@ -3401,7 +3517,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = GatherService::resolve_contextual_values(def, &context);
+        let (resolved, _) = GatherService::resolve_contextual_values(def, &context);
         match &resolved.filters[0].value {
             FilterValue::Uuid(u) => assert_eq!(*u, Uuid::nil()),
             other => panic!("expected nil Uuid, got {other:?}"),
@@ -3521,7 +3637,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = GatherService::resolve_contextual_values(def, &QueryContext::default());
+        let (resolved, _) = GatherService::resolve_contextual_values(def, &QueryContext::default());
         assert!(
             resolved.filters[0].value.is_null(),
             "an absent url arg must not become an empty string, got {:?}",
@@ -3546,7 +3662,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = GatherService::resolve_contextual_values(def, &context);
+        let (resolved, _) = GatherService::resolve_contextual_values(def, &context);
         let after = chrono::Utc::now().timestamp();
 
         match &resolved.filters[0].value {
@@ -3566,6 +3682,7 @@ mod tests {
             viewer: None,
             url_args,
             language: None,
+            ..Default::default()
         };
 
         let def = QueryDefinition {
@@ -3580,7 +3697,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = GatherService::resolve_contextual_values(def, &context);
+        let (resolved, _) = GatherService::resolve_contextual_values(def, &context);
         match &resolved.filters[0].value {
             FilterValue::String(s) => assert_eq!(s, "tech"),
             other => panic!("expected String, got {other:?}"),
@@ -3604,7 +3721,7 @@ mod tests {
             ..Default::default()
         };
 
-        let resolved = GatherService::resolve_contextual_values(def, &context);
+        let (resolved, _) = GatherService::resolve_contextual_values(def, &context);
         let after = chrono::Local::now().format("%Y-%m-%d").to_string();
 
         match &resolved.filters[0].value {
@@ -3615,6 +3732,184 @@ mod tests {
                 );
             }
             other => panic!("expected String date, got {other:?}"),
+        }
+    }
+
+    // ── B186: CurrentItem / CurrentItemField ────────────────────────────
+
+    #[test]
+    fn resolve_contextual_current_item_id() {
+        let item_id = Uuid::now_v7();
+        let context = QueryContext {
+            current_item_id: Some(item_id),
+            ..Default::default()
+        };
+
+        let def = QueryDefinition {
+            filters: vec![filter(
+                "id",
+                FilterOperator::NotEquals,
+                FilterValue::Contextual(ContextualValue::CurrentItem),
+                false,
+            )],
+            ..Default::default()
+        };
+
+        let (resolved, missing) = GatherService::resolve_contextual_values(def, &context);
+        assert!(!missing);
+        match &resolved.filters[0].value {
+            FilterValue::Uuid(u) => assert_eq!(*u, item_id),
+            other => panic!("expected Uuid, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_contextual_current_item_id_missing_is_flagged() {
+        // No current item (a gather listing, the front page): the filter must
+        // not silently resolve to an unconstrained value, or a tile asking for
+        // "the other articles" would show every article.
+        let def = QueryDefinition {
+            filters: vec![filter(
+                "id",
+                FilterOperator::NotEquals,
+                FilterValue::Contextual(ContextualValue::CurrentItem),
+                false,
+            )],
+            ..Default::default()
+        };
+
+        let (resolved, missing) =
+            GatherService::resolve_contextual_values(def, &QueryContext::default());
+        assert!(missing, "no current item must be flagged as missing");
+        assert!(resolved.filters[0].value.is_null());
+    }
+
+    #[test]
+    fn resolve_contextual_current_item_field() {
+        let item_id = Uuid::now_v7();
+        let context = QueryContext {
+            current_item_id: Some(item_id),
+            current_item_fields: Some(serde_json::json!({
+                "tags": [Uuid::now_v7().to_string(), Uuid::now_v7().to_string()]
+            })),
+            ..Default::default()
+        };
+
+        let def = QueryDefinition {
+            filters: vec![filter(
+                "fields.tags",
+                FilterOperator::HasAnyTag,
+                FilterValue::Contextual(ContextualValue::CurrentItemField("tags".to_string())),
+                false,
+            )],
+            ..Default::default()
+        };
+
+        let (resolved, missing) = GatherService::resolve_contextual_values(def, &context);
+        assert!(!missing);
+        match &resolved.filters[0].value {
+            FilterValue::List(items) => {
+                assert_eq!(items.len(), 2);
+            }
+            other => panic!("expected List, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn resolve_contextual_current_item_field_missing_is_flagged() {
+        let def = QueryDefinition {
+            filters: vec![filter(
+                "fields.tags",
+                FilterOperator::HasAnyTag,
+                FilterValue::Contextual(ContextualValue::CurrentItemField("tags".to_string())),
+                false,
+            )],
+            ..Default::default()
+        };
+
+        let (resolved, missing) =
+            GatherService::resolve_contextual_values(def, &QueryContext::default());
+        assert!(missing);
+        assert!(resolved.filters[0].value.is_null());
+    }
+
+    #[test]
+    fn resolve_contextual_current_item_field_for_single_tag_operators() {
+        // `has_tag`/`has_tag_or_descendants` read one uuid; a category
+        // reference stores a list. One tag becomes that uuid; several, or a
+        // non-tag, leave no usable value and the gather renders nothing —
+        // never a list the builder would drop the filter from.
+        let only = Uuid::now_v7();
+        for operator in [FilterOperator::HasTag, FilterOperator::HasTagOrDescendants] {
+            let resolve = |fields: serde_json::Value| {
+                let context = QueryContext {
+                    current_item_id: Some(Uuid::now_v7()),
+                    current_item_fields: Some(fields),
+                    ..Default::default()
+                };
+                let def = QueryDefinition {
+                    filters: vec![filter(
+                        "fields.tags",
+                        operator.clone(),
+                        FilterValue::Contextual(ContextualValue::CurrentItemField(
+                            "tags".to_string(),
+                        )),
+                        false,
+                    )],
+                    ..Default::default()
+                };
+                let (resolved, missing) = GatherService::resolve_contextual_values(def, &context);
+                (resolved.filters[0].value.clone(), missing)
+            };
+
+            let (value, missing) = resolve(serde_json::json!({ "tags": [only.to_string()] }));
+            assert!(!missing, "{operator:?}");
+            assert_eq!(value.as_uuid(), Some(only), "{operator:?}: {value:?}");
+
+            let (value, missing) = resolve(serde_json::json!({ "tags": only.to_string() }));
+            assert!(!missing, "{operator:?}");
+            assert_eq!(value.as_uuid(), Some(only), "{operator:?}: {value:?}");
+
+            for fields in [
+                serde_json::json!({ "tags": [Uuid::now_v7().to_string(), Uuid::now_v7().to_string()] }),
+                serde_json::json!({ "tags": ["not-a-tag-id"] }),
+            ] {
+                let (_, missing) = resolve(fields.clone());
+                assert!(missing, "{operator:?} with {fields}");
+            }
+        }
+    }
+
+    #[test]
+    fn resolve_contextual_current_item_field_without_a_value_renders_nothing() {
+        // The item exists but carries no value for this field (absent, null,
+        // an empty list): nothing can share it, so the gather must render
+        // nothing, not drop the filter and list every row.
+        for fields in [
+            serde_json::json!({}),
+            serde_json::json!({ "tags": null }),
+            serde_json::json!({ "tags": [] }),
+            serde_json::json!({ "tags": ["not-a-tag-id"] }),
+        ] {
+            let context = QueryContext {
+                current_item_id: Some(Uuid::now_v7()),
+                current_item_fields: Some(fields),
+                ..Default::default()
+            };
+
+            let def = QueryDefinition {
+                filters: vec![filter(
+                    "fields.tags",
+                    FilterOperator::HasAnyTag,
+                    FilterValue::Contextual(ContextualValue::CurrentItemField("tags".to_string())),
+                    false,
+                )],
+                ..Default::default()
+            };
+
+            let (resolved, missing) = GatherService::resolve_contextual_values(def, &context);
+            assert!(missing);
+            assert!(resolved.filters[0].value.is_null());
         }
     }
 

@@ -808,6 +808,7 @@ fn gather_finds_an_item_by_an_ancestor_tag() {
             viewer: Some(admin()),
             url_args: HashMap::new(),
             language: None,
+            ..Default::default()
         };
         let result = app
             .state

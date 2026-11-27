@@ -130,6 +130,7 @@ async fn bench_access_filtered_gather_at_volume() {
             viewer: Some(viewer),
             url_args: HashMap::new(),
             language: None,
+            ..Default::default()
         };
         let mut best = f64::MAX;
         let mut page_len = 0usize;

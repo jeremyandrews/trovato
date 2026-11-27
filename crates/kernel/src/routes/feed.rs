@@ -644,6 +644,7 @@ async fn serve_feed(
         // The feed's own size, not the page's: `items: 20` on a gather that
         // shows ten a page used to carry ten.
         Some(config.items),
+        None,
     )
     .await
     {
