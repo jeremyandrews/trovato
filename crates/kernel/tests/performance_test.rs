@@ -441,6 +441,85 @@ fn generate_refuses_a_database_it_did_not_generate() {
     });
 }
 
+/// Every account the generator writes, the administrator too, has exactly one
+/// `account.created` event, shaped as the other creation paths shape theirs:
+/// `path` `generate`, `by` `operator`, no actor, no address, a v7 id, and
+/// `admin` on the administrator's alone.
+#[test]
+fn generate_records_every_account_it_creates() {
+    run_test(async {
+        let site = shared_site();
+        let db = &site.app.db;
+        let options = common::perf::site_options();
+
+        let accounts: Vec<(uuid::Uuid, String, bool)> = sqlx::query_as(
+            "SELECT id, name, is_admin FROM users WHERE name LIKE 'gen\\_%' ORDER BY name",
+        )
+        .fetch_all(db)
+        .await
+        .unwrap();
+        assert_eq!(accounts.len(), usize::try_from(options.users).unwrap() + 1);
+
+        // Every `account.created` a generated account has, whatever its path
+        // or shape: a second event of any kind is as wrong as none.
+        type Event = (
+            uuid::Uuid,
+            Option<uuid::Uuid>,
+            String,
+            Option<uuid::Uuid>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            serde_json::Value,
+        );
+        let events: Vec<Event> = sqlx::query_as(
+            "SELECT e.id, e.user_id, e.outcome, e.actor_id, e.subject_hash, e.ip_address, \
+                    e.user_agent, e.details \
+             FROM security_audit_log e JOIN users u ON u.id = e.user_id \
+             WHERE e.kind = 'account.created' AND u.name LIKE 'gen\\_%'",
+        )
+        .fetch_all(db)
+        .await
+        .unwrap();
+        assert_eq!(
+            events.len(),
+            accounts.len(),
+            "one event per generated account"
+        );
+        // And no `generate` event for an account that is not a generated one.
+        let generate_events: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM security_audit_log \
+             WHERE kind = 'account.created' AND details->>'path' = 'generate'",
+        )
+        .fetch_one(db)
+        .await
+        .unwrap();
+        assert_eq!(generate_events, i64::try_from(accounts.len()).unwrap());
+
+        for (id, name, is_admin) in &accounts {
+            let mine: Vec<_> = events.iter().filter(|e| e.1 == Some(*id)).collect();
+            assert_eq!(mine.len(), 1, "{name} has {} events", mine.len());
+            let (event_id, _, outcome, actor, subject, ip, agent, details) = mine[0];
+            assert_eq!(event_id.get_version_num(), 7, "{name}'s event id");
+            assert_eq!(outcome, "success", "{name}");
+            assert_eq!(
+                (actor, subject, ip, agent),
+                (&None, &None, &None, &None),
+                "{name}: an actor, a subject, an address or a user agent"
+            );
+            assert_eq!(details["path"], "generate", "{name}: {details}");
+            assert_eq!(details["by"], "operator", "{name}: {details}");
+            assert_eq!(details["active"], true, "{name}: {details}");
+            if *is_admin {
+                assert_eq!(name, "gen_admin");
+                assert_eq!(details["admin"], true, "{name}: {details}");
+            } else {
+                assert!(details.get("admin").is_none(), "{name}: {details}");
+            }
+        }
+    });
+}
+
 /// Signing up writes the account and queues its verification mail in one
 /// transaction (BG18): the queue adds one insert to the write, and the counts
 /// say so.

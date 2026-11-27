@@ -1121,9 +1121,43 @@ pub struct ApiRequest {
     /// existed deserializes with it empty.
     #[serde(default)]
     pub files: Vec<UploadedFile>,
+    /// The values of a submitted form the kernel built for this plugin, once
+    /// the submission has passed the kernel's checks.
+    ///
+    /// `Some` only on a request that posts a form an earlier response of this
+    /// plugin carried in [`ApiResponse::form`], and only after the kernel has
+    /// checked its CSRF token, that the form was served to this visitor by
+    /// this plugin, that every `required` input has a value, and that no
+    /// plugin refused it in `tap_form_validate`. A failed submission never
+    /// reaches this callback: the kernel shows the form again with its errors.
+    ///
+    /// Holds the inputs the form rendered and nothing else, the same values
+    /// `tap_form_validate` and `tap_form_submit` see: each name once, a string,
+    /// or an array of strings for a repeated name. A checkbox left unticked is
+    /// absent. Password inputs are never included. [`Self::form_value`] reads
+    /// one as a string.
+    ///
+    /// `None` for every other request; [`Self::body`] still carries the raw
+    /// body either way.
+    ///
+    /// Added after 0.105.0 (B83b); `#[serde(default)]`, so a payload from a
+    /// kernel that does not send it deserializes with it `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form_values: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 impl ApiRequest {
+    /// One value of a submitted form ([`Self::form_values`]) as a string:
+    /// `None` when the request carries no validated form or the form posted
+    /// nothing under `name`, and the first value of a repeated name.
+    pub fn form_value(&self, name: &str) -> Option<&str> {
+        match self.form_values.as_ref()?.get(name)? {
+            serde_json::Value::String(value) => Some(value),
+            serde_json::Value::Array(values) => values.first()?.as_str(),
+            _ => None,
+        }
+    }
+
     /// Construct a request. Optional fields default to empty.
     pub fn new(
         callback: impl Into<String>,
@@ -1143,6 +1177,7 @@ impl ApiRequest {
             authenticated,
             csrf_token: String::new(),
             files: Vec::new(),
+            form_values: None,
         }
     }
 
@@ -1200,6 +1235,48 @@ pub struct ApiResponse {
     /// Ignored unless [`Self::theme`] is set.
     #[serde(default)]
     pub title: String,
+    /// A form for the kernel to build, render and check, shown after
+    /// [`Self::body`].
+    ///
+    /// The value has the shape a `tap_form_alter` implementation receives: a
+    /// `form_id`, and `elements` keyed by input name, each with a `type`
+    /// (`textfield`, `textarea`, `select`, `checkbox`, `hidden`, `input`,
+    /// `submit`, `markup`, …) and optional `title`, `description`,
+    /// `default_value`, `required`, `weight` and `attributes`. `title`,
+    /// `description`, `action` and `attributes` may be set on the form itself.
+    /// The `form_id` must start with the plugin's own name and an underscore.
+    /// The kernel fills in what a plugin cannot: the build id, the CSRF token
+    /// and, when `action` is empty, this request's path.
+    ///
+    /// ```ignore
+    /// ApiResponse::themed("Contact", "<p>Write to us.</p>").with_form(json!({
+    ///     "form_id": "my_plugin_contact",
+    ///     "elements": {
+    ///         "message": {"type": "textarea", "rows": 6, "title": "Message", "required": true},
+    ///         "send": {"type": "submit", "value": "Send", "weight": 10}
+    ///     }
+    /// }))
+    /// ```
+    ///
+    /// The kernel builds it with `FormService::build`, so `tap_form_alter`
+    /// reaches it and its state is saved for this visitor, and renders it with
+    /// the site's form templates. When it is posted, to this route or another
+    /// `api` route of the same plugin, the kernel checks the token, that the
+    /// form is this plugin's and was served to this visitor, that every
+    /// `required` input has a value, and `tap_form_validate`. A submission
+    /// that passes reaches the route's callback with
+    /// [`ApiRequest::form_values`] set, and `tap_form_submit` is dispatched
+    /// once that callback answers with a status below 400. A submission that
+    /// fails is answered by the kernel: it asks this plugin again for the page
+    /// the form was served on and shows the form there with the errors and
+    /// what the visitor typed, under status 422.
+    ///
+    /// An unthemed response carrying a form is served as HTML.
+    ///
+    /// Added after 0.105.0 (B83b); `#[serde(default)]`, so a response from a
+    /// plugin built before it deserializes with it `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub form: Option<serde_json::Value>,
 }
 
 fn default_api_content_type() -> String {
@@ -1218,6 +1295,7 @@ impl ApiResponse {
             content_type: default_api_content_type(),
             theme: false,
             title: String::new(),
+            form: None,
         })
     }
 
@@ -1229,6 +1307,7 @@ impl ApiResponse {
             content_type: default_api_content_type(),
             theme: false,
             title: String::new(),
+            form: None,
         }
     }
 
@@ -1240,6 +1319,7 @@ impl ApiResponse {
             content_type: default_api_content_type(),
             theme: false,
             title: String::new(),
+            form: None,
         }
     }
 
@@ -1259,6 +1339,7 @@ impl ApiResponse {
             content_type: "text/html; charset=utf-8".to_string(),
             theme: true,
             title: title.into(),
+            form: None,
         }
     }
 
@@ -1278,6 +1359,13 @@ impl ApiResponse {
     /// Override the content type.
     pub fn content_type(mut self, content_type: impl Into<String>) -> Self {
         self.content_type = content_type.into();
+        self
+    }
+
+    /// Attach a form for the kernel to build and render after the body; see
+    /// [`Self::form`].
+    pub fn with_form(mut self, form: serde_json::Value) -> Self {
+        self.form = Some(form);
         self
     }
 }

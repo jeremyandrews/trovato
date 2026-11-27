@@ -65,8 +65,9 @@ async fn csrf_meta(app: &TestApp, cookies: &str, path: &str) -> String {
     html[start..end].to_string()
 }
 
-/// The `_token` value from the first form on a page.
-async fn form_token(app: &TestApp, cookies: &str, path: &str) -> (String, String) {
+/// The `_token` value from the first form on a page, and the first form
+/// build id on it (empty when it has none), which a pipeline form posts back.
+async fn form_token(app: &TestApp, cookies: &str, path: &str) -> (String, String, String) {
     let response = app
         .request_with_cookies(Request::get(path).body(Body::empty()).unwrap(), cookies)
         .await;
@@ -83,7 +84,8 @@ async fn form_token(app: &TestApp, cookies: &str, path: &str) -> (String, String
         .map(|i| i + needle.len())
         .unwrap_or_else(|| panic!("no form token on {path}: {html}"));
     let end = html[start..].find('"').unwrap() + start;
-    (cookies, html[start..end].to_string())
+    let build = common::input_value_in(&html, "_form_build_id").unwrap_or_default();
+    (cookies, html[start..end].to_string(), build)
 }
 
 fn encode(value: &str) -> String {
@@ -226,12 +228,16 @@ async fn step_up_with_password(app: &TestApp, account: &Account) -> String {
         .reset("password", "198.51.100.9")
         .await
         .ok();
-    let (cookies, token) = form_token(app, &account.cookies, "/user/delete").await;
+    let (cookies, token, build) = form_token(app, &account.cookies, "/user/delete").await;
     let response = post_form(
         app,
         &cookies,
         "/user/delete/reauth",
-        &[("_token", &token), ("password", PASSWORD)],
+        &[
+            ("_token", &token),
+            ("_form_build_id", &build),
+            ("password", PASSWORD),
+        ],
     )
     .await;
     assert_eq!(
@@ -289,9 +295,14 @@ fn deleting_without_a_step_up_does_nothing() {
 
         // A valid CSRF token from a page the account can legitimately load, so the
         // only thing missing is the step-up.
-        let (cookies, token) = form_token(app, &account.cookies, "/user/profile").await;
-        let response =
-            post_form(app, &cookies, "/user/delete/confirm", &[("_token", &token)]).await;
+        let (cookies, token, build) = form_token(app, &account.cookies, "/user/profile").await;
+        let response = post_form(
+            app,
+            &cookies,
+            "/user/delete/confirm",
+            &[("_token", &token), ("_form_build_id", &build)],
+        )
+        .await;
 
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
         assert_eq!(
@@ -325,12 +336,16 @@ fn a_wrong_password_does_not_step_the_session_up() {
             .await
             .ok();
 
-        let (cookies, token) = form_token(app, &account.cookies, "/user/delete").await;
+        let (cookies, token, build) = form_token(app, &account.cookies, "/user/delete").await;
         let response = post_form(
             app,
             &cookies,
             "/user/delete/reauth",
-            &[("_token", &token), ("password", "not-the-password")],
+            &[
+                ("_token", &token),
+                ("_form_build_id", &build),
+                ("password", "not-the-password"),
+            ],
         )
         .await;
 
@@ -420,7 +435,7 @@ fn a_password_account_deletes_itself_and_its_content_is_reattributed() {
 
         // The confirmation screen says what will happen, in the terms the policy
         // uses, and counts the content.
-        let (cookies, token) = form_token(app, &cookies, "/user/delete/confirm").await;
+        let (cookies, token, build) = form_token(app, &cookies, "/user/delete/confirm").await;
         let screen = body_text(
             app.request_with_cookies(
                 Request::get("/user/delete/confirm")
@@ -455,8 +470,13 @@ fn a_password_account_deletes_itself_and_its_content_is_reattributed() {
             .len();
         assert!(indexed >= 2, "two sessions indexed, got {indexed}");
 
-        let response =
-            post_form(app, &cookies, "/user/delete/confirm", &[("_token", &token)]).await;
+        let response = post_form(
+            app,
+            &cookies,
+            "/user/delete/confirm",
+            &[("_token", &token), ("_form_build_id", &build)],
+        )
+        .await;
         let status = response.status();
         let reason = body_text(response).await;
         assert_eq!(status, StatusCode::SEE_OTHER, "delete failed: {reason}");
@@ -561,10 +581,15 @@ fn the_deleted_accounts_session_stops_working() {
         let app = shared_app().await;
         let account = seed_account(app, "delsession", false).await;
         let cookies = step_up_with_password(app, &account).await;
-        let (cookies, token) = form_token(app, &cookies, "/user/delete/confirm").await;
+        let (cookies, token, build) = form_token(app, &cookies, "/user/delete/confirm").await;
 
-        let response =
-            post_form(app, &cookies, "/user/delete/confirm", &[("_token", &token)]).await;
+        let response = post_form(
+            app,
+            &cookies,
+            "/user/delete/confirm",
+            &[("_token", &token), ("_form_build_id", &build)],
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
 
         // The same cookie must no longer reach an authenticated page.
@@ -705,9 +730,14 @@ fn a_passkey_account_deletes_itself_after_a_real_assertion() {
             }
         };
 
-        let (cookies, token) = form_token(app, &cookies, "/user/delete/confirm").await;
-        let response =
-            post_form(app, &cookies, "/user/delete/confirm", &[("_token", &token)]).await;
+        let (cookies, token, build) = form_token(app, &cookies, "/user/delete/confirm").await;
+        let response = post_form(
+            app,
+            &cookies,
+            "/user/delete/confirm",
+            &[("_token", &token), ("_form_build_id", &build)],
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
 
         let alive: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id = $1")
@@ -849,9 +879,14 @@ fn an_administrator_with_a_colleague_can_delete_itself() {
         let account = seed_account(app, "deladmin", true).await;
 
         let cookies = step_up_with_password(app, &account).await;
-        let (cookies, token) = form_token(app, &cookies, "/user/delete/confirm").await;
-        let response =
-            post_form(app, &cookies, "/user/delete/confirm", &[("_token", &token)]).await;
+        let (cookies, token, build) = form_token(app, &cookies, "/user/delete/confirm").await;
+        let response = post_form(
+            app,
+            &cookies,
+            "/user/delete/confirm",
+            &[("_token", &token), ("_form_build_id", &build)],
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
 
         let alive: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id = $1")
@@ -879,12 +914,12 @@ fn an_admin_can_delete_an_account_that_authored_content() {
         let victim = seed_account(app, "delvictim", false).await;
         let admin = seed_account(app, "deladmin2", true).await;
 
-        let (cookies, token) = form_token(app, &admin.cookies, "/admin/people").await;
+        let (cookies, token, build) = form_token(app, &admin.cookies, "/admin/people").await;
         let response = post_form(
             app,
             &cookies,
             &format!("/admin/people/{}/delete", victim.id),
-            &[("_token", &token)],
+            &[("_token", &token), ("_form_build_id", &build)],
         )
         .await;
         assert_eq!(
@@ -926,12 +961,12 @@ fn an_admin_deletion_is_audited_as_account_deleted() {
         let victim = seed_account(app, "deladmin4victim", false).await;
         let admin = seed_account(app, "deladmin4", true).await;
 
-        let (cookies, token) = form_token(app, &admin.cookies, "/admin/people").await;
+        let (cookies, token, build) = form_token(app, &admin.cookies, "/admin/people").await;
         let response = post_form(
             app,
             &cookies,
             &format!("/admin/people/{}/delete", victim.id),
-            &[("_token", &token)],
+            &[("_token", &token), ("_form_build_id", &build)],
         )
         .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
@@ -985,12 +1020,12 @@ fn a_deletion_refused_for_lack_of_permission_writes_no_account_deleted_event() {
         .await
         .unwrap();
 
-        let (cookies, token) = form_token(app, &bystander.cookies, "/user/profile").await;
+        let (cookies, token, build) = form_token(app, &bystander.cookies, "/user/profile").await;
         let response = post_form(
             app,
             &cookies,
             &format!("/admin/people/{}/delete", victim.id),
-            &[("_token", &token)],
+            &[("_token", &token), ("_form_build_id", &build)],
         )
         .await;
         assert_ne!(
@@ -1043,12 +1078,12 @@ fn an_admin_deletion_ends_the_accounts_sessions_and_empties_its_index() {
         let before = app.state.session_registry().list(victim.id).await.unwrap();
         assert_eq!(before.len(), 1, "the victim's session is indexed");
 
-        let (cookies, token) = form_token(app, &admin.cookies, "/admin/people").await;
+        let (cookies, token, build) = form_token(app, &admin.cookies, "/admin/people").await;
         let response = post_form(
             app,
             &cookies,
             &format!("/admin/people/{}/delete", victim.id),
-            &[("_token", &token)],
+            &[("_token", &token), ("_form_build_id", &build)],
         )
         .await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);

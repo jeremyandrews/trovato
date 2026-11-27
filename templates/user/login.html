@@ -14,34 +14,7 @@
         <div class="message message--success" role="status">{{ success | escape }}</div>
         {% endif %}
 
-        {% if error %}
-        <div class="message message--error" role="status">{{ error | escape }}</div>
-        {% endif %}
-
-        <form method="post" action="/user/login" class="login-form">
-            <input type="hidden" name="_token" value="{{ csrf_token }}">
-            {% if destination %}<input type="hidden" name="destination" value="{{ destination }}">{% endif %}
-
-            <div class="login-form__field">
-                <label for="username" class="login-form__label">Username or e-mail address</label>
-                <input type="text" id="username" name="username" class="login-form__input" required autofocus placeholder="Enter your username or e-mail address">
-            </div>
-
-            <div class="login-form__field">
-                <label for="password" class="login-form__label">Password</label>
-                <input type="password" id="password" name="password" class="login-form__input" required placeholder="Enter your password">
-            </div>
-
-            <div class="login-form__options">
-                <label class="login-form__remember">
-                    <input type="checkbox" name="remember_me" value="1">
-                    <span>Remember me</span>
-                </label>
-                <a href="/user/password-reset" class="login-form__forgot">Forgot password?</a>
-            </div>
-
-            <button type="submit" class="login-form__submit">Sign in</button>
-        </form>
+        {{ login_form | safe }} {# SAFE: kernel form renderer output — every value in it is escaped by the form templates #}
 
         {% if webauthn_available %}
         {# The passkey path is the SSR entry point onto the same JSON ceremony

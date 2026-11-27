@@ -567,7 +567,7 @@ fn an_anonymous_visitor_posts_a_plugin_served_form_without_javascript() {
             "a _token field must be accepted in place of the header: {body}"
         );
         assert!(
-            body.contains("received: hello from a plain form"),
+            body.contains("message=hello+from+a+plain+form"),
             "the plugin must have been dispatched with the body: {body}"
         );
 
@@ -696,6 +696,197 @@ fn a_json_body_carrying_a_token_field_is_not_accepted() {
             )
             .await;
         assert_eq!(response.status(), StatusCode::OK);
+
+        disable_plugin(app).await;
+    });
+}
+
+/// The value of the hidden input `name` in `html`.
+fn hidden_value(html: &str, name: &str) -> String {
+    let needle = format!(r#"name="{name}" value=""#);
+    let start = html
+        .find(&needle)
+        .unwrap_or_else(|| panic!("no {name} in: {html}"))
+        + needle.len();
+    let end = start + html[start..].find('"').unwrap();
+    html[start..end].to_string()
+}
+
+/// GET `/tpa/pipeline`: the session, the page, its form's token and build id.
+async fn load_pipeline_form(app: &TestApp) -> (String, String, String, String) {
+    let response = app
+        .request(Request::get("/tpa/pipeline").body(Body::empty()).unwrap())
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let cookies = common::extract_cookies(&response);
+    let html = text_body(response).await;
+    let token = hidden_value(&html, "_token");
+    let build_id = hidden_value(&html, "_form_build_id");
+    (cookies, html, token, build_id)
+}
+
+/// POST `body` form-encoded to `/tpa/pipeline` under `cookies`.
+async fn post_pipeline(app: &TestApp, cookies: &str, body: String) -> (StatusCode, String) {
+    let response = app
+        .request_with_cookies(
+            Request::post("/tpa/pipeline")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    (status, text_body(response).await)
+}
+
+/// **The plugin form seam (B83b).** A plugin describes a form in
+/// `ApiResponse::form`; the kernel builds it through `FormService` (token,
+/// build id, saved state), draws it with the site's form templates after the
+/// plugin's body, and hands the plugin's POST callback only the checked
+/// values of the inputs the form rendered.
+#[test]
+fn a_plugin_form_is_built_drawn_and_checked_by_the_kernel() {
+    common::run_test(async {
+        let app = app();
+
+        let (cookies, html, token, build_id) = load_pipeline_form(app).await;
+        let intro = html.find("tpa-pipeline-intro").expect("the plugin's body");
+        let form = html
+            .find(r#"<form id="test_plugin_api_note" action="/tpa/pipeline" method="post""#)
+            .unwrap_or_else(|| panic!("the kernel's form markup: {html}"));
+        assert!(intro < form, "the form follows the body");
+        for marker in THEME_CHROME {
+            assert!(html.contains(marker), "missing {marker}: {html}");
+        }
+
+        let (status, body) = post_pipeline(
+            app,
+            &cookies,
+            format!(
+                "_token={token}&_form_build_id={build_id}&message=hi+there&mood=loud&smuggled=x"
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let start = body.find("tpa-pipeline-values").expect("the values");
+        let shown = &body[start..start + body[start..].find("</p>").unwrap()];
+        assert!(
+            shown.contains("&quot;message&quot;:&quot;hi there&quot;"),
+            "{shown}"
+        );
+        assert!(
+            shown.contains("&quot;mood&quot;:&quot;loud&quot;"),
+            "{shown}"
+        );
+        for absent in ["_token", "_form_build_id", "smuggled"] {
+            assert!(
+                !shown.contains(absent),
+                "only rendered inputs reach the plugin: {shown}"
+            );
+        }
+
+        disable_plugin(app).await;
+    });
+}
+
+/// A submission that fails a check never reaches the plugin's POST callback:
+/// the kernel asks the plugin for the page again and shows the form with the
+/// error and what was typed, under 422, with a fresh token.
+#[test]
+fn a_failed_plugin_form_submission_is_shown_again_by_the_kernel() {
+    common::run_test(async {
+        let app = app();
+
+        let (cookies, _, token, build_id) = load_pipeline_form(app).await;
+        let (status, html) = post_pipeline(
+            app,
+            &cookies,
+            format!("_token={token}&_form_build_id={build_id}&message=+&mood=loud"),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{html}");
+        assert!(html.contains("Message is required."), "{html}");
+        assert!(
+            html.contains("tpa-pipeline-intro"),
+            "the page, again: {html}"
+        );
+        assert!(
+            !html.contains("tpa-pipeline-values"),
+            "the callback never ran: {html}"
+        );
+        assert!(
+            html.contains(r#"<option value="loud" selected>"#),
+            "what was chosen stays chosen: {html}"
+        );
+        assert_ne!(hidden_value(&html, "_token"), token, "a fresh token");
+
+        disable_plugin(app).await;
+    });
+}
+
+/// The seam does not loosen the token check: a plugin form posted with no
+/// token, a forged one, or two is refused with 403 before anything runs.
+#[test]
+fn a_plugin_form_post_without_its_token_is_refused() {
+    common::run_test(async {
+        let app = app();
+
+        let (cookies, _, token, build_id) = load_pipeline_form(app).await;
+        for body in [
+            format!("_form_build_id={build_id}&message=x"),
+            format!("_token=forged&_form_build_id={build_id}&message=x"),
+            format!("_token={token}&_token=forged&_form_build_id={build_id}&message=x"),
+        ] {
+            let (status, html) = post_pipeline(app, &cookies, body.clone()).await;
+            assert_eq!(status, StatusCode::FORBIDDEN, "{body}: {html}");
+        }
+
+        disable_plugin(app).await;
+    });
+}
+
+/// A build id that names no form saved for this visitor is refused as an
+/// expired form, and the plugin hears nothing.
+#[test]
+fn a_plugin_form_post_naming_no_saved_form_is_refused_as_expired() {
+    common::run_test(async {
+        let app = app();
+
+        let (cookies, _, token, _) = load_pipeline_form(app).await;
+        let (status, html) = post_pipeline(
+            app,
+            &cookies,
+            format!("_token={token}&_form_build_id={}&message=x", Uuid::now_v7()),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{html}");
+        assert!(html.contains("expired"), "{html}");
+        assert!(!html.contains("tpa-pipeline-values"));
+
+        disable_plugin(app).await;
+    });
+}
+
+/// A themed body that is a render tree is drawn through the theme's element
+/// templates, not shown as its JSON (B83b).
+#[test]
+fn a_themed_render_tree_is_drawn_by_the_theme() {
+    common::run_test(async {
+        let app = app();
+
+        let response = app
+            .request(Request::get("/tpa/tree").body(Body::empty()).unwrap())
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = text_body(response).await;
+        assert!(html.contains("tpa-tree-note"), "{html}");
+        assert!(!html.contains("\"#type\""), "not its JSON: {html}");
+        assert!(
+            !html.contains("<b>a tree"),
+            "the value is text, escaped: {html}"
+        );
 
         disable_plugin(app).await;
     });

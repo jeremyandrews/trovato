@@ -10,6 +10,8 @@ pub mod host_errors;
 pub mod render;
 pub mod types;
 
+pub use render::escape_html;
+
 // Re-export proc macros
 pub use trovato_sdk_macros::{plugin_tap, plugin_tap_result};
 

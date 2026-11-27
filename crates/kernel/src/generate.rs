@@ -13,7 +13,9 @@
 //! - `--items` published `blog` posts (the `trovato_blog` plugin's type), each
 //!   with a body, two tags and one revision, newest first by number;
 //! - `--comments` published comments, spread over the posts newest first;
-//! - the site marked installed, its front page set to `/blog`.
+//! - the site marked installed, its front page set to `/blog`;
+//! - an `account.created` security event for every account, the
+//!   administrator's with `details.admin`, in the transaction that writes them.
 //!
 //! The blog plugin's own gathers give the site its listing (`/blog`), term
 //! pages (`/blog/tag/<slug>`) and feeds. Search vectors are built by the
@@ -31,6 +33,7 @@ use std::time::Instant;
 
 use anyhow::{Context, Result, bail};
 use sqlx::PgPool;
+use uuid::Uuid;
 
 /// What to generate.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
@@ -193,6 +196,11 @@ pub async fn generate(
     let started = Instant::now();
     progress("users");
     let pass = crate::models::user::hash_password(admin_password)?;
+    let members = i64::try_from(options.users)?;
+    // The accounts and their `account.created` events in one transaction, the
+    // events written by one statement per kind of account: a generated site
+    // never holds an account the security log does not know about.
+    let mut tx = pool.begin().await?;
     sqlx::query(sqlx::AssertSqlSafe(format!(
         "INSERT INTO users (id, name, pass, mail, is_admin, status, created) \
          SELECT {id}, 'gen_user_' || n, $1, 'gen_user_' || n || '@example.invalid', false, 1, \
@@ -202,8 +210,8 @@ pub async fn generate(
     )))
     .bind(&pass)
     .bind(now)
-    .bind(i64::try_from(options.users)?)
-    .execute(pool)
+    .bind(members)
+    .execute(&mut *tx)
     .await
     .context("writing users")?;
     sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -213,9 +221,33 @@ pub async fn generate(
     )))
     .bind(&pass)
     .bind(now)
-    .execute(pool)
+    .execute(&mut *tx)
     .await
     .context("writing the administrator")?;
+    // `generate` grants no role: the administrator flag is the one privilege
+    // it gives, and the administrator's event says so (`admin`).
+    let created = crate::services::user::account_created_event(Uuid::nil(), None, "generate", true);
+    crate::audit::record_for_each_account(
+        &mut tx,
+        &created,
+        // In id order, so each event's `user_id` lands at the end of its
+        // index and its foreign key check reads the users index in order:
+        // about a tenth less time than in row number order.
+        &format!(
+            "SELECT {id} FROM generate_series(1, {members}::bigint) n ORDER BY 1",
+            id = id_sql(seed, "user", "n")
+        ),
+    )
+    .await
+    .context("recording the users in the security log")?;
+    crate::audit::record_for_each_account(
+        &mut tx,
+        &created.detail("admin", true),
+        &format!("SELECT {id}", id = id_sql(seed, "admin", "0")),
+    )
+    .await
+    .context("recording the administrator in the security log")?;
+    tx.commit().await?;
     report.phases.push(PhaseReport {
         name: "users",
         rows: options.users + 1,

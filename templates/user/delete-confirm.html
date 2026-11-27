@@ -41,15 +41,7 @@
     want one. After this you cannot.</p>
     <p>A confirmation goes to <code>{{ email | escape }}</code>.</p>
 
-    <form method="post" action="/user/delete/confirm" style="margin-top: 2rem;">
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
-        <button type="submit" class="button"
-                style="padding: 0.75rem 1.5rem; font-size: 1rem; cursor: pointer; background: #c00; color: #fff; border: none; border-radius: 4px;"
-                data-confirm="Delete your account? This cannot be undone.">
-            Delete my account permanently
-        </button>
-        <a href="/user/profile" style="margin-left: 1rem;">Cancel</a>
-    </form>
+    {{ confirm_form | safe }} {# SAFE: kernel form renderer output — every value in it is escaped by the form templates #}
     {% endif %}
 </div>
 {% endblock %}

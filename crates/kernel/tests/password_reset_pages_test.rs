@@ -158,12 +158,17 @@ async fn request_reset_page(app: &TestApp, email: &str, ip: &str) -> (StatusCode
     let (status, cookies, html) = get(app, "/user/password-reset", ip, "").await;
     assert_eq!(status, StatusCode::OK, "GET /user/password-reset");
     let token = csrf_token(&html);
+    let build = common::form_build_id(&html, "user_password_reset_request");
     let response = post_form(
         app,
         "/user/password-reset",
         ip,
         &cookies,
-        &[("_token", &token), ("email", email)],
+        &[
+            ("_token", &token),
+            ("_form_build_id", &build),
+            ("email", email),
+        ],
     )
     .await;
     let status = response.status();
@@ -229,6 +234,7 @@ async fn set_password(
     let (status, cookies, html) = get(app, link, ip, "").await;
     assert_eq!(status, StatusCode::OK, "GET {link}");
     let token = csrf_token(&html);
+    let build = common::form_build_id(&html, "user_password_reset");
     post_form(
         app,
         link,
@@ -236,6 +242,7 @@ async fn set_password(
         &cookies,
         &[
             ("_token", &token),
+            ("_form_build_id", &build),
             ("password", password),
             ("confirm_password", confirm),
         ],
@@ -550,8 +557,8 @@ fn a_mismatch_or_a_weak_password_rerenders_and_keeps_the_token() {
             "the form again: {html}"
         );
         assert!(
-            html.contains("message--error"),
-            "the weak password error is shown: {html}"
+            html.contains(r#"class="form__errors""#),
+            "the weak password error is shown on the form: {html}"
         );
 
         assert_eq!(password_hash(app, user).await, before, "nothing changed");
@@ -579,16 +586,20 @@ fn two_concurrent_posts_of_one_token_change_the_password_once() {
         let (_, cookies_b, html_b) = get(app, &link, &ip, "").await;
         let token_a = csrf_token(&html_a);
         let token_b = csrf_token(&html_b);
+        let build_a = common::form_build_id(&html_a, "user_password_reset");
+        let build_b = common::form_build_id(&html_b, "user_password_reset");
         let first = "bl07-Race-Password-AAA1";
         let second = "bl07-Race-Password-BBB2";
 
         let fields_a = [
             ("_token", token_a.as_str()),
+            ("_form_build_id", build_a.as_str()),
             ("password", first),
             ("confirm_password", first),
         ];
         let fields_b = [
             ("_token", token_b.as_str()),
+            ("_form_build_id", build_b.as_str()),
             ("password", second),
             ("confirm_password", second),
         ];

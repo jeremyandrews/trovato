@@ -7,6 +7,7 @@
 use serde::Deserialize;
 use trovato_sdk::host;
 use trovato_sdk::prelude::*;
+use trovato_sdk::render::escape_html;
 
 /// Row returned from the series sibling query.
 #[derive(Debug, Deserialize)]
@@ -22,27 +23,6 @@ pub fn tap_perm() -> Vec<PermissionDefinition> {
         "view series navigation",
         "View series navigation links on blog posts",
     )]
-}
-
-/// Escape a string for interpolation into HTML text or a double-quoted
-/// attribute value.
-///
-/// The SDK ships no escaping helper (**G-SDK-NO-ESCAPE**, Argus M3), so every
-/// rendering plugin writes this. Kept deliberately conservative: the five
-/// characters that can break out of text or an attribute.
-fn escape(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#x27;"),
-            _ => out.push(ch),
-        }
-    }
-    out
 }
 
 /// Render series navigation when viewing a blog item with a series title.
@@ -117,7 +97,7 @@ pub fn tap_item_view(item: Item) -> String {
     html.push_str(&format!(
         "<p class=\"series-nav__position\">Part {position} of {total} in the series \
          <strong class=\"series-nav__title\">{}</strong></p>",
-        escape(&series_title)
+        escape_html(&series_title)
     ));
 
     html.push_str("<ul class=\"series-nav__links\">");
@@ -126,8 +106,8 @@ pub fn tap_item_view(item: Item) -> String {
         html.push_str(&format!(
             "<li class=\"series-nav__prev\"><a rel=\"prev\" href=\"/item/{}\">\
              &larr; {}</a></li>",
-            escape(&prev.id),
-            escape(&prev.title)
+            escape_html(&prev.id),
+            escape_html(&prev.title)
         ));
     }
     if pos + 1 < total {
@@ -135,8 +115,8 @@ pub fn tap_item_view(item: Item) -> String {
         html.push_str(&format!(
             "<li class=\"series-nav__next\"><a rel=\"next\" href=\"/item/{}\">\
              {} &rarr;</a></li>",
-            escape(&nxt.id),
-            escape(&nxt.title)
+            escape_html(&nxt.id),
+            escape_html(&nxt.title)
         ));
     }
     html.push_str("</ul></nav>");

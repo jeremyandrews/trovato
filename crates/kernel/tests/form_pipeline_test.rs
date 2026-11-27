@@ -27,6 +27,8 @@ use uuid::Uuid;
 
 const FIXTURES: [&str; 2] = ["test_form_taps", "test_form_taps_b"];
 const AI: &str = "trovato_ai";
+/// The plugin serving a form through `ApiResponse::form` (B83b).
+const PLUGIN_FORMS: &str = "test_plugin_api";
 const PROBE: &str = "b71_alter_probe";
 const BLOCKS: &str = "b71_blocks_probe";
 const WHEN: &str = "b71_when_probe";
@@ -66,7 +68,7 @@ async fn build_app() -> TestApp {
             .await
             .unwrap();
     AI_STATUS.get_or_init(|| ai_status);
-    for plugin in FIXTURES.iter().chain([AI].iter()) {
+    for plugin in FIXTURES.iter().chain([AI, PLUGIN_FORMS].iter()) {
         trovato_kernel::plugin::status::install_plugin(&pool, plugin, "1.0.0")
             .await
             .unwrap_or_else(|e| panic!("failed to install '{plugin}': {e:#}"));
@@ -88,7 +90,13 @@ async fn build_app() -> TestApp {
 /// Put the plugins' status back so they do not load in other test binaries.
 async fn restore_plugins(app: &TestApp) {
     sqlx::query("UPDATE plugin_status SET status = 0 WHERE name = ANY($1)")
-        .bind(FIXTURES.map(String::from).to_vec())
+        .bind(
+            FIXTURES
+                .iter()
+                .chain([PLUGIN_FORMS].iter())
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>(),
+        )
         .execute(&app.db)
         .await
         .ok();
@@ -907,5 +915,820 @@ fn record_autocomplete_works_from_the_item_form_and_only_offers_viewable_targets
             !ids.contains(&staged.to_string().as_str()),
             "offered a target on a stage the editor cannot read: {found}"
         );
+    });
+}
+
+// =============================================================================
+// B83b: the account and comment forms go through the same pipeline
+// =============================================================================
+
+/// The B83b tests change what the fixture refuses, which every form id in the
+/// table shares, so they take turns.
+static B83B: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// What the fixture's `tap_form_alter` adds to the form `form_id`.
+fn probe(form_id: &str) -> String {
+    format!(r#"<p class="b83b-probe">Altered: {form_id}</p>"#)
+}
+
+/// What the fixture's `tap_form_validate` says when it refuses `form_id`.
+fn refusal(form_id: &str) -> String {
+    format!("test_form_taps refuses {form_id}.")
+}
+
+/// Have the fixture refuse `form_id` until the test ends.
+async fn refuse(app: &TestApp, form_id: &'static str) {
+    sqlx::query("INSERT INTO b83b_refuse_forms (form_id) VALUES ($1) ON CONFLICT DO NOTHING")
+        .bind(form_id)
+        .execute(&app.db)
+        .await
+        .unwrap();
+    let db = app.db.clone();
+    common::defer_cleanup(move || async move {
+        let _ = sqlx::query("DELETE FROM b83b_refuse_forms WHERE form_id = $1")
+            .bind(form_id)
+            .execute(&db)
+            .await;
+    });
+}
+
+/// Stop refusing `form_id`.
+async fn accept(app: &TestApp, form_id: &str) {
+    sqlx::query("DELETE FROM b83b_refuse_forms WHERE form_id = $1")
+        .bind(form_id)
+        .execute(&app.db)
+        .await
+        .unwrap();
+}
+
+/// The `<form>` whose id is `form_id` on `html`.
+fn form_of<'a>(html: &'a str, form_id: &str) -> &'a str {
+    let at = html
+        .find(&format!(r#"<form id="{form_id}""#))
+        .unwrap_or_else(|| panic!("no form {form_id} on the page: {html}"));
+    let end = html[at..].find("</form>").expect("the form is closed") + at;
+    &html[at..end]
+}
+
+/// GET `uri` as a browser from `ip`, returning the cookies to send next (the
+/// ones the answer set, else `cookies`) and the page, `&#x2F;` read as `/`.
+async fn visit(app: &TestApp, cookies: &str, uri: &str, ip: &str) -> (String, String) {
+    let response = app
+        .request_with_cookies(
+            Request::get(uri)
+                .header(header::ACCEPT, "text/html")
+                .header("x-forwarded-for", ip)
+                .body(Body::empty())
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let set = common::extract_cookies(&response);
+    let cookies = if set.is_empty() {
+        cookies.to_string()
+    } else {
+        set
+    };
+    let status = response.status();
+    let html = body_string(response).await.replace("&#x2F;", "/");
+    assert!(
+        status == StatusCode::OK || status == StatusCode::FORBIDDEN,
+        "GET {uri}: {status}: {html}"
+    );
+    (cookies, html)
+}
+
+/// POST `fields` and the form `form_id`'s token and build id from `html`.
+async fn submit(
+    app: &TestApp,
+    cookies: &str,
+    uri: &str,
+    ip: &str,
+    html: &str,
+    form_id: &str,
+    fields: &[(&str, &str)],
+) -> (StatusCode, String) {
+    let mut body = form_tokens(form_of(html, form_id));
+    for (name, value) in fields {
+        body.push_str(&format!("&{name}={}", urlencoding::encode(value)));
+    }
+    let response = app
+        .request_with_cookies(
+            Request::post(uri)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::ACCEPT, "text/html")
+                .header("x-forwarded-for", ip)
+                .body(Body::from(body))
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    (status, body_string(response).await.replace("&#x2F;", "/"))
+}
+
+/// The form `form_id` on `html` carries the fixture's alteration.
+fn assert_altered(html: &str, form_id: &str) {
+    assert!(
+        form_of(html, form_id).contains(&probe(form_id)),
+        "{form_id}: tap_form_alter did not reach the form"
+    );
+}
+
+/// A refused submission is shown again with the fixture's error, not saved.
+fn assert_refused(status: StatusCode, text: &str, form_id: &str) {
+    assert!(
+        !status.is_redirection(),
+        "{form_id}: a refused submission went through ({status})"
+    );
+    assert!(
+        form_of(text, form_id).contains(&refusal(form_id)),
+        "{form_id}: the refusal is not shown on the form ({status}): {text}"
+    );
+}
+
+/// The stored password hash of `user`.
+async fn password_hash(app: &TestApp, user: Uuid) -> String {
+    sqlx::query_scalar("SELECT pass FROM users WHERE id = $1")
+        .bind(user)
+        .fetch_one(&app.db)
+        .await
+        .unwrap()
+}
+
+/// A user made for one test, removed when it ends.
+async fn b83b_user(app: &TestApp, prefix: &str, permissions: &[&str]) -> (Uuid, String, String) {
+    let (id, cookies) = common::user_holding(app, prefix, permissions).await;
+    let name: String = sqlx::query_scalar("SELECT name FROM users WHERE id = $1")
+        .bind(id)
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+    let db = app.db.clone();
+    common::defer_cleanup(move || async move {
+        let _ = sqlx::query("DELETE FROM users WHERE id = $1")
+            .bind(id)
+            .execute(&db)
+            .await;
+    });
+    (id, cookies, name)
+}
+
+/// The login form, on `/user/login` and on the access-denied page, is altered,
+/// and a refusal leaves the visitor signed out.
+#[test]
+fn b83b_the_login_form_is_altered_and_a_refusal_signs_nobody_in() {
+    run(|app| async move {
+        common::hold_until_cleanup(B83B.lock().await);
+        let (_, _, name) = b83b_user(app, "b83blogin", &[]).await;
+        let ip = common::test_ip_for(&name);
+
+        let (_, denied) = visit(app, "", "/admin", &ip).await;
+        assert_altered(&denied, "user_login");
+
+        let (cookies, html) = visit(app, "", "/user/login?destination=/user/profile", &ip).await;
+        assert_altered(&html, "user_login");
+        refuse(app, "user_login").await;
+        app.state.lockout().clear_all(&name).await.ok();
+        app.state.rate_limiter().reset("login", &ip).await.ok();
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/user/login",
+            &ip,
+            &html,
+            "user_login",
+            &[
+                ("username", &name),
+                ("password", "test-password-123"),
+                ("destination", "/user/profile"),
+            ],
+        )
+        .await;
+        assert_refused(status, &text, "user_login");
+        assert!(
+            text.contains(r#"name="destination" value="/user/profile""#),
+            "the destination survives a refusal"
+        );
+        let response = app
+            .request_with_cookies(
+                Request::get("/user/profile").body(Body::empty()).unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_ne!(
+            response.status(),
+            StatusCode::OK,
+            "a refused login signed the visitor in ({})",
+            response.status()
+        );
+
+        // Accepted, the same form signs in and lands on the destination.
+        accept(app, "user_login").await;
+        let (cookies, html) = visit(app, "", "/user/login?destination=/user/profile", &ip).await;
+        let response = app
+            .request_with_cookies(
+                Request::post("/user/login")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header("x-forwarded-for", &ip)
+                    .body(Body::from(format!(
+                        "{}&username={}&password=test-password-123&destination=%2Fuser%2Fprofile",
+                        form_tokens(form_of(&html, "user_login")),
+                        urlencoding::encode(&name)
+                    )))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "/user/profile"
+        );
+    });
+}
+
+/// The registration form is altered, and a refusal creates no account.
+#[test]
+fn b83b_the_registration_form_is_altered_and_a_refusal_creates_no_account() {
+    use trovato_kernel::models::{RegistrationMode, SiteConfig};
+    run(|app| async move {
+        common::hold_until_cleanup(B83B.lock().await);
+        let saved = SiteConfig::get(&app.db, "user_registration")
+            .await
+            .ok()
+            .flatten();
+        let db = app.db.clone();
+        common::defer_cleanup(move || async move {
+            match saved {
+                Some(value) => {
+                    let _ = SiteConfig::set(&db, "user_registration", value).await;
+                }
+                None => {
+                    let _ = SiteConfig::delete(&db, "user_registration").await;
+                }
+            }
+        });
+        RegistrationMode::Open.save(&app.db).await.unwrap();
+
+        let name = common::username("b83breg");
+        let ip = common::test_ip_for(&name);
+        app.state.rate_limiter().reset("register", &ip).await.ok();
+        let (cookies, html) = visit(app, "", "/user/register", &ip).await;
+        assert_altered(&html, "user_register");
+        refuse(app, "user_register").await;
+        let mail = format!("{name}@example.com");
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/user/register",
+            &ip,
+            &html,
+            "user_register",
+            &[
+                ("username", &name),
+                ("mail", &mail),
+                ("password", "b83b-Password-123"),
+                ("confirm_password", "b83b-Password-123"),
+            ],
+        )
+        .await;
+        assert_refused(status, &text, "user_register");
+        let created: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE name = $1")
+            .bind(&name)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(created, 0, "a refused registration created the account");
+    });
+}
+
+/// The password change form on the profile page is altered, and a refusal
+/// changes no password.
+#[test]
+fn b83b_the_password_form_is_altered_and_a_refusal_keeps_the_password() {
+    run(|app| async move {
+        common::hold_until_cleanup(B83B.lock().await);
+        let (id, cookies, name) = b83b_user(app, "b83bpass", &[]).await;
+        let ip = common::test_ip_for(&name);
+        let (cookies, html) = visit(app, &cookies, "/user/profile", &ip).await;
+        assert_altered(&html, "user_password_change");
+        refuse(app, "user_password_change").await;
+        let before = password_hash(app, id).await;
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/user/password",
+            &ip,
+            &html,
+            "user_password_change",
+            &[
+                ("current_password", "test-password-123"),
+                ("new_password", "b83b-New-Password-1"),
+                ("confirm_password", "b83b-New-Password-1"),
+            ],
+        )
+        .await;
+        assert_refused(status, &text, "user_password_change");
+        assert_eq!(password_hash(app, id).await, before, "the password changed");
+    });
+}
+
+/// The resubscribe form on the profile page and the unsubscribe
+/// confirmation are altered, and a refusal changes no preference.
+#[test]
+fn b83b_the_mail_preference_forms_are_altered_and_a_refusal_changes_nothing() {
+    run(|app| async move {
+        common::hold_until_cleanup(B83B.lock().await);
+        let (id, cookies, name) = b83b_user(app, "b83bmail", &[]).await;
+        let ip = common::test_ip_for(&name);
+        let token = format!("b83b-{}", Uuid::now_v7().simple());
+        sqlx::query(
+            "INSERT INTO user_mail_preference (user_id, plugin, token) VALUES ($1, 'test_form_taps', $2)",
+        )
+        .bind(id)
+        .bind(&token)
+        .execute(&app.db)
+        .await
+        .unwrap();
+        let opted_out = || async {
+            sqlx::query_scalar::<_, bool>(
+                "SELECT opted_out_at IS NOT NULL FROM user_mail_preference WHERE token = $1",
+            )
+            .bind(&token)
+            .fetch_one(&app.db)
+            .await
+            .unwrap()
+        };
+
+        // The confirmation page, to nobody signed in.
+        let path = format!("/user/mail/unsubscribe/{token}");
+        let (anon, html) = visit(app, "", &path, &ip).await;
+        assert_altered(&html, "user_mail_unsubscribe");
+        refuse(app, "user_mail_unsubscribe").await;
+        let (status, text) =
+            submit(app, &anon, &path, &ip, &html, "user_mail_unsubscribe", &[]).await;
+        assert_refused(status, &text, "user_mail_unsubscribe");
+        assert!(!opted_out().await, "a refused unsubscribe opted out");
+
+        // Accepted, it opts out, and the profile page offers Resubscribe.
+        accept(app, "user_mail_unsubscribe").await;
+        let (anon, html) = visit(app, &anon, &path, &ip).await;
+        let (status, _) = submit(app, &anon, &path, &ip, &html, "user_mail_unsubscribe", &[]).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(opted_out().await, "the unsubscribe was not recorded");
+
+        let (cookies, html) = visit(app, &cookies, "/user/profile", &ip).await;
+        assert_altered(&html, "user_mail_resubscribe");
+        refuse(app, "user_mail_resubscribe").await;
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/user/mail/resubscribe",
+            &ip,
+            &html,
+            "user_mail_resubscribe",
+            &[("plugin", "test_form_taps")],
+        )
+        .await;
+        assert_refused(status, &text, "user_mail_resubscribe");
+        assert!(opted_out().await, "a refused resubscribe resubscribed");
+    });
+}
+
+/// Both account deletion forms are altered, and a refusal of either deletes
+/// nothing.
+#[test]
+fn b83b_the_account_deletion_forms_are_altered_and_a_refusal_deletes_nothing() {
+    run(|app| async move {
+        common::hold_until_cleanup(B83B.lock().await);
+        let (id, cookies, name) = b83b_user(app, "b83bdelete", &[]).await;
+        let ip = common::test_ip_for(&name);
+        app.state.rate_limiter().reset("password", &ip).await.ok();
+
+        let (cookies, html) = visit(app, &cookies, "/user/delete", &ip).await;
+        assert_altered(&html, "user_delete_confirm");
+        refuse(app, "user_delete_confirm").await;
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/user/delete/reauth",
+            &ip,
+            &html,
+            "user_delete_confirm",
+            &[("password", "test-password-123")],
+        )
+        .await;
+        assert_refused(status, &text, "user_delete_confirm");
+        let response = app
+            .request_with_cookies(
+                Request::get("/user/delete/confirm")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(
+            response.headers().get(header::LOCATION).unwrap(),
+            "/user/delete",
+            "a refused step-up was accepted"
+        );
+
+        accept(app, "user_delete_confirm").await;
+        let (cookies, html) = visit(app, &cookies, "/user/delete", &ip).await;
+        let (status, _) = submit(
+            app,
+            &cookies,
+            "/user/delete/reauth",
+            &ip,
+            &html,
+            "user_delete_confirm",
+            &[("password", "test-password-123")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER, "the step-up");
+
+        let (cookies, html) = visit(app, &cookies, "/user/delete/confirm", &ip).await;
+        assert_altered(&html, "user_delete_final");
+        refuse(app, "user_delete_final").await;
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/user/delete/confirm",
+            &ip,
+            &html,
+            "user_delete_final",
+            &[],
+        )
+        .await;
+        assert_refused(status, &text, "user_delete_final");
+        let exists: i64 = sqlx::query_scalar("SELECT count(*) FROM users WHERE id = $1")
+            .bind(id)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(exists, 1, "a refused deletion deleted the account");
+    });
+}
+
+/// The comment form (item page and reply page), the edit form and the delete
+/// form are altered, and a refusal writes nothing.
+#[test]
+fn b83b_the_comment_forms_are_altered_and_a_refusal_writes_nothing() {
+    run(|app| async move {
+        common::hold_until_cleanup(B83B.lock().await);
+        app.ensure_plugin_enabled("trovato_comments").await;
+        let (uid, cookies) = admin(app, "b83bcomment").await;
+        let db = app.db.clone();
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query("DELETE FROM users WHERE id = $1")
+                .bind(uid)
+                .execute(&db)
+                .await;
+        });
+        let ip = common::test_ip_for(&uid.to_string());
+        let item = seed_item(app, PROBE, uid, json!({})).await;
+        let comments = || async {
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM comment WHERE item_id = $1")
+                .bind(item)
+                .fetch_one(&app.db)
+                .await
+                .unwrap()
+        };
+
+        let (cookies, html) = visit(app, &cookies, &format!("/item/{item}"), &ip).await;
+        assert_altered(&html, "comment_form");
+        assert!(
+            form_of(&html, "comment_form").contains("data-comment-form"),
+            "comment-post.js finds the form"
+        );
+        let (cookies, reply) = visit(app, &cookies, &format!("/comment/reply/{item}"), &ip).await;
+        assert_altered(&reply, "comment_form");
+
+        refuse(app, "comment_form").await;
+        let path = format!("/api/v1/item/{item}/comments");
+        let (status, text) = submit(
+            app,
+            &cookies,
+            &path,
+            &ip,
+            &html,
+            "comment_form",
+            &[("body", "B83b refused comment"), ("parent_id", "")],
+        )
+        .await;
+        assert_refused(status, &text, "comment_form");
+        assert!(
+            text.contains("B83b refused comment"),
+            "what was written is kept"
+        );
+        assert_eq!(comments().await, 0, "a refused comment was created");
+
+        // An existing comment's edit and delete forms.
+        accept(app, "comment_form").await;
+        let (status, _) = submit(
+            app,
+            &cookies,
+            &path,
+            &ip,
+            &reply,
+            "comment_form",
+            &[("body", "B83b kept comment"), ("parent_id", "")],
+        )
+        .await;
+        assert!(
+            status.is_redirection(),
+            "the comment was not posted: {status}"
+        );
+        let comment: Uuid = sqlx::query_scalar("SELECT id FROM comment WHERE item_id = $1")
+            .bind(item)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        let body_of = || async {
+            sqlx::query_scalar::<_, String>("SELECT body FROM comment WHERE id = $1")
+                .bind(comment)
+                .fetch_one(&app.db)
+                .await
+                .unwrap()
+        };
+
+        let edit = format!("/comment/{comment}/edit");
+        let (cookies, html) = visit(app, &cookies, &edit, &ip).await;
+        assert_altered(&html, "comment_edit");
+        refuse(app, "comment_edit").await;
+        let (status, text) = submit(
+            app,
+            &cookies,
+            &edit,
+            &ip,
+            &html,
+            "comment_edit",
+            &[("body", "B83b edited"), ("subject", "")],
+        )
+        .await;
+        assert_refused(status, &text, "comment_edit");
+        assert_eq!(body_of().await, "B83b kept comment", "a refused edit wrote");
+
+        let delete = format!("/comment/{comment}/delete");
+        let (cookies, html) = visit(app, &cookies, &delete, &ip).await;
+        assert_altered(&html, "comment_delete");
+        refuse(app, "comment_delete").await;
+        let (status, text) =
+            submit(app, &cookies, &delete, &ip, &html, "comment_delete", &[]).await;
+        assert_refused(status, &text, "comment_delete");
+        assert_eq!(comments().await, 1, "a refused delete deleted");
+    });
+}
+
+/// Both password reset forms are altered, and a refusal sends no link and
+/// sets no password.
+#[test]
+fn b83b_the_password_reset_forms_are_altered_and_a_refusal_changes_nothing() {
+    use trovato_kernel::models::password_reset::PasswordResetToken;
+    run(|app| async move {
+        common::hold_until_cleanup(B83B.lock().await);
+        let (id, _, name) = b83b_user(app, "b83breset", &[]).await;
+        let ip = common::test_ip_for(&name);
+        let tokens = || async {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM password_reset_tokens WHERE user_id = $1",
+            )
+            .bind(id)
+            .fetch_one(&app.db)
+            .await
+            .unwrap()
+        };
+
+        let (cookies, html) = visit(app, "", "/user/password-reset", &ip).await;
+        assert_altered(&html, "user_password_reset_request");
+        refuse(app, "user_password_reset_request").await;
+        let mail = format!("{name}@example.com");
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/user/password-reset",
+            &ip,
+            &html,
+            "user_password_reset_request",
+            &[("email", &mail)],
+        )
+        .await;
+        assert_refused(status, &text, "user_password_reset_request");
+        assert!(
+            !text.contains("a reset link has been sent"),
+            "a refused request was answered as sent"
+        );
+        // The link is made in the background; give it the time it would take.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert_eq!(tokens().await, 0, "a refused request made a reset link");
+
+        let (_, token) = PasswordResetToken::create(&app.db, id).await.unwrap();
+        let path = format!("/user/password-reset/{token}");
+        let (cookies, html) = visit(app, &cookies, &path, &ip).await;
+        assert_altered(&html, "user_password_reset");
+        refuse(app, "user_password_reset").await;
+        let before = password_hash(app, id).await;
+        let (status, text) = submit(
+            app,
+            &cookies,
+            &path,
+            &ip,
+            &html,
+            "user_password_reset",
+            &[
+                ("password", "b83b-Reset-Password-1"),
+                ("confirm_password", "b83b-Reset-Password-1"),
+            ],
+        )
+        .await;
+        assert_refused(status, &text, "user_password_reset");
+        assert_eq!(password_hash(app, id).await, before, "the password changed");
+        assert!(
+            PasswordResetToken::find_valid(&app.db, &token)
+                .await
+                .unwrap()
+                .is_some(),
+            "a refused reset spent the link"
+        );
+    });
+}
+
+/// The recovery page's first form is altered; a refusal is shown, and an
+/// accepted post without script is told the flow needs it.
+#[test]
+fn b83b_the_recovery_form_is_altered_and_a_refusal_is_shown() {
+    run(|app| async move {
+        common::hold_until_cleanup(B83B.lock().await);
+        let ip = common::test_ip_for(&common::username("b83brecover"));
+        let (cookies, html) = visit(app, "", "/user/recover", &ip).await;
+        assert_altered(&html, "user_recover");
+        assert!(
+            html.contains(r#"<meta name="csrf-token""#),
+            "the page's script still has its token"
+        );
+        refuse(app, "user_recover").await;
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/user/recover",
+            &ip,
+            &html,
+            "user_recover",
+            &[("identifier", "nobody-b83b")],
+        )
+        .await;
+        assert_refused(status, &text, "user_recover");
+        assert!(!text.contains("needs JavaScript"), "{text}");
+
+        accept(app, "user_recover").await;
+        let (cookies, html) = visit(app, &cookies, "/user/recover", &ip).await;
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/user/recover",
+            &ip,
+            &html,
+            "user_recover",
+            &[("identifier", "nobody-b83b")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(text.contains("needs JavaScript"), "{text}");
+    });
+}
+
+/// The API token page's create form is altered; a refusal creates no token,
+/// and without script an accepted post creates one and shows it once.
+#[test]
+fn b83b_the_api_token_form_is_altered_and_a_refusal_creates_no_token() {
+    run(|app| async move {
+        common::hold_until_cleanup(B83B.lock().await);
+        let (id, cookies, name) = b83b_user(app, "b83btoken", &[]).await;
+        let ip = common::test_ip_for(&name);
+        let count = || async {
+            sqlx::query_scalar::<_, i64>("SELECT count(*) FROM api_tokens WHERE user_id = $1")
+                .bind(id)
+                .fetch_one(&app.db)
+                .await
+                .unwrap()
+        };
+
+        let (cookies, html) = visit(app, &cookies, "/user/tokens", &ip).await;
+        assert_altered(&html, "user_api_token_create");
+        refuse(app, "user_api_token_create").await;
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/user/tokens",
+            &ip,
+            &html,
+            "user_api_token_create",
+            &[("name", "b83b key"), ("expires_in_days", "")],
+        )
+        .await;
+        assert_refused(status, &text, "user_api_token_create");
+        assert_eq!(count().await, 0, "a refused create made a token");
+
+        accept(app, "user_api_token_create").await;
+        let (cookies, html) = visit(app, &cookies, "/user/tokens", &ip).await;
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/user/tokens",
+            &ip,
+            &html,
+            "user_api_token_create",
+            &[("name", "b83b key"), ("expires_in_days", "30")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert_eq!(count().await, 1, "the token was not created");
+        assert!(
+            text.contains(r#"id="api-token-value" class="form-text" readonly value=""#),
+            "the new token is shown once"
+        );
+    });
+}
+
+/// A plugin's own form, served through `ApiResponse::form`, is the same
+/// pipeline: `tap_form_alter` reaches it, `tap_form_validate` can refuse it on
+/// the form, and `tap_form_submit` hears of a submission the plugin accepted.
+#[test]
+fn b83b_a_plugin_served_form_is_altered_refused_and_submitted() {
+    run(|app| async move {
+        common::hold_until_cleanup(B83B.lock().await);
+        const FORM: &str = "test_plugin_api_note";
+        let ip = common::test_ip_for("b83b_plugin_form");
+        let submits = || async {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM b83b_form_submits WHERE form_id = $1",
+            )
+            .bind(FORM)
+            .fetch_one(&app.db)
+            .await
+            .unwrap()
+        };
+        let before = submits().await;
+
+        let (cookies, html) = visit(app, "", "/tpa/pipeline", &ip).await;
+        assert_altered(&html, FORM);
+
+        refuse(app, FORM).await;
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/tpa/pipeline",
+            &ip,
+            &html,
+            FORM,
+            &[("message", "hello")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
+        assert_refused(status, &text, FORM);
+        assert!(
+            !text.contains("tpa-pipeline-values"),
+            "the plugin never heard: {text}"
+        );
+        assert_eq!(submits().await, before);
+
+        accept(app, FORM).await;
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/tpa/pipeline",
+            &ip,
+            &text,
+            FORM,
+            &[("message", "hello")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert!(text.contains("tpa-pipeline-values"), "{text}");
+        assert_eq!(submits().await, before + 1, "tap_form_submit ran once");
+    });
+}
+
+/// A plugin route does not accept a form it did not serve: the login form's
+/// build id, posted with a good token, is refused as expired.
+#[test]
+fn b83b_a_plugin_route_refuses_a_kernel_forms_build_id() {
+    run(|app| async move {
+        let ip = common::test_ip_for("b83b_foreign_form");
+        let (cookies, login) = visit(app, "", "/user/login", &ip).await;
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/tpa/pipeline",
+            &ip,
+            &login,
+            "user_login",
+            &[("message", "hello")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        assert!(text.contains("expired"), "{text}");
+        assert!(!text.contains("tpa-pipeline-values"));
     });
 }

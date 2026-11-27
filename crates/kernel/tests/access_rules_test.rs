@@ -332,7 +332,7 @@ fn registration_is_refused_by_each_rule_type() {
         assert_eq!(response.status(), StatusCode::OK);
         let cookies = common::extract_cookies(&response);
         let html = body_string(response).await;
-        let token = input_value(&html, "_token").expect("register token");
+        let fields = common::form_fields(&html, "user_register");
         let name = common::username("b108regf");
         delete_user_on_exit(app, &name);
         app.state
@@ -345,8 +345,7 @@ fn registration_is_refused_by_each_rule_type() {
             &cookies,
             "/user/register",
             format!(
-                "_token={}&username={name}&mail={}&password=correct-horse-battery-staple&confirm_password=correct-horse-battery-staple",
-                urlencoding::encode(&token),
+                "{fields}&username={name}&mail={}&password=correct-horse-battery-staple&confirm_password=correct-horse-battery-staple",
                 urlencoding::encode(&format!("someone@{tag}.bad")),
             ),
         )

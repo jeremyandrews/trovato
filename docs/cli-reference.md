@@ -174,8 +174,11 @@ dates, authors and tags all come from the seed and the row number. It writes:
 It then sets the front page to `/blog` and analyses the tables. Every
 generated account has the `--admin-password` password, at least 12 characters.
 There is no default, so no generated site has a known administrator login. The
-password hash is salted, so it is the one value that differs between two runs
-with the same arguments.
+password hash is salted, so it differs between two runs with the same
+arguments, as do the ids and times of the security events. Every generated
+account, `gen_admin` included, is recorded in the security log as an
+`account.created` event with `path` `generate`, written in the transaction
+that writes the accounts.
 
 The work is done in Postgres: one `INSERT ... SELECT ... FROM generate_series`
 statement per `--batch` rows (default 20,000), `--parallel` statements at a

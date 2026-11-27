@@ -12,22 +12,6 @@
     </div>
     {% endif %}
 
-    {% if error %}
-    <div style="background: #fee; border: 1px solid #c00; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
-        {{ error | escape }}
-    </div>
-    {% endif %}
-
-    {% if errors %}
-    <div style="background: #fee; border: 1px solid #c00; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
-        <ul style="margin: 0; padding-left: 1.5rem;">
-        {% for err in errors %}
-            <li>{{ err | escape }}</li>
-        {% endfor %}
-        </ul>
-    </div>
-    {% endif %}
-
     <h2 style="margin-top: 2rem;">Profile</h2>
     {{ profile_form | safe }} {# SAFE: kernel form renderer output — every value in it is escaped by the form templates #}
 
@@ -54,11 +38,7 @@
         {% for opt_out in mail_opt_outs %}
             <li class="mail-preferences__item">
                 <span class="mail-preferences__label">{{ opt_out.label }}</span>
-                <form method="post" action="/user/mail/resubscribe" class="mail-preferences__form">
-                    <input type="hidden" name="_token" value="{{ mail_csrf_token }}">
-                    <input type="hidden" name="plugin" value="{{ opt_out.plugin }}">
-                    <button type="submit" class="button button--secondary">Resubscribe</button>
-                </form>
+                {{ opt_out.form | safe }} {# SAFE: kernel form renderer output — every value in it is escaped by the form templates #}
             </li>
         {% endfor %}
         </ul>
@@ -77,33 +57,6 @@
     verify who you are, and shown exactly what happens, before anything is deleted.</p>
 
     <h2 style="margin-top: 2.5rem;">Change password</h2>
-    <form method="post" action="/user/password">
-        <input type="hidden" name="_token" value="{{ password_csrf_token }}">
-
-        <div class="form-item" style="margin-bottom: 1rem;">
-            <label for="current_password" class="form-item__label">Current password</label>
-            <input type="password" id="current_password" name="current_password" class="form-text"
-                   style="width: 100%; padding: 0.5rem; font-size: 1rem;" required>
-        </div>
-
-        <div class="form-item" style="margin-bottom: 1rem;">
-            <label for="new_password" class="form-item__label">New password</label>
-            <input type="password" id="new_password" name="new_password" class="form-text"
-                   style="width: 100%; padding: 0.5rem; font-size: 1rem;" required
-                   minlength="12">
-        </div>
-
-        <div class="form-item" style="margin-bottom: 1.5rem;">
-            <label for="confirm_password" class="form-item__label">Confirm new password</label>
-            <input type="password" id="confirm_password" name="confirm_password" class="form-text"
-                   style="width: 100%; padding: 0.5rem; font-size: 1rem;" required
-                   minlength="12">
-        </div>
-
-        <button type="submit" class="button button--primary"
-                style="padding: 0.75rem 1.5rem; font-size: 1rem; cursor: pointer;">
-            Change password
-        </button>
-    </form>
+    {{ password_form | safe }} {# SAFE: kernel form renderer output — every value in it is escaped by the form templates #}
 </div>
 {% endblock %}

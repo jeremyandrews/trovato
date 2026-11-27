@@ -72,6 +72,12 @@ async fn end_blocked_session(state: &AppState, session: &Session, user_id: Uuid)
     let session_id = session.id().map(|id| id.to_string());
     match session.flush().await {
         Ok(()) => {
+            // A flushed session keeps its old id for the next save, so a page
+            // that writes after this (a form's CSRF token) would bring the
+            // ended record back. A new id makes that write a new session.
+            if let Err(e) = session.cycle_id().await {
+                tracing::warn!(error = %e, user_id = %user_id, "failed to renew a blocked account's session id");
+            }
             crate::services::session_registry::session_ended(
                 state,
                 user_id,
@@ -701,7 +707,7 @@ pub async fn require_csrf_header_or_resolved_field(
 ///
 /// Matches on the media type alone, so a `charset` parameter does not change the
 /// answer.
-fn is_form_urlencoded(headers: &axum::http::HeaderMap) -> bool {
+pub(crate) fn is_form_urlencoded(headers: &axum::http::HeaderMap) -> bool {
     headers
         .get(axum::http::header::CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())

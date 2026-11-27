@@ -57,6 +57,7 @@ use std::collections::HashMap;
 
 use trovato_sdk::host;
 use trovato_sdk::prelude::*;
+use trovato_sdk::render::escape_html;
 use trovato_sdk::types::{ApiRequest, ApiResponse, MenuRoute};
 
 /// Plugin name, for logging.
@@ -107,6 +108,13 @@ pub fn tap_menu() -> Vec<MenuRoute> {
         MenuRoute::api("POST", "/admin/structure/books/:book/place", "book_place")
             .title("Place a page")
             .permission(PERM_ADMINISTER),
+        MenuRoute::api(
+            "GET",
+            "/admin/structure/books/:book/remove",
+            "book_remove_confirm",
+        )
+        .title("Remove a page")
+        .permission(PERM_ADMINISTER),
         MenuRoute::api("POST", "/admin/structure/books/:book/remove", "book_remove")
             .title("Remove a page")
             .permission(PERM_ADMINISTER),
@@ -121,6 +129,7 @@ pub fn tap_api(request: ApiRequest) -> ApiResponse {
         "book_tree" => book_tree(&request),
         "book_create" => book_create(&request),
         "book_place" => book_place(&request),
+        "book_remove_confirm" => book_remove_confirm(&request),
         "book_remove" => book_remove(&request),
         other => ApiResponse::error(404, &format!("no such callback: {other}")),
     }
@@ -200,20 +209,17 @@ pub fn tap_item_view(item: Item) -> String {
 
 // ─── Admin screens ───────────────────────────────────────────────────
 
-/// The hidden field every form on these screens posts its CSRF token in.
-///
-/// The kernel checks a plugin route's POST for `_token` (or an
-/// `X-CSRF-Token` header) before the plugin sees it, so a form without one
-/// is refused with a 403.
-fn token_field(request: &ApiRequest) -> String {
-    format!(
-        "<input type=\"hidden\" name=\"_token\" value=\"{}\">",
-        escape_html(&request.csrf_token)
-    )
-}
+/// The form that declares an item the root of a new book.
+const FORM_CREATE: &str = "trovato_book_create";
 
-/// Every book, with its page count.
-fn book_list(request: &ApiRequest) -> ApiResponse {
+/// The form that places or moves a page.
+const FORM_PLACE: &str = "trovato_book_place";
+
+/// The form that removes a page.
+const FORM_REMOVE: &str = "trovato_book_remove";
+
+/// Every book, with its page count, and the form that creates one.
+fn book_list(_request: &ApiRequest) -> ApiResponse {
     let books = load_books();
 
     let mut body = String::new();
@@ -236,22 +242,22 @@ fn book_list(request: &ApiRequest) -> ApiResponse {
         body.push_str("</tbody>\n</table>\n");
     }
 
-    body.push_str(&format!(
-        "<h2>Create a book</h2>\n\
-         <form method=\"post\" action=\"/admin/structure/books/create\">\n\
-         {token}\n\
-         <label for=\"item_id\">Root page item id</label>\n\
-         <input type=\"text\" id=\"item_id\" name=\"item_id\" required>\n\
-         <button type=\"submit\">Create book</button>\n\
-         </form>\n\
-         <p>The item becomes the book's first page. Any item type can be a page.</p>\n",
-        token = token_field(request),
-    ));
-
-    admin_page("Books", &body)
+    ApiResponse::themed("Books", body).with_form(serde_json::json!({
+        "form_id": FORM_CREATE,
+        "action": "/admin/structure/books/create",
+        "title": "Create a book",
+        "description": "The item becomes the book's first page. Any item type can be a page.",
+        "elements": {
+            "item_id": {
+                "type": "textfield", "title": "Root page item id", "required": true,
+                "weight": 0
+            },
+            "create": {"type": "submit", "value": "Create book", "weight": 10}
+        }
+    }))
 }
 
-/// One book as an ordered tree, with the forms that edit it.
+/// One book as an ordered tree, and the form that places a page in it.
 fn book_tree(request: &ApiRequest) -> ApiResponse {
     let Some(book_id) = request.params.get("book") else {
         return ApiResponse::error(400, "missing book id");
@@ -271,9 +277,8 @@ fn book_tree(request: &ApiRequest) -> ApiResponse {
         body.push_str(&format!(
             "<tr><td>{n}</td><td>{indent}<a href=\"/item/{id}\">{title}</a></td>\
              <td>{depth}</td><td>{weight}</td><td>\
-             <form method=\"post\" action=\"/admin/structure/books/{book}/remove\">{token}\
-             <input type=\"hidden\" name=\"item_id\" value=\"{id}\">\
-             <button type=\"submit\">Remove</button></form></td></tr>\n",
+             <a href=\"/admin/structure/books/{book}/remove?item_id={id}\">Remove</a>\
+             </td></tr>\n",
             n = index + 1,
             indent = "&mdash; ".repeat(page.depth),
             id = escape_html(&page.item_id),
@@ -281,46 +286,199 @@ fn book_tree(request: &ApiRequest) -> ApiResponse {
             depth = page.depth,
             weight = page.weight,
             book = escape_html(book_id),
-            token = token_field(request),
         ));
     }
     body.push_str("</tbody>\n</table>\n");
 
-    body.push_str(&format!(
-        "<h2>Place a page</h2>\n\
-         <form method=\"post\" action=\"/admin/structure/books/{book}/place\">\n\
-         {token}\n\
-         <label for=\"item_id\">Item id</label>\n\
-         <input type=\"text\" id=\"item_id\" name=\"item_id\" required>\n\
-         <label for=\"parent_item_id\">Parent page item id (blank for top level)</label>\n\
-         <input type=\"text\" id=\"parent_item_id\" name=\"parent_item_id\">\n\
-         <label for=\"weight\">Weight</label>\n\
-         <input type=\"number\" id=\"weight\" name=\"weight\" value=\"0\">\n\
-         <button type=\"submit\">Place</button>\n\
-         </form>\n\
-         <p>Placing a page that is already in this book moves it. A page cannot be \
-         placed under itself or under one of its own descendants.</p>\n",
-        book = escape_html(book_id),
-        token = token_field(request),
-    ));
+    ApiResponse::themed("Book", body).with_form(serde_json::json!({
+        "form_id": FORM_PLACE,
+        "action": format!("/admin/structure/books/{book_id}/place"),
+        "title": "Place a page",
+        "description": "Placing a page that is already in this book moves it. A page cannot \
+                        be placed under itself or under one of its own descendants.",
+        "elements": {
+            "book": {"type": "hidden", "default_value": book_id},
+            "item_id": {"type": "textfield", "title": "Item id", "required": true, "weight": 0},
+            "parent_item_id": {
+                "type": "textfield", "title": "Parent page item id (blank for top level)",
+                "weight": 1
+            },
+            "weight": {
+                "type": "input", "input_type": "number", "title": "Weight",
+                "default_value": "0", "weight": 2
+            },
+            "place": {"type": "submit", "value": "Place", "weight": 10}
+        }
+    }))
+}
 
-    admin_page("Book", &body)
+/// Ask before removing a page: what removing it does, and the form that
+/// does it.
+fn book_remove_confirm(request: &ApiRequest) -> ApiResponse {
+    let Some(book_id) = request.params.get("book") else {
+        return ApiResponse::error(400, "missing book id");
+    };
+    let item_id = request.query.get("item_id").cloned().unwrap_or_default();
+    let Some(page) = load_page(&item_id).filter(|page| &page.book_id == book_id) else {
+        return ApiResponse::error(404, "that item is not a page in this book");
+    };
+
+    let consequence = if page.parent_item_id.is_none() {
+        "It is the book's root page, so the whole book is removed."
+    } else {
+        "Its child pages move up to its parent."
+    };
+    let body = format!(
+        "<p>Remove <a href=\"/item/{id}\">{title}</a> from this book? {consequence} \
+         The item itself is not deleted.</p>\n\
+         <p><a href=\"/admin/structure/books/{book}\">Back to the book</a></p>\n",
+        id = escape_html(&page.item_id),
+        title = escape_html(&page.title),
+        book = escape_html(book_id),
+    );
+    ApiResponse::themed("Remove a page", body).with_form(serde_json::json!({
+        "form_id": FORM_REMOVE,
+        "action": format!("/admin/structure/books/{book_id}/remove"),
+        "elements": {
+            "book": {"type": "hidden", "default_value": book_id},
+            "item_id": {"type": "hidden", "default_value": page.item_id},
+            "remove": {"type": "submit", "value": "Remove", "weight": 10}
+        }
+    }))
+}
+
+/// This plugin's checks on its three forms, as `(field, message)`. The kernel
+/// has already refused an empty required field.
+///
+/// Run by `tap_form_validate`, so a problem is shown on the form, and again
+/// by the handler before it writes, because the book may have changed since.
+fn form_errors(form_id: &str, values: &serde_json::Value) -> Vec<(&'static str, String)> {
+    let text = |name: &str| values[name].as_str().unwrap_or_default().trim().to_string();
+    let item_id = text("item_id");
+    let book_id = text("book");
+    let mut errors = Vec::new();
+    match form_id {
+        FORM_CREATE => {
+            if !item_exists(&item_id) {
+                errors.push(("item_id", "No item has that id.".to_string()));
+            } else if load_page(&item_id).is_some() {
+                errors.push((
+                    "item_id",
+                    "That item is already a page in a book; an item belongs to at most one."
+                        .to_string(),
+                ));
+            }
+        }
+        FORM_PLACE => {
+            if text("weight").parse::<i64>().is_err() && !text("weight").is_empty() {
+                errors.push(("weight", "The weight must be a whole number.".to_string()));
+            }
+            if load_book(&book_id).is_empty() {
+                errors.push(("item_id", "This book no longer exists.".to_string()));
+                return errors;
+            }
+            if !item_exists(&item_id) {
+                errors.push(("item_id", "No item has that id.".to_string()));
+                return errors;
+            }
+            // An item belongs to at most one book. Moving within this one is
+            // fine; moving in from another is not, because the other book's
+            // readers would lose a page silently.
+            if let Some(existing) = load_page(&item_id)
+                && existing.book_id != book_id
+            {
+                errors.push((
+                    "item_id",
+                    "That item is already a page in another book; remove it from that one \
+                     first."
+                        .to_string(),
+                ));
+            }
+            let parent = text("parent_item_id");
+            if !parent.is_empty() {
+                match load_page(&parent) {
+                    None => errors.push((
+                        "parent_item_id",
+                        "The parent is not a page in any book.".to_string(),
+                    )),
+                    Some(page) if page.book_id != book_id => errors.push((
+                        "parent_item_id",
+                        "The parent must be a page in this book.".to_string(),
+                    )),
+                    // The whole reason placement is validated here rather than
+                    // by a constraint: a self-referential foreign key permits a
+                    // cycle, and a cyclic book is one that cannot be read.
+                    Some(_) if would_cycle(&load_book(&book_id), &item_id, &parent) => {
+                        errors.push((
+                            "parent_item_id",
+                            "A page cannot be placed under itself or under one of its own \
+                             descendants."
+                                .to_string(),
+                        ));
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        FORM_REMOVE => match load_page(&item_id) {
+            None => errors.push(("item_id", "That item is not a page in a book.".to_string())),
+            Some(page) if page.book_id != book_id => {
+                errors.push(("item_id", "That page is not in this book.".to_string()));
+            }
+            Some(_) => {}
+        },
+        _ => {}
+    }
+    errors
+}
+
+/// Check a submission of one of this plugin's forms.
+#[plugin_tap]
+pub fn tap_form_validate(input: serde_json::Value) -> serde_json::Value {
+    let form_id = input["form_id"].as_str().unwrap_or_default();
+    if ![FORM_CREATE, FORM_PLACE, FORM_REMOVE].contains(&form_id) {
+        return serde_json::json!({});
+    }
+    let errors: Vec<serde_json::Value> = form_errors(form_id, &input["values"])
+        .into_iter()
+        .map(|(field, message)| serde_json::json!({"field": field, "message": message}))
+        .collect();
+    serde_json::json!({ "errors": errors })
+}
+
+/// The checked values of `form_id` posted with `request`, or the answer to
+/// give when there are none or they no longer hold.
+///
+/// A post that did not come from the kernel-built form (no build id, so the
+/// kernel checked only its token) gets `page` back and changes nothing.
+fn checked_values(
+    request: &ApiRequest,
+    form_id: &str,
+    page: impl FnOnce(&ApiRequest) -> ApiResponse,
+) -> Result<serde_json::Value, ApiResponse> {
+    let Some(values) = request.form_values.clone() else {
+        return Err(page(request));
+    };
+    let values = serde_json::Value::Object(values);
+    // The path names the book, and the form must be about the same one.
+    if let Some(book) = request.params.get("book")
+        && values["book"].as_str() != Some(book.as_str())
+    {
+        return Err(ApiResponse::error(400, "the form is for another book"));
+    }
+    match form_errors(form_id, &values).first() {
+        Some((_, message)) => Err(ApiResponse::error(400, message)),
+        None => Ok(values),
+    }
 }
 
 /// Declare an item the root of a new book.
 fn book_create(request: &ApiRequest) -> ApiResponse {
-    let Some(item_id) = form_field(&request.body, "item_id") else {
-        return ApiResponse::error(400, "missing item_id");
+    let values = match checked_values(request, FORM_CREATE, book_list) {
+        Ok(values) => values,
+        Err(response) => return response,
     };
-    if !item_exists(&item_id) {
-        return ApiResponse::error(400, "no such item");
-    }
-    if load_page(&item_id).is_some() {
-        return ApiResponse::error(
-            400,
-            "that item is already a page in a book; an item belongs to at most one",
-        );
-    }
+    let item_id = values["item_id"].as_str().unwrap_or_default().trim();
 
     // A root is its own book: `book_id = item_id`, no parent.
     let written = host::execute_raw(
@@ -339,54 +497,14 @@ fn book_create(request: &ApiRequest) -> ApiResponse {
 
 /// Place or move a page within a book.
 fn book_place(request: &ApiRequest) -> ApiResponse {
-    let Some(book_id) = request.params.get("book").cloned() else {
-        return ApiResponse::error(400, "missing book id");
+    let values = match checked_values(request, FORM_PLACE, book_tree) {
+        Ok(values) => values,
+        Err(response) => return response,
     };
-    let Some(item_id) = form_field(&request.body, "item_id") else {
-        return ApiResponse::error(400, "missing item_id");
-    };
-    let parent = form_field(&request.body, "parent_item_id").filter(|p| !p.is_empty());
-    let weight: i64 = form_field(&request.body, "weight")
-        .and_then(|w| w.parse().ok())
-        .unwrap_or(0);
-
-    if !item_exists(&item_id) {
-        return ApiResponse::error(400, "no such item");
-    }
-    if load_book(&book_id).is_empty() {
-        return ApiResponse::error(404, "no such book");
-    }
-
-    // An item belongs to at most one book. Moving within this one is fine; moving in
-    // from another is not, because the other book's readers would lose a page
-    // silently.
-    if let Some(existing) = load_page(&item_id)
-        && existing.book_id != book_id
-    {
-        return ApiResponse::error(
-            400,
-            "that item is already a page in another book; remove it from that one first",
-        );
-    }
-
-    if let Some(parent_id) = parent.as_deref() {
-        let Some(parent_page) = load_page(parent_id) else {
-            return ApiResponse::error(400, "the parent is not a page in any book");
-        };
-        if parent_page.book_id != book_id {
-            return ApiResponse::error(400, "the parent must be a page in this book");
-        }
-        // The whole reason placement is validated here rather than by a constraint:
-        // a self-referential foreign key permits a cycle, and a cyclic book is one
-        // that cannot be read.
-        let pages = load_book(&book_id);
-        if would_cycle(&pages, &item_id, parent_id) {
-            return ApiResponse::error(
-                400,
-                "a page cannot be placed under itself or under one of its own descendants",
-            );
-        }
-    }
+    let text = |name: &str| values[name].as_str().unwrap_or_default().trim().to_string();
+    let (book_id, item_id) = (text("book"), text("item_id"));
+    let parent = Some(text("parent_item_id")).filter(|p| !p.is_empty());
+    let weight: i64 = text("weight").parse().unwrap_or(0);
 
     let written = host::execute_raw(
         "INSERT INTO book_page (item_id, book_id, parent_item_id, weight) \
@@ -412,18 +530,19 @@ fn book_place(request: &ApiRequest) -> ApiResponse {
 
 /// Remove a page, promoting its children to its own parent.
 fn book_remove(request: &ApiRequest) -> ApiResponse {
-    let Some(book_id) = request.params.get("book").cloned() else {
-        return ApiResponse::error(400, "missing book id");
+    let values = match checked_values(request, FORM_REMOVE, book_remove_confirm) {
+        Ok(values) => values,
+        Err(response) => return response,
     };
-    let Some(item_id) = form_field(&request.body, "item_id") else {
-        return ApiResponse::error(400, "missing item_id");
-    };
+    let book_id = values["book"].as_str().unwrap_or_default().to_string();
+    let item_id = values["item_id"]
+        .as_str()
+        .unwrap_or_default()
+        .trim()
+        .to_string();
     let Some(page) = load_page(&item_id) else {
         return ApiResponse::error(404, "that item is not a page in a book");
     };
-    if page.book_id != book_id {
-        return ApiResponse::error(400, "that page is not in this book");
-    }
 
     // Removing a root removes the book: every page's `book_id` points at it, so the
     // rest would be orphaned rather than reparented.
@@ -773,84 +892,6 @@ fn item_exists(item_id: &str) -> bool {
 
 // ─── Plumbing ────────────────────────────────────────────────────────
 
-/// Read one field from an `application/x-www-form-urlencoded` body.
-///
-/// Written here because a plugin has no query-string parser: the kernel decodes the
-/// query string for `ApiRequest::query`, and leaves a form body as the bytes that
-/// arrived.
-pub fn form_field(body: &str, name: &str) -> Option<String> {
-    body.split('&').find_map(|pair| {
-        let (key, value) = pair.split_once('=')?;
-        if percent_decode(key) == name {
-            Some(percent_decode(value))
-        } else {
-            None
-        }
-    })
-}
-
-/// Decode `%XX` escapes and `+`, which is what a form body uses.
-fn percent_decode(raw: &str) -> String {
-    let bytes = raw.as_bytes();
-    let mut out = Vec::with_capacity(bytes.len());
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'+' => {
-                out.push(b' ');
-                i += 1;
-            }
-            b'%' if i + 2 < bytes.len() => {
-                let hex = std::str::from_utf8(&bytes[i + 1..i + 3]).unwrap_or("");
-                match u8::from_str_radix(hex, 16) {
-                    Ok(byte) => {
-                        out.push(byte);
-                        i += 3;
-                    }
-                    Err(_) => {
-                        out.push(bytes[i]);
-                        i += 1;
-                    }
-                }
-            }
-            byte => {
-                out.push(byte);
-                i += 1;
-            }
-        }
-    }
-    String::from_utf8_lossy(&out).to_string()
-}
-
-/// Escape for an HTML text node or a double-quoted attribute.
-///
-/// The kernel serves a plugin's response body as-is and does not sanitize it, and an
-/// item title is whatever somebody typed, so escaping is this plugin's job.
-pub fn escape_html(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
-    for c in raw.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(c),
-        }
-    }
-    out
-}
-
-/// Wrap a fragment in a minimal document.
-fn admin_page(title: &str, body: &str) -> ApiResponse {
-    let html = format!(
-        "<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n\
-         <title>{t}</title>\n</head>\n<body>\n<h1>{t}</h1>\n{body}\n</body>\n</html>\n",
-        t = escape_html(title),
-    );
-    ApiResponse::with_status(200, html).content_type("text/html; charset=utf-8")
-}
-
 /// A 303 back to a screen, so a form post does not leave the browser on a POST.
 fn redirect(location: &str) -> ApiResponse {
     ApiResponse::with_status(
@@ -1013,27 +1054,34 @@ mod tests {
     }
 
     #[test]
-    fn escaping_neutralizes_markup_and_quotes() {
-        assert_eq!(
-            escape_html(r#"<a href="x">&'"#),
-            "&lt;a href=&quot;x&quot;&gt;&amp;&#39;"
+    fn validation_ignores_every_other_form() {
+        let result = __inner_tap_form_validate(serde_json::json!({
+            "form_id": "user_login",
+            "values": {"item_id": "x"},
+        }));
+        assert_eq!(result, serde_json::json!({}));
+    }
+
+    #[test]
+    fn a_post_that_did_not_come_from_the_form_changes_nothing() {
+        let mut request = ApiRequest::new(
+            "book_create",
+            "POST",
+            "/admin/structure/books/create",
+            "00000000-0000-0000-0000-000000000000",
+            true,
         );
+        request.body = "item_id=abc".to_string();
+        let response = __inner_tap_api(request);
+        assert_eq!(response.title, "Books", "the list page, not a write");
+        assert!(response.form.is_some());
     }
 
     #[test]
-    fn a_form_body_is_decoded_field_by_field() {
-        let body = "item_id=abc&parent_item_id=&weight=-3";
-        assert_eq!(form_field(body, "item_id").as_deref(), Some("abc"));
-        assert_eq!(form_field(body, "parent_item_id").as_deref(), Some(""));
-        assert_eq!(form_field(body, "weight").as_deref(), Some("-3"));
-        assert_eq!(form_field(body, "absent"), None);
-    }
-
-    #[test]
-    fn a_form_body_decodes_escapes_and_plus() {
-        let body = "title=Hello+World%21&id=a%2Db";
-        assert_eq!(form_field(body, "title").as_deref(), Some("Hello World!"));
-        assert_eq!(form_field(body, "id").as_deref(), Some("a-b"));
+    fn the_form_names_must_belong_to_this_plugin() {
+        for form_id in [FORM_CREATE, FORM_PLACE, FORM_REMOVE] {
+            assert!(form_id.starts_with("trovato_book_"), "{form_id}");
+        }
     }
 
     #[test]

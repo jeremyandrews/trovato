@@ -9,6 +9,7 @@
     <p>Before anything is deleted, prove it is you. A signed-in browser is not enough
     on its own: someone using your unlocked laptop has that.</p>
 
+    {# Only for an account with no password form to show it on. #}
     {% if error %}
     <div style="background: #fee; border: 1px solid #c00; padding: 1rem; margin-bottom: 1rem; border-radius: 4px;">
         {{ error | escape }}
@@ -22,20 +23,7 @@
     {% endif %}
 
     {% if has_password %}
-    <form method="post" action="/user/delete/reauth">
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
-        <div class="form-item" style="margin-bottom: 1rem;">
-            <label for="password" class="form-item__label">Your password</label>
-            <input type="password" id="password" name="password" class="form-text"
-                   style="width: 100%; padding: 0.5rem; font-size: 1rem;"
-                   autocomplete="current-password" required>
-        </div>
-        <button type="submit" class="button button--primary"
-                style="padding: 0.75rem 1.5rem; font-size: 1rem; cursor: pointer;">
-            Continue
-        </button>
-        <a href="/user/profile" style="margin-left: 1rem;">Cancel</a>
-    </form>
+    {{ reauth_form | safe }} {# SAFE: kernel form renderer output — every value in it is escaped by the form templates #}
     {% endif %}
 
     {% if has_passkey %}

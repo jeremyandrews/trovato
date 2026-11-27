@@ -12,7 +12,9 @@
 //!
 //! A `POST` whose `Content-Type` is `application/json`, and a `GET` of the link
 //! that `Accept`s `application/json`, keep the JSON answers they always had.
-//! Everything else is a browser and gets pages; their forms carry a CSRF token.
+//! Everything else is a browser and gets pages; their forms,
+//! `user_password_reset_request` and `user_password_reset`, are built and
+//! checked through the forms pipeline.
 
 use axum::extract::{FromRequest, Path, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
@@ -23,11 +25,12 @@ use serde::Deserialize;
 use tower_sessions::Session;
 use tracing::info;
 
+use crate::content::submission::PostedForm;
 use crate::error::AppError;
-use crate::form::csrf::generate_csrf_token;
+use crate::form::ValidationError;
 use crate::models::password_reset::PasswordResetToken;
 use crate::routes::auth::SESSION_LOGIN_NOTICE;
-use crate::routes::helpers::{JsonSuccess, render_server_error, require_csrf, validate_password};
+use crate::routes::helpers::{JsonSuccess, render_server_error, validate_password};
 use crate::state::AppState;
 use crate::tap::UserContext;
 
@@ -47,27 +50,51 @@ pub struct RequestResetInput {
     pub email: String,
 }
 
-/// Password reset request (step 1), as the page's form.
-#[derive(Debug, Deserialize)]
-struct RequestResetForm {
-    #[serde(rename = "_token")]
-    token: String,
-    email: String,
+/// The reset request form (step 1), `user_password_reset_request`.
+fn build_request_form() -> crate::form::Form {
+    use crate::form::{Form, FormElement};
+    Form::new("user_password_reset_request")
+        .action("/user/password-reset")
+        .attribute("class", "login-form")
+        .element(
+            "email",
+            FormElement::input("email")
+                .title("Email")
+                .required()
+                .attribute("autofocus", "autofocus")
+                .attribute("autocomplete", "email")
+                .weight(0),
+        )
+        .element("op", FormElement::submit("Send reset link").weight(100))
+}
+
+/// The set-password form (step 2), `user_password_reset`, posting to the
+/// link's own address.
+fn build_set_form(token: &str) -> crate::form::Form {
+    use crate::form::{Form, FormElement};
+    let password = |title: &str, weight: i32| {
+        FormElement::password()
+            .title(title)
+            .required()
+            .attribute("minlength", "12")
+            .attribute("autocomplete", "new-password")
+            .weight(weight)
+    };
+    Form::new("user_password_reset")
+        .action(format!("/user/password-reset/{token}"))
+        .attribute("class", "login-form")
+        .element(
+            "password",
+            password("New password", 0).attribute("autofocus", "autofocus"),
+        )
+        .element("confirm_password", password("Confirm new password", 1))
+        .element("op", FormElement::submit("Set password").weight(100))
 }
 
 /// New password input (step 2: set new password), as JSON.
 #[derive(Debug, Deserialize)]
 pub struct SetPasswordInput {
     pub password: String,
-}
-
-/// New password (step 2), as the page's form.
-#[derive(Debug, Deserialize)]
-struct SetPasswordForm {
-    #[serde(rename = "_token")]
-    token: String,
-    password: String,
-    confirm_password: String,
 }
 
 /// Whether the request body is JSON.
@@ -114,14 +141,36 @@ async fn render_page(
 
 /// GET /user/password-reset: the form asking for an email address.
 async fn request_form(State(state): State<AppState>, session: Session) -> Response {
+    render_request_page(&state, &session, &[]).await
+}
+
+/// The reset request page with its form, showing `errors`.
+async fn render_request_page(
+    state: &AppState,
+    session: &Session,
+    errors: &[ValidationError],
+) -> Response {
+    let viewer = super::helpers::get_user_context(session, state).await;
+    let form =
+        match super::admin_form::render_as(state, session, &viewer, build_request_form(), errors)
+            .await
+        {
+            Ok(html) => html,
+            Err(refusal) => return refusal,
+        };
     let mut context = tera::Context::new();
     context.insert("stage", "form");
-    context.insert("csrf_token", &generate_csrf_token(&session).await);
+    context.insert("reset_form", &form);
+    let status = if errors.is_empty() {
+        StatusCode::OK
+    } else {
+        StatusCode::UNPROCESSABLE_ENTITY
+    };
     render_page(
-        &state,
-        &session,
+        state,
+        session,
         "user/password_reset_request.html",
-        StatusCode::OK,
+        status,
         context,
         false,
     )
@@ -153,14 +202,37 @@ async fn request_reset(
         .into_response();
     }
 
-    let Form(form) = match Form::<RequestResetForm>::from_request(request, &state).await {
+    let Form(pairs) = match Form::<Vec<(String, String)>>::from_request(request, &state).await {
         Ok(form) => form,
         Err(rejection) => return rejection.into_response(),
     };
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-    queue_reset_mail(&state, client_ip.0, form.email).await;
+    let posted = PostedForm(pairs);
+    let viewer = super::helpers::get_user_context(&session, &state).await;
+    let form_state = match super::admin_form::check_as(
+        &state,
+        &session,
+        &viewer,
+        &posted,
+        "user_password_reset_request",
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Err(refusal)) => return refusal,
+        Err(Ok(errors)) => return render_request_page(&state, &session, &errors).await,
+    };
+    let email = posted.get("email").unwrap_or_default().to_string();
+    queue_reset_mail(&state, client_ip.0, email).await;
+    state
+        .forms()
+        .submitted(
+            &form_state,
+            &posted,
+            None,
+            &super::item_form::tap_state(&state, &viewer),
+        )
+        .await;
 
     let mut context = tera::Context::new();
     context.insert("stage", "sent");
@@ -297,23 +369,25 @@ async fn send_reset_mail(state: AppState, email: String, client_id: String) {
     }
 }
 
-/// Render the set-password page: the form (with `error` if any), or the page
+/// Render the set-password page: the form (with its `errors`), or the page
 /// saying the link is invalid or has expired.
 async fn render_set_page(
     state: &AppState,
     session: &Session,
     token: &str,
     valid: bool,
-    error: Option<&str>,
+    errors: &[ValidationError],
 ) -> Response {
     let mut context = tera::Context::new();
     let status = if valid {
-        context.insert("stage", "form");
-        context.insert("action", &format!("/user/password-reset/{token}"));
-        context.insert("csrf_token", &generate_csrf_token(session).await);
-        if let Some(error) = error {
-            context.insert("error", error);
+        let viewer = super::helpers::get_user_context(session, state).await;
+        match super::admin_form::render_as(state, session, &viewer, build_set_form(token), errors)
+            .await
+        {
+            Ok(html) => context.insert("reset_form", &html),
+            Err(refusal) => return refusal,
         }
+        context.insert("stage", "form");
         StatusCode::OK
     } else {
         context.insert("stage", "invalid");
@@ -355,7 +429,7 @@ async fn validate_token(
         };
     }
 
-    render_set_page(&state, &session, &token, valid, None).await
+    render_set_page(&state, &session, &token, valid, &[]).await
 }
 
 /// Set new password using reset token.
@@ -386,30 +460,46 @@ async fn set_password(
         };
     }
 
-    let Form(form) = match Form::<SetPasswordForm>::from_request(request, &state).await {
+    let Form(pairs) = match Form::<Vec<(String, String)>>::from_request(request, &state).await {
         Ok(form) => form,
         Err(rejection) => return rejection.into_response(),
     };
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let posted = PostedForm(pairs);
+    let password = posted.get("password").unwrap_or_default();
     // Checked before the token is spent, so a typo keeps the link usable.
-    if form.password != form.confirm_password {
-        return render_set_page(
-            &state,
-            &session,
-            &token,
-            true,
-            Some("Passwords do not match."),
-        )
-        .await;
+    let mut errors = Vec::new();
+    if password != posted.get("confirm_password").unwrap_or_default() {
+        errors.push(ValidationError::form("Passwords do not match."));
+    } else if let Err(msg) = validate_password(password) {
+        errors.push(ValidationError::form(msg));
     }
-    if let Err(msg) = validate_password(&form.password) {
-        return render_set_page(&state, &session, &token, true, Some(msg)).await;
-    }
+    let viewer = super::helpers::get_user_context(&session, &state).await;
+    let form_state = match super::admin_form::check_as(
+        &state,
+        &session,
+        &viewer,
+        &posted,
+        "user_password_reset",
+        errors,
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Err(refusal)) => return refusal,
+        Err(Ok(errors)) => return render_set_page(&state, &session, &token, true, &errors).await,
+    };
 
-    match reset_password(&state, &token, &form.password).await {
+    match reset_password(&state, &token, password).await {
         Ok(true) => {
+            state
+                .forms()
+                .submitted(
+                    &form_state,
+                    &posted,
+                    None,
+                    &super::item_form::tap_state(&state, &viewer),
+                )
+                .await;
             if let Err(e) = session
                 .insert(SESSION_LOGIN_NOTICE, RESET_DONE_NOTICE)
                 .await
@@ -418,7 +508,7 @@ async fn set_password(
             }
             Redirect::to("/user/login").into_response()
         }
-        Ok(false) => render_set_page(&state, &session, &token, false, None).await,
+        Ok(false) => render_set_page(&state, &session, &token, false, &[]).await,
         Err(e) => e.into_response(),
     }
 }

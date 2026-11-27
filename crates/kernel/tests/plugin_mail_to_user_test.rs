@@ -624,8 +624,9 @@ fn the_profile_page_lists_opt_outs_and_resubscribes() {
                 Request::post("/user/mail/resubscribe")
                     .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
                     .body(Body::from(format!(
-                        "_token={}&plugin={PLUGIN}",
-                        urlencoding::encode(&token)
+                        "_token={}&_form_build_id={}&plugin={PLUGIN}",
+                        urlencoding::encode(&token),
+                        common::form_build_id(section, "user_mail_resubscribe")
                     )))
                     .unwrap(),
                 &cookies,

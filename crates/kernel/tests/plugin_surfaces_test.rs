@@ -196,8 +196,8 @@ fn the_contact_form_is_a_standard_plugin_declaring_mail() {
         "it must send through the narrow interface"
     );
     assert!(
-        source.contains(r#"name="_token""#),
-        "its form must carry the token field"
+        source.contains(".with_form(") && !source.contains(r#"name="_token""#),
+        "its form is the kernel's, handed over in ApiResponse::form, not hand written"
     );
     assert!(
         source.contains("ApiResponse::themed"),
