@@ -339,10 +339,46 @@ impl FormBuilder {
             if matches!(field.field_type, FieldType::TextLong) {
                 elements.push((format!("{name}_format"), self.format_select(value, mode)));
             }
+            if matches!(field.field_type, FieldType::Link) {
+                let mut title = FormElement::textfield()
+                    .title("Link text")
+                    .max_length(255)
+                    .default_value(field_value::form_link_title(value));
+                let mut new_tab = FormElement::checkbox()
+                    .title("Open in a new tab")
+                    .default_value(field_value::form_link_new_tab(value));
+                if mode == FieldMode::ReadOnly {
+                    title = title.disabled();
+                    new_tab = new_tab.disabled();
+                }
+                elements.push((format!("{name}_title"), title));
+                elements.push((format!("{name}_new_tab"), new_tab));
+            }
             return elements
                 .into_iter()
                 .map(|(n, e)| (n, e.weight(weight)))
                 .collect();
+        }
+
+        // A multi value List is one checkboxes group, not the repeating
+        // container: the allowed values are fixed, so there is nothing to
+        // "add another" of.
+        if matches!(field.field_type, FieldType::List) {
+            let options = field_value::list_options(field);
+            let selected: Vec<&str> = field_value::form_values(value)
+                .into_iter()
+                .filter_map(|v| v.as_str())
+                .collect();
+            let mut widget = FormElement::checkboxes(options)
+                .title(field.label.clone())
+                .default_value(serde_json::json!(selected));
+            if field.required {
+                widget = widget.required();
+            }
+            if mode == FieldMode::ReadOnly {
+                widget = widget.disabled();
+            }
+            return vec![(name.clone(), widget.weight(weight))];
         }
 
         let stored = field_value::form_values(value);
@@ -412,6 +448,14 @@ impl FormBuilder {
             }
             FieldType::Date => FormElement::input("date").default_value(text),
             FieldType::Email => FormElement::input("email").default_value(text),
+            // Not `type="url"`: that input type refuses a local path like
+            // `/item/<uuid>`, which a Link must accept.
+            FieldType::Link => FormElement::textfield().default_value(text),
+            FieldType::List => {
+                let options = field_value::list_options(field);
+                FormElement::select(options).default_value(text)
+            }
+            FieldType::Telephone => FormElement::input("tel").default_value(text),
             FieldType::RecordReference(target_type) => {
                 let id = text;
                 // Display title for the current value: an inline `title` key if

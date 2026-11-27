@@ -884,12 +884,108 @@ pub(crate) async fn render_item_fields(
     let mut children_html = String::new();
     let mut stylesheets: Vec<String> = Vec::new();
     let mut page_root: Option<serde_json::Value> = None;
+
+    // Every `/item/<uuid>` a Link field in `fields` names, resolved to its
+    // Live alias in one query, so a page with several links is not one round
+    // trip per link.
+    let link_sources: Vec<String> = fields
+        .as_object()
+        .map(|fields| {
+            content_type_fields
+                .iter()
+                .filter(|f| matches!(f.field_type, trovato_sdk::types::FieldType::Link))
+                .filter_map(|f| fields.get(&f.field_name))
+                .flat_map(|v| crate::content::field_value::form_values(Some(v)))
+                .filter_map(|v| v.get("uri").and_then(|u| u.as_str()))
+                .filter(|uri| uri.starts_with("/item/"))
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+    let link_aliases = if link_sources.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        UrlAlias::canonical_aliases_for(
+            state.db(),
+            &link_sources,
+            crate::models::stage::LIVE_STAGE_ID,
+            "en",
+        )
+        .await
+        .unwrap_or_default()
+    };
+
     if let Some(fields) = fields.as_object() {
         for (name, value) in fields {
             // A text field's format, stored beside it as `<name>_format`, is
             // part of that field and not a field of its own (B63).
             if is_text_format_key(content_type_fields, name) {
                 continue;
+            }
+
+            if let Some(field_def) = content_type_fields.iter().find(|f| f.field_name == *name) {
+                match &field_def.field_type {
+                    trovato_sdk::types::FieldType::Link => {
+                        let label =
+                            crate::content::revision_compare::field_label(content_type_fields, name);
+                        let links: Vec<String> =
+                            crate::content::field_value::form_values(Some(value))
+                                .into_iter()
+                                .filter_map(|v| render_link_value(v, &link_aliases))
+                                .collect();
+                        if !links.is_empty() {
+                            children_html.push_str(&format!(
+                                "<div class=\"field field-{}\"><strong class=\"field__label\">{}:</strong> {}</div>",
+                                html_escape(name),
+                                html_escape(&label),
+                                links.join(", ")
+                            ));
+                        }
+                        continue;
+                    }
+                    trovato_sdk::types::FieldType::List => {
+                        let label =
+                            crate::content::revision_compare::field_label(content_type_fields, name);
+                        let text = crate::content::field_value::form_values(Some(value))
+                            .into_iter()
+                            .filter_map(|v| v.as_str())
+                            .map(|key| {
+                                crate::content::field_value::list_label_for(field_def, key)
+                                    .unwrap_or_else(|| key.to_string())
+                            })
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        if !text.is_empty() {
+                            let filtered = FilterPipeline::for_format("plain_text").process(&text);
+                            children_html.push_str(&format!(
+                                "<div class=\"field field-{}\"><strong class=\"field__label\">{}:</strong> {}</div>",
+                                html_escape(name),
+                                html_escape(&label),
+                                filtered
+                            ));
+                        }
+                        continue;
+                    }
+                    trovato_sdk::types::FieldType::Telephone => {
+                        let label =
+                            crate::content::revision_compare::field_label(content_type_fields, name);
+                        let links: Vec<String> =
+                            crate::content::field_value::form_values(Some(value))
+                                .into_iter()
+                                .filter_map(render_telephone_value)
+                                .collect();
+                        if !links.is_empty() {
+                            children_html.push_str(&format!(
+                                "<div class=\"field field-{}\"><strong class=\"field__label\">{}:</strong> {}</div>",
+                                html_escape(name),
+                                html_escape(&label),
+                                links.join(", ")
+                            ));
+                        }
+                        continue;
+                    }
+                    _ => {}
+                }
             }
 
             // Blocks field: flat JSON array of {type, weight, data}
@@ -1098,6 +1194,56 @@ fn is_text_format_key(
                 )
         })
     })
+}
+
+/// The HTML one stored Link value renders as: an `<a>` tag when its `uri`
+/// still passes [`field_value::is_valid_link_uri`] (a value written straight
+/// to the database, bypassing the check, renders as escaped text instead,
+/// never as an `href`), an item reference shown at its Live alias when it has
+/// one, and `target="_blank" rel="noopener noreferrer"` only when `new_tab`.
+fn render_link_value(
+    value: &serde_json::Value,
+    aliases: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    let uri = value.get("uri").and_then(|v| v.as_str())?;
+    let title = value.get("title").and_then(|v| v.as_str()).unwrap_or(uri);
+    if !crate::content::field_value::is_valid_link_uri(uri) {
+        return Some(html_escape(title));
+    }
+    let href = aliases.get(uri).map_or(uri, String::as_str);
+    let new_tab = value.get("new_tab").and_then(|v| v.as_bool()).unwrap_or(false);
+    let attrs = if new_tab {
+        " target=\"_blank\" rel=\"noopener noreferrer\""
+    } else {
+        ""
+    };
+    Some(format!(
+        "<a href=\"{}\"{attrs}>{}</a>",
+        html_escape(href),
+        html_escape(title)
+    ))
+}
+
+/// The HTML one stored Telephone value renders as: a `tel:` link to its
+/// `e164` form, or else the entered value stripped to digits with a leading
+/// `+` when it has none.
+fn render_telephone_value(value: &serde_json::Value) -> Option<String> {
+    let entered = value.get("value").and_then(|v| v.as_str())?;
+    let href = value
+        .get("e164")
+        .and_then(|v| v.as_str())
+        .map(str::to_string)
+        .unwrap_or_else(|| {
+            format!(
+                "+{}",
+                entered.chars().filter(char::is_ascii_digit).collect::<String>()
+            )
+        });
+    Some(format!(
+        "<a href=\"tel:{}\">{}</a>",
+        html_escape(&href),
+        html_escape(entered)
+    ))
 }
 
 /// Render the assistant launcher for every scope that applies to this item type.
