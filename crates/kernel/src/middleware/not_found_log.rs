@@ -467,24 +467,35 @@ pub async fn record_not_found(
         .and_then(clean_referrer);
 
     let response = next.run(request).await;
+    let settings = state.not_found_log().settings();
 
-    if response.status() == StatusCode::NOT_FOUND
-        && matches!(method, Method::GET | Method::HEAD)
-        && !is_system_path(&path)
-    {
-        let settings = state.not_found_log().settings();
-        if settings.enabled && !is_ignored(&path, &settings.ignore) {
-            let language = language.unwrap_or_else(|| state.default_language());
-            state.not_found_log().record(NotFoundHit {
-                path: truncate(path, MAX_LENGTH),
-                language,
-                referrer,
-                when: chrono::Utc::now().timestamp(),
-            });
-        }
+    if should_record(response.status(), &method, &path, &settings) {
+        let language = language.unwrap_or_else(|| state.default_language());
+        state.not_found_log().record(NotFoundHit {
+            path: truncate(path, MAX_LENGTH),
+            language,
+            referrer,
+            when: chrono::Utc::now().timestamp(),
+        });
     }
 
     response
+}
+
+/// Whether a response for `method` to `path`, with final `status`, is one the
+/// 404 log keeps: a `404` to a `GET` or `HEAD`, the log turned on, the path
+/// neither a system path nor on the ignore list.
+pub fn should_record(
+    status: StatusCode,
+    method: &Method,
+    path: &str,
+    settings: &NotFoundLogSettings,
+) -> bool {
+    status == StatusCode::NOT_FOUND
+        && matches!(*method, Method::GET | Method::HEAD)
+        && settings.enabled
+        && !is_system_path(path)
+        && !is_ignored(path, &settings.ignore)
 }
 
 #[cfg(test)]
@@ -584,6 +595,47 @@ mod tests {
         };
         let round_tripped = NotFoundLogSettings::from_value(Some(&settings.to_value()));
         assert_eq!(settings, round_tripped);
+    }
+
+    #[test]
+    fn should_record_only_a_404_get_or_head_when_enabled_and_not_skipped() {
+        let on = NotFoundLogSettings::default();
+        let off = NotFoundLogSettings {
+            enabled: false,
+            ..NotFoundLogSettings::default()
+        };
+        assert!(should_record(
+            StatusCode::NOT_FOUND,
+            &Method::GET,
+            "/broken",
+            &on
+        ));
+        assert!(should_record(
+            StatusCode::NOT_FOUND,
+            &Method::HEAD,
+            "/broken",
+            &on
+        ));
+        assert!(
+            !should_record(StatusCode::OK, &Method::GET, "/broken", &on),
+            "not a 404"
+        );
+        assert!(
+            !should_record(StatusCode::NOT_FOUND, &Method::POST, "/broken", &on),
+            "not a GET or HEAD"
+        );
+        assert!(
+            !should_record(StatusCode::NOT_FOUND, &Method::GET, "/broken", &off),
+            "the log is turned off"
+        );
+        assert!(
+            !should_record(StatusCode::NOT_FOUND, &Method::GET, "/admin/x", &on),
+            "a system path"
+        );
+        assert!(
+            !should_record(StatusCode::NOT_FOUND, &Method::GET, "/x/wp-login.php", &on),
+            "on the ignore list"
+        );
     }
 
     #[test]
