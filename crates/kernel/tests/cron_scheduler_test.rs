@@ -12,17 +12,25 @@
 //! These drive the real loop against the real Postgres and Redis, and the
 //! external caller is the real `/cron/{key}` route, because the property under
 //! test is that the loop calls the same method, under the same lock, as every
-//! other caller. They share the `cron_interval_secs` row and the `cron:lock` /
-//! `cron:last_run` keys, so they run one at a time.
+//! other caller.
+//!
+//! Other suites run cron on the same site at the same time (they treat a
+//! skipped run as another holder), so nothing here reads the site-wide
+//! `cron:last_run` to count the scheduler's runs or clears the shared lock.
+//! The scheduler's own runs are counted by
+//! `CronService::scheduled_runs_completed`, which a foreign run can delay but
+//! never inflate. The tests in this file share the `cron_interval_secs` row,
+//! so they run one at a time: a mutex under libtest, the `cron-scheduler`
+//! test group in `.config/nextest.toml` under nextest.
 
 mod common;
 
-use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
+use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use trovato_kernel::cron::{CRON_INTERVAL_CONFIG_KEY, CronResult, CronService};
@@ -31,10 +39,7 @@ use trovato_kernel::models::SiteConfig;
 /// Mirrors the private `CRON_LOCK_KEY` in `crates/kernel/src/cron/mod.rs`.
 const CRON_LOCK_KEY: &str = "cron:lock";
 
-/// Mirrors the private key `CronService::record_run` writes.
-const CRON_LAST_RUN_KEY: &str = "cron:last_run";
-
-/// One test at a time: they share one `site_config` row and the cron keys.
+/// One test at a time under libtest: they share one `site_config` row.
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn serial<F: std::future::Future<Output = ()> + Send>(body: F) {
@@ -50,14 +55,12 @@ async fn redis_conn() -> redis::aio::MultiplexedConnection {
         .expect("redis connection")
 }
 
-async fn clear_cron_keys(conn: &mut redis::aio::MultiplexedConnection) {
-    for key in [CRON_LOCK_KEY, CRON_LAST_RUN_KEY] {
-        let _: () = redis::cmd("DEL")
-            .arg(key)
-            .query_async(conn)
-            .await
-            .unwrap_or(());
-    }
+/// The prefix of every cron lock value this process writes: `host:pid:`.
+fn own_lock_prefix() -> String {
+    let host = hostname::get()
+        .map(|h| h.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    format!("{host}:{}:", std::process::id())
 }
 
 /// Save the interval, and put the row back to absent (the default) when the
@@ -92,11 +95,24 @@ fn spawn_scheduler(cron: Arc<CronService>) -> (CancellationToken, tokio::task::J
 async fn stop(shutdown: CancellationToken, handle: tokio::task::JoinHandle<()>) {
     shutdown.cancel();
     assert!(
-        tokio::time::timeout(Duration::from_secs(5), handle)
+        tokio::time::timeout(Duration::from_secs(10), handle)
             .await
             .is_ok(),
-        "the scheduler loop did not stop within 5 seconds of shutdown"
+        "the scheduler loop did not stop within 10 seconds of shutdown"
     );
+}
+
+/// Wait until the scheduler has completed more than `count` runs, up to
+/// `limit`; the instant it was seen, or `None`.
+async fn wait_for_runs_past(cron: &CronService, count: u64, limit: Duration) -> Option<Instant> {
+    let deadline = Instant::now() + limit;
+    while Instant::now() < deadline {
+        if cron.scheduled_runs_completed() > count {
+            return Some(Instant::now());
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    None
 }
 
 async fn post_cron(app: &common::TestApp) -> (StatusCode, serde_json::Value) {
@@ -121,43 +137,30 @@ async fn post_cron(app: &common::TestApp) -> (StatusCode, serde_json::Value) {
 }
 
 /// With the scheduler on and a short interval, cron runs repeatedly with no
-/// HTTP call at all, and shutdown stops the loop. Red on `main`: nothing called
-/// `run` on a timer, so `cron:last_run` stayed empty.
+/// HTTP call at all, at least an interval apart, and shutdown stops the loop.
+/// Red on `main`: nothing called `run` on a timer.
 #[test]
 fn the_scheduler_runs_cron_on_its_interval_with_no_http_call() {
     serial(async {
         let app = common::shared_app().await;
-        let mut conn = redis_conn().await;
-        clear_cron_keys(&mut conn).await;
         set_interval(app, 2).await;
 
         let cron = app.state.cron().clone();
+        let before = cron.scheduled_runs_completed();
         let (shutdown, handle) = spawn_scheduler(cron.clone());
 
-        // Every distinct run the scheduler records. Nothing else here calls
-        // `run`: no request is sent.
-        let mut runs = BTreeSet::new();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(12);
-        while tokio::time::Instant::now() < deadline && runs.len() < 2 {
-            if let Ok(Some(run)) = cron.last_run().await {
-                assert_eq!(run.status, "completed", "{run:?}");
-                runs.insert(run.timestamp);
-            }
-            tokio::time::sleep(Duration::from_millis(100)).await;
-        }
-
+        // Nothing in this test sends a request. Another suite's cron can only
+        // delay a scheduled run, hence the generous limit.
+        let first = wait_for_runs_past(&cron, before, Duration::from_secs(60)).await;
+        let second = wait_for_runs_past(&cron, before + 1, Duration::from_secs(60)).await;
         stop(shutdown, handle).await;
-        clear_cron_keys(&mut conn).await;
+
+        let first = first.expect("the scheduler never ran cron");
+        let second = second.expect("the scheduler ran cron once, never twice");
         assert!(
-            runs.len() >= 2,
-            "expected two scheduled runs within 12 seconds at a 2 second \
-             interval; saw {runs:?}"
-        );
-        let first = *runs.iter().next().unwrap();
-        let second = *runs.iter().nth(1).unwrap();
-        assert!(
-            second - first >= 2,
-            "two scheduled runs came closer together than the interval: {runs:?}"
+            second - first >= Duration::from_millis(1_900),
+            "two scheduled runs came {:?} apart, inside the 2 second interval",
+            second - first
         );
     });
 }
@@ -167,13 +170,12 @@ fn the_scheduler_runs_cron_on_its_interval_with_no_http_call() {
 ///
 /// The scheduled run is held in progress deterministically: the test holds an
 /// exclusive lock on `file_managed`, which the run's first task (temporary
-/// file cleanup) deletes from, so the run takes the cron lock and then waits.
+/// file cleanup) reads, so the run takes the cron lock and then waits.
 #[test]
 fn an_external_call_during_a_scheduled_run_is_skipped() {
     serial(async {
         let app = common::shared_app().await;
         let mut conn = redis_conn().await;
-        clear_cron_keys(&mut conn).await;
         set_interval(app, 1).await;
 
         let mut blocker = app.db.begin().await.expect("begin");
@@ -183,42 +185,39 @@ fn an_external_call_during_a_scheduled_run_is_skipped() {
             .expect("lock file_managed");
 
         let cron = app.state.cron().clone();
+        let before = cron.scheduled_runs_completed();
         let (shutdown, handle) = spawn_scheduler(cron.clone());
 
-        // Wait for the scheduled run to take the cron lock.
+        // Wait for the scheduler to hold the cron lock. Nothing else in this
+        // process runs cron, so a lock value with this process's prefix is the
+        // scheduler's; another suite's run holds it under its own pid.
+        let prefix = own_lock_prefix();
         let mut held = None;
-        for _ in 0..100 {
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while Instant::now() < deadline {
             let value: Option<String> = redis::cmd("GET")
                 .arg(CRON_LOCK_KEY)
                 .query_async(&mut conn)
                 .await
                 .unwrap_or(None);
-            if value.is_some() {
+            if value.as_deref().is_some_and(|v| v.starts_with(&prefix)) {
                 held = value;
                 break;
             }
-            tokio::time::sleep(Duration::from_millis(50)).await;
+            tokio::time::sleep(Duration::from_millis(20)).await;
         }
         let Some(held) = held else {
             blocker.rollback().await.ok();
             stop(shutdown, handle).await;
-            panic!("the scheduler never took the cron lock within 5 seconds");
+            panic!("the scheduler never took the cron lock within 60 seconds");
         };
 
         let (status, body) = post_cron(app).await;
 
         // Let the scheduled run finish.
         blocker.rollback().await.expect("release file_managed");
-        let mut finished = None;
-        for _ in 0..100 {
-            if let Ok(Some(run)) = cron.last_run().await {
-                finished = Some(run);
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        let finished = wait_for_runs_past(&cron, before, Duration::from_secs(30)).await;
         stop(shutdown, handle).await;
-        clear_cron_keys(&mut conn).await;
 
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(
@@ -226,8 +225,10 @@ fn an_external_call_during_a_scheduled_run_is_skipped() {
             "an external call while the scheduler held the lock ({held}) ran \
              cron anyway: {body}"
         );
-        let finished = finished.expect("the scheduled run never finished");
-        assert_eq!(finished.status, "completed", "{finished:?}");
+        assert!(
+            finished.is_some(),
+            "the scheduled run never completed once it was let go"
+        );
     });
 }
 
@@ -236,23 +237,23 @@ fn an_external_call_during_a_scheduled_run_is_skipped() {
 fn interval_zero_means_no_scheduled_run() {
     serial(async {
         let app = common::shared_app().await;
-        let mut conn = redis_conn().await;
-        clear_cron_keys(&mut conn).await;
         set_interval(app, 0).await;
 
         let cron = app.state.cron().clone();
         let config = cron.scheduler_config().await;
         assert!(!config.enabled(), "{config:?}");
 
+        let before = cron.scheduled_runs_completed();
         let (shutdown, handle) = spawn_scheduler(cron.clone());
         tokio::time::sleep(Duration::from_secs(3)).await;
-        let last_run = cron.last_run().await.expect("read last_run");
+        let after = cron.scheduled_runs_completed();
         stop(shutdown, handle).await;
-        clear_cron_keys(&mut conn).await;
 
-        assert!(
-            last_run.is_none(),
-            "a scheduler set to 0 (off) ran cron: {last_run:?}"
+        assert_eq!(
+            after,
+            before,
+            "a scheduler set to 0 (off) ran cron {} times",
+            after - before
         );
     });
 }
@@ -263,26 +264,24 @@ fn interval_zero_means_no_scheduled_run() {
 fn shutdown_stops_the_scheduler_between_runs() {
     serial(async {
         let app = common::shared_app().await;
-        let mut conn = redis_conn().await;
-        clear_cron_keys(&mut conn).await;
         set_interval(app, 3600).await;
 
         let cron = app.state.cron().clone();
+        let before = cron.scheduled_runs_completed();
         let (shutdown, handle) = spawn_scheduler(cron.clone());
         tokio::time::sleep(Duration::from_millis(300)).await;
         assert!(!handle.is_finished(), "the scheduler loop ended on its own");
 
         shutdown.cancel();
         let stopped = tokio::time::timeout(Duration::from_secs(2), handle).await;
-        let last_run = cron.last_run().await.expect("read last_run");
-        clear_cron_keys(&mut conn).await;
         assert!(
             stopped.is_ok(),
             "the scheduler did not stop within 2 seconds of shutdown"
         );
-        assert!(
-            last_run.is_none(),
-            "an hourly scheduler ran cron in its first second: {last_run:?}"
+        assert_eq!(
+            cron.scheduled_runs_completed(),
+            before,
+            "an hourly scheduler ran cron in its first second"
         );
     });
 }
@@ -294,83 +293,67 @@ fn shutdown_stops_the_scheduler_between_runs() {
 fn a_scheduled_run_waits_out_a_recent_external_run() {
     serial(async {
         let app = common::shared_app().await;
-        let mut conn = redis_conn().await;
-        clear_cron_keys(&mut conn).await;
         set_interval(app, 4).await;
 
         let cron = app.state.cron().clone();
+        let before = cron.scheduled_runs_completed();
         let (shutdown, handle) = spawn_scheduler(cron.clone());
 
-        // An external run two seconds into the scheduler's first interval.
+        // An external run about two seconds into the scheduler's first
+        // interval. Another suite holding the lock makes it skip; try again.
         tokio::time::sleep(Duration::from_secs(2)).await;
-        let (status, body) = post_cron(app).await;
-        assert_eq!(body["status"], "completed", "{status} {body}");
-        let external = cron
-            .last_run()
-            .await
-            .expect("read last_run")
-            .expect("the external run was recorded")
-            .timestamp;
-
-        // The scheduler's own interval ends at about 4 seconds, when the
-        // external run is about 2 seconds old: it must not run then.
-        tokio::time::sleep(Duration::from_millis(3_000)).await;
-        let at_five = cron
-            .last_run()
-            .await
-            .expect("read last_run")
-            .expect("a run is recorded")
-            .timestamp;
-
-        // Once the external run is an interval old, the scheduler runs.
-        let mut later = at_five;
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
-        while tokio::time::Instant::now() < deadline && later == external {
-            tokio::time::sleep(Duration::from_millis(100)).await;
-            if let Ok(Some(run)) = cron.last_run().await {
-                later = run.timestamp;
+        let mut external_done = None;
+        for _ in 0..120 {
+            let (status, body) = post_cron(app).await;
+            assert_eq!(status, StatusCode::OK, "{body}");
+            if body["status"] == "completed" {
+                external_done = Some(Instant::now());
+                break;
             }
+            tokio::time::sleep(Duration::from_millis(250)).await;
         }
-        stop(shutdown, handle).await;
-        clear_cron_keys(&mut conn).await;
+        let external_done = external_done.expect("the external run never got the lock");
 
-        assert_eq!(
-            at_five,
-            external,
-            "the scheduler ran again {} seconds after an external run, \
-             inside its 4 second interval",
-            at_five - external
-        );
+        // The scheduler's own interval ends while the external run is younger
+        // than 4 seconds: it must hold off until that run is an interval old.
+        let next = wait_for_runs_past(&cron, before, Duration::from_secs(60)).await;
+        stop(shutdown, handle).await;
+
+        let next = next.expect("the scheduler never ran after the external run");
+        // `cron:last_run` is in whole seconds, so allow one second of rounding.
         assert!(
-            later - external >= 4,
-            "the scheduler did not run once the external run was an interval \
-             old: external at {external}, next at {later}"
+            next - external_done >= Duration::from_secs(3),
+            "the scheduler ran {:?} after an external run, inside its 4 second \
+             interval",
+            next - external_done
         );
     });
 }
 
-/// Two callers of `run` at once never both execute the cron tasks: one
-/// completes, the other is skipped.
+/// Two callers of `run` at once never both execute the cron tasks.
 #[test]
 fn two_concurrent_runs_never_both_execute() {
     serial(async {
         let app = common::shared_app().await;
-        let mut conn = redis_conn().await;
-        clear_cron_keys(&mut conn).await;
-
         let cron = app.state.cron().clone();
-        let (a, b) = tokio::join!(cron.run(), cron.run());
-        clear_cron_keys(&mut conn).await;
 
-        let results = [a, b];
-        let completed = results
-            .iter()
-            .filter(|r| matches!(r, CronResult::Completed { .. }))
-            .count();
-        let skipped = results
-            .iter()
-            .filter(|r| matches!(r, CronResult::Skipped))
-            .count();
-        assert_eq!((completed, skipped), (1, 1), "{results:?}");
+        // Another suite holding the lock skips both; try until one of ours
+        // gets it, and every time at most one may complete.
+        let mut seen_one = false;
+        for _ in 0..120 {
+            let (a, b) = tokio::join!(cron.run(), cron.run());
+            let results = [a, b];
+            let completed = results
+                .iter()
+                .filter(|r| matches!(r, CronResult::Completed { .. }))
+                .count();
+            assert!(completed <= 1, "both concurrent runs executed: {results:?}");
+            if completed == 1 {
+                seen_one = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        assert!(seen_one, "neither run ever got the lock");
     });
 }

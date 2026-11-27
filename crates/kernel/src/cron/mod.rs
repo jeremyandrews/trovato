@@ -903,6 +903,10 @@ pub struct CronService {
     /// (`CRON_INTERVAL_SECS`), set by `apply_runtime_config`. `None`
     /// in a harness that never calls it, where `site_config` alone decides.
     scheduler_interval_override: Option<u64>,
+    /// Runs this process's built-in scheduler has completed. Other callers'
+    /// runs are not counted, which is what lets a test tell the scheduler's
+    /// runs apart from cron that other processes run on the same site.
+    scheduled_runs_completed: AtomicU64,
 }
 
 impl CronService {
@@ -930,6 +934,7 @@ impl CronService {
             job_ceiling: None,
             search: None,
             scheduler_interval_override: None,
+            scheduled_runs_completed: AtomicU64::new(0),
         }
     }
 
@@ -957,6 +962,7 @@ impl CronService {
             job_ceiling: None,
             search: None,
             scheduler_interval_override: None,
+            scheduled_runs_completed: AtomicU64::new(0),
         }
     }
 
@@ -2257,6 +2263,12 @@ impl CronService {
         }
     }
 
+    /// How many runs this process's built-in scheduler has completed.
+    pub fn scheduled_runs_completed(&self) -> u64 {
+        self.scheduled_runs_completed
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// One scheduled call to [`run`](Self::run), logged.
     ///
     /// The run is spawned and awaited, not awaited inline, for the same reason
@@ -2274,6 +2286,8 @@ impl CronService {
                 duration_ms,
             } => {
                 info!(duration_ms, tasks = ?tasks_run, "scheduled cron run completed");
+                self.scheduled_runs_completed
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             CronResult::Skipped => {
                 info!("scheduled cron run skipped: another caller is running cron");
