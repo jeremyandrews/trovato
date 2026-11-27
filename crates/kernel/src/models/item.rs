@@ -129,7 +129,8 @@ pub struct ModeratedItem {
     pub author_id: Uuid,
     /// When the latest revision was saved, a Unix timestamp.
     pub changed: i64,
-    /// The latest revision's state: `draft` or `archived`.
+    /// The latest revision's state: any state of its type's workflow whose
+    /// `published` flag is `false` (`content::moderation`).
     pub state: String,
     /// Whether the latest revision is a draft ahead of the published one.
     pub ahead: bool,
@@ -655,12 +656,27 @@ impl Item {
     /// The items of moderated types whose latest revision is not published,
     /// newest change first: the moderated content list. `state` narrows it to
     /// one state. A revision saved before its type was moderated reads its
-    /// state from its status, as `content::moderation::state_of` does.
+    /// state from its status (`published` or `draft`), as
+    /// `ModerationWorkflow::state_of` does for the built-in workflow.
+    ///
+    /// Which states count as published is read fresh from every stored
+    /// workflow (`content::moderation::WORKFLOWS_KEY`), rather than the
+    /// literal `'published'`: a site whose workflow calls its published state
+    /// something else, or has more than one, is excluded correctly.
     pub async fn list_moderated(
         pool: &PgPool,
         state: Option<&str>,
         limit: i64,
     ) -> Result<Vec<ModeratedItem>> {
+        let value =
+            crate::models::SiteConfig::get(pool, crate::content::moderation::WORKFLOWS_KEY)
+                .await?;
+        let published: Vec<String> = crate::content::moderation::resolve_workflows(value.as_ref())
+            .iter()
+            .flat_map(|w| w.states.iter().filter(|s| s.published).map(|s| s.id.clone()))
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
         sqlx::query_as::<_, ModeratedItem>(
             "SELECT id, item_type, title, author_id, changed, state, ahead FROM ( \
                  SELECT i.id, i.type AS item_type, r.title, r.author_id, r.created AS changed, \
@@ -675,10 +691,47 @@ impl Item {
                      ORDER BY created DESC, id DESC LIMIT 1 \
                  ) r ON true \
              ) latest \
-             WHERE state <> 'published' AND ($1::text IS NULL OR state = $1) \
+             WHERE NOT (state = ANY($1)) AND ($2::text IS NULL OR state = $2) \
+             ORDER BY changed DESC, id DESC LIMIT $3",
+        )
+        .bind(&published)
+        .bind(state)
+        .bind(limit)
+        .fetch_all(pool)
+        .await
+        .context("failed to list moderated items")
+    }
+
+    /// The items of moderated types whose latest revision is in one of
+    /// `states`, newest change first: used where the caller already knows
+    /// exactly which states it wants (the dashboard's review panel wants
+    /// every non-default-revision state, not just one).
+    pub async fn list_moderated_in_states(
+        pool: &PgPool,
+        states: &[String],
+        limit: i64,
+    ) -> Result<Vec<ModeratedItem>> {
+        if states.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as::<_, ModeratedItem>(
+            "SELECT id, item_type, title, author_id, changed, state, ahead FROM ( \
+                 SELECT i.id, i.type AS item_type, r.title, r.author_id, r.created AS changed, \
+                        COALESCE(r.moderation_state, \
+                                 CASE WHEN r.status = 1 THEN 'published' ELSE 'draft' END) AS state, \
+                        (r.id IS DISTINCT FROM i.current_revision_id) AS ahead \
+                 FROM item i \
+                 JOIN item_type t ON t.type = i.type AND t.settings -> 'moderation' = 'true'::jsonb \
+                 JOIN LATERAL ( \
+                     SELECT id, title, author_id, created, status, moderation_state \
+                     FROM item_revision WHERE item_id = i.id \
+                     ORDER BY created DESC, id DESC LIMIT 1 \
+                 ) r ON true \
+             ) latest \
+             WHERE state = ANY($1) \
              ORDER BY changed DESC, id DESC LIMIT $2",
         )
-        .bind(state)
+        .bind(states)
         .bind(limit)
         .fetch_all(pool)
         .await

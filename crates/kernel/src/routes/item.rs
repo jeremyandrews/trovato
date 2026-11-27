@@ -1905,11 +1905,13 @@ async fn revision_authors(
     names
 }
 
-/// A revision as the revision templates show it.
+/// A revision as the revision templates show it. `workflow` is the item
+/// type's moderation workflow, `None` on an unmoderated type.
 fn revision_summary(
     revision: &crate::models::ItemRevision,
     authors: &std::collections::HashMap<Uuid, String>,
     current: Option<Uuid>,
+    workflow: Option<&crate::content::moderation::ModerationWorkflow>,
 ) -> serde_json::Value {
     let date = chrono::DateTime::from_timestamp(revision.created, 0)
         .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
@@ -1925,7 +1927,7 @@ fn revision_summary(
         "state": revision
             .moderation_state
             .as_deref()
-            .map(crate::content::moderation::label),
+            .map(|s| workflow.map_or_else(|| s.to_string(), |w| w.label(s))),
     })
 }
 
@@ -1946,9 +1948,10 @@ async fn list_revisions(
         };
 
     let authors = revision_authors(&state, &revisions).await;
+    let workflow = state.items().moderation_workflow_for(&item.item_type).await;
     let rev_data: Vec<serde_json::Value> = revisions
         .iter()
-        .map(|rev| revision_summary(rev, &authors, item.current_revision_id))
+        .map(|rev| revision_summary(rev, &authors, item.current_revision_id, workflow.as_ref()))
         .collect();
 
     // What each row offers. A revert is an edit of the item; a delete needs
@@ -2016,6 +2019,7 @@ async fn preview_revision(
     let (fields_html, page_stylesheets, page_root) =
         render_item_fields(&state, &viewer, &revision.fields, &content_type_fields).await;
     let authors = revision_authors(&state, &revisions).await;
+    let workflow = state.items().moderation_workflow_for(&item.item_type).await;
 
     let mut context = tera::Context::new();
     context.insert("path", &format!("/item/{id}/revisions/{rev_id}"));
@@ -2023,7 +2027,7 @@ async fn preview_revision(
     context.insert("item_title", &item.title);
     context.insert(
         "revision",
-        &revision_summary(revision, &authors, item.current_revision_id),
+        &revision_summary(revision, &authors, item.current_revision_id, workflow.as_ref()),
     );
     context.insert("current_revision_id", &item.current_revision_id);
     context.insert("fields_html", &fields_html);
@@ -2099,11 +2103,14 @@ async fn latest_version(
     let (fields_html, page_stylesheets, page_root) =
         render_item_fields(&state, &viewer, &revision.fields, &content_type_fields).await;
     let authors = revision_authors(&state, std::slice::from_ref(&revision)).await;
-    let latest_state = crate::content::moderation::label(crate::content::moderation::state_of(
-        revision.moderation_state.as_deref(),
-        revision.status,
-    ))
-    .to_lowercase();
+    let workflow = state.items().moderation_workflow_for(&item.item_type).await;
+    let latest_state = workflow
+        .as_ref()
+        .map(|w| {
+            w.label(&w.state_of(revision.moderation_state.as_deref(), revision.status))
+        })
+        .unwrap_or_default()
+        .to_lowercase();
 
     let mut context = tera::Context::new();
     context.insert("path", &format!("/item/{id}/latest"));
@@ -2111,7 +2118,7 @@ async fn latest_version(
     context.insert("item_title", &item.title);
     context.insert(
         "revision",
-        &revision_summary(&revision, &authors, item.current_revision_id),
+        &revision_summary(&revision, &authors, item.current_revision_id, workflow.as_ref()),
     );
     context.insert("current_revision_id", &item.current_revision_id);
     context.insert("latest_state", &latest_state);
@@ -2181,6 +2188,7 @@ async fn compare_revisions(
         &content_type_fields,
     );
     let authors = revision_authors(&state, &revisions).await;
+    let workflow = state.items().moderation_workflow_for(&item.item_type).await;
 
     let mut context = tera::Context::new();
     context.insert("path", &format!("/item/{id}/revisions/compare"));
@@ -2188,11 +2196,11 @@ async fn compare_revisions(
     context.insert("item_title", &item.title);
     context.insert(
         "from",
-        &revision_summary(from, &authors, item.current_revision_id),
+        &revision_summary(from, &authors, item.current_revision_id, workflow.as_ref()),
     );
     context.insert(
         "to",
-        &revision_summary(to, &authors, item.current_revision_id),
+        &revision_summary(to, &authors, item.current_revision_id, workflow.as_ref()),
     );
     context.insert("comparison", &comparison);
 
@@ -2264,6 +2272,7 @@ async fn confirm_delete_revision(
     }
 
     let authors = revision_authors(&state, &revisions).await;
+    let workflow = state.items().moderation_workflow_for(&item.item_type).await;
     let csrf_token = generate_csrf_token(&session).await;
     let mut context = tera::Context::new();
     context.insert("path", &format!("/item/{id}/revisions/{rev_id}/delete"));
@@ -2271,7 +2280,7 @@ async fn confirm_delete_revision(
     context.insert("item_title", &item.title);
     context.insert(
         "revision",
-        &revision_summary(revision, &authors, item.current_revision_id),
+        &revision_summary(revision, &authors, item.current_revision_id, workflow.as_ref()),
     );
     context.insert("csrf_token", &csrf_token);
 

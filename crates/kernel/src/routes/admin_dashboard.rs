@@ -215,13 +215,24 @@ async fn waiting(
     let mut rows = Vec::new();
     let mut total = 0;
     if may_review {
-        let drafts = crate::models::Item::list_moderated(
-            state.db(),
-            Some(crate::content::moderation::DRAFT),
-            200,
-        )
-        .await
-        .unwrap_or_default();
+        // Every state still awaiting a decision: not a default-revision
+        // state, so not Published and not an archived-like state either.
+        let workflows = state.items().moderation_workflows_in_use().await;
+        let pending_states: Vec<String> = workflows
+            .iter()
+            .flat_map(|w| {
+                w.states
+                    .iter()
+                    .filter(|s| !s.default_revision)
+                    .map(|s| s.id.clone())
+            })
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
+            .collect();
+        let drafts =
+            crate::models::Item::list_moderated_in_states(state.db(), &pending_states, 200)
+                .await
+                .unwrap_or_default();
         let ids: Vec<uuid::Uuid> = drafts.iter().map(|d| d.id).collect();
         let items = crate::models::Item::find_by_ids(state.db(), &ids)
             .await
@@ -241,7 +252,7 @@ async fn waiting(
         rows.push(PanelRow {
             text: count(n, "{count} draft to review", "{count} drafts to review"),
             detail: None,
-            href: Some("/admin/content/moderated?state=draft".to_string()),
+            href: Some("/admin/content/moderated".to_string()),
             status_line: None,
         });
     }

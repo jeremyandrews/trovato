@@ -427,6 +427,12 @@ pub enum WriteDenied {
         /// The state the write asked for.
         to: String,
     },
+    /// A stage move was asked for in the same save as a draft over a
+    /// published item (a forward revision): the forward save writes only a
+    /// revision and never reaches `Item::update`, so the move would be
+    /// accepted here and then silently dropped. Refused instead; save the two
+    /// separately.
+    TransitionWithStageMove,
 }
 
 impl std::fmt::Display for WriteDenied {
@@ -449,11 +455,13 @@ impl std::fmt::Display for WriteDenied {
                 f,
                 "changing an item's author or authored on time requires `{ADMINISTER_CONTENT}`"
             ),
-            Self::Transition { from, to } => write!(
+            Self::Transition { from, to } => {
+                write!(f, "you may not move this item from {from} to {to}")
+            }
+            Self::TransitionWithStageMove => write!(
                 f,
-                "you may not move this item from {} to {}",
-                moderation::label(from),
-                moderation::label(to)
+                "you may not move stage and save a draft over a published item in the same \
+                 save; save the stage move separately"
             ),
         }
     }
@@ -863,14 +871,17 @@ impl ItemService {
         // The two write gates, on the client's own submission and before the
         // presave tap: a plugin's presave edits are trusted code, not user
         // input. Both return `WriteDenied`, which every caller maps to 403.
-        let moderated_state = if self.is_moderated(&input.item_type).await {
+        let moderated_state = if let Some(workflow) =
+            self.moderation_workflow_for(&input.item_type).await
+        {
+            let from = &workflow.default_state;
             let requested = match (moderation_state, input.status) {
-                (Some(name), _) => name,
-                (None, Some(1)) => moderation::PUBLISHED,
-                (None, _) => moderation::DRAFT,
+                (Some(name), _) => name.to_string(),
+                (None, Some(1)) => Self::status_target(&workflow, from, 1),
+                (None, _) => from.clone(),
             };
-            let to = Self::gate_transition(user, moderation::DRAFT, requested)?;
-            input.status = Some(moderation::status_of(to));
+            let to = Self::gate_transition(&workflow, user, from, &requested)?;
+            input.status = Some(workflow.status_of(&to));
             Some(to)
         } else {
             input.status = Self::gate_publish(user, input.status, None)?;
@@ -947,7 +958,7 @@ impl ItemService {
             input,
             Some(&refs),
             created,
-            moderated_state,
+            moderated_state.as_deref(),
         )
         .await?;
 
@@ -1008,16 +1019,113 @@ impl ItemService {
         }
     }
 
-    /// The moderation state of `item`: the state of its latest revision
-    /// (`latest`, which may be ahead of the current one), read from its
-    /// status when the revision has none.
-    pub fn moderation_state_of(item: &Item, latest: Option<&ItemRevision>) -> &'static str {
+    /// The moderation workflow `item_type`'s items move through: `None` when
+    /// the type is not moderated. Read fresh on every call, as [`Self::stage_view`]
+    /// reads the stage workflow: a change to the stored workflow or to a
+    /// type's `moderation_workflow` setting is seen at once by every server.
+    pub async fn moderation_workflow_for(
+        &self,
+        item_type: &str,
+    ) -> Option<moderation::ModerationWorkflow> {
+        let settings = match crate::models::ItemType::find_by_type(&self.inner.pool, item_type)
+            .await
+        {
+            Ok(Some(row)) => row.settings,
+            Ok(None) => return None,
+            Err(e) => {
+                warn!(error = %e, item_type, "reading whether the type is moderated failed");
+                return None;
+            }
+        };
+        if !moderation::is_moderated(&settings) {
+            return None;
+        }
+        Some(
+            self.moderation_workflow_named(moderation::workflow_name(&settings))
+                .await,
+        )
+    }
+
+    /// The stored workflow named `name`, or [`moderation::builtin_editorial`],
+    /// logged, when no stored workflow has that name — a type whose
+    /// `moderation_workflow` setting names a workflow that was renamed or
+    /// removed still has somewhere to go.
+    async fn moderation_workflow_named(&self, name: &str) -> moderation::ModerationWorkflow {
+        let value = match SiteConfig::get(&self.inner.pool, moderation::WORKFLOWS_KEY).await {
+            Ok(value) => value,
+            Err(e) => {
+                warn!(error = %e, "reading moderation workflows failed: using the built-in editorial workflow");
+                None
+            }
+        };
+        moderation::resolve_workflows(value.as_ref())
+            .into_iter()
+            .find(|w| w.id == name)
+            .unwrap_or_else(|| {
+                warn!(
+                    workflow = name,
+                    "a content type names a moderation workflow that does not exist; using editorial"
+                );
+                moderation::builtin_editorial()
+            })
+    }
+
+    /// Every workflow actually assigned to a moderated content type, deduped
+    /// by workflow id: what the moderated content list's state filter and the
+    /// dashboard's review panel offer. Empty when no type is moderated.
+    pub async fn moderation_workflows_in_use(&self) -> Vec<moderation::ModerationWorkflow> {
+        let types = match crate::models::ItemType::list(&self.inner.pool).await {
+            Ok(types) => types,
+            Err(e) => {
+                warn!(error = %e, "reading content types failed");
+                return Vec::new();
+            }
+        };
+        let mut names: Vec<&str> = types
+            .iter()
+            .filter(|t| moderation::is_moderated(&t.settings))
+            .map(|t| moderation::workflow_name(&t.settings))
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        if names.is_empty() {
+            return Vec::new();
+        }
+        let value = match SiteConfig::get(&self.inner.pool, moderation::WORKFLOWS_KEY).await {
+            Ok(value) => value,
+            Err(e) => {
+                warn!(error = %e, "reading moderation workflows failed: using the built-in editorial workflow");
+                None
+            }
+        };
+        let resolved = moderation::resolve_workflows(value.as_ref());
+        names
+            .into_iter()
+            .map(|name| {
+                resolved
+                    .iter()
+                    .find(|w| w.id == name)
+                    .cloned()
+                    .unwrap_or_else(moderation::builtin_editorial)
+            })
+            .collect()
+    }
+
+    /// The moderation state of `item` on `workflow`: the state of its latest
+    /// revision (`latest`, which may be ahead of the current one), read from
+    /// its status when the revision has none or names a state the workflow
+    /// does not have.
+    pub fn moderation_state_of(
+        workflow: &moderation::ModerationWorkflow,
+        item: &Item,
+        latest: Option<&ItemRevision>,
+    ) -> String {
         match latest {
             Some(r) if Some(r.id) != item.current_revision_id => {
-                moderation::state_of(r.moderation_state.as_deref(), r.status)
+                workflow.state_of(r.moderation_state.as_deref(), r.status)
             }
-            Some(r) => moderation::state_of(r.moderation_state.as_deref(), item.status),
-            None => moderation::state_of(None, item.status),
+            Some(r) => workflow.state_of(r.moderation_state.as_deref(), item.status),
+            None => workflow.state_of(None, item.status),
         }
     }
 
@@ -1025,12 +1133,12 @@ impl ItemService {
     /// title and fields of a draft ahead of the published revision, over the
     /// item row. `None` for an item whose type is not moderated. One query
     /// more than a load, on the edit form only.
-    pub async fn load_for_moderation(&self, item: &Item) -> Result<Option<(&'static str, Item)>> {
-        if !self.is_moderated(&item.item_type).await {
+    pub async fn load_for_moderation(&self, item: &Item) -> Result<Option<(String, Item)>> {
+        let Some(workflow) = self.moderation_workflow_for(&item.item_type).await else {
             return Ok(None);
-        }
+        };
         let latest = Item::latest_revision(&self.inner.pool, item.id).await?;
-        let state = Self::moderation_state_of(item, latest.as_ref());
+        let state = Self::moderation_state_of(&workflow, item, latest.as_ref());
         let mut working = item.clone();
         if let Some(latest) = latest.filter(|r| Some(r.id) != item.current_revision_id) {
             working.title = latest.title;
@@ -1061,27 +1169,50 @@ impl ItemService {
             .filter(|r| Some(r.id) != item.current_revision_id))
     }
 
-    /// Decide a moderation transition: `to` must be a state, and the user
-    /// must hold the transition from `from` to it.
+    /// Decide a moderation transition on `workflow`: `to` must be one of its
+    /// states, and the user must hold the transition from `from` to it.
     fn gate_transition(
+        workflow: &moderation::ModerationWorkflow,
         user: &UserContext,
         from: &str,
         to: &str,
-    ) -> Result<&'static str, WriteDenied> {
-        let Some(to) = moderation::state(to) else {
-            return Err(WriteDenied::Transition {
-                from: from.to_string(),
-                to: to.to_string(),
-            });
-        };
-        if moderation::may(from, to, user) {
-            Ok(to)
+    ) -> Result<String, WriteDenied> {
+        if workflow.state(to).is_some() && workflow.may(from, to, user) {
+            Ok(to.to_string())
         } else {
             Err(WriteDenied::Transition {
                 from: from.to_string(),
                 to: to.to_string(),
             })
         }
+    }
+
+    /// The state a bare status change (no explicit `moderation_state`) maps
+    /// to on `workflow`: a status of 1 is the first published state (in
+    /// workflow order) reachable from `from`; a status of 0 from a published
+    /// state is the first state with `published: false, default_revision:
+    /// true` reachable from `from`; anything else that finds no reachable
+    /// match is the workflow's `default_state`, and [`Self::gate_transition`]
+    /// decides it as any other requested state. This is what a bare status
+    /// flip on the form and a background save of `{"status": N}` (scheduled
+    /// publishing) ask for.
+    fn status_target(workflow: &moderation::ModerationWorkflow, from: &str, status: i16) -> String {
+        let reachable = |published: bool| {
+            workflow
+                .states
+                .iter()
+                .find(|s| s.published == published && s.default_revision && workflow.transition(from, &s.id).is_some())
+        };
+        let target = if status == 1 {
+            reachable(true)
+        } else if workflow.state(from).is_some_and(|s| s.published) {
+            reachable(false)
+        } else {
+            None
+        };
+        target
+            .map(|s| s.id.clone())
+            .unwrap_or_else(|| workflow.default_state.clone())
     }
 
     /// A content type's promote and sticky defaults for a new item, from its
@@ -1626,21 +1757,22 @@ impl ItemService {
         // here, so a partial `fields` object cannot erase it.
         let mut moderated_state = None;
         let mut forward = false;
-        if self.is_moderated(&existing.item_type).await {
+        if let Some(workflow) = self.moderation_workflow_for(&existing.item_type).await {
             let latest = Item::latest_revision(&self.inner.pool, id).await?;
-            let from = Self::moderation_state_of(&existing, latest.as_ref());
+            let from = Self::moderation_state_of(&workflow, &existing, latest.as_ref());
             let requested = match (moderation_state, input.status) {
-                (Some(name), _) => Some(name),
-                (None, Some(status)) if status != existing.status => Some(if status == 1 {
-                    moderation::PUBLISHED
-                } else if from == moderation::PUBLISHED {
-                    moderation::ARCHIVED
-                } else {
-                    moderation::DRAFT
-                }),
-                (None, _) => moderation::default_target(from, user),
+                (Some(name), _) => Some(name.to_string()),
+                (None, Some(status)) if status != existing.status => {
+                    Some(Self::status_target(&workflow, &from, status))
+                }
+                (None, _) => workflow.default_target(&from, user),
             };
-            let to = Self::gate_transition(user, from, requested.unwrap_or(from))?;
+            let to = Self::gate_transition(
+                &workflow,
+                user,
+                &from,
+                requested.as_deref().unwrap_or(&from),
+            )?;
             // A save starts from the latest revision: a draft ahead of the
             // published one is what the user is working on.
             if let Some(latest) = latest
@@ -1650,11 +1782,18 @@ impl ItemService {
                 input.title.get_or_insert_with(|| latest.title.clone());
                 input.fields.get_or_insert_with(|| latest.fields.clone());
             }
-            forward = to == moderation::DRAFT && existing.is_published();
+            forward = workflow.is_forward_revision(&to, existing.is_published());
+            // A stage move would be accepted here (the permission check above
+            // already passed) and then silently dropped: the forward branch
+            // below returns before `Item::update` ever applies it. Refused
+            // instead, so the two are saved separately.
+            if forward && input.stage_id.is_some() {
+                return Err(WriteDenied::TransitionWithStageMove.into());
+            }
             input.status = Some(if forward {
                 existing.status
             } else {
-                moderation::status_of(to)
+                workflow.status_of(&to)
             });
             moderated_state = Some(to);
         } else {
@@ -1746,6 +1885,9 @@ impl ItemService {
         // the published revision; the taps that announce a change to the item
         // do not fire, because visitors see none.
         if forward {
+            // `forward` is only set inside the branch above that also sets
+            // `moderated_state`, so this always has a value.
+            let state = moderated_state.as_deref().unwrap_or(moderation::DRAFT);
             let revision_id = Item::insert_forward_revision(
                 &self.inner.pool,
                 id,
@@ -1753,12 +1895,12 @@ impl ItemService {
                 input.title.as_deref().unwrap_or(&existing.title),
                 input.fields.as_ref().unwrap_or(&existing.fields),
                 input.log.as_deref(),
-                moderation::DRAFT,
+                state,
             )
             .await?;
             info!(item_id = %id, revision_id = %revision_id, "draft saved ahead of the published revision");
             let mut details = Self::audit_details(&existing);
-            details["moderation_state"] = serde_json::Value::from(moderation::DRAFT);
+            details["moderation_state"] = serde_json::Value::from(state);
             details["revision_id"] = serde_json::Value::from(revision_id.to_string());
             self.audit("update", id, Some(user), details).await;
             return Ok(Some(existing));
@@ -1771,7 +1913,7 @@ impl ItemService {
             user.id,
             input,
             refs.as_ref(),
-            moderated_state,
+            moderated_state.as_deref(),
         )
         .await?;
 
