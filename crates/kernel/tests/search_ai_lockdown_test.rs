@@ -1,11 +1,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-//! B282 — the AI search endpoints build their own context.
+//! B282: the AI search endpoints build their own context.
 //!
 //! `POST /api/v1/search/summarize` and `/followup` used to format whatever
 //! text the browser sent straight into the model prompt, with no retrieval
 //! and no size limit: a caller could send any text it liked and spend the
 //! site's model provider on it. These tests pin the fix at the layer of the
-//! defect — the route itself, and the token budget it is held to — against a
+//! defect, the route itself, and the token budget it is held to, against a
 //! local stub standing in for the model provider (the same shape
 //! `search_sentiment_test.rs` uses: an Anthropic-shaped `/messages` endpoint,
 //! its exact loopback URL allowed past the send path's SSRF fence).
@@ -247,7 +247,7 @@ fn summarize_with_browser_supplied_excerpts_is_refused() {
 }
 
 // =============================================================================
-// (b) part 1 — an unpublished item contributes nothing, on the shared app.
+// (b) part 1: an unpublished item contributes nothing, on the shared app.
 // =============================================================================
 
 /// A result URL naming an unpublished item resolves to nothing: no provider
@@ -293,7 +293,7 @@ fn summarize_drops_an_unpublished_item_and_calls_the_provider_for_nothing() {
 }
 
 // =============================================================================
-// (b) part 2 — a denied field is dropped, a visible one is not. Needs a real
+// (b) part 2: a denied field is dropped, a visible one is not. Needs a real
 // field-access plugin, so this builds its own small app.
 // =============================================================================
 
@@ -312,7 +312,7 @@ fn field_access_app() -> &'static TestApp {
 }
 
 /// Install and enable the reference field-access plugin, then build an app
-/// that loads it — the shared `TestApp` loads no field-access plugin, so a
+/// that loads it: the shared `TestApp` loads no field-access plugin, so a
 /// governed field there fails open and this one defect could not be shown.
 async fn build_field_access_app() -> TestApp {
     trovato_test_utils::env::load_dotenv();
@@ -473,8 +473,8 @@ fn followup_refuses_four_user_turns_when_the_cap_is_three() {
         .save(&app.db, app.state.cache())
         .await
         .unwrap();
-        // Restore exactly what was there before — no row at all on a database
-        // that never saved search settings, not a default-valued one: a row
+        // Restore exactly what was there before: no row at all on a database
+        // that never saved search settings, not a default-valued one. A row
         // this test left behind is not the state another file's test expects.
         defer_cleanup(move || async move {
             match saved {

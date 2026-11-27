@@ -35,8 +35,8 @@ const CONFIG_KEY_PRICING: &str = "ai_pricing";
 /// `20261130000001_grant_use_ai_to_searchers`), and an unconfigured role used
 /// to read as unlimited: the only brake on anonymous AI spend was the per-IP
 /// rate limiter, easily spread across addresses. This cap applies only when
-/// the site has set no explicit limit for the anonymous role on a provider —
-/// an explicit limit, including an explicit `0` (meaning unlimited), keeps its
+/// the site has set no explicit limit for the anonymous role on a provider.
+/// An explicit limit, including an explicit `0` (meaning unlimited), keeps its
 /// configured meaning.
 pub const DEFAULT_ANONYMOUS_TOKEN_BUDGET: u64 = 100_000;
 
@@ -691,8 +691,8 @@ impl AiTokenBudgetService {
     ///
     /// The nil user id is every anonymous visitor at once: its limit is the
     /// `anonymous user` role's, a site-level cap on anonymous spend. An
-    /// anonymous role with no explicit limit configured — including no budget
-    /// configuration at all — gets [`DEFAULT_ANONYMOUS_TOKEN_BUDGET`] rather
+    /// anonymous role with no explicit limit configured, including no budget
+    /// configuration at all, gets [`DEFAULT_ANONYMOUS_TOKEN_BUDGET`] rather
     /// than unlimited; an explicit limit, `0` included, keeps its configured
     /// meaning.
     pub async fn check_budget(

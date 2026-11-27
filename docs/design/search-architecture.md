@@ -214,7 +214,7 @@ described them as streaming, which they have never done in the kernel's
 implementation.
 
 `/summarize` and `/followup` do not take the browser's text at all. Each
-takes result **URLs** — `{ "results": [{ "url": "..." }] }` — never excerpt
+takes result **URLs**, `{ "results": [{ "url": "..." }] }`, never excerpt
 text or page content; `/summarize` also answers 200 with an empty summary,
 spending no provider call, when none of its URLs resolve to an item the
 caller may see. The server resolves each URL to an item on the Live stage

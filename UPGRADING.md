@@ -111,8 +111,8 @@ limit, the per-IP rate limiter being the only brake. The anonymous role now
 gets a default cap of 100,000 tokens per budget period (monthly, unless a
 budget period is configured) when no explicit limit is set for it on a
 provider. Every other role is unaffected: an absent entry for it still reads
-as unlimited, and an explicit limit for the anonymous role — including an
-explicit `0`, which still means unlimited — keeps its configured meaning.
+as unlimited, and an explicit limit for the anonymous role, including an
+explicit `0`, which still means unlimited, keeps its configured meaning.
 
 **How to find out.** If `/admin/system/ai-budgets` shows no configured limit
 for the `anonymous user` role, this cap now applies. To keep anonymous AI

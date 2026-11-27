@@ -1,8 +1,8 @@
 //! Scolta AI search endpoints.
 //!
 //! `POST /api/v1/search/expand` — AI query expansion (returns alternative terms).
-//! `POST /api/v1/search/summarize` — AI summary of search results (JSON response).
-//! `POST /api/v1/search/followup` — Follow-up conversation (JSON response).
+//! `POST /api/v1/search/summarize`: AI summary of search results (JSON response).
+//! `POST /api/v1/search/followup`: Follow-up conversation (JSON response).
 //!
 //! All endpoints ask for the `use ai` permission, and require the `trovato_ai`
 //! plugin to be enabled and an AI provider configured for Chat operations.
@@ -96,8 +96,8 @@ struct ExpandResponse {
 ///
 /// `results` names what the summary reads; the server resolves each URL to an
 /// item and builds the text itself ([`context_for_results`]). `deny_unknown_fields`
-/// so an old client still sending `context` or `excerpts` — the browser's own
-/// text — gets a 400 rather than being silently ignored.
+/// so an old client still sending `context` or `excerpts`, the browser's own
+/// text, gets a 400 rather than being silently ignored.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SummarizeRequest {
@@ -401,7 +401,7 @@ async fn followup(
     }
     // The whole conversation, capped: `max_followups` turns plus the opening
     // summary, each worth at most one message's share. Previous assistant
-    // turns are still client-supplied text — this is what bounds them, not a
+    // turns are still client-supplied text; this is what bounds them, not a
     // resolution against stored content.
     let conversation_budget = (settings.max_followups as usize + 1) * max_chars;
     let mut user_prompt = truncate_chars(&conversation, conversation_budget);
@@ -448,8 +448,8 @@ async fn followup(
 /// refusal on these routes answers with, rather than axum's default 422: an
 /// old client sending a retired field (`context`, `excerpts`, the
 /// `query`/`history` follow-up shape) gets a refusal in the family these
-/// endpoints already use. A body over [`MAX_BODY_BYTES`] keeps its 413 —
-/// that refusal is about size, not shape, and belongs with the other oversize
+/// endpoints already use. A body over [`MAX_BODY_BYTES`] keeps its 413: that
+/// refusal is about size, not shape, and belongs with the other oversize
 /// refusals, not folded into this one.
 #[allow(clippy::result_large_err)]
 fn parse_json<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, Response> {
@@ -514,7 +514,7 @@ fn last_exchange(messages: &[Message]) -> Option<(&str, &str)> {
 /// their text context: each surviving item's title and the text of the
 /// fields the viewer may read, cut to `max_chars`. A URL that does not
 /// resolve, or resolves to an item the viewer cannot see at all or has
-/// nothing left to show after field filtering, contributes nothing — dropped
+/// nothing left to show after field filtering, contributes nothing, dropped
 /// silently rather than refused, since a stale or guessed URL is routine (a
 /// result the browser saw a moment ago may since have been unpublished).
 async fn context_for_results(
@@ -548,7 +548,7 @@ async fn context_for_results(
 }
 
 /// Resolve a result URL to the item it names: `/item/<uuid>` directly, else
-/// through the kernel's URL alias lookup on the Live stage — the same
+/// through the kernel's URL alias lookup on the Live stage, the same
 /// resolution a browser's request for that path would get.
 async fn resolve_item_for_url(state: &AppState, url: &str) -> Option<Item> {
     let path = request_path(url);
@@ -588,7 +588,7 @@ fn request_path(url: &str) -> &str {
 
 /// The text an item contributes to a summary or follow-up prompt: its title
 /// and the text of every field still present on it, tags stripped, cut to
-/// `max_chars` characters. `None` when nothing is left to show — an item with
+/// `max_chars` characters. `None` when nothing is left to show: an item with
 /// no visible text is dropped rather than contributing an empty entry.
 ///
 /// Called after [`crate::content::ItemService::filter_page_for_view`], so

@@ -27,7 +27,15 @@ const { escapeHtml, htmlToText, highlightText, bestExcerpt, isSafeLinkUrl, forma
 // link. A protocol-relative `//evil.example` passed a naive `new URL(url,
 // base)` parse too, resolving to whatever host the browser already trusted.
 test('a link is rendered only for http(s) or a same-site path', () => {
-  for (const url of ['javascript:alert(1)', 'data:text/html,hi', '//evil.example']) {
+  for (const url of [
+    'javascript:alert(1)',
+    'data:text/html,hi',
+    '//evil.example',
+    // A backslash is a forward slash to the URL parser on an http(s) base,
+    // so this is host `evil.example`, not a path on the current site.
+    '/\\evil.example',
+    '/\\/evil.example',
+  ]) {
     assert.equal(isSafeLinkUrl(url), false, url);
   }
   for (const url of ['/item/x', 'https://example.com/a', 'http://example.com/a']) {
@@ -36,7 +44,12 @@ test('a link is rendered only for http(s) or a same-site path', () => {
 });
 
 test('formatInline renders only a safe link, falling back to plain text', () => {
-  for (const url of ['javascript:alert(document.cookie)', 'data:text/html,hi', '//evil.example']) {
+  for (const url of [
+    'javascript:alert(document.cookie)',
+    'data:text/html,hi',
+    '//evil.example',
+    '/\\evil.example',
+  ]) {
     const html = formatInline(`[click me](${url})`);
     assert.ok(!html.includes('<a '), `${url} must not become a link: ${html}`);
     assert.ok(html.startsWith('click me'), `the link text is kept: ${html}`);

@@ -465,19 +465,35 @@
     return html;
   }
 
-  // A link is rendered only when its URL is `http:`/`https:` (parsed with
-  // `new URL`, so a schemeless or malformed one fails this) or a single
-  // leading slash (not `//`, which is scheme-relative and resolves to
-  // whatever host the browser is on). Everything else — `javascript:`,
-  // `data:`, `//evil.example` — is not a link, however the AI's answer
+  // A link is rendered only when its URL is `http:`/`https:` on its own
+  // (parsed with `new URL` and no base, so a schemeless or malformed one
+  // fails this) or a single leading slash (not `//`, which is scheme
+  // relative and resolves to whatever host the browser is on).
+  //
+  // A single leading slash is checked further: resolved against an
+  // arbitrary fixed base, it must land back on that base's own host. A
+  // backslash is a forward slash to the URL parser on an http(s) base
+  // (`/\evil.example` resolves to host `evil.example`, same as
+  // `//evil.example` would), so the plain "starts with one slash" test
+  // alone is not enough; this is what actually asks the parser where the
+  // string points, rather than guessing from its spelling.
+  //
+  // Everything else, `javascript:`, `data:`, `//evil.example`, a
+  // backslash-disguised host, is not a link, however the AI's answer
   // spelled it: the model's own output can carry a planted link through
   // prompt injection, and markdown gives it no other way to point at a
   // destination.
   function isSafeLinkUrl(url) {
-    if (/^\/(?!\/)/.test(url)) return true;
     try {
       const protocol = new URL(url).protocol;
       return protocol === 'http:' || protocol === 'https:';
+    } catch {
+      // Not parseable on its own: only a same-site path is left.
+    }
+    if (!/^\/(?!\/)/.test(url)) return false;
+    try {
+      const base = 'https://scolta-same-site-check.invalid';
+      return new URL(url, base).host === new URL(base).host;
     } catch {
       return false;
     }
@@ -506,7 +522,7 @@
           // allowedDomains: it is always same-site, so it is allowed.
           return `<a href="${url}" target="_blank" rel="noopener">${linkText}</a>`;
         }
-        // Non-allowed URL — show text only, no link
+        // Non-allowed URL: show text only, no link
         return linkText;
       });
   }
