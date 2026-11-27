@@ -56,10 +56,10 @@
         </dd>
 
         <dt>{{ t(s="Uploaded") }}</dt>
-        <dd>{{ file.created | date(format="%Y-%m-%d %H:%M:%S") }}</dd>
+        <dd>{{ admin_time(ts=file.created, seconds=true) }}</dd>
 
         <dt>{{ t(s="Changed") }}</dt>
-        <dd>{{ file.changed | date(format="%Y-%m-%d %H:%M:%S") }}</dd>
+        <dd>{{ admin_time(ts=file.changed, seconds=true) }}</dd>
     </dl>
 
     <div class="form-actions">

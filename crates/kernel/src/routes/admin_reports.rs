@@ -595,6 +595,9 @@ struct Requirement {
     severity: &'static str,
     /// What to do about it, in the source language, when there is anything.
     description: Option<&'static str>,
+    /// When `value` is a time: the time (Unix seconds), which the template
+    /// writes as "Last run …" in the viewer's timezone (`admin_time_text`).
+    time: Option<i64>,
 }
 
 impl Requirement {
@@ -604,6 +607,15 @@ impl Requirement {
             value: value.into(),
             severity,
             description: None,
+            time: None,
+        }
+    }
+
+    /// A row whose value is the time of the last run.
+    fn last_run(title: &'static str, ts: i64, severity: &'static str) -> Self {
+        Self {
+            time: Some(ts),
+            ..Self::new(title, "", severity)
         }
     }
 
@@ -782,18 +794,14 @@ async fn cron_requirement(state: &AppState) -> (Requirement, Option<i64>) {
         );
     };
     let age = chrono::Utc::now().timestamp() - run.timestamp;
-    let value = format!(
-        "Last run {} UTC",
-        chrono::DateTime::from_timestamp(run.timestamp, 0)
-            .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
-            .unwrap_or_default()
-    );
     let row = if run.status == "failed" {
-        Requirement::new(TITLE, value, "error").because("The last run failed. See the cron report.")
+        Requirement::last_run(TITLE, run.timestamp, "error")
+            .because("The last run failed. See the cron report.")
     } else if age > CRON_STALE_SECS {
-        Requirement::new(TITLE, value, "warning").because("Cron has not run in the last day.")
+        Requirement::last_run(TITLE, run.timestamp, "warning")
+            .because("Cron has not run in the last day.")
     } else {
-        Requirement::new(TITLE, value, "ok")
+        Requirement::last_run(TITLE, run.timestamp, "ok")
     };
     (row, Some(run.timestamp))
 }

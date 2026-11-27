@@ -109,6 +109,8 @@ pub fn is_pseudo(lang: &str) -> bool {
 
 thread_local! {
     static RENDER_LANG: RefCell<Option<String>> = const { RefCell::new(None) };
+    static RENDER_TZ: RefCell<Option<chrono_tz::Tz>> = const { RefCell::new(None) };
+    static RENDER_LOCALE: RefCell<Option<Arc<LocaleService>>> = const { RefCell::new(None) };
 }
 
 /// Run `f` (a template render) with `lang` as the language `t` translates
@@ -125,6 +127,236 @@ pub fn scope<R>(lang: &str, f: impl FnOnce() -> R) -> R {
     let previous = RENDER_LANG.with(|l| l.borrow_mut().replace(lang.to_string()));
     let _reset = Reset(previous);
     f()
+}
+
+/// [`scope`], with the viewer's timezone (and the locale service) for the
+/// admin's dates ([`admin_time_text_for`]): the admin shell renders every
+/// admin page in this, as it scopes the language for `t`.
+pub fn scope_with_time<R>(
+    lang: &str,
+    tz: chrono_tz::Tz,
+    locale: Option<Arc<LocaleService>>,
+    f: impl FnOnce() -> R,
+) -> R {
+    struct Reset(Option<chrono_tz::Tz>, Option<Arc<LocaleService>>);
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            let tz = self.0.take();
+            let locale = self.1.take();
+            RENDER_TZ.with(|t| *t.borrow_mut() = tz);
+            RENDER_LOCALE.with(|l| *l.borrow_mut() = locale);
+        }
+    }
+    let previous_tz = RENDER_TZ.with(|t| t.borrow_mut().replace(tz));
+    let previous_locale = RENDER_LOCALE.with(|l| std::mem::replace(&mut *l.borrow_mut(), locale));
+    let _reset = Reset(previous_tz, previous_locale);
+    scope(lang, f)
+}
+
+/// The timezone of the render in progress: the viewer's, when
+/// [`scope_with_time`] set one, else UTC.
+pub fn current_timezone() -> chrono_tz::Tz {
+    RENDER_TZ
+        .with(|t| *t.borrow())
+        .unwrap_or(chrono_tz::Tz::UTC)
+}
+
+/// The timezone an account's `users.timezone` names, or UTC when it names
+/// none the timezone database knows.
+pub fn timezone_named(name: Option<&str>) -> chrono_tz::Tz {
+    name.and_then(|n| n.trim().parse::<chrono_tz::Tz>().ok())
+        .unwrap_or(chrono_tz::Tz::UTC)
+}
+
+/// The short month names, January first: interface text, each translated
+/// with `ctx="short month"`.
+const SHORT_MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// The text of an admin time, `ts` (Unix seconds), in the language and
+/// timezone of the render in progress (the viewer's, inside the admin
+/// shell's [`scope_with_time`]; English and UTC outside one).
+///
+/// - the same day: "Today, 14:20";
+/// - the day before: "Yesterday, 14:20";
+/// - any other day, past or future: "3 Nov 2026, 14:20", one translated
+///   sentence with the month's name, never two bare runs of numbers.
+///
+/// `seconds` adds the seconds ("14:20:05"). In a right to left language the
+/// text is wrapped in FIRST STRONG ISOLATE … POP DIRECTIONAL ISOLATE, so
+/// the date keeps its order inside a right to left sentence; a left to right
+/// language gets no isolate. Every word goes through [`translate`], so marker
+/// mode marks it as `t` would.
+pub fn admin_time_text_for(ts: i64, seconds: bool) -> String {
+    let lang = current_language().unwrap_or_else(|| "en".to_string());
+    let locale = RENDER_LOCALE.with(|l| l.borrow().clone());
+    admin_time_text_at(
+        locale.as_deref(),
+        &lang,
+        current_timezone(),
+        ts,
+        seconds,
+        chrono::Utc::now().timestamp(),
+        true,
+    )
+}
+
+/// [`admin_time_text_for`] for an explicit language, timezone and "now";
+/// `isolate` false leaves out the isolates (for a `<time>` element, which
+/// `unicode-bidi: isolate` already isolates).
+pub fn admin_time_text_at(
+    locale: Option<&LocaleService>,
+    lang: &str,
+    tz: chrono_tz::Tz,
+    ts: i64,
+    seconds: bool,
+    now: i64,
+    isolate: bool,
+) -> String {
+    use chrono::{Datelike, TimeZone, Timelike};
+    let Some(at) = tz.timestamp_opt(ts, 0).single() else {
+        return String::new();
+    };
+    let today = tz
+        .timestamp_opt(now, 0)
+        .single()
+        .map(|n| n.date_naive())
+        .unwrap_or_else(|| at.date_naive());
+    let time = if seconds {
+        format!("{:02}:{:02}:{:02}", at.hour(), at.minute(), at.second())
+    } else {
+        format!("{:02}:{:02}", at.hour(), at.minute())
+    };
+    let day = at.date_naive();
+    let text = if day == today {
+        translate(
+            locale,
+            lang,
+            &Message::new("Today, {time}"),
+            &[("time".to_string(), time)],
+        )
+    } else if today.pred_opt() == Some(day) {
+        translate(
+            locale,
+            lang,
+            &Message::new("Yesterday, {time}"),
+            &[("time".to_string(), time)],
+        )
+    } else {
+        let month_index = usize::try_from(at.month0()).unwrap_or(0).min(11);
+        let month = translate(
+            locale,
+            lang,
+            &Message {
+                context: "short month",
+                ..Message::new(SHORT_MONTHS[month_index])
+            },
+            &[],
+        );
+        translate(
+            locale,
+            lang,
+            &Message::new("{day} {month} {year}, {time}"),
+            &[
+                ("day".to_string(), at.day().to_string()),
+                ("month".to_string(), month),
+                ("year".to_string(), at.year().to_string()),
+                ("time".to_string(), time),
+            ],
+        )
+    };
+    if isolate && crate::middleware::language::text_direction_for_language(lang) == "rtl" {
+        format!("\u{2068}{text}\u{2069}")
+    } else {
+        text
+    }
+}
+
+/// The ISO 8601 form of `ts` in `tz`, with its offset, for a `<time>`
+/// element's `datetime`.
+pub fn admin_time_iso(tz: chrono_tz::Tz, ts: i64) -> Option<String> {
+    use chrono::TimeZone;
+    tz.timestamp_opt(ts, 0)
+        .single()
+        .map(|t| t.format("%Y-%m-%dT%H:%M:%S%:z").to_string())
+}
+
+/// A Tera argument as Unix seconds: a number, a numeric string, or a
+/// `TIMESTAMPTZ` as serde writes it (RFC 3339). `None` for null or anything
+/// else.
+fn timestamp_arg(value: Option<&tera::Value>) -> Option<i64> {
+    match value? {
+        tera::Value::Number(n) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)),
+        tera::Value::String(s) => s.trim().parse::<i64>().ok().or_else(|| {
+            chrono::DateTime::parse_from_rfc3339(s.trim())
+                .ok()
+                .map(|t| t.timestamp())
+        }),
+        _ => None,
+    }
+}
+
+fn seconds_arg(args: &HashMap<String, tera::Value>) -> bool {
+    args.get("seconds")
+        .and_then(tera::Value::as_bool)
+        .unwrap_or(false)
+}
+
+/// The `admin_time_text(ts, seconds=false)` Tera function: the text of
+/// [`admin_time_text_for`] and nothing else, for a date inside a `t`
+/// sentence (`t` escapes its arguments, so it cannot take markup).
+pub struct AdminTimeTextFunction;
+
+impl tera::Function for AdminTimeTextFunction {
+    fn call(&self, args: &HashMap<String, tera::Value>) -> tera::Result<tera::Value> {
+        Ok(tera::Value::String(
+            timestamp_arg(args.get("ts"))
+                .map(|ts| admin_time_text_for(ts, seconds_arg(args)))
+                .unwrap_or_default(),
+        ))
+    }
+
+    fn is_safe(&self) -> bool {
+        false
+    }
+}
+
+/// The `admin_time(ts, seconds=false)` Tera function:
+/// `<time datetime="2026-11-03T14:20:00+09:00">3 Nov 2026, 14:20</time>`, in
+/// the viewer's timezone and language, with no `title` (everything is
+/// visible) and no isolates (the stylesheet isolates `time`). Safe: it
+/// escapes its text itself, so it is never piped to `safe`.
+pub struct AdminTimeFunction;
+
+impl tera::Function for AdminTimeFunction {
+    fn call(&self, args: &HashMap<String, tera::Value>) -> tera::Result<tera::Value> {
+        let Some(ts) = timestamp_arg(args.get("ts")) else {
+            return Ok(tera::Value::String(String::new()));
+        };
+        let tz = current_timezone();
+        let lang = current_language().unwrap_or_else(|| "en".to_string());
+        let locale = RENDER_LOCALE.with(|l| l.borrow().clone());
+        let text = admin_time_text_at(
+            locale.as_deref(),
+            &lang,
+            tz,
+            ts,
+            seconds_arg(args),
+            chrono::Utc::now().timestamp(),
+            false,
+        );
+        let iso = admin_time_iso(tz, ts).unwrap_or_default();
+        Ok(tera::Value::String(format!(
+            "<time datetime=\"{}\">{}</time>",
+            tera::escape_html(&iso),
+            tera::escape_html(&text)
+        )))
+    }
+
+    fn is_safe(&self) -> bool {
+        true
+    }
 }
 
 /// The language of the render in progress, if [`scope`] set one.
@@ -905,6 +1137,12 @@ pub struct UiMessage {
     /// "Done:" status a plain message gets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<String>,
+    /// Placeholder values that are times (Unix seconds), written out when
+    /// the message is shown, in the viewer's timezone and language
+    /// ([`admin_time_text_for`]): a handler builds the message before the
+    /// render knows either. Absent from messages stored before B246.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub times: std::collections::BTreeMap<String, i64>,
 }
 
 impl UiMessage {
@@ -940,9 +1178,30 @@ impl UiMessage {
         self
     }
 
+    /// Set a placeholder that is a time, `ts` in Unix seconds: shown as
+    /// [`admin_time_text_for`] writes it, when the message is shown.
+    pub fn time(mut self, name: &str, ts: i64) -> Self {
+        self.times.insert(name.to_string(), ts);
+        self
+    }
+
+    /// The placeholder values: the arguments, and each time as the viewer
+    /// reads it.
+    fn values(&self, locale: Option<&LocaleService>, lang: &str) -> Vec<(String, String)> {
+        let mut args: Vec<(String, String)> = self.args.clone().into_iter().collect();
+        let now = chrono::Utc::now().timestamp();
+        for (name, ts) in &self.times {
+            args.push((
+                name.clone(),
+                admin_time_text_at(locale, lang, current_timezone(), *ts, false, now, true),
+            ));
+        }
+        args
+    }
+
     /// The message's text in `lang`, unescaped.
     pub fn text(&self, locale: Option<&LocaleService>, lang: &str) -> String {
-        let args: Vec<(String, String)> = self.args.clone().into_iter().collect();
+        let args = self.values(locale, lang);
         translate(
             locale,
             lang,
@@ -965,7 +1224,7 @@ impl UiMessage {
             && !href.starts_with("//")
             && !href.contains(['"', '\'', '<', '>', ' ', '\\'])
         {
-            let args: Vec<(String, String)> = self.args.clone().into_iter().collect();
+            let args = self.values(locale, lang);
             let label = translate(locale, lang, &Message::new(text), &args);
             out.push_str(&format!(
                 " <a href=\"{}\">{}</a>",
@@ -1087,4 +1346,125 @@ pub fn ui_html(
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
     tera::escape_html(&translate(locale, lang, &Message::new(source), &args))
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod time_tests {
+    use super::*;
+
+    /// 2026-11-03 05:20:05 UTC, 14:20:05 in Tokyo.
+    const AT: i64 = 1_793_683_205;
+    const TOKYO: chrono_tz::Tz = chrono_tz::Asia::Tokyo;
+
+    #[test]
+    fn a_time_reads_today_yesterday_or_its_date() {
+        let text =
+            |now: i64, seconds: bool| admin_time_text_at(None, "en", TOKYO, AT, seconds, now, true);
+        assert_eq!(text(AT + 3600, false), "Today, 14:20");
+        assert_eq!(text(AT + 86_400, false), "Yesterday, 14:20");
+        assert_eq!(text(AT + 2 * 86_400, false), "3 Nov 2026, 14:20");
+        // A future date is written in full too.
+        assert_eq!(text(AT - 86_400, false), "3 Nov 2026, 14:20");
+        assert_eq!(text(AT + 3600, true), "Today, 14:20:05");
+        assert_eq!(text(AT + 2 * 86_400, true), "3 Nov 2026, 14:20:05");
+        // The same instant in UTC is another day's time.
+        assert_eq!(
+            admin_time_text_at(
+                None,
+                "en",
+                chrono_tz::Tz::UTC,
+                AT,
+                false,
+                AT + 2 * 86_400,
+                true
+            ),
+            "3 Nov 2026, 05:20"
+        );
+    }
+
+    #[test]
+    fn a_right_to_left_language_isolates_the_date_and_a_left_to_right_one_does_not() {
+        let rtl = admin_time_text_at(None, PSEUDO_RTL, TOKYO, AT, false, AT + 2 * 86_400, true);
+        assert!(
+            rtl.starts_with('\u{2068}') && rtl.ends_with('\u{2069}'),
+            "{rtl:?}"
+        );
+        assert!(rtl.contains("14:20"), "{rtl:?}");
+        let ltr = admin_time_text_at(
+            None,
+            PSEUDO_ACCENTED,
+            TOKYO,
+            AT,
+            false,
+            AT + 2 * 86_400,
+            true,
+        );
+        assert!(!ltr.contains(['\u{2068}', '\u{2069}']), "{ltr:?}");
+        // The month is interface text: the pseudo locale accents it.
+        let month = translate(
+            None,
+            PSEUDO_ACCENTED,
+            &Message {
+                context: "short month",
+                ..Message::new("Nov")
+            },
+            &[],
+        );
+        assert!(ltr.contains(&month), "{ltr:?} holds {month:?}");
+        let english = admin_time_text_at(None, "en", TOKYO, AT, false, AT + 2 * 86_400, true);
+        assert!(!english.contains(['\u{2068}', '\u{2069}']));
+        // Without isolates, for a `<time>` element.
+        let bare = admin_time_text_at(None, PSEUDO_RTL, TOKYO, AT, false, AT + 2 * 86_400, false);
+        assert!(!bare.contains(['\u{2068}', '\u{2069}']), "{bare:?}");
+    }
+
+    #[test]
+    fn admin_time_is_a_time_element_in_the_viewers_timezone() {
+        let mut tera = tera::Tera::default();
+        tera.register_function("admin_time", AdminTimeFunction);
+        tera.register_function("admin_time_text", AdminTimeTextFunction);
+        tera.add_raw_template(
+            "t",
+            "{{ admin_time(ts=at) }}|{{ admin_time(ts=at, seconds=true) }}|{{ admin_time(ts=iso) }}|{{ admin_time_text(ts=at) }}",
+        )
+        .unwrap();
+        tera.autoescape_on(vec!["t"]);
+        let mut context = tera::Context::new();
+        context.insert("at", &AT);
+        context.insert("iso", "2026-11-03T05:20:05+00:00");
+        let html = scope_with_time("en", TOKYO, None, || tera.render("t", &context)).unwrap();
+        let parts: Vec<&str> = html.split('|').collect();
+        let today_or_date = admin_time_text_at(
+            None,
+            "en",
+            TOKYO,
+            AT,
+            false,
+            chrono::Utc::now().timestamp(),
+            false,
+        );
+        assert_eq!(
+            parts[0],
+            format!("<time datetime=\"2026-11-03T14:20:05+09:00\">{today_or_date}</time>")
+        );
+        assert!(parts[1].contains(":05</time>"), "{}", parts[1]);
+        assert_eq!(parts[2], parts[0], "a TIMESTAMPTZ reads the same");
+        assert!(!html.contains("title="), "nothing is hidden in a title");
+        // The datetime is ISO 8601 with its offset.
+        let iso = parts[0].split('"').nth(1).unwrap();
+        assert_eq!(
+            chrono::DateTime::parse_from_rfc3339(iso)
+                .unwrap()
+                .timestamp(),
+            AT
+        );
+        assert_eq!(parts[3], today_or_date, "the text alone, nothing added");
+        // UTC outside a viewer's scope.
+        let utc = tera.render("t", &context).unwrap();
+        assert!(
+            utc.contains("datetime=\"2026-11-03T05:20:05+00:00\""),
+            "{utc}"
+        );
+    }
 }

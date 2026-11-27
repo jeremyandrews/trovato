@@ -30,8 +30,8 @@
                     <br><small class="text-muted">{{ s.user_agent | truncate(length=90) }}</small>
                 </th>
                 <td>{{ s.ip }}</td>
-                <td>{{ s.created_at }}</td>
-                <td>{{ s.last_seen }}</td>
+                <td>{{ admin_time(ts=s.created_ts) }}</td>
+                <td>{{ admin_time(ts=s.last_seen_ts) }}</td>
                 <td class="operations">
                     {{ list::row_button(action="/admin/users/" ~ user.id ~ "/sessions/" ~ s.device_id ~ "/revoke", text=t(s="Sign out", ctx="row action"), id="act-sign-out-" ~ s.device_id, row_id="row-" ~ s.device_id, csrf_token=csrf_token, btn_class="link-button link-button--danger") }}
                 </td>

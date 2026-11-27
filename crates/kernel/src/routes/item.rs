@@ -1907,12 +1907,12 @@ fn revision_summary(
     authors: &std::collections::HashMap<Uuid, String>,
     current: Option<Uuid>,
 ) -> serde_json::Value {
-    let date = chrono::DateTime::from_timestamp(revision.created, 0)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-        .unwrap_or_else(|| "Unknown".to_string());
     serde_json::json!({
         "id": revision.id,
-        "date": date,
+        // Unix seconds: the templates write it with `admin_time` (or
+        // `admin_time_text` inside a sentence), in the viewer's timezone,
+        // with seconds, since the revision actions are named by it.
+        "created": revision.created,
         "title": revision.title,
         "log": revision.log,
         "author": authors.get(&revision.author_id),

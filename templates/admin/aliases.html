@@ -39,7 +39,7 @@
                     </th>
                     <td><code>{{ alias.source }}</code></td>
                     <td>{{ alias.language }}</td>
-                    <td>{{ alias.created_display }}</td>
+                    <td>{{ admin_time(ts=alias.created) }}</td>
                     <td class="operations">
                         {{ list::row_action(href="/admin/structure/aliases/" ~ alias.id ~ "/edit", text=t(s="Edit", ctx="row action"), id="act-edit-" ~ alias.id, row_id="row-" ~ alias.id) }}
                         {{ list::delete_button(action="/admin/structure/aliases/" ~ alias.id ~ "/delete", label=t(s="Delete {name}", name=alias.alias), confirm_text=t(s="Are you sure you want to delete this alias?"), csrf_token=csrf_token, text=t(s="Delete", ctx="row action"), id="act-delete-" ~ alias.id, row_id="row-" ~ alias.id) }}

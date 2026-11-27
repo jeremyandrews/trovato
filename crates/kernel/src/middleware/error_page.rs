@@ -265,7 +265,8 @@ async fn themed_page(
     // copied into the title (`AdminShell::render`).
     let in_shell = |f: &mut dyn FnMut() -> anyhow::Result<String>| -> anyhow::Result<String> {
         match &shell {
-            Some(shell) => crate::i18n::scope(&shell.lang, f)
+            Some(shell) => shell
+                .scope(f)
                 .map(|html| crate::routes::admin_nav::finish_page(&html)),
             None => f(),
         }

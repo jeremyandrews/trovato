@@ -39,6 +39,11 @@ struct SessionView {
     ip: String,
     created_at: String,
     last_seen: String,
+    /// The same two times as timestamps, for the admin page, which writes
+    /// them in the viewer's timezone (`admin_time`). The account's own page
+    /// keeps the UTC text above.
+    created_ts: i64,
+    last_seen_ts: i64,
     /// Whether this is the session making the request. The UI marks it so a
     /// user does not log themselves out by mistake.
     is_current: bool,
@@ -59,6 +64,8 @@ fn to_view(entry: &SessionEntry, current_device: Option<Uuid>) -> SessionView {
         ip: entry.ip.clone(),
         created_at: format_ts(entry.created_at),
         last_seen: format_ts(entry.last_seen),
+        created_ts: entry.created_at,
+        last_seen_ts: entry.last_seen,
         is_current: current_device == Some(entry.device_id),
     }
 }

@@ -8,7 +8,7 @@
 <div class="content-lock" data-content-lock data-entity-type="item" data-entity-id="{{ content_lock.entity_id }}" hidden></div>
 {% else %}
 <div class="notice notice--warning content-lock content-lock--held" role="status" data-content-lock-held data-entity-type="item" data-entity-id="{{ content_lock.entity_id }}">
-    <p><strong class="notice__label">{{ t(s="Warning:") }}</strong> {{ t(s="{name} is editing this item. A save made now is refused until they finish, or until their lock lapses at {time} if they stop editing.", name=content_lock.holder, time=content_lock.expires_at | date(format="%H:%M UTC")) }}</p>
+    <p><strong class="notice__label">{{ t(s="Warning:") }}</strong> {{ t(s="{name} is editing this item. A save made now is refused until they finish, or until their lock lapses ({time}) if they stop editing.", name=content_lock.holder, time=admin_time_text(ts=content_lock.expires_at)) }}</p>
     {% if content_lock.can_break %}
     <p><button type="button" class="button button--danger" data-content-lock-break>{{ t(s="Break the lock and edit") }}</button></p>
     {% endif %}

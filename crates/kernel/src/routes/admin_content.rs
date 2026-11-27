@@ -278,9 +278,7 @@ async fn list_moderated(
                 }),
                 "state": moderation::label(&r.state),
                 "ahead": r.ahead,
-                "changed": chrono::DateTime::from_timestamp(r.changed, 0)
-                    .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
-                    .unwrap_or_default(),
+                "changed": r.changed,
             })
         })
         .collect();

@@ -26,7 +26,7 @@
             <caption id="log-caption">{{ t(s="Log messages") }}</caption>
             <thead>
                 <tr>
-                    {{ list::sort_th(label=t(s="Time (UTC)"), key="time", list=list) }}
+                    {{ list::sort_th(label=t(s="Time"), key="time", list=list) }}
                     {{ list::sort_th(label=t(s="Level"), key="level", list=list) }}
                     {{ list::sort_th(label=t(s="Type"), key="type", list=list) }}
                     <th scope="col">{{ t(s="Message") }}</th>
@@ -36,7 +36,7 @@
             <tbody>
                 {% for entry in entries %}
                 <tr>
-                    <th scope="row" class="log-time">{{ entry.created | format_date(format="%Y-%m-%d %H:%M:%S") }}</th>
+                    <th scope="row" class="log-time">{{ admin_time(ts=entry.created, seconds=true) }}</th>
                     <td><span class="log-level log-level--{{ entry.level }}">{{ t(s=entry.level) }}</span></td>
                     <td>{{ entry.log_type }}</td>
                     <td>{{ entry.message }}</td>

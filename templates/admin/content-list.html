@@ -71,7 +71,7 @@
                             <span class="status status--unpublished">{{ t(s="Unpublished") }}</span>
                             {% endif %}
                         </td>
-                        <td>{{ item.changed | date(format="%Y-%m-%d %H:%M") }}</td>
+                        <td>{{ admin_time(ts=item.changed) }}</td>
                         <td class="operations">
                             {% if ops.edit %}
                             {% if ops.edit == "admin" %}{% set edit_href = "/admin/content/" ~ item.id ~ "/edit" %}{% else %}{% set edit_href = "/item/" ~ item.id ~ "/edit" %}{% endif %}

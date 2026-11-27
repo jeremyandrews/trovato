@@ -60,7 +60,8 @@ struct RedirectDisplay {
     destination: String,
     status_code: i16,
     language: String,
-    created_display: String,
+    /// Unix seconds; the template writes it with `admin_time`.
+    created: i64,
 }
 
 // =============================================================================
@@ -106,9 +107,7 @@ async fn list_redirects(
             destination: r.destination,
             status_code: r.status_code,
             language: r.language,
-            created_display: chrono::DateTime::from_timestamp(r.created, 0)
-                .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-                .unwrap_or_else(|| "Unknown".to_string()),
+            created: r.created,
         })
         .collect();
 

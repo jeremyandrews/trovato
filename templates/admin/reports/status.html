@@ -34,7 +34,7 @@
                 <th scope="row">{{ t(s=row.title) }}</th>
                 <td>{% if row.severity == "error" %}<span class="badge badge--error">{{ t(s="Error") }}</span>{% elif row.severity == "warning" %}<span class="badge badge--warning">{{ t(s="Warning") }}</span>{% else %}<span class="badge badge--success">{{ t(s="OK") }}</span>{% endif %}</td>
                 <td>
-                    {{ row.value }}
+                    {% if row.time %}{{ t(s="Last run {when}", when=admin_time_text(ts=row.time)) }}{% else %}{{ row.value }}{% endif %}
                     {% if row.description %}<p class="form-hint">{{ t(s=row.description) }}</p>{% endif %}
                     {% if row.title == "Cron maintenance tasks" %}
                     {% if may_run_cron %}<p><a href="/admin/reports/cron">{{ t(s="You can run cron manually.") }}</a></p>{% endif %}

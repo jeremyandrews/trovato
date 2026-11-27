@@ -45,7 +45,8 @@ struct AliasDisplay {
     source: String,
     alias: String,
     language: String,
-    created_display: String,
+    /// Unix seconds; the template writes it with `admin_time`.
+    created: i64,
 }
 
 // =============================================================================
@@ -92,9 +93,7 @@ async fn list_aliases(
             source: a.source,
             alias: a.alias,
             language: a.language,
-            created_display: chrono::DateTime::from_timestamp(a.created, 0)
-                .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
-                .unwrap_or_else(|| "Unknown".to_string()),
+            created: a.created,
         })
         .collect();
 

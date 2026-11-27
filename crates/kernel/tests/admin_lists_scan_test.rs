@@ -133,9 +133,7 @@ fn a_row_action_shows_its_verb_and_is_named_by_the_row() {
         assert!(!html.contains(&format!(">Revisions of {title}<")), "{html}");
         assert!(!html.contains(&format!(">Delete {title}<")), "{html}");
         // The confirmation still names the item in full.
-        assert!(html.contains(&format!(
-            r#"name="_confirm_label" value="Delete {title}""#
-        )));
+        assert!(html.contains(&format!(r#"name="_confirm_label" value="Delete {title}""#)));
     });
 }
 

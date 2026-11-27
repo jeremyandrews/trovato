@@ -44,7 +44,7 @@
                 <td>{{ item.type }}</td>
                 <td>{{ item.author }}</td>
                 <td>{% if item.ahead %}{{ t(s="{state} (ahead of the published version)", state=t(s=item.state)) }}{% else %}{{ t(s=item.state) }}{% endif %}</td>
-                <td>{{ item.changed }}</td>
+                <td>{{ admin_time(ts=item.changed) }}</td>
                 <td class="operations">
                     {{ list::row_action(href="/item/" ~ item.id ~ "/edit", text=t(s="Edit", ctx="row action"), id="act-edit-" ~ item.id, row_id="row-" ~ item.id) }}
                     {{ list::row_action(href="/item/" ~ item.id ~ "/revisions", text=t(s="Revisions", ctx="row action"), id="act-revisions-" ~ item.id, row_id="row-" ~ item.id) }}

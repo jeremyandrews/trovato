@@ -23,7 +23,7 @@
             <caption id="audit-caption">{{ t(s="Recorded changes") }}</caption>
             <thead>
                 <tr>
-                    {{ list::sort_th(label=t(s="Time (UTC)"), key="time", list=list) }}
+                    {{ list::sort_th(label=t(s="Time"), key="time", list=list) }}
                     {{ list::sort_th(label=t(s="User"), key="user", list=list) }}
                     {{ list::sort_th(label=t(s="Action"), key="action", list=list) }}
                     {{ list::sort_th(label=t(s="Type"), key="type", list=list) }}
@@ -35,7 +35,7 @@
             <tbody>
                 {% for entry in entries %}
                 <tr>
-                    <th scope="row" class="log-time">{{ entry.created | format_date(format="%Y-%m-%d %H:%M:%S") }}</th>
+                    <th scope="row" class="log-time">{{ admin_time(ts=entry.created, seconds=true) }}</th>
                     <td>{% if entry.user_name %}{{ entry.user_name }}{% elif entry.user_id %}{{ entry.user_id }}{% else %}-{% endif %}</td>
                     <td>{{ entry.action }}</td>
                     <td>{{ entry.entity_type }}</td>

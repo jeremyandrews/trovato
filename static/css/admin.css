@@ -1813,6 +1813,12 @@
         font-variant-numeric: tabular-nums;
     }
 
+    /* An admin date (`admin_time`) keeps its own order inside a right to
+       left page: isolated, never given a `dir`. */
+    time {
+        unicode-bidi: isolate;
+    }
+
     .log-context {
         margin: 0;
         padding: 0;

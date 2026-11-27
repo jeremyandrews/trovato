@@ -1078,6 +1078,10 @@ impl ThemeEngine {
             "t_message",
             crate::i18n::TranslateMessageFunction::new(locale.clone()),
         );
+        // `admin_time(ts)` and `admin_time_text(ts)`: an admin date in the
+        // viewer's timezone and language (see `crate::i18n::admin_time_text_for`).
+        tera.register_function("admin_time", crate::i18n::AdminTimeFunction);
+        tera.register_function("admin_time_text", crate::i18n::AdminTimeTextFunction);
         // `admin_render()`: whether this render is an admin page's (inside the
         // admin shell's translation scope). For a template the front end
         // shares, to fix something on admin pages while leaving front end
