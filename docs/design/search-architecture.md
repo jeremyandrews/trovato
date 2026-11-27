@@ -362,8 +362,8 @@ The architecture splits responsibility between the `trovato_search` WASM plugin 
 | Query expansion endpoint | `tap_menu` -> `/api/v1/search/expand` | Calls `ai_request(operation: Chat)`, returns expanded terms as JSON |
 | Expansion cache | KV store or in-memory cache | Same query -> same expansion. Configurable TTL. |
 | Re-ranking config | `SearchSettings` in `site_config` (see "Search Settings (as built)") | Admin UI at `/admin/config/search` |
-| AI summary endpoint | `tap_menu` -> `/api/v1/search/summarize` | SSE streaming via `ai_request(operation: Chat)` |
-| Conversational follow-up | Session-scoped history on summary endpoint | Reuses chatbot SSE infrastructure (Story 31.7) |
+| AI summary endpoint | `tap_menu` -> `/api/v1/search/summarize` | Plain JSON response via `ai_request(operation: Chat)`; the server resolves the given result URLs to items itself rather than reading browser-supplied text |
+| Conversational follow-up | Client-held conversation on the follow-up endpoint | Plain JSON response, not SSE; the endpoint validates every message's role and caps the conversation's length server-side |
 | Sentiment classification | Async `ai_request()` post-response | Fast model, fire-and-forget to analytics |
 | tsvector fallback | Existing Gather search | Activated when Pagefind unavailable or for server-side consumers |
 
