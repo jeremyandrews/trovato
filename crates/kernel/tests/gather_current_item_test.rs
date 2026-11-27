@@ -15,7 +15,7 @@ mod common;
 
 use std::collections::HashMap;
 
-use common::{TestApp, run_test, shared_app};
+use common::{TestApp, defer_cleanup, run_test, shared_app};
 use trovato_kernel::gather::{
     ContextualValue, DisplayFormat, FilterOperator, FilterValue, PagerConfig, PagerStyle,
     QueryContext, QueryDefinition, QueryDisplay, QueryFilter,
@@ -114,6 +114,17 @@ async fn create_item(
         )
         .await
         .expect("create item");
+    let (id, pool) = (item.id, app.db.clone());
+    defer_cleanup(move || async move {
+        let _ = sqlx::query("DELETE FROM url_alias WHERE source = $1")
+            .bind(format!("/item/{id}"))
+            .execute(&pool)
+            .await;
+        let _ = sqlx::query("DELETE FROM item WHERE id = $1")
+            .bind(id)
+            .execute(&pool)
+            .await;
+    });
     (item.id, item.fields)
 }
 
@@ -205,16 +216,34 @@ fn not_equals_current_item_excludes_only_the_item_shown() {
         .await;
         let on_a_titles = titles(&on_a);
         assert_eq!(on_a.len(), 2, "got {on_a_titles:?}");
-        assert!(!on_a_titles.contains(&format!("{marker} A")), "{on_a_titles:?}");
-        assert!(on_a_titles.contains(&format!("{marker} B")), "{on_a_titles:?}");
-        assert!(on_a_titles.contains(&format!("{marker} C")), "{on_a_titles:?}");
+        assert!(
+            !on_a_titles.contains(&format!("{marker} A")),
+            "{on_a_titles:?}"
+        );
+        assert!(
+            on_a_titles.contains(&format!("{marker} B")),
+            "{on_a_titles:?}"
+        );
+        assert!(
+            on_a_titles.contains(&format!("{marker} C")),
+            "{on_a_titles:?}"
+        );
 
         let on_b = gather_rows(app, &marker, not_equals_current_item, Some(b.clone())).await;
         let on_b_titles = titles(&on_b);
         assert_eq!(on_b.len(), 2, "got {on_b_titles:?}");
-        assert!(!on_b_titles.contains(&format!("{marker} B")), "{on_b_titles:?}");
-        assert!(on_b_titles.contains(&format!("{marker} A")), "{on_b_titles:?}");
-        assert!(on_b_titles.contains(&format!("{marker} C")), "{on_b_titles:?}");
+        assert!(
+            !on_b_titles.contains(&format!("{marker} B")),
+            "{on_b_titles:?}"
+        );
+        assert!(
+            on_b_titles.contains(&format!("{marker} A")),
+            "{on_b_titles:?}"
+        );
+        assert!(
+            on_b_titles.contains(&format!("{marker} C")),
+            "{on_b_titles:?}"
+        );
 
         // Unused but keeps `c` from looking dead to a reader scanning the test.
         let _ = &c;
@@ -275,7 +304,13 @@ fn current_item_field_has_any_tag_finds_items_sharing_a_tag() {
             },
         ];
 
-        let on_r1 = gather_rows(app, &marker, related_by_tag_excluding_self, Some(r1.clone())).await;
+        let on_r1 = gather_rows(
+            app,
+            &marker,
+            related_by_tag_excluding_self,
+            Some(r1.clone()),
+        )
+        .await;
         let on_r1_titles = titles(&on_r1);
         assert_eq!(on_r1.len(), 1, "got {on_r1_titles:?}");
         assert_eq!(on_r1_titles[0], format!("{marker} R2"));

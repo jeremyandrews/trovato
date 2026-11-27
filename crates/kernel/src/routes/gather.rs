@@ -577,7 +577,6 @@ pub async fn execute_query_only(
         language,
         current_item_id: current_item.map(|item| item.id),
         current_item_fields: current_item.map(|item| item.fields.clone()),
-        ..Default::default()
     };
 
     let exposed_filters = parse_filter_params(&params.filters);

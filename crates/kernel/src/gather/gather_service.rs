@@ -2123,9 +2123,10 @@ impl GatherService {
     ///
     /// Returns the rewritten definition and whether a filter named
     /// [`ContextualValue::CurrentItem`] or [`ContextualValue::CurrentItemField`]
-    /// while `context` carries no current item: the caller must then treat the
-    /// whole gather as unsatisfiable (B186) rather than run it with that one
-    /// filter merely unconstrained.
+    /// while `context` carries no current item (or, for a field, the item has
+    /// no value for it): the caller must then treat the whole gather as
+    /// unsatisfiable (B186) rather than run it with that one filter merely
+    /// unconstrained.
     fn resolve_contextual_values(
         mut definition: QueryDefinition,
         context: &QueryContext,
@@ -2173,12 +2174,37 @@ impl GatherService {
                             missing_current_item = true;
                             FilterValue::Null(())
                         }
-                        Some(_) => context
+                        // The item carries no value here (absent, null or an
+                        // empty list): nothing can match it, so the gather is
+                        // as unsatisfiable as with no item at all — "related
+                        // by tag" on an untagged recipe lists nothing, not
+                        // every recipe.
+                        Some(_) => match context
                             .current_item_fields
                             .as_ref()
                             .and_then(|fields| fields.get(name))
                             .map(filter_value_from_json)
-                            .unwrap_or(FilterValue::Null(())),
+                        {
+                            // A tag operator reads only uuids out of the value
+                            // and drops the filter when there are none, so a
+                            // field holding no tag id counts as no value.
+                            Some(value)
+                                if !value.is_unset()
+                                    && (!matches!(
+                                        filter.operator,
+                                        FilterOperator::HasTag
+                                            | FilterOperator::HasAnyTag
+                                            | FilterOperator::HasAllTags
+                                            | FilterOperator::HasTagOrDescendants
+                                    ) || !value.as_uuid_list().is_empty()) =>
+                            {
+                                value
+                            }
+                            _ => {
+                                missing_current_item = true;
+                                FilterValue::Null(())
+                            }
+                        },
                     },
                 };
             }
@@ -3740,7 +3766,9 @@ mod tests {
         let item_id = Uuid::now_v7();
         let context = QueryContext {
             current_item_id: Some(item_id),
-            current_item_fields: Some(serde_json::json!({ "tags": ["a", "b"] })),
+            current_item_fields: Some(serde_json::json!({
+                "tags": [Uuid::now_v7().to_string(), Uuid::now_v7().to_string()]
+            })),
             ..Default::default()
         };
 
@@ -3783,29 +3811,36 @@ mod tests {
     }
 
     #[test]
-    fn resolve_contextual_current_item_field_absent_on_the_item_is_null_not_missing() {
-        // The item exists, it just does not carry this field: no constraint,
-        // the same rule an absent `UrlArg` follows — not the "render nothing"
-        // treatment reserved for no current item at all.
-        let context = QueryContext {
-            current_item_id: Some(Uuid::now_v7()),
-            current_item_fields: Some(serde_json::json!({})),
-            ..Default::default()
-        };
+    fn resolve_contextual_current_item_field_without_a_value_renders_nothing() {
+        // The item exists but carries no value for this field (absent, null,
+        // an empty list): nothing can share it, so the gather must render
+        // nothing, not drop the filter and list every row.
+        for fields in [
+            serde_json::json!({}),
+            serde_json::json!({ "tags": null }),
+            serde_json::json!({ "tags": [] }),
+            serde_json::json!({ "tags": ["not-a-tag-id"] }),
+        ] {
+            let context = QueryContext {
+                current_item_id: Some(Uuid::now_v7()),
+                current_item_fields: Some(fields),
+                ..Default::default()
+            };
 
-        let def = QueryDefinition {
-            filters: vec![filter(
-                "fields.tags",
-                FilterOperator::HasAnyTag,
-                FilterValue::Contextual(ContextualValue::CurrentItemField("tags".to_string())),
-                false,
-            )],
-            ..Default::default()
-        };
+            let def = QueryDefinition {
+                filters: vec![filter(
+                    "fields.tags",
+                    FilterOperator::HasAnyTag,
+                    FilterValue::Contextual(ContextualValue::CurrentItemField("tags".to_string())),
+                    false,
+                )],
+                ..Default::default()
+            };
 
-        let (resolved, missing) = GatherService::resolve_contextual_values(def, &context);
-        assert!(!missing);
-        assert!(resolved.filters[0].value.is_null());
+            let (resolved, missing) = GatherService::resolve_contextual_values(def, &context);
+            assert!(missing);
+            assert!(resolved.filters[0].value.is_null());
+        }
     }
 
     #[test]

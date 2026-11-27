@@ -105,8 +105,7 @@ const AUDIENCE_ERROR: &str =
     "Show to must be Everyone, Anonymous visitors only, or Signed-in users only.";
 
 /// Why an `item_types` value was refused, worded for whoever set it.
-const ITEM_TYPES_ERROR: &str =
-    "Content types must be a comma-separated list of machine names (lowercase letters, numbers, and underscores).";
+const ITEM_TYPES_ERROR: &str = "Content types must be a comma-separated list of machine names (lowercase letters, numbers, and underscores).";
 
 /// The content-type machine names typed into the form's `item_types` field:
 /// comma-separated, blank entries dropped. Blank input is the empty list —
@@ -184,7 +183,10 @@ impl TileFormData {
             value.insert(
                 "item_types".to_string(),
                 serde_json::Value::Array(
-                    item_types.into_iter().map(serde_json::Value::String).collect(),
+                    item_types
+                        .into_iter()
+                        .map(serde_json::Value::String)
+                        .collect(),
                 ),
             );
         }

@@ -221,6 +221,12 @@ async fn render_gather_tile(tile: &Tile, render: &TileRenderContext<'_>) -> Opti
         tracing::warn!(tile = %tile.machine_name, query_id, "gather tile names no registered gather");
         return None;
     };
+    // A gather about the item in view, on a page with none: no tile at all,
+    // rather than an empty box (and never an unfiltered list, which
+    // `GatherService` refuses on its own as well).
+    if render.current_item.is_none() && query.definition.names_current_item() {
+        return None;
+    }
     let items = match gather_tile_items(&tile.config) {
         Ok(items) => items,
         Err(message) => {

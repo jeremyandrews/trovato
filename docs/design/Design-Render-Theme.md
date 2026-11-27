@@ -319,6 +319,11 @@ exposes `audience` as a "Show to" field, merged into the tile's stored
 `visibility` so an existing `paths` or `roles` rule (set through `config
 import`, which the form has no control for) survives an edit.
 
+`item_types` (`["article", "recipe"]`) shows a tile only on a page showing an
+item of one of those types (B186). A page showing no item never matches. The
+tile form exposes it as "Content types", a comma-separated list of machine
+names.
+
 ### Gather Tiles
 
 **A gather tile** (`tile_type: gather_query`) lists the first rows of the
@@ -335,6 +340,22 @@ filtered by item access, on the viewer's stages, in the page's language, with
 for page 1 with `items` rows. It is not the full gather page. A tile has no
 pager, no exposed filters and no URL arguments; a gather that needs them is
 better linked than placed.
+
+**The item in view** (B186). On an item page the tile also knows which item
+the page shows, so a filter can name it. `"value": "current_item"` is that
+item's id, and `"value": "current_item.fields.tags"` (or
+`{"current_item_field": "tags"}`) is the value of its `tags` field. A list
+field such as a category reference's tag ids works with `has_any_tag`. One
+tile placed once then serves every item page. "Other articles" is
+`{"field": "id", "operator": "not_equals", "value": "current_item"}`.
+"Related recipes" is that filter plus `{"field": "fields.tags", "operator":
+"has_any_tag", "value": "current_item.fields.tags"}`. A gather that names the
+current item never runs unconstrained. On a page with no item the tile is left
+off the page. When the item has no value in the named field, the gather returns
+no rows. The item reaches the tile through `TileRenderContext::current_item`,
+which `inject_site_context_for` reads back from the `item` the item route put
+in the page context. Neither tiles nor gather results are cached, so one
+item's list cannot be served on another item's page.
 
 The template gets `tile`, `rows` (each item row has `title` and `url`, its
 alias when it has one), `empty_text` and `more_url`, the gather's own page

@@ -39,18 +39,30 @@ fn admin() -> UserContext {
 /// A published conference titled `title`, by `author`, removed when the test ends.
 async fn conference(app: &TestApp, title: &str, author: Uuid) -> Uuid {
     app.ensure_conference_type().await;
+    published(app, "conference", title, author, serde_json::json!({})).await
+}
+
+/// A published item of `item_type` titled `title`, by `author`, carrying
+/// `fields`, removed when the test ends.
+async fn published(
+    app: &TestApp,
+    item_type: &str,
+    title: &str,
+    author: Uuid,
+    fields: serde_json::Value,
+) -> Uuid {
     let id = app
         .state
         .items()
         .create(
             CreateItem {
-                item_type: "conference".to_string(),
+                item_type: item_type.to_string(),
                 title: title.to_string(),
                 author_id: author,
                 status: Some(1),
                 promote: Some(0),
                 sticky: Some(0),
-                fields: Some(serde_json::json!({})),
+                fields: Some(fields),
                 stage_id: Some(LIVE_STAGE_ID),
                 language: Some("en".to_string()),
                 log: Some("gather tile test".to_string()),
@@ -336,7 +348,7 @@ fn a_gather_on_the_current_user_shows_each_viewer_their_own_rows() {
 /// One tile, placed once, filters out whichever item it is rendered beside: on
 /// conference A's page it lists B (and not A); on B's page it lists A (and not
 /// B). On a page with no current item — the gather's own listing — it lists
-/// nothing, never an unfiltered "every conference".
+/// no tile at all, never an unfiltered "every conference".
 #[test]
 fn a_gather_tile_on_current_item_excludes_the_item_it_is_shown_on() {
     run_test(async {
@@ -378,11 +390,9 @@ fn a_gather_tile_on_current_item_excludes_the_item_it_is_shown_on() {
         // the tile render nothing, not every conference.
         let listing = format!("/gather/{query_id}");
         let html_listing = get(app, &listing, "").await;
-        let tile_listing =
-            tile_html(&html_listing, &machine).unwrap_or_else(|| panic!("{html_listing}"));
         assert!(
-            linked_titles(tile_listing, &marker).is_empty(),
-            "{tile_listing}"
+            tile_html(&html_listing, &machine).is_none(),
+            "no tile, let alone every conference:\n{html_listing}"
         );
     });
 }
@@ -411,12 +421,118 @@ fn a_tile_with_item_types_visibility_shows_only_on_matching_item_pages() {
             "shows on a conference page:\n{html_item}"
         );
 
+        // Another type's page: not shown.
+        let page = published(
+            app,
+            "page",
+            &format!("B186 types {marker} page"),
+            Uuid::nil(),
+            serde_json::json!({}),
+        )
+        .await;
+        let html_page = get(app, &format!("/item/{page}"), "").await;
+        assert!(
+            html_page.contains(&format!("B186 types {marker} page")),
+            "the page item renders:\n{html_page}"
+        );
+        assert!(
+            tile_html(&html_page, &machine).is_none(),
+            "a page item never matches an item_types conference rule:\n{html_page}"
+        );
+
         let listing = format!("/gather/{query_id}");
         let html_listing = get(app, &listing, "").await;
         assert!(
             tile_html(&html_listing, &machine).is_none(),
             "a page with no item never matches an item_types rule:\n{html_listing}"
         );
+    });
+}
+
+/// "Related by tag": one tile whose filters are `fields.tags has_any_tag
+/// "current_item.fields.tags"` and `id not_equals "current_item"` lists, on
+/// each item's page, the other items sharing one of its tags. An item with no
+/// tags lists nothing, never every item.
+#[test]
+fn a_gather_tile_on_a_current_item_field_lists_items_sharing_a_tag() {
+    run_test(async {
+        let app = shared_app().await;
+        app.ensure_conference_type().await;
+        let marker = stamp();
+        let shared = Uuid::now_v7().to_string();
+        let only_c = Uuid::now_v7().to_string();
+        let title = |label: &str| format!("B186 tags {marker} {label}");
+        let a = published(
+            app,
+            "conference",
+            &title("A"),
+            Uuid::nil(),
+            serde_json::json!({ "tags": [shared] }),
+        )
+        .await;
+        let b = published(
+            app,
+            "conference",
+            &title("B"),
+            Uuid::nil(),
+            serde_json::json!({ "tags": [shared, Uuid::now_v7().to_string()] }),
+        )
+        .await;
+        let c = published(
+            app,
+            "conference",
+            &title("C"),
+            Uuid::nil(),
+            serde_json::json!({ "tags": [only_c] }),
+        )
+        .await;
+        let untagged = published(
+            app,
+            "conference",
+            &title("D"),
+            Uuid::nil(),
+            serde_json::json!({}),
+        )
+        .await;
+        let query_id = gather(
+            app,
+            &marker,
+            serde_json::json!({ "filters": [
+                {
+                    "exposed": false,
+                    "field": "fields.tags",
+                    "operator": "has_any_tag",
+                    "value": "current_item.fields.tags",
+                },
+                {
+                    "exposed": false,
+                    "field": "id",
+                    "operator": "not_equals",
+                    "value": "current_item",
+                },
+            ] }),
+        )
+        .await;
+        let machine = format!("b186_tags_{marker}");
+        tile_with_visibility(
+            app,
+            &machine,
+            serde_json::json!({ "query_id": query_id }),
+            serde_json::json!({ "item_types": ["conference"] }),
+        )
+        .await;
+
+        let expect = [(a, vec![title("B")]), (b, vec![title("A")]), (c, vec![])];
+        for (id, expected) in expect {
+            let html = get(app, &format!("/item/{id}"), "").await;
+            let tile = tile_html(&html, &machine).unwrap_or_else(|| panic!("{html}"));
+            assert_eq!(linked_titles(tile, &marker), expected, "on {id}: {tile}");
+        }
+
+        // No tags at all: nothing, not every conference but itself.
+        let html = get(app, &format!("/item/{untagged}"), "").await;
+        let tile = tile_html(&html, &machine).unwrap_or_else(|| panic!("{html}"));
+        assert!(linked_titles(tile, &marker).is_empty(), "{tile}");
     });
 }
 
@@ -755,9 +871,7 @@ fn the_tile_form_stores_and_redisplays_item_types() {
         let response =
             submit_tile_form_full(app, &cookies, &machine, None, Some("article, recipe")).await;
         assert_eq!(response.status(), StatusCode::SEE_OTHER);
-        let visibility = stored_visibility(app, &machine)
-            .await
-            .expect("tile saved");
+        let visibility = stored_visibility(app, &machine).await.expect("tile saved");
         assert_eq!(
             visibility["item_types"],
             serde_json::json!(["article", "recipe"]),
@@ -789,7 +903,9 @@ fn the_tile_form_stores_and_redisplays_item_types() {
             )
             .await;
         let html = body_text(edit).await;
-        let field = &html[html.find("name=\"item_types\"").expect("an item_types field")..];
+        let field = &html[html
+            .find("name=\"item_types\"")
+            .expect("an item_types field")..];
         let field = &field[..field.find('>').unwrap()];
         assert!(field.contains("value=\"article, recipe\""), "{field}");
     });
@@ -807,7 +923,10 @@ fn the_tile_form_refuses_an_invalid_item_type() {
             submit_tile_form_full(app, &cookies, &machine, None, Some("Not Valid!")).await;
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let html = body_text(response).await;
-        assert!(html.contains("machine names"), "the refusal says why: {html}");
+        assert!(
+            html.contains("machine names"),
+            "the refusal says why: {html}"
+        );
         assert!(
             stored_config(app, &machine).await.is_none(),
             "an invalid item type saved nothing"
