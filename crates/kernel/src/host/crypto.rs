@@ -1,17 +1,21 @@
 //! Cryptographic host functions for WASM plugins.
 //!
-//! Provides HMAC-SHA256, SHA-256 hashing, secure random bytes, and
-//! constant-time comparison. Plugins use these instead of bundling
-//! their own crypto libraries in WASM (which would be large, slow,
-//! and potentially insecure).
+//! Provides HMAC-SHA256, SHA-256 hashing, secure random bytes,
+//! constant-time comparison, and ES256 JWT signing with an operator-held
+//! key (B273). Plugins use these instead of bundling their own crypto
+//! libraries in WASM (which would be large, slow, and potentially
+//! insecure).
 
 use anyhow::Result;
+use tracing::warn;
 use wasmtime::Linker;
 
-use super::trace::HostCallGuard;
+use super::trace::{HostCallGuard, TracedLinker};
 
 use super::{read_string_from_memory, write_string_to_memory};
 use crate::plugin::{PluginState, WasmtimeExt};
+use crate::services::crypto_keys::{JwtBuildError, KeyError, sign_jwt_es256};
+use trovato_sdk::host_errors;
 
 /// Register cryptographic host functions.
 pub fn register_crypto_functions(linker: &mut Linker<PluginState>) -> Result<()> {
@@ -148,6 +152,96 @@ pub fn register_crypto_functions(linker: &mut Linker<PluginState>) -> Result<()>
                 use subtle::ConstantTimeEq;
                 let equal = a.as_bytes().ct_eq(b.as_bytes());
                 if bool::from(equal) { 1 } else { 0 }
+            },
+        )
+        .into_anyhow()?;
+
+    // sign-jwt-es256(key_ref_ptr, key_ref_len, header_ptr, header_len,
+    //                claims_ptr, claims_len, out_ptr, out_max_len) -> i32
+    // Returns the bytes of the compact JWS written, or a negative host error
+    // code. The key never crosses into WASM memory (B273).
+    linker
+        .func_wrap_async_traced(
+            "trovato:kernel/crypto-api",
+            "sign-jwt-es256",
+            |mut caller: wasmtime::Caller<'_, PluginState>,
+             (
+                key_ref_ptr,
+                key_ref_len,
+                header_ptr,
+                header_len,
+                claims_ptr,
+                claims_len,
+                out_ptr,
+                out_max_len,
+            ): (i32, i32, i32, i32, i32, i32, i32, i32)| {
+                Box::new(async move {
+                    let Some(wasmtime::Extern::Memory(memory)) = caller.get_export("memory") else {
+                        return host_errors::ERR_MEMORY_MISSING;
+                    };
+                    let Ok(key_ref) =
+                        read_string_from_memory(&memory, &caller, key_ref_ptr, key_ref_len)
+                    else {
+                        return host_errors::ERR_PARAM1_READ;
+                    };
+                    let Ok(header_json) =
+                        read_string_from_memory(&memory, &caller, header_ptr, header_len)
+                    else {
+                        return host_errors::ERR_PARAM2_OR_OUTPUT;
+                    };
+                    let Ok(claims_json) =
+                        read_string_from_memory(&memory, &caller, claims_ptr, claims_len)
+                    else {
+                        return host_errors::ERR_PARAM3_READ;
+                    };
+
+                    let Some(services) = caller.data().request.services() else {
+                        return host_errors::ERR_NO_SERVICES;
+                    };
+                    let Some(ref registry) = services.crypto_keys else {
+                        return host_errors::ERR_CRYPTO_KEY_UNMAPPED;
+                    };
+                    let registry = registry.clone();
+                    let plugin_name = caller.data().plugin_name.clone();
+
+                    let key = match registry.resolve(&plugin_name, &key_ref).await {
+                        Ok(key) => key,
+                        Err(KeyError::Unmapped) => {
+                            warn!(
+                                plugin = %plugin_name,
+                                key_ref = %key_ref,
+                                "sign-jwt-es256: no key mapped for this plugin under this key-ref"
+                            );
+                            return host_errors::ERR_CRYPTO_KEY_UNMAPPED;
+                        }
+                        Err(KeyError::Invalid) => {
+                            warn!(
+                                plugin = %plugin_name,
+                                key_ref = %key_ref,
+                                "sign-jwt-es256: the mapped key is not a usable P-256 key"
+                            );
+                            return host_errors::ERR_CRYPTO_KEY_INVALID;
+                        }
+                    };
+
+                    let jws = match sign_jwt_es256(&key, &header_json, &claims_json) {
+                        Ok(jws) => jws,
+                        Err(JwtBuildError::InvalidJson) => {
+                            return host_errors::ERR_CRYPTO_JWT_INVALID_JSON;
+                        }
+                        Err(JwtBuildError::AlgOverride) => {
+                            warn!(
+                                plugin = %plugin_name,
+                                key_ref = %key_ref,
+                                "sign-jwt-es256: header named an alg other than ES256"
+                            );
+                            return host_errors::ERR_CRYPTO_JWT_ALG_OVERRIDE;
+                        }
+                    };
+
+                    write_string_to_memory(&memory, &mut caller, out_ptr, out_max_len, &jws)
+                        .unwrap_or(host_errors::ERR_PARAM3_READ)
+                })
             },
         )
         .into_anyhow()?;

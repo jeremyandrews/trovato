@@ -84,6 +84,9 @@ pub fn tap_menu() -> Vec<MenuRoute> {
         // host call (B71), as the caller. Public: the kernel decides which
         // formats the caller may use, and an anonymous caller gets plain text.
         MenuRoute::api("POST", "/tpa/filter", "filter_text").title("Filter text"),
+        // Signs a JWT with the `crypto-api` host call (B273). Public: the key
+        // mapping, not a permission, is what gates this.
+        MenuRoute::api("POST", "/tpa/sign-jwt", "sign_jwt").title("Sign a JWT"),
         // B182: a multipart form carrying a file. The kernel stores it through
         // `FileService` before dispatch and hands this route `ApiRequest::files`;
         // the plugin attaches the id to a `conference` item's `field_logo`
@@ -119,6 +122,7 @@ pub fn tap_api(request: ApiRequest) -> ApiResponse {
         "send_mail" => send_mail(&request),
         "show_themed" => show_themed(),
         "filter_text" => filter_text(&request),
+        "sign_jwt" => sign_jwt(&request),
         "show_admin_dashboard" => show_admin_dashboard(),
         "upload_attachment" => upload_attachment(&request),
         "echo_upload" => echo_upload(&request),
@@ -201,6 +205,33 @@ fn send_mail(request: &ApiRequest) -> ApiResponse {
     match host::mail_send_to_site_contacts(&subject, &body, &attachments) {
         Ok(()) => ApiResponse::with_status(200, r#"{"sent":true}"#),
         Err(code) => ApiResponse::json(&serde_json::json!({"sent": false, "code": code}))
+            .unwrap_or_else(|_| ApiResponse::error(500, "serialize failed")),
+    }
+}
+
+/// Sign `{key_ref, kid, claims}` with ES256 through `host::crypto_sign_jwt_es256`
+/// (B273) and answer `{jws}` or `{code}`.
+///
+/// `claims` travels as a raw JSON value, since a real caller's claim set (APNs,
+/// or anything else) has no shape this fixture should assume. `header` carries
+/// only `kid`: `JwtHeader` has no `alg` field, so this callback — unlike a raw
+/// WAT caller — cannot ask the host to override it even if it wanted to.
+fn sign_jwt(request: &ApiRequest) -> ApiResponse {
+    let body: serde_json::Value = match request.json() {
+        Ok(v) => v,
+        Err(e) => return ApiResponse::error(400, &format!("body is not JSON: {e}")),
+    };
+    let key_ref = body["key_ref"].as_str().unwrap_or_default();
+    let mut header = trovato_sdk::types::JwtHeader::default();
+    if let Some(kid) = body["kid"].as_str() {
+        header.kid = Some(kid.to_string());
+    }
+    let claims = body.get("claims").cloned().unwrap_or(serde_json::json!({}));
+
+    match host::crypto_sign_jwt_es256(key_ref, &header, &claims) {
+        Ok(jws) => ApiResponse::json(&serde_json::json!({ "jws": jws }))
+            .unwrap_or_else(|_| ApiResponse::error(500, "serialize failed")),
+        Err(code) => ApiResponse::json(&serde_json::json!({ "code": code }))
             .unwrap_or_else(|_| ApiResponse::error(500, "serialize failed")),
     }
 }
@@ -401,10 +432,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_menu_declares_ten_api_routes_with_callbacks() {
+    fn the_menu_declares_eleven_api_routes_with_callbacks() {
         let menus = __inner_tap_menu();
         let api: Vec<&MenuRoute> = menus.iter().filter(|m| m.handler_type == "api").collect();
-        assert_eq!(api.len(), 10);
+        assert_eq!(api.len(), 11);
         assert!(api.iter().all(|m| !m.callback.is_empty()));
         assert_eq!(
             api.iter()

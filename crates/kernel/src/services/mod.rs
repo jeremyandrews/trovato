@@ -16,6 +16,7 @@ pub mod api_token;
 pub mod audit;
 pub mod comment;
 pub mod content_lock;
+pub mod crypto_keys;
 pub mod email;
 pub mod email_templates;
 pub mod embed_index;

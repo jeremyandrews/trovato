@@ -124,6 +124,19 @@ write or read fails and `-14` for a request that is not valid JSON.
 | -91 | `ERR_VOCABULARY_INVALID` | The id is not a machine name of at most 32 characters, the label is empty, or the owner id is empty or longer than 255 | Fix the request |
 | -92 | `ERR_VOCABULARY_EXISTS` | A vocabulary with this id exists | Put the owner in the id, or list the owner's vocabularies first |
 
+## Crypto API JWT Signing Errors
+
+Returned by `host::crypto_sign_jwt_es256` (`trovato:kernel/crypto-api`
+`sign-jwt-es256`, added by B273). The key material never crosses into WASM
+memory and never appears in a log or an error.
+
+| Code | Constant | Meaning | Recovery |
+|------|----------|---------|----------|
+| -93 | `ERR_CRYPTO_KEY_UNMAPPED` | No key is mapped for this plugin under this `key-ref` — the same answer for a key mapped to a different plugin | Ask the operator to map the key under this plugin's name in `crypto_signing_keys` |
+| -94 | `ERR_CRYPTO_KEY_INVALID` | The mapped key is not a usable P-256 PKCS#8 private key | Ask the operator to check the key's curve and format |
+| -95 | `ERR_CRYPTO_JWT_INVALID_JSON` | `header` or `claims` was not valid JSON | Fix the header/claims JSON |
+| -96 | `ERR_CRYPTO_JWT_ALG_OVERRIDE` | The header named an `alg` other than `ES256` | Omit `alg`, or name `ES256` — the host never signs under anything else |
+
 ## User Directory Errors
 
 Returned by `host::load_users`, `host::find_user_by_name` and

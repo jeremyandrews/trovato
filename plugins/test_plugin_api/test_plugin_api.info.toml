@@ -14,9 +14,10 @@ weight = 0
 # finding this fixture exercises. `user-api` is not needed: the authenticated
 # user's id arrives in the ApiRequest payload. `text-format` for the
 # filter_text callback (B71). `item-api` for upload_attachment, which attaches
-# the stored file to an item through `host::save_item` (B182).
+# the stored file to an item through `host::save_item` (B182). `crypto-api`
+# for the sign_jwt callback (B273).
 [capabilities]
-host_interfaces = ["logging", "db", "mail", "text-format", "item-api"]
+host_interfaces = ["logging", "db", "mail", "text-format", "item-api", "crypto-api"]
 db_tables = ["tpa_notes"]
 raw_sql = true
 
