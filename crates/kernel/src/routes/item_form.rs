@@ -78,6 +78,7 @@ pub(crate) async fn build(
         extra.push(moderation_element(user, &text, moderation.state));
     }
     extra.extend(publishing_element(state, user, type_name, item).await);
+    extra.extend(comment_override_element(state, user, type_name, item).await);
     let mode = preview_mode(state, type_name).await;
     if mode != PreviewMode::Disabled {
         let text = super::admin_nav::AdminText::for_page(state, user, action).await;
@@ -925,6 +926,74 @@ pub(crate) async fn requested_publishing(
     } else {
         Err(errors)
     }
+}
+
+/// Posted beside the comment override select when the form rendered it, so a
+/// submission that does not carry `comment_override` at all (the select was
+/// never offered) is read as "leave it" rather than "set it to inherit".
+pub(crate) const COMMENT_OVERRIDE_FIELD: &str = "comment_override";
+
+/// The item's own comment override (B239): `inherit` (the default, use the
+/// type's own `comment_mode`), or one of the type's three. Offered only to a
+/// holder of [`SET_ITEM_COMMENT_STATUS`], and only while `trovato_comments`
+/// is enabled; nothing for anyone else, so there is nothing to post and
+/// [`requested_comment_mode`] reads it as "leave it".
+///
+/// [`SET_ITEM_COMMENT_STATUS`]: crate::content::SET_ITEM_COMMENT_STATUS
+pub(crate) async fn comment_override_element(
+    state: &AppState,
+    user: &UserContext,
+    item_type: &str,
+    item: Option<&Item>,
+) -> Vec<(String, FormElement)> {
+    use crate::content::SET_ITEM_COMMENT_STATUS;
+    use crate::content::comment_settings::{COMMENT_OVERRIDE_OPTIONS, CommentOverride};
+
+    if state.comments_if_enabled().is_none() || !user.can(SET_ITEM_COMMENT_STATUS) {
+        return Vec::new();
+    }
+
+    let current = CommentOverride::parse(item.and_then(|i| i.comment_mode.as_deref()));
+    let type_mode = super::comment::settings_for_type(state, item_type)
+        .await
+        .mode;
+    let options: Vec<(String, String)> = COMMENT_OVERRIDE_OPTIONS
+        .iter()
+        .map(|(value, label)| ((*value).to_string(), (*label).to_string()))
+        .collect();
+
+    let fieldset = FormElement::fieldset()
+        .title("Comments")
+        .weight(crate::content::STATUS_WEIGHT + 6)
+        .attribute("id", "comment-status")
+        .child(
+            COMMENT_OVERRIDE_FIELD,
+            FormElement::select(options)
+                .title("Comment status")
+                .default_value(current.as_str())
+                .description(format!(
+                    "Overrides this content type's own setting, currently {}.",
+                    type_mode.as_str()
+                ))
+                .weight(0),
+        );
+    vec![("comments".to_string(), fieldset)]
+}
+
+/// The comment override a submission asked for, `None` when the select was
+/// not offered (so nothing changes): the form's raw value (`inherit`,
+/// `open`, `closed` or `hidden`) for [`ItemService::set_comment_mode`] to
+/// normalize.
+///
+/// [`ItemService::set_comment_mode`]: crate::content::ItemService::set_comment_mode
+pub(crate) fn requested_comment_mode(
+    posted: &crate::content::submission::PostedForm,
+) -> Option<String> {
+    posted
+        .get(COMMENT_OVERRIDE_FIELD)
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
 }
 
 /// A `datetime-local` value (with or without seconds), read as UTC.

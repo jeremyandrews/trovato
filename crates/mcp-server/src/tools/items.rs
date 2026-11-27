@@ -418,6 +418,7 @@ mod tests {
             language: "en".to_string(),
             item_group_id: Uuid::new_v4(),
             retention_days: None,
+            comment_mode: None,
         }
     }
 

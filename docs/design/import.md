@@ -73,11 +73,18 @@ The item as it is now: its current revision.
 | `revision_id` | no | The current revision's id. Default: a new one. |
 | `revision_author_id` | no | Who saved the current revision. Default `author_id`. |
 | `log` | no | The current revision's log message. |
+| `comment_mode` | no | `inherit`, `open`, `closed` or `hidden` (B239); default `inherit`. |
 
 The comparison that decides *unchanged* covers the item: `title`, `author_id`,
-`status`, `promote`, `sticky`, `language`, `fields`, `created` and `changed`.
-`revision_id`, `revision_author_id` and `log` describe the revision a create
-or a change writes, and do not make a change on their own.
+`status`, `promote`, `sticky`, `language`, `fields`, `created`, `changed` and
+`comment_mode`. `revision_id`, `revision_author_id` and `log` describe the
+revision a create or a change writes, and do not make a change on their own.
+
+`comment_mode` is the item's own override of its content type's comment
+setting (`crates/kernel/src/content/comment_settings.rs`): `inherit` defers to
+the type, and the other three win over it for this item alone. A site
+migrated from Drupal 6 maps `node.comment`: `0` (disabled) to `hidden`, `1`
+(read only) to `closed`, `2` (read and write) to `open`.
 
 ### `revision`
 
@@ -238,7 +245,8 @@ the kernel already makes on its own writes:
   references, field cardinality and category references
   (`field_values::validate_field_values`), and the file references the fields
   hold (`file_refs`), which are recorded with the item as a form save records
-  them. The title length is the forms' limit.
+  them. The title length is the forms' limit. An item's `comment_mode` must be
+  `inherit`, `open`, `closed` or `hidden`.
 - **References**: every id a record names (author, item, parent comment) must
   be stored or on an earlier line.
 - **The other types**: the checks their forms make, listed per type above.

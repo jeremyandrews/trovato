@@ -359,7 +359,7 @@ pub async fn indexable_documents_for(
     let candidates = sqlx::query_as::<_, Item>(
         r#"
         SELECT id, current_revision_id, type, title, author_id, status, created, changed,
-               promote, sticky, fields, stage_id, language, item_group_id, retention_days
+               promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode
         FROM item
         WHERE status = 1 AND stage_id = $1 AND ($2::uuid[] IS NULL OR id = ANY($2))
         "#,

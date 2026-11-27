@@ -65,6 +65,15 @@ pub struct Item {
     /// Data retention period in days (NULL = keep indefinitely).
     #[serde(default)]
     pub retention_days: Option<i32>,
+
+    /// This item's own override of its type's comment setting (B239):
+    /// `None` is `inherit` (use the type's own `comment_mode`, what every
+    /// item holds before this), `Some("open" | "closed" | "hidden")` wins
+    /// over the type's setting for this item alone. Not revisioned, as
+    /// `promote` and `sticky` are not. See
+    /// `content::comment_settings::effective_mode`.
+    #[serde(default)]
+    pub comment_mode: Option<String>,
 }
 
 /// Item revision record.
@@ -197,7 +206,7 @@ impl Item {
     /// Find an item by ID.
     pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Self>> {
         let item = sqlx::query_as::<_, Item>(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days FROM item WHERE id = $1"
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode FROM item WHERE id = $1"
         )
         .bind(id)
         .fetch_optional(pool)
@@ -214,7 +223,7 @@ impl Item {
             return Ok(Vec::new());
         }
         sqlx::query_as::<_, Item>(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days FROM item WHERE id = ANY($1)"
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode FROM item WHERE id = ANY($1)"
         )
         .bind(ids)
         .fetch_all(pool)
@@ -225,7 +234,7 @@ impl Item {
     /// List items by content type.
     pub async fn list_by_type(pool: &PgPool, item_type: &str) -> Result<Vec<Self>> {
         let items = sqlx::query_as::<_, Item>(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days FROM item WHERE type = $1 ORDER BY created DESC"
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode FROM item WHERE type = $1 ORDER BY created DESC"
         )
         .bind(item_type)
         .fetch_all(pool)
@@ -238,7 +247,7 @@ impl Item {
     /// List items by author.
     pub async fn list_by_author(pool: &PgPool, author_id: Uuid) -> Result<Vec<Self>> {
         let items = sqlx::query_as::<_, Item>(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days FROM item WHERE author_id = $1 ORDER BY created DESC"
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode FROM item WHERE author_id = $1 ORDER BY created DESC"
         )
         .bind(author_id)
         .fetch_all(pool)
@@ -262,7 +271,7 @@ impl Item {
     /// List published items (live stage only).
     pub async fn list_published(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<Self>> {
         let items = sqlx::query_as::<_, Item>(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days FROM item WHERE status = 1 AND stage_id = $1 ORDER BY sticky DESC, created DESC LIMIT $2 OFFSET $3"
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode FROM item WHERE status = 1 AND stage_id = $1 ORDER BY sticky DESC, created DESC LIMIT $2 OFFSET $3"
         )
         .bind(LIVE_STAGE_ID)
         .bind(limit)
@@ -282,7 +291,7 @@ impl Item {
     /// simply never seen, however many promoted items the site has.
     pub async fn list_promoted(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<Self>> {
         let items = sqlx::query_as::<_, Item>(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days FROM item WHERE status = 1 AND promote = 1 AND stage_id = $1 ORDER BY sticky DESC, created DESC LIMIT $2 OFFSET $3"
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode FROM item WHERE status = 1 AND promote = 1 AND stage_id = $1 ORDER BY sticky DESC, created DESC LIMIT $2 OFFSET $3"
         )
         .bind(LIVE_STAGE_ID)
         .bind(limit)
@@ -505,6 +514,19 @@ impl Item {
 
         // Return updated item
         Self::find_by_id(pool, id).await
+    }
+
+    /// Set `comment_mode` directly: no revision, as `promote` and `sticky`
+    /// are not revisioned either (B239). `None` stores `NULL`, clearing the
+    /// override back to `inherit`. `false` when no row matched.
+    pub async fn set_comment_mode(pool: &PgPool, id: Uuid, mode: Option<&str>) -> Result<bool> {
+        let result = sqlx::query("UPDATE item SET comment_mode = $1 WHERE id = $2")
+            .bind(mode)
+            .bind(id)
+            .execute(pool)
+            .await
+            .context("failed to set the item's comment mode")?;
+        Ok(result.rows_affected() > 0)
     }
 
     /// Delete an item and all its revisions.
@@ -773,7 +795,7 @@ impl Item {
     /// List all items with pagination.
     pub async fn list_all(pool: &PgPool, limit: i64, offset: i64) -> Result<Vec<Self>> {
         let items = sqlx::query_as::<_, Item>(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days FROM item ORDER BY changed DESC LIMIT $1 OFFSET $2"
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode FROM item ORDER BY changed DESC LIMIT $1 OFFSET $2"
         )
         .bind(limit)
         .bind(offset)
@@ -831,7 +853,7 @@ impl Item {
     ) -> Result<Vec<Self>> {
         // Build dynamic query
         let mut query = String::from(
-            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days FROM item WHERE 1=1",
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode FROM item WHERE 1=1",
         );
         let mut param_idx = 1;
         let mut conditions = Vec::new();
@@ -973,7 +995,7 @@ impl Item {
         };
         let list_sql = format!(
             "SELECT id, current_revision_id, type, title, author_id, status, created, changed, \
-             promote, sticky, fields, stage_id, language, item_group_id, retention_days \
+             promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode \
              FROM item WHERE 1=1{conditions} ORDER BY {order_by}, {ties} \
              LIMIT ${} OFFSET ${}",
             n + 1,
@@ -1046,7 +1068,7 @@ impl Item {
 
         let mut sql = String::from(
             "SELECT id, current_revision_id, type, title, author_id, status, created, changed, \
-             promote, sticky, fields, stage_id, language, item_group_id, retention_days \
+             promote, sticky, fields, stage_id, language, item_group_id, retention_days, comment_mode \
              FROM item WHERE (fields @> $1::jsonb OR fields @> $2::jsonb)",
         );
         if item_type.is_some() {
@@ -1104,6 +1126,7 @@ mod tests {
             language: "en".to_string(),
             item_group_id: Uuid::now_v7(),
             retention_days: None,
+            comment_mode: None,
         };
 
         assert!(item.is_published());

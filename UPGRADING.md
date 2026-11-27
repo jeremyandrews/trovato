@@ -97,6 +97,38 @@ applied, so `trovato migrate` finds nothing to do.
 
 ## Unreleased
 
+### An item's own comment override; `set item comment status` is a new permission
+
+**Who is affected:** an operator who wants a non administrator to close or
+hide comments on individual items; a plugin that reads or writes items through
+`get-item` or `save-item`.
+
+**What changed.** `item.comment_mode` is a new, nullable column: `NULL` is
+`inherit` (use the content type's own `comment_mode` setting, B159), the only
+value any existing item holds, so nothing about an existing item's comments
+changes. A non null value, `open`, `closed` or `hidden`, wins over the type's
+setting for that item alone, resolved by one function
+(`content::comment_settings::effective_mode`) that every comment surface now
+reads through: the item page's thread, every write route (the form and the
+JSON API, replies included), the comment listing API and the search index.
+
+The item form shows a "Comments" control to a holder of the new permission
+`set item comment status`, granted to no role by migration; an administrator
+holds it implicitly, as every permission does. A site that wants an editor to
+set it on their own items grants the permission to that editor's role.
+
+`get-item` and `save-item` carry `comment_mode` the same way they carry every
+other item field, so a plugin can read and set it. `trovato import`'s `item`
+record takes a `comment_mode` key too, so a site migrated from Drupal 6
+carries `node.comment` across: `0` (disabled) maps to `hidden`, `1` (read
+only) to `closed`, `2` (read and write) to `open`.
+
+**How to find out.** Nothing to check before upgrading: the column is
+nullable with no default read by any released code, so every existing item
+answers `inherit` and behaves exactly as it did. After upgrading, grant
+`set item comment status` to any role other than an administrator that should
+be able to use the new control.
+
 ### `AdminNavDefinition` is `#[non_exhaustive]`, with a new `keywords` field
 
 **Who is affected:** a plugin that builds `trovato_sdk::types::AdminNavDefinition`

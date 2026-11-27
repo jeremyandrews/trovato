@@ -180,6 +180,11 @@ pub struct ItemSubmission {
     /// The content moderation state asked for, on a moderated type:
     /// `moderation_state` on a form and in JSON.
     pub moderation_state: Option<String>,
+    /// The item's own comment override asked for (B239): `inherit`, `open`,
+    /// `closed` or `hidden`, `comment_override` on a form and `comment_mode`
+    /// in JSON. `None` leaves it; `ItemService::set_comment_mode` normalizes
+    /// the rest.
+    pub comment_mode: Option<String>,
 }
 
 impl ItemSubmission {
@@ -218,6 +223,7 @@ impl ItemSubmission {
             url_alias: get("url_alias"),
             stage: get("_stage"),
             moderation_state: get("moderation_state").filter(|s| !s.is_empty()),
+            comment_mode: super::item_form::requested_comment_mode(&form),
             posted: Some(form),
         }
     }
@@ -242,6 +248,10 @@ impl ItemSubmission {
                 .map(String::from),
             moderation_state: body
                 .get("moderation_state")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+            comment_mode: body
+                .get("comment_mode")
                 .and_then(|v| v.as_str())
                 .map(String::from),
             posted: None,
@@ -1458,6 +1468,14 @@ async fn create_item(
         .await
         .map_err(|e| write_error(e, "create item"))?;
 
+    if let Some(mode) = request.comment_mode.as_deref() {
+        state
+            .items()
+            .set_comment_mode(item.id, mode, &user)
+            .await
+            .map_err(|e| write_error(e, "set item comment status"))?;
+    }
+
     if let (Some(form_state), Some(posted)) = (form_state, request.posted.as_ref()) {
         state
             .forms()
@@ -1793,6 +1811,14 @@ async fn update_item(
                 } else if let Err(e) = state.aliases().set_for_item(&item, alias_path).await {
                     tracing::warn!(error = %e, "failed to update url alias");
                 }
+            }
+
+            if let Some(mode) = request.comment_mode.as_deref() {
+                state
+                    .items()
+                    .set_comment_mode(item.id, mode, &user)
+                    .await
+                    .map_err(|e| write_error(e, "set item comment status"))?;
             }
 
             if let (Some(form_state), Some(posted)) = (form_state, request.posted.as_ref()) {

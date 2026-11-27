@@ -77,6 +77,15 @@ pub struct Item {
     /// language-specific behavior.
     #[serde(default)]
     pub language: Option<String>,
+
+    /// This item's own override of its content type's comment setting
+    /// (B239): `None` for `inherit` (use the type's own setting, what every
+    /// item holds before this), `Some("open" | "closed" | "hidden")` to win
+    /// over it for this item alone. Read from `get-item`; a `save-item` that
+    /// sets `"comment_mode"` applies it the same way the item routes do,
+    /// through `ItemService::set_comment_mode`, gated the same way.
+    #[serde(default)]
+    pub comment_mode: Option<String>,
 }
 
 impl Item {

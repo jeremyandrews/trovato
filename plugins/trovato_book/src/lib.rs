@@ -1062,6 +1062,7 @@ mod tests {
             created: 0,
             changed: 0,
             language: None,
+            comment_mode: None,
             stage_id: Uuid::nil(),
         };
         // With the stub host, `query_raw` returns "[]", so there is no page row.
