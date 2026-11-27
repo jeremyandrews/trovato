@@ -450,6 +450,33 @@ contact email.
 **Step 4 &mdash; Complete:** Installation is finished. Follow the links to
 visit your site or the admin dashboard.
 
+## 6b. Unattended Install (no browser)
+
+A container stack has nobody to open a browser at the web installer, so
+`serve` would sit behind a redirect to `/install` forever and cron would never
+run. `trovato install` does the same two steps the web installer does, from
+the command line, and is safe to run on every start: it exits 0 and changes
+nothing once the site is installed.
+
+```bash
+printf '%s\n' "$ADMIN_PASSWORD" | trovato install \
+  --admin-user admin --admin-mail admin@example.com --admin-password-stdin \
+  --site-name "My Site"
+```
+
+A container start command runs it before `serve`:
+
+```bash
+trovato install \
+  --admin-user admin --admin-mail admin@example.com --admin-password-stdin \
+  --site-name "My Site" < /run/secrets/admin-password \
+  && trovato serve
+```
+
+See [docs/cli-reference.md](docs/cli-reference.md#trovato-install) for every
+flag and the matching environment variables, and for passing the password
+through a file instead of stdin.
+
 ## 7. Verify
 
 After installation, confirm everything is running:
