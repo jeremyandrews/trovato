@@ -14,10 +14,10 @@ use axum::{
 };
 use serde::Deserialize;
 
-use crate::models::{CreateUser, SiteConfig};
-use crate::routes::helpers::{html_escape, is_valid_email, validate_password, validate_username};
+use crate::models::SiteConfig;
+use crate::routes::helpers::html_escape;
+use crate::services::install::{CreateAdminError, FinishSiteSetupError};
 use crate::state::AppState;
-use crate::tap::UserContext;
 
 // =============================================================================
 // Request Types
@@ -51,12 +51,9 @@ async fn check_installed(state: &AppState) -> bool {
 
 /// Count admin users (excluding anonymous).
 async fn count_admin_users(state: &AppState) -> i64 {
-    sqlx::query_scalar::<_, i64>(
-        "SELECT COUNT(*) FROM users WHERE is_admin = true AND id != '00000000-0000-0000-0000-000000000000'"
-    )
-    .fetch_one(state.db())
-    .await
-    .unwrap_or(0)
+    crate::services::install::admin_count(state.db())
+        .await
+        .unwrap_or(0)
 }
 
 /// Render installer template.
@@ -347,45 +344,30 @@ async fn install_admin_submit(
         return Redirect::to("/").into_response();
     }
 
-    // Validate
-    if let Err(msg) = validate_username(form.username.trim()) {
-        return render_admin_form_with_error(msg);
-    }
-
-    if form.email.trim().is_empty() || !is_valid_email(form.email.trim()) {
-        return render_admin_form_with_error("Valid email is required");
-    }
-
-    if let Err(msg) = validate_password(&form.password) {
-        return render_admin_form_with_error(msg);
-    }
-
+    // The confirmation field is a web-form concern only; the shared service
+    // function takes one password.
     if form.password != form.password_confirm {
         return render_admin_form_with_error("Passwords do not match");
     }
 
-    // Check if username already exists
-    if let Ok(Some(_)) = state.users().find_by_name(&form.username).await {
-        return render_admin_form_with_error("Username already exists");
-    }
-
-    // Check if email already exists
-    if let Ok(Some(_)) = state.users().find_by_mail(&form.email).await {
-        return render_admin_form_with_error("Email already in use");
-    }
-
-    // Create admin user (anonymous context — no user exists yet)
-    let input = CreateUser {
-        name: form.username.trim().to_string(),
-        password: form.password,
-        mail: form.email.trim().to_string(),
-        is_admin: true,
-    };
-
-    let anon = UserContext::anonymous();
-    match state.users().create(input, &anon, "installer").await {
+    match crate::services::install::create_admin(
+        &state,
+        &form.username,
+        &form.email,
+        form.password,
+        "installer",
+    )
+    .await
+    {
         Ok(_) => Redirect::to("/install/site").into_response(),
-        Err(e) => {
+        Err(CreateAdminError::Username(msg)) => render_admin_form_with_error(msg),
+        Err(CreateAdminError::Email(msg)) => render_admin_form_with_error(msg),
+        Err(CreateAdminError::Password(msg)) => render_admin_form_with_error(msg),
+        Err(CreateAdminError::UsernameTaken) => {
+            render_admin_form_with_error("Username already exists")
+        }
+        Err(CreateAdminError::EmailTaken) => render_admin_form_with_error("Email already in use"),
+        Err(CreateAdminError::Failed(e)) => {
             tracing::error!(error = %e, "failed to create admin user");
             render_admin_form_with_error("Failed to create admin account")
         }
@@ -472,36 +454,27 @@ async fn install_site_submit(
         return Redirect::to("/").into_response();
     }
 
-    // Validate
-    if form.site_name.trim().is_empty() {
-        return render_site_form_with_error("Site name is required");
-    }
-
-    // Save configuration
-    if let Err(e) = SiteConfig::set_site_name(state.db(), form.site_name.trim()).await {
-        tracing::error!(error = %e, "failed to set site name");
-        return render_site_form_with_error("Failed to save configuration");
-    }
-
-    if let Some(ref slogan) = form.site_slogan
-        && let Err(e) = SiteConfig::set_site_slogan(state.db(), slogan.trim()).await
+    match crate::services::install::finish_site_setup(
+        state.db(),
+        &form.site_name,
+        form.site_slogan.as_deref(),
+        form.site_mail.as_deref(),
+    )
+    .await
     {
-        tracing::error!(error = %e, "failed to set site slogan");
+        Ok(()) => Redirect::to("/install/complete").into_response(),
+        Err(FinishSiteSetupError::SiteNameRequired) => {
+            render_site_form_with_error("Site name is required")
+        }
+        Err(FinishSiteSetupError::SiteNameSaveFailed(e)) => {
+            tracing::error!(error = %e, "failed to set site name");
+            render_site_form_with_error("Failed to save configuration")
+        }
+        Err(FinishSiteSetupError::MarkInstalledFailed(e)) => {
+            tracing::error!(error = %e, "failed to mark site as installed");
+            render_site_form_with_error("Failed to complete installation")
+        }
     }
-
-    if let Some(ref mail) = form.site_mail
-        && let Err(e) = SiteConfig::set_site_mail(state.db(), mail.trim()).await
-    {
-        tracing::error!(error = %e, "failed to set site mail");
-    }
-
-    // Mark as installed
-    if let Err(e) = SiteConfig::mark_installed(state.db()).await {
-        tracing::error!(error = %e, "failed to mark site as installed");
-        return render_site_form_with_error("Failed to complete installation");
-    }
-
-    Redirect::to("/install/complete").into_response()
 }
 
 /// Helper to render site form with error.

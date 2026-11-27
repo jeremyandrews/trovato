@@ -15,6 +15,7 @@ and `trovato <command> --help` print the same, from the binary.
 | `trovato plugin enable <name>` / `disable <name>` | Change a plugin's stored status (servers apply it on restart). |
 | `trovato config export [<dir>] [--clean]` | Export configuration to YAML. |
 | `trovato config import [<dir>] [--dry-run]` | Import configuration from YAML. |
+| `trovato install --admin-user <user> --admin-mail <address> --admin-password-stdin --site-name <name> [--site-mail <address>]` | Create the first administrator and complete the site step, with no browser involved. Idempotent: does nothing on an already installed site. |
 | `trovato user create <user> --mail <address> [--role <role>]... [--blocked] [--no-password]` | Create an account, as the admin "Add user" form does; the password is read from stdin. |
 | `trovato user reset-password <user> [<password>]` | Set a password (read from stdin if omitted) and end the user's sessions. |
 | `trovato user role-add <user> <role>` / `role-remove <user> <role>` / `roles <user>` | Manage a user's roles. |
@@ -78,6 +79,63 @@ afterwards not ready until `trovato migrate` runs. Run it right after the
 enable.
 
 See [docs/deployment/upgrades.md](deployment/upgrades.md).
+
+## `trovato install`
+
+```
+trovato install --admin-user <user> --admin-mail <address> --admin-password-stdin \
+  --site-name <name> [--site-mail <address>]
+```
+
+Takes a fresh database all the way to a working, installed site with no
+browser involved: it creates the first administrator and does the site step
+the web installer's second page does (site name, site mail, and marking the
+site installed), through the same service code both callers share. Meant to
+run once before `serve` in a container's start command, and safe to leave
+there on every start:
+
+- **Idempotent.** On a site that is already installed, it prints that and
+  exits 0, changing nothing. A site with an administrator but no site step
+  done yet (an interrupted earlier run, or the web installer's first step run
+  by hand) completes only the missing step; it never creates a second
+  administrator.
+- **Migrates first.** Like the other commands here, it runs pending kernel
+  migrations before touching anything else, or refuses with
+  `trovato migrate`'s own message when `MIGRATE_ON_START=false` and the schema
+  is behind.
+- **The password is never a command line argument.** Give
+  `--admin-password-stdin` and pipe it in, as `trovato user create` and
+  `trovato user reset-password` already ask for a password:
+
+  ```sh
+  printf '%s\n' "$ADMIN_PASSWORD" | trovato install \
+    --admin-user admin --admin-mail admin@example.com --admin-password-stdin \
+    --site-name "My Site"
+  ```
+
+  It must be 12 to 128 characters, the same rule the web form's password field
+  enforces.
+- **Every value also has an environment variable**, read when its flag is
+  left out (a flag wins over its variable): `TROVATO_INSTALL_ADMIN_USER`,
+  `TROVATO_INSTALL_ADMIN_MAIL`, `TROVATO_INSTALL_SITE_NAME`,
+  `TROVATO_INSTALL_SITE_MAIL`. The password has one too, but it names a file
+  rather than holding the password itself, so the password is still never
+  sitting in a bare environment variable: `TROVATO_INSTALL_ADMIN_PASSWORD_FILE`
+  points at a file whose contents are the password. Useful for a container
+  orchestrator that mounts a secret as a file:
+
+  ```yaml
+  command: ["sh", "-c", "trovato install && trovato serve"]
+  environment:
+    TROVATO_INSTALL_ADMIN_USER: admin
+    TROVATO_INSTALL_ADMIN_MAIL: admin@example.com
+    TROVATO_INSTALL_ADMIN_PASSWORD_FILE: /run/secrets/admin-password
+    TROVATO_INSTALL_SITE_NAME: My Site
+  ```
+
+The account is created through the same user service `trovato user create`
+uses, so an enabled plugin's `tap_user_register` and the audit trail see it
+exactly as they would see one the web installer created.
 
 ## `trovato user create`
 

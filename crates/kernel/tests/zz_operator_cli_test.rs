@@ -1,13 +1,17 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-//! `trovato user create` and `trovato cache clear` (B165), through the real
-//! binary.
+//! `trovato user create`, `trovato cache clear` (B165) and `trovato install`
+//! (B272), through the real binary.
 //!
 //! An operator's account import and a direct database write both used to need
 //! more than the command line gave: the first a SQL `INSERT INTO users`, the
-//! second a server restart. Each test here runs `trovato` as a child process
-//! against a scratch database of its own, and the cache test runs a real
-//! `trovato serve` beside it, because what is under test is one process telling
-//! another.
+//! second a server restart. A fresh deployment used to need a third thing the
+//! command line could not do at all: the first administrator, which only the
+//! web installer could create, so a container stack with nobody to open a
+//! browser at it never finished installing and cron never ran. Each test here
+//! runs `trovato` as a child process against a scratch database of its own,
+//! and the cache and install tests run a real `trovato serve` beside it,
+//! because what is under test is one process telling another, or the
+//! installed state a running server actually reads.
 //!
 //! Named to sort after every other kernel test target, so adding it does not
 //! move any existing kernel target to a different CI shard
@@ -23,6 +27,7 @@ use std::time::{Duration, Instant};
 use sqlx::PgPool;
 use tokio::io::AsyncWriteExt;
 use tokio::process::{Child, Command};
+use trovato_kernel::models::{CreateUser, SiteConfig, User};
 use trovato_test_utils::ScratchDb;
 use uuid::Uuid;
 
@@ -101,6 +106,32 @@ async fn run(database_url: &str, args: &[&str], stdin: &str) -> Ran {
     let work = TempDir::new("cli");
     let mut child = command(database_url, &work)
         .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn trovato");
+    let mut input = child.stdin.take().unwrap();
+    input.write_all(stdin.as_bytes()).await.unwrap();
+    drop(input);
+    let out = child.wait_with_output().await.unwrap();
+    Ran {
+        code: out.status.code(),
+        stdout: String::from_utf8_lossy(&out.stdout).to_string(),
+        stderr: String::from_utf8_lossy(&out.stderr).to_string(),
+    }
+}
+
+/// [`run`], with extra environment variables set on the child (for
+/// TROVATO_INSTALL_* in the install tests).
+async fn run_with_env(database_url: &str, args: &[&str], stdin: &str, env: &[(&str, &str)]) -> Ran {
+    let work = TempDir::new("cli-env");
+    let mut cmd = command(database_url, &work);
+    cmd.args(args);
+    for (key, value) in env {
+        cmd.env(key, value);
+    }
+    let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -417,6 +448,285 @@ async fn user_create_refuses_what_the_admin_form_refuses() {
     assert_eq!(
         events_before, events_after,
         "a refused create writes no account.created event either"
+    );
+}
+
+// =============================================================================
+// trovato install
+// =============================================================================
+
+/// A password long enough for the install command's rule, distinct from
+/// [`PASSWORD`] so a test cannot pass by accident with the wrong one.
+const INSTALL_PASSWORD: &str = "unattended-install-password-1";
+
+async fn admin_count(pool: &PgPool) -> i64 {
+    sqlx::query_scalar(
+        "SELECT COUNT(*) FROM users WHERE is_admin = true \
+         AND id != '00000000-0000-0000-0000-000000000000'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+async fn site_name(pool: &PgPool) -> String {
+    SiteConfig::site_name(pool).await.unwrap()
+}
+
+async fn installed(pool: &PgPool) -> bool {
+    SiteConfig::is_installed(pool).await.unwrap()
+}
+
+/// On a fresh database, `trovato install` leaves the site installed with one
+/// administrator who can log in, and a running server no longer redirects
+/// `POST /cron/{key}` to the installer (the defect this command fixes: cron
+/// never fired on a container stack nobody had opened a browser at).
+#[tokio::test]
+async fn install_creates_an_administrator_and_cron_runs() {
+    // `trovato install` bumps every cache kind on success, the same as `cache
+    // clear` with no `--kind`; serialize with the cache_clear tests below so
+    // neither sees the other's bump mid-assertion.
+    let _serial = CLEARING.lock().await;
+    let db = migrated("install_fresh").await;
+
+    let ran = run(
+        &db.url(),
+        &[
+            "install",
+            "--admin-user",
+            "install_admin",
+            "--admin-mail",
+            "admin@example.com",
+            "--admin-password-stdin",
+            "--site-name",
+            "Unattended Site",
+        ],
+        &format!("{INSTALL_PASSWORD}\n"),
+    )
+    .await;
+    assert_eq!(ran.code, Some(0), "{}", ran.all());
+    assert!(
+        !ran.all().contains(INSTALL_PASSWORD),
+        "the password must never be printed:\n{}",
+        ran.all()
+    );
+
+    assert!(installed(db.pool()).await, "the site is marked installed");
+    assert_eq!(admin_count(db.pool()).await, 1);
+    assert_eq!(site_name(db.pool()).await, "Unattended Site");
+    assert!(
+        password_verifies(db.pool(), "install_admin", INSTALL_PASSWORD).await,
+        "the administrator the command created can log in"
+    );
+
+    // The defect itself: before an unattended install path existed, every
+    // path but /install, /health and /static redirected while the site was
+    // not installed, POST /cron/{key} included, so cron never fired on a
+    // fresh container with nobody to open the web installer.
+    let server = Server::start(&db.url()).await;
+    let response = http()
+        .post(format!("{}/cron/default-cron-key", server.base))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        response.status(),
+        reqwest::StatusCode::OK,
+        "cron must run, not redirect to /install, once `trovato install` has run"
+    );
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert!(
+        body["status"] == "completed" || body["status"] == "skipped",
+        "{body:?}"
+    );
+    server.stop().await;
+}
+
+/// A second run against an already-installed site changes nothing: so the
+/// command can sit before `serve` in a container start command on every
+/// start, not just the first.
+#[tokio::test]
+async fn install_a_second_time_is_a_no_op() {
+    let _serial = CLEARING.lock().await;
+    let db = migrated("install_twice").await;
+
+    let first = run(
+        &db.url(),
+        &[
+            "install",
+            "--admin-user",
+            "install_admin",
+            "--admin-mail",
+            "admin@example.com",
+            "--admin-password-stdin",
+            "--site-name",
+            "First Name",
+        ],
+        &format!("{INSTALL_PASSWORD}\n"),
+    )
+    .await;
+    assert_eq!(first.code, Some(0), "{}", first.all());
+
+    let second = run(
+        &db.url(),
+        &[
+            "install",
+            "--admin-user",
+            "someone_else",
+            "--admin-mail",
+            "someone@example.com",
+            "--admin-password-stdin",
+            "--site-name",
+            "Second Name",
+        ],
+        &format!("{INSTALL_PASSWORD}\n"),
+    )
+    .await;
+    assert_eq!(second.code, Some(0), "{}", second.all());
+    assert!(
+        second.stdout.contains("already installed"),
+        "{}",
+        second.all()
+    );
+
+    assert_eq!(
+        admin_count(db.pool()).await,
+        1,
+        "no second administrator from the second run"
+    );
+    assert_eq!(
+        site_name(db.pool()).await,
+        "First Name",
+        "the second run's site name must not overwrite the first"
+    );
+    assert!(account(db.pool(), "someone_else").await.is_none());
+}
+
+/// A site with an administrator already (the web installer's first step run,
+/// or a previous `trovato install` that was interrupted before the site
+/// step) completes only the missing step: no second administrator, and the
+/// site step runs.
+#[tokio::test]
+async fn install_completes_a_half_installed_site() {
+    let _serial = CLEARING.lock().await;
+    let db = migrated("install_half").await;
+    let existing = User::create(
+        db.pool(),
+        CreateUser {
+            name: "existing_admin".to_string(),
+            password: INSTALL_PASSWORD.to_string(),
+            mail: "existing@example.com".to_string(),
+            is_admin: true,
+        },
+    )
+    .await
+    .unwrap();
+    assert!(!installed(db.pool()).await, "the site step has not run yet");
+
+    let ran = run(
+        &db.url(),
+        &[
+            "install",
+            "--admin-user",
+            "would_be_second_admin",
+            "--admin-mail",
+            "second@example.com",
+            "--admin-password-stdin",
+            "--site-name",
+            "Completed Site",
+        ],
+        &format!("{INSTALL_PASSWORD}\n"),
+    )
+    .await;
+    assert_eq!(ran.code, Some(0), "{}", ran.all());
+    assert!(
+        ran.stdout.contains("An administrator already exists"),
+        "{}",
+        ran.all()
+    );
+
+    assert!(installed(db.pool()).await, "the site step now completes");
+    assert_eq!(site_name(db.pool()).await, "Completed Site");
+    assert_eq!(
+        admin_count(db.pool()).await,
+        1,
+        "the existing administrator is kept, not duplicated"
+    );
+    assert!(account(db.pool(), "would_be_second_admin").await.is_none());
+    let still_there = account(db.pool(), "existing_admin").await.unwrap();
+    assert_eq!(still_there.id, existing.id);
+}
+
+/// The same minimum length the web form's password field enforces; refusing
+/// it writes nothing.
+#[tokio::test]
+async fn install_refuses_a_short_password() {
+    let _serial = CLEARING.lock().await;
+    let db = migrated("install_short_password").await;
+
+    let ran = run(
+        &db.url(),
+        &[
+            "install",
+            "--admin-user",
+            "install_admin",
+            "--admin-mail",
+            "admin@example.com",
+            "--admin-password-stdin",
+            "--site-name",
+            "Unattended Site",
+        ],
+        "short\n",
+    )
+    .await;
+    assert_ne!(ran.code, Some(0), "{}", ran.all());
+    assert!(
+        ran.stderr
+            .contains("Password must be at least 12 characters."),
+        "{}",
+        ran.all()
+    );
+    assert!(!installed(db.pool()).await);
+    assert_eq!(admin_count(db.pool()).await, 0);
+}
+
+/// Every value the flags take also comes from its environment variable
+/// (TROVATO_INSTALL_ADMIN_PASSWORD_FILE for the password, since it is never
+/// a bare argument), and a flag that is also given wins over its variable.
+#[tokio::test]
+async fn install_reads_the_environment_and_flags_win() {
+    let _serial = CLEARING.lock().await;
+    let db = migrated("install_env").await;
+    let work = TempDir::new("install-env-password-file");
+    let password_path = work.0.join("admin-password");
+    std::fs::write(&password_path, format!("{INSTALL_PASSWORD}\n")).unwrap();
+
+    let ran = run_with_env(
+        &db.url(),
+        // --site-name on the command line must win over the environment
+        // variable set below.
+        &["install", "--site-name", "Flag Wins"],
+        "",
+        &[
+            ("TROVATO_INSTALL_ADMIN_USER", "env_admin"),
+            ("TROVATO_INSTALL_ADMIN_MAIL", "env_admin@example.com"),
+            (
+                "TROVATO_INSTALL_ADMIN_PASSWORD_FILE",
+                password_path.to_str().unwrap(),
+            ),
+            ("TROVATO_INSTALL_SITE_NAME", "Env Site"),
+            ("TROVATO_INSTALL_SITE_MAIL", "site@example.com"),
+        ],
+    )
+    .await;
+    assert_eq!(ran.code, Some(0), "{}", ran.all());
+    assert!(!ran.all().contains(INSTALL_PASSWORD), "{}", ran.all());
+
+    assert!(installed(db.pool()).await);
+    assert_eq!(site_name(db.pool()).await, "Flag Wins");
+    assert!(
+        password_verifies(db.pool(), "env_admin", INSTALL_PASSWORD).await,
+        "the administrator named by the environment was created"
     );
 }
 
