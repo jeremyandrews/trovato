@@ -5,10 +5,15 @@
 //! server both call [`resolve`], so the two cannot come to disagree about
 //! which tokens are good (expiry, a blocked account, a deleted one) or about
 //! recording a token's use.
+//!
+//! Issuing and revoking a token go through here too ([`create`], [`revoke`],
+//! [`revoke_all_for_user`]), so every path that does either writes the same
+//! `api_token.created` or `api_token.revoked` security event.
 
 use anyhow::{Context, Result};
 use uuid::Uuid;
 
+use crate::audit::{SecurityEvent, SecurityEventKind};
 use crate::models::User;
 use crate::models::api_token::ApiToken;
 use crate::state::AppState;
@@ -60,4 +65,86 @@ pub async fn resolve(state: &AppState, raw_token: &str) -> Result<Option<TokenHo
     });
 
     Ok(Some(TokenHolder { token_id, user }))
+}
+
+/// Issue `user_id` a token named `name`, and record `api_token.created`.
+///
+/// Returns the stored token and the raw value, which exists only here: the
+/// caller shows it once. The event names the token by its hashed id, never
+/// the value.
+///
+/// # Errors
+///
+/// When the insert fails; then no token exists and nothing is recorded.
+pub async fn create(
+    state: &AppState,
+    user_id: Uuid,
+    name: &str,
+    expires_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> Result<(ApiToken, String)> {
+    let (token, raw) = ApiToken::create(state.db(), user_id, name, expires_at).await?;
+    state
+        .audit_trail()
+        .security(
+            SecurityEvent::new(SecurityEventKind::ApiTokenCreated)
+                .user(user_id)
+                .subject(&token.id.to_string())
+                // Not the label: it is free text its holder typed, and may
+                // hold anything, an address or a secret included.
+                .detail("expires", token.expires_at.is_some()),
+        )
+        .await;
+    Ok((token, raw))
+}
+
+/// Revoke `user_id`'s token `id`, at its holder's request, and record
+/// `api_token.revoked`. Returns whether there was such a token.
+///
+/// # Errors
+///
+/// When the delete fails; then the token remains and nothing is recorded.
+pub async fn revoke(state: &AppState, id: Uuid, user_id: Uuid) -> Result<bool> {
+    let deleted = ApiToken::delete(state.db(), id, user_id).await?;
+    if deleted {
+        state
+            .audit_trail()
+            .security(revoked_event(user_id, id, None, "self"))
+            .await;
+    }
+    Ok(deleted)
+}
+
+/// Revoke every token `user_id` holds, recording one `api_token.revoked`
+/// per token (`actor` did it, for `reason`). Returns how many went.
+///
+/// # Errors
+///
+/// When the delete fails; then the tokens remain and nothing is recorded.
+pub async fn revoke_all_for_user(
+    state: &AppState,
+    user_id: Uuid,
+    actor: Option<Uuid>,
+    reason: &str,
+) -> Result<usize> {
+    let ids = ApiToken::delete_all_for_user(state.db(), user_id).await?;
+    for id in &ids {
+        state
+            .audit_trail()
+            .security(revoked_event(user_id, *id, actor, reason))
+            .await;
+    }
+    Ok(ids.len())
+}
+
+fn revoked_event(
+    user_id: Uuid,
+    token_id: Uuid,
+    actor: Option<Uuid>,
+    reason: &str,
+) -> SecurityEvent {
+    SecurityEvent::new(SecurityEventKind::ApiTokenRevoked)
+        .user(user_id)
+        .subject(&token_id.to_string())
+        .maybe_actor(actor.filter(|a| *a != user_id))
+        .detail("reason", reason)
 }
