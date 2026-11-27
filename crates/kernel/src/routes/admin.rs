@@ -278,13 +278,34 @@ async fn list_files(
         }
     };
 
-    // Get owners for display
-    let mut owners: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for file in &files {
-        if !owners.contains_key(&file.owner_id.to_string())
-            && let Ok(Some(user)) = state.users().find_by_id(file.owner_id).await
-        {
-            owners.insert(file.owner_id.to_string(), user.name);
+    // The owners' names, through the user cache: one statement at most for
+    // the page's uncached accounts together, never one per owner.
+    let owner_ids: Vec<uuid::Uuid> = files.iter().map(|f| f.owner_id).collect();
+    let owners: std::collections::HashMap<String, String> = state
+        .users()
+        .find_many(&owner_ids)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, user)| (id.to_string(), user.name))
+        .collect();
+
+    // A 48px picture beside each image's name, from the seeded `thumbnail`
+    // style, when image styles are on. Both checks are in memory, and the
+    // address is built, never looked up: the style is read only when the
+    // picture is fetched.
+    let mut thumbnails: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    if state.is_plugin_enabled("trovato_image_styles") && state.image_styles().is_some() {
+        for file in &files {
+            if let Some(path) = file.uri.strip_prefix("local://")
+                && file.filemime.starts_with("image/")
+            {
+                thumbnails.insert(
+                    file.id.to_string(),
+                    format!("/files/styles/thumbnail/{path}"),
+                );
+            }
         }
     }
 
@@ -292,6 +313,7 @@ async fn list_files(
 
     let mut context = tera::Context::new();
     context.insert("files", &files);
+    context.insert("thumbnails", &thumbnails);
     context.insert("list", &query.view(total, files.len(), Some(&sort)));
     context.insert("owners", &owners);
     context.insert("status_filter", &status_filter.map(|s| s as i16));
@@ -701,16 +723,17 @@ async fn list_comments(
         }
     };
 
-    // Get author names
-    let mut authors: std::collections::HashMap<uuid::Uuid, String> =
-        std::collections::HashMap::new();
-    for comment in &comments {
-        if !authors.contains_key(&comment.author_id)
-            && let Ok(Some(user)) = state.users().find_by_id(comment.author_id).await
-        {
-            authors.insert(comment.author_id, user.name);
-        }
-    }
+    // The authors' names, through the user cache: one statement at most for
+    // the page's uncached accounts together, never one per author.
+    let author_ids: Vec<uuid::Uuid> = comments.iter().map(|c| c.author_id).collect();
+    let authors: std::collections::HashMap<uuid::Uuid, String> = state
+        .users()
+        .find_many(&author_ids)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, user)| (id, user.name))
+        .collect();
 
     // Get item titles
     let mut items: std::collections::HashMap<uuid::Uuid, String> = std::collections::HashMap::new();

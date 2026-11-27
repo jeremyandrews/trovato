@@ -117,15 +117,17 @@ async fn list_content(
     }
     let items = shown;
 
-    // Get authors for display
-    let mut authors: std::collections::HashMap<String, String> = std::collections::HashMap::new();
-    for item in &items {
-        if !authors.contains_key(&item.author_id.to_string())
-            && let Ok(Some(user)) = state.users().find_by_id(item.author_id).await
-        {
-            authors.insert(item.author_id.to_string(), user.name);
-        }
-    }
+    // The authors' names, through the user cache: one statement at most for
+    // the page's uncached accounts together, never one per author.
+    let author_ids: Vec<uuid::Uuid> = items.iter().map(|i| i.author_id).collect();
+    let authors: std::collections::HashMap<String, String> = state
+        .users()
+        .find_many(&author_ids)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, user)| (id.to_string(), user.name))
+        .collect();
 
     let content_types = state.content_types().list_all().await;
 

@@ -765,3 +765,84 @@ fn media_browse_is_scoped_to_the_viewer() {
         assert_eq!(total, names.len() as i64, "total matches the listing");
     });
 }
+
+/// The Files listing (B246) shows a 48px picture beside an image's name,
+/// from the `thumbnail` style, when image styles are on: decorative
+/// (`alt=""`), with its size set and loaded lazily, never a link of its own.
+/// A file that is not an image shows none, and no placeholder.
+#[test]
+fn the_files_listing_shows_a_thumbnail_beside_an_image() {
+    run_test(async {
+        let app = styles_app();
+        let cookies = admin_cookies(app).await;
+        let owner = user_id_of(app, &{
+            let n: String = sqlx::query_scalar(
+                "SELECT name FROM users WHERE name LIKE 'fsadmin%' ORDER BY created DESC LIMIT 1",
+            )
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+            n
+        })
+        .await;
+        let tag = Uuid::now_v7().simple().to_string();
+        let image = Uuid::now_v7();
+        let document = Uuid::now_v7();
+        let now = chrono::Utc::now().timestamp();
+        for (id, name, mime) in [
+            (image, format!("thumb-{tag}.jpg"), "image/jpeg"),
+            (document, format!("thumb-{tag}.pdf"), "application/pdf"),
+        ] {
+            sqlx::query(
+                "INSERT INTO file_managed (id, owner_id, filename, uri, filemime, filesize, status, created, changed) \
+                 VALUES ($1, $2, $3, $4, $5, 10, 1, $6, $6)",
+            )
+            .bind(id)
+            .bind(owner)
+            .bind(&name)
+            .bind(format!("local://2026/11/{name}"))
+            .bind(mime)
+            .bind(now)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        }
+        let resp = get_as(
+            app,
+            &format!("/admin/content/files?q=thumb-{tag}"),
+            &cookies,
+        )
+        .await;
+        let status = resp.status();
+        let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let html = String::from_utf8_lossy(&body).into_owned();
+        sqlx::query("DELETE FROM file_managed WHERE id = ANY($1)")
+            .bind(vec![image, document])
+            .execute(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(status, StatusCode::OK);
+        let row = |id: Uuid| -> String {
+            let at = html
+                .find(&format!(r#"id="row-{id}""#))
+                .expect("the file's row");
+            let start = html[..at].rfind("<tr>").unwrap();
+            html[start..at].to_string()
+        };
+        assert!(
+            row(image).contains(&format!(
+                r#"<img class="list-thumbnail" src="&#x2F;files&#x2F;styles&#x2F;thumbnail&#x2F;2026&#x2F;11&#x2F;thumb-{tag}.jpg" alt="" width="48" height="48" loading="lazy">"#
+            )),
+            "an image has its picture: {html}"
+        );
+        assert!(
+            !row(image).contains("<a href=\"&#x2F;files"),
+            "the picture is not a link"
+        );
+        assert!(
+            !row(document).contains("<img"),
+            "a document has no picture: {html}"
+        );
+        assert_eq!(html.matches("<img class=\"list-thumbnail\"").count(), 1);
+    });
+}

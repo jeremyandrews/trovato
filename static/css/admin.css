@@ -1808,6 +1808,17 @@
         padding-inline-start: var(--space-5);
     }
 
+    /* A picture beside an image file's name in the Files listing: a hairline
+       frame on the sheet, no shadow. */
+    .list-thumbnail {
+        inline-size: 48px;
+        block-size: 48px;
+        object-fit: cover;
+        vertical-align: middle;
+        margin-inline-end: var(--space-2);
+        border: 1px solid var(--border);
+    }
+
     .log-time {
         white-space: nowrap;
         font-variant-numeric: tabular-nums;

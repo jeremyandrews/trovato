@@ -183,3 +183,50 @@ fn the_ai_provider_test_form_keeps_its_script_hook() {
         )));
     });
 }
+
+/// With image styles off (the shared app does not enable them) an image in
+/// the Files listing shows no picture, and no placeholder.
+#[test]
+fn without_image_styles_an_image_shows_no_thumbnail() {
+    run_test(async {
+        let app = shared_app().await;
+        let cookies = admin(app, "b246nothumb").await;
+        // Another test binary may have left the plugin installed in the
+        // database this app read: switch it off here, in memory, and back.
+        let was_on = app.state.is_plugin_enabled("trovato_image_styles");
+        app.state.set_plugin_enabled("trovato_image_styles", false);
+        let owner: Uuid =
+            sqlx::query_scalar("SELECT id FROM users WHERE name LIKE 'b246nothumb-%' LIMIT 1")
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        let tag = Uuid::new_v4().simple().to_string();
+        let id = Uuid::new_v4();
+        sqlx::query(
+            "INSERT INTO file_managed (id, owner_id, filename, uri, filemime, filesize, status, created, changed) \
+             VALUES ($1, $2, $3, $4, 'image/jpeg', 10, 1, 0, 0)",
+        )
+        .bind(id)
+        .bind(owner)
+        .bind(format!("nothumb-{tag}.jpg"))
+        .bind(format!("local://2026/11/nothumb-{tag}.jpg"))
+        .execute(&app.db)
+        .await
+        .unwrap();
+        let (status, html) = get(
+            app,
+            &cookies,
+            &format!("/admin/content/files?q=nothumb-{tag}"),
+        )
+        .await;
+        app.state.set_plugin_enabled("trovato_image_styles", was_on);
+        sqlx::query("DELETE FROM file_managed WHERE id = $1")
+            .bind(id)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains(&format!(r#"id="row-{id}""#)), "{html}");
+        assert!(!html.contains("list-thumbnail"), "{html}");
+    });
+}

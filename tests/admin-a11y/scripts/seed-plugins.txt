@@ -7,3 +7,4 @@ trovato_locale
 trovato_content_translation
 trovato_search
 trovato_redirects
+trovato_image_styles

@@ -39,7 +39,10 @@
                 {% set owner = owners[file.owner_id] | default(value="") %}
                 {% set size_kb = (file.filesize / 1024) | round(precision=1) %}
                 <tr>
+                    {% set thumbnail = thumbnails[file.id] | default(value="") %}
                     <th scope="row">
+                        {#- An image's picture is decorative: the name beside it says what it is. -#}
+                        {% if thumbnail %}<img class="list-thumbnail" src="{{ thumbnail }}" alt="" width="48" height="48" loading="lazy">{% endif %}
                         <a id="row-{{ file.id }}" href="/admin/content/files/{{ file.id }}">{{ file.filename }}</a>
                     </th>
                     <td>{{ file.filemime }}</td>
