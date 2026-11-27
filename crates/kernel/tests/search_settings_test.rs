@@ -403,7 +403,7 @@ fn summary_and_followup_switched_off_are_refused() {
         let (status, body) = post_json(
             app,
             "/api/v1/search/summarize",
-            serde_json::json!({"query": "q", "context": "some text"}),
+            serde_json::json!({"query": "q", "results": []}),
         )
         .await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
@@ -449,17 +449,6 @@ fn followup_rejects_a_conversation_over_the_turn_cap() {
             turn("user", "third"),
         ]});
         let (status, body) = post_json(app, "/api/v1/search/followup", over).await;
-        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
-
-        // Counted on `history` too, where the new question is the extra turn.
-        let over_history = serde_json::json!({
-            "query": "third",
-            "history": [
-                turn("user", "first"), turn("assistant", "answer"),
-                turn("user", "second"), turn("assistant", "answer"),
-            ],
-        });
-        let (status, body) = post_json(app, "/api/v1/search/followup", over_history).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     });
 }

@@ -27,7 +27,8 @@ use axum::http::{Request, StatusCode, header};
 use axum::response::IntoResponse;
 use axum::routing::post;
 use common::{TestApp, run_test, shared_app};
-use trovato_kernel::models::SiteConfig;
+use trovato_kernel::models::stage::LIVE_STAGE_ID;
+use trovato_kernel::models::{CreateItem, SiteConfig};
 use trovato_kernel::plugin::{PluginConfig, PluginRuntime};
 use trovato_kernel::search::SearchSettings;
 use trovato_kernel::services::ai_provider::{AiCaller, allow_loopback_provider_for_tests};
@@ -322,6 +323,37 @@ async fn a_fresh_second(app: &TestApp) -> i64 {
     }
 }
 
+/// A published, Live-stage item the search endpoints' server-side context
+/// builder can resolve by `/item/<id>` and read, so a summarize or follow-up
+/// call here has something real to build its prompt from.
+async fn make_context_item(app: &TestApp, title: &str) -> String {
+    let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
+    let id = app
+        .state
+        .items()
+        .create(
+            CreateItem {
+                item_type: "conference".to_string(),
+                title: title.to_string(),
+                author_id: Uuid::nil(),
+                status: Some(1),
+                promote: Some(0),
+                sticky: Some(0),
+                fields: Some(serde_json::json!({
+                    "field_body": { "value": format!("{title} is a usage-budget test item.") }
+                })),
+                stage_id: Some(LIVE_STAGE_ID),
+                language: Some("en".to_string()),
+                log: Some("b89 usage test".to_string()),
+            },
+            &admin,
+        )
+        .await
+        .unwrap()
+        .id;
+    format!("/item/{id}")
+}
+
 /// One call on each AI path writes one usage row, with the tokens the provider
 /// reported, attributed to whoever the call was for. Run with `--nocapture` to
 /// see the table.
@@ -356,6 +388,8 @@ fn one_call_on_each_path_records_its_real_usage() {
         .await;
         assert_eq!(status, StatusCode::OK, "expand: {body}");
 
+        let item_url = make_context_item(app, &query).await;
+
         let member = common::username("b89_member");
         app.create_test_user(&member, "Password123!", &format!("{member}@test.local"))
             .await;
@@ -364,7 +398,7 @@ fn one_call_on_each_path_records_its_real_usage() {
         let (status, body) = post_json(
             app,
             "/api/v1/search/summarize",
-            serde_json::json!({"query": query, "context": "Some results."}),
+            serde_json::json!({"query": query, "results": [{"url": item_url}]}),
             Some(&member_cookies),
             &common::test_ip_for(&member),
         )
@@ -656,20 +690,18 @@ fn ai_search_asks_for_use_ai() {
         app.state.permissions().invalidate_all();
 
         let mut refused = Vec::new();
-        for path in [
-            "/api/v1/search/expand",
-            "/api/v1/search/summarize",
-            "/api/v1/search/followup",
+        for (path, body) in [
+            ("/api/v1/search/expand", serde_json::json!({"query": "q"})),
+            (
+                "/api/v1/search/summarize",
+                serde_json::json!({"query": "q", "results": []}),
+            ),
+            (
+                "/api/v1/search/followup",
+                serde_json::json!({"messages": [{"role": "user", "content": "q"}]}),
+            ),
         ] {
-            let (status, _) = post_json(
-                app,
-                path,
-                serde_json::json!({"query": "q", "context": "c",
-                                   "messages": [{"role": "user", "content": "q"}]}),
-                None,
-                "10.89.3.1",
-            )
-            .await;
+            let (status, _) = post_json(app, path, body, None, "10.89.3.1").await;
             refused.push((path, status));
         }
 
