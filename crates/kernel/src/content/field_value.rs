@@ -327,10 +327,11 @@ pub fn check_new_kind(field: &FieldDefinition, value: &Value) -> Option<String> 
         return None;
     }
     match &field.field_type {
-        FieldType::List => {
-            let ok = matches!(value, Value::String(key) if is_valid_list_key(field, key));
-            (!ok).then(|| "is not one of the allowed values.".to_string())
-        }
+        FieldType::List => match value {
+            Value::String(key) if is_valid_list_key(field, key) => None,
+            Value::String(key) => Some(format!("{key} is not one of the allowed values.")),
+            _ => Some("is not one of the allowed values.".to_string()),
+        },
         FieldType::Link => {
             let (uri, title, new_tab) = match value {
                 Value::Object(obj) => (
@@ -946,6 +947,145 @@ mod tests {
                 &formats
             )
             .is_ok()
+        );
+    }
+
+    // --- Link -----------------------------------------------------------
+
+    #[test]
+    fn a_link_uri_accepts_http_https_and_local_paths_only() {
+        assert!(is_valid_link_uri("https://example.org/a?b#c"));
+        assert!(is_valid_link_uri("http://example.org/"));
+        assert!(is_valid_link_uri("/item/0193b72a-0000-7000-8000-000000000001"));
+        assert!(is_valid_link_uri("/about-us"));
+
+        assert!(!is_valid_link_uri("javascript:alert(1)"));
+        assert!(!is_valid_link_uri("data:text/html,x"));
+        assert!(!is_valid_link_uri("mailto:a@b.com"));
+        assert!(!is_valid_link_uri("//evil.example"));
+        assert!(!is_valid_link_uri("example.com"));
+        assert!(!is_valid_link_uri(""));
+        assert!(!is_valid_link_uri("/with space"));
+        assert!(!is_valid_link_uri("/with\ncontrol"));
+        assert!(!is_valid_link_uri(&format!("/{}", "a".repeat(2048))));
+    }
+
+    #[test]
+    fn a_link_field_checks_its_uri_title_and_new_tab() {
+        let field = FieldDefinition::new("f", FieldType::Link).label("Link");
+        assert!(check_new_kind(&field, &json!(null)).is_none());
+        assert!(
+            check_new_kind(&field, &json!({"uri": "https://example.org/", "title": "Site"}))
+                .is_none()
+        );
+        assert!(check_new_kind(&field, &json!({"uri": "javascript:alert(1)"})).is_some());
+        assert!(check_new_kind(&field, &json!({"uri": "/item/x", "title": "a".repeat(256)})).is_some());
+        assert!(
+            check_new_kind(&field, &json!({"uri": "/item/x", "new_tab": "yes"})).is_some(),
+            "new_tab must be a bool"
+        );
+    }
+
+    // --- List -------------------------------------------------------------
+
+    #[test]
+    fn a_list_field_checks_its_value_against_the_allowed_keys() {
+        let field = FieldDefinition::new("f", FieldType::List)
+            .label("List")
+            .allowed_values(&[("gold", "Gold"), ("silver", "Silver")]);
+        assert_eq!(
+            list_options(&field.settings),
+            vec![
+                ("gold".to_string(), "Gold".to_string()),
+                ("silver".to_string(), "Silver".to_string())
+            ]
+        );
+        assert!(is_valid_list_key(&field, "gold"));
+        assert!(!is_valid_list_key(&field, "platinum"));
+        assert_eq!(list_label_for(&field, "gold"), Some("Gold".to_string()));
+        assert_eq!(list_label_for(&field, "platinum"), None);
+
+        assert!(check_new_kind(&field, &json!(null)).is_none());
+        assert!(check_new_kind(&field, &json!("gold")).is_none());
+        assert!(check_new_kind(&field, &json!("platinum")).is_some());
+        assert!(check_new_kind(&field, &json!(1)).is_some());
+    }
+
+    // --- Telephone ----------------------------------------------------------
+
+    #[test]
+    fn telephone_numbers_normalise_to_e164_only_with_a_country_prefix() {
+        assert_eq!(
+            telephone_e164("+39 0583 123456"),
+            Some("+390583123456".to_string())
+        );
+        assert_eq!(
+            telephone_e164("0039 0583 123456"),
+            Some("+390583123456".to_string())
+        );
+        assert_eq!(telephone_e164("0583 123456"), None, "no country prefix");
+        assert_eq!(telephone_e164("+0123456"), None, "leading zero after +");
+        assert_eq!(telephone_e164("+123"), None, "too short");
+        assert_eq!(telephone_e164("+1234567890123456"), None, "too long");
+    }
+
+    #[test]
+    fn a_telephone_field_refuses_text_with_letters_and_a_mismatched_e164() {
+        assert!(is_valid_telephone_text("+39 0583 123456"));
+        assert!(is_valid_telephone_text("(415) 555-0123"));
+        assert!(!is_valid_telephone_text("call me"));
+        assert!(!is_valid_telephone_text(""));
+
+        let field = FieldDefinition::new("f", FieldType::Telephone).label("Tel");
+        assert!(check_new_kind(&field, &json!(null)).is_none());
+        assert!(check_new_kind(&field, &json!("+39 0583 123456")).is_none());
+        assert!(
+            check_new_kind(
+                &field,
+                &json!({"value": "+39 0583 123456", "e164": "+390583123456"})
+            )
+            .is_none()
+        );
+        assert!(
+            check_new_kind(
+                &field,
+                &json!({"value": "+39 0583 123456", "e164": "+10000000000"})
+            )
+            .is_some(),
+            "a written e164 that disagrees with the function is refused"
+        );
+        assert!(check_new_kind(&field, &json!("call me")).is_some());
+    }
+
+    #[test]
+    fn canonicalize_fills_e164_and_leaves_an_unchanged_value_alone() {
+        let defs = vec![FieldDefinition::new("f", FieldType::Telephone).label("Tel")];
+        let mut fields = json!({ "f": "+39 0583 123456" });
+        canonicalize_field_values(&mut fields, &defs, None);
+        assert_eq!(
+            fields["f"],
+            json!({"value": "+39 0583 123456", "e164": "+390583123456"})
+        );
+
+        // Already canonical and unchanged from `previous`: left exactly as it
+        // was, byte for byte.
+        let stored = json!({ "f": {"value": "+39 0583 123456", "e164": "+390583123456"} });
+        let mut same = stored.clone();
+        canonicalize_field_values(&mut same, &defs, Some(&stored));
+        assert_eq!(same, stored);
+
+        // A multi value field's array is canonicalised element by element.
+        let multi_defs = vec![FieldDefinition::new("f", FieldType::Telephone)
+            .label("Tel")
+            .cardinality(-1)];
+        let mut multi = json!({ "f": ["+39 0583 123456", "0583 123456"] });
+        canonicalize_field_values(&mut multi, &multi_defs, None);
+        assert_eq!(
+            multi["f"],
+            json!([
+                {"value": "+39 0583 123456", "e164": "+390583123456"},
+                {"value": "0583 123456"}
+            ])
         );
     }
 }

@@ -266,8 +266,19 @@ pub fn build_item_fields(
         if matches!(field.field_type, FieldType::List)
             && crate::content::field_values::stores_a_list(field)
         {
+            let raws = posted.checkbox_values(name);
+            let shown: Vec<&str> = field_value::form_values(prior)
+                .into_iter()
+                .filter_map(|v| v.as_str())
+                .collect();
+            if editing && raws == shown {
+                if field.required && raws.is_empty() {
+                    errors.push(required_error(field));
+                }
+                continue;
+            }
             let mut values = Vec::new();
-            for raw in posted.checkbox_values(name) {
+            for raw in raws {
                 match field_value::parse(field, raw, None, permitted_formats) {
                     Ok(Some(v)) => values.push(v),
                     Ok(None) => {}
