@@ -566,6 +566,7 @@ impl RedirectService {
             .await
             .context("failed to create redirect")?;
         self.invalidate();
+        self.clear_not_found_log(&canonical_source, language).await;
         self.audit("create", &redirect).await;
         Ok(redirect)
     }
@@ -593,9 +594,21 @@ impl RedirectService {
             .context("failed to update redirect")?;
         if let Some(redirect) = &redirect {
             self.invalidate();
+            self.clear_not_found_log(&canonical_source, language).await;
             self.audit("update", redirect).await;
         }
         Ok(redirect)
+    }
+
+    /// Remove the 404 log entry a redirect's own source now answers for, so
+    /// the report does not keep listing an address an administrator just
+    /// fixed.
+    async fn clear_not_found_log(&self, source: &str, language: &str) {
+        if let Err(e) =
+            crate::middleware::not_found_log::delete_one(&self.pool, source, language).await
+        {
+            tracing::debug!(error = %e, "failed to clear the 404 log entry for a new redirect");
+        }
     }
 
     /// Delete a redirect. `false` when there is no such redirect.

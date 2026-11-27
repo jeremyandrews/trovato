@@ -10,6 +10,7 @@ pub mod error_page;
 pub mod install_check;
 pub mod language;
 pub mod maintenance;
+pub mod not_found_log;
 pub mod path_alias;
 pub mod query_profiler;
 pub mod rate_limit;
@@ -27,6 +28,7 @@ pub use error_page::{ErrorPage, PluginBody, render_error_pages};
 pub use install_check::check_installation;
 pub use language::negotiate_language;
 pub use maintenance::check_maintenance;
+pub use not_found_log::record_not_found;
 pub use path_alias::{path_alias_fallback, resolve_path_alias};
 pub use query_profiler::{ServerTimingDetail, track_request_timing};
 pub use rate_limit::{

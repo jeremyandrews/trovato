@@ -841,6 +841,17 @@ pub const LINKS: &[Link] = &[
             "Images that lack a text alternative, and how this administration is checked.",
         )
     },
+    Link {
+        also: &["/admin/reports/page-not-found/settings"],
+        synonyms: &["404", "not found", "broken links", "missing pages"],
+        ..page(
+            Reports,
+            "Page not found",
+            "/admin/reports/page-not-found",
+            AnyPermission(&["access site reports", "administer site"]),
+            "Addresses visitors requested that the site could not find, most frequent first.",
+        )
+    },
 ];
 
 /// A state a landing tile or dashboard card shows in one sentence: what

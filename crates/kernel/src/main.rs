@@ -562,6 +562,9 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
     // are written to `system_log`.
     system_log::spawn_writer(state.db().clone(), log_receiver);
 
+    // The 404 log (`/admin/reports/page-not-found`).
+    state.not_found_log().spawn_writer(state.db().clone()).await;
+
     // Create a cancellation token for coordinated shutdown of background tasks.
     let shutdown_token = tokio_util::sync::CancellationToken::new();
 
@@ -799,10 +802,17 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         // Middleware layers (last added = first executed in request flow):
         // TraceLayer → track_request_timing → security_headers → CORS → session → rate_limit(per-IP) →
         // bearer_auth → api_token → rate_limit(per-user) → install_check →
-        // negotiate_language → redirect → routes
+        // negotiate_language → not_found_log → redirect → routes
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::check_redirect,
+        ))
+        // The 404 log (B306): records a final 404 keyed on exactly the path
+        // and language `check_redirect` just matched against. Directly
+        // outside it, inside `negotiate_language`.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::record_not_found,
         ))
         // Who is acting and from where, for the audit rows the write services
         // record. Inside the session and API token layers, which it reads.

@@ -1,0 +1,57 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/list.html" as list %}
+
+{#- The 404 log: every address a visitor requested that the site could not
+    find, aggregated per path and language. -#}
+
+{% block page_title %}{{ t(s="Page not found report") }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="Addresses visitors requested that the site could not find, most frequent first.") }}</p>{% endblock page_intro %}
+{% block page_actions %}
+<a href="/admin/reports/page-not-found/settings" class="button button--secondary">{{ t(s="Settings") }}</a>
+{% endblock page_actions %}
+
+{% block content %}
+{{ list::sort_form(list=list, action="/admin/reports/page-not-found") }}
+
+{% if entries %}
+<div class="admin-card">
+    {{ list::count(list=list) }}
+    <div class="table-scroll" role="region" aria-labelledby="not-found-caption" tabindex="0">
+        <table class="table table--stack">
+            <caption id="not-found-caption">{{ t(s="Pages not found") }}</caption>
+            <thead>
+                <tr>
+                    <th scope="col">{{ t(s="Path") }}</th>
+                    <th scope="col">{{ t(s="Language") }}</th>
+                    {{ list::sort_th(label=t(s="Hits"), key="hits", list=list) }}
+                    {{ list::sort_th(label=t(s="First seen"), key="first_seen", list=list) }}
+                    {{ list::sort_th(label=t(s="Last seen"), key="last_seen", list=list) }}
+                    <th scope="col">{{ t(s="Last referrer") }}</th>
+                    {% if offer_redirects %}<th scope="col">{{ t(s="Operations") }}</th>{% endif %}
+                </tr>
+            </thead>
+            <tbody>
+                {% for entry in entries %}
+                <tr>
+                    <td><code>{{ entry.path }}</code></td>
+                    <td>{{ entry.language }}</td>
+                    <td>{{ entry.hits }}</td>
+                    <td>{{ entry.first_seen | format_date(format="%Y-%m-%d %H:%M:%S") }}</td>
+                    <td>{{ entry.last_seen | format_date(format="%Y-%m-%d %H:%M:%S") }}</td>
+                    <td>{% if entry.referrer %}{{ entry.referrer }}{% endif %}</td>
+                    {% if offer_redirects %}
+                    <td class="operations">
+                        <a href="/admin/config/redirects/add?source={{ entry.path | urlencode }}&language={{ entry.language | urlencode }}">{{ t(s="Create redirect") }}</a>
+                    </td>
+                    {% endif %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+    {{ list::pager(list=list, action="/admin/reports/page-not-found", label=t(s="Pages of the report")) }}
+</div>
+{% else %}
+{{ list::empty(message=t(s="No page not found has been recorded yet.")) }}
+{% endif %}
+{% endblock content %}

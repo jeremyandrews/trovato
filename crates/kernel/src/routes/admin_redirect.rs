@@ -134,19 +134,46 @@ async fn list_redirects(
 /// Add redirect form.
 ///
 /// GET /admin/config/redirects/add
-async fn add_redirect_form(State(state): State<AppState>, session: Session) -> Response {
+///
+/// `source` and `language` prefill the form, from the 404 report's "Create
+/// redirect" link: the source is canonicalized the way a save would store it,
+/// and the language is checked against the site's known languages. Either one
+/// invalid or absent leaves the form exactly as blank as it always was.
+async fn add_redirect_form(
+    State(state): State<AppState>,
+    session: Session,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Response {
     if let Err(redirect) = require_permission(&state, &session, "administer redirects").await {
         return redirect;
     }
 
     let csrf_token = generate_csrf_token(&session).await;
 
+    let source = params
+        .get("source")
+        .and_then(|s| crate::services::redirect::canonicalize_source(s).ok());
+    let language = params.get("language").filter(|lang| {
+        state
+            .known_languages()
+            .iter()
+            .any(|known| known.as_str() == lang.as_str())
+    });
+    let values = match (source, language) {
+        (Some(source), Some(language)) => serde_json::json!({
+            "source": source,
+            "language": language,
+        }),
+        (Some(source), None) => serde_json::json!({ "source": source }),
+        _ => serde_json::json!({}),
+    };
+
     let mut context = tera::Context::new();
     context.insert("csrf_token", &csrf_token);
     context.insert("action", "/admin/config/redirects/add");
     context.insert("editing", &false);
     context.insert("status_options", STATUS_OPTIONS);
-    context.insert("values", &serde_json::json!({}));
+    context.insert("values", &values);
     context.insert("path", "/admin/config/redirects/add");
 
     render_admin_template(

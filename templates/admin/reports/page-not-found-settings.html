@@ -1,0 +1,16 @@
+{% extends "page--admin.html" %}
+
+{#- Settings for the 404 log (B306). -#}
+
+{% block page_title %}{{ t(s="Page not found report settings") }}{% endblock page_title %}
+{% block page_actions %}
+<a href="/admin/reports/page-not-found" class="button button--secondary">{{ t(s="Back to the report") }}</a>
+{% endblock page_actions %}
+
+{% block content %}
+{% if flash %}<div class="messages"><div class="message message--status" role="status">{{ flash }}</div></div>{% endif %}
+<section class="admin-card" aria-labelledby="not-found-settings-heading">
+    <h2 id="not-found-settings-heading">{{ t(s="What is recorded") }}</h2>
+    {{ settings_form | safe }} {# SAFE: built by the kernel's form builder, every value escaped there #}
+</section>
+{% endblock content %}

@@ -93,6 +93,23 @@ fn redirect_to(status: StatusCode, location: &str) -> Response {
     (status, [("Location", safe)]).into_response()
 }
 
+/// Paths neither a redirect lookup nor the 404 log need to check: admin, the
+/// API, static assets, files, the installer, OAuth, a health probe, and the
+/// site root (shared by [`check_redirect`] and
+/// [`crate::middleware::not_found_log::record_not_found`], so the two agree
+/// on what a redirect "could have matched").
+pub(crate) fn is_system_path(path: &str) -> bool {
+    path.starts_with("/admin")
+        || path.starts_with("/api")
+        || path.starts_with("/static")
+        || path.starts_with("/files")
+        || path.starts_with("/file")
+        || path.starts_with("/install")
+        || path.starts_with("/oauth")
+        || crate::routes::health::is_probe_path(path)
+        || path == "/"
+}
+
 /// The status a stored redirect answers with.
 fn status_of(code: i16) -> StatusCode {
     match code {
@@ -150,16 +167,7 @@ pub async fn check_redirect(
     }
 
     // Skip system paths that don't need redirect checking
-    if path.starts_with("/admin")
-        || path.starts_with("/api")
-        || path.starts_with("/static")
-        || path.starts_with("/files")
-        || path.starts_with("/file")
-        || path.starts_with("/install")
-        || path.starts_with("/oauth")
-        || crate::routes::health::is_probe_path(path)
-        || path == "/"
-    {
+    if is_system_path(path) {
         return next.run(request).await;
     }
 
@@ -220,6 +228,23 @@ pub async fn check_redirect(
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_paths_are_skipped() {
+        for path in [
+            "/admin/content",
+            "/api/v1/items",
+            "/static/css/app.css",
+            "/files/x.png",
+            "/file/x.png",
+            "/install",
+            "/oauth/authorize",
+            "/",
+        ] {
+            assert!(is_system_path(path), "{path}");
+        }
+        assert!(!is_system_path("/some/broken/link"));
+    }
 
     #[test]
     fn status_code_mapping() {

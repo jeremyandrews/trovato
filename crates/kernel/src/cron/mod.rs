@@ -1171,6 +1171,12 @@ impl CronService {
         self.pagefind_enabled = enabled;
     }
 
+    /// Whether the redirects plugin is enabled, for the 404 log's clearing
+    /// pass ([`CronTasks::clear_resolved_not_found_log`]).
+    pub fn set_redirects_enabled(&mut self, enabled: bool) {
+        self.tasks.set_redirects_enabled(enabled);
+    }
+
     /// Apply the configuration the cron tasks used to read from the environment.
     ///
     /// The Pagefind index needs one destination: `PAGEFIND_OUTPUT_DIR`, which
@@ -1483,6 +1489,40 @@ impl CronService {
                 tasks_run.push(format!("cleanup_system_log: {count}"));
             }
             Some(Err(e)) => warn!(error = %e, "failed to prune the system log"),
+            _ => {}
+        }
+
+        // Keep the 404 log to its caps (`/admin/reports/page-not-found`).
+        match bounded(
+            "cleanup_not_found_log",
+            self.task_timeout,
+            &mut tasks_run,
+            self.tasks.cleanup_not_found_log(),
+        )
+        .await
+        {
+            Some(Ok(count)) if count > 0 => {
+                info!(count = count, "pruned the 404 log");
+                tasks_run.push(format!("cleanup_not_found_log: {count}"));
+            }
+            Some(Err(e)) => warn!(error = %e, "failed to prune the 404 log"),
+            _ => {}
+        }
+
+        // Remove 404 log entries a redirect, alias or item now answers for.
+        match bounded(
+            "clear_resolved_not_found_log",
+            self.task_timeout,
+            &mut tasks_run,
+            self.tasks.clear_resolved_not_found_log(),
+        )
+        .await
+        {
+            Some(Ok(count)) if count > 0 => {
+                info!(count = count, "cleared resolved 404 log entries");
+                tasks_run.push(format!("clear_resolved_not_found_log: {count}"));
+            }
+            Some(Err(e)) => warn!(error = %e, "failed to clear resolved 404 log entries"),
             _ => {}
         }
 

@@ -59,6 +59,11 @@ pub fn router() -> Router<AppState> {
         .route("/admin/reports/status", get(status_report))
         .route("/admin/reports/log", get(log_report))
         .route("/admin/reports/accessibility", get(accessibility_report))
+        .route("/admin/reports/page-not-found", get(page_not_found_report))
+        .route(
+            "/admin/reports/page-not-found/settings",
+            get(page_not_found_settings_form).post(save_page_not_found_settings),
+        )
 }
 
 // =============================================================================
@@ -433,6 +438,260 @@ async fn log_report(
     context.insert("type_options", &type_options);
     context.insert("path", "/admin/reports/log");
     render_admin_template(&state, &viewer, "admin/reports/log.html", context).await
+}
+
+// =============================================================================
+// Page not found (B306)
+// =============================================================================
+
+/// The report's sortable columns: key and SQL.
+const NOT_FOUND_SORTS: &[(&str, &str)] = &[
+    ("hits", "hits DESC"),
+    ("first_seen", "first_seen"),
+    ("last_seen", "last_seen"),
+];
+
+/// GET /admin/reports/page-not-found
+///
+/// Every address a visitor requested that the site could not find,
+/// aggregated per path and language, most frequent first.
+async fn page_not_found_report(
+    State(state): State<AppState>,
+    session: Session,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let user = match require_any_permission(&state, &session, &[LOG_PERMISSION, PERMISSION]).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
+    let viewer = super::helpers::user_context_for(&state, &user).await;
+
+    let query = ListQuery::from_params(&params);
+    let sort = query.sort(NOT_FOUND_SORTS, ("hits", true));
+
+    let (entries, total) =
+        match crate::middleware::not_found_log::list(state.db(), Some(&sort.order_by()), PER_PAGE, query.offset())
+            .await
+        {
+            Ok(found) => found,
+            Err(e) => {
+                tracing::error!(error = %e, "failed to read the 404 log");
+                return render_server_error("The 404 log could not be read.");
+            }
+        };
+
+    // A "Create redirect" link per row, only while the redirects plugin is
+    // enabled and the viewer may use it.
+    let offer_redirects =
+        state.redirect_cache().is_some() && viewer.can("administer redirects");
+
+    let mut context = tera::Context::new();
+    context.insert("list", &query.view(total, entries.len(), Some(&sort)));
+    context.insert("entries", &entries);
+    context.insert("offer_redirects", &offer_redirects);
+    context.insert("path", "/admin/reports/page-not-found");
+    render_admin_template(&state, &viewer, "admin/reports/page-not-found.html", context).await
+}
+
+/// The settings form's id.
+const NOT_FOUND_SETTINGS_FORM_ID: &str = "not_found_log_settings_form";
+
+/// Where the save confirmation waits for the redirect.
+const NOT_FOUND_SETTINGS_FLASH: &str = "not_found_log_settings_flash";
+
+/// The settings form, through the kernel's form pipeline.
+fn not_found_settings_form(settings: &crate::middleware::not_found_log::NotFoundLogSettings) -> crate::form::Form {
+    crate::form::Form::new(NOT_FOUND_SETTINGS_FORM_ID)
+        .action("/admin/reports/page-not-found/settings")
+        .element(
+            "enabled",
+            FormElement::checkbox()
+                .title("Record pages visitors could not find")
+                .default_value(settings.enabled)
+                .weight(0),
+        )
+        .element(
+            "retention_days",
+            FormElement::textfield()
+                .title("Retention (days)")
+                .description("An entry not seen again in this many days is removed.")
+                .default_value(settings.retention_days.to_string())
+                .attribute("inputmode", "numeric")
+                .required()
+                .weight(1),
+        )
+        .element(
+            "max_rows",
+            FormElement::textfield()
+                .title("Maximum rows")
+                .description("Only this many addresses are kept, the most frequent first.")
+                .default_value(settings.max_rows.to_string())
+                .attribute("inputmode", "numeric")
+                .required()
+                .weight(2),
+        )
+        .element(
+            "ignore",
+            FormElement::textarea(6)
+                .title("Never record an address containing")
+                .description("One case-insensitive substring per line.")
+                .default_value(settings.ignore.join("\n"))
+                .weight(3),
+        )
+        .element("op", FormElement::submit("Save settings").weight(10))
+}
+
+/// GET /admin/reports/page-not-found/settings
+async fn page_not_found_settings_form(State(state): State<AppState>, session: Session) -> Response {
+    let user = match require_permission(&state, &session, PERMISSION).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
+    let settings = state.not_found_log().settings();
+    render_not_found_settings(&state, &session, &user, &settings, &[]).await
+}
+
+async fn render_not_found_settings(
+    state: &AppState,
+    session: &Session,
+    user: &crate::models::User,
+    settings: &crate::middleware::not_found_log::NotFoundLogSettings,
+    errors: &[ValidationError],
+) -> Response {
+    let form_html = match super::admin_form::render(
+        state,
+        session,
+        user,
+        not_found_settings_form(settings),
+        errors,
+    )
+    .await
+    {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+    let flash: Option<String> = session.remove(NOT_FOUND_SETTINGS_FLASH).await.ok().flatten();
+
+    let mut context = tera::Context::new();
+    context.insert("settings_form", &form_html);
+    context.insert("flash", &flash);
+    context.insert("path", "/admin/reports/page-not-found/settings");
+
+    let viewer = super::helpers::user_context_for(state, user).await;
+    render_admin_template(state, &viewer, "admin/reports/page-not-found-settings.html", context).await
+}
+
+/// POST /admin/reports/page-not-found/settings
+async fn save_page_not_found_settings(
+    State(state): State<AppState>,
+    session: Session,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Response {
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, PERMISSION).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
+
+    let retention_days = posted
+        .get("retention_days")
+        .unwrap_or_default()
+        .trim()
+        .parse::<i64>()
+        .ok()
+        .filter(|n| *n > 0);
+    let max_rows = posted
+        .get("max_rows")
+        .unwrap_or_default()
+        .trim()
+        .parse::<i64>()
+        .ok()
+        .filter(|n| *n > 0);
+    let mut field_errors = Vec::new();
+    if retention_days.is_none() {
+        field_errors.push(ValidationError::field(
+            "retention_days",
+            "Enter a whole number of days, 1 or more.",
+        ));
+    }
+    if max_rows.is_none() {
+        field_errors.push(ValidationError::field(
+            "max_rows",
+            "Enter a whole number of rows, 1 or more.",
+        ));
+    }
+
+    match super::admin_form::check(
+        &state,
+        &session,
+        &user,
+        &posted,
+        NOT_FOUND_SETTINGS_FORM_ID,
+        field_errors,
+    )
+    .await
+    {
+        Ok(()) => {}
+        Err(Ok(errors)) => {
+            let current = crate::middleware::not_found_log::NotFoundLogSettings {
+                enabled: posted.contains("enabled"),
+                retention_days: retention_days
+                    .unwrap_or(crate::middleware::not_found_log::DEFAULT_RETENTION_DAYS),
+                max_rows: max_rows.unwrap_or(crate::middleware::not_found_log::DEFAULT_MAX_ROWS),
+                ignore: posted
+                    .get("ignore")
+                    .unwrap_or_default()
+                    .lines()
+                    .map(|l| l.trim().to_string())
+                    .filter(|l| !l.is_empty())
+                    .collect(),
+            };
+            return render_not_found_settings(&state, &session, &user, &current, &errors).await;
+        }
+        Err(Err(response)) => return response,
+    }
+
+    let settings = crate::middleware::not_found_log::NotFoundLogSettings {
+        enabled: posted.contains("enabled"),
+        retention_days: retention_days
+            .unwrap_or(crate::middleware::not_found_log::DEFAULT_RETENTION_DAYS),
+        max_rows: max_rows.unwrap_or(crate::middleware::not_found_log::DEFAULT_MAX_ROWS),
+        ignore: posted
+            .get("ignore")
+            .unwrap_or_default()
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+    };
+
+    if let Err(e) = SiteConfig::set(
+        state.db(),
+        crate::middleware::not_found_log::SETTINGS_KEY,
+        settings.to_value(),
+    )
+    .await
+    {
+        tracing::error!(error = %e, "failed to save the 404 log settings");
+        return render_server_error("The settings could not be saved.");
+    }
+    // `SiteConfig::set` bumps the `SiteConfig` cache kind, which every
+    // server (this one included) picks up within `cache::generation::SETTLE`;
+    // reload this server's copy at once so the save is visible immediately.
+    state.not_found_log().reload_settings(state.db()).await;
+
+    tracing::info!(
+        log_type = "config",
+        user_id = %user.id,
+        enabled = settings.enabled,
+        retention_days = settings.retention_days,
+        max_rows = settings.max_rows,
+        "404 log settings changed"
+    );
+    let _ = session
+        .insert(NOT_FOUND_SETTINGS_FLASH, "The settings were saved.")
+        .await;
+    Redirect::to("/admin/reports/page-not-found/settings").into_response()
 }
 
 /// An image file that has no text alternative.

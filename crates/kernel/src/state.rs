@@ -285,6 +285,9 @@ struct AppStateInner {
     /// dispatched through (`routes::front`).
     front_page: crate::routes::front::FrontPageConfig,
 
+    /// The 404 log's channel, writer and settings (B306).
+    not_found_log: crate::middleware::not_found_log::NotFoundLogState,
+
     /// Comment service (available when comments plugin is enabled).
     ///
     /// Uses `OnceLock` rather than `Option` so the service can be
@@ -1176,6 +1179,9 @@ impl AppState {
             audit_trail.clone(),
             redirect_cache.clone(),
         ));
+        let not_found_log = crate::middleware::not_found_log::NotFoundLogState::new(
+            crate::middleware::not_found_log::NotFoundLogSettings::load(&db).await,
+        );
         let menu_links = Arc::new(services::menu_link::MenuLinkService::new(
             db.clone(),
             audit_trail.clone(),
@@ -1336,6 +1342,7 @@ impl AppState {
         cron.set_vector_store(vector_store.clone());
         cron.set_search_service(search.clone());
         cron.set_pagefind_enabled(enabled_set.contains("trovato_search"));
+        cron.set_redirects_enabled(enabled_set.contains("trovato_redirects"));
         // The security-audit retention window and the Pagefind index destination
         // used to be read from the environment inside the tasks themselves.
         cron.apply_runtime_config(&config.runtime);
@@ -1442,6 +1449,7 @@ impl AppState {
                 locale,
                 redirect_cache,
                 front_page: crate::routes::front::FrontPageConfig::default(),
+                not_found_log,
                 comments,
             }),
         };
@@ -1520,6 +1528,7 @@ impl AppState {
                 self.front_page().clear();
                 self.gather().clear_site_settings();
                 self.items().view_counter().clear();
+                self.not_found_log().reload_settings(self.db()).await;
             }
             CacheKind::Themes => {
                 crate::theme::registry::load_active(self.db(), self.theme()).await;
@@ -1931,6 +1940,11 @@ impl AppState {
     /// The configured front page path, cached (`routes::front`).
     pub fn front_page(&self) -> &crate::routes::front::FrontPageConfig {
         &self.inner.front_page
+    }
+
+    /// The 404 log's channel, writer and settings.
+    pub fn not_found_log(&self) -> &crate::middleware::not_found_log::NotFoundLogState {
+        &self.inner.not_found_log
     }
 
     /// Get the comment service (if comments plugin is enabled).

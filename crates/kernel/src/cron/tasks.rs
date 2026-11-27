@@ -33,6 +33,9 @@ pub struct CronTasks {
     /// The site log's retention: days and rows, the smaller set kept. From
     /// [`crate::config::RuntimeConfig`]; the defaults otherwise.
     system_log_retention: (i64, i64),
+    /// Whether the redirects plugin is enabled, so the clearing pass knows
+    /// whether the `redirect` table exists to check against.
+    redirects_enabled: bool,
     /// How the update check reaches the release endpoint, and whether it may.
     ///
     /// `None` disables the check outright, which is what `UPDATE_CHECK=0` produces
@@ -80,6 +83,7 @@ impl CronTasks {
                 crate::system_log::DEFAULT_RETENTION_DAYS,
                 crate::system_log::DEFAULT_MAX_ROWS,
             ),
+            redirects_enabled: false,
             update_check: None,
         }
     }
@@ -102,6 +106,7 @@ impl CronTasks {
                 crate::system_log::DEFAULT_RETENTION_DAYS,
                 crate::system_log::DEFAULT_MAX_ROWS,
             ),
+            redirects_enabled: false,
             update_check: None,
         }
     }
@@ -209,6 +214,30 @@ impl CronTasks {
         crate::system_log::prune(&self.pool, days, rows)
             .await
             .context("failed to prune the system log")
+    }
+
+    /// Whether the redirects plugin is enabled, for the clearing pass.
+    pub fn set_redirects_enabled(&mut self, enabled: bool) {
+        self.redirects_enabled = enabled;
+    }
+
+    /// Prune the 404 log to the smaller of its day and row caps, reading the
+    /// current settings fresh: a cron task is not the request path, so
+    /// reading them here (rather than keeping its own copy) keeps a changed
+    /// setting from waiting for the next deploy to take effect.
+    pub async fn cleanup_not_found_log(&self) -> Result<u64> {
+        let settings = crate::middleware::not_found_log::NotFoundLogSettings::load(&self.pool).await;
+        crate::middleware::not_found_log::prune(&self.pool, settings.retention_days, settings.max_rows)
+            .await
+            .context("failed to prune the 404 log")
+    }
+
+    /// Remove 404 log entries that a redirect, a URL alias or an item now
+    /// answers for.
+    pub async fn clear_resolved_not_found_log(&self) -> Result<u64> {
+        crate::middleware::not_found_log::clear_resolved(&self.pool, self.redirects_enabled)
+            .await
+            .context("failed to clear resolved 404 log entries")
     }
 
     /// Cleanup temporary files older than 6 hours.
