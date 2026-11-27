@@ -249,11 +249,10 @@ without that second press.
   badges) was again written from the recorded trees: on the Mac Studio,
   turning on VoiceOver's AppleScript control and retrying still left every
   VoiceOver command waiting on an Automation permission that only a person
-  at the machine can grant.
-- **The Cron line in right to left.** "Last run {when} UTC" puts a
-  timestamp in a right to left sentence; in the right to left pseudo locale
-  its digits and dashes may display out of order. It is left as it is: the
-  words are right and a real translation can place the time.
+  at the machine can grant. The B246 pass (listing rows, their actions,
+  states and dates) was written from the trees for the same reason: with
+  VoiceOver's AppleScript control turned on, `osascript` still waited on
+  that permission until it timed out.
 - **Pages never opened.** The parameterised pages with nothing seeded to open
   (an access rule, a tile, a menu link, a record, an AI provider, a
   translation, a deletable text format) were not opened by the browser checks.
