@@ -43,7 +43,7 @@
             <tbody>
                 {% for ct in content_types %}
                 <tr>
-                    {% if ct.machine_name is matching("^[a-z0-9_-]+$") %}{% set key = ct.machine_name %}{% else %}{% set key = loop.index %}{% endif %}
+                    {% if ct.machine_name is matching("^[a-z0-9_-]+$") %}{% set key = ct.machine_name %}{% else %}{% set key = "pos." ~ loop.index %}{% endif %}
                     <th scope="row">
                         <strong id="row-{{ key }}">{{ ct.label }}</strong>
                         <span class="text-muted">{{ ct.machine_name }}</span>

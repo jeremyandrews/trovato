@@ -469,9 +469,11 @@ query and `templates/admin/macros/list.html` draws it:
   description too. So a screen reader's list of links is never a column of
   identical "Edit"s, and what is seen is the start of what is heard
   (WCAG 2.5.3). Ids are `act-{verb}-{key}` and `row-{key}`: `{verb}` a
-  fixed English slug, `{key}` the row's database id, or its machine name,
-  or the loop index, never text a person typed, because `aria-labelledby`
-  splits on spaces. `list::row_action` draws a link,
+  fixed English slug, `{key}` the row's database id, or its machine name
+  when it matches `^[a-z0-9_-]+$`, or else `pos.` and the loop index, never
+  text a person typed, because `aria-labelledby` splits on spaces. The `.`
+  keeps the two kinds apart: a machine name `2` and the second row's
+  fallback would otherwise both be `row-2`. `list::row_action` draws a link,
   `list::row_button` a form that posts at once and `list::delete_button`
   (with `text`, `id` and `row_id`) a Delete that asks first. Every action
   stays visible inline. A listing whose row's name would be only a

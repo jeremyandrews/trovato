@@ -25,7 +25,7 @@
         <tbody>
             {% for language in languages %}
             <tr>
-                {% if language.id is matching("^[a-z0-9_-]+$") %}{% set key = language.id %}{% else %}{% set key = loop.index %}{% endif %}
+                {% if language.id is matching("^[a-z0-9_-]+$") %}{% set key = language.id %}{% else %}{% set key = "pos." ~ loop.index %}{% endif %}
                 <th scope="row" lang="{{ language.id }}"><span id="row-{{ key }}">{{ language.label }}</span>{% if language.is_default %} <span class="badge badge--success">{{ t(s="Default") }}</span>{% endif %}</th>
                 <td><code>{{ language.id }}</code></td>
                 <td>{% if language.prefix %}<a href="{{ language.prefix }}"><code>{{ language.prefix }}/</code></a>{% else %}{{ t(s="None") }}{% endif %}</td>

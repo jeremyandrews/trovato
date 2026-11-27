@@ -10,8 +10,12 @@
 //   translations, whose rows are language codes, and its revisions, whose
 //   rows are dates), each action is named exactly its visible text;
 // - on every other listing, every action carries `aria-labelledby`;
+// - an action's row element is in the action's own table row;
 // - every id an `aria-labelledby` names is the id of exactly one element;
-// - no form sits inside another form, on any page opened.
+// - no form sits inside another form, on any page opened. This is read from
+//   the HTML as served: a browser drops a nested `<form>` start tag while
+//   parsing, so the parsed page never shows one, and the inner form's
+//   buttons would quietly post to the outer form's address.
 //
 // Light mode and the source language only: the names are the same words in
 // every mode, and the pseudo locales change only the verbs.
@@ -23,9 +27,28 @@ const FULL_SENTENCE = [/^\/admin\/content\/[^/]+\/translate$/, /^\/item\/[^/]+\/
 
 const collapse = (s) => s.replace(/\s+/g, ' ').trim();
 
+/** Each `<form` in `html` opened while another was still open. */
+export function nestedForms(html) {
+  const markup = html
+    .replace(/<!--[\s\S]*?-->/g, '')
+    .replace(/<script\b[\s\S]*?<\/script>/gi, '')
+    .replace(/<template\b[\s\S]*?<\/template>/gi, '');
+  const nested = [];
+  let depth = 0;
+  for (const m of markup.matchAll(/<(\/?)form\b[^>]*>/gi)) {
+    if (m[1]) {
+      depth = Math.max(0, depth - 1);
+    } else {
+      if (depth > 0) nested.push(m[0].slice(0, 160));
+      depth += 1;
+    }
+  }
+  return nested;
+}
+
 /** Check the row actions on the page `page` shows; returns how many. */
-async function checkPage(page, address) {
-  expect(await page.locator('form form').count(), `a form inside a form on ${address}`).toBe(0);
+async function checkPage(page, address, response) {
+  expect(nestedForms(await response.text()), `a form inside a form on ${address}`).toEqual([]);
 
   // Every referenced id names exactly one element.
   const badRefs = await page.locator('[aria-labelledby]').evaluateAll((els) =>
@@ -52,6 +75,7 @@ async function checkPage(page, address) {
         labelledby: ids,
         text: el.textContent,
         rowText: row ? row.textContent : null,
+        ownRow: Boolean(row && el.closest('tr') && el.closest('tr').contains(row)),
         html: el.outerHTML.slice(0, 200),
       };
     });
@@ -62,12 +86,30 @@ async function checkPage(page, address) {
     expect(facts.labelledby.length, `${facts.html} on ${address} is named by aria-labelledby`).toBe(2);
     expect(facts.labelledby[1], `${facts.html}: its second id names the row`).toMatch(/^row-/);
     expect(facts.rowText, `${facts.html}: its row element`).not.toBeNull();
+    expect(facts.ownRow, `${facts.html}: its row element is in its own row`).toBe(true);
     await expect(action, `${facts.html} on ${address}`).toHaveAccessibleName(
       `${collapse(facts.text)} ${collapse(facts.rowText)}`,
     );
   }
   return n;
 }
+
+test('a nested form is found in the served HTML, which the parsed page hides', async ({ page }) => {
+  const html = '<form action="/a"><div><form action="/b"><button>Go</button></form></div></form>'
+    + '<form action="/c"></form><script>const t = "<form>";</script>';
+  expect(nestedForms(html)).toEqual(['<form action="/b">']);
+  await page.setContent(html);
+  expect(await page.locator('form form').count()).toBe(0);
+});
+
+test('an action named by another row fails the own-row check', async ({ page }) => {
+  const html = `<table><tbody>
+    <tr><th><a id="row-a">A</a></th><td class="operations"><a id="act-edit-a" aria-labelledby="act-edit-a row-b" href="#">Edit</a></td></tr>
+    <tr><th><a id="row-b">B</a></th><td class="operations"><a id="act-edit-b" aria-labelledby="act-edit-b row-b" href="#">Edit</a></td></tr>
+  </tbody></table>`;
+  await page.setContent(html);
+  await expect(checkPage(page, '/admin/example', { text: async () => html })).rejects.toThrow(/in its own row/);
+});
 
 test.describe('row actions', () => {
   test.beforeEach(({}, info) => {
@@ -83,7 +125,7 @@ test.describe('row actions', () => {
       const pluginOff = route.plugin && !SEEDED_PLUGINS.has(route.plugin);
       test.skip(pluginOff && response.status() === 404, `${route.plugin} is not installed on this site`);
       expect(response.status(), `${address} opens`).toBe(200);
-      const n = await checkPage(page, address);
+      const n = await checkPage(page, address, response);
       info.annotations.push({ type: 'row actions', description: `${address}: ${n}` });
     });
   }
@@ -94,6 +136,6 @@ test.describe('row actions', () => {
     expect(edit).toMatch(/^\/item\/[^/]+\/revisions$/);
     const response = await page.goto(edit);
     expect(response.status()).toBe(200);
-    expect(await checkPage(page, edit)).toBeGreaterThan(0);
+    expect(await checkPage(page, edit, response)).toBeGreaterThan(0);
   });
 });

@@ -235,3 +235,83 @@ fn without_image_styles_an_image_shows_no_thumbnail() {
         assert!(!html.contains("list-thumbnail"), "{html}");
     });
 }
+
+/// A row's key is its machine name when that is a plain slug, and `pos.` with
+/// its place in the list otherwise, so the two never meet: a menu named `2`
+/// and a menu with spaces in its name shown second each keep their own ids.
+#[test]
+fn a_slug_key_and_a_positional_key_never_share_an_id() {
+    run_test(async {
+        let app = shared_app().await;
+        let cookies = admin(app, "b246menukey").await;
+        let spaced = "2 B246 Menu";
+        for menu in ["2", spaced] {
+            sqlx::query(
+                "INSERT INTO menu_link (id, menu_name, path, title, weight, hidden, plugin, \
+                 stage_id, created, changed) \
+                 VALUES ($1, $2, '/b246-menu-key', 'B246 key', 0, false, 'core', $3, 0, 0)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(menu)
+            .bind(LIVE_STAGE_ID)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        }
+        let pool = app.db.clone();
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query("DELETE FROM menu_link WHERE path = '/b246-menu-key'")
+                .execute(&pool)
+                .await;
+        });
+
+        // Filtered to `2`, the slug `2` is the first row and the spaced
+        // name, which needs a positional key, the second.
+        let (status, html) = get(app, &cookies, "/admin/structure/menus?q=2").await;
+        assert_eq!(status, StatusCode::OK);
+        let first = html.find(">2</a>").expect("the menu named 2");
+        let second = html
+            .find(&format!(">{spaced}</a>"))
+            .expect("the spaced menu");
+        assert!(first < second, "the slug sorts first: {html}");
+        assert_eq!(html.matches(r#"id="row-2""#).count(), 1, "{html}");
+        assert!(
+            html.contains(&format!(
+                r#"<a id="row-pos.2" href="/admin/structure/menus/{spaced}">{spaced}</a>"#
+            )),
+            "{html}"
+        );
+        assert_eq!(html.matches(r#"id="act-links-2""#).count(), 1, "{html}");
+        assert_eq!(html.matches(r#"id="act-links-pos.2""#).count(), 1, "{html}");
+    });
+}
+
+/// Every listing that falls back to the loop index for a row's key writes it
+/// with the `pos.` prefix, which no slug key can hold.
+#[test]
+fn every_positional_row_key_is_prefixed() {
+    let mut dirs = vec![common::project_root().join("templates/admin")];
+    let mut prefixed = 0;
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                dirs.push(path);
+                continue;
+            }
+            if path.extension().is_none_or(|e| e != "html") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).unwrap();
+            assert!(
+                !text.contains("{% set key = loop.index %}"),
+                "{}: a bare loop index can equal a slug key",
+                path.display()
+            );
+            prefixed += text
+                .matches(r#"{% set key = "pos." ~ loop.index %}"#)
+                .count();
+        }
+    }
+    assert!(prefixed >= 10, "{prefixed}");
+}

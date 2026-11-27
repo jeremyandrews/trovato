@@ -35,7 +35,7 @@
         <tbody>
             {% for cat in categories %}
             <tr>
-                {% if cat.id is matching("^[a-z0-9_-]+$") %}{% set key = cat.id %}{% else %}{% set key = loop.index %}{% endif %}
+                {% if cat.id is matching("^[a-z0-9_-]+$") %}{% set key = cat.id %}{% else %}{% set key = "pos." ~ loop.index %}{% endif %}
                 <th scope="row">
                     <a id="row-{{ key }}" href="/admin/structure/categories/{{ cat.id }}/tags">{{ cat.label }}</a>
                 </th>

@@ -35,7 +35,7 @@
             <tbody>
                 {% for menu in menus %}
                 <tr>
-                    {% if menu.name is matching("^[a-z0-9_-]+$") %}{% set key = menu.name %}{% else %}{% set key = loop.index %}{% endif %}
+                    {% if menu.name is matching("^[a-z0-9_-]+$") %}{% set key = menu.name %}{% else %}{% set key = "pos." ~ loop.index %}{% endif %}
                     <th scope="row"><a id="row-{{ key }}" href="/admin/structure/menus/{{ menu.name }}">{{ menu.name }}</a></th>
                     <td>{{ menu.links }}</td>
                     <td>{{ menu.editable }}</td>

@@ -31,8 +31,11 @@
         <tbody>
             {% for rev in revisions %}
             {#- The revision's date, as its actions and radios are named: with
-                seconds, so two revisions saved in one minute are told apart. -#}
+                seconds, so two revisions saved in one minute are told apart,
+                and its place among those saved in the same second ("2 of 2"),
+                so two saved in one second are too. -#}
             {% set date = admin_time_text(ts=rev.created, seconds=true) %}
+            {% if rev.same_second %}{% set date = t(s="{date}, {n} of {count}", date=date, n=rev.same_second.n, count=rev.same_second.of) %}{% endif %}
             <tr>
                 <td>
                     <input type="radio" name="from" value="{{ rev.id }}" form="revision-compare"

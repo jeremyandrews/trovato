@@ -35,7 +35,7 @@
                     <td>-</td>
                 </tr>
                 {% for field in fields %}
-                {% if field.field_name is matching("^[a-z0-9_-]+$") %}{% set key = field.field_name %}{% else %}{% set key = loop.index %}{% endif %}
+                {% if field.field_name is matching("^[a-z0-9_-]+$") %}{% set key = field.field_name %}{% else %}{% set key = "pos." ~ loop.index %}{% endif %}
                 <tr data-field="{{ field.field_name }}">
                     <th scope="row"><span id="row-{{ key }}">{{ field.label }}</span></th>
                     <td><code>{{ field.field_name }}</code></td>

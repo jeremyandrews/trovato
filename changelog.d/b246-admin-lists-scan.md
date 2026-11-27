@@ -6,15 +6,15 @@ id and an element in the row header that holds only the row's name. The new
 `list::row_action` and `list::row_button` macros, and `list::delete_button`'s
 new `text`, `id` and `row_id` arguments, draw every row action this way; the
 translations and revisions of an item keep full sentences, because their row's
-name is only a language code or a date. A row's state is one `list::status`
-pill, quiet unless the row needs someone: a blocked account, spam or an error
-in the log reads as a problem; unpublished, pending, temporary and warnings ask
-for attention; everything else is plain. `admin_list::ListState` is the one
-place a state's word and kind are set, and the per-listing status colours are
-gone. In Files an image row shows a small thumbnail from the image styles
-plugin's `thumbnail` style. The content, files and comments listings read their
-accounts through the user cache in one `find_many` call instead of one query per
-row.
+name is only a language code or a date. Revisions saved in the same second are
+told apart by their place in it ("2 of 2"). A row's state is one `list::status`
+pill, quiet unless the row needs someone: a blocked account, spam or an error in
+the log reads as a problem; unpublished, pending, temporary and warnings ask for
+attention; everything else is plain. `admin_list::ListState` is the one place a
+state's word and kind are set, and the per-listing status colours are gone. In
+Files an image row shows a small thumbnail from the image styles plugin's
+`thumbnail` style. The content, files and comments listings read their accounts
+through the user cache in one `find_many` call instead of one query per row.
 
 **Behavior change: dates.** Every admin date is now written in the viewer's own
 timezone (`users.timezone`, UTC when it is unset) and language, as "Today,

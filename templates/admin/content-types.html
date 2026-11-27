@@ -20,7 +20,7 @@
         <tbody>
             {% for ct in content_types %}
             <tr>
-                {% if ct.machine_name is matching("^[a-z0-9_-]+$") %}{% set key = ct.machine_name %}{% else %}{% set key = loop.index %}{% endif %}
+                {% if ct.machine_name is matching("^[a-z0-9_-]+$") %}{% set key = ct.machine_name %}{% else %}{% set key = "pos." ~ loop.index %}{% endif %}
                 <th scope="row">
                     <a id="row-{{ key }}" href="/admin/structure/types/{{ ct.machine_name }}/edit">{{ ct.label }}</a>
                 </th>

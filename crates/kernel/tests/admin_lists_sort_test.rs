@@ -60,18 +60,52 @@ fn sql_and_sort_rows_agree_on_natural_order() {
     });
 }
 
-/// Each `*_SORTS` list in the routes, with the listing it sorts.
-const LISTINGS: &[(&str, &str)] = &[
-    ("FILE_SORTS", "/admin/content/files"),
-    ("COMMENT_SORTS", "/admin/content/comments"),
-    ("ALIAS_SORTS", "/admin/structure/aliases"),
-    ("AUDIT_SORTS", "/admin/reports/audit"),
-    ("CONTENT_SORTS", "/admin/content"),
-    ("MENU_SORTS", "/admin/structure/menus"),
-    ("LOG_SORTS", "/admin/reports/log"),
-    ("CATEGORY_SORTS", "/admin/structure/categories"),
-    ("USER_SORTS", "/admin/people"),
-    ("GATHER_SORTS", "/admin/gather"),
+/// Each `*_SORTS` list in the routes, the listing it sorts, and its keys.
+/// The keys are written out here so a parse of the source that drops a key,
+/// or reads an SQL expression as one, fails against them.
+const LISTINGS: &[(&str, &str, &[&str])] = &[
+    (
+        "FILE_SORTS",
+        "/admin/content/files",
+        &["name", "type", "size", "status", "uploaded"],
+    ),
+    (
+        "COMMENT_SORTS",
+        "/admin/content/comments",
+        &["author", "status", "posted"],
+    ),
+    (
+        "ALIAS_SORTS",
+        "/admin/structure/aliases",
+        &["alias", "source", "language", "created"],
+    ),
+    (
+        "AUDIT_SORTS",
+        "/admin/reports/audit",
+        &["time", "user", "action", "type"],
+    ),
+    (
+        "CONTENT_SORTS",
+        "/admin/content",
+        &["title", "type", "status", "changed"],
+    ),
+    ("MENU_SORTS", "/admin/structure/menus", &["name", "links"]),
+    (
+        "LOG_SORTS",
+        "/admin/reports/log",
+        &["time", "level", "type"],
+    ),
+    (
+        "CATEGORY_SORTS",
+        "/admin/structure/categories",
+        &["weight", "name", "id", "tags"],
+    ),
+    ("USER_SORTS", "/admin/people", &["name", "email", "status"]),
+    (
+        "GATHER_SORTS",
+        "/admin/gather",
+        &["label", "id", "table", "plugin"],
+    ),
 ];
 
 /// Every `*_SORTS` list in the route sources and its keys, read from the
@@ -90,18 +124,63 @@ fn sort_lists() -> Vec<(String, Vec<String>)> {
             let name = text[start..at + "_SORTS".len()].to_string();
             let body = &text[at..];
             let body = &body[..body.find("];").unwrap()];
-            let keys: Vec<String> = body
-                .match_indices("(\"")
-                .map(|(i, _)| {
-                    let rest = &body[i + 2..];
-                    rest[..rest.find('"').unwrap()].to_string()
-                })
-                .collect();
-            found.push((name, keys));
+            found.push((name, tuple_keys(&body[body.find("= &[").unwrap() + 4..])));
         }
     }
     found.sort();
     found
+}
+
+/// The first string of each `(key, sql)` tuple in an array body: a `(` at
+/// the array's own level opens a tuple, whatever whitespace or line break
+/// follows it, and the parentheses of a macro call inside the tuple
+/// (`natural!("lower(title)")`) and anything inside a string are not tuples.
+fn tuple_keys(body: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut depth = 0;
+    let mut want_key = false;
+    let mut chars = body.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                let mut text = String::new();
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\\' => {
+                            chars.next();
+                        }
+                        '"' => break,
+                        c => text.push(c),
+                    }
+                }
+                if want_key {
+                    keys.push(text);
+                    want_key = false;
+                }
+            }
+            '(' => {
+                depth += 1;
+                want_key = depth == 1;
+            }
+            ')' => depth -= 1,
+            c if c.is_whitespace() => {}
+            _ => want_key = false,
+        }
+    }
+    keys
+}
+
+#[test]
+fn the_key_parse_reads_tuples_not_expressions() {
+    let body = r#"
+        ("time", "id"),
+        (
+            "level",
+            "CASE level WHEN 'error' THEN 3 ELSE 1 END",
+        ),
+        ("title", natural!("lower(title)")),
+    ];"#;
+    assert_eq!(tuple_keys(body), ["time", "level", "title"]);
 }
 
 async fn status(app: &TestApp, cookies: &str, uri: &str) -> StatusCode {
@@ -155,12 +234,12 @@ fn every_listing_answers_every_sort_key_both_ways() {
         );
         let mut checked = 0;
         for (name, keys) in &lists {
-            let path = LISTINGS
+            let (path, expected) = LISTINGS
                 .iter()
-                .find(|(n, _)| n == name)
-                .map(|(_, p)| *p)
+                .find(|(n, _, _)| n == name)
+                .map(|(_, p, k)| (*p, *k))
                 .unwrap_or_else(|| panic!("{name} sorts no listing this test knows"));
-            assert!(!keys.is_empty(), "{name}");
+            assert_eq!(keys, expected, "{name}: the keys read from the source");
             for key in keys {
                 for sort in [key.clone(), format!("-{key}")] {
                     let uri = format!("{path}?sort={sort}");
@@ -169,6 +248,9 @@ fn every_listing_answers_every_sort_key_both_ways() {
                 }
             }
         }
-        assert!(checked >= 2 * LISTINGS.len());
+        assert_eq!(
+            checked,
+            2 * LISTINGS.iter().map(|(_, _, k)| k.len()).sum::<usize>()
+        );
     });
 }

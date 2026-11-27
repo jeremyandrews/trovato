@@ -22,7 +22,7 @@
         <tbody>
             {% for format in formats %}
             <tr>
-                {% if format.format is matching("^[a-z0-9_-]+$") %}{% set key = format.format %}{% else %}{% set key = loop.index %}{% endif %}
+                {% if format.format is matching("^[a-z0-9_-]+$") %}{% set key = format.format %}{% else %}{% set key = "pos." ~ loop.index %}{% endif %}
                 <th scope="row"><span id="row-{{ key }}">{{ format.name }}</span><br><code class="text-format-machine">{{ format.format }}</code></th>
                 <td>{{ t(s=format.filter) }}</td>
                 <td>{% if format.tags %}<code class="text-format-tags">{{ format.tags }}</code>{% else %}{{ t(s="None") }}{% endif %}</td>

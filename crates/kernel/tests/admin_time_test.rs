@@ -225,29 +225,31 @@ fn the_dashboard_writes_times_in_the_viewers_timezone() {
         assert!(!html.contains("UTC"), "no panel says UTC: {html}");
 
         // The Reports landing page's Cron line: a run is needed for a date.
-        // One recorded by another test is kept; otherwise one is written and
-        // removed again.
+        // A run recorded by anyone else is kept, whatever its date: the line
+        // is compared with that run's own text. Without one, this test writes
+        // its own, only if the key is still empty (`NX`), under a hostname no
+        // one else uses, and removes it at the end only if it is still that
+        // record.
         let mut redis = app
             .state
             .redis()
             .get_multiplexed_async_connection()
             .await
             .unwrap();
-        let existing = app.state.cron().last_run().await.unwrap();
-        if existing.is_none() {
-            let run = serde_json::json!({
-                "timestamp": now, "hostname": "b246", "result": "Completed",
-                "status": "completed", "tasks": [], "duration_ms": 1,
-            });
-            redis::AsyncCommands::set_ex::<_, _, ()>(
-                &mut redis,
-                "cron:last_run",
-                run.to_string(),
-                600,
-            )
+        let ours = serde_json::json!({
+            "timestamp": now, "hostname": format!("b246-{}", Uuid::new_v4()),
+            "result": "Completed", "status": "completed", "tasks": [], "duration_ms": 1,
+        })
+        .to_string();
+        let _: Option<String> = redis::cmd("SET")
+            .arg("cron:last_run")
+            .arg(&ours)
+            .arg("NX")
+            .arg("EX")
+            .arg(600)
+            .query_async(&mut redis)
             .await
             .unwrap();
-        }
         let mut found = false;
         for _ in 0..3 {
             let before = app
@@ -270,11 +272,6 @@ fn the_dashboard_writes_times_in_the_viewers_timezone() {
                 continue;
             }
             let ts = after.expect("a cron run is recorded");
-            let when = shown(i18n::PSEUDO_ACCENTED, tokyo, ts);
-            assert!(
-                when.contains(&head(&today)) || when.contains(&head(&yesterday)),
-                "{when}"
-            );
             let line = tera::escape_html(&i18n::translate(
                 None,
                 i18n::PSEUDO_ACCENTED,
@@ -297,11 +294,17 @@ fn the_dashboard_writes_times_in_the_viewers_timezone() {
             found = true;
             break;
         }
-        if existing.is_none() {
-            redis::AsyncCommands::del::<_, ()>(&mut redis, "cron:last_run")
-                .await
-                .unwrap();
-        }
+        // Compare and delete in one step: a record another process wrote
+        // since is left alone.
+        let _: i64 = redis::Script::new(
+            "if redis.call('GET', KEYS[1]) == ARGV[1] then \
+             return redis.call('DEL', KEYS[1]) else return 0 end",
+        )
+        .key("cron:last_run")
+        .arg(&ours)
+        .invoke_async(&mut redis)
+        .await
+        .unwrap();
         assert!(found, "the cron record held still for one request");
     });
 }
@@ -433,6 +436,95 @@ fn revision_names_hold_the_dates_text() {
                 assert!(digits < 10, "{page}: a name holds a timestamp: {name}");
             }
         }
+    });
+}
+
+/// Two revisions saved in the same second: their dates, to the second, are
+/// the same, so the list adds each one's place in that second, and no two
+/// actions or radios share a name.
+#[test]
+fn revisions_saved_in_one_second_keep_distinct_names() {
+    run_test(async {
+        let app = shared_app().await;
+        let (cookies, id) = admin_in(app, "b246same", "Europe/Rome", None).await;
+        let viewer = UserContext::administrator(id, vec!["administer site".to_string()]);
+        let item = app
+            .state
+            .items()
+            .create(
+                CreateItem {
+                    item_type: "page".to_string(),
+                    title: format!("Same second {}", letters_only(Uuid::new_v4())),
+                    author_id: id,
+                    status: Some(1),
+                    promote: Some(0),
+                    sticky: Some(0),
+                    fields: Some(serde_json::json!({})),
+                    stage_id: Some(LIVE_STAGE_ID),
+                    language: Some("en".to_string()),
+                    log: Some("first".to_string()),
+                },
+                &viewer,
+            )
+            .await
+            .unwrap();
+        // Two older revisions written in one second.
+        let second = chrono::Utc::now().timestamp() - 3 * 86_400;
+        for log in ["older a", "older b"] {
+            sqlx::query(
+                "INSERT INTO item_revision (id, item_id, author_id, title, status, fields, created, log) \
+                 VALUES ($1, $2, $3, $4, 1, '{}'::jsonb, $5, $6)",
+            )
+            .bind(Uuid::now_v7())
+            .bind(item.id)
+            .bind(id)
+            .bind(&item.title)
+            .bind(second)
+            .bind(log)
+            .execute(&app.db)
+            .await
+            .unwrap();
+        }
+
+        let (status, html) = get(app, &cookies, &format!("/item/{}/revisions", item.id)).await;
+        assert_eq!(status, StatusCode::OK);
+        let date = tera::escape_html(&i18n::admin_time_text_at(
+            None,
+            "en",
+            chrono_tz::Europe::Rome,
+            second,
+            true,
+            chrono::Utc::now().timestamp(),
+            true,
+        ));
+        for n in ["1 of 2", "2 of 2"] {
+            for name in [
+                format!("View the revision of {date}, {n}"),
+                format!("Compare from the revision of {date}, {n}"),
+                format!("Compare to the revision of {date}, {n}"),
+            ] {
+                assert_eq!(html.matches(&name).count(), 1, "{name}: {html}");
+            }
+        }
+        // The current revision, alone in its second, is named by its date.
+        assert!(!html.contains(", 1 of 1"), "{html}");
+        let mut names: Vec<&str> = html
+            .match_indices("aria-label=\"")
+            .map(|(at, attr)| {
+                let rest = &html[at + attr.len()..];
+                &rest[..rest.find('"').unwrap()]
+            })
+            .filter(|name| name.contains("revision of"))
+            .collect();
+        let total = names.len();
+        names.sort_unstable();
+        names.dedup();
+        assert_eq!(
+            names.len(),
+            total,
+            "every radio has its own name: {names:?}"
+        );
+        assert_eq!(total, 6, "{names:?}");
     });
 }
 

@@ -22,7 +22,7 @@
         <tbody>
             {% for vocabulary in vocabularies %}
             <tr>
-                {% if vocabulary.id is matching("^[a-z0-9_-]+$") %}{% set key = vocabulary.id %}{% else %}{% set key = loop.index %}{% endif %}
+                {% if vocabulary.id is matching("^[a-z0-9_-]+$") %}{% set key = vocabulary.id %}{% else %}{% set key = "pos." ~ loop.index %}{% endif %}
                 <th scope="row"><a id="row-{{ key }}" href="{{ base }}/{{ vocabulary.id }}">{{ vocabulary.label }}</a></th>
                 <td>{{ vocabulary.description | default(value="") }}</td>
                 <td>{{ tag_counts[vocabulary.id] | default(value=0) }}</td>
