@@ -5,7 +5,7 @@ use uuid::Uuid;
 
 /// Every record type, in the order the report lists them.
 pub const RECORD_TYPES: &[&str] = &[
-    "user", "item", "revision", "comment", "alias", "redirect", "tile",
+    "user", "file", "item", "revision", "comment", "alias", "redirect", "tile",
 ];
 
 /// One line of the file, by its `type`.
@@ -19,6 +19,7 @@ pub(crate) enum Record {
     Redirect(RedirectRecord),
     User(UserRecord),
     Tile(TileRecord),
+    File(FileRecord),
 }
 
 impl Record {
@@ -32,6 +33,7 @@ impl Record {
             Self::Redirect(_) => "redirect",
             Self::User(_) => "user",
             Self::Tile(_) => "tile",
+            Self::File(_) => "file",
         }
     }
 }
@@ -178,6 +180,25 @@ pub(crate) struct TileRecord {
     pub created: i64,
     #[serde(deserialize_with = "timestamp")]
     pub changed: i64,
+}
+
+/// A file already copied into the files directory, registered under the id,
+/// owner and date the record gives.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FileRecord {
+    pub id: Uuid,
+    /// Who the file belongs to; a user id, stored or on an earlier line.
+    pub owner_id: Uuid,
+    /// Where the bytes already sit, relative to the files directory
+    /// (`UPLOADS_DIR`). No absolute path, no `..`, no symlink leading outside it.
+    pub path: String,
+    /// The name shown to users. Its extension must agree with `mime_type`.
+    pub filename: String,
+    /// The type the bytes are checked against, as an upload is.
+    pub mime_type: String,
+    #[serde(deserialize_with = "timestamp")]
+    pub created: i64,
 }
 
 /// A date as the file may give it: Unix seconds, or an RFC 3339 string.
