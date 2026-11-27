@@ -443,7 +443,11 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Events {
 }
 
 /// `run`'s own result, and the number of `sqlx::query` statements it issued.
+///
+/// Panics if it counted none: every gather reads the database, so a count of
+/// zero means the capture missed the statements, not that there were none.
 async fn statement_count<F: std::future::Future<Output = T>, T>(run: F) -> (T, usize) {
+    common::scoped_subscribers_see_every_callsite();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let subscriber = tracing_subscriber::registry().with(Events(seen.clone()));
     let result = run.with_subscriber(subscriber).await;
@@ -453,6 +457,11 @@ async fn statement_count<F: std::future::Future<Output = T>, T>(run: F) -> (T, u
         .iter()
         .filter(|t| *t == "sqlx::query")
         .count();
+    assert!(
+        count > 0,
+        "setup: the scoped subscriber saw no sqlx::query statement for a gather that \
+         reads the database, so it is not capturing"
+    );
     (result, count)
 }
 

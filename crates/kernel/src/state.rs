@@ -1,5 +1,6 @@
 //! Application state shared across all handlers.
 
+use crate::redis_conn::BoundedRedis;
 use std::path::PathBuf;
 use std::sync::{Arc, OnceLock};
 
@@ -392,7 +393,7 @@ impl AppState {
 
         // Test Redis connection
         let mut conn = redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to connect to Redis")?;
 
@@ -1990,7 +1991,7 @@ impl AppState {
 
     /// Check if Redis is healthy.
     pub async fn redis_healthy(&self) -> bool {
-        let Ok(mut conn) = self.inner.redis.get_multiplexed_async_connection().await else {
+        let Ok(mut conn) = self.inner.redis.bounded_connection().await else {
             return false;
         };
 

@@ -39,6 +39,7 @@ pub use tasks::UpdateCheckConfig;
 pub use queue::{Queue, RedisQueue};
 pub use tasks::CronTasks;
 
+use crate::redis_conn::BoundedRedis;
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -127,6 +128,30 @@ const QUEUE_DRAIN_BUDGET_SECS: u64 = 60;
 /// against an unforeseen stall rather than a routine bound: the routine bound is
 /// [`QUEUE_DRAIN_BUDGET_SECS`].
 const MAX_LOCK_RENEWAL_SECS: u64 = 900;
+
+/// Longest one ordinary cron task may run before the run gives up on it and
+/// moves on to the next (B247).
+///
+/// The tasks had no bound of their own. A task waiting on a Redis or a database
+/// that had stopped answering waited for ever, and the run with it: in the
+/// incident behind this, one run sat in `process_queues` for ten hours while its
+/// heartbeat kept the lock alive and every later tick was skipped. Every task
+/// the run starts is now cut off here, logged at warn, recorded as
+/// `<task>:TIMEOUT` the way `tap_cron` already was, and the run carries on and
+/// releases the lock. Half the lock TTL, the same allowance `tap_cron` has
+/// always had: an ordinary task is a bounded batch of deletes or a few queue
+/// pops and finishes in milliseconds to seconds, so this is a backstop, not a
+/// budget anyone is expected to use.
+const CRON_TASK_TIMEOUT_SECS: u64 = LOCK_TTL_SECS / 2;
+
+/// Marks where a cron lock value records when its run took the lock.
+///
+/// The value is `host:pid:uuid:t<unix seconds>`. The owner check compares the whole
+/// value, so the time costs nothing there; it is what lets a run that finds the
+/// lock held say how long the holder has had it. A value without the marker
+/// (written by an older kernel during a rolling deploy) still works as a lock,
+/// it just has no age to report.
+const LOCK_SINCE_MARKER: &str = ":t";
 
 /// Slack allowed when deciding that a failed dispatch ran to its epoch deadline.
 ///
@@ -922,6 +947,10 @@ pub struct CronService {
     /// An outright override of the in-flight ceiling, ignoring the worker's
     /// budget. `None` in production, where the ceiling is budget + slack.
     job_ceiling: Option<Duration>,
+    /// Bound on each ordinary cron task ([`CRON_TASK_TIMEOUT_SECS`]). A field
+    /// rather than the constant so a test can drive it to a value it can wait
+    /// out.
+    task_timeout: Duration,
     /// Search, whose analytics tables cron prunes once a day. `None` in a
     /// harness that builds a `CronService` on its own.
     search: Option<Arc<crate::search::SearchService>>,
@@ -959,6 +988,7 @@ impl CronService {
             drain_budget: Duration::from_secs(QUEUE_DRAIN_BUDGET_SECS),
             abandon_slack: JOB_ABANDON_SLACK,
             job_ceiling: None,
+            task_timeout: Duration::from_secs(CRON_TASK_TIMEOUT_SECS),
             search: None,
             scheduler_interval_override: None,
             scheduled_runs_completed: AtomicU64::new(0),
@@ -988,6 +1018,7 @@ impl CronService {
             drain_budget: Duration::from_secs(QUEUE_DRAIN_BUDGET_SECS),
             abandon_slack: JOB_ABANDON_SLACK,
             job_ceiling: None,
+            task_timeout: Duration::from_secs(CRON_TASK_TIMEOUT_SECS),
             search: None,
             scheduler_interval_override: None,
             scheduled_runs_completed: AtomicU64::new(0),
@@ -1023,6 +1054,49 @@ impl CronService {
     /// deadline can never do.
     pub fn set_job_ceiling(&mut self, ceiling: Duration) {
         self.job_ceiling = Some(ceiling);
+    }
+
+    /// Override the bound on each ordinary cron task.
+    ///
+    /// The default is `CRON_TASK_TIMEOUT_SECS`. Tests lower it so a task stuck
+    /// on a Redis that never answers is cut off in a second, not minutes.
+    pub fn set_task_timeout(&mut self, timeout: Duration) {
+        self.task_timeout = timeout;
+    }
+
+    /// Point the cron tasks' Redis queue (`email:send`, `search:reindex`) at
+    /// `redis`, leaving the lock and everything else on the client the service
+    /// was built with.
+    ///
+    /// Only tests use this: it is how a run is given a queue that never answers
+    /// while its lock still works.
+    pub fn set_queue_redis(&mut self, redis: RedisClient) {
+        let queue = Arc::new(RedisQueue::new(redis));
+        self.tasks.set_queue(queue.clone());
+        self.queue = queue;
+    }
+
+    /// The outer bound on one queue drain inside a cron run.
+    ///
+    /// A drain already stops starting batches after `drain_budget`, and waits on
+    /// the batch in flight for at most the in-flight ceiling (a worker's epoch
+    /// budget plus `abandon_slack`, or the test override). What it did not bound
+    /// is everything around those: the claims, the reaping, the bookkeeping, all
+    /// of them Redis or database calls. This is the sum of the two bounds the
+    /// drain enforces itself, plus one ordinary task's allowance for the rest,
+    /// so it only fires when the drain is stuck somewhere its own bounds do not
+    /// reach. Work cut off here is not lost: its rows stay claimed until their
+    /// lease runs out and are claimed again on a later cycle.
+    fn drain_timeout(&self) -> Duration {
+        let worker_budget = self
+            .tap_dispatcher
+            .as_ref()
+            .map(|d| d.runtime().limits().background_tap_epoch_deadline_secs)
+            .unwrap_or(0);
+        let in_flight = self
+            .job_ceiling
+            .unwrap_or(Duration::from_secs(worker_budget) + self.abandon_slack);
+        self.drain_budget + in_flight + self.task_timeout
     }
 
     pub fn set_rate_limiter(&mut self, limiter: Arc<crate::middleware::RateLimiter>) {
@@ -1174,7 +1248,7 @@ impl CronService {
         let lock_value = match self.acquire_lock().await {
             Ok(Some(v)) => v,
             Ok(None) => {
-                debug!("cron lock held by another instance, skipping");
+                self.report_held_lock().await;
                 return CronResult::Skipped;
             }
             Err(e) => {
@@ -1214,46 +1288,85 @@ impl CronService {
         let mut tasks_run = Vec::new();
 
         // Cleanup temporary files
-        match self.tasks.cleanup_temp_files().await {
-            Ok(count) => {
+        match bounded(
+            "cleanup_temp_files",
+            self.task_timeout,
+            &mut tasks_run,
+            self.tasks.cleanup_temp_files(),
+        )
+        .await
+        {
+            Some(Ok(count)) => {
                 info!(deleted = count, "cleaned up temporary files");
                 tasks_run.push(format!("cleanup_temp_files: {count}"));
             }
-            Err(e) => warn!(error = %e, "failed to cleanup temp files"),
+            Some(Err(e)) => warn!(error = %e, "failed to cleanup temp files"),
+            None => {}
         }
 
         // Cleanup expired sessions
-        match self.tasks.cleanup_expired_sessions().await {
-            Ok(count) => {
+        match bounded(
+            "cleanup_expired_sessions",
+            self.task_timeout,
+            &mut tasks_run,
+            self.tasks.cleanup_expired_sessions(),
+        )
+        .await
+        {
+            Some(Ok(count)) => {
                 info!(deleted = count, "cleaned up expired sessions");
                 tasks_run.push(format!("cleanup_expired_sessions: {count}"));
             }
-            Err(e) => warn!(error = %e, "failed to cleanup sessions"),
+            Some(Err(e)) => warn!(error = %e, "failed to cleanup sessions"),
+            None => {}
         }
 
         // Cleanup form state cache
-        match self.tasks.cleanup_form_state_cache().await {
-            Ok(count) => {
+        match bounded(
+            "cleanup_form_state_cache",
+            self.task_timeout,
+            &mut tasks_run,
+            self.tasks.cleanup_form_state_cache(),
+        )
+        .await
+        {
+            Some(Ok(count)) => {
                 info!(deleted = count, "cleaned up form state cache");
                 tasks_run.push(format!("cleanup_form_state_cache: {count}"));
             }
-            Err(e) => warn!(error = %e, "failed to cleanup form state"),
+            Some(Err(e)) => warn!(error = %e, "failed to cleanup form state"),
+            None => {}
         }
 
         // Process queues
-        match self.tasks.process_queues().await {
-            Ok(count) => {
+        match bounded(
+            "process_queues",
+            self.task_timeout,
+            &mut tasks_run,
+            self.tasks.process_queues(),
+        )
+        .await
+        {
+            Some(Ok(count)) => {
                 info!(processed = count, "processed queue items");
                 tasks_run.push(format!("process_queues: {count}"));
             }
-            Err(e) => warn!(error = %e, "failed to process queues"),
+            Some(Err(e)) => warn!(error = %e, "failed to process queues"),
+            None => {}
         }
 
         // Ask whether a newer release exists. Failures are logged at debug and
         // change nothing: an unreachable GitHub is not a site problem, and this is
         // the one task whose output is advisory.
-        match self.tasks.check_for_updates().await {
-            Ok(Some(status)) => {
+        match bounded(
+            "check_for_updates",
+            self.task_timeout,
+            &mut tasks_run,
+            self.tasks.check_for_updates(),
+        )
+        .await
+        {
+            Some(Ok(Some(status))) => {
                 info!(
                     latest = %status.latest_version,
                     is_security = status.is_security,
@@ -1261,43 +1374,72 @@ impl CronService {
                 );
                 tasks_run.push(format!("check_for_updates: {}", status.latest_version));
             }
-            Ok(None) => {}
-            Err(e) => debug!(error = %e, "update check failed; nothing changed"),
+            Some(Ok(None)) => {}
+            Some(Err(e)) => debug!(error = %e, "update check failed; nothing changed"),
+            None => {}
         }
 
         // Cleanup expired verification tokens
-        match self.tasks.cleanup_verification_tokens().await {
-            Ok(count) if count > 0 => {
+        match bounded(
+            "cleanup_verification_tokens",
+            self.task_timeout,
+            &mut tasks_run,
+            self.tasks.cleanup_verification_tokens(),
+        )
+        .await
+        {
+            Some(Ok(count)) if count > 0 => {
                 info!(count = count, "cleaned up expired verification tokens");
                 tasks_run.push(format!("cleanup_verification_tokens: {count}"));
             }
-            Err(e) => warn!(error = %e, "failed to cleanup verification tokens"),
+            Some(Err(e)) => warn!(error = %e, "failed to cleanup verification tokens"),
             _ => {}
         }
 
         // Cleanup expired password reset tokens
-        match self.tasks.cleanup_password_reset_tokens().await {
-            Ok(count) if count > 0 => {
+        match bounded(
+            "cleanup_password_reset_tokens",
+            self.task_timeout,
+            &mut tasks_run,
+            self.tasks.cleanup_password_reset_tokens(),
+        )
+        .await
+        {
+            Some(Ok(count)) if count > 0 => {
                 info!(count = count, "cleaned up expired password reset tokens");
                 tasks_run.push(format!("cleanup_password_reset_tokens: {count}"));
             }
-            Err(e) => warn!(error = %e, "failed to cleanup password reset tokens"),
+            Some(Err(e)) => warn!(error = %e, "failed to cleanup password reset tokens"),
             _ => {}
         }
 
         // Cleanup expired content locks
-        match self.tasks.cleanup_expired_locks().await {
-            Ok(count) if count > 0 => {
+        match bounded(
+            "cleanup_expired_locks",
+            self.task_timeout,
+            &mut tasks_run,
+            self.tasks.cleanup_expired_locks(),
+        )
+        .await
+        {
+            Some(Ok(count)) if count > 0 => {
                 info!(count = count, "cleaned up expired locks");
                 tasks_run.push(format!("cleanup_expired_locks: {count}"));
             }
-            Err(e) => warn!(error = %e, "failed to cleanup locks"),
+            Some(Err(e)) => warn!(error = %e, "failed to cleanup locks"),
             _ => {}
         }
 
         // Mail retention (BG18)
-        match self.tasks.purge_mail_outbox().await {
-            Ok((cleared, deleted)) if cleared + deleted > 0 => {
+        match bounded(
+            "purge_mail_outbox",
+            self.task_timeout,
+            &mut tasks_run,
+            self.tasks.purge_mail_outbox(),
+        )
+        .await
+        {
+            Some(Ok((cleared, deleted))) if cleared + deleted > 0 => {
                 info!(
                     cleared,
                     deleted, "mail retention: bodies cleared, old messages deleted"
@@ -1306,51 +1448,79 @@ impl CronService {
                     "purge_mail_outbox: {cleared} cleared, {deleted} deleted"
                 ));
             }
-            Err(e) => warn!(error = %e, "failed to apply mail retention"),
+            Some(Err(e)) => warn!(error = %e, "failed to apply mail retention"),
             _ => {}
         }
 
         // Cleanup audit log (periodic)
-        match self.tasks.cleanup_audit_log().await {
-            Ok(count) if count > 0 => {
+        match bounded(
+            "cleanup_audit_log",
+            self.task_timeout,
+            &mut tasks_run,
+            self.tasks.cleanup_audit_log(),
+        )
+        .await
+        {
+            Some(Ok(count)) if count > 0 => {
                 info!(count = count, "cleaned up old audit log entries");
                 tasks_run.push(format!("cleanup_audit_log: {count}"));
             }
-            Err(e) => warn!(error = %e, "failed to cleanup audit log"),
+            Some(Err(e)) => warn!(error = %e, "failed to cleanup audit log"),
             _ => {}
         }
 
         // Keep the site log to its caps (`/admin/reports/log`).
-        match self.tasks.cleanup_system_log().await {
-            Ok(count) if count > 0 => {
+        match bounded(
+            "cleanup_system_log",
+            self.task_timeout,
+            &mut tasks_run,
+            self.tasks.cleanup_system_log(),
+        )
+        .await
+        {
+            Some(Ok(count)) if count > 0 => {
                 info!(count = count, "pruned the system log");
                 tasks_run.push(format!("cleanup_system_log: {count}"));
             }
-            Err(e) => warn!(error = %e, "failed to prune the system log"),
+            Some(Err(e)) => warn!(error = %e, "failed to prune the system log"),
             _ => {}
         }
 
         // Prune the kernel-internal security audit stream (one bounded policy)
-        match self.tasks.cleanup_security_audit_log().await {
-            Ok(count) if count > 0 => {
+        match bounded(
+            "cleanup_security_audit_log",
+            self.task_timeout,
+            &mut tasks_run,
+            self.tasks.cleanup_security_audit_log(),
+        )
+        .await
+        {
+            Some(Ok(count)) if count > 0 => {
                 info!(count = count, "pruned old security audit events");
                 tasks_run.push(format!("cleanup_security_audit_log: {count}"));
             }
-            Err(e) => warn!(error = %e, "failed to prune security audit log"),
+            Some(Err(e)) => warn!(error = %e, "failed to prune security audit log"),
             _ => {}
         }
 
         // Catch up items an earlier release never scanned for images without
         // a text alternative (B251), one bounded batch per run.
-        match self.tasks.backfill_accessibility_scan().await {
-            Ok(count) if count > 0 => {
+        match bounded(
+            "backfill_accessibility_scan",
+            self.task_timeout,
+            &mut tasks_run,
+            self.tasks.backfill_accessibility_scan(),
+        )
+        .await
+        {
+            Some(Ok(count)) if count > 0 => {
                 info!(
                     count = count,
                     "scanned content for images without a text alternative"
                 );
                 tasks_run.push(format!("backfill_accessibility_scan: {count}"));
             }
-            Err(e) => warn!(error = %e, "failed to backfill the accessibility scan"),
+            Some(Err(e)) => warn!(error = %e, "failed to backfill the accessibility scan"),
             _ => {}
         }
 
@@ -1418,65 +1588,134 @@ impl CronService {
         // and follows the same resident-runner hand-off, but is independent of
         // any plugin `tap_queue_worker`, so it runs even when no plugin
         // implements one.
-        let runner_owns_drain = self.queue_runner_config().await.enabled;
+        // A config read that cannot finish counts as "runner off", the answer a
+        // failed read already gives: the cron drain then runs, and the `SKIP
+        // LOCKED` claims make that safe even if a runner is draining too.
+        let runner_owns_drain = bounded(
+            "queue_runner_config",
+            self.task_timeout,
+            &mut tasks_run,
+            self.queue_runner_config(),
+        )
+        .await
+        .is_some_and(|config| config.enabled);
         if runner_owns_drain {
             debug!("resident queue-runner enabled; cron skips queue drains (D-46)");
         } else {
             if let Some(ref dispatcher) = self.tap_dispatcher
                 && dispatcher.registry().has_tap("tap_queue_worker")
             {
-                match self.drain_plugin_queues().await {
-                    Ok(stats) => {
+                match bounded(
+                    "tap_queue_worker",
+                    self.drain_timeout(),
+                    &mut tasks_run,
+                    self.drain_plugin_queues(),
+                )
+                .await
+                {
+                    Some(Ok(stats)) => {
                         tasks_run.push(format!("tap_queue_worker: {}", stats.total()));
                     }
-                    Err(e) => warn!(error = %e, "plugin queue dispatch failed"),
+                    Some(Err(e)) => warn!(error = %e, "plugin queue dispatch failed"),
+                    None => {}
                 }
             }
-            match self.drain_embed_jobs().await {
-                Ok(stats) => {
+            match bounded(
+                "embed_jobs",
+                self.drain_timeout(),
+                &mut tasks_run,
+                self.drain_embed_jobs(),
+            )
+            .await
+            {
+                Some(Ok(stats)) => {
                     if stats.total() > 0 || stats.errors > 0 {
                         tasks_run.push(format!("embed_jobs: {}", stats.total()));
                     }
                 }
-                Err(e) => warn!(error = %e, "embed queue drain failed"),
+                Some(Err(e)) => warn!(error = %e, "embed queue drain failed"),
+                None => {}
             }
         }
 
         // Prune search analytics past the retention window, at most once a day.
+        // One DELETE, so cutting it off at the task bound loses nothing: the
+        // rows it did not reach are pruned on a later day.
         if let Some(ref search) = self.search {
-            match self.claim_daily(SEARCH_ANALYTICS_PRUNE_KEY).await {
-                Ok(true) => {
-                    let retention = search.settings().await.analytics_retention_days;
-                    match search.analytics().prune(retention).await {
-                        Ok(count) => {
-                            tasks_run.push(format!("prune_search_analytics: {count}"));
+            let prune = async {
+                match self.claim_daily(SEARCH_ANALYTICS_PRUNE_KEY).await {
+                    Ok(true) => {
+                        let retention = search.settings().await.analytics_retention_days;
+                        match search.analytics().prune(retention).await {
+                            Ok(count) => Some(format!("prune_search_analytics: {count}")),
+                            Err(e) => {
+                                warn!(error = %e, "failed to prune search analytics");
+                                None
+                            }
                         }
-                        Err(e) => warn!(error = %e, "failed to prune search analytics"),
+                    }
+                    Ok(false) => None,
+                    Err(e) => {
+                        warn!(error = %e, "failed to claim the daily search analytics prune");
+                        None
                     }
                 }
-                Ok(false) => {}
-                Err(e) => warn!(error = %e, "failed to claim the daily search analytics prune"),
+            };
+            if let Some(Some(entry)) = bounded(
+                "prune_search_analytics",
+                self.task_timeout,
+                &mut tasks_run,
+                prune,
+            )
+            .await
+            {
+                tasks_run.push(entry);
             }
         }
 
         // Rebuild Pagefind index if the trovato_search plugin is enabled and requested it
         if self.pagefind_enabled {
             if let Some(items) = self.items.clone() {
-                let compaction = match self.search {
-                    Some(ref search) => search.settings().await.index_compaction_percent,
-                    None => DEFAULT_COMPACTION_PERCENT,
-                };
-                match pagefind::maybe_rebuild_index(
-                    &self.pool,
-                    &self.pagefind_output_dir,
-                    &items,
-                    compaction,
-                )
-                .await
-                {
-                    Ok(true) => tasks_run.push("pagefind_rebuild".to_string()),
-                    Ok(false) => {}
-                    Err(e) => warn!(error = %e, "pagefind index rebuild failed"),
+                // The rebuild writes the index in place, so it must never be
+                // cut off part way: that would publish a half-written index. It
+                // runs on a task of its own instead, and the run waits on it for
+                // one task's bound. A rebuild still going then carries on in the
+                // background and the run moves on; the guard keeps the next run
+                // from starting a second writer on the same directory meanwhile.
+                match PagefindRebuild::start() {
+                    None => {
+                        debug!("a pagefind rebuild is still running; not starting another");
+                    }
+                    Some(guard) => {
+                        let pool = self.pool.clone();
+                        let output_dir = self.pagefind_output_dir.clone();
+                        let search = self.search.clone();
+                        let rebuild = tokio::spawn(async move {
+                            let _guard = guard;
+                            let compaction = match search {
+                                Some(ref search) => {
+                                    search.settings().await.index_compaction_percent
+                                }
+                                None => DEFAULT_COMPACTION_PERCENT,
+                            };
+                            pagefind::maybe_rebuild_index(&pool, &output_dir, &items, compaction)
+                                .await
+                        });
+                        match bounded(
+                            "pagefind_rebuild",
+                            self.task_timeout,
+                            &mut tasks_run,
+                            rebuild,
+                        )
+                        .await
+                        {
+                            Some(Ok(Ok(true))) => tasks_run.push("pagefind_rebuild".to_string()),
+                            Some(Ok(Ok(false))) => {}
+                            Some(Ok(Err(e))) => warn!(error = %e, "pagefind index rebuild failed"),
+                            Some(Err(e)) => warn!(error = %e, "pagefind index rebuild panicked"),
+                            None => {}
+                        }
+                    }
                 }
             } else {
                 warn!(
@@ -1527,7 +1766,7 @@ impl CronService {
 
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
 
@@ -1545,13 +1784,69 @@ impl CronService {
         Ok(result.map(|_| lock_value))
     }
 
+    /// Say why this run is skipping: at debug for an ordinary overlap, at warn
+    /// when the holder has had the lock longer than any run should.
+    ///
+    /// This was a bare `debug!` (B247). In the incident behind this, a stuck
+    /// run held the lock for ten hours and every tick in between logged only
+    /// that line, which production does not show, so cron looked idle rather
+    /// than wedged. Reading the lock's age turns the second case into a line an
+    /// operator sees.
+    async fn report_held_lock(&self) {
+        let read = async {
+            let mut conn = self.redis.bounded_connection().await?;
+            redis::pipe()
+                .cmd("GET")
+                .arg(CRON_LOCK_KEY)
+                .cmd("TTL")
+                .arg(CRON_LOCK_KEY)
+                .query_async::<(Option<String>, i64)>(&mut conn)
+                .await
+        };
+        let (holder, ttl_secs) = match read.await {
+            Ok((Some(holder), ttl)) => (holder, ttl),
+            Ok((None, _)) => {
+                debug!("cron lock was held a moment ago and is free now; skipping this run");
+                return;
+            }
+            Err(e) => {
+                debug!(error = %e, "cron lock held by another instance, skipping; could not read its age");
+                return;
+            }
+        };
+        match classify_held_lock(&holder, ttl_secs, chrono::Utc::now().timestamp()) {
+            HeldLock::Overlap { held_secs } => debug!(
+                holder = %holder,
+                held_secs = ?held_secs,
+                ttl_secs,
+                "cron lock held by another instance, skipping"
+            ),
+            HeldLock::TooLong { held_secs } => warn!(
+                holder = %holder,
+                held_secs,
+                ttl_secs,
+                max_secs = MAX_LOCK_RENEWAL_SECS,
+                "cron lock has been held for {held_secs}s, longer than any cron run should \
+                 take; skipping this run. The holder is probably stuck: the lock expires on \
+                 its own in {ttl_secs}s"
+            ),
+            HeldLock::NoExpiry => warn!(
+                holder = %holder,
+                held_secs = ?lock_held_since(&holder)
+                    .map(|since| chrono::Utc::now().timestamp() - since),
+                "cron lock has no expiry, so no cron run will ever take it again until it is \
+                 deleted; skipping this run"
+            ),
+        }
+    }
+
     /// Release the distributed cron lock.
     ///
     /// Only releases if we own the lock (checked via Lua script).
     async fn release_lock(&self, lock_value: &str) -> Result<()> {
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
 
@@ -1864,8 +2159,21 @@ impl CronService {
             warn!(error = %e, "failed to reap exhausted embed queue items");
         }
 
+        // The same time budget the plugin drain keeps, checked before each
+        // claim. Without it the only stop was the item cap, so a slow provider
+        // kept this pass claiming fresh batches until the cron run's outer
+        // bound cut it off, and every job in the batch it was holding then
+        // spent an attempt on work that was never allowed to finish.
+        let deadline = std::time::Instant::now() + self.drain_budget;
         let mut processed: i64 = 0;
         while processed < MAX_QUEUE_ITEMS_PER_CYCLE {
+            if std::time::Instant::now() >= deadline {
+                debug!(
+                    budget_secs = self.drain_budget.as_secs(),
+                    "embed drain budget spent; remaining jobs wait for the next cycle"
+                );
+                break;
+            }
             let batch =
                 KERNEL_EMBED_CONCURRENCY.min((MAX_QUEUE_ITEMS_PER_CYCLE - processed) as usize);
             let claimed = self
@@ -1876,16 +2184,24 @@ impl CronService {
             }
             processed += claimed.len() as i64;
 
-            let mut set = tokio::task::JoinSet::new();
-            for job in claimed {
-                let pool = self.pool.clone();
-                let ai = self.ai_providers.clone();
-                let vs = self.vector_store.clone();
-                set.spawn(async move { run_embed_job(pool, ai, vs, job).await });
-            }
+            // Plain spawned tasks, not a `JoinSet`: dropping a `JoinSet` aborts
+            // its tasks, so a pass cancelled from outside (the cron run's bound
+            // on this drain) used to abort claimed jobs part way and leave each
+            // with an attempt spent and no outcome recorded. A dropped
+            // `JoinHandle` only stops waiting; the job finishes and records its
+            // own outcome.
+            let handles: Vec<_> = claimed
+                .into_iter()
+                .map(|job| {
+                    let pool = self.pool.clone();
+                    let ai = self.ai_providers.clone();
+                    let vs = self.vector_store.clone();
+                    tokio::spawn(async move { run_embed_job(pool, ai, vs, job).await })
+                })
+                .collect();
 
-            while let Some(joined) = set.join_next().await {
-                match joined {
+            for handle in handles {
+                match handle.await {
                     Ok(Ok(outcome)) => stats.record(outcome),
                     Ok(Err(e)) => {
                         warn!(error = %e, "embed job bookkeeping failed");
@@ -2425,7 +2741,7 @@ impl CronService {
     async fn claim_daily(&self, key: &str) -> Result<bool> {
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
         let claimed: Option<String> = redis::cmd("SET")
@@ -2444,7 +2760,7 @@ impl CronService {
     pub async fn last_run(&self) -> Result<Option<LastCronRun>> {
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
 
@@ -2484,7 +2800,7 @@ impl CronService {
 
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
 
@@ -2513,6 +2829,99 @@ pub struct LastCronRun {
     /// How long a completed run took.
     #[serde(default)]
     pub duration_ms: Option<u64>,
+}
+
+/// Await one cron task, for at most `limit`.
+///
+/// On timeout the task's future is dropped, the timeout is logged at warn with
+/// the task's name, `<task>:TIMEOUT` goes into the run's task list as it always
+/// has for `tap_cron`, and `None` comes back so the run moves on to its next
+/// task. See [`CRON_TASK_TIMEOUT_SECS`].
+async fn bounded<T>(
+    task: &str,
+    limit: Duration,
+    tasks_run: &mut Vec<String>,
+    fut: impl std::future::Future<Output = T>,
+) -> Option<T> {
+    match tokio::time::timeout(limit, fut).await {
+        Ok(value) => Some(value),
+        Err(_) => {
+            warn!(
+                task,
+                timeout_secs = limit.as_secs_f64(),
+                "cron task timed out; moving on to the next task"
+            );
+            tasks_run.push(format!("{task}:TIMEOUT"));
+            None
+        }
+    }
+}
+
+/// Whether this process has a Pagefind rebuild in flight.
+static PAGEFIND_REBUILDING: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// The one Pagefind rebuild this process may have running at a time.
+///
+/// A cron run waits on a rebuild for one task's bound and then leaves it running
+/// in the background (see `run`), so the next run can arrive while it is still
+/// writing. This keeps that run from starting a second writer on the same
+/// directory. Dropped when the rebuild ends, however it ends.
+struct PagefindRebuild;
+
+impl PagefindRebuild {
+    /// Claim the slot, or `None` if a rebuild is already running.
+    fn start() -> Option<Self> {
+        PAGEFIND_REBUILDING
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for PagefindRebuild {
+    fn drop(&mut self) {
+        PAGEFIND_REBUILDING.store(false, std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// When the run holding a cron lock took it, from the lock's value, in unix
+/// seconds. `None` for a value written without [`LOCK_SINCE_MARKER`].
+fn lock_held_since(value: &str) -> Option<i64> {
+    value
+        .rsplit_once(LOCK_SINCE_MARKER)
+        .and_then(|(_, since)| since.parse().ok())
+}
+
+/// What a run that found the cron lock held should make of it.
+#[derive(Debug, PartialEq, Eq)]
+enum HeldLock {
+    /// Another run is going and has not been at it unusually long. `held_secs`
+    /// is `None` when the holder's value records no start time.
+    Overlap { held_secs: Option<i64> },
+    /// The holder has had the lock longer than [`MAX_LOCK_RENEWAL_SECS`], the
+    /// bound past which no healthy run renews it: whatever holds it is stuck.
+    TooLong { held_secs: i64 },
+    /// The lock has no TTL, so it will never free itself.
+    NoExpiry,
+}
+
+/// Classify a held cron lock from its value, its TTL (`TTL` semantics: `-1`
+/// means no expiry) and the time now.
+fn classify_held_lock(value: &str, ttl_secs: i64, now: i64) -> HeldLock {
+    if ttl_secs == -1 {
+        return HeldLock::NoExpiry;
+    }
+    let held_secs = lock_held_since(value).map(|since| (now - since).max(0));
+    match held_secs {
+        Some(held) if held > MAX_LOCK_RENEWAL_SECS as i64 => HeldLock::TooLong { held_secs: held },
+        _ => HeldLock::Overlap { held_secs },
+    }
 }
 
 /// What [`run_heartbeat`] is allowed to do, and for how long.
@@ -2586,7 +2995,7 @@ pub(crate) async fn run_heartbeat(
                     gave_up = true;
                     continue;
                 }
-                if let Ok(mut conn) = redis.get_multiplexed_async_connection().await {
+                if let Ok(mut conn) = redis.bounded_connection().await {
                     // Extend lock TTL if we still own it
                     let script = redis::Script::new(EXTEND_LOCK_SCRIPT);
                     if let Err(e) = script
@@ -2653,17 +3062,21 @@ fn build_http_client() -> reqwest::Client {
         .expect("SSRF-hardened cron/queue HTTP client must build")
 }
 
-/// Get hostname for lock identification.
-/// A fresh owner value for the cron lock: `host:pid:uuid`, unique per run.
+/// A fresh owner value for the cron lock: `host:pid:uuid:t<unix seconds>`,
+/// unique per run, and recording when the run took the lock (see
+/// [`LOCK_SINCE_MARKER`]). The uuid is plain hex, so the marker stays
+/// unambiguous.
 fn new_lock_value() -> String {
     format!(
-        "{}:{}:{}",
+        "{}:{}:{}{LOCK_SINCE_MARKER}{}",
         hostname(),
         std::process::id(),
-        uuid::Uuid::new_v4().simple()
+        uuid::Uuid::new_v4().simple(),
+        chrono::Utc::now().timestamp()
     )
 }
 
+/// Get hostname for lock identification.
 fn hostname() -> String {
     hostname::get()
         .map(|h| h.to_string_lossy().to_string())
@@ -2876,6 +3289,55 @@ mod tests {
         assert_eq!(from_empty.poll_interval_secs, 5);
     }
 
+    /// The lock value carries its start time, and only a value written with
+    /// the marker has an age: an older kernel's `host:pid` must not have its
+    /// pid read as a timestamp.
+    #[test]
+    fn a_lock_value_records_when_it_was_taken() {
+        assert_eq!(lock_held_since("web-1:42:t1700000000"), Some(1_700_000_000));
+        assert_eq!(lock_held_since("web-1:42"), None);
+        assert_eq!(lock_held_since("web-1:42:tsoon"), None);
+        // The value a run writes now, and the uuid-only form the release
+        // before it wrote.
+        let now = chrono::Utc::now().timestamp();
+        let since = lock_held_since(&new_lock_value()).expect("a fresh value has an age");
+        assert!((now - 1..=now + 1).contains(&since), "{since} vs {now}");
+        assert_eq!(
+            lock_held_since("web-1:42:0123456789abcdef0123456789abcdef"),
+            None
+        );
+        assert_ne!(new_lock_value(), new_lock_value());
+    }
+
+    #[test]
+    fn only_a_lock_held_past_the_renewal_bound_is_too_long() {
+        let now = 1_700_010_000;
+        let since = |held: i64| format!("web-1:42:t{}", now - held);
+        let max = MAX_LOCK_RENEWAL_SECS as i64;
+
+        assert_eq!(
+            classify_held_lock(&since(5), 295, now),
+            HeldLock::Overlap { held_secs: Some(5) }
+        );
+        assert_eq!(
+            classify_held_lock(&since(max), 300, now),
+            HeldLock::Overlap {
+                held_secs: Some(max)
+            }
+        );
+        assert_eq!(
+            classify_held_lock(&since(max + 1), 300, now),
+            HeldLock::TooLong { held_secs: max + 1 }
+        );
+        // An older kernel's value has no age; a TTL still bounds it.
+        assert_eq!(
+            classify_held_lock("web-1:42", 120, now),
+            HeldLock::Overlap { held_secs: None }
+        );
+        // No expiry is never an ordinary overlap, whatever the age.
+        assert_eq!(classify_held_lock(&since(1), -1, now), HeldLock::NoExpiry);
+    }
+
     // ── B178: the built-in scheduler ─────────────────────────────────────────
 
     #[test]
@@ -2964,7 +3426,7 @@ mod tests {
         let Ok(client) = redis::Client::open(trovato_test_utils::env::redis_url()) else {
             return;
         };
-        let Ok(mut conn) = client.get_multiplexed_async_connection().await else {
+        let Ok(mut conn) = client.bounded_connection().await else {
             return; // No Redis in this environment.
         };
         // A pool that is never used: the skip happens before any task runs.
@@ -3016,7 +3478,7 @@ mod tests {
         let Ok(client) = redis::Client::open(trovato_test_utils::env::redis_url()) else {
             return;
         };
-        let Ok(mut conn) = client.get_multiplexed_async_connection().await else {
+        let Ok(mut conn) = client.bounded_connection().await else {
             return; // No Redis in this environment; uniqueness is covered above.
         };
         let key = format!("cron:lock:test:{}", uuid::Uuid::new_v4());
@@ -3079,7 +3541,7 @@ mod tests {
         let Ok(client) = redis::Client::open(trovato_test_utils::env::redis_url()) else {
             return;
         };
-        let Ok(mut conn) = client.get_multiplexed_async_connection().await else {
+        let Ok(mut conn) = client.bounded_connection().await else {
             return; // No Redis in this environment; the bound is covered above.
         };
 

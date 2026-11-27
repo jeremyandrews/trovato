@@ -16,6 +16,7 @@
 //! and ` ADMIN ` are one account and must be one counter, and no caller can
 //! forget to normalise.
 
+use crate::redis_conn::BoundedRedis;
 use anyhow::{Context, Result};
 use redis::AsyncCommands;
 use redis::Client as RedisClient;
@@ -70,7 +71,7 @@ impl LockoutService {
 
     async fn conn(&self) -> Result<redis::aio::MultiplexedConnection> {
         self.redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")
     }

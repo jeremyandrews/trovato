@@ -39,6 +39,7 @@ mod password_prompt;
 mod permissions;
 mod plugin;
 mod recovery;
+mod redis_conn;
 mod routes;
 mod search;
 mod services;

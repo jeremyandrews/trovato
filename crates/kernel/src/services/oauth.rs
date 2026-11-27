@@ -3,6 +3,7 @@
 //! JWT token signing/verification, client validation, authorization code
 //! generation with PKCE (RFC 7636), and token endpoint grant handling.
 
+use crate::redis_conn::BoundedRedis;
 use anyhow::{Context, Result};
 use jsonwebtoken::{Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use sqlx::PgPool;
@@ -361,7 +362,7 @@ impl OAuthService {
         let json = serde_json::to_string(&data).context("failed to serialize auth code data")?;
 
         let mut conn = redis_client
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
 
@@ -399,7 +400,7 @@ impl OAuthService {
         redis_client: &redis::Client,
     ) -> Result<TokenResponse> {
         let mut conn = redis_client
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
 
@@ -476,7 +477,7 @@ impl OAuthService {
         Self::validate_jti(jti)?;
 
         let mut conn = redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
 
@@ -499,7 +500,7 @@ impl OAuthService {
         Self::validate_jti(jti)?;
 
         let mut conn = redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to get Redis connection")?;
 
