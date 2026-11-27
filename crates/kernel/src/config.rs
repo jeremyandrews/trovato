@@ -136,11 +136,6 @@ impl crate::plugin::PluginConfig {
     /// - `PLUGIN_FUEL_LIMIT` (default 10_000_000_000) — per-`Store` fuel budget.
     /// - `PLUGIN_BACKGROUND_TAP_DEADLINE_SECS` (default 150) — epoch budget for
     ///   a background tap, and so the longest a single queue job may burn CPU.
-    /// - `PLUGIN_WASM_CACHE_DIR` (default unset, cache off) — directory for
-    ///   wasmtime's own compilation cache. Off by default: production never
-    ///   recompiles a plugin twice in one process's life, so the cache would
-    ///   only cost disk I/O. A test harness that starts many processes against
-    ///   the same fixture plugins sets this (see `TestApp::build`).
     ///
     /// Every variable falls back to its documented default when unset or
     /// unparseable. The pool slab and the limiter memory cap are kept coherent at
@@ -207,7 +202,6 @@ impl crate::plugin::PluginConfig {
                     lim_defaults.background_wallclock_ceiling_secs,
                 ),
             },
-            wasm_cache_dir: lookup("PLUGIN_WASM_CACHE_DIR").map(PathBuf::from),
         }
     }
 }
@@ -577,10 +571,6 @@ pub struct Config {
 
     /// Mail outbox, worker and limit settings (BG18). See [`MailConfig`].
     pub mail: MailConfig,
-
-    /// Plugin runtime resource bounds and the WASM compilation cache. See
-    /// [`crate::plugin::PluginConfig`].
-    pub plugin: crate::plugin::PluginConfig,
 
     /// The configuration request handling reads. See [`RuntimeConfig`].
     pub runtime: RuntimeConfig,
@@ -992,7 +982,6 @@ impl Config {
             shutdown_drain,
             health_token,
             mail: MailConfig::from_lookup(get),
-            plugin: crate::plugin::PluginConfig::from_lookup(get),
             runtime,
         })
     }

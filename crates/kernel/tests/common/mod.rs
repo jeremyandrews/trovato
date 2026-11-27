@@ -397,17 +397,6 @@ impl TestApp {
                 .join(format!("trovato-test-pagefind-{}", std::process::id()))
                 .join("pagefind");
         }
-        // Production never recompiles the same plugin twice in one process's
-        // life, so the cache is off there by default. A test run is the
-        // opposite case: hundreds of processes compile the same fixture
-        // `.wasm` files from scratch. Turned on here, through
-        // `target/wasm-cache` (keyed by wasmtime itself on the module bytes,
-        // engine settings and its own version, so a changed fixture or a
-        // toolchain bump still recompiles).
-        if std::env::var_os("PLUGIN_WASM_CACHE_DIR").is_none() {
-            config.plugin.wasm_cache_dir = Some(project_root.join("target").join("wasm-cache"));
-        }
-
         // Trust the mocked loopback peer (see MockConnectInfo below) so the
         // per-test X-Forwarded-For isolation `login` relies on passes the RATE-1
         // trusted-proxy gate.

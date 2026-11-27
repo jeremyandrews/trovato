@@ -201,3 +201,9 @@ cargo nextest run --workspace --lib --bins --profile ci
 cargo nextest list --workspace --run-ignored all --message-format oneline
 cargo test --all --doc -- --list
 ```
+
+That is what CI itself runs. For day-to-day local work, including by an
+agent, see "How to test fast" in `CONTRIBUTING.md`: `scripts/test-changed.sh`
+for the inner loop, covered with its measurements in
+`docs/performance/test-suite.md`.
+```
