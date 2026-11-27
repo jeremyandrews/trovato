@@ -100,14 +100,14 @@ applied, so `trovato migrate` finds nothing to do.
 ### Search needs `access content` and counts only what it shows
 
 **Who is affected:** visitors holding `search content` without
-`access content`, now refused search; and anyone but a superuser who searched
-for items on an internal stage, or for their own unpublished items opened by a
-type-specific permission or a plugin such as the blog plugin. See
+`access content`, now refused search; and a non-superuser who searched
+internal stages, or their own unpublished items opened by a type-specific
+permission or a plugin such as the blog plugin. See
 [docs/admin-permissions.md](docs/admin-permissions.md#search).
 
 **How to find out.** Look for roles holding `search content` but not
 `access content`. The stock `anonymous user` and `authenticated user` roles
-hold both by default.
+hold both.
 
 ## v0.105.0 — 2026-11-25
 
