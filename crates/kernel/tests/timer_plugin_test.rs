@@ -465,8 +465,6 @@ async fn publisher_app() -> common::TestApp {
         .unwrap();
     drop(lock);
     pool.close().await;
-    let plugins = dir.clone();
-    let app = common::TestApp::with_config(move |config| config.plugins_dirs = vec![plugins]).await;
     std::fs::remove_dir_all(&dir).ok();
     app
 }

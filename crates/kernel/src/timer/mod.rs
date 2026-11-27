@@ -97,6 +97,43 @@ const DEFAULT_LEASE_SECS: u64 = 960;
 /// Largest repeat interval: what fits the column.
 const MAX_REPEAT_SECS: i64 = i32::MAX as i64;
 
+/// The scheduler's wake query (`$1` an owner scope or NULL): milliseconds
+/// until the earliest scheduled timer or the earliest lease to run out. Public
+/// so the benchmark explains exactly this statement.
+pub const NEXT_DUE_SQL: &str = "SELECT (EXTRACT(EPOCH FROM (LEAST( \
+     (SELECT min(run_at) FROM scheduled_timer \
+      WHERE status = 'scheduled' AND ($1::text[] IS NULL OR owner = ANY($1))), \
+     (SELECT min(claimed_until) FROM scheduled_timer \
+      WHERE status = 'running' AND ($1::text[] IS NULL OR owner = ANY($1))) \
+     ) - clock_timestamp())) * 1000)::float8";
+
+/// The claim (`$1` scope, `$2` limit, `$3` this server, `$4` lease seconds):
+/// due timers, and any whose lease ran out, in one statement. Public so the
+/// benchmark explains exactly this statement.
+pub const CLAIM_SQL: &str = "WITH due AS ( \
+     SELECT id FROM scheduled_timer \
+     WHERE status = 'scheduled' AND run_at <= clock_timestamp() \
+       AND ($1::text[] IS NULL OR owner = ANY($1)) \
+     ORDER BY run_at LIMIT $2 FOR UPDATE SKIP LOCKED \
+     ), stale AS ( \
+     SELECT id FROM scheduled_timer \
+     WHERE status = 'running' AND claimed_until < clock_timestamp() \
+       AND ($1::text[] IS NULL OR owner = ANY($1)) \
+     ORDER BY claimed_until LIMIT $2 FOR UPDATE SKIP LOCKED \
+     ), picked AS ( \
+     SELECT id FROM due UNION ALL SELECT id FROM stale LIMIT $2 \
+     ) \
+     UPDATE scheduled_timer t SET \
+     status = 'running', attempts = t.attempts + 1, \
+     claim_token = gen_random_uuid(), claimed_by = $3, \
+     claimed_until = clock_timestamp() + make_interval(secs => $4), \
+     last_fired_at = clock_timestamp(), \
+     last_lateness_ms = GREATEST(0, (EXTRACT(EPOCH FROM (clock_timestamp() - t.run_at)) * 1000)::bigint), \
+     changed = now() \
+     FROM picked d WHERE t.id = d.id \
+     RETURNING t.id, t.owner, t.name, t.payload, t.run_at, t.last_fired_at AS fired_at, \
+     t.repeat_secs, t.attempts, t.claim_token, t.last_lateness_ms AS lateness_ms";
+
 // =============================================================================
 // Settings
 // =============================================================================
@@ -899,18 +936,11 @@ impl TimerService {
     /// earliest scheduled timer, or the earliest lease to run out. `None`
     /// when there is neither. One statement on the two partial indexes.
     pub async fn next_due_in_ms(&self) -> Result<Option<i64>> {
-        let ms: Option<f64> = sqlx::query_scalar(
-            "SELECT (EXTRACT(EPOCH FROM (LEAST( \
-                 (SELECT min(run_at) FROM scheduled_timer \
-                  WHERE status = 'scheduled' AND ($1::text[] IS NULL OR owner = ANY($1))), \
-                 (SELECT min(claimed_until) FROM scheduled_timer \
-                  WHERE status = 'running' AND ($1::text[] IS NULL OR owner = ANY($1))) \
-             ) - clock_timestamp())) * 1000)::float8",
-        )
-        .bind(self.scope())
-        .fetch_one(&self.pool)
-        .await
-        .context("read the next timer")?;
+        let ms: Option<f64> = sqlx::query_scalar(NEXT_DUE_SQL)
+            .bind(self.scope())
+            .fetch_one(&self.pool)
+            .await
+            .context("read the next timer")?;
         Ok(ms.map(|ms| ms.ceil() as i64))
     }
 
@@ -918,38 +948,14 @@ impl TimerService {
     /// statement. `FOR UPDATE SKIP LOCKED`: a row another server is claiming
     /// is passed over, never claimed twice.
     async fn claim(&self, limit: i64) -> Result<Vec<Claimed>> {
-        let rows: Vec<Claimed> = sqlx::query_as(
-            "WITH due AS ( \
-                 SELECT id FROM scheduled_timer \
-                 WHERE status = 'scheduled' AND run_at <= clock_timestamp() \
-                   AND ($1::text[] IS NULL OR owner = ANY($1)) \
-                 ORDER BY run_at LIMIT $2 FOR UPDATE SKIP LOCKED \
-             ), stale AS ( \
-                 SELECT id FROM scheduled_timer \
-                 WHERE status = 'running' AND claimed_until < clock_timestamp() \
-                   AND ($1::text[] IS NULL OR owner = ANY($1)) \
-                 ORDER BY claimed_until LIMIT $2 FOR UPDATE SKIP LOCKED \
-             ), picked AS ( \
-                 SELECT id FROM due UNION ALL SELECT id FROM stale LIMIT $2 \
-             ) \
-             UPDATE scheduled_timer t SET \
-                 status = 'running', attempts = t.attempts + 1, \
-                 claim_token = gen_random_uuid(), claimed_by = $3, \
-                 claimed_until = clock_timestamp() + make_interval(secs => $4), \
-                 last_fired_at = clock_timestamp(), \
-                 last_lateness_ms = GREATEST(0, (EXTRACT(EPOCH FROM (clock_timestamp() - t.run_at)) * 1000)::bigint), \
-                 changed = now() \
-             FROM picked d WHERE t.id = d.id \
-             RETURNING t.id, t.owner, t.name, t.payload, t.run_at, t.last_fired_at AS fired_at, \
-                 t.repeat_secs, t.attempts, t.claim_token, t.last_lateness_ms AS lateness_ms",
-        )
-        .bind(self.scope())
-        .bind(limit)
-        .bind(&self.instance)
-        .bind(self.lease_secs() as f64)
-        .fetch_all(&self.pool)
-        .await
-        .context("claim due timers")?;
+        let rows: Vec<Claimed> = sqlx::query_as(CLAIM_SQL)
+            .bind(self.scope())
+            .bind(limit)
+            .bind(&self.instance)
+            .bind(self.lease_secs() as f64)
+            .fetch_all(&self.pool)
+            .await
+            .context("claim due timers")?;
         Ok(rows)
     }
 

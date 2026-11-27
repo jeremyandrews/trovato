@@ -301,6 +301,10 @@ fn a_repeating_timer_keeps_its_cadence_and_fires_once_after_an_outage() {
         let timers = service(&app.db, &owner);
         timers.register_handler(&owner, "r", recorder(&log, 0));
 
+        // Start just after a second begins, so the next slot (+1 s) is ~950 ms
+        // away and the catch-up sample below cannot catch it as well.
+        let into = Utc::now().timestamp_subsec_millis();
+        tokio::time::sleep(Duration::from_millis(u64::from(1050 - into.min(1000)))).await;
         // Scheduled every 2 s from 9 s ago: slots -9, -7, -5, -3 and -1 were
         // missed while no scheduler ran.
         let first = Utc::now().timestamp() - 9;
@@ -310,7 +314,7 @@ fn a_repeating_timer_keeps_its_cadence_and_fires_once_after_an_outage() {
         };
         timers.set(&owner, &every).await.unwrap();
         let (token, handle) = start(&timers);
-        tokio::time::sleep(Duration::from_millis(700)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
         let caught_up = log.lock().unwrap().len();
         wait_for(&log, 4, Duration::from_secs(12)).await;
         stop(token, handle).await;

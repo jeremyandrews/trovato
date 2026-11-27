@@ -154,6 +154,25 @@ struct Relative {
     future: bool,
 }
 
+/// A repeat interval, for the template to say ("every 7 days").
+#[derive(Debug, Serialize)]
+struct Every {
+    count: i64,
+    /// `second`, `minute`, `hour` or `day`.
+    unit: &'static str,
+}
+
+/// `secs` in the largest unit that divides it exactly: 604800 is 7 days, 90 is
+/// 90 seconds.
+fn every(secs: i32) -> Every {
+    let secs = i64::from(secs);
+    let (count, unit) = [(86_400, "day"), (3600, "hour"), (60, "minute")]
+        .into_iter()
+        .find(|(size, _)| secs % size == 0)
+        .map_or((secs, "second"), |(size, unit)| (secs / size, unit));
+    Every { count, unit }
+}
+
 fn relative(at: DateTime<Utc>, now: DateTime<Utc>) -> Relative {
     let secs = (at - now).num_seconds();
     let future = secs >= 0;
@@ -188,6 +207,8 @@ struct Row {
     next_utc: String,
     next_relative: Relative,
     repeat_secs: Option<i32>,
+    /// The repeat in the largest unit that divides it exactly.
+    repeat: Option<Every>,
     status: String,
     last_fired_local: Option<String>,
     last_lateness_ms: Option<i64>,
@@ -254,6 +275,7 @@ async fn list_timers(
             last_fired_local: local.get(i * 2 + 1).cloned().flatten(),
             owner: t.owner,
             name: t.name,
+            repeat: t.repeat_secs.map(every),
             repeat_secs: t.repeat_secs,
             status: t.status,
             last_lateness_ms: t.last_lateness_ms,
@@ -745,6 +767,16 @@ async fn save_settings(
 #[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_repeat_is_said_in_the_largest_unit_that_divides_it() {
+        let e = every(604_800);
+        assert_eq!((e.count, e.unit), (7, "day"));
+        let e = every(5400);
+        assert_eq!((e.count, e.unit), (90, "minute"));
+        let e = every(90);
+        assert_eq!((e.count, e.unit), (90, "second"));
+    }
 
     #[test]
     fn relative_times_pick_the_largest_whole_unit() {

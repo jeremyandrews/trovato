@@ -124,6 +124,20 @@ write or read fails and `-14` for a request that is not valid JSON.
 | -91 | `ERR_VOCABULARY_INVALID` | The id is not a machine name of at most 32 characters, the label is empty, or the owner id is empty or longer than 255 | Fix the request |
 | -92 | `ERR_VOCABULARY_EXISTS` | A vocabulary with this id exists | Put the owner in the id, or list the owner's vocabularies first |
 
+## Timer Errors
+
+Returned by `host::timer_set` (`trovato:kernel/timer` `set`, added by B278).
+`set` also returns `-12` when the write fails and `-14` for a request that is
+not valid JSON; `cancel` and `get` return `-12` when the read or write fails.
+See [plugin-timers.md](plugin-timers.md).
+
+| Code | Constant | Meaning | Recovery |
+|------|----------|---------|----------|
+| -95 | `ERR_TIMER_INVALID` | The name is empty, longer than 255 bytes or has a control character, or the time is not a valid second | Fix the request |
+| -96 | `ERR_TIMER_PAYLOAD_TOO_LARGE` | The payload's JSON is over the site's `max_payload_bytes` (default 4096) | Carry an id and read the rest in the handler |
+| -97 | `ERR_TIMER_REPEAT_TOO_SHORT` | The repeat interval is under the site's `min_repeat_secs` (default 60) | Repeat less often, or use cron |
+| -98 | `ERR_TIMER_LIMIT` | The plugin holds as many timers as the site's `max_per_plugin` (default 10,000) | Cancel timers it no longer needs, or ask the operator to raise the limit |
+
 ## User Directory Errors
 
 Returned by `host::load_users`, `host::find_user_by_name` and

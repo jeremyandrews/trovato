@@ -81,6 +81,10 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 | `CLIENT_IP_STORAGE` | `full` | How much of a client address is stored: `full`, `truncated` or `none`. See "Client addresses and privacy" below. |
 | `CRON_KEY` | *(none)* | Shared secret in the cron URL, `POST /cron/<CRON_KEY>`. Change it before exposing the server. |
 | `CRON_INTERVAL_SECS` | *(none)* | Seconds between the built-in scheduler's cron runs, overriding the `cron_interval_secs` site setting (default 300). `0` turns the scheduler off. Unset leaves the site setting in charge; see [Cron](#cron). |
+| `TIMER_MAX_CONCURRENT` | *(none)* | Most timers one server fires at once, overriding the timers throttle (default 4). See [Timers](#timers). |
+| `TIMER_MAX_PER_PLUGIN` | *(none)* | Most timers one plugin may hold, overriding the throttle (default 10,000). |
+| `TIMER_MIN_REPEAT_SECS` | *(none)* | Shortest repeat interval a timer may have, in seconds, overriding the throttle (default 60). |
+| `TIMER_MAX_PAYLOAD_BYTES` | *(none)* | Largest JSON payload a timer may carry, overriding the throttle (default 4096). |
 | `JWT_SECRET` | *(none)* | Required for OAuth2 plugin (min 32 bytes) |
 | `WEBHOOK_ENCRYPTION_KEY` | *(none)* | Encrypts webhook secrets (min 32 bytes, recommended) |
 | `UPDATE_CHECK` | `1` | Whether the kernel may check for Trovato releases. Set to `0` (or `false`/`off`/`no`) for a deployment that must make no outbound requests at all. See "Update checks" below. |
@@ -479,7 +483,7 @@ are applied automatically on startup. To see them first, run
 
 ## Cron
 
-Cron (scheduled publishing, the search index rebuild, temporary file and
+Cron (the scheduled publishing catch-up sweep, the search index rebuild, temporary file and
 session cleanup, plugins' `tap_cron`) runs on its own: the server calls it every
 300 seconds with nothing else to set up. No sidecar container, crontab or
 systemd timer is needed. Change the interval, or set it to `0` to turn the
@@ -491,6 +495,21 @@ setting from the environment.
 go. Every caller takes the same lock, so two runs never overlap, and the
 scheduler skips a turn when cron ran less than an interval ago, so an external
 caller does not double the rate.
+
+## Timers
+
+Work due at a known second (an item's publish date, a plugin's own timers)
+runs on a timer, not on cron: every server runs a timer scheduler that sleeps
+until the next timer is due and fires it at that second, on exactly one server.
+It needs nothing set up: it uses the site's Postgres, with `LISTEN`/`NOTIFY` to
+wake every server when a timer is set earlier, and reads the table once a
+minute when nothing is due. The timers report at `/admin/reports/timers` lists,
+pauses, runs and edits them, and holds the throttles; the `TIMER_*` variables
+above override those from the environment. A connection pooler in transaction
+mode in front of Postgres does not pass `LISTEN`: there a timer set on one
+server for earlier than the next one due wakes that server at once, and the
+others up to a minute later. See
+[docs/plugin-timers.md](docs/plugin-timers.md).
 
 ## More Than One Server
 
