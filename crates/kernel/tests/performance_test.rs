@@ -254,6 +254,100 @@ fn admin_content_list() {
     });
 }
 
+/// The Files listing as the administrator (B246): twelve files owned by four
+/// generated accounts, half of them JPEG images, so the owner lookup and the
+/// image rows both show. The perf site does not enable
+/// `trovato_image_styles`, so the thumbnails are off here. The rows are
+/// removed again, whatever the outcome.
+#[test]
+fn admin_files_list() {
+    run_test(async {
+        let site = shared_site();
+        let db = &site.app.db;
+        let clear = || async {
+            sqlx::query("DELETE FROM file_managed WHERE uri LIKE 'local://perf-files/%'")
+                .execute(db)
+                .await
+                .unwrap();
+        };
+        clear().await;
+        for n in 1..=12_i64 {
+            let (mime, ext) = if n % 2 == 0 {
+                ("image/jpeg", "jpg")
+            } else {
+                ("application/pdf", "pdf")
+            };
+            sqlx::query(
+                "INSERT INTO file_managed (id, owner_id, filename, uri, filemime, filesize, \
+                 status, created, changed) \
+                 VALUES (md5('perf-file:' || $1::text)::uuid, \
+                         md5('1:user:' || (1 + $1 % 4)::text)::uuid, \
+                         'perf-file-' || $1 || '.' || $2, \
+                         'local://perf-files/perf-file-' || $1 || '.' || $2, \
+                         $3, 1000 + $1, 1, 1700000000 + $1, 1700000000 + $1)",
+            )
+            .bind(n)
+            .bind(ext)
+            .bind(mime)
+            .execute(db)
+            .await
+            .unwrap();
+        }
+        let outcome = tokio::spawn(async move {
+            measure(
+                shared_site(),
+                "admin_files",
+                &[Visitor::Admin],
+                "/admin/content/files",
+                &["perf-file-12.jpg", "perf-file-1.pdf"],
+                &[],
+            )
+            .await;
+        })
+        .await;
+        clear().await;
+        if let Err(e) = outcome {
+            std::panic::resume_unwind(e.into_panic());
+        }
+    });
+}
+
+/// The comments listing as the administrator. Another test adds a comment for
+/// a while, so this holds the comment rows still for the whole measure.
+#[test]
+fn admin_comments_list() {
+    run_test(async {
+        let _rows = COMMENT_ROWS.lock().await;
+        let site = shared_site();
+        measure(
+            site,
+            "admin_comments",
+            &[Visitor::Admin],
+            "/admin/content/comments",
+            &["gen_user_"],
+            &[],
+        )
+        .await;
+    });
+}
+
+/// The people listing as the administrator, sorted by name (its default).
+#[test]
+fn admin_people_list() {
+    run_test(async {
+        let site = shared_site();
+        measure(
+            site,
+            "admin_people",
+            &[Visitor::Admin],
+            "/admin/people",
+            &["gen_user_1"],
+            &[],
+        )
+        .await;
+    });
+}
+
 /// The harness bites: one more statement on the item page is a failure that
 /// names the statement. The extra statement comes from the test router's
 /// `x-perf-extra-query` probe, inside the request's profile.
