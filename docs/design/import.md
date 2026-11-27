@@ -41,7 +41,7 @@ output. Every record has:
 
 | Key | Meaning |
 |---|---|
-| `type` | `user`, `item`, `revision`, `comment`, `alias`, `redirect` or `tile`. |
+| `type` | `user`, `file`, `item`, `revision`, `comment`, `alias`, `redirect` or `tile`. |
 | `id` | The record's id, a UUID the caller chooses. It is the record's identity: importing the same id again updates that record, never a second one. |
 
 and the keys of its type below. A key the type does not have is an error
@@ -171,6 +171,36 @@ run. Roles listed are granted; none is taken away. The users table has no
 Tiles are on the live stage; a `machine_name` another tile holds there is
 refused, naming that tile.
 
+### `file`
+
+A file already copied into the files directory (`UPLOADS_DIR`), from the old
+site's export. The importer never uploads, moves or rewrites a byte of it: it
+only reads the file at `path` to check and measure it, then registers a
+`file_managed` row pointing at that same path.
+
+| Key | Required | Meaning |
+|---|---|---|
+| `owner_id` | yes | A user id, stored or on an earlier line. |
+| `path` | yes | Where the bytes already sit, relative to the files directory. No absolute path, no `..`, no symlink leading outside it. |
+| `filename` | yes | The name shown to users. Its extension must agree with `mime_type` ([`EXTENSION_MIME_TYPES`]). |
+| `mime_type` | yes | Checked against the bytes' magic numbers and the allowlist, exactly as an upload's declared type is ([`FileService::validate_file`]). |
+| `created` | yes | When the file was first stored on the old site. |
+
+```json
+{"type":"file","id":"0193a5a0-0000-7000-8000-00000000f001","owner_id":"0193a5a0-0000-7000-8000-000000000003","path":"2019/04/conference-photo.jpg","filename":"conference-photo.jpg","mime_type":"image/jpeg","created":"2019-04-01T10:00:00Z"}
+```
+
+Importing a `file` before the items that reference it (by its id in a File
+field, or its `local://path` / `/files/path` embedded in a rich text field)
+lets those items resolve it exactly as they would resolve an uploaded file:
+`file_refs::sync_item_file_references` finds a managed file by id or URI alone
+and does not care how it got there. A `file` record is written `Permanent`
+(not the temporary status a fresh upload gets), since it is already attached
+to the content that references it. Size is measured from the bytes on disk,
+never trusted from the record. The file's storage path (and so its URI) is
+fixed at creation: a later record for the same id may update its owner, name,
+type and date, but not move it to another path.
+
 ## Upsert by id
 
 Each record is looked up by its `id`:
@@ -255,8 +285,11 @@ request, with no restart. One audit row (`import`) records the counts.
 - **No AI embeddings** are queued; the kernel's embed job runs on the next
   save of each item.
 - **No deletes.** Records absent from the file are left as they are.
-- **Files, media and images** are out of scope: a field may reference a file
-  that is already stored, but the importer does not bring files.
+- **No file uploads or copies.** A `file` record registers a file a port has
+  already placed in the files directory; the importer never fetches, uploads
+  or writes bytes of its own. Image style derivatives are not generated at
+  import time either — the existing on-demand route makes one the first time
+  it is requested, the same as for an uploaded original.
 
 ## Output
 
@@ -284,6 +317,7 @@ Running servers have dropped their cached copies; the next request reads the dat
 | redirect | `routes/admin_redirect.rs` | `Redirect::create` (`services/redirect.rs`, pool) | `canonicalize_source`, `validate_redirect_destination`, status code | local redirect cache clear | `now_v7()`, `created` now |
 | tile | `TileService::create` (`services/tile.rs`) | `Tile::create` (`models/tile.rs`, pool) | routes: machine name, config, visibility; unique `(machine_name, stage_id)` | audit | `now_v7()`, `created`/`changed` now |
 | user | `UserService::create_with_status_and_mail` (`services/user.rs`), `trovato user create` | `User::insert_hashed` (`models/user.rs`, any executor) | `new_account_problems` (`routes/admin_user.rs`): name, mail, password policy, name and mail taken | `tap_user_register`, audit | `now_v7()`, `created` the database default |
+| file (upload) | `FileService::upload` (`file/service.rs`) | `FileService::store`, pool, own id | size, MIME allowlist, magic bytes, extension (`validate_file`) | none | `Uuid::now_v7()`, `created`/`changed` now, `Temporary` |
 
 `trovato config import` (`config_storage/yaml.rs::import_config`) is the
 pattern this follows: an operator command that checks the whole set first,
@@ -298,3 +332,7 @@ writes it in one transaction, then bumps every cache kind from the command
 
 Each stands alone: a record type a build does not know yet is refused by name,
 so an older build fails a newer file loudly rather than skipping its lines.
+
+A fourth pull request added the `file` record (B184): a port's files arrive on
+disk ahead of the import run, and this is how they are registered without a
+second upload of bytes the port already placed.
