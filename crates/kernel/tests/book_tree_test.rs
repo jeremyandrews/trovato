@@ -131,55 +131,91 @@ async fn seed_item(app: &TestApp, title: &str) -> Uuid {
     id
 }
 
-async fn csrf_token(app: &TestApp, cookies: &str) -> String {
-    let response = app
-        .request_with_cookies(
-            Request::get("/admin/structure/books")
-                .body(Body::empty())
-                .unwrap(),
-            cookies,
-        )
-        .await;
-    let html = body_text(response).await;
-    // The plugin's page carries no meta tag, so take the token from a kernel admin
-    // page in the same session.
-    let response = app
-        .request_with_cookies(Request::get("/admin").body(Body::empty()).unwrap(), cookies)
-        .await;
-    let admin = body_text(response).await;
-    let needle = "csrf-token";
-    let pos = admin
-        .find(needle)
-        .unwrap_or_else(|| panic!("no csrf-token meta on /admin; books page was: {html}"));
-    let start = admin[pos..]
-        .find("content=\"")
-        .map(|p| pos + p + 9)
-        .unwrap();
-    let end = admin[start..].find('"').map(|p| start + p).unwrap();
-    admin[start..end].to_string()
+/// The value of attribute `name` in the tag `tag`.
+fn attr(tag: &str, name: &str) -> Option<String> {
+    let needle = format!(" {name}=\"");
+    let start = tag.find(&needle)? + needle.len();
+    let end = start + tag[start..].find('"')?;
+    Some(tag[start..end].to_string())
 }
 
+/// The form `form_id` on `html` as a browser holds it: its action and its
+/// hidden inputs, token and build id included.
+fn served_form(html: &str, form_id: &str) -> (String, Vec<(String, String)>) {
+    let start = html
+        .find(&format!("<form id=\"{form_id}\""))
+        .unwrap_or_else(|| panic!("no form {form_id} on the page: {html}"));
+    let end = start + html[start..].find("</form>").expect("the form's end");
+    let form = &html[start..end];
+    let action = attr(&form[..form.find('>').unwrap()], "action").expect("an action");
+    let hidden = form
+        .split("<input")
+        .skip(1)
+        .map(|rest| &rest[..rest.find('>').unwrap_or(rest.len())])
+        .filter(|tag| tag.contains("type=\"hidden\""))
+        .filter_map(|tag| Some((attr(tag, "name")?, attr(tag, "value").unwrap_or_default())))
+        .collect();
+    (action, hidden)
+}
+
+/// Load `page`, then submit its form `form_id` as served, with `fields`
+/// typed in. No CSRF header: the token comes from the form, as in a browser.
+async fn submit_served(
+    app: &TestApp,
+    cookies: &str,
+    page: &str,
+    form_id: &str,
+    fields: &[(&str, &str)],
+) -> axum::response::Response {
+    let html = page_html(app, cookies, page).await;
+    let (action, mut pairs) = served_form(&html, form_id);
+    for (name, value) in fields {
+        pairs.retain(|(n, _)| n != name);
+        pairs.push((name.to_string(), value.to_string()));
+    }
+    let body = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(pairs)
+        .finish();
+    app.request_with_cookies(
+        Request::post(action)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(body))
+            .unwrap(),
+        cookies,
+    )
+    .await
+}
+
+/// Submit the Book screen form that posts to `path`, the way an administrator
+/// does: load the screen it is on and fill it in.
 async fn post_with_csrf(
     app: &TestApp,
     cookies: &str,
     path: &str,
     fields: &[(&str, &str)],
 ) -> axum::response::Response {
-    let token = csrf_token(app, cookies).await;
-    let body = fields
+    let item = fields
         .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join("&");
-    app.request_with_cookies(
-        Request::post(path)
-            .header("content-type", "application/x-www-form-urlencoded")
-            .header("x-csrf-token", token)
-            .body(Body::from(body))
-            .unwrap(),
-        cookies,
-    )
-    .await
+        .find(|(name, _)| *name == "item_id")
+        .map(|(_, value)| value.to_string())
+        .unwrap_or_default();
+    if path.ends_with("/create") {
+        submit_served(
+            app,
+            cookies,
+            "/admin/structure/books",
+            "trovato_book_create",
+            fields,
+        )
+        .await
+    } else if let Some(book) = path.strip_suffix("/place") {
+        submit_served(app, cookies, book, "trovato_book_place", fields).await
+    } else if path.ends_with("/remove") {
+        let page = format!("{path}?item_id={item}");
+        submit_served(app, cookies, &page, "trovato_book_remove", &[]).await
+    } else {
+        panic!("no Book form posts to {path}")
+    }
 }
 
 /// Remove every page of a book, so a reused database does not accumulate them.
@@ -581,8 +617,8 @@ fn placing_a_page_under_its_own_descendant_is_refused() {
         .await;
         assert_eq!(
             response.status(),
-            StatusCode::BAD_REQUEST,
-            "a cycle must be refused"
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "a cycle must be refused on the form"
         );
         let body = body_text(response).await;
         assert!(
@@ -751,9 +787,11 @@ fn an_item_belongs_to_at_most_one_book() {
         .await;
         assert_eq!(
             response.status(),
-            StatusCode::BAD_REQUEST,
+            StatusCode::UNPROCESSABLE_ENTITY,
             "a page already in another book must be refused"
         );
+        let body = body_text(response).await;
+        assert!(body.contains("already a page in another book"), "{body}");
 
         let book: Uuid = sqlx::query_scalar("SELECT book_id FROM book_page WHERE item_id = $1")
             .bind(shared)
@@ -783,72 +821,56 @@ fn a_page_must_be_an_item_that_exists() {
         .await;
         assert_eq!(
             response.status(),
-            StatusCode::BAD_REQUEST,
+            StatusCode::UNPROCESSABLE_ENTITY,
             "a book root must be an item that exists"
+        );
+        let body = body_text(response).await;
+        assert!(
+            body.contains("No item has that id."),
+            "said on the form: {body}"
         );
     });
 }
 
-/// The `_token` value of the first form on `html`.
-fn form_token(html: &str) -> Option<String> {
-    let pos = html.find("name=\"_token\" value=\"")? + "name=\"_token\" value=\"".len();
-    let end = html[pos..].find('"')? + pos;
-    Some(html[pos..end].to_string())
-}
-
-/// GET `path` and return its HTML.
+/// GET `path` and return its HTML, with Tera's escaped `/` (`&#x2F;`) read
+/// back as a browser reads it.
 async fn page_html(app: &TestApp, cookies: &str, path: &str) -> String {
     let response = app
         .request_with_cookies(Request::get(path).body(Body::empty()).unwrap(), cookies)
         .await;
     assert_eq!(response.status(), StatusCode::OK, "GET {path}");
-    body_text(response).await
+    body_text(response).await.replace("&#x2F;", "/")
 }
 
-/// POST `fields` form-encoded with no CSRF header, as a browser submits the
-/// screen's own form: the token can only come from the form itself.
-async fn submit_form(
-    app: &TestApp,
-    cookies: &str,
-    path: &str,
-    fields: &[(&str, &str)],
-) -> axum::response::Response {
-    let body = fields
-        .iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join("&");
-    app.request_with_cookies(
-        Request::post(path)
-            .header("content-type", "application/x-www-form-urlencoded")
-            .body(Body::from(body))
-            .unwrap(),
-        cookies,
-    )
-    .await
-}
-
-/// Every form on the Book admin screens carries the `_token` the kernel checks,
-/// so a browser submitting the form as served is not refused with a 403 (B83b).
+/// The Book admin screens' forms are the kernel's: each is drawn by the form
+/// templates with the token and build id `FormService::build` gave it, and a
+/// browser submitting it as served is accepted (B83b).
 #[test]
-fn the_book_admin_forms_post_their_own_csrf_token() {
+fn the_book_admin_forms_are_built_by_the_kernel_and_accepted_as_served() {
     common::run_test(async {
         let app = app();
         let admin = book_admin(app).await;
-        let root = seed_item(app, "Token Book").await;
-        let child = seed_item(app, "Token Page").await;
+        let root = seed_item(app, "Served Book").await;
+        let child = seed_item(app, "Served Page").await;
 
-        // Create, with the token the list screen served.
         let html = page_html(app, &admin, "/admin/structure/books").await;
-        let create_at = html.find("/create\"").expect("the list has a create form");
-        let create_end = create_at + html[create_at..].find("</form>").unwrap();
-        let token = form_token(&html[create_at..create_end])
-            .expect("the create form carries a _token field");
-        let response = submit_form(
+        let (action, hidden) = served_form(&html, "trovato_book_create");
+        assert_eq!(action, "/admin/structure/books/create");
+        for name in ["_token", "_form_build_id"] {
+            assert!(
+                hidden.iter().any(|(n, v)| n == name && !v.is_empty()),
+                "{name}"
+            );
+        }
+        // Rendered inside the admin theme, not as a bare document.
+        assert!(html.contains("admin"), "{html}");
+
+        let response = submit_served(
             app,
             &admin,
-            "/admin/structure/books/create",
-            &[("_token", &token), ("item_id", &root.to_string())],
+            "/admin/structure/books",
+            "trovato_book_create",
+            &[("item_id", &root.to_string())],
         )
         .await;
         assert!(
@@ -857,22 +879,15 @@ fn the_book_admin_forms_post_their_own_csrf_token() {
             response.status()
         );
 
-        // Place, with the token the tree screen served.
         let tree = format!("/admin/structure/books/{root}");
-        let html = page_html(app, &admin, &tree).await;
-        let place_at = html.find("/place\"").expect("the tree has a place form");
-        let place_end = place_at + html[place_at..].find("</form>").unwrap();
-        let token =
-            form_token(&html[place_at..place_end]).expect("the place form carries a _token");
-        let response = submit_form(
+        let response = submit_served(
             app,
             &admin,
-            &format!("{tree}/place"),
+            &tree,
+            "trovato_book_place",
             &[
-                ("_token", &token),
                 ("item_id", &child.to_string()),
                 ("parent_item_id", &root.to_string()),
-                ("weight", "0"),
             ],
         )
         .await;
@@ -882,28 +897,57 @@ fn the_book_admin_forms_post_their_own_csrf_token() {
             response.status()
         );
 
-        // Remove, with the token on the page's own row.
+        // Each row links to a page asking whether to remove it.
         let html = page_html(app, &admin, &tree).await;
-        let row = html
-            .find(&format!("value=\"{child}\""))
-            .expect("the placed page has a remove form");
-        let form_start = html[..row].rfind("<form").unwrap();
-        let form_end = form_start + html[form_start..].find("</form>").unwrap();
-        let token = form_token(&html[form_start..form_end])
-            .expect("the page's own remove form carries a _token");
-        let response = submit_form(
-            app,
-            &admin,
-            &format!("{tree}/remove"),
-            &[("_token", &token), ("item_id", &child.to_string())],
-        )
-        .await;
+        let link = format!("{tree}/remove?item_id={child}");
+        assert!(html.contains(&link), "{html}");
+        let response = submit_served(app, &admin, &link, "trovato_book_remove", &[]).await;
         assert!(
             response.status().is_redirection(),
             "the remove form as served must be accepted, got {}",
             response.status()
         );
+        let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM book_page WHERE item_id = $1")
+            .bind(child)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(left, 0);
 
         drop_book(app, root).await;
+    });
+}
+
+/// A post that is not the kernel's form (a token, no build id) changes
+/// nothing: the screen answers with its page and writes no row.
+#[test]
+fn a_post_without_the_kernels_form_changes_nothing() {
+    common::run_test(async {
+        let app = app();
+        let admin = book_admin(app).await;
+        let root = seed_item(app, "Hand Posted Book").await;
+
+        let html = page_html(app, &admin, "/admin/structure/books").await;
+        let (_, hidden) = served_form(&html, "trovato_book_create");
+        let token = &hidden.iter().find(|(n, _)| n == "_token").unwrap().1;
+        let response = app
+            .request_with_cookies(
+                Request::post("/admin/structure/books/create")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(format!("_token={token}&item_id={root}")))
+                    .unwrap(),
+                &admin,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM book_page WHERE item_id = $1")
+            .bind(root)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(
+            rows, 0,
+            "no book is created from a post the kernel did not check"
+        );
     });
 }

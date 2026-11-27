@@ -189,3 +189,34 @@ pub fn link(href: &str, text: &str) -> ElementBuilder {
     b.attrs.insert("href".into(), Value::String(href.into()));
     b
 }
+
+/// Escape text for an HTML text node or a double-quoted or single-quoted
+/// attribute value.
+///
+/// The kernel does not sanitize HTML a plugin writes itself (a `tap_api` body,
+/// a view tap's string), so anything in it that a visitor or an editor typed has
+/// to pass through this first. `&`, `<`, `>`, `"` and `'` are replaced; nothing
+/// else is touched.
+///
+/// ```
+/// assert_eq!(
+///     trovato_sdk::render::escape_html(r#"<a href="x">Tom & Jerry's</a>"#),
+///     "&lt;a href=&quot;x&quot;&gt;Tom &amp; Jerry&#39;s&lt;/a&gt;"
+/// );
+/// ```
+///
+/// Added after 0.105.0 (B83b); before it every plugin carried its own copy.
+pub fn escape_html(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    for c in raw.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            '\'' => out.push_str("&#39;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}

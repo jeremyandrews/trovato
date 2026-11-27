@@ -489,7 +489,7 @@ impl TapError {
 /// [`Form::rendered_inputs`]), so form machinery (`_token`, `_form_build_id`),
 /// anything a client added to the body, and password inputs, which that list
 /// never holds, do not reach a plugin.
-fn posted_values(
+pub(crate) fn posted_values(
     posted: &crate::content::submission::PostedForm,
     rendered: &[String],
 ) -> serde_json::Map<String, Value> {

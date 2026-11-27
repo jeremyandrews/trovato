@@ -56,6 +56,19 @@
 //!   rendered, and a public-facing plugin needed JavaScript to post anything.
 //!   The verification is the same one every kernel form uses: single-use,
 //!   session-bound, and an hour long.
+//! - **Forms (B83b).** A plugin that takes input describes its form in
+//!   [`ApiResponse::form`] instead of writing one. The kernel builds it with
+//!   `FormService::build` (token, `tap_form_alter`, saved state naming the
+//!   plugin, the visitor, its required inputs and the request that served
+//!   it), draws it with the site's form templates after the body, and checks
+//!   a form-urlencoded POST carrying its `_form_build_id` with
+//!   `FormService::process` before the plugin hears of it. That post skips
+//!   the generic token gate below, because `process` verifies the same
+//!   single-use `_token`. A passing submission reaches the callback with
+//!   [`ApiRequest::form_values`] and is followed by `tap_form_submit`; a
+//!   failing one is answered by the kernel with the serving page again, the
+//!   form showing the errors and what was typed. A form id must start with
+//!   the plugin's name, so a plugin cannot serve or accept another's form.
 //! - **Response.** A plugin's `status`, `body` and `content_type` are served as
 //!   given, with an out-of-range status served as 500 and the content type
 //!   validated as a header value. The kernel does **not** sanitize a plugin's
@@ -91,7 +104,9 @@ use axum::{
 };
 use tower_sessions::Session;
 
+use crate::content::submission::PostedForm;
 use crate::file::MAX_UPLOAD_BODY_SIZE;
+use crate::form::{ElementType, Form, FormElement, FormState, ProcessError, ValidationError};
 use crate::menu::MenuDefinition;
 use crate::middleware::api_token::ApiTokenAuth;
 use crate::middleware::language::ResolvedLanguage;
@@ -349,7 +364,7 @@ async fn serve(
     // before dispatch; everything else keeps the exact body handling this
     // route always had. See `read_multipart_fields` for the CSRF and storage
     // ordering this branch relies on.
-    let (body, files) = if is_multipart_content_type(&headers) {
+    let (body, files, form_post) = if is_multipart_content_type(&headers) {
         match read_multipart_fields(
             &state,
             &session,
@@ -360,7 +375,7 @@ async fn serve(
         )
         .await
         {
-            Ok(parsed) => parsed,
+            Ok((body, files)) => (body, files, None),
             Err(response) => return response,
         }
     } else {
@@ -380,7 +395,27 @@ async fn serve(
         // than decoded: a non-UTF-8 body yields no field, so it is refused by
         // this gate with 403 exactly as it was before, and the 400 below
         // still names the real problem for a caller that got the token right.
-        if is_state_changing(&method) && bearer.is_none() {
+        // A post of a form this plugin served in `ApiResponse::form` is
+        // checked by `FormService::process` below, which verifies its `_token`
+        // itself: a token is single use, so this gate must not spend it first.
+        let form_post = if is_state_changing(&method) && bearer.is_none() {
+            plugin_form_post(&headers, &body)
+        } else {
+            None
+        };
+        if let Some(posted) = &form_post
+            && posted
+                .values_of(crate::routes::helpers::CSRF_FORM_FIELD)
+                .len()
+                != 1
+        {
+            return error_response(
+                StatusCode::FORBIDDEN,
+                "Invalid or missing CSRF token. Reload the page and try again.",
+            );
+        }
+
+        if is_state_changing(&method) && bearer.is_none() && form_post.is_none() {
             let body_str = std::str::from_utf8(&body).unwrap_or("");
             if crate::routes::helpers::require_csrf_header_or_field(&session, &headers, body_str)
                 .await
@@ -401,7 +436,7 @@ async fn serve(
         let Ok(body) = String::from_utf8(body.to_vec()) else {
             return error_response(StatusCode::BAD_REQUEST, "Request body is not valid UTF-8");
         };
-        (body, Vec::new())
+        (body, Vec::new(), form_post)
     };
 
     // A token for the plugin to embed in a form it serves.
@@ -437,10 +472,6 @@ async fn serve(
     request.csrf_token = csrf_token;
     request.files = files;
 
-    let Ok(payload) = serde_json::to_string(&request) else {
-        return error_response(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
-    };
-
     // Dispatch with services attached — this is the whole point. A tap with no
     // DB handle could not write the table this exists to let it write.
     //
@@ -458,37 +489,482 @@ async fn serve(
     });
     let tap_state =
         RequestState::new(user, state.tap_services().clone()).with_read_context(stages, language);
+
+    // A submission of a form this plugin served: checked before the plugin
+    // hears of it, and answered by the kernel when it fails.
+    let mut submitted = None;
+    if let Some(posted) = form_post {
+        match check_plugin_form(&state, &session, &menu.plugin, &posted, &tap_state).await {
+            FormCheck::Passed(form_state) => {
+                request.form_values = Some(crate::form::posted_values(
+                    &posted,
+                    &form_state.rendered_fields,
+                ));
+                submitted = Some((form_state, posted));
+            }
+            FormCheck::Refused(response) => return response,
+            FormCheck::Invalid(form_state, errors) => {
+                let failed = FailedForm {
+                    form_id: &form_state.form_id,
+                    posted: &posted,
+                    errors: &errors,
+                };
+                return show_failed_form(
+                    &state,
+                    &session,
+                    &menu.plugin,
+                    &tap_state,
+                    &form_state,
+                    &request.csrf_token,
+                    failed,
+                )
+                .await;
+            }
+        }
+    }
+
+    let parsed = match dispatch_api(&state, &menu.plugin, &request, &tap_state).await {
+        Ok(parsed) => parsed,
+        Err(response) => return response,
+    };
+    if let Some((form_state, posted)) = &submitted
+        && parsed.status < 400
+    {
+        state
+            .forms()
+            .submitted(form_state, posted, None, &tap_state)
+            .await;
+    }
+    finish(
+        &state,
+        &session,
+        &menu.plugin,
+        &tap_state,
+        &request,
+        parsed,
+        None,
+    )
+    .await
+}
+
+/// Call the plugin's `tap_api` with `request` and decode its answer.
+async fn dispatch_api(
+    state: &AppState,
+    plugin: &str,
+    request: &ApiRequest,
+    tap_state: &RequestState,
+) -> Result<ApiResponse, Response> {
+    let Ok(payload) = serde_json::to_string(request) else {
+        return Err(error_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Internal server error",
+        ));
+    };
     let result = state
         .tap_dispatcher()
-        .dispatch_to_plugin("tap_api", &payload, &menu.plugin, tap_state)
+        .dispatch_to_plugin("tap_api", &payload, plugin, tap_state.clone())
         .await;
 
     match result {
         Some(result) => match parse_api_response(&result.output) {
-            Some(parsed) if parsed.theme => {
-                themed_response(&state, &session, uri.path(), parsed).await
-            }
-            Some(parsed) => raw_response(parsed),
+            Some(parsed) => Ok(parsed),
             None => {
                 tracing::warn!(
-                    plugin = %menu.plugin,
-                    callback = %menu.callback,
+                    plugin = %plugin,
+                    callback = %request.callback,
                     "tap_api returned an unparseable response"
                 );
-                error_response(
+                Err(error_response(
                     StatusCode::BAD_GATEWAY,
                     "Plugin returned an invalid response",
-                )
+                ))
             }
         },
         None => {
             tracing::warn!(
-                plugin = %menu.plugin,
-                callback = %menu.callback,
+                plugin = %plugin,
+                callback = %request.callback,
                 "tap_api dispatch failed"
             );
-            error_response(StatusCode::BAD_GATEWAY, "Plugin handler failed")
+            Err(error_response(
+                StatusCode::BAD_GATEWAY,
+                "Plugin handler failed",
+            ))
         }
+    }
+}
+
+/// Serve a plugin's answer: its form, if it sent one, built and rendered
+/// after the body, then the body themed or as is.
+///
+/// A themed body that is a render tree (a JSON object with `#type`) is drawn
+/// by the theme's element templates rather than shown as JSON.
+async fn finish(
+    state: &AppState,
+    session: &Session,
+    plugin: &str,
+    tap_state: &RequestState,
+    request: &ApiRequest,
+    mut parsed: ApiResponse,
+    failed: Option<FailedForm<'_>>,
+) -> Response {
+    let form_html = match parsed.form.take() {
+        Some(value) => {
+            match render_plugin_form(state, session, plugin, tap_state, request, value, failed)
+                .await
+            {
+                Ok(html) => Some(html),
+                Err(response) => return response,
+            }
+        }
+        None => None,
+    };
+    if parsed.theme {
+        parsed.body = state.theme().render_plugin_output(&parsed.body);
+    }
+    if let Some(html) = form_html {
+        parsed.body.push_str(&html);
+        if !parsed.theme {
+            parsed.content_type = "text/html; charset=utf-8".to_string();
+        }
+    }
+    if parsed.theme {
+        themed_response(state, session, &request.path, parsed).await
+    } else {
+        raw_response(parsed)
+    }
+}
+
+// ─── Plugin forms (B83b) ─────────────────────────────────────────────
+
+/// The saved form state key naming the plugin that served the form.
+const FORM_PLUGIN: &str = "plugin";
+
+/// The saved form state key listing the form's required inputs, as
+/// `[name, title]` pairs.
+const FORM_REQUIRED: &str = "required";
+
+/// The saved form state key recording the request whose answer carried the
+/// form, so a failed submission can ask the plugin for that page again.
+const FORM_PAGE: &str = "page";
+
+/// A submission that failed its checks, to show on the form again.
+#[derive(Clone, Copy)]
+struct FailedForm<'a> {
+    /// The id of the form that was posted.
+    form_id: &'a str,
+    /// What the visitor posted.
+    posted: &'a PostedForm,
+    /// Why it was refused.
+    errors: &'a [ValidationError],
+}
+
+/// The outcome of checking a plugin form submission.
+enum FormCheck {
+    /// Every check passed: dispatch to the plugin with the values.
+    Passed(FormState),
+    /// Show the form again with these errors.
+    Invalid(FormState, Vec<ValidationError>),
+    /// Refuse with this response: a bad token or an expired form.
+    Refused(Response),
+}
+
+/// The posted fields of a form-urlencoded body that names exactly one
+/// `_form_build_id`, which is what a form the kernel built posts. `None` for
+/// any other body, which keeps the route's existing handling.
+fn plugin_form_post(headers: &HeaderMap, body: &[u8]) -> Option<PostedForm> {
+    if !crate::routes::helpers::is_form_urlencoded(headers) {
+        return None;
+    }
+    let posted = PostedForm(url::form_urlencoded::parse(body).into_owned().collect());
+    match posted.values_of("_form_build_id").as_slice() {
+        [build_id] if !build_id.is_empty() => Some(posted),
+        _ => None,
+    }
+}
+
+/// Check a submission of a plugin's form with `FormService::process`: its
+/// token, that the saved state was built for this visitor by `plugin`, its
+/// required inputs, then `tap_form_validate`.
+async fn check_plugin_form(
+    state: &AppState,
+    session: &Session,
+    plugin: &str,
+    posted: &PostedForm,
+    tap_state: &RequestState,
+) -> FormCheck {
+    let build_id = posted.get("_form_build_id").unwrap_or_default();
+    let result = state
+        .forms()
+        .process(build_id, posted, session, tap_state, |form_state| {
+            if form_state.extra.get(FORM_PLUGIN).and_then(|v| v.as_str()) != Some(plugin) {
+                return Err(vec![ValidationError::form(crate::form::FORM_EXPIRED)]);
+            }
+            let errors = missing_required(form_state, posted);
+            if errors.is_empty() {
+                Ok(())
+            } else {
+                Err(errors)
+            }
+        })
+        .await;
+    let expired = || {
+        FormCheck::Refused(crate::routes::helpers::render_error(
+            "The form has expired. Reload the page and try again.",
+        ))
+    };
+    match result {
+        Ok((form_state, ())) => FormCheck::Passed(form_state),
+        Err(ProcessError::Csrf) => FormCheck::Refused(error_response(
+            StatusCode::FORBIDDEN,
+            "Invalid or missing CSRF token. Reload the page and try again.",
+        )),
+        Err(ProcessError::Invalid(errors)) => {
+            if errors
+                .iter()
+                .any(|e| e.field.is_none() && e.message == crate::form::FORM_EXPIRED)
+            {
+                return expired();
+            }
+            match state.forms().recall(build_id, tap_state.user.id).await {
+                Some(form_state) => FormCheck::Invalid(form_state, errors),
+                None => expired(),
+            }
+        }
+    }
+}
+
+/// An "is required" error for each required input the submission left empty.
+fn missing_required(form_state: &FormState, posted: &PostedForm) -> Vec<ValidationError> {
+    let Some(required) = form_state
+        .extra
+        .get(FORM_REQUIRED)
+        .and_then(|v| v.as_array())
+    else {
+        return Vec::new();
+    };
+    required
+        .iter()
+        .filter_map(|pair| {
+            let name = pair.get(0)?.as_str()?;
+            let title = pair.get(1).and_then(|t| t.as_str()).unwrap_or(name);
+            posted
+                .values_of(name)
+                .iter()
+                .all(|v| v.trim().is_empty())
+                .then(|| ValidationError::field(name, format!("{title} is required.")))
+        })
+        .collect()
+}
+
+/// Answer a failed submission: ask the plugin again for the page the form
+/// was served on, and show the form there with the errors and what the
+/// visitor typed, under 422.
+///
+/// The page is the request recorded when the form was built, for this same
+/// visitor, so the callback is one the kernel already dispatched for them.
+async fn show_failed_form(
+    state: &AppState,
+    session: &Session,
+    plugin: &str,
+    tap_state: &RequestState,
+    form_state: &FormState,
+    csrf_token: &str,
+    failed: FailedForm<'_>,
+) -> Response {
+    let page = form_state.extra.get(FORM_PAGE);
+    let text = |key: &str| {
+        page.and_then(|p| p.get(key))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string()
+    };
+    let map = |key: &str| -> HashMap<String, String> {
+        page.and_then(|p| p.get(key))
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+            .unwrap_or_default()
+    };
+    let mut request = ApiRequest::new(
+        text("callback"),
+        text("method"),
+        text("path"),
+        tap_state.user.id.to_string(),
+        tap_state.user.authenticated,
+    );
+    request.params = map("params");
+    request.query = map("query");
+    request.csrf_token = csrf_token.to_string();
+
+    let mut parsed = match dispatch_api(state, plugin, &request, tap_state).await {
+        Ok(parsed) => parsed,
+        Err(response) => return response,
+    };
+    if parsed.status < 400 {
+        parsed.status = StatusCode::UNPROCESSABLE_ENTITY.as_u16();
+    }
+    let shown_again = parsed
+        .form
+        .as_ref()
+        .and_then(|f| f.get("form_id"))
+        .and_then(|id| id.as_str())
+        == Some(failed.form_id);
+    if !shown_again {
+        // The page no longer offers the form: say what was wrong on its own.
+        let messages: Vec<&str> = failed.errors.iter().map(|e| e.message.as_str()).collect();
+        return error_response(StatusCode::UNPROCESSABLE_ENTITY, &messages.join(" "));
+    }
+    finish(
+        state,
+        session,
+        plugin,
+        tap_state,
+        &request,
+        parsed,
+        Some(failed),
+    )
+    .await
+}
+
+/// Build a plugin's form with `FormService::build` and render it with the
+/// site's form templates, with the errors and values of `failed` when it is
+/// that form shown again.
+async fn render_plugin_form(
+    state: &AppState,
+    session: &Session,
+    plugin: &str,
+    tap_state: &RequestState,
+    request: &ApiRequest,
+    value: serde_json::Value,
+    failed: Option<FailedForm<'_>>,
+) -> Result<String, Response> {
+    let mut form = match plugin_form(plugin, value, &request.path) {
+        Ok(form) => form,
+        Err(reason) => {
+            tracing::warn!(plugin = %plugin, callback = %request.callback, "{reason}");
+            return Err(error_response(
+                StatusCode::BAD_GATEWAY,
+                "Plugin returned an invalid form",
+            ));
+        }
+    };
+    let failed = failed.filter(|f| f.form_id == form.form_id);
+    if let Some(failed) = failed {
+        refill(&mut form.elements, failed.posted);
+    }
+
+    let rendered = form.rendered_inputs();
+    let required: Vec<[String; 2]> = form
+        .all_elements()
+        .into_iter()
+        .filter(|(name, element)| element.required && rendered.iter().any(|r| r == name))
+        .map(|(name, element)| {
+            [
+                name.to_string(),
+                element.title.clone().unwrap_or_else(|| name.to_string()),
+            ]
+        })
+        .collect();
+    let mut form_state = FormState::new(form.form_id.clone(), "");
+    form_state.user_id = Some(tap_state.user.id);
+    form_state
+        .extra
+        .insert(FORM_PLUGIN.to_string(), serde_json::json!(plugin));
+    form_state
+        .extra
+        .insert(FORM_REQUIRED.to_string(), serde_json::json!(required));
+    form_state.extra.insert(
+        FORM_PAGE.to_string(),
+        serde_json::json!({
+            "callback": request.callback,
+            "method": request.method,
+            "path": request.path,
+            "params": request.params,
+            "query": request.query,
+        }),
+    );
+
+    let failed_to_display = |e: anyhow::Error| {
+        tracing::error!(plugin = %plugin, error = %e, "failed to build a plugin form");
+        crate::routes::helpers::render_server_error("The form could not be displayed.")
+    };
+    let form = state
+        .forms()
+        .build(form, session, tap_state, form_state)
+        .await
+        .map_err(failed_to_display)?;
+    state
+        .theme()
+        .render_form_with_errors(&form, failed.map(|f| f.errors).unwrap_or_default())
+        .map_err(failed_to_display)
+}
+
+/// The kernel [`Form`] a plugin's `ApiResponse::form` describes, with the
+/// parts only the kernel may set filled in: a fresh build id, an empty token
+/// for `build` to mint, `post`, and `path` as the action when none is given.
+///
+/// Refused when it is not a form, when its id does not start with the
+/// plugin's name and an underscore (so a plugin cannot serve, or have
+/// submitted as, a form of the kernel's or another plugin's), or when its
+/// action is not a path on this site (the token would go with it).
+fn plugin_form(plugin: &str, value: serde_json::Value, path: &str) -> Result<Form, &'static str> {
+    let serde_json::Value::Object(mut map) = value else {
+        return Err("plugin form is not a JSON object");
+    };
+    let form_id = map
+        .get("form_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    match form_id
+        .strip_prefix(plugin)
+        .and_then(|rest| rest.strip_prefix('_'))
+    {
+        Some(rest) if !rest.is_empty() => {}
+        _ => return Err("plugin form_id must start with the plugin's name and an underscore"),
+    }
+    let action = map
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    if action.is_empty() {
+        map.insert("action".into(), serde_json::json!(path));
+    } else if !action.starts_with('/') || action.starts_with("//") || action.contains('\\') {
+        return Err("plugin form action must be a path on this site");
+    }
+    map.insert(
+        "form_build_id".into(),
+        serde_json::json!(uuid::Uuid::new_v4().to_string()),
+    );
+    map.insert("token".into(), serde_json::json!(""));
+    map.insert("method".into(), serde_json::json!("post"));
+    map.remove("ajax_token");
+    map.entry("elements")
+        .or_insert_with(|| serde_json::json!({}));
+    serde_json::from_value(serde_json::Value::Object(map))
+        .map_err(|_| "plugin form does not have the shape of a form")
+}
+
+/// Put what the visitor posted back into the inputs it came from, so a form
+/// shown again keeps what they typed. Passwords and files are left empty.
+fn refill(elements: &mut std::collections::BTreeMap<String, FormElement>, posted: &PostedForm) {
+    for (name, element) in elements.iter_mut() {
+        let value = match &element.element_type {
+            ElementType::Password
+            | ElementType::File
+            | ElementType::Submit { .. }
+            | ElementType::Markup { .. }
+            | ElementType::Fieldset { .. }
+            | ElementType::Container
+            | ElementType::Widget { .. } => None,
+            ElementType::Checkbox => Some(serde_json::Value::Bool(posted.contains(name))),
+            ElementType::Checkboxes { .. } | ElementType::Select { multiple: true, .. } => {
+                Some(serde_json::json!(posted.values_of(name)))
+            }
+            _ => Some(serde_json::json!(posted.get(name).unwrap_or_default())),
+        };
+        if let Some(value) = value {
+            element.default_value = Some(value);
+        }
+        refill(&mut element.children, posted);
     }
 }
 
@@ -839,6 +1315,148 @@ fn error_response(status: StatusCode, message: &str) -> Response {
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_plugin_form_gets_the_kernels_parts_filled_in() {
+        let form = plugin_form(
+            "my_plugin",
+            serde_json::json!({
+                "form_id": "my_plugin_note",
+                "method": "get",
+                "token": "planted",
+                "form_build_id": "planted",
+                "elements": {"note": {"type": "textfield", "required": true}}
+            }),
+            "/my/page",
+        )
+        .unwrap();
+        assert_eq!(
+            form.action, "/my/page",
+            "the request path when none is given"
+        );
+        assert_eq!(form.method, "post", "a form the kernel checks is posted");
+        assert!(
+            form.token.is_empty(),
+            "build mints the token, not the plugin"
+        );
+        assert_ne!(form.form_build_id, "planted");
+        assert!(form.elements["note"].required);
+    }
+
+    #[test]
+    fn a_plugin_form_id_must_carry_the_plugins_name() {
+        for form_id in [
+            "user_login",
+            "other_plugin_note",
+            "my_plugin",
+            "my_plugin_",
+            "my_pluginx_a",
+        ] {
+            assert!(
+                plugin_form("my_plugin", serde_json::json!({ "form_id": form_id }), "/p").is_err(),
+                "{form_id} must be refused"
+            );
+        }
+        assert!(
+            plugin_form(
+                "my_plugin",
+                serde_json::json!({"form_id": "my_plugin_a"}),
+                "/p"
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_plugin_form_must_post_to_this_site() {
+        for action in [
+            "https://elsewhere.test/x",
+            "//elsewhere.test/x",
+            "javascript:x",
+            "/\\elsewhere",
+        ] {
+            let value = serde_json::json!({"form_id": "my_plugin_a", "action": action});
+            assert!(plugin_form("my_plugin", value, "/p").is_err(), "{action}");
+        }
+        let value = serde_json::json!({"form_id": "my_plugin_a", "action": "/my/other"});
+        assert_eq!(
+            plugin_form("my_plugin", value, "/p").unwrap().action,
+            "/my/other"
+        );
+    }
+
+    #[test]
+    fn a_form_shown_again_keeps_what_was_posted_except_secrets() {
+        let mut form = plugin_form(
+            "p",
+            serde_json::json!({
+                "form_id": "p_f",
+                "elements": {
+                    "name": {"type": "textfield"},
+                    "agree": {"type": "checkbox", "default_value": true},
+                    "secret": {"type": "password"},
+                    "group": {"type": "fieldset", "children": {"inner": {"type": "textarea", "rows": 2}}}
+                }
+            }),
+            "/p",
+        )
+        .unwrap();
+        let posted = PostedForm(vec![
+            ("name".into(), "Ada".into()),
+            ("secret".into(), "hunter2".into()),
+            ("inner".into(), "nested".into()),
+        ]);
+        refill(&mut form.elements, &posted);
+        assert_eq!(
+            form.elements["name"].default_value,
+            Some(serde_json::json!("Ada"))
+        );
+        assert_eq!(
+            form.elements["agree"].default_value,
+            Some(serde_json::json!(false)),
+            "an unticked box comes back unticked"
+        );
+        assert_eq!(form.elements["secret"].default_value, None);
+        assert_eq!(
+            form.elements["group"].children["inner"].default_value,
+            Some(serde_json::json!("nested"))
+        );
+    }
+
+    #[test]
+    fn a_required_input_left_blank_is_named() {
+        let mut state = FormState::new("p_f", "b");
+        state.extra.insert(
+            FORM_REQUIRED.to_string(),
+            serde_json::json!([["name", "Your name"], ["note", "Note"]]),
+        );
+        let posted = PostedForm(vec![
+            ("name".into(), "  ".into()),
+            ("note".into(), "x".into()),
+        ]);
+        let errors = missing_required(&state, &posted);
+        assert_eq!(errors.len(), 1);
+        assert_eq!(errors[0].field.as_deref(), Some("name"));
+        assert_eq!(errors[0].message, "Your name is required.");
+    }
+
+    #[test]
+    fn only_a_urlencoded_body_naming_one_build_id_is_a_form_post() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/x-www-form-urlencoded"),
+        );
+        assert!(plugin_form_post(&headers, b"_token=t&_form_build_id=b&x=1").is_some());
+        assert!(plugin_form_post(&headers, b"_token=t&x=1").is_none());
+        assert!(plugin_form_post(&headers, b"_form_build_id=&x=1").is_none());
+        assert!(plugin_form_post(&headers, b"_form_build_id=a&_form_build_id=b").is_none());
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        );
+        assert!(plugin_form_post(&headers, b"_form_build_id=b").is_none());
+    }
 
     fn menu(path: &str, method: &str, callback: &str, handler_type: &str) -> MenuDefinition {
         MenuDefinition {

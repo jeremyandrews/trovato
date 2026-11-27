@@ -1416,6 +1416,99 @@ A file your route stores but never references from an item stays `Temporary`
 and is removed by the kernel's temporary-file cleanup — a plugin cannot leak
 storage by accepting an upload nobody attaches.
 
+### Serving a Form
+
+A `tap_api` page that takes input should not write its own `<form>`. Put the
+form in `ApiResponse::form` and the kernel builds, draws and checks it, the
+same way it does its own forms: `FormService::build` mints the token, runs
+`tap_form_alter` and saves the form's state for this visitor, the site's form
+templates draw it after your body, and a submission is checked before your
+callback hears of it.
+
+```rust
+const FORM_ID: &str = "my_plugin_feedback";
+
+fn show(_request: &ApiRequest) -> ApiResponse {
+    ApiResponse::themed("Feedback", "<p>Tell us what you think.</p>").with_form(
+        serde_json::json!({
+            "form_id": FORM_ID,
+            "elements": {
+                "message": {"type": "textarea", "rows": 6, "title": "Message", "required": true},
+                "mood": {"type": "select", "title": "Mood",
+                         "options": [["happy", "Happy"], ["sad", "Sad"]]},
+                "send": {"type": "submit", "value": "Send", "weight": 10}
+            }
+        }),
+    )
+}
+
+fn submit(request: &ApiRequest) -> ApiResponse {
+    // Set only for a submission that passed every check.
+    let Some(message) = request.form_value("message") else {
+        return show(request);
+    };
+    // ... act on `message` ...
+    ApiResponse::themed("Thank you", "<p>Received.</p>")
+}
+```
+
+The form value has the shape `tap_form_alter` receives: a `form_id`, and
+`elements` keyed by input name, each with a `type` (`textfield`, `textarea`,
+`select`, `checkbox`, `checkboxes`, `radio`, `hidden`, `input` with an
+`input_type`, `submit`, `markup`, `fieldset`) and optional `title`,
+`description`, `default_value`, `required`, `weight` and `attributes`. The
+form itself may carry `title`, `description`, `attributes` and an `action`.
+
+- **The `form_id` starts with your plugin's name and an underscore**
+  (`my_plugin_feedback`); any other id is refused with a 502 and a warning in
+  the log. That keeps a plugin from serving, or having submitted as, a form of
+  the kernel's or of another plugin.
+- **The action** defaults to the path the page was served on. It may name
+  another `api` route of your plugin (the Book screens post
+  `/admin/structure/books/create` from `/admin/structure/books`). It must be a
+  path on this site.
+- **A submission** (a form-urlencoded POST carrying the form's
+  `_form_build_id`) is checked by the kernel: the `_token`, that the form was
+  served to this visitor by your plugin, that every `required` input has a
+  value, then `tap_form_validate`, yours and every other plugin's. A bad token
+  is a 403 and an unknown or foreign form a 400, and your callback is not
+  called for either.
+- **A submission that passes** reaches your callback with
+  `request.form_values`: the inputs the form rendered and nothing else, each
+  name once, a string or an array of strings. `request.form_value(name)` reads
+  one. Once your callback answers with a status below 400, the kernel
+  dispatches `tap_form_submit`.
+- **A submission that fails** never reaches your callback. The kernel calls
+  your plugin again for the page the form was served on, with the same method,
+  path, params and query, and shows the form there with the errors and what
+  the visitor typed, under 422. Your own rules go in `tap_form_validate`
+  (declare it in `[taps] implements`), returning
+  `{"errors": [{"field": "message", "message": "..."}]}` for your `form_id`
+  and `{}` for any other.
+- **Without a build id** a POST is handled exactly as before: the `_token`
+  field or header is checked and your callback gets the raw `request.body`
+  with `form_values` unset. A callback that only acts on `form_values` can
+  answer such a post with the form.
+
+A plugin form takes no file input: a `multipart/form-data` post is handled
+as described above for files, with `form_values` unset. An unthemed response
+may carry a form too; it is then served as HTML. A
+themed body may also be a render tree (`render::markup(...)` and friends,
+serialized): the kernel draws it with the theme's element templates rather
+than showing the JSON, as it does for `tap_item_view` output.
+
+`ApiResponse::form`, `ApiResponse::with_form`, `ApiRequest::form_values` and
+`ApiRequest::form_value` were added after 0.105.0 (B83b). Each is optional,
+so a plugin built before them is unchanged.
+
+### Escaping HTML
+
+Anything a visitor or an editor typed goes through `render::escape_html`
+(also `trovato_sdk::escape_html`) before it lands in HTML your plugin writes
+itself: the kernel does not sanitize a `tap_api` body or a view tap's string.
+It replaces `&`, `<`, `>`, `"` and `'`. Added after 0.105.0 (B83b); before it
+each plugin carried its own copy.
+
 ---
 
 ## Database Operations

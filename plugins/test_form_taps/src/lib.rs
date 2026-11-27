@@ -7,9 +7,10 @@
 //! form of a user holding its permission, so the rest of the suite never sees
 //! it.
 //!
-//! B83b adds the kernel's account and comment forms ([`B83B_FORMS`]): each is
-//! altered with a probe line, and refused with a form error while its id is
-//! listed in this fixture's `b83b_refuse_forms` table.
+//! B83b adds the kernel's account and comment forms and one plugin form
+//! ([`B83B_FORMS`]): each is altered with a probe line, refused with a form
+//! error while its id is listed in this fixture's `b83b_refuse_forms` table,
+//! and its submissions are recorded in `b83b_form_submits`.
 //!
 //! Each tap takes and returns a `serde_json::Value`: `#[plugin_tap]`
 //! deserializes the input as the parameter's type, so a `String` parameter
@@ -50,6 +51,8 @@ const B83B_FORMS: &[&str] = &[
     "user_password_reset",
     "user_recover",
     "user_api_token_create",
+    // A plugin's own form, served through `ApiResponse::form` (B83b PR 3).
+    "test_plugin_api_note",
 ];
 
 /// Whether `form_id` is one of [`B83B_FORMS`].
@@ -138,6 +141,15 @@ pub fn tap_form_validate(input: serde_json::Value) -> serde_json::Value {
 #[plugin_tap]
 pub fn tap_form_submit(input: serde_json::Value) -> serde_json::Value {
     let form_id = input["form_id"].as_str().unwrap_or_default();
+    if is_b83b_form(form_id) {
+        if let Err(code) = host::execute_raw(
+            "INSERT INTO b83b_form_submits (form_id) VALUES ($1)",
+            &[serde_json::json!(form_id)],
+        ) {
+            host::log("error", "test_form_taps", &format!("insert failed: {code}"));
+        }
+        return serde_json::json!({});
+    }
     if !is_probe_form(form_id) {
         return serde_json::json!({});
     }

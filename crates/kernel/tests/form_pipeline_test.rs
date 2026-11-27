@@ -27,6 +27,8 @@ use uuid::Uuid;
 
 const FIXTURES: [&str; 2] = ["test_form_taps", "test_form_taps_b"];
 const AI: &str = "trovato_ai";
+/// The plugin serving a form through `ApiResponse::form` (B83b).
+const PLUGIN_FORMS: &str = "test_plugin_api";
 const PROBE: &str = "b71_alter_probe";
 const BLOCKS: &str = "b71_blocks_probe";
 const WHEN: &str = "b71_when_probe";
@@ -66,7 +68,7 @@ async fn build_app() -> TestApp {
             .await
             .unwrap();
     AI_STATUS.get_or_init(|| ai_status);
-    for plugin in FIXTURES.iter().chain([AI].iter()) {
+    for plugin in FIXTURES.iter().chain([AI, PLUGIN_FORMS].iter()) {
         trovato_kernel::plugin::status::install_plugin(&pool, plugin, "1.0.0")
             .await
             .unwrap_or_else(|e| panic!("failed to install '{plugin}': {e:#}"));
@@ -88,7 +90,13 @@ async fn build_app() -> TestApp {
 /// Put the plugins' status back so they do not load in other test binaries.
 async fn restore_plugins(app: &TestApp) {
     sqlx::query("UPDATE plugin_status SET status = 0 WHERE name = ANY($1)")
-        .bind(FIXTURES.map(String::from).to_vec())
+        .bind(
+            FIXTURES
+                .iter()
+                .chain([PLUGIN_FORMS].iter())
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>(),
+        )
         .execute(&app.db)
         .await
         .ok();
@@ -1640,5 +1648,87 @@ fn b83b_the_api_token_form_is_altered_and_a_refusal_creates_no_token() {
             text.contains(r#"id="api-token-value" class="form-text" readonly value=""#),
             "the new token is shown once"
         );
+    });
+}
+
+/// A plugin's own form, served through `ApiResponse::form`, is the same
+/// pipeline: `tap_form_alter` reaches it, `tap_form_validate` can refuse it on
+/// the form, and `tap_form_submit` hears of a submission the plugin accepted.
+#[test]
+fn b83b_a_plugin_served_form_is_altered_refused_and_submitted() {
+    run(|app| async move {
+        common::hold_until_cleanup(B83B.lock().await);
+        const FORM: &str = "test_plugin_api_note";
+        let ip = common::test_ip_for("b83b_plugin_form");
+        let submits = || async {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM b83b_form_submits WHERE form_id = $1",
+            )
+            .bind(FORM)
+            .fetch_one(&app.db)
+            .await
+            .unwrap()
+        };
+        let before = submits().await;
+
+        let (cookies, html) = visit(app, "", "/tpa/pipeline", &ip).await;
+        assert_altered(&html, FORM);
+
+        refuse(app, FORM).await;
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/tpa/pipeline",
+            &ip,
+            &html,
+            FORM,
+            &[("message", "hello")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{text}");
+        assert_refused(status, &text, FORM);
+        assert!(
+            !text.contains("tpa-pipeline-values"),
+            "the plugin never heard: {text}"
+        );
+        assert_eq!(submits().await, before);
+
+        accept(app, FORM).await;
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/tpa/pipeline",
+            &ip,
+            &text,
+            FORM,
+            &[("message", "hello")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        assert!(text.contains("tpa-pipeline-values"), "{text}");
+        assert_eq!(submits().await, before + 1, "tap_form_submit ran once");
+    });
+}
+
+/// A plugin route does not accept a form it did not serve: the login form's
+/// build id, posted with a good token, is refused as expired.
+#[test]
+fn b83b_a_plugin_route_refuses_a_kernel_forms_build_id() {
+    run(|app| async move {
+        let ip = common::test_ip_for("b83b_foreign_form");
+        let (cookies, login) = visit(app, "", "/user/login", &ip).await;
+        let (status, text) = submit(
+            app,
+            &cookies,
+            "/tpa/pipeline",
+            &ip,
+            &login,
+            "user_login",
+            &[("message", "hello")],
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        assert!(text.contains("expired"), "{text}");
+        assert!(!text.contains("tpa-pipeline-values"));
     });
 }

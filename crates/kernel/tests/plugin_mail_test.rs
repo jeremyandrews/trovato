@@ -173,16 +173,14 @@ async fn post_mail(
     attach: bool,
 ) -> (StatusCode, serde_json::Value) {
     let (cookies, token) = session_and_token(app).await;
-    let form = format!(
-        "_token={token}&subject={subject}&body={body}&attach={}",
-        if attach { "1" } else { "0" }
-    );
+    let fields = serde_json::json!({"subject": subject, "body": body, "attach": attach});
     let response = app
         .request_with_cookies(
             Request::post("/tpa/mail")
-                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("x-csrf-token", token)
                 .header("x-forwarded-for", common::test_ip_for(BUCKET))
-                .body(Body::from(form))
+                .body(Body::from(fields.to_string()))
                 .unwrap(),
             &cookies,
         )

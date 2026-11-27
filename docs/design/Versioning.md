@@ -102,6 +102,20 @@ break requires a MAJOR bump plus a written justification.
 The short version: do not break the plugin contract. That the version number
 starts with a zero does not make it negotiable.
 
+What the freeze permits is addition: a new optional field on a
+`#[non_exhaustive]` type that deserializes with a default, a new function in the
+SDK, a new tap a plugin may choose to implement. A plugin built before the
+addition keeps working unchanged. Additions since the last release tag:
+
+| Since | Addition | Where |
+|---|---|---|
+| v0.105.0 | `ApiResponse::form` and `ApiResponse::with_form`: a `tap_api` page hands the kernel a form to build, draw and check (B83b) | `trovato-sdk` `types.rs`; [plugin-development.md](../plugin-development.md#serving-a-form) |
+| v0.105.0 | `ApiRequest::form_values` and `ApiRequest::form_value`: the checked values of a submitted plugin form (B83b) | `trovato-sdk` `types.rs` |
+| v0.105.0 | `render::escape_html`, re-exported as `trovato_sdk::escape_html` (B83b) | `trovato-sdk` `render.rs` |
+
+These ship in the version `[workspace.package]` already names (0.106.0), which
+is ahead of the newest tag, so no version was raised for them.
+
 ## Plugin manifests
 
 Plugins declare both numbers in `.info.toml`:

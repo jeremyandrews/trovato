@@ -16,6 +16,7 @@ mod types;
 
 pub use ajax::{AjaxCommand, AjaxRequest, AjaxResponse};
 pub use csrf::{generate_csrf_token, verify_csrf_token};
+pub(crate) use service::posted_values;
 pub use service::{
     ADMIN_FORM, FORM_EXPIRED, FormResult, FormService, FormState, ProcessError, ValidationError,
 };

@@ -9,6 +9,7 @@ dependencies = []
 implements = [
     "tap_menu",
     "tap_api",
+    "tap_form_validate",
 ]
 weight = 0
 
