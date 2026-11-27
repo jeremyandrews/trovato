@@ -46,9 +46,12 @@
     {% if scheduler_enabled %}
     <p>{{ t(s="On: this server calls cron on its own every {secs} seconds, with no external caller needed.", secs=scheduler_interval_secs) }}</p>
     {% else %}
-    <p>{{ t(s="Off: cron only runs from an external caller to /cron/{key}, or from the button above.") }}</p>
+    <p>{{ t(s="Off: cron only runs when an external caller posts to the cron URL, or from the button above.") }}</p>
     {% endif %}
-    {% if may_configure_scheduler %}
+    <p>{{ t(s="An external caller to the cron URL keeps working alongside it: every caller takes the same lock, so two runs never overlap, and a scheduled run waits out one that happened recently.") }}</p>
+    {% if scheduler_from_environment %}
+    <p>{{ t(s="Set by the CRON_INTERVAL_SECS environment variable, which overrides the site setting. Change or unset it and restart to change this.") }}</p>
+    {% elif may_configure_scheduler %}
     {{ scheduler_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
     {% else %}
     <p>{{ t(s='Changing this needs "administer site".') }}</p>

@@ -619,7 +619,8 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
 
     // Spawn the resident plugin-queue runner (P11d / D-46), but only when it is
     // enabled in site_config at boot. The default deployment runs no queue
-    // scheduler and keeps the external-cron cadence contract; enabling the
+    // runner and drains the queue on the cron cadence (the built-in scheduler's
+    // or an external caller's); enabling the
     // runner is an explicit, config-gated opt-in for sub-cron latency.
     //
     // Its token is cancelled when shutdown begins, not when the server has
@@ -643,33 +644,30 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         }
     }
 
-    // Spawn the built-in cron scheduler (B178): calls `CronService::run` on its
-    // own cadence so a freshly installed site runs scheduled cron (publishing,
-    // search rebuilds, session and temp-file cleanup) with no external caller
-    // configured — core must be fully functional without a site's own cron
-    // sidecar. Always spawned, unlike the queue runner above: its loop
-    // re-reads `cron_scheduler` every tick, so a `site_config` change —
-    // including turning it off — applies without a restart, and `/cron/{key}`
-    // and the admin "Run now" control are unaffected either way: all three
-    // call the identical `run` and share its Redis lock, so a scheduled run
-    // and an external poke landing in the same window skip one another rather
-    // than both executing.
+    // The built-in cron scheduler (B178): calls `CronService::run` on its own
+    // cadence, so a site runs cron (scheduled publishing, search rebuilds,
+    // session and temp-file cleanup) with no external caller configured.
+    // Always spawned, unlike the queue runner above: it rereads
+    // `cron_interval_secs` every time it wakes, so turning it off or on, or
+    // changing the interval, applies without a restart. `/cron/{key}` and the
+    // admin "Run now" control are unaffected: all three call the same `run`
+    // and share its Redis lock, so whichever arrives second is skipped.
     //
-    // On the general shutdown token, not `workers_token`: like the DB pool
-    // monitor and the analytics flush above, this is a periodic background
-    // task rather than request-serving capacity that has to stop taking new
-    // work before the drain.
-    {
+    // On `workers_token`, like the queue runner: it starts no new run from the
+    // signal on, and where a drain is configured the run in flight is waited
+    // for below, within the shutdown deadline.
+    let cron_scheduler = {
         let cron = state.cron().clone();
         let scheduler_config = cron.scheduler_config().await;
-        let token = shutdown_token.clone();
+        let token = workers_token.clone();
         info!(
             enabled = scheduler_config.enabled(),
             interval_secs = scheduler_config.interval_secs,
+            source = ?scheduler_config.source,
             "Built-in cron scheduler starting"
         );
-        tokio::spawn(async move { cron.run_scheduler(token).await });
-    }
+        tokio::spawn(async move { cron.run_scheduler(token).await })
+    };
 
     // The mail workers (BG18): whenever a transport is configured, so a
     // queued message is sent within seconds with nothing else to enable. On the
@@ -970,6 +968,15 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         warn!(
             "The queue runner did not finish its batch; its claims are reclaimed when their leases expire"
         );
+    }
+    // Likewise the cron scheduler: it has stopped starting runs, and a run in
+    // flight that is cut off here leaves the lock to expire on its TTL.
+    if bound_in_flight
+        && tokio::time::timeout_at(deadline, cron_scheduler)
+            .await
+            .is_err()
+    {
+        warn!("The scheduled cron run did not finish; its lock expires on its own TTL");
     }
     // Always waited for, within the deadline: a mail worker stops after at most
     // the one send in flight, and putting its other claims back now saves them

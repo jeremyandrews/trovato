@@ -21,7 +21,7 @@ use serde::Serialize;
 use tower_sessions::Session;
 
 use crate::content::submission::PostedForm;
-use crate::cron::{CRON_SCHEDULER_CONFIG_KEY, CronResult};
+use crate::cron::{CRON_INTERVAL_CONFIG_KEY, CronIntervalSource, CronResult};
 use crate::form::{FormElement, FormState, ProcessError, ValidationError};
 use crate::models::SiteConfig;
 use crate::state::AppState;
@@ -95,12 +95,12 @@ fn scheduler_settings_form(interval_secs: u64) -> crate::form::Form {
             FormElement::textfield()
                 .title("Scheduled interval (seconds)")
                 .description(
-                    "How often this server calls cron on its own, with no external caller \
-                     needed. 0 turns the built-in scheduler off; an external caller to \
-                     /cron/{key} (or the button above) still works either way, and the two \
-                     never run at once.",
+                    "How often this server runs cron on its own, with no external caller \
+                     needed. The default is 300 (five minutes); 0 turns the built-in \
+                     scheduler off.",
                 )
                 .default_value(interval_secs.to_string())
+                .attribute("inputmode", "numeric")
                 .required()
                 .weight(0),
         )
@@ -160,7 +160,10 @@ async fn cron_report(State(state): State<AppState>, session: Session) -> Respons
     // current interval but not an edit form that `save_scheduler_settings`
     // (gated on `PERMISSION` alone) would refuse anyway.
     let scheduler_config = state.cron().scheduler_config().await;
-    let may_configure_scheduler = viewer.can(PERMISSION);
+    // With `CRON_INTERVAL_SECS` set the saved setting has no effect, so the
+    // form is not offered; the page says where the interval comes from.
+    let may_configure_scheduler =
+        viewer.can(PERMISSION) && scheduler_config.source != CronIntervalSource::Environment;
     let scheduler_form_html = if may_configure_scheduler {
         let mut scheduler_form_state = FormState::new(SCHEDULER_FORM_ID, "");
         scheduler_form_state.user_id = Some(user.id);
@@ -192,6 +195,10 @@ async fn cron_report(State(state): State<AppState>, session: Session) -> Respons
     context.insert("run_now_form", &form_html);
     context.insert("scheduler_enabled", &scheduler_config.enabled());
     context.insert("scheduler_interval_secs", &scheduler_config.interval_secs);
+    context.insert(
+        "scheduler_from_environment",
+        &(scheduler_config.source == CronIntervalSource::Environment),
+    );
     context.insert("scheduler_form", &scheduler_form_html);
     context.insert("may_configure_scheduler", &may_configure_scheduler);
     context.insert("flash", &flash);
@@ -310,8 +317,8 @@ async fn save_scheduler_settings(
 
     if let Err(e) = SiteConfig::set(
         state.db(),
-        CRON_SCHEDULER_CONFIG_KEY,
-        serde_json::json!({ "interval_secs": interval_secs }),
+        CRON_INTERVAL_CONFIG_KEY,
+        serde_json::json!(interval_secs),
     )
     .await
     {

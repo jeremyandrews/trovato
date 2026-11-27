@@ -426,13 +426,11 @@ pub struct RuntimeConfig {
     pub search_expand_cache_ttl: u64,
 
     /// Process-level override of the built-in cron scheduler's interval
-    /// (`CRON_SCHEDULER_INTERVAL_SECS`), seconds. Unset: the `cron_scheduler`
-    /// `site_config` key decides, as `queue_runner` already does for the
-    /// resident queue runner. Set (including to `0`, which turns the scheduler
-    /// off): this wins outright, the same precedence `UPDATE_CHECK` gives the
-    /// environment over the site setting — the switch an air-gapped or
-    /// single-shot deployment needs without a database row being right.
-    pub cron_scheduler_interval_override: Option<u64>,
+    /// (`CRON_INTERVAL_SECS`), seconds. Unset: the `cron_interval_secs`
+    /// `site_config` row decides, edited on the cron report. Set (including to
+    /// `0`, which turns the scheduler off): this wins outright, the same
+    /// precedence `UPDATE_CHECK` gives the environment over a site setting.
+    pub cron_interval_override: Option<u64>,
 }
 
 /// The SMTP configuration mail is sent with, as an administrator may see it.
@@ -960,10 +958,11 @@ impl Config {
                 "UPDATE_CHECK_INTERVAL_SECS",
                 crate::update_status::DEFAULT_CHECK_INTERVAL_SECS,
             ),
-            cron_scheduler_interval_override: get("CRON_SCHEDULER_INTERVAL_SECS")
+            cron_interval_override: get("CRON_INTERVAL_SECS")
+                .filter(|raw| !raw.trim().is_empty())
                 .map(|raw| raw.trim().parse::<u64>())
                 .transpose()
-                .context("CRON_SCHEDULER_INTERVAL_SECS must be a valid non-negative integer")?,
+                .context("CRON_INTERVAL_SECS must be a valid non-negative integer")?,
         };
 
         Ok(Self {
@@ -1094,6 +1093,39 @@ mod config_tests {
         let mut pairs = vec![("DATABASE_URL", "postgres://localhost/x")];
         pairs.extend_from_slice(extra);
         config_from(&pairs).expect("config resolves")
+    }
+
+    /// `CRON_INTERVAL_SECS` (B178): unset or empty leaves the site setting in
+    /// charge; a number, `0` included, overrides it; anything else fails
+    /// startup rather than being read as off.
+    #[test]
+    fn cron_interval_override_setting() {
+        assert_eq!(with_db(&[]).runtime.cron_interval_override, None);
+        assert_eq!(
+            with_db(&[("CRON_INTERVAL_SECS", "")])
+                .runtime
+                .cron_interval_override,
+            None
+        );
+        assert_eq!(
+            with_db(&[("CRON_INTERVAL_SECS", "0")])
+                .runtime
+                .cron_interval_override,
+            Some(0)
+        );
+        assert_eq!(
+            with_db(&[("CRON_INTERVAL_SECS", " 120 ")])
+                .runtime
+                .cron_interval_override,
+            Some(120)
+        );
+        let err = config_from(&[
+            ("DATABASE_URL", "postgres://localhost/x"),
+            ("CRON_INTERVAL_SECS", "5m"),
+        ])
+        .expect_err("a non-number fails")
+        .to_string();
+        assert!(err.contains("CRON_INTERVAL_SECS"), "{err}");
     }
 
     /// The drain defaults to a Kubernetes endpoint update only under Kubernetes;

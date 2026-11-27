@@ -33,7 +33,10 @@ default 300 seconds) calls cron on its own cadence, and an external caller to
 `/cron/{key}` may still poke any server at any time — every one of them, the
 scheduler included, takes the same Redis lock before running, so a scheduled
 run on one server and an external poke to another, landing in the same
-window, never both run; the second is told another instance already is.
+window, never both run; the second is told another instance already is. A
+scheduler also skips its turn when cron finished anywhere less than an interval
+ago, so several servers together run cron about once per interval, not once
+each. No cron sidecar is needed on any server.
 
 The Pagefind index is rebuilt by whichever server's cron run takes the lock.
 The kernel writes it itself, in Pagefind 1.3.0's format, so no `pagefind`

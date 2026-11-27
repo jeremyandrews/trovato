@@ -156,7 +156,7 @@ Background work in Trovato runs through two cooperating systems: **cron** for sc
 
 ### Cron Architecture
 
-By default, the kernel runs cron on its own: a built-in scheduler calls it every 300 seconds (`cron_interval_secs` in site settings, or the `CRON_SCHEDULER_INTERVAL_SECS` environment variable), so a freshly installed site publishes scheduled content, rebuilds its search index and cleans up after itself with no external caller configured and no sidecar container. The cron report (`/admin/reports/cron`) shows whether the scheduler is on and its interval, and lets an administrator change it.
+By default, the kernel runs cron on its own: a built-in scheduler calls it every 300 seconds (`cron_interval_secs` in site settings, or the `CRON_INTERVAL_SECS` environment variable), so a freshly installed site publishes scheduled content, rebuilds its search index and cleans up after itself with no external caller configured and no sidecar container. The cron report (`/admin/reports/cron`) shows whether the scheduler is on and its interval, and lets an administrator change it.
 
 An external trigger (systemd timer, Kubernetes CronJob, or manual curl) still works exactly as before, side by side with the built-in scheduler — both call the same `run`, which takes a Redis lock, so whichever lands first in a given window runs cron and the other is told another instance already is:
 

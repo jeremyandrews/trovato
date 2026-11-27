@@ -80,6 +80,7 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 | `TRUSTED_PROXIES` | *(empty: trust none)* | Reverse proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed, as comma-separated addresses and CIDR ranges. See "Behind a reverse proxy" below. |
 | `CLIENT_IP_STORAGE` | `full` | How much of a client address is stored: `full`, `truncated` or `none`. See "Client addresses and privacy" below. |
 | `CRON_KEY` | *(none)* | Shared secret in the cron URL, `POST /cron/<CRON_KEY>`. Change it before exposing the server. |
+| `CRON_INTERVAL_SECS` | *(none)* | Seconds between the built-in scheduler's cron runs, overriding the `cron_interval_secs` site setting (default 300). `0` turns the scheduler off. Unset leaves the site setting in charge; see [Cron](#cron). |
 | `JWT_SECRET` | *(none)* | Required for OAuth2 plugin (min 32 bytes) |
 | `WEBHOOK_ENCRYPTION_KEY` | *(none)* | Encrypts webhook secrets (min 32 bytes, recommended) |
 | `UPDATE_CHECK` | `1` | Whether the kernel may check for Trovato releases. Set to `0` (or `false`/`off`/`no`) for a deployment that must make no outbound requests at all. See "Update checks" below. |
@@ -475,6 +476,21 @@ are applied automatically on startup. To see them first, run
 `trovato migrate --dry-run`; to roll a release back, start the previous binary
 (see [docs/deployment/upgrades.md](docs/deployment/upgrades.md) and the
 [command line reference](docs/cli-reference.md)).
+
+## Cron
+
+Cron (scheduled publishing, the search index rebuild, temporary file and
+session cleanup, plugins' `tap_cron`) runs on its own: the server calls it every
+300 seconds with nothing else to set up. No sidecar container, crontab or
+systemd timer is needed. Change the interval, or set it to `0` to turn the
+built-in scheduler off, on the cron report at `/admin/reports/cron`; the change
+applies within a minute, without a restart. `CRON_INTERVAL_SECS` overrides the
+setting from the environment.
+
+`POST /cron/<CRON_KEY>` still works, so an existing external caller can stay or
+go. Every caller takes the same lock, so two runs never overlap, and the
+scheduler skips a turn when cron ran less than an interval ago, so an external
+caller does not double the rate.
 
 ## More Than One Server
 
