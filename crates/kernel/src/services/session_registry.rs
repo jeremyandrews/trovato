@@ -36,6 +36,7 @@
 //! The **audit stream** carries session lifecycle durably (the D-36 rider), so
 //! incident response still has a record after the registry has forgotten.
 
+use crate::redis_conn::BoundedRedis;
 use anyhow::{Context, Result};
 use redis::AsyncCommands;
 use serde::{Deserialize, Serialize};
@@ -172,7 +173,7 @@ impl SessionRegistry {
     pub async fn list(&self, user_id: Uuid) -> Result<Vec<SessionEntry>> {
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to connect to Redis for the session index")?;
 
@@ -196,7 +197,7 @@ impl SessionRegistry {
     pub async fn get(&self, user_id: Uuid, device_id: Uuid) -> Result<Option<SessionEntry>> {
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to connect to Redis for the session index")?;
 
@@ -212,7 +213,7 @@ impl SessionRegistry {
     async fn put(&self, user_id: Uuid, entry: &SessionEntry) -> Result<()> {
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to connect to Redis for the session index")?;
 
@@ -312,7 +313,7 @@ impl SessionRegistry {
 
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to connect to Redis for the session index")?;
 

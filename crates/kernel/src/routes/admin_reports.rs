@@ -11,6 +11,7 @@
 //! `administer site`, as `/cron/status` does, and also opens to
 //! `access site reports`, as Drupal's recent log messages do.
 
+use crate::redis_conn::BoundedRedis;
 use std::collections::HashMap;
 
 use axum::extract::{Query, State};
@@ -763,7 +764,7 @@ async fn database_requirements(state: &AppState) -> Vec<Requirement> {
 async fn redis_requirement(state: &AppState) -> Requirement {
     const TITLE: &str = "Cache server";
     let info: redis::RedisResult<String> = async {
-        let mut conn = state.redis().get_multiplexed_async_connection().await?;
+        let mut conn = state.redis().bounded_connection().await?;
         redis::cmd("INFO")
             .arg("server")
             .query_async(&mut conn)

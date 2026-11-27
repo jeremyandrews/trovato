@@ -46,6 +46,7 @@
 //! `trovato_email_recovery:code` would have its verdict ignored for the same
 //! reason a plugin claiming another plugin's namespace does.
 
+use crate::redis_conn::BoundedRedis;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use redis::AsyncCommands;
@@ -325,7 +326,7 @@ impl RecoveryFlowStore {
     pub async fn put(&self, flow: &RecoveryFlow) -> Result<()> {
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to connect to Redis for the recovery flow")?;
         let encoded = serde_json::to_string(flow).context("failed to encode the recovery flow")?;
@@ -340,7 +341,7 @@ impl RecoveryFlowStore {
     pub async fn get(&self, flow_id: &str, now: i64) -> Result<Option<RecoveryFlow>> {
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to connect to Redis for the recovery flow")?;
         let raw: Option<String> = conn
@@ -363,7 +364,7 @@ impl RecoveryFlowStore {
     pub async fn burn(&self, flow_id: &str) -> Result<()> {
         let mut conn = self
             .redis
-            .get_multiplexed_async_connection()
+            .bounded_connection()
             .await
             .context("failed to connect to Redis for the recovery flow")?;
         let _: Result<i64, _> = conn.del(flow_key(flow_id)).await;
