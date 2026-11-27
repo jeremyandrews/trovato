@@ -322,3 +322,42 @@ fn admin_search_finds_a_plugins_declared_page_only_for_a_holder() {
         disable_plugin(app).await;
     });
 }
+
+/// The page a plugin declares is found by admin search under Plugins by a
+/// keyword it declared through `AdminNavDefinition::with_keywords`, a word
+/// that appears in neither its label, its section nor its card description,
+/// for a viewer holding its permission, and not for one who does not.
+#[test]
+fn admin_search_finds_a_plugins_page_by_its_declared_keyword() {
+    common::run_test(async {
+        let app = app();
+        let (_id, holder) =
+            common::user_holding(app, "b250tpa", &["access administration pages", PERM_WRITE])
+                .await;
+        let (_id, other) =
+            common::user_holding(app, "b250tpa-no", &["access administration pages"]).await;
+
+        let (status, html) = get(app, &holder, "/admin/search?q=scratchpad").await;
+        assert_eq!(status, StatusCode::OK);
+        let start = html
+            .find(r#"aria-labelledby="search-results-plugins""#)
+            .expect("a Plugins group");
+        let group = &html[start..start + html[start..].find("</section>").unwrap()];
+        assert!(
+            group.contains(&format!(r#"href="{DASHBOARD_PATH}""#)),
+            "{group}"
+        );
+        let (status, json) = get(app, &holder, "/admin/search/suggest?q=scratchpad").await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert!(json.contains(DASHBOARD_PATH), "{json}");
+
+        let (status, html) = get(app, &other, "/admin/search?q=scratchpad").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!html.contains(&format!(r#"href="{DASHBOARD_PATH}""#)));
+        let (status, json) = get(app, &other, "/admin/search/suggest?q=scratchpad").await;
+        assert_eq!(status, StatusCode::OK, "{json}");
+        assert!(!json.contains(DASHBOARD_PATH), "{json}");
+
+        disable_plugin(app).await;
+    });
+}
