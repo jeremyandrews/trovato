@@ -624,12 +624,14 @@ async fn own_member(site: &PerfSite, prefix: &str) -> (uuid::Uuid, String, Strin
     (id, name, cookies)
 }
 
-/// The `content` of the page's `csrf-token` meta tag.
+/// The `content` of the page's `csrf-token` meta tag, or nothing when it has
+/// none (an anonymous page served from the page cache), as
+/// [`PerfSite::submit`] reads it.
 fn meta_csrf(html: &str) -> String {
     let marker = "name=\"csrf-token\" content=\"";
     html.find(marker)
         .and_then(|start| html[start + marker.len()..].split('"').next())
-        .expect("a csrf-token meta tag")
+        .unwrap_or_default()
         .to_string()
 }
 
