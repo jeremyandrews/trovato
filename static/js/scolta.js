@@ -919,7 +919,7 @@
       }
     }
 
-    const expandedResults = await searchAndLoadParallel(queries, activeFilters, searchQuery);
+    const expandedResults = renderableResults(await searchAndLoadParallel(queries, activeFilters, searchQuery));
 
     if (version !== searchVersion) {
       console.log('[scolta:expand] Discarding stale expansion after load (version', version, 'vs current', searchVersion, ')');
@@ -992,15 +992,21 @@
     allHighlightTerms = meaningfulTerms.length > 0
       ? meaningfulTerms.filter(t => t.length > 2)
       : query.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+    // A query of only short words ("go") keeps those words as its terms, so
+    // the false positive check has something to look for.
+    if (allHighlightTerms.length === 0) {
+      allHighlightTerms = (meaningfulTerms.length > 0 ? meaningfulTerms : query.toLowerCase().split(/\s+/))
+        .filter(t => t.length > 0);
+    }
 
     // Phase 1: Primary search — render results IMMEDIATELY
     const expandPromise = preserveFilters
       ? Promise.resolve(lastExpandedTerms)
       : expandQuery(query);
 
-    const primarySearch = await withIndexReload(async () => {
+    await withIndexReload(async () => {
       const search = await pagefindSearch(searchQuery, activeFilters);
-      allScoredResults = await loadAndScoreSearch(search, searchQuery, 1.0);
+      allScoredResults = renderableResults(await loadAndScoreSearch(search, searchQuery, 1.0));
       return search;
     });
 
@@ -1009,10 +1015,11 @@
     // to find a specific piece of content. When it activates, we set a flag
     // so the UI can inform the user that the search was broadened.
     usedOrFallback = false;
-    if (meaningfulTerms.length > 1 && primarySearch.results.length === 0) {
+    // A primary search whose every hit is a false positive found nothing.
+    if (meaningfulTerms.length > 1 && allScoredResults.length === 0) {
       console.log('[scolta:search] AND returned 0 results — running OR fallback');
       const orQueries = meaningfulTerms.map(term => ({ term, weight: 0.6 }));
-      const orResults = await searchAndLoadParallel(orQueries, activeFilters, searchQuery);
+      const orResults = renderableResults(await searchAndLoadParallel(orQueries, activeFilters, searchQuery));
       allScoredResults = mergeResults(allScoredResults, orResults);
       usedOrFallback = allScoredResults.length > 0;
     }
@@ -1142,8 +1149,11 @@
    * Returns text, not HTML: the renderer escapes it once with highlightText.
    */
   function bestExcerpt(data, maxLen, terms) {
-    terms = terms || allHighlightTerms;
+    terms = (terms || allHighlightTerms).filter(function (t) { return t && t.length > 0; });
     var raw = data.excerpt || "";
+
+    // With no term to look for there is nothing to call a false positive.
+    if (terms.length === 0) return truncateExcerpt(raw, maxLen);
     var clean = htmlToText(raw).toLowerCase();
 
     // Check if the default excerpt already contains a highlight term
@@ -1198,6 +1208,24 @@
     return (windowStart > 0 ? "…" : "") + snippet + (windowEnd < contentPlain.length ? "…" : "");
   }
 
+  // The results that render, each with its excerpt: a result whose term is in
+  // none of its excerpt, content or title (bestExcerpt's null) is dropped.
+  //
+  // Pagefind answers a term it has no indexed word for with the longest
+  // indexed word the term starts with (pagefind_web `find_word_extensions`,
+  // "checking the inverse"), so "kerneltrap" returns every page with "kernel"
+  // on it. Every count, page and summary works from this list, never from the
+  // raw hits (B170b), so the header never counts a card the page skips.
+  function renderableResults(results) {
+    const CONFIG = getConfig();
+    const kept = [];
+    for (const r of results) {
+      const excerpt = bestExcerpt(r.data, CONFIG.EXCERPT_LENGTH);
+      if (excerpt !== null) kept.push({ data: r.data, score: r.score, excerpt });
+    }
+    return kept;
+  }
+
   function renderResults(isExpanded) {
     isExpanded = isExpanded || false;
     const CONFIG = getConfig();
@@ -1206,7 +1234,9 @@
     const noResults = els.noResults;
     const loadMore = els.loadMore;
 
-    const filtered = allScoredResults;
+    // Filter before counting: the header, "Showing N" and "Show more" all
+    // describe cards that render, and a page is RESULTS_PER_PAGE of them.
+    const filtered = renderableResults(allScoredResults);
 
     if (filtered.length === 0) {
       container.innerHTML = "";
@@ -1226,7 +1256,7 @@
 
     let html = "";
     for (let i = displayedCount; i < showing; i++) {
-      const { data } = filtered[i];
+      const { data, excerpt } = filtered[i];
       // Every value from Pagefind as plain text (see htmlToText).
       const meta = function (key) { return htmlToText(data.meta?.[key] || ""); };
       const title = meta("title") || "Untitled";
@@ -1237,8 +1267,6 @@
       const location = meta("location");
       const eventDates = meta("event_dates");
       const description = meta("description");
-      const excerpt = bestExcerpt(data, CONFIG.EXCERPT_LENGTH);
-      if (excerpt === null) continue; // Skip false-positive results
       const highlighted = excerpt !== description ? highlightText(excerpt) : "";
 
       const displayTitle = title.length > 90 ? title.substring(0, 87) + "\u2026" : title;
