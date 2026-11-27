@@ -145,6 +145,7 @@ async fn sorted_titles(
         viewer: Some(admin()),
         url_args: HashMap::new(),
         language: None,
+        ..Default::default()
     };
 
     let result = app

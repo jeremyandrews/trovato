@@ -279,6 +279,20 @@ impl QueryDefinition {
         out
     }
 
+    /// Whether any filter, top level or grouped, names the item the page
+    /// shows ([`ContextualValue::CurrentItem`] or
+    /// [`ContextualValue::CurrentItemField`], B186).
+    pub fn names_current_item(&self) -> bool {
+        self.all_filters().iter().any(|filter| {
+            matches!(
+                filter.value,
+                FilterValue::Contextual(
+                    ContextualValue::CurrentItem | ContextualValue::CurrentItemField(_)
+                )
+            )
+        })
+    }
+
     /// Every filter, top level and grouped, to rewrite in place.
     pub fn all_filters_mut(&mut self) -> Vec<&mut QueryFilter> {
         let mut out: Vec<&mut QueryFilter> = self.filters.iter_mut().collect();
@@ -517,6 +531,11 @@ pub enum FilterValue {
     /// List of values (for In/NotIn operators).
     List(Vec<FilterValue>),
     /// Contextual value resolved at query time.
+    ///
+    /// Besides the derived spellings (`"current_user"`, `{"url_arg": "cat"}`,
+    /// `{"current_item_field": "tags"}`), a string `"current_item.fields.<name>"`
+    /// reads as [`ContextualValue::CurrentItemField`] (B186).
+    #[serde(deserialize_with = "deserialize_contextual")]
     Contextual(ContextualValue),
     /// String value (catch-all for remaining string values).
     String(String),
@@ -537,6 +556,30 @@ where
     } else {
         Err(serde::de::Error::custom("not the canonical UUID spelling"))
     }
+}
+
+/// The spelling of [`ContextualValue::CurrentItemField`] a site writes as a
+/// plain string: `"current_item.fields.tags"` (B186).
+const CURRENT_ITEM_FIELD_PREFIX: &str = "current_item.fields.";
+
+/// A [`ContextualValue`] in its derived spelling, or a string
+/// `"current_item.fields.<name>"` read as
+/// [`ContextualValue::CurrentItemField`]. Anything else is an error here,
+/// which inside the `FilterValue` untagged enum falls through to
+/// [`FilterValue::String`], as before.
+fn deserialize_contextual<'de, D>(deserializer: D) -> Result<ContextualValue, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if let Some(name) = value
+        .as_str()
+        .and_then(|s| s.strip_prefix(CURRENT_ITEM_FIELD_PREFIX))
+        && !name.is_empty()
+    {
+        return Ok(ContextualValue::CurrentItemField(name.to_string()));
+    }
+    ContextualValue::deserialize(value).map_err(serde::de::Error::custom)
 }
 
 impl FilterValue {
@@ -626,6 +669,25 @@ pub enum ContextualValue {
     CurrentDate,
     /// Value from URL argument (query-string parameter).
     UrlArg(String),
+    /// The id of the item the current page shows (B186).
+    ///
+    /// `None` in [`QueryContext::current_item_id`] — a page showing no single
+    /// item, such as a gather listing or the front page — makes any filter
+    /// naming this resolve to a predicate the whole gather cannot satisfy,
+    /// rather than to a value that would leave the filter unconstrained: a
+    /// tile asking for "the other articles" must never show every article
+    /// just because it was placed somewhere with no article in view.
+    CurrentItem,
+    /// The named field of the item the current page shows (B186), read out of
+    /// [`QueryContext::current_item_fields`].
+    ///
+    /// Resolves the same way [`Self::CurrentItem`] does when there is no
+    /// current item, and when the item carries no value for the field
+    /// (absent, null or an empty list): nothing can match it, so the gather
+    /// renders nothing rather than dropping the filter.
+    ///
+    /// Written `{"current_item_field": "tags"}` or `"current_item.fields.tags"`.
+    CurrentItemField(String),
 }
 
 /// Nested sub-query specification for composite responses.
@@ -665,6 +727,18 @@ pub struct QueryContext {
 
     /// URL arguments available for UrlArg resolution.
     pub url_args: HashMap<String, String>,
+
+    /// The id of the item the current page shows (B186): the item a `tile`
+    /// placed in its sidebar is rendered beside. `None` on a page that shows
+    /// no single item — a gather listing, the front page, an admin screen —
+    /// so [`ContextualValue::CurrentItem`] and
+    /// [`ContextualValue::CurrentItemField`] have nothing to resolve to.
+    pub current_item_id: Option<Uuid>,
+
+    /// The fields of the item named by [`Self::current_item_id`], read by
+    /// [`ContextualValue::CurrentItemField`]. `None` together with
+    /// `current_item_id`.
+    pub current_item_fields: Option<serde_json::Value>,
 
     /// Optional language code for translation overlay.
     ///
@@ -1275,6 +1349,67 @@ mod tests {
         match parsed2 {
             FilterValue::Contextual(ContextualValue::UrlArg(ref s)) if s == "cat" => {}
             other => panic!("expected Contextual(UrlArg(\"cat\")), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn current_item_contextual_values_are_the_wire_shape_a_site_writes() {
+        // `{"field": "id", "operator": "not_equals", "value": "current_item"}`:
+        // a bare string, the same shape `"current_user"` already takes.
+        let filter: QueryFilter = serde_json::from_value(serde_json::json!({
+            "field": "id",
+            "operator": "not_equals",
+            "value": "current_item",
+        }))
+        .unwrap();
+        match filter.value {
+            FilterValue::Contextual(ContextualValue::CurrentItem) => {}
+            other => panic!("expected Contextual(CurrentItem), got {other:?}"),
+        }
+
+        // The named field of the current item: `{"current_item_field": "tags"}`,
+        // the same tagged-object shape `{"url_arg": "..."}` already takes.
+        let filter: QueryFilter = serde_json::from_value(serde_json::json!({
+            "field": "fields.tags",
+            "operator": "has_any_tag",
+            "value": { "current_item_field": "tags" },
+        }))
+        .unwrap();
+        match filter.value {
+            FilterValue::Contextual(ContextualValue::CurrentItemField(ref name)) => {
+                assert_eq!(name, "tags");
+            }
+            other => panic!("expected Contextual(CurrentItemField), got {other:?}"),
+        }
+
+        // The same, written as the dotted string `"current_item.fields.tags"`.
+        let filter: QueryFilter = serde_json::from_value(serde_json::json!({
+            "field": "fields.tags",
+            "operator": "has_any_tag",
+            "value": "current_item.fields.tags",
+        }))
+        .unwrap();
+        match filter.value {
+            FilterValue::Contextual(ContextualValue::CurrentItemField(ref name)) => {
+                assert_eq!(name, "tags");
+            }
+            other => panic!("expected Contextual(CurrentItemField), got {other:?}"),
+        }
+        // It survives a round trip, in the tagged spelling.
+        let round: FilterValue =
+            serde_json::from_value(serde_json::to_value(&filter.value).unwrap()).unwrap();
+        assert!(matches!(
+            round,
+            FilterValue::Contextual(ContextualValue::CurrentItemField(ref n)) if n == "tags"
+        ));
+
+        // Other strings stay plain strings: a bare prefix, or any other text.
+        for text in ["current_item.fields.", "current_item.title", "hello"] {
+            let value: FilterValue = serde_json::from_value(serde_json::json!(text)).unwrap();
+            assert!(
+                matches!(value, FilterValue::String(ref s) if s == text),
+                "{text}: {value:?}"
+            );
         }
     }
 

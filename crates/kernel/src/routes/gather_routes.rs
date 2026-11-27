@@ -316,6 +316,7 @@ async fn handle_gather_route(
             language,
             viewer,
             None,
+            None,
         )
         .await
         {

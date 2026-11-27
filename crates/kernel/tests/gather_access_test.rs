@@ -86,6 +86,7 @@ async fn gather_conferences(
         viewer,
         url_args: HashMap::new(),
         language: None,
+        ..Default::default()
     };
     app.state
         .gather()
@@ -533,6 +534,7 @@ fn gather_service_refuses_users_join_for_superuser() {
             viewer: Some(admin),
             url_args: HashMap::new(),
             language: None,
+            ..Default::default()
         };
         let result = app
             .state
