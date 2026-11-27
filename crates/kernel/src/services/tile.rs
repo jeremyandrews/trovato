@@ -88,6 +88,7 @@ impl TileService {
     /// taps.
     pub async fn create(&self, input: CreateTile) -> Result<Tile> {
         let tile = Tile::create(&self.db, input).await?;
+        crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
         self.audit("create", &tile).await;
         Ok(tile)
     }
@@ -96,6 +97,7 @@ impl TileService {
     pub async fn update(&self, id: uuid::Uuid, input: UpdateTile) -> Result<Option<Tile>> {
         let tile = Tile::update(&self.db, id, input).await?;
         if let Some(tile) = &tile {
+            crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
             self.audit("update", tile).await;
         }
         Ok(tile)
@@ -105,6 +107,7 @@ impl TileService {
     pub async fn delete(&self, id: uuid::Uuid) -> Result<bool> {
         let deleted = Tile::delete(&self.db, id).await?;
         if deleted {
+            crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
             self.audit
                 .record("delete", "tile", id, None, serde_json::json!({}))
                 .await;

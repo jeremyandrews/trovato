@@ -577,6 +577,12 @@ impl TestApp {
                 trovato_kernel::middleware::scope_theme,
             ))
             .layer(session_layer)
+            // Edge caching headers (B303), outside the session layer and
+            // inside the security headers layer below, as in `main.rs`.
+            .layer(axum::middleware::from_fn_with_state(
+                state.clone(),
+                trovato_kernel::middleware::set_cache_headers,
+            ))
             // Resolve the trusted-proxy-gated client IP (RATE-1) so handlers see
             // the `ClientIp` extension exactly as in production.
             .layer(axum::middleware::from_fn_with_state(

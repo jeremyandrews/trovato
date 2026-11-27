@@ -224,6 +224,7 @@ impl RoleService {
         let before = Role::get_permissions(&self.inner.pool, role_id).await?;
         Role::add_permission(&self.inner.pool, role_id, permission).await?;
         self.inner.permissions.invalidate_all();
+        crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
         self.audit_grants(role_id, &before).await
     }
 
@@ -232,6 +233,7 @@ impl RoleService {
         let before = Role::get_permissions(&self.inner.pool, role_id).await?;
         Role::remove_permission(&self.inner.pool, role_id, permission).await?;
         self.inner.permissions.invalidate_all();
+        crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
         self.audit_grants(role_id, &before).await
     }
 
@@ -247,6 +249,7 @@ impl RoleService {
         let before = Role::get_permissions(&self.inner.pool, role_id).await?;
         Role::set_permissions(&self.inner.pool, role_id, desired).await?;
         self.inner.permissions.invalidate_all();
+        crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
         self.audit_grants(role_id, &before).await
     }
 
@@ -265,6 +268,7 @@ impl RoleService {
         let before = Role::get_permissions(&self.inner.pool, role_id).await?;
         Role::set_permissions_within(&self.inner.pool, role_id, desired, rendered).await?;
         self.inner.permissions.invalidate_all();
+        crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
         self.audit_grants(role_id, &before).await
     }
 

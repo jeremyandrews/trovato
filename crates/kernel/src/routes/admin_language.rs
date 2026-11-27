@@ -102,6 +102,7 @@ async fn languages_changed(state: &AppState) {
         tracing::error!(error = %e, "failed to reload languages after a change");
     }
     generation::bump_all(&[CacheKind::Languages, CacheKind::Menus]);
+    crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
 }
 
 // =============================================================================

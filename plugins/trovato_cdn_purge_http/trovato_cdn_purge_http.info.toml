@@ -1,0 +1,20 @@
+name = "trovato_cdn_purge_http"
+description = "Edge cache purge: a plain HTTP POST to a configured URL"
+version = "0.106.0"
+api_version = "0.106"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = [
+    "tap_cache_purge",
+    "tap_queue_worker",
+]
+weight = 0
+
+# Declared plugin capabilities (WASM-1, deny-unless-declared). The kernel
+# builds this plugin's WASM linker from host_interfaces — it receives exactly
+# the host interfaces named here (plus baseline WASI). Derived from the
+# compiled .wasm import section.
+[capabilities]
+host_interfaces = ["http", "logging", "queue", "variables"]

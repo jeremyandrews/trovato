@@ -473,6 +473,7 @@ impl ContentTypeRegistry {
     fn cache_written(&self, row: &ItemType) {
         self.cache_row(row);
         crate::cache::generation::bump(crate::cache::generation::CacheKind::ContentTypes);
+        crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
     }
 
     /// The row input `create` and `replace` both write.

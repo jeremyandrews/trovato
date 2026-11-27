@@ -53,6 +53,8 @@ PLUGINS=(
   test_form_taps
   test_form_taps_b
   test_owned_vocabulary
+  trovato_cdn_purge_http
+  trovato_cdn_purge_cloudflare
 )
 
 if [ "${1:-}" = "--list" ]; then
