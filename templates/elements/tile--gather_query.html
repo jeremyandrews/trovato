@@ -6,7 +6,8 @@
     rows        the gather's rows, in its order, at most the tile's `items`;
                 an item row carries `title` and `url` (its alias when it has one)
     empty_text  the gather's empty text, when it has one
-    more_url    the gather's own page
+    more_url    the gather's own page; empty for a gather about the item
+                in view, whose own page shows no item and so lists nothing
 
   Override for every gather tile with `elements/tile--gather_query.html` in a
   theme, or for one tile with `elements/tile--gather_query--<machine_name>.html`.
@@ -20,4 +21,4 @@
 {% elif empty_text %}
 <p class="tile-gather__empty">{{ empty_text }}</p>
 {% endif %}
-<p class="tile-gather__more"><a href="{{ more_url }}">More</a></p>
+{% if more_url %}<p class="tile-gather__more"><a href="{{ more_url }}">More</a></p>{% endif %}

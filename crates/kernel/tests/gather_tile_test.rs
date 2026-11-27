@@ -377,6 +377,8 @@ fn a_gather_tile_on_current_item_excludes_the_item_it_is_shown_on() {
             [format!("B186 conf {marker} B")],
             "{tile_a}"
         );
+        // No "More": the gather's own page shows no item and lists nothing.
+        assert!(!tile_a.contains("tile-gather__more"), "{tile_a}");
 
         let html_b = get(app, &format!("/item/{b}"), "").await;
         let tile_b = tile_html(&html_b, &machine).unwrap_or_else(|| panic!("{html_b}"));

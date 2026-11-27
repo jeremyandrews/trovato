@@ -258,7 +258,14 @@ async fn render_gather_tile(tile: &Tile, render: &TileRenderContext<'_>) -> Opti
     context.insert("tile", tile);
     context.insert("rows", &result.items);
     context.insert("empty_text", &query.display.empty_text);
-    context.insert("more_url", &gather_page_path(&query));
+    // The gather's own page shows no item, so for a gather about the item in
+    // view it would list nothing: no "More" link to it.
+    let more_url = if query.definition.names_current_item() {
+        String::new()
+    } else {
+        gather_page_path(&query)
+    };
+    context.insert("more_url", &more_url);
     Some(render_tile_template(tile, render, &context))
 }
 

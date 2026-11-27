@@ -361,6 +361,9 @@ The template gets `tile`, `rows` (each item row has `title` and `url`, its
 alias when it has one), `empty_text` and `more_url`, the gather's own page
 (its canonical URL, else its first route without arguments, else
 `/gather/{query_id}`).
+For a gather that names the item in view, `more_url` is empty and the default
+template draws no "More" link: the gather's own page shows no item, so it
+would list nothing.
 
 A tile with nothing it may show is left off the page, not drawn empty: when
 the viewer may not run the gather, silently; when the gather does not exist,
