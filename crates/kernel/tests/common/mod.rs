@@ -80,9 +80,11 @@ pub async fn shared_app() -> &'static TestApp {
         // Use the shared runtime's handle to initialize inside a
         // separate OS thread (avoiding nested block_on).
         let handle = SHARED_RT.handle().clone();
-        std::thread::spawn(move || handle.block_on(TestApp::new()))
-            .join()
-            .expect("TestApp init thread panicked")
+        std::thread::spawn(move || {
+            handle.block_on(TestApp::build(|_| {}, false, false, SHARED_POOL_SIZE))
+        })
+        .join()
+        .expect("TestApp init thread panicked")
     })
 }
 
@@ -295,6 +297,23 @@ async fn seed_test_languages(database_url: &str) {
     pool.close().await;
 }
 
+/// Pool size for a `TestApp` built directly by a test file (`TestApp::new`,
+/// `with_config`, `for_site`, `with_rate_limits`) rather than through
+/// [`shared_app`]. These apps are usually one per test file, several of which
+/// may initialize at once (one per libtest thread). At 25 connections each —
+/// the shared app's size — four concurrent apps alone ask Postgres for 100
+/// connections, its default `max_connections`, and the rest time out acquiring
+/// a connection. A small default here and the shared app's larger pool kept
+/// separate (`SHARED_POOL_SIZE`) is what lets `RUST_TEST_THREADS` scale past 4
+/// without a pool timeout. An explicit `DATABASE_MAX_CONNECTIONS` always wins
+/// over this default, for a test that genuinely needs more.
+const DIRECT_POOL_SIZE: u32 = 5;
+
+/// Pool size for the one app [`shared_app`] builds and every other test reuses.
+/// It legitimately serves many tests concurrently (see the comment in `build`),
+/// so it keeps the larger pool the direct-build default used to apply to everyone.
+const SHARED_POOL_SIZE: u32 = 25;
+
 impl TestApp {
     /// Create a new test application with full kernel initialization.
     pub async fn new() -> Self {
@@ -308,7 +327,7 @@ impl TestApp {
     /// nothing else — where a `set_var` steers every other test thread in the
     /// binary too, and cannot be undone once another thread may have read it.
     pub async fn with_config(customize: impl FnOnce(&mut Config)) -> Self {
-        Self::build(customize, false, false).await
+        Self::build(customize, false, false, DIRECT_POOL_SIZE).await
     }
 
     /// Build a test app for a whole site, the performance tests' (`perf`): the
@@ -316,7 +335,7 @@ impl TestApp {
     /// answers the `x-perf-extra-query` header with one more statement, which
     /// is how a test proves the page counts catch an added query.
     pub async fn for_site(customize: impl FnOnce(&mut Config)) -> Self {
-        Self::build(customize, false, true).await
+        Self::build(customize, false, true, DIRECT_POOL_SIZE).await
     }
 
     /// Build a test app whose router also runs the two rate-limit layers, in the
@@ -334,10 +353,15 @@ impl TestApp {
     /// `AppState` reads its limits once, at construction, so a test that
     /// configures `rate_limit.*` keys writes them before calling this.
     pub async fn with_rate_limits(customize: impl FnOnce(&mut Config)) -> Self {
-        Self::build(customize, true, false).await
+        Self::build(customize, true, false, DIRECT_POOL_SIZE).await
     }
 
-    async fn build(customize: impl FnOnce(&mut Config), rate_limited: bool, site: bool) -> Self {
+    async fn build(
+        customize: impl FnOnce(&mut Config),
+        rate_limited: bool,
+        site: bool,
+        default_max_connections: u32,
+    ) -> Self {
         // `dotenvy::dotenv` calls `set_var` for every line it applies, so it goes
         // through the workspace env lock like any other mutation. It is also the
         // last environment *mutation* left in this fixture: everything below is a
@@ -373,6 +397,16 @@ impl TestApp {
                 .join(format!("trovato-test-pagefind-{}", std::process::id()))
                 .join("pagefind");
         }
+        // Production never recompiles the same plugin twice in one process's
+        // life, so the cache is off there by default. A test run is the
+        // opposite case: hundreds of processes compile the same fixture
+        // `.wasm` files from scratch. Turned on here, through
+        // `target/wasm-cache` (keyed by wasmtime itself on the module bytes,
+        // engine settings and its own version, so a changed fixture or a
+        // toolchain bump still recompiles).
+        if std::env::var_os("PLUGIN_WASM_CACHE_DIR").is_none() {
+            config.plugin.wasm_cache_dir = Some(project_root.join("target").join("wasm-cache"));
+        }
 
         // Trust the mocked loopback peer (see MockConnectInfo below) so the
         // per-test X-Forwarded-For isolation `login` relies on passes the RATE-1
@@ -381,10 +415,12 @@ impl TestApp {
             config.trusted_proxies = vec![std::net::IpAddr::from([127, 0, 0, 1])].into();
         }
 
-        // Tests run 100 tests concurrently — bump the default pool size so
-        // serialization locks don't starve other tests of connections.
+        // `shared_app` passes its own larger default (`SHARED_POOL_SIZE`); a
+        // directly-built app gets the smaller `DIRECT_POOL_SIZE` so several of
+        // them at once don't exhaust the server's `max_connections`. An explicit
+        // `DATABASE_MAX_CONNECTIONS` always wins over either default.
         if std::env::var_os("DATABASE_MAX_CONNECTIONS").is_none() {
-            config.database_max_connections = 25;
+            config.database_max_connections = default_max_connections;
         }
 
         customize(&mut config);

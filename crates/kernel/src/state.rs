@@ -29,7 +29,7 @@ use crate::menu::MenuRegistry;
 use crate::metrics::Metrics;
 use crate::middleware::{RateLimitConfig, RateLimiter};
 use crate::permissions::PermissionService;
-use crate::plugin::{PluginConfig, PluginRuntime, status as plugin_status};
+use crate::plugin::{PluginRuntime, status as plugin_status};
 use crate::search::SearchService;
 use crate::search::sentiment::SentimentQueue;
 use crate::services;
@@ -488,11 +488,10 @@ impl AppState {
         );
 
         // Create plugin runtime and load only enabled plugins. Resource bounds
-        // (pool sizing + per-Store limiter + optional fuel, WASM-4) come from the
-        // environment, falling back to the documented defaults.
-        let plugin_config = PluginConfig::from_env();
+        // (pool sizing + per-Store limiter + optional fuel, WASM-4) come from
+        // `config.plugin`, which falls back to the documented defaults.
         let mut plugin_runtime =
-            PluginRuntime::new(&plugin_config).context("failed to create plugin runtime")?;
+            PluginRuntime::new(&config.plugin).context("failed to create plugin runtime")?;
 
         plugin_runtime
             .load_enabled(&config.plugins_dirs, &enabled_set)

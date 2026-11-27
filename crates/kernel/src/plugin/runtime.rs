@@ -258,6 +258,14 @@ pub struct PluginConfig {
     /// Per-`Store` resource bounds (WASM-4): linear-memory / table caps and the
     /// optional fuel budget, attached to every plugin `Store` at creation.
     pub limits: ResourceLimits,
+    /// Directory for wasmtime's own compilation cache, keyed by module bytes,
+    /// engine settings and the wasmtime version. `None` (the default) disables
+    /// it: production never recompiles the same plugin twice in one process's
+    /// life, so the cache would only add disk I/O for no reuse. A test harness
+    /// that starts many short-lived processes against the same fixture
+    /// plugins is the opposite case, which is what sets this
+    /// (`PLUGIN_WASM_CACHE_DIR`, or `TestApp::build`'s own default).
+    pub wasm_cache_dir: Option<PathBuf>,
 }
 
 impl Default for PluginConfig {
@@ -266,6 +274,7 @@ impl Default for PluginConfig {
             max_instances: 1000,
             max_memory_pages: 1024, // 64MB max per instance
             limits: ResourceLimits::default(),
+            wasm_cache_dir: None,
         }
     }
 }
@@ -911,6 +920,20 @@ fn create_engine(config: &PluginConfig) -> Result<Engine> {
 
     // Optimize for speed
     wasmtime_config.cranelift_opt_level(wasmtime::OptLevel::Speed);
+
+    // Off unless `config.wasm_cache_dir` names a directory (see its doc comment):
+    // wasmtime's own cache, keyed by module bytes, engine settings and the
+    // wasmtime version, not a cache this kernel writes or invalidates itself.
+    if let Some(dir) = &config.wasm_cache_dir {
+        std::fs::create_dir_all(dir)
+            .with_context(|| format!("failed to create wasm cache dir {}", dir.display()))?;
+        let mut cache_config = wasmtime::CacheConfig::new();
+        cache_config.with_directory(dir);
+        let cache = wasmtime::Cache::new(cache_config)
+            .into_anyhow()
+            .with_context(|| format!("failed to open wasm cache at {}", dir.display()))?;
+        wasmtime_config.cache(Some(cache));
+    }
 
     Engine::new(&wasmtime_config)
         .into_anyhow()
