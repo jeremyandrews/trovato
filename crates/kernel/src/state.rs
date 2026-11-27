@@ -616,8 +616,12 @@ impl AppState {
             .context("failed to query pending tap_install")?;
         // The item service is built further down. The install task waits for
         // it, so `item-api` calls from `tap_install` are decided rather than
-        // refused for want of one.
-        let mut tap_install_items: Option<tokio::sync::oneshot::Sender<Arc<ItemService>>> = None;
+        // refused for want of one. The gather service travels with it, so
+        // `query` from `tap_install` runs rather than answering
+        // `ERR_NO_SERVICES`.
+        let mut tap_install_items: Option<
+            tokio::sync::oneshot::Sender<(Arc<ItemService>, Arc<GatherService>)>,
+        > = None;
         if !pending.is_empty() {
             let (items_tx, items_rx) = tokio::sync::oneshot::channel();
             tap_install_items = Some(items_tx);
@@ -632,7 +636,7 @@ impl AppState {
                 // stands even when its dispatch fails, so dispatching from a
                 // server that is not starting would spend each hook the next
                 // healthy start should run.
-                let Ok(items) = items_rx.await else {
+                let Ok((items, gather)) = items_rx.await else {
                     warn!(
                         pending = pending.len(),
                         "startup failed; tap_install left pending for the next start"
@@ -669,6 +673,7 @@ impl AppState {
                         install_services = install_services.with_email(email.clone());
                     }
                     install_services.set_item_service(&items);
+                    install_services.set_gather_service(&gather);
                     let install_state =
                         RequestState::new(UserContext::anonymous(), install_services);
                     // dispatch_to_plugin returns None when the plugin does not
@@ -1081,9 +1086,7 @@ impl AppState {
         // lines above sees this binding, and neither side keeps the other
         // alive.
         tap_services.set_item_service(&items);
-        if let Some(tx) = tap_install_items.take() {
-            let _ = tx.send(items.clone());
-        }
+
         // And the gather service, for the `query` host interface, by the same
         // shared, weak cell.
         tap_services.set_gather_service(&gather);
@@ -1098,6 +1101,13 @@ impl AppState {
         // a gather naming a `record_type` resolves it to its table + field map.
         gather.set_record_types(record_types.clone());
 
+        // Only now is the install task handed both: gather has its item-access
+        // seam and record registry, so a `query` from `tap_install` reads
+        // through the same checks a request does.
+        if let Some(tx) = tap_install_items.take() {
+            let _ = tx.send((items.clone(), gather.clone()));
+        }
+
         // Create cron service with file service for proper cleanup
         let mut cron = CronService::with_file_service(redis.clone(), db.clone(), files.clone());
 
@@ -1105,6 +1115,9 @@ impl AppState {
         // anonymous visitor who downloads it. The one `ItemService`, not a
         // second one: a second would carry its own field-access cache.
         cron.set_item_service(items.clone());
+        // And the gather service, so `query` from `tap_cron` and
+        // `tap_queue_worker` runs on the same one request dispatch binds above.
+        cron.set_gather_service(gather.clone());
 
         // Create batch service
         let batch = Arc::new(BatchService::new(redis.clone()));

@@ -1,5 +1,5 @@
 name = "test_item_background"
-description = "U40 fixture: item-api writes from tap_cron and tap_queue_worker"
+description = "U40 fixture: item-api writes and query reads from tap_cron and tap_queue_worker"
 version = "0.105.0"
 api_version = "0.105"
 default_enabled = false
@@ -9,11 +9,11 @@ dependencies = []
 implements = ["tap_cron", "tap_queue_worker"]
 weight = 0
 
-# `item-api` is what the fixture exercises, from the two background paths, so it
-# declares `item_background`. `variables` carries the step tap_cron runs and the
+# `item-api` and `query` are what the fixture exercises, from the two background
+# paths, so it declares `item_background`. `variables` carries the step tap_cron runs and the
 # answers both taps report. `logging` because the #[plugin_tap] macro references
 # the logging import on its error paths. The suite also loads a renamed copy of
 # this plugin with `item_background` removed, to see the refusal.
 [capabilities]
-host_interfaces = ["logging", "item-api", "variables"]
+host_interfaces = ["logging", "item-api", "query", "variables"]
 item_background = true

@@ -1,5 +1,6 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-//! `item-api` from `tap_cron` and `tap_queue_worker`, on a real `AppState`.
+//! `item-api` and `query` from `tap_cron` and `tap_queue_worker`, on a real
+//! `AppState`.
 //!
 //! Every other item-api suite builds its `RequestServices` by hand and binds
 //! the item service itself, so none of them could see that the services
@@ -35,6 +36,11 @@ use uuid::Uuid;
 const FIXTURE: &str = "test_item_background";
 /// The same module under another name, without `item_background`.
 const NOCAP: &str = "test_item_background_nocap";
+/// The same fixture under a third and fourth name, for the `query` tests, so
+/// their steps never share a variable with the `item-api` tests running at
+/// the same time.
+const QUERY: &str = "test_item_background_query";
+const QUERY_NOCAP: &str = "test_item_background_query_nocap";
 
 /// Serializes enabling a fixture, building an app and disabling it again, so
 /// one test's restore cannot land between another's enable and its build.
@@ -443,6 +449,82 @@ fn without_item_background_both_paths_are_refused() {
         let deleted = through_queue(&app, NOCAP, QUEUE, "delete", Some(any), "").await;
         assert_eq!(code(&deleted), denied, "tap_queue_worker delete: {deleted}");
         assert_eq!(titled(&app.db, &prefix).await, 0, "nothing was written");
+    });
+}
+
+/// Publish an item, so the background viewer is entitled to see it.
+async fn publish(pool: &PgPool, id: Uuid) {
+    sqlx::query("UPDATE item SET status = 1 WHERE id = $1")
+        .bind(id)
+        .execute(pool)
+        .await
+        .expect("publish the item");
+}
+
+/// `query` from `tap_cron` and `tap_queue_worker` runs and returns rows.
+///
+/// Before B249 the services both paths dispatch with bound the item service
+/// and not the gather service, so `query` answered `ERR_NO_SERVICES` (-10)
+/// from either one after `item_background` had already let it through.
+#[test]
+fn tap_cron_query_returns_rows_with_item_background() {
+    const QUEUE: &str = "b249_query";
+    run_test(async {
+        let app = app_with(QUERY, true).await;
+        let prefix = format!("b249 query {}", Uuid::now_v7().simple());
+        clean_up_after(
+            &app.db,
+            QUERY,
+            &["step", "cron_result", "queue_result"],
+            Some(QUEUE),
+            prefix.clone(),
+        );
+
+        let created = through_cron(&app, QUERY, "create", None, &prefix).await;
+        let id = created_id(&created);
+        publish(&app.db, id).await;
+
+        let no_services = i64::from(host_errors::ERR_NO_SERVICES);
+        let from_cron = through_cron(&app, QUERY, "query", None, &prefix).await;
+        assert_ne!(code(&from_cron), no_services, "tap_cron query: {from_cron}");
+        assert_eq!(code(&from_cron), 0, "tap_cron query: {from_cron}");
+        assert_eq!(from_cron["id"], json!(id.to_string()), "{from_cron}");
+        assert_eq!(title(&from_cron), prefix, "{from_cron}");
+        assert_eq!(from_cron["total"], json!(1), "{from_cron}");
+
+        let from_queue = through_queue(&app, QUERY, QUEUE, "query", None, &prefix).await;
+        assert_eq!(code(&from_queue), 0, "tap_queue_worker query: {from_queue}");
+        assert_eq!(from_queue["id"], json!(id.to_string()), "{from_queue}");
+        assert_eq!(from_queue["total"], json!(1), "{from_queue}");
+    });
+}
+
+/// Without `item_background`, `query` over content from either background
+/// path is still refused with the background denial, now that gather is
+/// bound: the binding widens nothing.
+#[test]
+fn without_item_background_query_is_still_refused() {
+    const QUEUE: &str = "b249_query_nocap";
+    run_test(async {
+        let app = app_with(QUERY_NOCAP, false).await;
+        let prefix = format!("b249 query nocap {}", Uuid::now_v7().simple());
+        clean_up_after(
+            &app.db,
+            QUERY_NOCAP,
+            &["step", "cron_result", "queue_result"],
+            Some(QUEUE),
+            prefix.clone(),
+        );
+        let denied = i64::from(host_errors::ERR_ITEM_BACKGROUND_DENIED);
+
+        let from_cron = through_cron(&app, QUERY_NOCAP, "query", None, &prefix).await;
+        assert_eq!(code(&from_cron), denied, "tap_cron query: {from_cron}");
+        let from_queue = through_queue(&app, QUERY_NOCAP, QUEUE, "query", None, &prefix).await;
+        assert_eq!(
+            code(&from_queue),
+            denied,
+            "tap_queue_worker query: {from_queue}"
+        );
     });
 }
 
