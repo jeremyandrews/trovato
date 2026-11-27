@@ -589,11 +589,19 @@ async fn events_for(
     seen.lock().unwrap().clone()
 }
 
+/// Panics if it counted none: a page with a gather tile reads the database,
+/// so zero means the capture missed the statements, not that there were none.
 fn statement_count(events: &[(String, tracing::Level, String)]) -> usize {
-    events
+    let count = events
         .iter()
         .filter(|(target, _, _)| target == "sqlx::query")
-        .count()
+        .count();
+    assert!(
+        count > 0,
+        "setup: the scoped subscriber saw no sqlx::query statement for a page that \
+         reads the database, so it is not capturing"
+    );
+    count
 }
 
 #[test]
