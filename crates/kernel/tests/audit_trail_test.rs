@@ -368,22 +368,24 @@ fn tile_writes_are_audited_with_the_request_actor() {
             "machine_name": unique("b88b_tile"), "label": "Audited tile"
         }))
         .unwrap();
-        // A tile write takes no user: who made it comes from the request.
+        // Who made the write for the audit trail comes from the request, not
+        // from the format-check user context passed to the service call.
         let request = AuditActor {
             user_id: Some(actor),
             ip: "203.0.113.9".to_string(),
             user_agent: String::new(),
         };
+        let admin = UserContext::administrator(Uuid::nil(), vec![]);
         let tile = request
             .clone()
-            .scope(tiles.create(create))
+            .scope(tiles.create(create, &admin))
             .await
             .expect("create tile");
         let update =
             serde_json::from_value(serde_json::json!({ "label": "Renamed tile" })).unwrap();
         request
             .clone()
-            .scope(tiles.update(tile.id, update))
+            .scope(tiles.update(tile.id, update, &admin))
             .await
             .unwrap();
         request.scope(tiles.delete(tile.id)).await.unwrap();
@@ -432,7 +434,12 @@ fn nothing_is_recorded_while_the_plugin_is_disabled() {
             "machine_name": unique("b88b_off"), "label": "Unaudited tile"
         }))
         .unwrap();
-        let tile = app.state.tiles().create(create).await.expect("create tile");
+        let tile = app
+            .state
+            .tiles()
+            .create(create, &UserContext::administrator(Uuid::nil(), vec![]))
+            .await
+            .expect("create tile");
         assert!(
             audit_rows(&app, "tile", &tile.id.to_string())
                 .await
@@ -674,7 +681,12 @@ fn the_audit_log_page_lists_the_rows() {
             "machine_name": label, "label": "Listed tile"
         }))
         .unwrap();
-        let tile = app.state.tiles().create(create).await.unwrap();
+        let tile = app
+            .state
+            .tiles()
+            .create(create, &UserContext::administrator(Uuid::nil(), vec![]))
+            .await
+            .unwrap();
 
         let (_, cookies) = user_holding(
             app,

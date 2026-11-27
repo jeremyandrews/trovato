@@ -79,9 +79,7 @@ pub(crate) async fn import_tile(run: &mut Run<'_>, r: TileRecord) -> Result<Outc
             .get("format")
             .and_then(Value::as_str)
             .unwrap_or("filtered_html");
-        if !run.formats.iter().any(|f| f == format) {
-            anyhow::bail!("text format '{format}' is not one the site has");
-        }
+        crate::content::text_format::check_permitted("Custom HTML tile", format, &run.formats)?;
     }
     let visibility = r
         .visibility

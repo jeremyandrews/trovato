@@ -331,11 +331,12 @@ pub fn parse(
             let Some(format) = format else {
                 return Ok(Some(Value::String(text)));
             };
-            if !permitted_formats.iter().any(|f| f == format) {
-                return Err(ValidationError::field(
-                    name,
-                    format!("{}: you may not use the {format} text format.", field.label),
-                ));
+            if let Err(refused) = crate::content::text_format::check_permitted(
+                &field.label,
+                format,
+                permitted_formats,
+            ) {
+                return Err(ValidationError::field(name, refused.to_string()));
             }
             Ok(Some(serde_json::json!({ "value": text, "format": format })))
         }
@@ -434,11 +435,8 @@ fn check_one(
                 let Some(format) = format.as_str() else {
                     return Err(format!("{label}: the text format must be a string."));
                 };
-                if !permitted_formats.iter().any(|f| f == format) {
-                    return Err(format!(
-                        "{label}: you may not use the {format} text format."
-                    ));
-                }
+                crate::content::text_format::check_permitted(label, format, permitted_formats)
+                    .map_err(|refused| refused.to_string())?;
             }
             wrapped_scalar
         }
@@ -634,5 +632,43 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    /// A format that does not exist at all answers differently from one that
+    /// exists but is not among the writer's permitted formats, so a typo does
+    /// not read as a permission problem. Covers both the posted-form path
+    /// ([`parse`]) and the JSON path ([`check_json`]).
+    #[test]
+    fn a_missing_format_is_told_apart_from_a_forbidden_one() {
+        let field = FieldDefinition::new("body", FieldType::TextLong).label("Body");
+        let formats = vec!["plain_text".to_string()];
+
+        let err = parse(&field, "hi", Some("nope_at_all"), &formats).unwrap_err();
+        assert_eq!(
+            err.message,
+            "Body: the nope_at_all text format does not exist."
+        );
+
+        let err = parse(&field, "hi", Some("full_html"), &formats).unwrap_err();
+        assert_eq!(
+            err.message,
+            "Body: you may not use the full_html text format."
+        );
+
+        let err = check_json(
+            &field,
+            &json!({"value": "hi", "format": "nope_at_all"}),
+            &formats,
+        )
+        .unwrap_err();
+        assert_eq!(err, "Body: the nope_at_all text format does not exist.");
+
+        let err = check_json(
+            &field,
+            &json!({"value": "hi", "format": "full_html"}),
+            &formats,
+        )
+        .unwrap_err();
+        assert_eq!(err, "Body: you may not use the full_html text format.");
     }
 }

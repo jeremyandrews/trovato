@@ -268,6 +268,9 @@ pub struct UpdateComment {
     pub subject: Option<Option<String>>,
 }
 
+/// The text format a new comment is stored in when the writer named none.
+pub const DEFAULT_BODY_FORMAT: &str = "filtered_html";
+
 /// The limit the `comment_subject_length` CHECK constraint also enforces.
 ///
 /// Checked here first so a submission over the limit gets a clean 400 rather
@@ -304,7 +307,7 @@ impl Comment {
         let now = chrono::Utc::now().timestamp();
         let body_format = input
             .body_format
-            .unwrap_or_else(|| "filtered_html".to_string());
+            .unwrap_or_else(|| DEFAULT_BODY_FORMAT.to_string());
         let status = input
             .status
             .unwrap_or_else(|| CommentStatus::Published.as_i16());

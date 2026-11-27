@@ -46,10 +46,8 @@ pub(crate) async fn import_comment(run: &mut Run<'_>, r: CommentRecord) -> Resul
     let body_format = r
         .body_format
         .clone()
-        .unwrap_or_else(|| "filtered_html".to_string());
-    if !run.formats.contains(&body_format) {
-        anyhow::bail!("text format '{body_format}' is not one the site has");
-    }
+        .unwrap_or_else(|| crate::models::comment::DEFAULT_BODY_FORMAT.to_string());
+    crate::content::text_format::check_permitted("Comment", &body_format, &run.formats)?;
     let status = r.status.unwrap_or(CommentStatus::Published.as_i16());
     if CommentStatus::from_i16(status).is_none() {
         anyhow::bail!("status must be 0, 1, 2 or 3, not {status}");

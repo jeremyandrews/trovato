@@ -589,7 +589,7 @@ fn a_comment_that_fails_validation_writes_nothing() {
                     c["body_format"] = json!("b167_nope");
                     c
                 },
-                "text format",
+                "the b167_nope text format does not exist",
             ),
         ];
         for (line, expected) in cases {
@@ -1009,7 +1009,7 @@ fn an_imported_tile_keeps_its_id_and_dates_and_reruns_unchanged() {
             (
                 "config",
                 json!({"body": "x", "format": "b167_nope"}),
-                "text format",
+                "the b167_nope text format does not exist",
             ),
         ] {
             let mut bad = lines.clone();
