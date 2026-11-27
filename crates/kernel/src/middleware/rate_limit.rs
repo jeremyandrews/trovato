@@ -2,6 +2,7 @@
 //!
 //! Uses a sliding window counter pattern with Redis INCR + EXPIRE.
 
+use crate::redis_conn::BoundedRedis;
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -668,7 +669,7 @@ impl RateLimiter {
     /// Uses a Lua script to atomically INCR + EXPIRE, preventing a race
     /// where a crash between the two commands creates an immortal counter.
     async fn increment(&self, key: &str, ttl_secs: u64) -> Result<i64, redis::RedisError> {
-        let mut conn = self.redis.get_multiplexed_async_connection().await?;
+        let mut conn = self.redis.bounded_connection().await?;
 
         let script = redis::Script::new(
             r"local count = redis.call('INCR', KEYS[1])
@@ -694,14 +695,14 @@ impl RateLimiter {
         identifier: &str,
     ) -> Result<i64, redis::RedisError> {
         let key = format!("rate:{category}:{identifier}");
-        let mut conn = self.redis.get_multiplexed_async_connection().await?;
+        let mut conn = self.redis.bounded_connection().await?;
         let count: Option<i64> = conn.get(&key).await?;
         Ok(count.unwrap_or(0))
     }
 
     /// Delete every counter in `category` (for testing).
     pub async fn reset_category(&self, category: &str) {
-        let Ok(mut conn) = self.redis.get_multiplexed_async_connection().await else {
+        let Ok(mut conn) = self.redis.bounded_connection().await else {
             return;
         };
         let keys: Vec<String> = redis::cmd("KEYS")
@@ -717,7 +718,7 @@ impl RateLimiter {
     /// Reset the counter for a key (for testing).
     pub async fn reset(&self, category: &str, identifier: &str) -> Result<(), redis::RedisError> {
         let key = format!("rate:{category}:{identifier}");
-        let mut conn = self.redis.get_multiplexed_async_connection().await?;
+        let mut conn = self.redis.bounded_connection().await?;
         let _: () = conn.del(&key).await?;
         Ok(())
     }
