@@ -800,8 +800,13 @@ async fn edit_user_submit(
                     "account_blocked",
                 )
                 .await;
-                match crate::models::api_token::ApiToken::delete_all_for_user(state.db(), user_id)
-                    .await
+                match crate::services::api_token::revoke_all_for_user(
+                    &state,
+                    user_id,
+                    Some(admin_user_id),
+                    "account_blocked",
+                )
+                .await
                 {
                     Ok(n) => tracing::info!(
                         user_id = %user_id,

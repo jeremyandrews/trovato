@@ -5,7 +5,7 @@
 //! 2026-07-17 alongside the Epic-4 ratification). Every security-relevant state
 //! change in the kernel emits here: account lifecycle (creation, deletion,
 //! username and e-mail changes), authentication outcomes, passkey lifecycle,
-//! password lifecycle, session lifecycle (the D-36 rider), and account recovery
+//! password lifecycle, session lifecycle (the D-36 rider), API tokens, and account recovery
 //! (including the D-32 fold-escalation amendment).
 //!
 //! # What this is not
@@ -119,6 +119,19 @@ pub enum SecurityEventKind {
     /// no record claiming the session is over.
     SessionEnded,
 
+    // ── API tokens ──────────────────────────────────────────────────────────
+    /// An API token was issued to the account. `subject_hash` is the hash of
+    /// the token's id (never the token); `details.name` is the label its
+    /// holder gave it and `details.expires` whether it has an expiry.
+    ApiTokenCreated,
+    /// An API token was revoked. `subject_hash` is the hash of its id;
+    /// `details.reason` is `"self"` (its holder revoked it) or
+    /// `"account_blocked"` (an administrator blocked the account, which
+    /// revokes every token it holds).
+    ///
+    /// Emitted after the delete, and only for a token that was there to go.
+    ApiTokenRevoked,
+
     // ── Account recovery (Story 4.6) ────────────────────────────────────────
     /// A recovery flow was initiated for an account.
     RecoveryInitiated,
@@ -204,6 +217,8 @@ impl SecurityEventKind {
             Self::SessionRevokedByAdmin => "session.revoked_by_admin",
             Self::SessionIdCycled => "session.id_cycled",
             Self::SessionEnded => "session.ended",
+            Self::ApiTokenCreated => "api_token.created",
+            Self::ApiTokenRevoked => "api_token.revoked",
             Self::RecoveryInitiated => "recovery.initiated",
             Self::RecoveryMethodInitiated => "recovery.method_initiated",
             Self::RecoveryVerdict => "recovery.verdict",
@@ -658,6 +673,8 @@ mod tests {
             SecurityEventKind::SessionRevokedByAdmin,
             SecurityEventKind::SessionIdCycled,
             SecurityEventKind::SessionEnded,
+            SecurityEventKind::ApiTokenCreated,
+            SecurityEventKind::ApiTokenRevoked,
             SecurityEventKind::RecoveryInitiated,
             SecurityEventKind::RecoveryMethodInitiated,
             SecurityEventKind::RecoveryVerdict,

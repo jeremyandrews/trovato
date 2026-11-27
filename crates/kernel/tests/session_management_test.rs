@@ -970,6 +970,28 @@ fn blocking_a_user_ends_their_sessions_and_deletes_their_tokens() {
             .await
             .unwrap();
         assert_eq!(tokens, 0, "blocking must delete the account's API tokens");
+
+        // And records which went: one `api_token.revoked` for the token,
+        // naming the block as the reason and the administrator as the actor.
+        let revoked: Vec<(Option<String>, Option<uuid::Uuid>, serde_json::Value)> = sqlx::query_as(
+            "SELECT subject_hash, actor_id, details FROM security_audit_log \
+                 WHERE kind = 'api_token.revoked' AND user_id = $1",
+        )
+        .bind(user_id)
+        .fetch_all(&app.db)
+        .await
+        .unwrap();
+        assert_eq!(revoked.len(), 1, "one event per token: {revoked:?}");
+        let (subject, actor, details) = &revoked[0];
+        assert_eq!(
+            subject.as_deref(),
+            Some(trovato_kernel::audit::hash_subject(&token.id.to_string()).as_str())
+        );
+        assert!(
+            actor.is_some_and(|a| a != user_id),
+            "the administrator who blocked it: {actor:?}"
+        );
+        assert_eq!(details["reason"], "account_blocked");
     });
 }
 

@@ -85,16 +85,129 @@ pub async fn reset_password_offline(pool: &PgPool, user_id: Uuid, password: &str
                 serde_json::json!({ "via": "cli" }),
             )
             .await;
-        let kind = if had_password {
-            SecurityEventKind::PasswordChanged
-        } else {
-            SecurityEventKind::PasswordSet
-        };
         audit
-            .security(SecurityEvent::new(kind).user(user_id).detail("via", "cli"))
+            .security(password_event(user_id, None, had_password, "cli"))
             .await;
     }
     Ok(updated)
+}
+
+/// `password.set` when the account had no password, `password.changed` when
+/// it had one: the event every path that writes a password emits. `via`
+/// names the path (`self_service`, `password_reset`, `recovery`, `admin`,
+/// `cli`, `import`); `actor` is named only when it is someone else.
+pub(crate) fn password_event(
+    user_id: Uuid,
+    actor: Option<Uuid>,
+    had_password: bool,
+    via: &str,
+) -> SecurityEvent {
+    let kind = if had_password {
+        SecurityEventKind::PasswordChanged
+    } else {
+        SecurityEventKind::PasswordSet
+    };
+    SecurityEvent::new(kind)
+        .user(user_id)
+        .maybe_actor(actor.filter(|a| *a != user_id))
+        .detail("via", via)
+}
+
+/// `account.created`, as every path that makes an account writes it.
+///
+/// `path` names where (`registration`, `admin`, `installer`, `cli`,
+/// `import`), `active` whether the account starts usable. `details.by` is the
+/// acting account's id when one is authenticated; otherwise `"operator"` for
+/// the installer, the command line and an import, where no site is running to
+/// have an authenticated acting user at all, and `"self"` for a visitor
+/// registering their own account.
+pub(crate) fn account_created_event(
+    user_id: Uuid,
+    actor: Option<Uuid>,
+    path: &str,
+    active: bool,
+) -> SecurityEvent {
+    let by = match actor {
+        Some(actor) => actor.to_string(),
+        None if matches!(path, "cli" | "installer" | "import") => "operator".to_string(),
+        None => "self".to_string(),
+    };
+    SecurityEvent::new(SecurityEventKind::AccountCreated)
+        .user(user_id)
+        .maybe_actor(actor.filter(|a| *a != user_id))
+        .detail("path", path)
+        .detail("active", active)
+        .detail("by", by)
+}
+
+/// The fields of an account a change to which is a security event.
+pub(crate) struct AccountFields<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) mail: &'a str,
+    pub(crate) status: i16,
+    pub(crate) is_admin: bool,
+}
+
+impl<'a> From<&'a User> for AccountFields<'a> {
+    fn from(user: &'a User) -> Self {
+        Self {
+            name: &user.name,
+            mail: &user.mail,
+            status: user.status,
+            is_admin: user.is_admin,
+        }
+    }
+}
+
+/// The security events a change from `before` to `after` writes: the
+/// username (`user.name_changed`), the e-mail address (`user.mail_changed`,
+/// never the addresses), the blocked state (`user.status_changed`) and the
+/// administrator flag (`user.roles_changed`). Shared by every path that
+/// changes an account, so each records a change the same way.
+pub(crate) fn account_change_events(
+    user_id: Uuid,
+    actor: Option<Uuid>,
+    before: &AccountFields<'_>,
+    after: &AccountFields<'_>,
+) -> Vec<SecurityEvent> {
+    let other_actor = actor.filter(|a| *a != user_id);
+    let mut events = Vec::new();
+    if before.name != after.name {
+        events.push(
+            SecurityEvent::new(SecurityEventKind::UserNameChanged)
+                .user(user_id)
+                .maybe_actor(other_actor)
+                .detail("from", before.name)
+                .detail("to", after.name),
+        );
+    }
+    if before.mail != after.mail {
+        events.push(
+            SecurityEvent::new(SecurityEventKind::UserMailChanged)
+                .user(user_id)
+                .maybe_actor(other_actor),
+        );
+    }
+    if before.status != after.status {
+        events.push(
+            SecurityEvent::new(SecurityEventKind::UserStatusChanged)
+                .user(user_id)
+                .maybe_actor(other_actor)
+                .detail("from", before.status)
+                .detail("to", after.status)
+                .detail("blocked", after.status == 0),
+        );
+    }
+    if before.is_admin != after.is_admin {
+        events.push(
+            SecurityEvent::new(SecurityEventKind::UserRolesChanged)
+                .user(user_id)
+                .maybe_actor(other_actor)
+                .detail("change", if after.is_admin { "added" } else { "removed" })
+                .detail("role", "administrator"),
+        );
+    }
+    events
 }
 
 /// The actor a `UserContext` names, for an audit row: `None` for anonymous.
@@ -406,11 +519,6 @@ impl UserService {
             self.invalidate(id);
             self.dispatch_tap("tap_user_update", id, acting_user).await;
             info!(user_id = %id, "user password updated");
-            let kind = if had_password {
-                SecurityEventKind::PasswordChanged
-            } else {
-                SecurityEventKind::PasswordSet
-            };
             let audit = &self.inner.audit;
             audit
                 .record(
@@ -422,12 +530,7 @@ impl UserService {
                 )
                 .await;
             audit
-                .security(
-                    SecurityEvent::new(kind)
-                        .user(id)
-                        .maybe_actor(actor_of(acting_user).filter(|a| *a != id))
-                        .detail("via", via),
-                )
+                .security(password_event(id, actor_of(acting_user), had_password, via))
                 .await;
         }
 
@@ -633,12 +736,8 @@ impl UserService {
 
     /// Dispatch a user tap hook with standard `{ "user_id": "..." }` payload.
     /// Record an account created, both as a content audit row and, as the
-    /// security event every creation path shares, `account.created`.
-    ///
-    /// `by` is the acting account's id when one is authenticated; otherwise
-    /// `"self"` for a visitor registering their own account, or `"operator"`
-    /// for the installer and the command line, where no site is running to
-    /// have an authenticated acting user at all.
+    /// security event every creation path shares, `account.created` (see
+    /// [`account_created_event`]).
     async fn audit_created(
         &self,
         user: &User,
@@ -657,21 +756,9 @@ impl UserService {
                 serde_json::json!({ "name": user.name, "status": user.status }),
             )
             .await;
-        let by = match actor {
-            Some(actor) => actor.to_string(),
-            None if matches!(path, "cli" | "installer") => "operator".to_string(),
-            None => "self".to_string(),
-        };
         self.inner
             .audit
-            .security(
-                SecurityEvent::new(SecurityEventKind::AccountCreated)
-                    .user(user.id)
-                    .maybe_actor(actor.filter(|a| *a != user.id))
-                    .detail("path", path)
-                    .detail("active", active)
-                    .detail("by", by),
-            )
+            .security(account_created_event(user.id, actor, path, active))
             .await;
     }
 
@@ -706,49 +793,8 @@ impl UserService {
             )
             .await;
         let Some(before) = before else { return };
-        let other_actor = actor.filter(|a| *a != after.id);
-        if before.name != after.name {
-            audit
-                .security(
-                    SecurityEvent::new(SecurityEventKind::UserNameChanged)
-                        .user(after.id)
-                        .maybe_actor(other_actor)
-                        .detail("from", &before.name)
-                        .detail("to", &after.name),
-                )
-                .await;
-        }
-        if before.mail != after.mail {
-            audit
-                .security(
-                    SecurityEvent::new(SecurityEventKind::UserMailChanged)
-                        .user(after.id)
-                        .maybe_actor(other_actor),
-                )
-                .await;
-        }
-        if before.status != after.status {
-            audit
-                .security(
-                    SecurityEvent::new(SecurityEventKind::UserStatusChanged)
-                        .user(after.id)
-                        .maybe_actor(other_actor)
-                        .detail("from", before.status)
-                        .detail("to", after.status)
-                        .detail("blocked", after.status == 0),
-                )
-                .await;
-        }
-        if before.is_admin != after.is_admin {
-            audit
-                .security(
-                    SecurityEvent::new(SecurityEventKind::UserRolesChanged)
-                        .user(after.id)
-                        .maybe_actor(other_actor)
-                        .detail("change", if after.is_admin { "added" } else { "removed" })
-                        .detail("role", "administrator"),
-                )
-                .await;
+        for event in account_change_events(after.id, actor, &before.into(), &after.into()) {
+            audit.security(event).await;
         }
     }
 

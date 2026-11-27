@@ -8,12 +8,23 @@
 //! and never echoed. No `tap_user_register`: a migrated account gets no
 //! welcome mail. Roles are granted by name; none is taken away, and the
 //! superuser flag is not something a file can set.
+//!
+//! Not through `UserService` (no tap, the file's id and date, one
+//! transaction), but with the same security events it writes, built by the
+//! same functions: `account.created` (path `import`), `user.name_changed`,
+//! `user.mail_changed`, `user.status_changed`, `password.set` or
+//! `password.changed` (via `import`), and `user.roles_changed` for each role
+//! granted. They are queued on the [`Run`](super::Run) and written once the
+//! import commits, so a dry run or a run rolled back records nothing.
 
 use anyhow::{Context, Result};
 use uuid::Uuid;
 
 use super::record::UserRecord;
 use super::{Outcome, Run, require_id};
+use crate::services::user::{
+    AccountFields, account_change_events, account_created_event, password_event,
+};
 
 /// The column limit of `users.name` and `users.mail`.
 const MAX_LENGTH: usize = 255;
@@ -34,6 +45,19 @@ struct StoredUser {
     status: i16,
     created: i64,
     pass: String,
+}
+
+impl StoredUser {
+    /// The fields whose change is a security event. A file cannot set the
+    /// administrator flag, so an import never changes it.
+    fn fields(&self) -> AccountFields<'_> {
+        AccountFields {
+            name: &self.name,
+            mail: &self.mail,
+            status: self.status,
+            is_admin: false,
+        }
+    }
 }
 
 /// Import one `user` record.
@@ -162,7 +186,34 @@ pub(crate) async fn import_user(run: &mut Run<'_>, r: UserRecord) -> Result<Outc
         .await
         .context("failed to insert the user")?;
     }
+    // The security events every other path writes for the same changes,
+    // built by the same functions, and queued for after the commit.
+    match &stored {
+        Some(stored) => {
+            run.security_events.extend(account_change_events(
+                r.id,
+                None,
+                &stored.fields(),
+                &wanted.fields(),
+            ));
+            if stored.pass != wanted.pass {
+                run.security_events.push(password_event(
+                    r.id,
+                    None,
+                    !stored.pass.is_empty(),
+                    "import",
+                ));
+            }
+        }
+        None => run.security_events.push(account_created_event(
+            r.id,
+            None,
+            "import",
+            wanted.status == 1,
+        )),
+    }
     for role in missing_roles {
+        run.role_grants.push((r.id, role));
         sqlx::query(
             "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
         )

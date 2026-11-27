@@ -23,3 +23,20 @@ account's session on its next request — ended the session with nothing in
 the security log to say so. `session.ended` is new, written once the session
 is actually flushed, with `details.reason` saying which (`logout` or
 `blocked`) and the session id hashed as for every other session event.
+
+`trovato import` had the same gap for every account it wrote. It inserts and
+updates `users` with its own SQL inside one transaction, so it never passed
+through `UserService`, where every other path's events are written: an
+imported account appeared, or had its name, address, status, password or
+roles changed, with nothing in the security log. It now writes the same
+events, built by the same functions, once the import commits (`account.created`
+with `path` `import`, and `password.*` with `via` `import`); a dry run or a
+rolled-back run writes none.
+
+API tokens, a credential that signs their holder in, had no events at all.
+Issuing one (`POST /api/tokens`, behind the `/user/tokens` page), revoking one,
+and the revocation of every token an account holds when an administrator
+blocks it wrote the token row and nothing else. `api_token.created` and
+`api_token.revoked` are new, written from `services::api_token`, which those
+paths now all go through; each names the token by its hashed id, never its
+value.
