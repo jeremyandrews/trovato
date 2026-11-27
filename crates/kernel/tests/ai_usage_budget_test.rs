@@ -689,20 +689,18 @@ fn ai_search_asks_for_use_ai() {
         app.state.permissions().invalidate_all();
 
         let mut refused = Vec::new();
-        for path in [
-            "/api/v1/search/expand",
-            "/api/v1/search/summarize",
-            "/api/v1/search/followup",
+        for (path, body) in [
+            ("/api/v1/search/expand", serde_json::json!({"query": "q"})),
+            (
+                "/api/v1/search/summarize",
+                serde_json::json!({"query": "q", "results": []}),
+            ),
+            (
+                "/api/v1/search/followup",
+                serde_json::json!({"messages": [{"role": "user", "content": "q"}]}),
+            ),
         ] {
-            let (status, _) = post_json(
-                app,
-                path,
-                serde_json::json!({"query": "q", "context": "c",
-                                   "messages": [{"role": "user", "content": "q"}]}),
-                None,
-                "10.89.3.1",
-            )
-            .await;
+            let (status, _) = post_json(app, path, body, None, "10.89.3.1").await;
             refused.push((path, status));
         }
 

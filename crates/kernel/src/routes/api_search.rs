@@ -451,6 +451,7 @@ async fn followup(
 /// endpoints already use. A body over [`MAX_BODY_BYTES`] keeps its 413 —
 /// that refusal is about size, not shape, and belongs with the other oversize
 /// refusals, not folded into this one.
+#[allow(clippy::result_large_err)]
 fn parse_json<T>(body: Result<Json<T>, JsonRejection>) -> Result<T, Response> {
     body.map(|Json(body)| body).map_err(|rejection| {
         if rejection.status() == StatusCode::PAYLOAD_TOO_LARGE {
