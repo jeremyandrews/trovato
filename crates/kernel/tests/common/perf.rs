@@ -228,6 +228,9 @@ pub struct PerfSite {
     /// Held for a whole visit: tests in a binary run in parallel, and one
     /// test emptying the caches must not land inside another's request.
     one_at_a_time: tokio::sync::Mutex<()>,
+    /// The session ids of the members tests made with [`Self::member`],
+    /// which a cold start must not delete either.
+    member_sessions: Mutex<Vec<String>>,
 }
 
 /// The Redis URL with the database number replaced by [`REDIS_DB`].
@@ -367,6 +370,7 @@ impl PerfSite {
             user_cookies,
             admin_cookies,
             one_at_a_time: tokio::sync::Mutex::new(()),
+            member_sessions: Mutex::new(Vec::new()),
         }
     }
 
@@ -381,12 +385,58 @@ impl PerfSite {
     /// The session ids the two signed-in visitors hold, which a cold start
     /// must not delete.
     fn session_keys(&self) -> Vec<String> {
-        [&self.user_cookies, &self.admin_cookies]
+        let mut keys: Vec<String> = [&self.user_cookies, &self.admin_cookies]
             .iter()
             .flat_map(|c| c.split(';'))
             .filter_map(|kv| kv.trim().split_once('='))
             .map(|(_, v)| v.to_string())
-            .collect()
+            .collect();
+        keys.extend(
+            self.member_sessions
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .iter()
+                .cloned(),
+        );
+        keys
+    }
+
+    /// A member of its own, signed in with `password` and its session
+    /// registered: `(id, name, cookies)`.
+    ///
+    /// Made while no visit is measured, and settled before one is: making an
+    /// account and signing it in bump the user cache generation, which must
+    /// not land inside another test's measured request. Its session is kept
+    /// by every cold start from now on, as the shared visitors' are.
+    pub async fn member(&self, prefix: &str, password: &str) -> (uuid::Uuid, String, String) {
+        let _turn = self.one_at_a_time.lock().await;
+        let name = format!("{prefix}_{}", uuid::Uuid::now_v7().simple());
+        self.app
+            .create_test_user(&name, password, &format!("{name}@perf.example.test"))
+            .await;
+        let id = super::user_id_of(&self.app, &name).await;
+        let cookies = self.app.login(&name, password).await;
+        let response = self
+            .app
+            .request(
+                Request::get("/")
+                    .header("cookie", cookies.as_str())
+                    .body(Body::empty())
+                    .expect("request"),
+            )
+            .await;
+        let _ = to_bytes(response.into_body(), usize::MAX).await;
+        self.member_sessions
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .extend(
+                cookies
+                    .split(';')
+                    .filter_map(|kv| kv.trim().split_once('='))
+                    .map(|(_, v)| v.to_string()),
+            );
+        super::settle_cache_generations().await;
+        (id, name, cookies)
     }
 
     /// Empty every cache: the in-process ones, and every Redis key but the
@@ -395,19 +445,8 @@ impl PerfSite {
     /// (deleting those would make the generation watcher clear caches at a
     /// moment of its choosing).
     async fn make_cold(&self) {
-        self.make_cold_keeping("").await;
-    }
-
-    /// [`Self::make_cold`], keeping the sessions `cookies` holds too.
-    async fn make_cold_keeping(&self, cookies: &str) {
         self.app.state.clear_local_caches().await;
-        let mut keep = self.session_keys();
-        keep.extend(
-            cookies
-                .split(';')
-                .filter_map(|kv| kv.trim().split_once('='))
-                .map(|(_, v)| v.to_string()),
-        );
+        let keep = self.session_keys();
         let mut conn = self
             .redis
             .get_multiplexed_async_connection()
@@ -540,7 +579,11 @@ impl PerfSite {
     ) -> Written {
         let _turn = self.one_at_a_time.lock().await;
         if cold {
-            self.make_cold_keeping(cookies).await;
+            // Whatever ran before (a sign in, another test's write) may have
+            // bumped a cache generation: let that land now, before the page
+            // warms the caches, and not after.
+            super::settle_cache_generations().await;
+            self.make_cold().await;
         }
         let mut get = Request::get(page);
         if !cookies.is_empty() {

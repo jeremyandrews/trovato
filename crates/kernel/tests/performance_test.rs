@@ -611,21 +611,9 @@ fn comment() {
 /// the password change alternates with.
 const WRITE_PASSWORDS: [&str; 2] = ["Perf-Write-Password-1", "Perf-Write-Password-2"];
 
-/// A signed-in member of the site of its own: `(id, name, cookies)`. Its
-/// session is registered (the page load does that) before anything is
-/// measured.
+/// A signed-in member of the site of its own: `(id, name, cookies)`.
 async fn own_member(site: &PerfSite, prefix: &str) -> (uuid::Uuid, String, String) {
-    let name = format!("{prefix}_{}", uuid::Uuid::now_v7().simple());
-    site.app
-        .create_test_user(
-            &name,
-            WRITE_PASSWORDS[0],
-            &format!("{name}@perf.example.test"),
-        )
-        .await;
-    let id = common::user_id_of(&site.app, &name).await;
-    let cookies = site.app.login(&name, WRITE_PASSWORDS[0]).await;
-    (id, name, cookies)
+    site.member(prefix, WRITE_PASSWORDS[0]).await
 }
 
 /// The `content` of the page's `csrf-token` meta tag, or nothing when it has
