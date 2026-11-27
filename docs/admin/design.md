@@ -419,9 +419,9 @@ query and `templates/admin/macros/list.html` draws it:
   `COLLATE trovato_natural`, an ICU collation (`und-u-kn-true`) the
   migrations create, to the sort expression only, never to a column, so
   `ILIKE` filters and existing indexes keep the default collation. The
-  people and content title sorts have an index on that exact expression,
-  so their first page reads from the index in either direction; a unit
-  test holds each index to its listing's sort SQL. A listing sorted in
+  people listing's default sort has an index on that exact expression
+  (`idx_users_name_natural`), so its first page reads from the index; a
+  unit test holds the index to `USER_SORTS`. A listing sorted in
   memory (`admin_list::sort_rows`) builds a key that gives the same order:
   each non-ASCII letter transliterated (`deunicode`), lowercased, every run
   of digits by value; a test holds SQL and `sort_rows` to the same order.
