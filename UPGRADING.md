@@ -95,6 +95,37 @@ accepts migrations it does not know unless one is marked incompatible.
 When the newer release is fixed, upgrade again. Its migrations are already
 applied, so `trovato migrate` finds nothing to do.
 
+## Unreleased
+
+### `AdminNavDefinition` is `#[non_exhaustive]`, with a new `keywords` field
+
+**Who is affected:** a plugin that builds `trovato_sdk::types::AdminNavDefinition`
+with a struct literal instead of `new` and its builders, or that destructures
+one with a pattern listing every field.
+
+**What changed.** **API change:** `AdminNavDefinition` has a new field,
+`keywords: Vec<String>`, set through a new builder, `.with_keywords(...)`, next
+to the existing `.card(...)`. The kernel feeds a plugin's keywords into admin
+search and the quick search palette the same way it feeds a kernel admin
+page's own keywords, so a plugin page can now be found by a word that is in
+none of its label, section or card description. `AdminNavDefinition` is also
+`#[non_exhaustive]` now, so a future field is additive and needs no second
+breaking bump. Two kinds of code stop compiling against this SDK. One builds
+the value with a struct literal (`AdminNavDefinition { section: ..., label:
+..., .. }`) and must move to `AdminNavDefinition::new(...)` and the builders.
+The other destructures it with a pattern that names every field
+(`let AdminNavDefinition { section, label, href, permission, card_description }
+= def;`) and must end the pattern with `..`, or read the fields directly.
+Code that only builds with `new` and the builders and reads fields by name
+is unaffected.
+
+The kernel trims each keyword and keeps at most 20, each at most 255 bytes;
+a blank or longer one, or any past the twentieth, is dropped with a warning
+in the log, and the page keeps its link and card.
+
+**How to find out.** `grep -rn "AdminNavDefinition {" plugins/*/src` in an
+out of tree plugin finds both kinds.
+
 ## v0.105.0 — 2026-11-25
 
 ### A `CategoryReference` field kind; `FieldType` is `#[non_exhaustive]`; cardinality is enforced on every write

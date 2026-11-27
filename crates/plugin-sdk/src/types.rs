@@ -750,6 +750,7 @@ impl MenuDefinition {
 /// declaration is dropped entirely — it contributes no link and no card,
 /// exactly as its routes stop being reachable.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct AdminNavDefinition {
     /// The sidebar section heading this link sits under (for example
     /// `"Structure"` or `"People"`). Joins an existing kernel section when
@@ -766,6 +767,17 @@ pub struct AdminNavDefinition {
     /// `label`, with this one line of description, linking to `href`.
     #[serde(default)]
     pub card_description: Option<String>,
+    /// Other words a person might search for this page by, matched the same
+    /// way a kernel admin page's own keywords are: on `/admin/search` and in
+    /// the quick search palette, in addition to `label`, `section` and
+    /// `card_description`. Never widens who sees the link; `permission` still
+    /// decides that.
+    ///
+    /// The kernel trims each keyword and keeps at most 20, each at most 255
+    /// bytes. A blank or longer one, or any past the twentieth, is dropped on
+    /// its own with a warning in the log; the link and card are kept.
+    #[serde(default)]
+    pub keywords: Vec<String>,
 }
 
 impl AdminNavDefinition {
@@ -781,12 +793,24 @@ impl AdminNavDefinition {
             href: href.into(),
             permission: permission.into(),
             card_description: None,
+            keywords: Vec::new(),
         }
     }
 
     /// Also show this entry as a dashboard card on `/admin`.
     pub fn card(mut self, description: impl Into<String>) -> Self {
         self.card_description = Some(description.into());
+        self
+    }
+
+    /// Other words a person might search for this page by. See
+    /// [`AdminNavDefinition::keywords`] for the limits the kernel applies.
+    pub fn with_keywords<I, S>(mut self, keywords: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.keywords = keywords.into_iter().map(Into::into).collect();
         self
     }
 }
@@ -2639,6 +2663,33 @@ mod tests {
         }"#;
         let def: FieldDefinition = serde_json::from_str(new_json).unwrap();
         assert!(def.personal_data);
+    }
+
+    #[test]
+    fn backward_compat_admin_nav_definition_without_keywords() {
+        // Old AdminNavDefinition JSON without `keywords` deserializes with an
+        // empty list, so a plugin built against an older SDK still loads.
+        let old_json = r#"{
+            "section": "Structure",
+            "label": "Groups",
+            "href": "/admin/groups",
+            "permission": "administer groups"
+        }"#;
+        let def: AdminNavDefinition = serde_json::from_str(old_json).unwrap();
+        assert!(def.keywords.is_empty());
+    }
+
+    #[test]
+    fn admin_nav_definition_with_keywords_round_trips() {
+        let def =
+            AdminNavDefinition::new("Structure", "Groups", "/admin/groups", "administer groups")
+                .with_keywords(["teams", "cohorts"]);
+        let json = serde_json::to_string(&def).unwrap();
+        let back: AdminNavDefinition = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.keywords,
+            vec!["teams".to_string(), "cohorts".to_string()]
+        );
     }
 
     #[test]

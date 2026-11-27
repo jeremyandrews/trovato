@@ -46,7 +46,8 @@ pub fn tap_perm() -> Vec<PermissionDefinition> {
 pub fn tap_admin_nav() -> Vec<AdminNavDefinition> {
     vec![
         AdminNavDefinition::new("System", "TPA Dashboard", ADMIN_DASHBOARD_PATH, PERM_WRITE)
-            .card("Notes written through the test plugin API."),
+            .card("Notes written through the test plugin API.")
+            .with_keywords(["scratchpad", "jotter"]),
     ]
 }
 
@@ -428,6 +429,7 @@ mod tests {
         assert_eq!(nav[0].href, ADMIN_DASHBOARD_PATH);
         assert_eq!(nav[0].permission, PERM_WRITE);
         assert!(nav[0].card_description.is_some());
+        assert_eq!(nav[0].keywords, vec!["scratchpad", "jotter"]);
 
         let menus = __inner_tap_menu();
         let route = menus
