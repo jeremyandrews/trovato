@@ -767,7 +767,9 @@ pub fn categorize_path_with<S: AsRef<str>>(
     let path = versioned.as_deref().unwrap_or(path);
     if is_static_asset(path, method, static_prefixes) {
         "static"
-    } else if path.starts_with("/user/login") && method == "POST" {
+    } else if (path.starts_with("/user/login") || path == "/install/site") && method == "POST" {
+        // The installer's site step takes an administrator's password from a
+        // session that did not create the account, so it is a sign in too.
         "login"
     } else if path.starts_with("/user/register") && method == "POST" {
         "register"
@@ -1044,6 +1046,8 @@ mod tests {
     fn categorize_login_paths() {
         assert_eq!(categorize_path("/user/login", "POST"), "login");
         assert_eq!(categorize_path("/user/login/json", "POST"), "login");
+        assert_eq!(categorize_path("/install/site", "POST"), "login");
+        assert_eq!(categorize_path("/install/site", "GET"), "page");
     }
 
     #[test]

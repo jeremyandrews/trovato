@@ -340,11 +340,13 @@ async fn install(client: &Client) {
     if front.location() != "/install" {
         return;
     }
+    let form = client.get(On::Any, "/install/admin").await;
     let admin = client
         .post_form(
             On::Any,
             "/install/admin",
             &[
+                ("_token", form_token(&form.body)),
                 ("username", ADMIN_NAME.to_string()),
                 ("email", "admin@cluster.test".to_string()),
                 ("password", ADMIN_PASSWORD.to_string()),
@@ -357,14 +359,28 @@ async fn install(client: &Client) {
         "install admin: {}",
         admin.body
     );
+    let form = client.get(On::Any, "/install/site").await;
     let site = client
         .post_form(
             On::Any,
             "/install/site",
-            &[("site_name", "Cluster".to_string())],
+            &[
+                ("_token", form_token(&form.body)),
+                ("site_name", "Cluster".to_string()),
+            ],
         )
         .await;
     assert!(site.status.is_redirection(), "install site: {}", site.body);
+}
+
+/// The `_token` an installer form carries, or nothing if it carries none.
+fn form_token(html: &str) -> String {
+    let marker = "name=\"_token\" value=\"";
+    html.find(marker)
+        .map(|at| &html[at + marker.len()..])
+        .and_then(|rest| rest.split('"').next())
+        .unwrap_or_default()
+        .to_string()
 }
 
 /// Wait until the round robin backend (`On::Any`) has both nodes in rotation.
