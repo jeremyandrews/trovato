@@ -322,7 +322,9 @@ fn revision_names_hold_the_dates_text() {
             .create(
                 CreateItem {
                     item_type: "page".to_string(),
-                    title: format!("Revised {}", Uuid::new_v4().simple()),
+                    // Letters only: the test below looks for a run of ten
+                    // digits in every name, and a hex id can hold one.
+                    title: format!("Revised {}", letters_only(Uuid::new_v4())),
                     author_id: id,
                     status: Some(1),
                     promote: Some(0),
@@ -432,4 +434,17 @@ fn revision_names_hold_the_dates_text() {
             }
         }
     });
+}
+
+/// `id` as 32 letters, each hex digit 0-9 written as g-p, so a title made from
+/// it holds no run of digits.
+fn letters_only(id: Uuid) -> String {
+    id.simple()
+        .to_string()
+        .chars()
+        .map(|c| match c.to_digit(10) {
+            Some(d) => char::from(b'g' + d as u8),
+            None => c,
+        })
+        .collect()
 }
