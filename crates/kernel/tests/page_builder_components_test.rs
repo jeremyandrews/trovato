@@ -814,7 +814,8 @@ fn a_page_saved_before_root_fields_validates_and_renders_the_same_html() {
             json!({
                 "title": "A page saved before the component registry",
                 "footer_cta_mode": "default",
-                "variant_classes": ""
+                "variant_classes": "",
+                "has_page_heading": false
             })
         );
         create(page).await.expect("the old page saves");

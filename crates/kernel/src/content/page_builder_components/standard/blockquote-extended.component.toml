@@ -35,3 +35,8 @@ name = "lang"
 type = "text"
 label = "Language Override"
 hidden = true
+
+[[fields]]
+name = "isDecorative"
+type = "boolean"
+hidden = true

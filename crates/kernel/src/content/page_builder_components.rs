@@ -37,7 +37,7 @@ pub use schema::{
     ComponentDefinition, ComponentSource, FieldDefinition, FieldKind, RESERVED_ROOT_FIELD_NAMES,
     ReferenceTarget, RootFieldDefinition, SelectOption, to_kebab_case,
 };
-pub use validate::{FieldError, is_gather_id, is_safe_url};
+pub use validate::{FieldError, image_prop_without_alt, is_gather_id, is_safe_url};
 
 /// Deepest nesting of zones a page may have.
 pub const MAX_ZONE_DEPTH: usize = 10;
@@ -233,6 +233,7 @@ impl ComponentRegistry {
                     location: "root",
                     component: "",
                     errors: &mut errors,
+                    allow_h1: false,
                 }
                 .check_props(
                     fields,
@@ -352,8 +353,15 @@ impl ComponentRegistry {
             errors.push(page_error("content must be a list of components"));
             return errors;
         };
+        let mut h1_seen = false;
         for (i, component) in content.iter().enumerate() {
-            self.validate_component(&format!("content[{i}]"), component, 0, &mut errors);
+            self.validate_component(
+                &format!("content[{i}]"),
+                component,
+                0,
+                &mut errors,
+                &mut h1_seen,
+            );
         }
         errors
     }
@@ -411,6 +419,7 @@ impl ComponentRegistry {
             location: "root",
             component: "",
             errors,
+            allow_h1: false,
         }
         .check_props(
             &self.root_field_defs,
@@ -425,6 +434,7 @@ impl ComponentRegistry {
         component: &serde_json::Value,
         depth: usize,
         errors: &mut Vec<FieldError>,
+        h1_seen: &mut bool,
     ) {
         let type_name = component.get("type").and_then(|t| t.as_str()).unwrap_or("");
         let push = |field: &str, message: String, errors: &mut Vec<FieldError>| {
@@ -456,14 +466,16 @@ impl ComponentRegistry {
                     location,
                     component: type_name,
                     errors,
+                    allow_h1: def.may_be_page_heading,
                 }
                 .check_props(&def.fields, props, "");
 
                 // The checks that predate field definitions, by prop name, for
                 // the props a definition does not declare with a type of its own.
+                let min_heading = if def.may_be_page_heading { 1 } else { 2 };
                 if def.field("headingLevel").is_none()
                     && let Some(level) = props.get("headingLevel").and_then(|l| l.as_u64())
-                    && level < 2
+                    && level < min_heading
                 {
                     push(
                         "headingLevel",
@@ -472,25 +484,30 @@ impl ComponentRegistry {
                         errors,
                     );
                 }
-                if let Some(url) = props.get("imageUrl").and_then(|u| u.as_str())
-                    && !url.is_empty()
+                // At most one component on the page may set headingLevel: 1
+                // (and only one `may_be_page_heading` component may ever ask
+                // to): the page's H1 is rendered once, or not at all.
+                if def.may_be_page_heading
+                    && props.get("headingLevel").and_then(|l| l.as_u64()) == Some(1)
                 {
-                    let is_decorative = props
-                        .get("isDecorative")
-                        .and_then(|d| d.as_bool())
-                        .unwrap_or(false);
-                    let has_alt = props
-                        .get("imageAlt")
-                        .and_then(|a| a.as_str())
-                        .is_some_and(|a| !a.trim().is_empty());
-                    if !is_decorative && !has_alt {
+                    if *h1_seen {
                         push(
-                            "imageAlt",
-                            "an image needs alt text, or isDecorative must be true (WCAG 1.1.1)"
+                            "headingLevel",
+                            "only one component per page may render the page's H1 heading"
                                 .to_string(),
                             errors,
                         );
+                    } else {
+                        *h1_seen = true;
                     }
+                }
+                if validate::image_prop_without_alt(props) {
+                    push(
+                        "imageAlt",
+                        "an image needs alt text, or isDecorative must be true (WCAG 1.1.1)"
+                            .to_string(),
+                        errors,
+                    );
                 }
             }
         }
@@ -505,6 +522,7 @@ impl ComponentRegistry {
                             child,
                             depth + 1,
                             errors,
+                            h1_seen,
                         );
                     }
                 }
@@ -637,11 +655,88 @@ mod tests {
 
     #[test]
     fn validate_page_catches_h1_heading() {
+        // A component without `may_be_page_heading` keeps the old rule.
         let registry = ComponentRegistry::new();
-        let page = json!({ "content": [ { "type": "Hero", "props": { "headingLevel": 1 } } ] });
+        let page = json!({ "content": [ { "type": "Cta", "props": { "headingLevel": 1 } } ] });
         let errors = registry.validate_page(&page);
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert_eq!(errors[0].field, "headingLevel");
+    }
+
+    #[test]
+    fn hero_may_render_the_page_h1() {
+        let registry = ComponentRegistry::new();
+        let page = json!({ "content": [
+            { "type": "Hero", "props": { "title": "T", "headingLevel": 1 } }
+        ] });
+        assert!(registry.validate_page(&page).is_empty());
+    }
+
+    #[test]
+    fn a_second_h1_component_is_refused() {
+        let registry = ComponentRegistry::new();
+        let page = json!({ "content": [
+            { "type": "Hero", "props": { "title": "A", "headingLevel": 1 } },
+            { "type": "Hero", "props": { "title": "B", "headingLevel": 1 } }
+        ] });
+        let errors = registry.validate_page(&page);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].location, "content[1]");
+        assert_eq!(errors[0].field, "headingLevel");
+        assert!(errors[0].message.contains("only one component"));
+    }
+
+    #[test]
+    fn a_second_h1_nested_in_a_zone_is_also_refused() {
+        let registry = ComponentRegistry::new();
+        let page = json!({ "content": [
+            { "type": "Hero", "props": { "title": "A", "headingLevel": 1 } },
+            { "type": "Columns", "props": { "layout": "1/2+1/2" }, "zones": {
+                "zone-0": [ { "type": "Hero", "props": { "title": "B", "headingLevel": 1 } } ],
+                "zone-1": []
+            } }
+        ] });
+        let errors = registry.validate_page(&page);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(errors[0].location, "content[1].zones.zone-0[0]");
+    }
+
+    #[test]
+    fn a_nested_card_image_without_alt_is_refused() {
+        let registry = ComponentRegistry::new();
+        let page = json!({ "content": [
+            { "type": "CardGrid", "props": { "cards": [
+                { "title": "A", "image_url": "/img/a.jpg" }
+            ] } }
+        ] });
+        let errors = registry.validate_page(&page);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert!(errors[0].message.contains("alt text"), "{errors:?}");
+    }
+
+    #[test]
+    fn a_blockquote_avatar_marked_decorative_is_allowed() {
+        let registry = ComponentRegistry::new();
+        let page = json!({ "content": [
+            { "type": "BlockquoteExtended", "props": {
+                "text": "Quote", "attribution": "A. Author",
+                "imageUrl": "/img/avatar.jpg", "isDecorative": true
+            } }
+        ] });
+        assert!(registry.validate_page(&page).is_empty());
+    }
+
+    #[test]
+    fn a_blockquote_avatar_without_alt_or_decorative_is_refused() {
+        let registry = ComponentRegistry::new();
+        let page = json!({ "content": [
+            { "type": "BlockquoteExtended", "props": {
+                "text": "Quote", "attribution": "A. Author",
+                "imageUrl": "/img/avatar.jpg"
+            } }
+        ] });
+        let errors = registry.validate_page(&page);
+        assert_eq!(errors.len(), 1, "{errors:?}");
     }
 
     #[test]

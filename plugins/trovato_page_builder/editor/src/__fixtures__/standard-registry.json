@@ -79,6 +79,7 @@
       "has_zones": true,
       "in_editor": true,
       "label": "Columns",
+      "may_be_page_heading": false,
       "props": {
         "gap": {
           "type": "string"
@@ -226,6 +227,7 @@
       "has_zones": true,
       "in_editor": true,
       "label": "Section",
+      "may_be_page_heading": false,
       "props": {
         "ariaLabel": {
           "type": "string"
@@ -382,7 +384,7 @@
         {
           "default": 2,
           "hidden": false,
-          "label": "Heading Level (2-6)",
+          "label": "Heading Level (1-6; 1 makes this Hero the page's H1)",
           "name": "headingLevel",
           "required": false,
           "type": "heading_level"
@@ -413,6 +415,7 @@
       "has_zones": false,
       "in_editor": true,
       "label": "Hero Section",
+      "may_be_page_heading": true,
       "props": {
         "background": {
           "default": "",
@@ -503,6 +506,7 @@
       "has_zones": false,
       "in_editor": true,
       "label": "Text",
+      "may_be_page_heading": false,
       "props": {
         "content": {
           "default": "Write **Markdown** here.",
@@ -637,6 +641,7 @@
       "has_zones": false,
       "in_editor": true,
       "label": "Call to Action",
+      "may_be_page_heading": false,
       "props": {
         "background": {
           "default": "",
@@ -784,6 +789,7 @@
       "has_zones": false,
       "in_editor": true,
       "label": "Content Feature",
+      "may_be_page_heading": false,
       "props": {
         "body": {
           "type": "string"
@@ -883,11 +889,18 @@
           "name": "lang",
           "required": false,
           "type": "text"
+        },
+        {
+          "hidden": true,
+          "name": "isDecorative",
+          "required": false,
+          "type": "boolean"
         }
       ],
       "has_zones": false,
       "in_editor": true,
       "label": "Quote",
+      "may_be_page_heading": false,
       "props": {
         "attribution": {
           "type": "string"
@@ -895,6 +908,9 @@
         "imageUrl": {
           "format": "uri-reference",
           "type": "string"
+        },
+        "isDecorative": {
+          "type": "boolean"
         },
         "lang": {
           "type": "string"
@@ -976,6 +992,7 @@
       "has_zones": false,
       "in_editor": true,
       "label": "YouTube Video",
+      "may_be_page_heading": false,
       "props": {
         "aspectRatio": {
           "default": "16:9",
@@ -1073,6 +1090,7 @@
       "has_zones": false,
       "in_editor": true,
       "label": "Logo Row",
+      "may_be_page_heading": false,
       "props": {
         "headingLevel": {
           "default": 3,
@@ -1213,6 +1231,7 @@
       "has_zones": false,
       "in_editor": true,
       "label": "Card Grid",
+      "may_be_page_heading": false,
       "props": {
         "cardHeadingLevel": {
           "default": 3,
@@ -1309,6 +1328,7 @@
       "has_zones": false,
       "in_editor": true,
       "label": "Accordion",
+      "may_be_page_heading": false,
       "props": {
         "allowMultiple": {
           "default": false,
@@ -1396,6 +1416,7 @@
       "has_zones": true,
       "in_editor": true,
       "label": "Summary Box",
+      "may_be_page_heading": false,
       "props": {
         "content": {
           "type": "string"
@@ -1448,6 +1469,7 @@
       "has_zones": false,
       "in_editor": false,
       "label": "Table of Contents",
+      "may_be_page_heading": false,
       "props": {
         "maxDepth": {
           "default": 3,

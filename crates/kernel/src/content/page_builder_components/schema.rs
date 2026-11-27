@@ -213,6 +213,12 @@ pub struct ComponentDefinition {
     pub stylesheets: Vec<String>,
     /// Offered in the editor's component picker.
     pub in_editor: bool,
+    /// Whether this component may render the page's level one heading
+    /// (`headingLevel: 1`). At most one component on a page may set it; the
+    /// kernel refuses a second on save ([`super::ComponentRegistry::validate_page`]).
+    /// A component without this flag keeps the existing rule: 2 to 6 only.
+    #[serde(default)]
+    pub may_be_page_heading: bool,
     /// Who declared it.
     pub source: ComponentSource,
     /// A JSON-Schema-like summary of the fields, kept for clients that read
@@ -250,6 +256,8 @@ struct RawComponent {
     classes: Vec<String>,
     #[serde(default = "yes")]
     in_editor: bool,
+    #[serde(default)]
+    may_be_page_heading: bool,
     #[serde(default)]
     fields: Vec<RawField>,
 }
@@ -659,8 +667,12 @@ fn props_summary(fields: &[FieldDefinition]) -> serde_json::Value {
 
 /// The page root field names the kernel keeps for itself: `title`, the built
 /// in root field; `props`, under which current Puck versions nest the root's
-/// values; and `variant_classes`, which templates receive beside the values.
-pub const RESERVED_ROOT_FIELD_NAMES: &[&str] = &["title", "props", "variant_classes"];
+/// values; `variant_classes`, which templates receive beside the values; and
+/// `has_page_heading`, whether a rendered component supplied the page's level
+/// one heading (see `page_builder::render_puck_page`), so a theme's item
+/// template knows whether to print its own.
+pub const RESERVED_ROOT_FIELD_NAMES: &[&str] =
+    &["title", "props", "variant_classes", "has_page_heading"];
 
 /// The page root file as written: `components/<name>.root.toml`.
 #[derive(Debug, Deserialize)]
@@ -805,6 +817,7 @@ pub fn parse_component(
         template,
         stylesheets,
         in_editor: raw.in_editor,
+        may_be_page_heading: raw.may_be_page_heading,
         source,
         props,
     })
@@ -949,7 +962,7 @@ max_length = 20
 
     #[test]
     fn a_root_file_cannot_take_a_reserved_name_or_an_unknown_key() {
-        for name in ["title", "props", "variant_classes"] {
+        for name in ["title", "props", "variant_classes", "has_page_heading"] {
             let err = parse_root(
                 &format!("[[fields]]\nname = \"{name}\"\ntype = \"text\"\n"),
                 ComponentSource::Kernel,

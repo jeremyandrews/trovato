@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 
 use super::page_builder_components::{
     ComponentDefinition, ComponentRegistry, FieldDefinition, FieldKind, MAX_ZONE_DEPTH,
-    ReferenceTarget, is_safe_url, root_values,
+    ReferenceTarget, image_prop_without_alt, is_safe_url, root_values,
 };
 
 /// Regex for extracting heading levels from rendered HTML.
@@ -46,6 +46,15 @@ static HEADING_RE: LazyLock<Regex> =
 #[allow(clippy::expect_used)]
 static MD_HEADING_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?m)^(#{1,6})\s").expect("hard-coded regex"));
+
+/// An `id` value safe to use as a fragment anchor and an `aria-controls` or
+/// `aria-labelledby` target: an ASCII letter, then letters, digits, `_` or
+/// `-`. Anything else (a quote, whitespace, an empty value) is stripped by
+/// [`build_sanitizer`]'s attribute filter rather than passed through.
+// Infallible: hard-coded valid regex pattern — Regex::new cannot fail here.
+#[allow(clippy::expect_used)]
+static ID_VALUE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z][A-Za-z0-9_-]*$").expect("hard-coded regex"));
 
 /// The sanitizer every component's HTML passes through. Built once: it is the
 /// same for every component and every page.
@@ -238,6 +247,21 @@ pub fn collect_references(page: &PuckPage, registry: &ComponentRegistry) -> Vec<
 fn build_sanitizer() -> ammonia::Builder<'static> {
     let mut builder = ammonia::Builder::default();
     builder.add_generic_attributes(["class"]);
+    // `id`, for an in page anchor and an `aria-controls` / `aria-labelledby`
+    // target (the accordion's `<summary>`/`<div>` pair); checked for a safe
+    // value by the `attribute_filter` below rather than accepted as any
+    // string, since an `id` lands in a URL fragment unescaped.
+    builder.add_generic_attributes(["id"]);
+    // The `aria-*` attributes the bundled components use: `aria-label` and
+    // `role` were already generic; these complete the set an accordion (BL-67
+    // follow up, K8) and other components with in page relationships need.
+    builder.add_generic_attributes([
+        "aria-controls",
+        "aria-expanded",
+        "aria-labelledby",
+        "aria-hidden",
+        "aria-describedby",
+    ]);
     // Allow semantic tags used by components
     builder.add_tags([
         "section",
@@ -271,6 +295,17 @@ fn build_sanitizer() -> ammonia::Builder<'static> {
     builder.add_tag_attribute_values("a", "target", ["_blank"]);
     // Allow aria-label and role on any element
     builder.add_generic_attributes(["aria-label", "role", "lang"]);
+    // `id` is otherwise free text; an unsafe value (anything but a letter,
+    // then letters, digits, `_` or `-`) is stripped rather than kept, so a
+    // quote or a control character cannot ride along in an attribute ammonia
+    // would otherwise pass through unescaped into a fragment URL.
+    builder.attribute_filter(|_element, attribute, value| {
+        if attribute == "id" && !ID_VALUE_RE.is_match(value) {
+            None
+        } else {
+            Some(value.into())
+        }
+    });
     builder
 }
 
@@ -285,35 +320,16 @@ fn validate_accessibility(
 ) -> std::result::Result<Vec<String>, String> {
     let mut warnings = Vec::new();
 
-    // Rule 1: Images must have alt text (WCAG 1.1.1)
-    let image_props = ["backgroundImage", "imageUrl", "image_url"];
-    let alt_props = ["imageAlt", "image_alt", "alt"];
-
-    let has_image = image_props.iter().any(|p| {
-        props
-            .get(p)
-            .and_then(|v| v.as_str())
-            .is_some_and(|s| !s.is_empty())
-    });
-
-    if has_image {
-        let has_alt = alt_props.iter().any(|p| {
-            props
-                .get(p)
-                .and_then(|v| v.as_str())
-                .is_some_and(|s| !s.is_empty())
-        });
-        let is_decorative = props
-            .get("isDecorative")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-
-        if !has_alt && !is_decorative {
-            return Err(format!(
-                "component '{component_type}' has an image but no alt text \
-                 (and isDecorative is not true) — WCAG 1.1.1"
-            ));
-        }
+    // Rule 1: Images must have alt text (WCAG 1.1.1), checked at the top
+    // level and recursively through every list entry's props, so a CardGrid
+    // card or a LogoRow logo is held to the same rule as the component's own
+    // top level image. A `decorative: true` or `isDecorative: true` image is
+    // skipped, deliberately, anywhere it is found.
+    if image_prop_without_alt(props) {
+        return Err(format!(
+            "component '{component_type}' has an image but no alt text \
+             (and isDecorative is not true) — WCAG 1.1.1"
+        ));
     }
 
     // Rule 1b: the same for a declared image field, at the top level or in a
@@ -327,12 +343,21 @@ fn validate_accessibility(
         ));
     }
 
-    // Rule 2: headingLevel must be 2-6 (page template owns H1)
+    // Rule 2: headingLevel must be 2-6, unless this component may render the
+    // page's H1 (`may_be_page_heading`), in which case 1 is allowed too. A
+    // second H1 on the page is refused on save (`ComponentRegistry::validate_page`),
+    // not here: this runs once per component, with no view of the rest of
+    // the page.
+    let min_heading = if def.is_some_and(|d| d.may_be_page_heading) {
+        1
+    } else {
+        2
+    };
     if let Some(level) = props.get("headingLevel").and_then(|v| v.as_u64())
-        && !(2..=6).contains(&level)
+        && !(min_heading..=6).contains(&level)
     {
         return Err(format!(
-            "component '{component_type}' has headingLevel={level} — must be 2-6"
+            "component '{component_type}' has headingLevel={level} — must be {min_heading}-6"
         ));
     }
 
@@ -431,6 +456,17 @@ pub fn render_puck_page(
         stylesheets.clear();
     }
 
+    // Whether a component rendered the page's H1: only a `may_be_page_heading`
+    // component can emit one (validated on save), so an `<h1` in the output is
+    // that component's, not a false positive from user text — rich text and
+    // Markdown headings are never rendered below level 2
+    // (`rewrite_markdown_headings`, `FieldKind::HeadingLevel`'s own 2-6 limit).
+    let mut root = root;
+    root.insert(
+        "has_page_heading".into(),
+        serde_json::Value::Bool(rendered.contains("<h1")),
+    );
+
     Ok(RenderedPage {
         html: rendered,
         stylesheets,
@@ -471,7 +507,7 @@ pub fn page_root_values(
         }
     }
     let effective = serde_json::Value::Object(effective);
-    let mut out = match normalize_props(fields, &effective, references) {
+    let mut out = match normalize_props(fields, &effective, references, false) {
         serde_json::Value::Object(map) => map,
         _ => serde_json::Map::new(),
     };
@@ -482,6 +518,10 @@ pub fn page_root_values(
         "variant_classes".into(),
         serde_json::Value::String(chosen_classes(fields, registry.root_classes(), &effective)),
     );
+    // Whether a component on the page already rendered the page's H1
+    // (`render_puck_page` overwrites this with the real answer); a page with
+    // no page builder content, or whose content builds no H1, prints none.
+    out.insert("has_page_heading".into(), serde_json::Value::Bool(false));
     out
 }
 
@@ -608,8 +648,13 @@ impl Renderer<'_> {
 
         // Build the Tera context from the declared fields
         let mut context = tera::Context::new();
-        if let Some(obj) =
-            normalize_props(&def.fields, &component.props, self.references).as_object()
+        if let Some(obj) = normalize_props(
+            &def.fields,
+            &component.props,
+            self.references,
+            def.may_be_page_heading,
+        )
+        .as_object()
         {
             for (key, value) in obj {
                 context.insert(key, value);
@@ -651,10 +696,16 @@ impl Renderer<'_> {
 
 /// The template's view of `props`: each declared field, normalized to its
 /// type, and nothing else. A rich text field adds `<name>_html`.
+///
+/// `allow_h1` is whether a `headingLevel` field at this level may hold `1`
+/// (the component's own `may_be_page_heading`); it is always `false` for a
+/// `list` field's entries, so only the component's own top level heading may
+/// be the page's.
 fn normalize_props(
     fields: &[FieldDefinition],
     props: &serde_json::Value,
     references: &ResolvedReferences,
+    allow_h1: bool,
 ) -> serde_json::Value {
     use serde_json::Value;
     let mut out = serde_json::Map::new();
@@ -681,7 +732,7 @@ fn normalize_props(
             FieldKind::Number { .. } => value.is_number().then(|| value.clone()),
             FieldKind::HeadingLevel => value
                 .as_u64()
-                .filter(|l| (2..=6).contains(l))
+                .filter(|l| (if allow_h1 { 1 } else { 2 }..=6).contains(l))
                 .map(Value::from),
             FieldKind::Boolean => value.is_boolean().then(|| value.clone()),
             FieldKind::Url => value
@@ -730,7 +781,7 @@ fn normalize_props(
                     items
                         .iter()
                         .filter(|i| i.is_object())
-                        .map(|i| normalize_props(fields, i, references))
+                        .map(|i| normalize_props(fields, i, references, false))
                         .collect(),
                 )
             }),
@@ -905,6 +956,40 @@ mod tests {
     }
 
     #[test]
+    fn a_hero_at_heading_level_one_renders_h1_and_marks_the_page_root() {
+        let tera = test_tera();
+        let registry = ComponentRegistry::new();
+        let page: PuckPage = serde_json::from_value(json!({
+            "content": [{
+                "type": "Hero",
+                "props": { "title": "Welcome", "variant": "standard", "headingLevel": 1 }
+            }]
+        }))
+        .unwrap();
+        let rendered = render_puck_page(&page, &tera, &registry, &ResolvedReferences::default())
+            .unwrap();
+        assert!(rendered.html.contains("<h1"), "{}", rendered.html);
+        assert!(!rendered.html.contains("<h2"), "{}", rendered.html);
+        assert_eq!(rendered.root["has_page_heading"], true);
+    }
+
+    #[test]
+    fn a_page_with_no_h1_component_marks_the_page_root_false() {
+        let tera = test_tera();
+        let registry = ComponentRegistry::new();
+        let page: PuckPage = serde_json::from_value(json!({
+            "content": [{
+                "type": "Hero",
+                "props": { "title": "Welcome", "variant": "standard" }
+            }]
+        }))
+        .unwrap();
+        let rendered = render_puck_page(&page, &tera, &registry, &ResolvedReferences::default())
+            .unwrap();
+        assert_eq!(rendered.root["has_page_heading"], false);
+    }
+
+    #[test]
     fn render_columns_with_nested_children() {
         let tera = test_tera();
         let page: PuckPage = serde_json::from_value(json!({
@@ -1060,6 +1145,84 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    #[test]
+    fn accessibility_allows_h1_for_a_may_be_page_heading_component() {
+        let registry = ComponentRegistry::new();
+        let hero = registry.get("Hero").unwrap();
+        assert!(hero.may_be_page_heading);
+        let result = validate_accessibility("Hero", &json!({ "headingLevel": 1 }), Some(hero));
+        assert!(result.is_ok(), "{result:?}");
+
+        // A component without the flag still rejects it, def or no def.
+        let cta = registry.get("Cta").unwrap();
+        assert!(!cta.may_be_page_heading);
+        let result = validate_accessibility("Cta", &json!({ "headingLevel": 1 }), Some(cta));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn a_card_grid_image_missing_alt_in_a_nested_card_is_blocked() {
+        let result = validate_accessibility(
+            "CardGrid",
+            &json!({ "cards": [ { "title": "A", "image_url": "/img/a.jpg" } ] }),
+            None,
+        );
+        assert!(result.is_err(), "{result:?}");
+    }
+
+    #[test]
+    fn a_blockquote_avatar_marked_decorative_is_allowed() {
+        let result = validate_accessibility(
+            "BlockquoteExtended",
+            &json!({
+                "text": "Quote", "attribution": "A. Author",
+                "imageUrl": "/img/avatar.jpg", "isDecorative": true
+            }),
+            None,
+        );
+        assert!(result.is_ok(), "{result:?}");
+    }
+
+    // --- Sanitizer: id and aria-* (K8) ---
+
+    #[test]
+    fn sanitizer_keeps_id_and_aria_attributes() {
+        let html = SANITIZER.clean(
+            r#"<details id="accordion-item-1"><summary id="s-1" aria-controls="c-1" aria-expanded="false">T</summary><div id="c-1" role="region" aria-labelledby="s-1" aria-hidden="false" aria-describedby="s-1">X</div></details>"#,
+        ).to_string();
+        for needle in [
+            r#"id="accordion-item-1""#,
+            r#"id="s-1""#,
+            r#"aria-controls="c-1""#,
+            r#"aria-expanded="false""#,
+            r#"id="c-1""#,
+            r#"aria-labelledby="s-1""#,
+            r#"aria-hidden="false""#,
+            r#"aria-describedby="s-1""#,
+        ] {
+            assert!(html.contains(needle), "{needle} missing from {html}");
+        }
+    }
+
+    #[test]
+    fn sanitizer_strips_an_unsafe_id_value() {
+        let html = SANITIZER
+            .clean(r#"<div id="1-starts-with-digit">x</div><div id="has space">y</div><div id="quote&quot;">z</div>"#)
+            .to_string();
+        assert!(!html.contains("id="), "{html}");
+    }
+
+    #[test]
+    fn sanitizer_still_strips_script_and_event_handlers() {
+        let html = SANITIZER
+            .clean(r#"<div id="ok" onclick="alert(1)"><script>alert(2)</script>text</div>"#)
+            .to_string();
+        assert!(html.contains(r#"id="ok""#), "{html}");
+        assert!(!html.contains("onclick"), "{html}");
+        assert!(!html.contains("<script"), "{html}");
+        assert!(!html.contains("alert(2)"), "{html}");
+    }
+
     // --- Heading hierarchy tests ---
 
     #[test]
@@ -1134,10 +1297,14 @@ mod tests {
 
     // --- The registry-driven renderer ---
 
-    fn fixture(name: &str) -> String {
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+    fn fixture_path(name: &str) -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/page_builder")
-            .join(name);
+            .join(name)
+    }
+
+    fn fixture(name: &str) -> String {
+        let path = fixture_path(name);
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
     }
 
@@ -1167,12 +1334,23 @@ mod tests {
             &ResolvedReferences::default(),
         )
         .unwrap();
+        if std::env::var_os("TROVATO_UPDATE_FIXTURES").is_some() {
+            std::fs::write(
+                fixture_path("standard-page-pre-registry.html"),
+                &rendered.html,
+            )
+            .unwrap();
+        }
         assert_eq!(rendered.html, fixture("standard-page-pre-registry.html"));
         assert_eq!(rendered.stylesheets, vec![STANDARD_STYLESHEET]);
         // Its root is the title alone, and templates receive just that.
         assert_eq!(
             serde_json::Value::Object(rendered.root),
-            json!({ "title": "A page saved before the component registry", "variant_classes": "" })
+            json!({
+                "title": "A page saved before the component registry",
+                "variant_classes": "",
+                "has_page_heading": false
+            })
         );
 
         // With a plugin declaring page root fields enabled, the same page
@@ -1247,7 +1425,10 @@ type = "url"
                 json!({ "root": { "title": "T" }, "content": [] }),
                 &registry
             ),
-            json!({ "title": "T", "footer_mode": "default", "variant_classes": "" })
+            json!({
+                "title": "T", "footer_mode": "default", "variant_classes": "",
+                "has_page_heading": false
+            })
         );
         // A chosen option adds its declared class.
         assert_eq!(
@@ -1255,7 +1436,10 @@ type = "url"
                 json!({ "root": { "footer_mode": "hide" }, "content": [] }),
                 &registry
             ),
-            json!({ "footer_mode": "hide", "variant_classes": "page--no-footer-cta" })
+            json!({
+                "footer_mode": "hide", "variant_classes": "page--no-footer-cta",
+                "has_page_heading": false
+            })
         );
         // Nested under props, as current Puck keeps it; rich text is rendered
         // and sanitized; an unsafe URL, an unknown option and an undeclared
@@ -1286,11 +1470,14 @@ type = "url"
         // No page builder content at all: the defaults.
         assert_eq!(
             page_root_defaults(&registry),
-            json!({ "footer_mode": "default", "variant_classes": "" })
+            json!({
+                "footer_mode": "default", "variant_classes": "",
+                "has_page_heading": false
+            })
         );
         assert_eq!(
             page_root_defaults(&ComponentRegistry::new()),
-            json!({ "variant_classes": "" })
+            json!({ "variant_classes": "", "has_page_heading": false })
         );
     }
 

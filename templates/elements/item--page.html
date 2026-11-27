@@ -1,6 +1,9 @@
 <article class="item item--page">
     <header class="item__header">
-        <h1 class="item__title">{{ item.title }}</h1>
+        {# A page builder component marked `may_be_page_heading` (Hero) may render the
+           page's own H1; `page_root.has_page_heading` says whether one did, so the
+           item's title is not printed twice. #}
+        {% if not page_root.has_page_heading %}<h1 class="item__title">{{ item.title }}</h1>{% endif %}
     </header>
 
     <div class="item__content">

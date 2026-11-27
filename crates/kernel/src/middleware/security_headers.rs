@@ -6,6 +6,7 @@
 //! MIME sniffing, and downgrade attacks.
 
 use std::net::SocketAddr;
+use std::sync::LazyLock;
 
 use axum::{
     body::Body,
@@ -14,8 +15,10 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use regex::Regex;
 
 use crate::client_addr::forwarded_https;
+use crate::config::Lookup;
 use crate::state::AppState;
 
 /// Static header values — constructed at compile time from string literals.
@@ -57,6 +60,55 @@ const CSP_ENFORCE: &str = "content-security-policy";
 /// The header name for a report-only policy.
 const CSP_REPORT_ONLY: &str = "content-security-policy-report-only";
 
+/// A CSP host source the kernel accepts from a site's `CSP_FRAME_SRC` or
+/// `CSP_IMG_SRC` setting: an `http` or `https` URL naming a host, with an
+/// optional `*.` wildcard subdomain, and nothing else — no port, no path, no
+/// query, no fragment, no quote. This refuses `*` (no host at all), `data:`
+/// and `'unsafe-inline'` (no `://`) along with anything carrying a path, by
+/// construction rather than as special cases.
+// Infallible: hard-coded valid regex pattern — Regex::new cannot fail here.
+#[allow(clippy::expect_used)]
+static CSP_HOST_SOURCE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^https?://(\*\.)?[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$",
+    )
+    .expect("hard-coded regex")
+});
+
+/// Whether `source` is a CSP host source a site may add to `frame-src` or
+/// `img-src` (see [`CSP_HOST_SOURCE_RE`]).
+fn is_valid_csp_host_source(source: &str) -> bool {
+    CSP_HOST_SOURCE_RE.is_match(source)
+}
+
+/// The host sources a site configured for `name` (`CSP_FRAME_SRC` or
+/// `CSP_IMG_SRC`): comma or whitespace separated, each checked with
+/// [`is_valid_csp_host_source`]. An entry that fails is dropped with a
+/// warning — the rest of the list, and the response, are not lost over one
+/// bad entry — and a setting that is absent or holds no valid entry yields an
+/// empty list, which leaves the directive it would extend untouched.
+fn csp_sources(lookup: Lookup<'_>, name: &'static str) -> Vec<String> {
+    let Some(raw) = lookup(name) else {
+        return Vec::new();
+    };
+    raw.split([',', ' ', '\t', '\n', '\r'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| {
+            if is_valid_csp_host_source(s) {
+                Some(s.to_string())
+            } else {
+                tracing::warn!(
+                    setting = name,
+                    value = s,
+                    "not a CSP host source (need a scheme and a host, no path, no quote); dropping it"
+                );
+                None
+            }
+        })
+        .collect()
+}
+
 /// The Content-Security-Policy to send, resolved once at startup.
 ///
 /// Both inputs used to be read from the environment on **every response**, and
@@ -79,32 +131,63 @@ impl SecurityHeaders {
     /// - `CSP_REPORT_ONLY` (truthy) — send the policy as report-only, so a
     ///   tightening can be observed before it starts blocking.
     /// - `CSP_REPORT_URI` — appended to the policy as `report-uri`.
+    /// - `CSP_FRAME_SRC` — host sources (see [`csp_sources`]) appended to a new
+    ///   `frame-src 'self' ...` directive, so a site can allow embedding
+    ///   specific frames (YouTube, Captivate, HubSpot) without widening
+    ///   `default-src`. Absent or empty, the policy carries no `frame-src` at
+    ///   all, exactly as before: every frame is blocked by `default-src 'self'`.
+    /// - `CSP_IMG_SRC` — host sources appended to the existing `img-src 'self'
+    ///   data:` directive, for a thumbnail or avatar an embed's page builder
+    ///   component pulls from the embed's own host.
+    ///
+    /// Nothing configured sends the exact `DEFAULT_CSP` bytes: the three
+    /// settings only ever append to or extend a directive, never replace one,
+    /// so an unconfigured site's policy is unchanged.
     ///
     /// A `report-uri` that cannot go in a header value (a control character, a
     /// newline) is dropped with a warning rather than silently discarding the
     /// whole policy, which is what the per-response version did: its
     /// `HeaderValue::from_str` failure left the response with **no CSP at all**.
-    pub(crate) fn from_lookup(lookup: crate::config::Lookup<'_>) -> Self {
+    pub(crate) fn from_lookup(lookup: Lookup<'_>) -> Self {
         let csp_header_name = if crate::config::parse_bool_or(lookup, "CSP_REPORT_ONLY", false) {
             CSP_REPORT_ONLY
         } else {
             CSP_ENFORCE
         };
 
+        let frame_sources = csp_sources(lookup, "CSP_FRAME_SRC");
+        let img_sources = csp_sources(lookup, "CSP_IMG_SRC");
+        let widened = !frame_sources.is_empty() || !img_sources.is_empty();
+
+        let mut policy = DEFAULT_CSP.to_str().unwrap_or_default().to_string();
+        if !frame_sources.is_empty() {
+            policy = format!("{policy}; frame-src 'self' {}", frame_sources.join(" "));
+        }
+        if !img_sources.is_empty() {
+            policy = policy.replacen(
+                "img-src 'self' data:;",
+                &format!("img-src 'self' data: {};", img_sources.join(" ")),
+                1,
+            );
+        }
+
         let csp = match lookup("CSP_REPORT_URI") {
             Some(report_uri) if !report_uri.trim().is_empty() => {
-                let policy = format!(
-                    "{}; report-uri {}",
-                    DEFAULT_CSP.to_str().unwrap_or_default(),
-                    report_uri.trim()
-                );
-                HeaderValue::from_str(&policy).unwrap_or_else(|_| {
+                let with_report = format!("{policy}; report-uri {}", report_uri.trim());
+                HeaderValue::from_str(&with_report).unwrap_or_else(|_| {
                     tracing::warn!(
                         report_uri = %report_uri,
                         "CSP_REPORT_URI is not a valid header value; serving the policy without it"
                     );
-                    DEFAULT_CSP.clone()
+                    if widened {
+                        HeaderValue::from_str(&policy).unwrap_or_else(|_| DEFAULT_CSP.clone())
+                    } else {
+                        DEFAULT_CSP.clone()
+                    }
                 })
+            }
+            _ if widened => {
+                HeaderValue::from_str(&policy).unwrap_or_else(|_| DEFAULT_CSP.clone())
             }
             _ => DEFAULT_CSP.clone(),
         };
@@ -360,4 +443,102 @@ mod tests {
     // `client_addr::forwarded_https` (unit tested there) and exercised through
     // the real middleware, with a trusted and an untrusted socket peer, in
     // `tests/forwarded_proto_hsts_test.rs`.
+
+    // --- CSP_FRAME_SRC / CSP_IMG_SRC (K7) ---
+
+    #[test]
+    fn valid_csp_host_sources() {
+        for ok in [
+            "https://www.youtube-nocookie.com",
+            "https://player.captivate.fm",
+            "https://*.hubspot.net",
+            "http://example.com",
+        ] {
+            assert!(is_valid_csp_host_source(ok), "{ok}");
+        }
+    }
+
+    #[test]
+    fn invalid_csp_host_sources() {
+        for bad in [
+            "*",
+            "'unsafe-inline'",
+            "data:",
+            "https://example.com/path",
+            "https://example.com/",
+            "https://example.com?x=1",
+            "https://example.com#f",
+            "https://example.com'",
+            "https://*",
+            "example.com",
+            "javascript:alert(1)",
+        ] {
+            assert!(!is_valid_csp_host_source(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn nothing_configured_sends_the_policy_byte_for_byte_unchanged() {
+        let headers = from_map(&[]);
+        assert_eq!(headers.csp, DEFAULT_CSP);
+    }
+
+    #[test]
+    fn configured_frame_sources_are_appended_with_self() {
+        let headers = from_map(&[(
+            "CSP_FRAME_SRC",
+            "https://www.youtube-nocookie.com, https://player.captivate.fm",
+        )]);
+        let csp = headers.csp.to_str().unwrap();
+        assert!(
+            csp.contains("frame-src 'self' https://www.youtube-nocookie.com https://player.captivate.fm"),
+            "{csp}"
+        );
+        // Every other directive is exactly as the default sends it.
+        assert!(csp.contains("img-src 'self' data:;"), "{csp}");
+        assert!(csp.starts_with(DEFAULT_CSP.to_str().unwrap()), "{csp}");
+    }
+
+    #[test]
+    fn configured_img_sources_extend_the_existing_directive() {
+        let headers = from_map(&[("CSP_IMG_SRC", "https://*.hubspot.net")]);
+        let csp = headers.csp.to_str().unwrap();
+        assert!(
+            csp.contains("img-src 'self' data: https://*.hubspot.net;"),
+            "{csp}"
+        );
+        assert!(!csp.contains("frame-src"), "{csp}");
+    }
+
+    #[test]
+    fn an_invalid_csp_source_is_dropped_and_the_rest_kept() {
+        let headers = from_map(&[(
+            "CSP_FRAME_SRC",
+            "https://www.youtube-nocookie.com, *, 'unsafe-inline', data:",
+        )]);
+        let csp = headers.csp.to_str().unwrap();
+        assert!(
+            csp.contains("frame-src 'self' https://www.youtube-nocookie.com"),
+            "{csp}"
+        );
+        assert!(!csp.contains(" * "), "{csp}");
+        assert!(!csp.contains("unsafe-inline"), "{csp}");
+    }
+
+    #[test]
+    fn only_invalid_csp_sources_leaves_the_directive_untouched() {
+        let headers = from_map(&[("CSP_FRAME_SRC", "*"), ("CSP_IMG_SRC", "'unsafe-inline'")]);
+        assert_eq!(headers.csp, DEFAULT_CSP);
+    }
+
+    #[test]
+    fn csp_sources_and_report_uri_compose() {
+        let headers = from_map(&[
+            ("CSP_FRAME_SRC", "https://www.youtube-nocookie.com"),
+            ("CSP_REPORT_URI", "https://csp.example.com/report"),
+        ]);
+        let csp = headers.csp.to_str().unwrap();
+        assert!(csp.contains("frame-src 'self' https://www.youtube-nocookie.com"));
+        assert!(csp.ends_with("; report-uri https://csp.example.com/report"), "{csp}");
+    }
 }

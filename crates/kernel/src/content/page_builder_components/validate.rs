@@ -76,6 +76,52 @@ pub fn is_safe_url(url: &str) -> bool {
     }
 }
 
+/// The prop name pairs the generic "an image needs alt text" heuristic
+/// recognizes: a component (or a list entry's props) carrying one of the
+/// first group, non-empty, needs one of the second, non-empty, unless it
+/// also carries `isDecorative: true`.
+const LEGACY_IMAGE_PROP_NAMES: &[&str] = &["backgroundImage", "imageUrl", "image_url"];
+const LEGACY_ALT_PROP_NAMES: &[&str] = &["imageAlt", "image_alt", "alt"];
+
+/// The first image the generic heuristic finds with no alt text and no
+/// `isDecorative: true`, anywhere in `value`: at its top level, and recursing
+/// into every array entry and object value, so a `list` field's repeated
+/// entries (a `CardGrid` card, a `LogoRow` logo) are checked exactly as the
+/// component's own top level props are (WCAG 1.1.1).
+///
+/// This is the name based heuristic for a component that stores its image as
+/// a free `<name>Url` / `<name>Alt` pair rather than the structured `image`
+/// field kind (whose own alt rule is `FieldKind::Image`'s, in
+/// [`super::schema::FieldKind`] and checked by `Checker::check_value`).
+pub fn image_prop_without_alt(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Object(map) => {
+            let has_image = LEGACY_IMAGE_PROP_NAMES.iter().any(|p| {
+                map.get(*p)
+                    .and_then(serde_json::Value::as_str)
+                    .is_some_and(|s| !s.is_empty())
+            });
+            if has_image {
+                let has_alt = LEGACY_ALT_PROP_NAMES.iter().any(|p| {
+                    map.get(*p)
+                        .and_then(serde_json::Value::as_str)
+                        .is_some_and(|s| !s.is_empty())
+                });
+                let is_decorative = map
+                    .get("isDecorative")
+                    .and_then(serde_json::Value::as_bool)
+                    .unwrap_or(false);
+                if !has_alt && !is_decorative {
+                    return true;
+                }
+            }
+            map.values().any(image_prop_without_alt)
+        }
+        serde_json::Value::Array(items) => items.iter().any(image_prop_without_alt),
+        _ => false,
+    }
+}
+
 /// A gather query id as the gather admin accepts it.
 pub fn is_gather_id(id: &str) -> bool {
     !id.is_empty()
@@ -93,6 +139,11 @@ pub(super) struct Checker<'a> {
     pub component: &'a str,
     /// Errors so far, for the whole page.
     pub errors: &'a mut Vec<FieldError>,
+    /// Whether the component this checker runs for may set `headingLevel: 1`
+    /// (its definition's `may_be_page_heading`). `false` for every nested
+    /// list entry: only the component's own top level field may be the page
+    /// heading, never one inside a repeatable list.
+    pub allow_h1: bool,
 }
 
 impl Checker<'_> {
@@ -197,13 +248,23 @@ impl Checker<'_> {
                     self.push(path, format!("must be at most {max}"));
                 }
             }
-            FieldKind::HeadingLevel => match value.as_u64() {
-                Some(2..=6) => {}
-                _ => self.push(
-                    path,
-                    "must be a heading level from 2 to 6 (the page title is the level 1 heading)",
-                ),
-            },
+            FieldKind::HeadingLevel => {
+                let ok = match value.as_u64() {
+                    Some(1) => self.allow_h1,
+                    Some(2..=6) => true,
+                    _ => false,
+                };
+                if !ok {
+                    self.push(
+                        path,
+                        if self.allow_h1 {
+                            "must be a heading level from 1 to 6"
+                        } else {
+                            "must be a heading level from 2 to 6 (the page title is the level 1 heading)"
+                        },
+                    );
+                }
+            }
             FieldKind::Url => match value.as_str() {
                 Some(url) if is_safe_url(url) => {}
                 Some(_) => self.push(
@@ -328,6 +389,7 @@ impl Checker<'_> {
                         format!("needs at least {min} entries (has {})", items.len()),
                     );
                 }
+                let allow_h1 = std::mem::replace(&mut self.allow_h1, false);
                 for (i, item) in items.iter().enumerate() {
                     if !item.is_object() {
                         self.push(&format!("{path}[{i}]"), "must be an object");
@@ -335,6 +397,7 @@ impl Checker<'_> {
                     }
                     self.check_props(fields, item, &format!("{path}[{i}]"));
                 }
+                self.allow_h1 = allow_h1;
             }
             FieldKind::Reference { target, .. } => {
                 let Some(id) = value.as_str() else {

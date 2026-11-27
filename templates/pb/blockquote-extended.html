@@ -6,7 +6,7 @@
   {% if attribution %}
   <figcaption class="pb-blockquote__attribution">
     {% if imageUrl %}
-    <img src="{{ imageUrl }}" alt="Photo of {{ attribution }}" class="pb-blockquote__avatar" loading="lazy">
+    <img src="{{ imageUrl }}" alt="{% if not isDecorative %}Photo of {{ attribution }}{% endif %}" class="pb-blockquote__avatar" loading="lazy">
     {% endif %}
     <cite>
       <span class="pb-blockquote__name">{{ attribution }}</span>

@@ -4,6 +4,8 @@ label = "Hero Section"
 category = "content"
 description = "A large heading with an optional subtitle, image and call to action."
 classes = ["pb-bg--light", "pb-bg--dark", "pb-bg--brand"]
+# The one component a page may let render the page's H1; see headingLevel below.
+may_be_page_heading = true
 
 [[fields]]
 name = "title"
@@ -59,7 +61,7 @@ options = [
 [[fields]]
 name = "headingLevel"
 type = "heading_level"
-label = "Heading Level (2-6)"
+label = "Heading Level (1-6; 1 makes this Hero the page's H1)"
 default = 2
 
 [[fields]]
