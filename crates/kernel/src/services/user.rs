@@ -20,8 +20,18 @@ use crate::cache::generation::{CacheKind, bump};
 use crate::metrics::{CacheName, Metrics};
 use crate::models::user::ANONYMOUS_USER_ID;
 use crate::models::{CreateUser, UpdateUser, User};
+use crate::routes::helpers::validate_username;
 use crate::services::audit::AuditTrail;
 use crate::tap::{RequestServices, RequestState, TapDispatcher, UserContext};
+
+/// [`validate_username`] as the `Result` every create or rename returns, so
+/// every caller refuses the same names with the same message: registration,
+/// the installer, and the admin forms already call it themselves to build a
+/// field-level error before the write; this is the backstop for any caller
+/// (CLI, a future API) that reaches the service directly without one.
+fn check_username(name: &str) -> Result<()> {
+    validate_username(name).map_err(anyhow::Error::msg)
+}
 
 /// Permission that gates a profile link beside an author's name (item page,
 /// gather row). Declared in [`crate::models::role`]; granted to no role by
@@ -384,8 +394,10 @@ impl UserService {
         acting_user: &UserContext,
         path: &str,
     ) -> Result<User> {
+        check_username(&input.name)?;
         let user = User::create(&self.inner.pool, input).await?;
         self.inner.cache.insert(user.id, user.clone());
+        bump(CacheKind::Users);
         self.dispatch_tap("tap_user_register", user.id, acting_user)
             .await;
         info!(user_id = %user.id, name = %user.name, "user created");
@@ -404,6 +416,7 @@ impl UserService {
         acting_user: &UserContext,
         path: &str,
     ) -> Result<User> {
+        check_username(&input.name)?;
         let user = User::create_with_status(&self.inner.pool, input, status).await?;
         self.created_with_status(&user, status, acting_user, path)
             .await;
@@ -428,6 +441,7 @@ impl UserService {
         mail: impl FnOnce(&User) -> Vec<crate::services::email::NewMail>,
         path: &str,
     ) -> Result<User> {
+        check_username(&input.name)?;
         // Hash before BEGIN: Argon2 takes a while, and a pooled connection
         // must not sit idle in a transaction meanwhile.
         let pass = crate::models::user::stored_password(&input.password)?;
@@ -452,6 +466,7 @@ impl UserService {
         path: &str,
     ) {
         self.inner.cache.insert(user.id, user.clone());
+        bump(CacheKind::Users);
         self.dispatch_tap("tap_user_register", user.id, acting_user)
             .await;
         info!(user_id = %user.id, name = %user.name, status, "user created with status");
@@ -480,11 +495,15 @@ impl UserService {
         input: UpdateUser,
         acting_user: &UserContext,
     ) -> Result<Option<User>> {
+        if let Some(ref name) = input.name {
+            check_username(name)?;
+        }
         let before = User::find_by_id(&self.inner.pool, id).await?;
         let user = User::update(&self.inner.pool, id, input).await?;
 
         if let Some(ref u) = user {
             self.inner.cache.insert(id, u.clone());
+            bump(CacheKind::Users);
             self.dispatch_tap("tap_user_update", id, acting_user).await;
             info!(user_id = %id, "user updated");
             self.audit_updated(before.as_ref(), u, acting_user).await;
