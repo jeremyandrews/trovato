@@ -575,12 +575,12 @@ fn a_warm_page_with_four_menus_runs_no_menu_or_alias_query() {
         let statements = statements_for(app, &path, &cookies).await;
         assert!(!statements.is_empty(), "the counter sees statements at all");
         // The one alias statement a request always runs is the path alias
-        // middleware resolving the requested path itself (`WHERE alias = $1`);
+        // fallback resolving the requested path itself (`UrlAlias::resolve_path`);
         // the menus resolve their links by source, never by alias.
         let menu_queries: Vec<&String> = statements
             .iter()
             .filter(|sql| sql.contains("menu_link") || sql.contains("url_alias"))
-            .filter(|sql| !sql.contains("WHERE alias = $1"))
+            .filter(|sql| !sql.contains("FROM url_alias a"))
             .collect();
         assert!(
             menu_queries.is_empty(),

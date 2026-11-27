@@ -1,18 +1,28 @@
 {% extends "page--admin.html" %}
-{#- A group's landing page: every page in the group the viewer may open, each
-    with its one sentence description. Context: group, group_description,
-    items (label, description, href), from routes::admin_shell::landing. -#}
+{% import "admin/macros/icons.html" as icons %}
+{% import "admin/macros/list.html" as list %}
+{% import "admin/macros/status.html" as status %}
+{#- A group's landing page: a tile for every page in the group the viewer
+    may open, each with its icon, its one sentence description and, where its
+    page has one, its state now; the group's main action is the button beside
+    the heading. Context: group, group_description, items (label,
+    description, href, icon, status_line), primary (label, href, icon), from
+    routes::admin_shell::landing. -#}
 
 {% block page_title %}{{ t(s=group) }}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s=group_description) }}</p>{% endblock page_intro %}
+{% block page_actions %}{% if primary %}{{ list::add_link(url=primary.href, label=t(s=primary.label), icon=primary.icon) }}{% endif %}{% endblock page_actions %}
 
 {% block content %}
-<ul class="landing-list">
+{% if items %}
+<ul class="dashboard-grid landing-tiles" role="list">
     {% for item in items %}
-    <li class="landing-list__item">
-        <a class="landing-list__link" href="{{ item.href | safe }}">{{ t(s=item.label) }}</a> {# SAFE: registry constants and validated plugin declarations #}
-        {% if item.description %}<p class="landing-list__description">{{ t(s=item.description) }}</p>{% endif %}
+    <li class="admin-card landing-tile">
+        <h2><span class="icon-chip" aria-hidden="true">{{ icons::icon(name=item.icon) }}</span><a href="{{ item.href | safe }}">{{ t(s=item.label) }}</a></h2> {# SAFE: registry constants and validated plugin declarations #}
+        {% if item.description %}<p class="landing-tile__description">{{ t(s=item.description) }}</p>{% endif %}
+        {% if item.status_line %}{{ status::render_status_line(line=item.status_line) }}{% endif %}
     </li>
     {% endfor %}
 </ul>
+{% endif %}
 {% endblock content %}

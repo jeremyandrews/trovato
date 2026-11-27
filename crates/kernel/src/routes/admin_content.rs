@@ -22,6 +22,10 @@ use super::helpers::{
 /// everything on it: what an author holds to find their own work.
 pub const ACCESS_CONTENT_OVERVIEW: &str = "access content overview";
 
+/// What lets a viewer see and edit every item: the content list shows such a
+/// viewer every row, and anyone else only the rows they may open.
+pub const EDIT_ANY_CONTENT: &str = "edit any content";
+
 /// Session key for flash messages on the content list page.
 const CONTENT_FLASH_KEY: &str = "content_admin_flash";
 
@@ -44,7 +48,7 @@ async fn list_content(
     let user = match require_any_permission(
         &state,
         &session,
-        &[ACCESS_CONTENT_OVERVIEW, "edit any content"],
+        &[ACCESS_CONTENT_OVERVIEW, EDIT_ANY_CONTENT],
     )
     .await
     {
@@ -87,7 +91,7 @@ async fn list_content(
     // let them. The answers are `check_access`'s, so the list never shows or
     // offers more than the items themselves allow.
     let viewer = admin_user_context(&state, &user).await;
-    let editor = viewer.can("edit any content");
+    let editor = viewer.can(EDIT_ANY_CONTENT);
     let deleter = viewer.can("delete any content");
     let mut shown = Vec::with_capacity(items.len());
     let mut operations: std::collections::HashMap<String, serde_json::Value> =

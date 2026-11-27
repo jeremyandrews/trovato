@@ -18,6 +18,7 @@ pub mod admin_dashboard;
 mod admin_design_tests;
 pub mod admin_embed;
 pub mod admin_form;
+pub mod admin_language;
 pub mod admin_list;
 pub mod admin_menu;
 pub mod admin_nav;

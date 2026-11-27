@@ -1242,8 +1242,8 @@ boot, not queried per request.
 fn tap_admin_nav() -> Vec<AdminNavDefinition> {
     vec![
         AdminNavDefinition::new(
-            "Structure",             // section heading — joins an existing
-                                      // one by this name, or starts a new one
+            "Structure",             // section heading — joins the group of
+                                      // this name; any other name joins Extend
             "Groups",                // link text, and the card's title
             "/admin/groups",         // must start with /admin
             "administer groups",     // permission that gates the link and card
@@ -1272,11 +1272,17 @@ filtered to viewers who hold `permission` while the plugin is enabled:
 | Where | What the entry becomes |
 |---|---|
 | Sidebar | a link under its group: the `section` names the group (`Structure`, `People`, …, or `System` for Configuration); any other name joins Extend |
-| The group's landing page (`/admin/{group}/overview`) | the link, with `card_description` as its line when set |
-| Dashboard | a card titled `label`, when `card_description` is set |
+| The group's landing page (`/admin/{group}/overview`) | a tile with the group's icon, the link, and `card_description` as its line when set |
+| Dashboard | a card titled `label` linking to `href`, with the Extend icon and `card_description`, when `card_description` is set; without one, the link still gives its group a card for whoever may open it |
 | Admin search and the command palette | a result under "Plugins", found by `label`, `section` and `card_description` |
 | Breadcrumb and `<title>` of your page and the pages below it | Administration › group › `label` |
 | "Who can do this?" | `permission`, and the roles that hold it |
+
+A plugin link shows its group's icon and a plugin card the Extend icon. A
+plugin cannot yet declare an icon of its own, a status line (the one
+sentence of state a kernel tile shows, such as "3 comments waiting for
+moderation") or a main action (the filled button beside a landing page's
+heading); `tap_admin_nav` is unchanged.
 
 Write `label` and `card_description` in English. The
 administration shows them through its translation table, so a site that

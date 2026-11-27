@@ -142,6 +142,9 @@ const UI_PAIRS: &[(&str, &str)] = &[
     ("focus", "surface-sunken"),
     ("success", "success-surface"),
     ("danger", "danger-surface"),
+    // The icon in an icon chip. Decorative, so WCAG 1.4.11 does not ask for
+    // it; 3:1 is this project's own floor for anything drawn to be seen.
+    ("accent", "accent-tint"),
 ];
 
 fn check(pairs: &[(&str, &str)], minimum: f64) -> Vec<String> {
@@ -203,6 +206,7 @@ fn every_semantic_token_is_a_light_dark_pair() {
         "link",
         "danger",
         "focus",
+        "accent-tint",
     ] {
         assert!(tokens.contains_key(name), "--{name} is missing");
     }

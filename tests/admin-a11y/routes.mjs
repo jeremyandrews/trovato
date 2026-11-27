@@ -45,6 +45,7 @@ export const EXPECTED_UNSEEDED = new Map([
   ['/admin/system/ai-providers/{id}/edit', 'no AI provider is configured'],
   ['/admin/config/formats/{format}/delete', 'the built-in text formats cannot be deleted'],
   ['/admin/config/redirects/{id}/edit', 'no redirect is defined'],
+  ['/admin/config/languages/{code}/delete', 'the site has one language, the default, which cannot be deleted'],
 ]);
 
 /**

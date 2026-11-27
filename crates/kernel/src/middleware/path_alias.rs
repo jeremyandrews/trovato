@@ -21,6 +21,7 @@ use uuid::Uuid;
 use crate::middleware::language::ResolvedLanguage;
 use crate::models::UrlAlias;
 use crate::models::stage::LIVE_STAGE_ID;
+use crate::models::url_alias::AliasMatch;
 use crate::state::AppState;
 
 /// The stage an alias is looked up on first, before Live: the session's
@@ -82,11 +83,12 @@ pub async fn resolve_path_alias(
     }
 
     // Extract resolved language from request extensions (set by negotiate_language middleware)
+    let default_language = state.default_language();
     let language = request
         .extensions()
         .get::<ResolvedLanguage>()
         .map(|l| l.0.as_str())
-        .unwrap_or_else(|| state.default_language());
+        .unwrap_or(&default_language);
 
     let active_stage = alias_stage(&state, &session).await;
 
@@ -94,7 +96,12 @@ pub async fn resolve_path_alias(
     // Try the active stage first; fall back to live if not found.
     tracing::debug!(path = %path, language = %language, stage = %active_stage, "looking up path alias");
 
-    let alias_result = lookup_alias(state.db(), path, active_stage, language).await;
+    let alias_result = lookup_alias(state.db(), path, active_stage, language)
+        .await
+        .and_then(|found| match decide(found, None) {
+            Resolution::Serve(alias) => Some(alias),
+            Resolution::Redirect(_) => None,
+        });
 
     if let Some(alias) = alias_result {
         tracing::debug!(
@@ -114,16 +121,83 @@ pub async fn resolve_path_alias(
     next.run(request).await
 }
 
-/// Look up an alias, trying the active stage first then falling back to live.
+/// What the alias lookup decided for a requested path.
+enum Resolution {
+    /// Serve the alias's source at the requested address.
+    Serve(UrlAlias),
+    /// Send the visitor to this alias (a permanent redirect): the stored
+    /// spelling of an alias asked for in another letter case, or the
+    /// requested language's own alias of the same page.
+    Redirect(String),
+}
+
+/// What to do with a match. `prefix_language` is the language the address
+/// named by its prefix, if it had one.
+///
+/// - An exact match in that language, or for a page with no alias of its own
+///   in it, is served: every page can be read under every prefix, and links on
+///   a page in that language are written that way.
+/// - An exact match of another language's alias, for a page that has its own
+///   alias in the prefix's language, is redirected there (`/es/recipes/borscht-
+///   with-pork-ribs` to `/es/recipes/borscht-con-costillas-de-cerdo`): the old
+///   link works and the page keeps one address per language.
+/// - A match only ignoring case is redirected to the stored spelling, so
+///   `/BLOG/TILLICUM` reaches `/blog/tillicum` and nothing is served twice.
+fn decide(found: AliasMatch, prefix_language: Option<&str>) -> Resolution {
+    let own = found
+        .own_alias
+        .filter(|own| prefix_language.is_some() && *own != found.alias.alias);
+    if !found.exact {
+        return Resolution::Redirect(own.unwrap_or(found.alias.alias));
+    }
+    match (prefix_language, own) {
+        (Some(language), Some(own)) if found.alias.language != language => {
+            Resolution::Redirect(own)
+        }
+        _ => Resolution::Serve(found.alias),
+    }
+}
+
+/// The forms `path` may be stored in: as requested, and percent-decoded when
+/// that differs (and is UTF-8). The decoded form is last, which is the form
+/// the case-insensitive match compares.
+fn candidates(path: &str) -> Vec<String> {
+    let mut forms = vec![path.to_string()];
+    if let Ok(decoded) = urlencoding::decode(path)
+        && decoded != path
+    {
+        forms.push(decoded.into_owned());
+    }
+    forms
+}
+
+/// `path` fit for a `Location` header: every byte that is not printable ASCII
+/// (an alias with `á` or a space in it) percent-encoded, the rest as stored.
+fn location_path(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for byte in path.bytes() {
+        if byte.is_ascii_graphic() && byte != b'?' && byte != b'#' {
+            out.push(char::from(byte));
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// Look up an alias in one query, trying the active stage first then
+/// falling back to live.
 async fn lookup_alias(
     pool: &sqlx::PgPool,
     path: &str,
     stage_id: Uuid,
     language: &str,
-) -> Option<UrlAlias> {
+) -> Option<AliasMatch> {
+    let forms = candidates(path);
+    let forms: Vec<&str> = forms.iter().map(String::as_str).collect();
     // Try active stage first
-    match UrlAlias::find_by_alias_with_context(pool, path, stage_id, language).await {
-        Ok(Some(alias)) => return Some(alias),
+    match UrlAlias::resolve_path(pool, &forms, stage_id, language).await {
+        Ok(Some(found)) => return Some(found),
         Ok(None) => {}
         Err(e) => {
             tracing::warn!(path = %path, stage = %stage_id, error = %e, "error looking up alias");
@@ -132,8 +206,8 @@ async fn lookup_alias(
 
     // Fall back to live if we were looking in a different stage
     if stage_id != LIVE_STAGE_ID {
-        match UrlAlias::find_by_alias_with_context(pool, path, LIVE_STAGE_ID, language).await {
-            Ok(Some(alias)) => return Some(alias),
+        match UrlAlias::resolve_path(pool, &forms, LIVE_STAGE_ID, language).await {
+            Ok(Some(found)) => return Some(found),
             Ok(None) => {}
             Err(e) => {
                 tracing::warn!(path = %path, error = %e, "error looking up live alias fallback");
@@ -192,9 +266,9 @@ pub async fn path_alias_fallback(
     // rewrite the URI for route matching in Axum 0.8 (middleware runs after
     // route matching). The fallback handles this by stripping the prefix
     // before looking up aliases.
-    let known_languages = state.known_languages();
-    let default_language = state.default_language();
-    let (path, resolved_lang) = strip_language_prefix(&raw_path, known_languages, default_language);
+    let known_languages = &state.known_languages();
+    let default_language = &state.default_language();
+    let (path, resolved_lang) = strip_language_prefix(&raw_path, known_languages);
     let had_lang_prefix = resolved_lang.is_some();
 
     // Read resolved language — prefer what we just stripped, fall back to
@@ -217,8 +291,38 @@ pub async fn path_alias_fallback(
 
     let active_stage = alias_stage(&state, &session).await;
 
-    // Look up alias: try active stage, then fall back to live
-    let alias = lookup_alias(state.db(), &path, active_stage, &language).await;
+    // The language prefix the address was asked with, if any: the one this
+    // function stripped, or the one `negotiate_language` stripped before it
+    // (the requested path ends with what is left).
+    let asked_prefix: String = if had_lang_prefix {
+        raw_path[..raw_path.len() - path.len()].to_string()
+    } else {
+        request
+            .extensions()
+            .get::<crate::middleware::RequestedPath>()
+            .and_then(|asked| asked.0.strip_suffix(raw_path.as_str()).map(str::to_string))
+            .filter(|prefix| prefix.len() > 1)
+            .unwrap_or_default()
+    };
+    let prefix_language = asked_prefix
+        .strip_prefix('/')
+        .filter(|l| known_languages.iter().any(|k| k == l));
+    let lookup_language = prefix_language.unwrap_or(&language);
+
+    // Look up alias: try active stage, then fall back to live. One query
+    // either way: exact (as requested or percent-decoded) or ignoring case.
+    let found = lookup_alias(state.db(), &path, active_stage, lookup_language).await;
+    let alias = match found.map(|found| decide(found, prefix_language)) {
+        Some(Resolution::Redirect(target)) => {
+            let location = match request.uri().query() {
+                Some(query) => format!("{asked_prefix}{}?{query}", location_path(&target)),
+                None => format!("{asked_prefix}{}", location_path(&target)),
+            };
+            return axum::response::Redirect::permanent(&location).into_response();
+        }
+        Some(Resolution::Serve(alias)) => Some(alias),
+        None => None,
+    };
 
     if let Some(alias) = alias {
         tracing::debug!(
@@ -276,14 +380,15 @@ pub async fn path_alias_fallback(
     crate::routes::helpers::render_not_found()
 }
 
-/// Strip a language prefix from the path if it matches a known non-default language.
+/// Strip a language prefix from the path if it matches a known language, the
+/// default included (`/en/about` is `/about` in English; whether that address
+/// is served or redirected is `negotiate_language`'s decision).
 ///
 /// Returns `(stripped_path, Some(language_code))` if a prefix was found,
 /// or `(original_path, None)` if no prefix matches.
 pub(crate) fn strip_language_prefix(
     path: &str,
     known_languages: &[String],
-    default_language: &str,
 ) -> (String, Option<String>) {
     // Check if the path starts with /{lang}/ or is exactly /{lang}
     if let Some(trimmed) = path.strip_prefix('/') {
@@ -293,8 +398,7 @@ pub(crate) fn strip_language_prefix(
             (trimmed, "/")
         };
 
-        // Must be a known non-default language
-        if candidate != default_language && known_languages.iter().any(|l| l == candidate) {
+        if known_languages.iter().any(|l| l == candidate) {
             return (rest.to_string(), Some(candidate.to_string()));
         }
     }

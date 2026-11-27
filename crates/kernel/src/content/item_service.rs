@@ -969,6 +969,31 @@ impl ItemService {
         Ok(item)
     }
 
+    /// The checks every create and update above runs on an item's field
+    /// values once its writer has been decided, in the same order: page
+    /// builder pages, owned category references, then field cardinality and
+    /// category references with the file references the fields hold, which
+    /// are returned for the write to record.
+    ///
+    /// For `trovato import` (`crate::import`), which writes an item with the
+    /// id and dates its file gives, inside its own transaction, and so cannot
+    /// go through [`Self::create`]. `previous` is the stored fields on a
+    /// change, as on an update: a value the write leaves as it was is not
+    /// judged again.
+    pub(crate) async fn check_imported_fields(
+        &self,
+        item_type: &str,
+        fields: &serde_json::Value,
+        previous: Option<&serde_json::Value>,
+    ) -> Result<FileReferences> {
+        self.validate_page_builder_fields(item_type, Some(fields), previous)
+            .await?;
+        self.validate_owned_terms(item_type, Some(fields), previous)
+            .await?;
+        self.checked_file_references(item_type, Some(fields), previous)
+            .await
+    }
+
     /// Whether items of `item_type` are moderated: its `moderation` setting
     /// ([`moderation::is_moderated`]). Asked on the write path and by the
     /// forms, never on a read; a type that cannot be read is not moderated.
@@ -1814,6 +1839,8 @@ impl ItemService {
         self.dispatch_write_tap("tap_item_update_index", &item_json, user)
             .await;
 
+        self.update_accessibility_scan(item).await;
+
         // Drive kernel-side embedding (re)generation so kernel-managed items
         // become searchable via the SemanticSimilarity gather operator. Both an
         // embedding provider and a vector store must be wired; otherwise there
@@ -1851,6 +1878,26 @@ impl ItemService {
         // Opt-out (synchronous) path: unchanged embed mechanics, now with an
         // observable state write so failures are no longer silent.
         self.embed_sync(item, &text, store.clone()).await;
+    }
+
+    /// Stores how many images in `item`'s rich text have no text alternative
+    /// (B251), so the accessibility report reads a count instead of parsing
+    /// HTML on every page load. Best-effort, like the embed and search-index
+    /// steps around it: a failed write here is logged, not propagated, since
+    /// it changes nothing the viewer already saved.
+    async fn update_accessibility_scan(&self, item: &Item) {
+        let count = super::accessibility_scan::count_missing_alt(&item.fields);
+        if let Err(e) = sqlx::query(
+            "INSERT INTO item_accessibility (item_id, images_missing_alt) VALUES ($1, $2) \
+             ON CONFLICT (item_id) DO UPDATE SET images_missing_alt = EXCLUDED.images_missing_alt",
+        )
+        .bind(item.id)
+        .bind(count)
+        .execute(&self.inner.pool)
+        .await
+        {
+            warn!(item_id = %item.id, error = %e, "failed to update the accessibility scan");
+        }
     }
 
     /// Synchronous best-effort embed for a content type that opted out of the

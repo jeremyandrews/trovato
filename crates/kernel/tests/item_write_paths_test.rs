@@ -237,7 +237,9 @@ fn an_alias_is_written_in_the_items_language() {
                 .await
                 .expect("create");
             forget_on_exit(app, item.id);
-            let expected = language.unwrap_or(app.state.default_language());
+            let expected = language
+                .unwrap_or(&app.state.default_language())
+                .to_string();
             assert_eq!(item.language, expected);
             assert_eq!(
                 aliases_of(app, item.id).await,
@@ -251,7 +253,7 @@ fn an_alias_is_written_in_the_items_language() {
             &app.db,
             &slug(it_title),
             LIVE_STAGE_ID,
-            app.state.default_language(),
+            &app.state.default_language(),
         )
         .await
         .unwrap()

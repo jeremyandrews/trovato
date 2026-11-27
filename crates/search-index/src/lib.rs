@@ -18,11 +18,15 @@
 //! * [`bundle`] adds the browser bundle from the same release and the entry
 //!   file; [`publish`] puts a bundle live in a safe order; [`decode`] reads
 //!   one back.
+//! * [`alt_text`] runs the same `lol_html` parser over a rendered fragment of
+//!   HTML for a different question: how many `<img>` elements in it have no
+//!   text alternative.
 //!
 //! Proved against the `pagefind` crate and CLI by `crates/pagefind-harness`
 //! and by the kernel's search index gate tests. See
 //! `docs/design/incremental-search-index.md`.
 
+pub mod alt_text;
 pub mod assemble;
 pub mod bundle;
 pub mod codec;
@@ -37,6 +41,7 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 
+pub use alt_text::count_images_missing_alt;
 pub use assemble::{ChunkPlan, LanguageIndex, Slot, build_language, build_language_avoiding};
 pub use bundle::{Bundle, assemble_bundle};
 pub use tokenize::{PageTerms, tokenize};

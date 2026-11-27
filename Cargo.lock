@@ -5928,6 +5928,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "trovato-field-bench"
+version = "0.105.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "trovato-kernel",
+ "trovato-sdk",
+ "trovato-test-utils",
+ "uuid",
+]
+
+[[package]]
 name = "trovato-kernel"
 version = "0.105.0"
 dependencies = [
@@ -5953,6 +5971,7 @@ dependencies = [
  "infer",
  "jsonwebtoken",
  "lettre",
+ "libc",
  "moka",
  "opentelemetry",
  "opentelemetry-otlp",

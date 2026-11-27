@@ -1,0 +1,12 @@
+{% extends "page--admin.html" %}
+
+{% block page_title %}{{ t(s="Delete language") }}{% endblock page_title %}
+{% block page_intro %}<p class="page-intro">{{ t(s="A language that content or an address is written in cannot be deleted.") }}</p>{% endblock page_intro %}
+
+{% block content %}
+<div class="admin-card">
+    <p>{{ t(s="Delete the language {name} ({code})? Its address prefix stops working at once. This cannot be undone.", name=language, code=code) }}</p>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+    <p><a href="/admin/config/languages">{{ t(s="Cancel") }}</a></p>
+</div>
+{% endblock content %}

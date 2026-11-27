@@ -1169,6 +1169,20 @@ impl CronService {
             _ => {}
         }
 
+        // Catch up items an earlier release never scanned for images without
+        // a text alternative (B251), one bounded batch per run.
+        match self.tasks.backfill_accessibility_scan().await {
+            Ok(count) if count > 0 => {
+                info!(
+                    count = count,
+                    "scanned content for images without a text alternative"
+                );
+                tasks_run.push(format!("backfill_accessibility_scan: {count}"));
+            }
+            Err(e) => warn!(error = %e, "failed to backfill the accessibility scan"),
+            _ => {}
+        }
+
         // Dispatch tap_cron to all plugins that implement it
         if let Some(ref dispatcher) = self.tap_dispatcher {
             let expected = dispatcher.registry().handler_count("tap_cron");

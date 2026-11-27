@@ -145,6 +145,11 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     // still does too. Granted by no migration; an administrator holds it
     // implicitly.
     "run cron",
+    // `/admin/config/languages`: add, edit, order and delete languages and
+    // choose whether the default language is prefixed (B161). Drupal's
+    // permission of the same name. Granted by no migration; an administrator
+    // holds it implicitly.
+    "administer languages",
     "use filtered_html",
     "use full_html",
     "use ai",

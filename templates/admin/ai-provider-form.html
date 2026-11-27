@@ -58,6 +58,11 @@
 <script id="ai-operations" type="application/json">
 [{% for op in operations %}{"key": "{{ op.key }}", "label": "{{ t(s=op.label) }}"}{% if not loop.last %}, {% endif %}{% endfor %}]
 </script>
+
+{# Words static/js/ai-admin.js puts on the page for an added model row (B253). #}
+<script id="ai-i18n" type="application/json">
+{"select_operation": "{{ t(s='— Select operation —') }}", "model_id_placeholder": "{{ t(s='Model ID (e.g. {example})', example='gpt-4o') }}", "remove_title": "{{ t(s='Remove') }}"}
+</script>
 {% endblock content %}
 
 {% block scripts %}<script src="/static/js/ai-admin.js"></script>{% endblock scripts %}

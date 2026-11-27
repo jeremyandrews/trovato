@@ -1,0 +1,91 @@
+- link "Skip to main content":
+  - /url: "#main"
+- banner:
+  - link "Trovato Administration":
+    - /url: /admin
+    - img "Trovato"
+    - text: Administration
+  - search:
+    - text: Search the administration
+    - searchbox "Search the administration"
+    - button "Search"
+  - button "Quick search"
+  - list:
+    - listitem:
+      - link "View site":
+        - /url: /
+    - listitem:
+      - link "Your preferences":
+        - /url: /admin/preferences
+- navigation "Administration":
+  - list:
+    - listitem:
+      - link "Dashboard":
+        - /url: /admin
+    - listitem:
+      - heading "Content" [level=2]:
+        - button "Content"
+    - listitem:
+      - heading "Structure" [level=2]:
+        - button "Structure"
+    - listitem:
+      - heading "Appearance" [level=2]:
+        - button "Appearance"
+    - listitem:
+      - heading "People" [level=2]:
+        - button "People" [expanded]
+      - list:
+        - listitem:
+          - link "Overview":
+            - /url: /admin/people/overview
+        - listitem:
+          - link "Users":
+            - /url: /admin/people
+        - listitem:
+          - link "Roles":
+            - /url: /admin/people/roles
+        - listitem:
+          - link "Permissions":
+            - /url: /admin/people/permissions
+        - listitem:
+          - link "Access rules":
+            - /url: /admin/people/rules
+    - listitem:
+      - heading "Extend" [level=2]:
+        - button "Extend"
+    - listitem:
+      - heading "Configuration" [level=2]:
+        - button "Configuration"
+    - listitem:
+      - heading "Reports" [level=2]:
+        - button "Reports"
+- main:
+  - navigation "Breadcrumb":
+    - list:
+      - listitem:
+        - link "Administration":
+          - /url: /admin
+      - listitem:
+        - link "People":
+          - /url: /admin/people/overview
+      - listitem:
+        - link "Roles":
+          - /url: /admin/people/roles
+      - listitem: Edit role anonymous user
+  - heading "Edit role anonymous user" [level=1]
+  - paragraph: A role is a named set of permissions. Its permissions are assigned on the permissions screen.
+  - text: Role name (required)
+  - paragraph: The human-readable name of this role.
+  - textbox "Role name (required)": anonymous user
+  - button "Save changes"
+  - link "Cancel":
+    - /url: /admin/people/roles
+  - region "Current permissions":
+    - heading "Current permissions" [level=2]
+    - list:
+      - listitem: access content
+      - listitem: search content
+      - listitem: use ai
+  - paragraph:
+    - link "Who can do this?":
+      - /url: /admin/people/who-can?path=/admin/people/roles/00000000-0000-0000-0000-000000000001/edit

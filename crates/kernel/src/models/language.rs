@@ -66,7 +66,9 @@ fn validate_direction(direction: &str) -> Result<()> {
 /// Validate that a language ID follows BCP 47 primary subtag format.
 ///
 /// Accepts: lowercase alpha 2-3 chars, optionally followed by hyphen-separated
-/// alphanumeric subtags (e.g., "en", "fr", "pt-br", "zh-hans").
+/// alphanumeric subtags (e.g., "en", "fr", "pt-br", "zh-hans"), or a private
+/// use tag: `x` and at least one subtag (e.g., "x-pirate"), BCP 47's form for a
+/// language of the site's own.
 fn validate_language_id(id: &str) -> Result<()> {
     if id.is_empty() || id.len() > 12 {
         anyhow::bail!("language ID must be 1-12 characters, got '{id}'");
@@ -76,6 +78,7 @@ fn validate_language_id(id: &str) -> Result<()> {
 
     // Primary subtag: 2-3 lowercase letters
     match parts.next() {
+        Some("x") if id.len() > 2 => {}
         Some(primary) if (2..=3).contains(&primary.len()) => {
             if !primary.bytes().all(|b| b.is_ascii_lowercase()) {
                 anyhow::bail!("language ID primary subtag must be lowercase letters, got '{id}'");
@@ -405,12 +408,21 @@ mod tests {
         assert!(validate_language_id("pt-br").is_ok());
         assert!(validate_language_id("zh-hans").is_ok());
         assert!(validate_language_id("ast").is_ok()); // 3-letter primary
+        assert!(validate_language_id("x-pv2").is_ok(), "private use");
     }
 
     #[test]
     fn validate_language_id_rejects_invalid() {
         assert!(validate_language_id("").is_err(), "empty");
         assert!(validate_language_id("e").is_err(), "too short");
+        assert!(
+            validate_language_id("x").is_err(),
+            "private use needs a subtag"
+        );
+        assert!(
+            validate_language_id("x-").is_err(),
+            "an empty private use subtag"
+        );
         assert!(validate_language_id("EN").is_err(), "uppercase");
         assert!(validate_language_id("en us").is_err(), "space");
         assert!(validate_language_id("../foo").is_err(), "path traversal");

@@ -98,16 +98,8 @@ echo ""
 if [[ "$MODE" == "full" ]]; then
     run_check "Release build" cargo build -p trovato-kernel --release
     echo "=== WASM plugin build ==="
-    if cargo build -p trovato_blog -p trovato_search \
-        -p test_e2e_caller -p test_e2e_callee -p test_e2e_bystander -p test_e2e_nocaps \
-        -p test_ai_background -p test_queue_worker -p test_item_writer -p test_site_queries -p test_item_deny -p test_item_background -p test_members -p test_menu_entries -p test_page_builder_components \
-        -p trovato_field_access_ref \
-        -p trovato_recovery_ref -p test_recovery_bystander \
-        -p trovato_record_ref \
-        -p trovato_series -p test_plugin_api \
-        -p test_assistant_scope \
-        -p trovato_ai -p test_form_taps -p test_form_taps_b \
-        --target wasm32-wasip1 --release 2>&1; then
+    # The same list CI builds, from the one script that holds it (B235).
+    if ./scripts/ci-build-plugins.sh 2>&1; then
         echo -e "${GREEN}OK${NC}"
     else
         echo -e "${RED}FAIL${NC}"

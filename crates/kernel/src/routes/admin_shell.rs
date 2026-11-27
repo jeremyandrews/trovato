@@ -7,8 +7,10 @@
 //!   open, each with its one sentence description, from the registry in
 //!   [`super::admin_nav`]. The way to browse the admin without JavaScript.
 //! - `GET` and `POST /admin/preferences`: the colour theme and admin language.
-//! - `POST /admin/preferences/nav`: which sidebar groups are collapsed, sent
-//!   by the sidebar's disclosure buttons (JSON, CSRF header).
+//! - `POST /admin/preferences/nav`: one sidebar group the viewer opened or
+//!   closed by hand (`{ group, open }`), sent by its disclosure button (JSON,
+//!   same-site requests only). Only the current page's group opens by
+//!   default; the groups opened by hand are remembered.
 //! - `GET /admin/search?q=`: the registry pages matching the query.
 
 use axum::extract::{Query, State};
@@ -86,17 +88,26 @@ async fn landing(
     let mut enabled: Vec<String> = state.enabled_plugins().into_iter().collect();
     enabled.sort();
     let nav = state.plugin_admin_nav();
-    let items = admin_nav::landing(&viewer, &enabled, group, nav.links(), nav.cards());
+    let mut landing = admin_nav::landing(&viewer, &enabled, group, nav.links(), nav.cards());
     // A group with nothing the viewer may open does not exist for them, as a
     // page they may not open does not.
-    if items.is_empty() {
+    if landing.is_empty() {
         return render_not_found();
+    }
+    // Each tile's state, one after another in this request's own task, so
+    // the request profile counts every statement. Only offered tiles carry
+    // a status, and `status_line` applies its own visibility rules.
+    for item in &mut landing.items {
+        if let Some(status) = item.status {
+            item.status_line = admin_nav::status_line(status, &viewer, &state).await;
+        }
     }
 
     let mut context = tera::Context::new();
     context.insert("group", group.info().title);
     context.insert("group_description", group.info().description);
-    context.insert("items", &items);
+    context.insert("items", &landing.items);
+    context.insert("primary", &landing.primary);
     context.insert("path", &path);
     render_admin_template(&state, &viewer, "admin/landing.html", context).await
 }
@@ -174,7 +185,7 @@ async fn render_preferences(
             ("alt-k", "Alt+K (Option+K on a Mac)"),
         ],
     );
-    context.insert("default_language", state.default_language());
+    context.insert("default_language", &state.default_language());
     context.insert("flash", &flash);
     context.insert("error_message", &error);
     context.insert("path", admin_nav::PREFERENCES);
@@ -255,13 +266,17 @@ async fn preferences_save(
 }
 
 #[derive(Debug, Deserialize)]
-struct NavState {
-    /// The slugs of the groups now collapsed.
-    collapsed: Vec<String>,
+struct NavToggle {
+    /// The slug of the group the viewer opened or closed.
+    group: String,
+    /// Whether it is now open.
+    open: bool,
 }
 
-/// POST /admin/preferences/nav: the sidebar groups the viewer has collapsed,
-/// remembered so the next page renders them that way with no flash.
+/// POST /admin/preferences/nav: the viewer opened or closed one sidebar
+/// group by hand, remembered so the next page renders it that way with no
+/// flash. The group holding the current page is always open, so the sidebar
+/// never sends it.
 ///
 /// No CSRF token, unlike every form: a token is issued per render and kept
 /// in a short list, so giving every admin page one would expire the tokens of
@@ -274,7 +289,7 @@ async fn save_nav_state(
     State(state): State<AppState>,
     session: Session,
     headers: HeaderMap,
-    Json(body): Json<NavState>,
+    Json(body): Json<NavToggle>,
 ) -> Response {
     let user = match require_permission_json(&state, &session, ADMISSION).await {
         Ok(user) => user,
@@ -287,15 +302,10 @@ async fn save_nav_state(
     if fetch_site != "same-origin" && fetch_site != "none" {
         return StatusCode::FORBIDDEN.into_response();
     }
-    let mut collapsed: Vec<String> = body
-        .collapsed
-        .into_iter()
-        .filter(|slug| Group::from_slug(slug).is_some())
-        .collect();
-    collapsed.sort();
-    collapsed.dedup();
-    let changes = serde_json::json!({ "collapsed": collapsed });
-    match Preferences::merge(state.db(), user.id, changes).await {
+    if Group::from_slug(&body.group).is_none() {
+        return StatusCode::BAD_REQUEST.into_response();
+    }
+    match Preferences::toggle_group(state.db(), user.id, &body.group, body.open).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to save the sidebar state");

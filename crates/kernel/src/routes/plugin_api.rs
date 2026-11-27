@@ -454,7 +454,7 @@ async fn serve(
     )
     .await;
     let language = language.and_then(|Extension(lang)| {
-        crate::routes::gather::query_language(&lang.0, state.default_language())
+        crate::routes::gather::query_language(&lang.0, &state.default_language())
     });
     let tap_state =
         RequestState::new(user, state.tap_services().clone()).with_read_context(stages, language);

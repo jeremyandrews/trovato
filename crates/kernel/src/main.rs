@@ -25,6 +25,7 @@ mod gather;
 mod generate;
 mod host;
 mod i18n;
+mod import;
 mod lockout;
 mod menu;
 mod metrics;
@@ -34,6 +35,7 @@ mod migration_rule;
 mod models;
 mod net_policy;
 mod pagination;
+mod password_prompt;
 mod permissions;
 mod plugin;
 mod recovery;
@@ -111,6 +113,21 @@ enum Commands {
     Item {
         #[command(subcommand)]
         action: ItemAction,
+    },
+    /// Import content from another site, keeping each record's id and dates.
+    ///
+    /// Reads newline delimited JSON, one record per line
+    /// (`docs/design/import.md`), and writes the whole file in one
+    /// transaction, each record checked as the forms check it. A record
+    /// identical to what is stored changes nothing, so a rerun reports 0
+    /// changes. Any record that fails is reported with its line number, and
+    /// nothing is written. Exits nonzero on any failure.
+    Import {
+        /// The file to import (`-` reads stdin).
+        file: std::path::PathBuf,
+        /// Check every record and report what would change; write nothing.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Apply pending kernel and plugin migrations, under one lock.
     ///
@@ -331,6 +348,7 @@ async fn main() -> Result<()> {
         Some(Commands::Cache { action }) => run_cache_command(action).await,
         Some(Commands::Search { action }) => run_search_command(action).await,
         Some(Commands::Item { action }) => run_item_command(action).await,
+        Some(Commands::Import { file, dry_run }) => run_import_command(&file, dry_run).await,
         Some(Commands::Migrate {
             status,
             dry_run,
@@ -1287,14 +1305,14 @@ async fn run_user_command(action: UserAction) -> Result<()> {
             let password = if no_password {
                 None
             } else {
-                Some(read_password_from_stdin("Password: ")?)
+                Some(password_prompt::read_password_from_stdin("Password: ")?)
             };
             create_user_from_cli(&config, account, password).await?;
         }
         UserAction::ResetPassword { username, password } => {
             let password = match password {
                 Some(p) => p,
-                None => read_password_from_stdin("New password: ")?,
+                None => password_prompt::read_password_from_stdin("New password: ")?,
             };
 
             if password.len() < 12 {
@@ -1369,62 +1387,6 @@ async fn run_user_command(action: UserAction) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Read one line from stdin as a password, prompting on stderr: how
-/// `user create` and `user reset-password` take one, so it never appears in
-/// argv, the shell history or the output.
-///
-/// From a terminal the password is read with echo off, so what is typed is
-/// not shown, and the prompt comes only then: a person typing gets one, piped
-/// input does not, so it does not run into the command's own output.
-fn read_password_from_stdin(prompt: &str) -> Result<String> {
-    use std::io::IsTerminal;
-    let line = if std::io::stdin().is_terminal() {
-        read_line_unechoed(prompt)
-    } else {
-        read_line()
-    };
-    Ok(line
-        .context("failed to read password from stdin")?
-        .trim()
-        .to_string())
-}
-
-fn read_line() -> std::io::Result<String> {
-    let mut buf = String::new();
-    std::io::stdin().read_line(&mut buf)?;
-    Ok(buf)
-}
-
-/// Prompt on stderr and read one line from the terminal on stdin with echo
-/// off, putting the terminal back as it was whatever the read did. The line
-/// end is still echoed (`ECHONL`), so the output after it starts on a new line.
-#[cfg(unix)]
-fn read_line_unechoed(prompt: &str) -> std::io::Result<String> {
-    use rustix::termios::{LocalModes, OptionalActions, tcgetattr, tcsetattr};
-    let stdin = std::io::stdin();
-    let saved = tcgetattr(&stdin)?;
-    let mut quiet = saved.clone();
-    quiet.local_modes.remove(LocalModes::ECHO);
-    quiet.local_modes.insert(LocalModes::ECHONL);
-    // Echo goes off before the prompt appears, so nothing typed in answer to
-    // the prompt is ever shown.
-    tcsetattr(&stdin, OptionalActions::Flush, &quiet)?;
-    eprint!("{prompt}");
-    let line = read_line();
-    let restored = tcsetattr(&stdin, OptionalActions::Now, &saved);
-    let line = line?;
-    restored?;
-    Ok(line)
-}
-
-/// Without termios the prompt says the input will be shown, so nobody types
-/// a password at it believing otherwise.
-#[cfg(not(unix))]
-fn read_line_unechoed(prompt: &str) -> std::io::Result<String> {
-    eprint!("{prompt}(shown as typed; pipe it in to hide it) ");
-    read_line()
 }
 
 /// What `trovato user create` was asked for, short of the password.
@@ -1547,6 +1509,39 @@ async fn create_user_from_cli(
         "{}",
         bump_from_cli(config, &[CacheKind::Users, CacheKind::Permissions]).await
     );
+    Ok(())
+}
+
+/// `trovato import`: content from another site, through `import::import`
+/// (`docs/design/import.md`). Runs as the operator, the bypass every command
+/// here runs with; the records are still checked as the forms check them.
+async fn run_import_command(file: &std::path::Path, dry_run: bool) -> Result<()> {
+    let config = Config::from_env().context("failed to load configuration")?;
+    let state = AppState::new(&config)
+        .await
+        .context("failed to initialize application state")?;
+
+    let name = file.display().to_string();
+    let report = if name == "-" {
+        import::import(&state, std::io::stdin().lock(), dry_run).await?
+    } else {
+        let opened = std::fs::File::open(file).with_context(|| format!("cannot open {name}"))?;
+        import::import(&state, std::io::BufReader::new(opened), dry_run).await?
+    };
+
+    let verb = if dry_run { "Would import" } else { "Imported" };
+    println!("{verb} {} records from {name}:", report.records);
+    for line in report.lines() {
+        println!("{line}");
+    }
+    println!(
+        "{} change(s){}.",
+        report.changes(),
+        if dry_run { ", none written" } else { "" }
+    );
+    if let Some(note) = &report.cache_note {
+        println!("{note}");
+    }
     Ok(())
 }
 
