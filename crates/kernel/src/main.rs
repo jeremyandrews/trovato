@@ -643,6 +643,34 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         }
     }
 
+    // Spawn the built-in cron scheduler (B178): calls `CronService::run` on its
+    // own cadence so a freshly installed site runs scheduled cron (publishing,
+    // search rebuilds, session and temp-file cleanup) with no external caller
+    // configured — core must be fully functional without a site's own cron
+    // sidecar. Always spawned, unlike the queue runner above: its loop
+    // re-reads `cron_scheduler` every tick, so a `site_config` change —
+    // including turning it off — applies without a restart, and `/cron/{key}`
+    // and the admin "Run now" control are unaffected either way: all three
+    // call the identical `run` and share its Redis lock, so a scheduled run
+    // and an external poke landing in the same window skip one another rather
+    // than both executing.
+    //
+    // On the general shutdown token, not `workers_token`: like the DB pool
+    // monitor and the analytics flush above, this is a periodic background
+    // task rather than request-serving capacity that has to stop taking new
+    // work before the drain.
+    {
+        let cron = state.cron().clone();
+        let scheduler_config = cron.scheduler_config().await;
+        let token = shutdown_token.clone();
+        info!(
+            enabled = scheduler_config.enabled(),
+            interval_secs = scheduler_config.interval_secs,
+            "Built-in cron scheduler starting"
+        );
+        tokio::spawn(async move { cron.run_scheduler(token).await });
+    }
+
     // The mail workers (BG18): whenever a transport is configured, so a
     // queued message is sent within seconds with nothing else to enable. On the
     // same token as the queue runner: they take no new message from SIGTERM on,

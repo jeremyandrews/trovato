@@ -28,6 +28,13 @@ and deletes a uniquely named file there, and refuses to start, naming the
 directory, if it cannot. A broken mount fails the deploy, not the first
 upload.
 
+Each server's built-in cron scheduler (`cron_interval_secs` in site settings,
+default 300 seconds) calls cron on its own cadence, and an external caller to
+`/cron/{key}` may still poke any server at any time — every one of them, the
+scheduler included, takes the same Redis lock before running, so a scheduled
+run on one server and an external poke to another, landing in the same
+window, never both run; the second is told another instance already is.
+
 The Pagefind index is rebuilt by whichever server's cron run takes the lock.
 The kernel writes it itself, in Pagefind 1.3.0's format, so no `pagefind`
 binary is needed on any server or in the image. It builds the new index in a

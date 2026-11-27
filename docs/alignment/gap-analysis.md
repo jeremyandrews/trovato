@@ -189,15 +189,13 @@ Gaps between Trovato and Drupal 6 + CCK + Views, sorted by priority. Each gap in
 
 ---
 
-### 16. No Poor Man's Cron
+### 16. ~~No Poor Man's Cron~~ RESOLVED (B178)
 
-**Gap:** Cron only runs via external scheduler hitting `/cron/{key}`. No automatic triggering from web requests.
+**Gap:** Cron only ran via external scheduler hitting `/cron/{key}`. No automatic triggering with nothing external configured, so a fresh install silently never published scheduled content, rebuilt its search index or cleaned up after itself.
 
 **D6 equivalent:** `drupal_cron_run()` could be triggered by page requests when enough time had elapsed since the last run.
 
-**Impact:** Minimal. External cron schedulers (systemd timers, crontab, Kubernetes CronJobs) are more reliable than request-triggered cron.
-
-**Resolution:** Skip. External scheduling is the correct approach for production deployments.
+**Resolution:** A built-in scheduler, not request-triggered cron: the kernel calls `CronService::run` on its own cadence (`cron_interval_secs` in site settings, default 300 seconds), sharing the same Redis lock `/cron/{key}` and the admin "Run now" control use, so an external scheduler may still be configured alongside it with no double-running. See `crates/kernel/src/cron/mod.rs` (`CronSchedulerConfig`, `run_scheduler`).
 
 ---
 
