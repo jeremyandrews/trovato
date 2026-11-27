@@ -29,10 +29,17 @@ The install wizard had no CSRF protection at all, and its site step, which
 names the site and closes the installer, could be finished by anyone who
 reached it after the administrator was created. Both forms now carry and check
 a token. The site step belongs to the browser session that created the
-administrator; any other session is asked for that administrator's username
-and password on the same form before it may finish. The administrator step also
-no longer creates a second administrator when one already exists: it goes on to
-the site step instead.
+administrator. Any other session is asked for that administrator's username and
+password on the same form before it may finish. That check counts toward the
+same account lockout as the sign-in form, and `POST /install/site` is counted
+in the `login` rate limit bucket.
+
+The administrator step could also create more than one administrator. It
+created one even when an administrator already existed. Two submissions at
+once could each see none, because hashing the password leaves a wide gap
+between the count and the insert. Only the submission holding a transaction
+advisory lock may now count and create. A submission that finds an
+administrator already there, or the lock taken, goes on to the site step.
 
 The login page's inline HTML fallback for a template that fails to render was
 already replaced by the standard server error page in B84, so it needed no

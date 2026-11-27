@@ -419,6 +419,37 @@ async fn install_admin_submit(
         return render_admin_form(&session, Some("Passwords do not match")).await;
     }
 
+    // Two submissions at once would both count no administrator and both
+    // create one, since hashing the password leaves a wide gap between the
+    // count and the insert. Only the submission holding a transaction
+    // advisory lock may count and create; one that finds it taken goes on to
+    // the site step, as it would once the other's account exists. The lock is
+    // tried rather than waited for, so no submission holds a connection while
+    // it waits for one the holder needs to write the account. Dropping the
+    // transaction on any early return releases it.
+    let mut lock = match state.db().begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::error!(error = %e, "failed to begin the installer's admin lock");
+            return render_admin_form(&session, Some("Failed to create admin account")).await;
+        }
+    };
+    match sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_xact_lock(hashtext($1))")
+        .bind("trovato_install_admin")
+        .fetch_one(&mut *lock)
+        .await
+    {
+        Ok(true) => {}
+        Ok(false) => return Redirect::to("/install/site").into_response(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to take the installer's admin lock");
+            return render_admin_form(&session, Some("Failed to create admin account")).await;
+        }
+    }
+    if count_admin_users(&state).await > 0 {
+        return Redirect::to("/install/site").into_response();
+    }
+
     // Check if username already exists
     if let Ok(Some(_)) = state.users().find_by_name(&form.username).await {
         return render_admin_form(&session, Some("Username already exists")).await;
@@ -438,7 +469,12 @@ async fn install_admin_submit(
     };
 
     let anon = UserContext::anonymous();
-    match state.users().create(input, &anon, "installer").await {
+    let created = state.users().create(input, &anon, "installer").await;
+    // The account is written (or not): the next submission may count.
+    if let Err(e) = lock.commit().await {
+        tracing::warn!(error = %e, "failed to release the installer's admin lock");
+    }
+    match created {
         Ok(admin) => {
             if let Err(e) = session.insert(SESSION_INSTALL_ADMIN, admin.id).await {
                 tracing::error!(error = %e, "failed to remember the installing administrator");
@@ -543,6 +579,7 @@ async fn install_site_form(State(state): State<AppState>, session: Session) -> R
 async fn install_site_submit(
     State(state): State<AppState>,
     session: Session,
+    axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
     Form(form): Form<SiteConfigForm>,
 ) -> Response {
     if check_installed(&state).await {
@@ -558,6 +595,16 @@ async fn install_site_submit(
     if installing_admin(&state, &session).await.is_none() {
         let name = form.admin_name.as_deref().unwrap_or("").trim();
         let password = form.admin_password.as_deref().unwrap_or("");
+        // The same lockout as the sign-in form, by name and address, so the
+        // password cannot be guessed here at a rate sign-in would refuse.
+        if let Ok(true) = state.lockout().is_locked(name, &client_ip.0).await {
+            return render_site_form(
+                &state,
+                &session,
+                Some("Too many failed attempts. Try again in a few minutes."),
+            )
+            .await;
+        }
         let admin = match state.users().find_by_name(name).await {
             Ok(Some(user)) if user.is_admin => Some(user),
             _ => None,
@@ -565,12 +612,22 @@ async fn install_site_submit(
         // Verified against a dummy hash when there is no such administrator,
         // so the answer takes as long either way.
         if !crate::models::User::verify_password_or_dummy(admin.as_ref(), password) {
+            if let Err(e) = state
+                .lockout()
+                .record_failed_attempt(name, &client_ip.0)
+                .await
+            {
+                tracing::warn!(error = %e, "failed to record a failed installer sign in");
+            }
             return render_site_form(
                 &state,
                 &session,
                 Some("Sign in as the site's administrator to finish the installation"),
             )
             .await;
+        }
+        if let Err(e) = state.lockout().clear_attempts(name, &client_ip.0).await {
+            tracing::warn!(error = %e, "failed to clear installer sign in attempts");
         }
         if let Some(admin) = admin
             && let Err(e) = session.insert(SESSION_INSTALL_ADMIN, admin.id).await

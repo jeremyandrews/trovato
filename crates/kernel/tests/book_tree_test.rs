@@ -840,7 +840,10 @@ fn the_book_admin_forms_post_their_own_csrf_token() {
 
         // Create, with the token the list screen served.
         let html = page_html(app, &admin, "/admin/structure/books").await;
-        let token = form_token(&html).expect("the create form carries a _token field");
+        let create_at = html.find("/create\"").expect("the list has a create form");
+        let create_end = create_at + html[create_at..].find("</form>").unwrap();
+        let token = form_token(&html[create_at..create_end])
+            .expect("the create form carries a _token field");
         let response = submit_form(
             app,
             &admin,
@@ -858,7 +861,9 @@ fn the_book_admin_forms_post_their_own_csrf_token() {
         let tree = format!("/admin/structure/books/{root}");
         let html = page_html(app, &admin, &tree).await;
         let place_at = html.find("/place\"").expect("the tree has a place form");
-        let token = form_token(&html[place_at..]).expect("the place form carries a _token");
+        let place_end = place_at + html[place_at..].find("</form>").unwrap();
+        let token =
+            form_token(&html[place_at..place_end]).expect("the place form carries a _token");
         let response = submit_form(
             app,
             &admin,
@@ -883,7 +888,9 @@ fn the_book_admin_forms_post_their_own_csrf_token() {
             .find(&format!("value=\"{child}\""))
             .expect("the placed page has a remove form");
         let form_start = html[..row].rfind("<form").unwrap();
-        let token = form_token(&html[form_start..]).expect("the remove form carries a _token");
+        let form_end = form_start + html[form_start..].find("</form>").unwrap();
+        let token = form_token(&html[form_start..form_end])
+            .expect("the page's own remove form carries a _token");
         let response = submit_form(
             app,
             &admin,
