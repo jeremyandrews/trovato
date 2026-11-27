@@ -26,7 +26,15 @@ kernel source opens a Redis connection another way. Each cron task is bounded
 too: a task that has not finished in 150 seconds (the allowance `tap_cron`
 already had) is logged at warn, recorded as `<task>:TIMEOUT` in the run's task
 list, and the run moves on and releases the lock straight away; the queue
-drains get their own budget plus the batch they may have in flight. And a run
+drains get their own budget plus the batch they may have in flight. The
+queue-runner setting read and the daily search analytics prune are bounded the
+same way. Cutting a task off never throws work away: an item `process_queues`
+has already popped from Redis is handled on a task of its own and finishes
+anyway, the embed drain now stops claiming when its time budget is spent (as
+the plugin drain always did) and runs its jobs as tasks a cancelled pass does
+not abort, and the Pagefind rebuild, which writes its index in place, is waited
+on for one task bound and otherwise left to finish in the background, with a
+guard so a later run never starts a second rebuild over it. And a run
 that finds the lock held reads its age, which the lock value now records, and
 logs at warn naming that age when the holder has had it longer than
 `MAX_LOCK_RENEWAL_SECS`, or when the lock has no expiry at all. An ordinary
