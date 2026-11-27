@@ -366,8 +366,7 @@ fn one_call_on_each_path_records_its_real_usage() {
         // The summary is built server-side from a result URL now, not from
         // browser-supplied text: a real, published item for it to resolve.
         app.ensure_conference_type().await;
-        let admin =
-            UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
+        let admin = UserContext::administrator(Uuid::nil(), vec!["administer site".to_string()]);
         let item_id = app
             .state
             .items()

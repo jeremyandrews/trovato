@@ -746,8 +746,15 @@ impl AiTokenBudgetService {
                 .await?
         };
 
-        self.evaluate_budget(pool, user_id, provider_id, limit, config.period, config.action_on_limit)
-            .await
+        self.evaluate_budget(
+            pool,
+            user_id,
+            provider_id,
+            limit,
+            config.period,
+            config.action_on_limit,
+        )
+        .await
     }
 
     /// Weigh `limit` against usage already recorded in the current period:

@@ -49,9 +49,9 @@ const MAX_BODY_BYTES: usize = 64 * 1024;
 
 /// Build the Scolta search API router.
 pub fn api() -> super::api::ApiRoutes {
+    use super::api::doc;
     use axum::extract::DefaultBodyLimit;
     use axum::routing::post;
-    use super::api::doc;
 
     let limit = || DefaultBodyLimit::max(MAX_BODY_BYTES);
 
@@ -360,7 +360,8 @@ async fn followup(
     };
 
     for message in &body.messages {
-        if !message.role.eq_ignore_ascii_case("user") && !message.role.eq_ignore_ascii_case("assistant")
+        if !message.role.eq_ignore_ascii_case("user")
+            && !message.role.eq_ignore_ascii_case("assistant")
         {
             return AppError::bad_request("Message role must be \"user\" or \"assistant\"")
                 .into_response();
@@ -694,7 +695,10 @@ pub(crate) const SEARCH_USAGE_SOURCE: &str = "kernel_search";
 /// gets expansion, summaries and follow-ups. A signed-in person's calls count
 /// against their token budget; an anonymous visitor's against the site-level
 /// anonymous cap.
-async fn ai_caller(state: &AppState, session: &Session) -> Result<(UserContext, AiCaller), Response> {
+async fn ai_caller(
+    state: &AppState,
+    session: &Session,
+) -> Result<(UserContext, AiCaller), Response> {
     let viewer = crate::routes::item::get_user_context(session, state).await;
     if !viewer.can(USE_AI_PERMISSION) {
         return Err(super::helpers::refusal_for(
