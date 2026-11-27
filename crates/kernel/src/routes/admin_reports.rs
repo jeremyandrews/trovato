@@ -188,7 +188,7 @@ async fn cron_report(State(state): State<AppState>, session: Session) -> Respons
         None
     };
 
-    let flash: Option<String> = session.remove(CRON_FLASH_KEY).await.ok().flatten();
+    let flash: Option<serde_json::Value> = session.remove(CRON_FLASH_KEY).await.ok().flatten();
 
     let mut context = tera::Context::new();
     context.insert("last_run", &last_run);
@@ -310,8 +310,19 @@ async fn save_scheduler_settings(
         Err(ProcessError::Csrf) => {
             return render_error("Invalid or expired form token. Please try again.");
         }
-        Err(ProcessError::Invalid(_)) => {
-            return render_error("The form has expired. Reload the page and try again.");
+        // A value that is not a whole number: say so on the report, where the
+        // form is, rather than calling the form expired.
+        Err(ProcessError::Invalid(errors)) => {
+            match errors.into_iter().find(|e| e.field.is_some()) {
+                Some(error) => {
+                    let flash = serde_json::json!({ "kind": "error", "message": error.message });
+                    let _ = session.insert(CRON_FLASH_KEY, flash).await;
+                    return Redirect::to("/admin/reports/cron").into_response();
+                }
+                None => {
+                    return render_error("The form has expired. Reload the page and try again.");
+                }
+            }
         }
     };
 

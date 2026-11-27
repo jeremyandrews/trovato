@@ -70,6 +70,9 @@ const HEARTBEAT_INTERVAL_SECS: u64 = 60;
 /// Cron lock key in Redis.
 const CRON_LOCK_KEY: &str = "cron:lock";
 
+/// Redis key holding the last completed run ([`LastCronRun`]).
+const CRON_LAST_RUN_KEY: &str = "cron:last_run";
+
 /// Maximum items processed per plugin per drain cycle (P11d fairness cap): one
 /// plugin flooding its queue cannot starve another. Ratified value retained.
 const MAX_QUEUE_ITEMS_PER_CYCLE: i64 = 100;
@@ -368,6 +371,23 @@ pub(crate) fn scheduled_run_due(now: i64, last_finished: Option<i64>, interval_s
     match last_finished {
         None => true,
         Some(finished) => now.saturating_sub(finished) >= interval_secs as i64,
+    }
+}
+
+/// The setting the scheduler loop acts on after a read.
+///
+/// A successful read wins. A failed one keeps the setting last read, so a
+/// database error cannot turn on a scheduler an administrator turned off,
+/// nor change its interval; only a failure before anything was ever read
+/// falls back to the default.
+pub(crate) fn next_scheduler_config(
+    known: Option<CronSchedulerConfig>,
+    read: Result<CronSchedulerConfig>,
+) -> CronSchedulerConfig {
+    match (read, known) {
+        (Ok(cfg), _) => cfg,
+        (Err(_), Some(cfg)) => cfg,
+        (Err(_), None) => CronSchedulerConfig::default(),
     }
 }
 
@@ -1114,6 +1134,23 @@ impl CronService {
     /// Acquires a distributed lock before running to ensure only one
     /// instance executes cron at a time.
     pub async fn run(&self) -> CronResult {
+        self.run_with(None).await
+    }
+
+    /// Run all cron tasks unless a run finished less than `interval_secs` ago
+    /// (B178): the built-in scheduler's entry point.
+    ///
+    /// The scheduler decides a run is due before it calls this, but two
+    /// servers can both read the same old `cron:last_run`, both decide, and
+    /// then take the lock one after the other, the second one running cron
+    /// again right after the first. So the check is repeated here, after the
+    /// lock is held, where no other run can finish in between: a run that is
+    /// no longer due gives the lock back and is reported as skipped.
+    pub async fn run_if_due(&self, interval_secs: u64) -> CronResult {
+        self.run_with(Some(interval_secs)).await
+    }
+
+    async fn run_with(&self, due_after_secs: Option<u64>) -> CronResult {
         let start = std::time::Instant::now();
 
         // Try to acquire lock
@@ -1128,6 +1165,17 @@ impl CronService {
                 return CronResult::Failed(e.to_string());
             }
         };
+
+        if let Some(interval_secs) = due_after_secs {
+            let last_finished = self.last_run().await.ok().flatten().map(|r| r.timestamp);
+            if !scheduled_run_due(chrono::Utc::now().timestamp(), last_finished, interval_secs) {
+                debug!("cron ran less than an interval ago; giving the lock back");
+                if let Err(e) = self.release_lock(&lock_value).await {
+                    warn!(error = %e, "failed to release cron lock");
+                }
+                return CronResult::Skipped;
+            }
+        }
 
         info!("acquired cron lock, running tasks");
 
@@ -2155,26 +2203,46 @@ impl CronService {
         }
     }
 
-    /// Load the built-in scheduler config (B178).
+    /// Load the built-in scheduler config (B178), for display.
+    ///
+    /// As [`read_scheduler_config`](Self::read_scheduler_config), with a
+    /// failed database read shown as the default. The scheduler loop itself
+    /// does not use this: it keeps the last setting it read instead.
+    pub async fn scheduler_config(&self) -> CronSchedulerConfig {
+        match self.read_scheduler_config().await {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                warn!(error = %e, "failed to read cron_interval_secs; showing the default");
+                CronSchedulerConfig::default()
+            }
+        }
+    }
+
+    /// Read the built-in scheduler config (B178).
     ///
     /// `CRON_INTERVAL_SECS`, when set, wins outright: the process-level switch
     /// a deployment needs without a database row being right. Otherwise the
     /// `cron_interval_secs` `site_config` row, read fresh on every call so a
     /// change (including turning the scheduler off) applies without a
-    /// restart. Absent, unreadable or unparseable falls back to the default
-    /// interval rather than off: unlike
-    /// [`queue_runner_config`](Self::queue_runner_config), whose safe default
-    /// is off, this scheduler's safe default is on, so a broken row cannot
-    /// silently turn a site back into one where cron never runs.
-    pub async fn scheduler_config(&self) -> CronSchedulerConfig {
+    /// restart. An absent or unparseable row is the default interval rather
+    /// than off: unlike [`queue_runner_config`](Self::queue_runner_config),
+    /// whose safe default is off, this scheduler's safe default is on, so a
+    /// broken row cannot silently turn a site back into one where cron never
+    /// runs. A failed read is an error, not a default, so the loop can keep
+    /// the setting it last read: a database blip must not turn on a scheduler
+    /// an administrator turned off.
+    pub async fn read_scheduler_config(&self) -> Result<CronSchedulerConfig> {
         if let Some(interval_secs) = self.scheduler_interval_override {
-            return CronSchedulerConfig {
+            return Ok(CronSchedulerConfig {
                 interval_secs,
                 source: CronIntervalSource::Environment,
-            };
+            });
         }
-        match crate::models::SiteConfig::get(&self.pool, CRON_INTERVAL_CONFIG_KEY).await {
-            Ok(Some(value)) => match CronSchedulerConfig::interval_from_value(&value) {
+        let value = crate::models::SiteConfig::get(&self.pool, CRON_INTERVAL_CONFIG_KEY)
+            .await
+            .context("failed to read cron_interval_secs")?;
+        Ok(match value {
+            Some(value) => match CronSchedulerConfig::interval_from_value(&value) {
                 Some(interval_secs) => CronSchedulerConfig {
                     interval_secs,
                     source: CronIntervalSource::SiteConfig,
@@ -2187,80 +2255,102 @@ impl CronService {
                     CronSchedulerConfig::default()
                 }
             },
-            Ok(None) => CronSchedulerConfig::default(),
-            Err(e) => {
-                warn!(error = %e, "failed to read cron_interval_secs; using the default");
-                CronSchedulerConfig::default()
-            }
-        }
+            None => CronSchedulerConfig::default(),
+        })
     }
 
     /// Run the built-in scheduler loop until `shutdown` fires (B178).
     ///
-    /// Calls [`run`](Self::run) on its own cadence so a site runs cron with no
-    /// external caller configured. It drives the exact same `run`, and
-    /// therefore the exact same Redis lock, as `/cron/{key}` and the admin
-    /// "Run now" control: whichever lands first runs cron, and any caller that
-    /// arrives while it runs gets [`CronResult::Skipped`], never a second run.
+    /// Calls [`run_if_due`](Self::run_if_due) on its own cadence so a site
+    /// runs cron with no external caller configured. That is the same `run`,
+    /// under the same Redis lock, as `/cron/{key}` and the admin "Run now"
+    /// control: whichever arrives first runs cron, and any caller that arrives
+    /// while it runs gets [`CronResult::Skipped`], never a second run.
     ///
     /// The first run comes one interval after start, not at boot. After that a
     /// run is attempted once `interval_secs` have passed since this loop's
     /// last attempt finished *and* since the last run anywhere finished
     /// (`scheduled_run_due`), so an external poke or another server's
     /// scheduler that ran recently pushes this one's next run back instead of
-    /// adding to it.
+    /// adding to it. `run_if_due` checks the second condition again once it
+    /// holds the lock, so two servers that decide at the same moment still
+    /// run cron once.
     ///
-    /// The setting is reread every time the loop wakes, which is at most
-    /// a minute apart, so a change (including turning the
-    /// scheduler off, or back on) applies without a restart. A failed run is
-    /// logged and the loop continues: one bad cycle must not stop the next.
+    /// The setting is reread every time the loop wakes, which is at most a
+    /// minute apart, so a change (including turning the scheduler off, or back
+    /// on) applies without a restart. A read that fails keeps the setting last
+    /// read. Shutdown is honoured while a read is waiting as well as between
+    /// runs, and no run starts once it has fired. A failed run is logged and
+    /// the loop continues: one bad cycle must not stop the next.
     pub async fn run_scheduler(self: Arc<Self>, shutdown: tokio_util::sync::CancellationToken) {
         info!("built-in cron scheduler started");
         let mut last_attempt = tokio::time::Instant::now();
+        let mut known: Option<CronSchedulerConfig> = None;
         loop {
-            let cfg = self.scheduler_config().await;
-            let wait_secs = if cfg.enabled() {
+            let tick = async {
+                let read = self.read_scheduler_config().await;
+                if let Err(e) = &read {
+                    warn!(error = %e, "keeping the last cron scheduler setting read");
+                }
+                let cfg = next_scheduler_config(known, read);
+                if !cfg.enabled() {
+                    return (cfg, None);
+                }
                 let interval = Duration::from_secs(cfg.interval_secs);
                 let since_attempt = last_attempt.elapsed();
-                if since_attempt >= interval {
-                    let now = chrono::Utc::now().timestamp();
-                    let last_finished = match self.last_run().await {
-                        Ok(run) => run.map(|r| r.timestamp),
-                        Err(e) => {
-                            debug!(error = %e, "could not read the last cron run; treating the run as due");
-                            None
-                        }
-                    };
-                    if scheduled_run_due(now, last_finished, cfg.interval_secs) {
-                        self.run_scheduled_once().await;
-                        last_attempt = tokio::time::Instant::now();
-                        cfg.interval_secs
-                    } else {
-                        // Cron ran elsewhere in this window: wait until that
-                        // run is one interval old, then check again.
-                        let age = now.saturating_sub(last_finished.unwrap_or(now));
-                        debug!(
-                            age_secs = age,
-                            interval_secs = cfg.interval_secs,
-                            "scheduled cron run not due: cron ran recently elsewhere"
-                        );
-                        cfg.interval_secs.saturating_sub(age.max(0) as u64)
-                    }
-                } else {
-                    (interval - since_attempt).as_secs_f64().ceil() as u64
+                if since_attempt < interval {
+                    let wait = (interval - since_attempt).as_secs_f64().ceil() as u64;
+                    return (cfg, Some(Err(wait)));
                 }
-            } else {
-                SCHEDULER_MAX_POLL_SECS
+                let now = chrono::Utc::now().timestamp();
+                let last_finished = match self.last_run().await {
+                    Ok(run) => run.map(|r| r.timestamp),
+                    Err(e) => {
+                        debug!(error = %e, "could not read the last cron run; treating the run as due");
+                        None
+                    }
+                };
+                if scheduled_run_due(now, last_finished, cfg.interval_secs) {
+                    (cfg, Some(Ok(())))
+                } else {
+                    // Cron ran elsewhere in this window: wait until that run
+                    // is one interval old, then check again.
+                    let age = now.saturating_sub(last_finished.unwrap_or(now)).max(0) as u64;
+                    debug!(
+                        age_secs = age,
+                        interval_secs = cfg.interval_secs,
+                        "scheduled cron run not due: cron ran recently elsewhere"
+                    );
+                    (cfg, Some(Err(cfg.interval_secs.saturating_sub(age))))
+                }
+            };
+            let (cfg, decision) = tokio::select! {
+                biased;
+                _ = shutdown.cancelled() => break,
+                decided = tick => decided,
+            };
+            known = Some(cfg);
+            let wait_secs = match decision {
+                // Off: poll for it being turned back on.
+                None => SCHEDULER_MAX_POLL_SECS,
+                Some(Err(wait_secs)) => wait_secs,
+                Some(Ok(())) => {
+                    if shutdown.is_cancelled() {
+                        break;
+                    }
+                    self.run_scheduled_once(cfg.interval_secs).await;
+                    last_attempt = tokio::time::Instant::now();
+                    cfg.interval_secs
+                }
             };
             let wait = Duration::from_secs(wait_secs.clamp(1, SCHEDULER_MAX_POLL_SECS));
             tokio::select! {
-                _ = shutdown.cancelled() => {
-                    info!("built-in cron scheduler stopped");
-                    return;
-                }
+                biased;
+                _ = shutdown.cancelled() => break,
                 _ = tokio::time::sleep(wait) => {}
             }
         }
+        info!("built-in cron scheduler stopped");
     }
 
     /// How many runs this process's built-in scheduler has completed.
@@ -2269,14 +2359,14 @@ impl CronService {
             .load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// One scheduled call to [`run`](Self::run), logged.
+    /// One scheduled call to [`run_if_due`](Self::run_if_due), logged.
     ///
     /// The run is spawned and awaited, not awaited inline, for the same reason
     /// `/cron/{key}` spawns it: once started it finishes and releases its lock
     /// even if this loop's task is dropped part way (a runtime shutting down).
-    async fn run_scheduled_once(self: &Arc<Self>) {
+    async fn run_scheduled_once(self: &Arc<Self>, interval_secs: u64) {
         let cron = Arc::clone(self);
-        let result = match tokio::spawn(async move { cron.run().await }).await {
+        let result = match tokio::spawn(async move { cron.run_if_due(interval_secs).await }).await {
             Ok(result) => result,
             Err(e) => CronResult::Failed(format!("cron task did not finish: {e}")),
         };
@@ -2290,7 +2380,7 @@ impl CronService {
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             CronResult::Skipped => {
-                info!("scheduled cron run skipped: another caller is running cron");
+                info!("scheduled cron run skipped: another caller ran or is running cron");
             }
             CronResult::Failed(e) => {
                 warn!(error = %e, "scheduled cron run failed; the scheduler carries on");
@@ -2327,7 +2417,7 @@ impl CronService {
             .context("failed to get Redis connection")?;
 
         let data: Option<String> = conn
-            .get("cron:last_run")
+            .get(CRON_LAST_RUN_KEY)
             .await
             .context("failed to get last run")?;
 
@@ -2367,7 +2457,7 @@ impl CronService {
             .context("failed to get Redis connection")?;
 
         let json = serde_json::to_string(&run).context("failed to serialize run")?;
-        conn.set_ex::<_, _, ()>("cron:last_run", &json, 86400)
+        conn.set_ex::<_, _, ()>(CRON_LAST_RUN_KEY, &json, 86400)
             .await
             .context("failed to record run")?;
 
@@ -2742,6 +2832,71 @@ mod tests {
         assert!(scheduled_run_due(1_000, Some(700), 300));
         // A record from a clock ahead of ours: not due until it is an interval old.
         assert!(!scheduled_run_due(1_000, Some(1_010), 300));
+    }
+
+    #[test]
+    fn a_failed_settings_read_keeps_the_last_setting() {
+        let off = CronSchedulerConfig {
+            interval_secs: 0,
+            source: CronIntervalSource::SiteConfig,
+        };
+        let hourly = CronSchedulerConfig {
+            interval_secs: 3600,
+            source: CronIntervalSource::SiteConfig,
+        };
+        let failed = || Err(anyhow::anyhow!("connection refused"));
+        // Turned off, then the database blips: still off, not the default.
+        let cfg = next_scheduler_config(Some(off), failed());
+        assert!(!cfg.enabled(), "{cfg:?}");
+        assert_eq!(next_scheduler_config(Some(hourly), failed()), hourly);
+        // A successful read always wins.
+        assert_eq!(next_scheduler_config(Some(off), Ok(hourly)), hourly);
+        // Nothing read yet: the default.
+        assert_eq!(
+            next_scheduler_config(None, failed()),
+            CronSchedulerConfig::default()
+        );
+    }
+
+    /// The scheduler's run rechecks that cron is due once it holds the lock:
+    /// a run that finished in between (another server's, deciding from the
+    /// same old `cron:last_run`) makes it give the lock back and skip.
+    #[tokio::test]
+    async fn a_scheduled_run_skips_when_cron_finished_after_it_decided() {
+        let Ok(client) = redis::Client::open(trovato_test_utils::env::redis_url()) else {
+            return;
+        };
+        let Ok(mut conn) = client.get_multiplexed_async_connection().await else {
+            return; // No Redis in this environment.
+        };
+        // A pool that is never used: the skip happens before any task runs.
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://nobody@127.0.0.1:1/none")
+            .expect("lazy pool");
+        let cron = CronService::new(client, pool);
+        // Another run finished just now. Writing the site-wide record is safe
+        // here: it is what every completed run writes.
+        let now = chrono::Utc::now().timestamp();
+        let record = serde_json::json!({
+            "timestamp": now, "hostname": "elsewhere", "result": "Completed",
+            "status": "completed", "tasks": [], "duration_ms": 1
+        })
+        .to_string();
+        let _: () = conn
+            .set_ex(super::CRON_LAST_RUN_KEY, &record, 86_400)
+            .await
+            .expect("record a fresh run");
+
+        match cron.run_if_due(3600).await {
+            // Another process held the lock: also not a second run.
+            CronResult::Skipped => {}
+            other => panic!("a run that is no longer due executed: {other:?}"),
+        }
+        let held: Option<String> = conn.get(CRON_LOCK_KEY).await.unwrap_or(None);
+        assert!(
+            held.is_none_or(|v| !v.starts_with(&format!("{}:{}:", hostname(), std::process::id()))),
+            "the skipped run kept the cron lock"
+        );
     }
 
     #[test]

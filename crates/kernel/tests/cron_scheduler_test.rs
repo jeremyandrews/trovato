@@ -94,12 +94,29 @@ fn spawn_scheduler(cron: Arc<CronService>) -> (CancellationToken, tokio::task::J
 
 async fn stop(shutdown: CancellationToken, handle: tokio::task::JoinHandle<()>) {
     shutdown.cancel();
-    assert!(
-        tokio::time::timeout(Duration::from_secs(10), handle)
-            .await
-            .is_ok(),
-        "the scheduler loop did not stop within 10 seconds of shutdown"
-    );
+    let stopped = tokio::time::timeout(Duration::from_secs(10), handle).await;
+    assert_clean_stop(stopped, "10 seconds");
+}
+
+/// The loop ended within the limit *and* returned normally: a panic in the
+/// loop is a failure, not a stop.
+fn assert_clean_stop(
+    stopped: Result<Result<(), tokio::task::JoinError>, tokio::time::error::Elapsed>,
+    limit: &str,
+) {
+    match stopped {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => panic!("the scheduler loop panicked instead of stopping: {e}"),
+        Err(_) => panic!("the scheduler loop did not stop within {limit} of shutdown"),
+    }
+}
+
+async fn lock_value(conn: &mut redis::aio::MultiplexedConnection) -> Option<String> {
+    redis::cmd("GET")
+        .arg(CRON_LOCK_KEY)
+        .query_async(conn)
+        .await
+        .unwrap_or(None)
 }
 
 /// Wait until the scheduler has completed more than `count` runs, up to
@@ -178,38 +195,59 @@ fn an_external_call_during_a_scheduled_run_is_skipped() {
         let mut conn = redis_conn().await;
         set_interval(app, 1).await;
 
-        let mut blocker = app.db.begin().await.expect("begin");
-        sqlx::query("LOCK TABLE file_managed IN ACCESS EXCLUSIVE MODE")
-            .execute(&mut *blocker)
-            .await
-            .expect("lock file_managed");
-
         let cron = app.state.cron().clone();
         let before = cron.scheduled_runs_completed();
         let (shutdown, handle) = spawn_scheduler(cron.clone());
 
-        // Wait for the scheduler to hold the cron lock. Nothing else in this
-        // process runs cron, so a lock value with this process's prefix is the
-        // scheduler's; another suite's run holds it under its own pid.
+        // Hold an exclusive lock on `file_managed` so the scheduler's run
+        // stops at it, and wait for that run to hold the cron lock. Nothing
+        // else in this process runs cron, so a lock value with this process's
+        // prefix is the scheduler's. Another suite's run would block on the
+        // table lock too, holding the cron lock the scheduler is waiting for,
+        // so the table lock is only taken while nobody holds the cron lock and
+        // is let go the moment a foreign run is seen holding it.
         let prefix = own_lock_prefix();
+        let mut blocker: Option<sqlx::Transaction<'_, sqlx::Postgres>> = None;
         let mut held = None;
-        let deadline = Instant::now() + Duration::from_secs(60);
+        let deadline = Instant::now() + Duration::from_secs(90);
         while Instant::now() < deadline {
-            let value: Option<String> = redis::cmd("GET")
-                .arg(CRON_LOCK_KEY)
-                .query_async(&mut conn)
-                .await
-                .unwrap_or(None);
-            if value.as_deref().is_some_and(|v| v.starts_with(&prefix)) {
-                held = value;
-                break;
+            let value = lock_value(&mut conn).await;
+            match value {
+                Some(v) if v.starts_with(&prefix) => {
+                    if blocker.is_some() {
+                        held = Some(v);
+                        break;
+                    }
+                    // Our run started before the table lock: let it finish.
+                }
+                Some(_) => {
+                    if let Some(tx) = blocker.take() {
+                        tx.rollback().await.ok();
+                    }
+                }
+                None if blocker.is_none() => {
+                    let mut tx = app.db.begin().await.expect("begin");
+                    sqlx::query("LOCK TABLE file_managed IN ACCESS EXCLUSIVE MODE")
+                        .execute(&mut *tx)
+                        .await
+                        .expect("lock file_managed");
+                    // A run that took the cron lock before the table lock may
+                    // already be past `file_managed`: start over.
+                    if lock_value(&mut conn).await.is_some() {
+                        tx.rollback().await.ok();
+                    } else {
+                        blocker = Some(tx);
+                    }
+                }
+                None => {}
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        let Some(held) = held else {
-            blocker.rollback().await.ok();
+        let (Some(held), Some(blocker)) = (held, blocker) else {
             stop(shutdown, handle).await;
-            panic!("the scheduler never took the cron lock within 60 seconds");
+            panic!(
+                "the scheduler never took the cron lock behind the table lock within 90 seconds"
+            );
         };
 
         let (status, body) = post_cron(app).await;
@@ -274,10 +312,7 @@ fn shutdown_stops_the_scheduler_between_runs() {
 
         shutdown.cancel();
         let stopped = tokio::time::timeout(Duration::from_secs(2), handle).await;
-        assert!(
-            stopped.is_ok(),
-            "the scheduler did not stop within 2 seconds of shutdown"
-        );
+        assert_clean_stop(stopped, "2 seconds");
         assert_eq!(
             cron.scheduled_runs_completed(),
             before,
@@ -355,5 +390,46 @@ fn two_concurrent_runs_never_both_execute() {
             tokio::time::sleep(Duration::from_millis(250)).await;
         }
         assert!(seen_one, "neither run ever got the lock");
+    });
+}
+
+/// Shutdown that arrives while the loop is waiting on its settings read stops
+/// the loop there, and no run starts after it.
+///
+/// The read is held up with an exclusive lock on `site_config`, kept only for
+/// about a second since every other suite reads that table too.
+#[test]
+fn shutdown_during_a_settings_read_starts_no_run() {
+    serial(async {
+        let app = common::shared_app().await;
+        set_interval(app, 1).await;
+
+        let cron = app.state.cron().clone();
+        let before = cron.scheduled_runs_completed();
+        let (shutdown, handle) = spawn_scheduler(cron.clone());
+        wait_for_runs_past(&cron, before, Duration::from_secs(60))
+            .await
+            .expect("the scheduler never ran cron");
+        let ran = cron.scheduled_runs_completed();
+
+        // The loop wakes within a second of that run and reads its setting.
+        let mut blocker = app.db.begin().await.expect("begin");
+        sqlx::query("LOCK TABLE site_config IN ACCESS EXCLUSIVE MODE")
+            .execute(&mut *blocker)
+            .await
+            .expect("lock site_config");
+        tokio::time::sleep(Duration::from_millis(1_200)).await;
+        shutdown.cancel();
+        let stopped = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        blocker.rollback().await.expect("release site_config");
+
+        // Long enough for a run the loop still started to finish.
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        assert_clean_stop(stopped, "2 seconds, with its settings read blocked,");
+        assert_eq!(
+            cron.scheduled_runs_completed(),
+            ran,
+            "the scheduler ran cron after shutdown"
+        );
     });
 }

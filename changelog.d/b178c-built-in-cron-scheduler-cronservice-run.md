@@ -15,7 +15,11 @@ The scheduler shares the lock every other caller takes, so an external caller
 stays harmless: whichever arrives second is told another instance is running
 cron. It also waits out a run that finished less than an interval ago, whoever
 ran it, so several servers, or a server plus an external poker, run cron about
-once per interval together rather than once each. `/cron/{key}` is unchanged.
+once per interval together rather than once each. That check is made again
+once the lock is held, so two servers deciding at the same moment still run
+cron once. A failed read of the setting keeps the one last read, so a database
+error cannot turn on a scheduler an administrator turned off, and shutdown
+stops the loop even while a read is waiting. `/cron/{key}` is unchanged.
 
 The lock itself got stricter. Its owner value was `host:pid`, the same for
 every run in one process, so a run that outlived its lock could, on finishing,
