@@ -109,9 +109,11 @@ async fn list_content(
             None
         };
         let delete = deleter || allowed(&state, &item, "delete", &viewer).await;
+        let clone = viewer.can(&format!("clone {} content", item.item_type))
+            || viewer.can(crate::content::ADMINISTER_CONTENT);
         operations.insert(
             item.id.to_string(),
-            serde_json::json!({ "edit": edit, "delete": delete }),
+            serde_json::json!({ "edit": edit, "delete": delete, "clone": clone }),
         );
         shown.push(item);
     }
@@ -1083,6 +1085,136 @@ async fn delete_content(
     }
 }
 
+/// The clone confirmation form's id.
+const CLONE_FORM_ID: &str = "clone_content_form";
+
+/// Whether `viewer` may clone an item of `item_type`: held implicitly by an
+/// administrator and by `administer content`, as the permission grid lists it
+/// (B306).
+fn may_clone(viewer: &crate::tap::UserContext, item_type: &str) -> bool {
+    viewer.can(&format!("clone {item_type} content")) || viewer.can(crate::content::ADMINISTER_CONTENT)
+}
+
+/// The clone confirmation form: a checkbox for translations, shown only when
+/// the source has any, and a Clone button.
+fn clone_form(has_translations: bool) -> crate::form::Form {
+    use crate::form::FormElement;
+    let mut form = crate::form::Form::new(CLONE_FORM_ID);
+    if has_translations {
+        form = form.element(
+            "with_translations",
+            FormElement::checkbox()
+                .title("Also copy translations")
+                .weight(0),
+        );
+    }
+    form.element("op", FormElement::submit("Clone").weight(10))
+}
+
+/// GET /admin/content/{id}/clone
+async fn clone_content_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path(item_id): Path<uuid::Uuid>,
+) -> Response {
+    let user = match require_login(&state, &session).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
+    let viewer = admin_user_context(&state, &user).await;
+    let Some(item) = state.items().load(item_id).await.ok().flatten() else {
+        return render_not_found();
+    };
+    if !may_clone(&viewer, &item.item_type) || !allowed(&state, &item, "view", &viewer).await {
+        return render_forbidden("You do not have permission to clone this content.");
+    }
+    render_clone_form(&state, &session, &user, &item, &[]).await
+}
+
+async fn render_clone_form(
+    state: &AppState,
+    session: &Session,
+    user: &crate::models::User,
+    item: &crate::models::Item,
+    errors: &[crate::form::ValidationError],
+) -> Response {
+    let translations = state
+        .items()
+        .list_translations(item.id)
+        .await
+        .unwrap_or_default();
+    let form_html = match super::admin_form::render(
+        state,
+        session,
+        user,
+        clone_form(!translations.is_empty()),
+        errors,
+    )
+    .await
+    {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+
+    let mut context = tera::Context::new();
+    context.insert("item", item);
+    context.insert("clone_form", &form_html);
+    context.insert("path", &format!("/admin/content/{}/clone", item.id));
+
+    let viewer = super::helpers::user_context_for(state, user).await;
+    render_admin_template(state, &viewer, "admin/content-clone.html", context).await
+}
+
+/// POST /admin/content/{id}/clone
+async fn clone_content_submit(
+    State(state): State<AppState>,
+    session: Session,
+    Path(item_id): Path<uuid::Uuid>,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Response {
+    let posted = PostedForm(pairs);
+    let user = match require_login(&state, &session).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
+    let viewer = admin_user_context(&state, &user).await;
+    let Some(item) = state.items().load(item_id).await.ok().flatten() else {
+        return render_not_found();
+    };
+    if !may_clone(&viewer, &item.item_type) || !allowed(&state, &item, "view", &viewer).await {
+        return render_forbidden("You do not have permission to clone this content.");
+    }
+
+    match super::admin_form::check(&state, &session, &user, &posted, CLONE_FORM_ID, Vec::new()).await
+    {
+        Ok(()) => {}
+        Err(Ok(errors)) => return render_clone_form(&state, &session, &user, &item, &errors).await,
+        Err(Err(response)) => return response,
+    }
+
+    let with_translations = posted.contains("with_translations");
+    match state
+        .items()
+        .clone_item(item_id, &viewer, with_translations)
+        .await
+    {
+        Ok(new_item) => {
+            tracing::info!(source_id = %item_id, new_item_id = %new_item.id, "content cloned");
+            let _ = session
+                .insert(CONTENT_FLASH_KEY, "The item was cloned as a new draft.")
+                .await;
+            Redirect::to(&format!("/admin/content/{}/edit", new_item.id)).into_response()
+        }
+        Err(e) => {
+            if e.to_string().contains("access denied") {
+                return render_forbidden("You may not clone this item.");
+            }
+            tracing::error!(error = %e, "failed to clone content");
+            render_server_error("Failed to clone content.")
+        }
+    }
+}
+
 /// Bulk action form data, read from the body the content list screen posts.
 ///
 /// The screen posts one `ids[]` pair per checked box. That shape is read by
@@ -1464,6 +1596,10 @@ pub fn router() -> Router<AppState> {
             get(edit_content_form).post(edit_content_submit),
         )
         .route("/admin/content/{id}/delete", post(delete_content))
+        .route(
+            "/admin/content/{id}/clone",
+            get(clone_content_form).post(clone_content_submit),
+        )
         .route("/admin/content/bulk", post(bulk_content_action))
 }
 

@@ -969,6 +969,95 @@ impl ItemService {
         Ok(item)
     }
 
+    /// Clone an item into a new, unpublished draft (B306).
+    ///
+    /// The copy's fields (the whole `fields` JSON, compound values, blocks and
+    /// page builder JSON included) and file references are exactly the
+    /// source's: both items point at the same `file_managed` rows, and no
+    /// file is copied. No URL alias is copied; pathauto may give the draft
+    /// its own, as any new item. Title is `"Copy of {title}"`, in the
+    /// source's language. Author is the acting user, created now, unpublished
+    /// (Draft on a moderated type), same stage and language; promote and
+    /// sticky take the type's defaults. Every write gate [`Self::create_moderated`]
+    /// runs applies to the copy exactly as to any other create.
+    ///
+    /// Refused, with nothing written, when `user` may not view the source, or
+    /// when a write gate refuses the copy.
+    pub async fn clone_item(
+        &self,
+        source_id: Uuid,
+        user: &UserContext,
+        with_translations: bool,
+    ) -> Result<Item> {
+        let source = self
+            .load(source_id)
+            .await?
+            .context("the item to clone does not exist")?;
+        if !self.check_access(&source, "view", user).await? {
+            anyhow::bail!("access denied");
+        }
+
+        let title = Self::copy_title(&source.title, &source.language);
+        let input = CreateItem {
+            item_type: source.item_type.clone(),
+            title,
+            author_id: user.id,
+            // Explicitly unpublished: on a non-moderated type `Some(0)` is
+            // always accepted on a create regardless of permission
+            // (`gate_publish`); on a moderated type `moderation_state` below
+            // decides instead, and this is ignored.
+            status: Some(0),
+            promote: None,
+            sticky: None,
+            fields: Some(source.fields.clone()),
+            stage_id: Some(source.stage_id),
+            language: Some(source.language.clone()),
+            log: Some(format!("Cloned from {source_id}")),
+        };
+        let new_item = self
+            .create_moderated(input, None, Some(moderation::DRAFT), user)
+            .await?;
+        self.audit(
+            "clone",
+            new_item.id,
+            Some(user),
+            serde_json::json!({ "source_id": source_id }),
+        )
+        .await;
+
+        if with_translations {
+            let translations = sqlx::query_as::<_, (String, String, serde_json::Value)>(
+                "SELECT language, title, fields FROM item_translation \
+                 WHERE item_id = $1 ORDER BY language",
+            )
+            .bind(source_id)
+            .fetch_all(&self.inner.pool)
+            .await
+            .context("failed to load the source item's translations")?;
+            for (language, translation_title, fields) in translations {
+                let title = Self::copy_title(&translation_title, &language);
+                self.save_translation(new_item.id, &language, &title, &fields, user)
+                    .await?;
+            }
+        }
+
+        Ok(new_item)
+    }
+
+    /// `"Copy of {title}"`, in `lang`, through the kernel's translation
+    /// function. There is no locale service reachable from `ItemService`, so
+    /// this never actually looks a translation up; it still goes through
+    /// [`crate::i18n::translate`] so the string is one `tap_locale_export`
+    /// can find, for the day a locale backend is wired in here.
+    fn copy_title(title: &str, lang: &str) -> String {
+        crate::i18n::strip_markers(&crate::i18n::translate(
+            None,
+            lang,
+            &crate::i18n::Message::new("Copy of {title}"),
+            &[("title".to_string(), title.to_string())],
+        ))
+    }
+
     /// The checks every create and update above runs on an item's field
     /// values once its writer has been decided, in the same order: page
     /// builder pages, owned category references, then field cardinality and

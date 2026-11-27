@@ -1,0 +1,13 @@
+{% extends "page--admin.html" %}
+
+{#- Confirm cloning an item into a new unpublished draft (B306). -#}
+
+{% block page_title %}{{ t(s="Clone {title}", title=item.title) }}{% endblock page_title %}
+
+{% block content %}
+<section class="admin-card" aria-labelledby="clone-heading">
+    <h2 id="clone-heading">{{ t(s="Clone this item?") }}</h2>
+    <p class="description">{{ t(s="A new, unpublished draft is created with the same fields. No file is copied, and no address is copied.") }}</p>
+    {{ clone_form | safe }} {# SAFE: built by the kernel's form builder, every value escaped there #}
+</section>
+{% endblock content %}

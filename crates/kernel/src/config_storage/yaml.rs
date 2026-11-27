@@ -1557,6 +1557,15 @@ async fn known_permissions(pool: &PgPool) -> std::result::Result<HashSet<String>
         .await
         .map_err(|e| format!("failed to read the text formats: {e:#}"))?;
     known.extend(formats.iter().filter_map(|f| f.permission()));
+    // `clone {type} content` for every registered content type (B306).
+    let types = crate::models::ItemType::list(pool)
+        .await
+        .map_err(|e| format!("failed to read the content types: {e:#}"))?;
+    known.extend(
+        types
+            .iter()
+            .map(|t| format!("clone {} content", t.type_name)),
+    );
     Ok(known)
 }
 

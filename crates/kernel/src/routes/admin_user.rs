@@ -1725,6 +1725,18 @@ fn grid_permissions(state: &AppState) -> Vec<GridPermission> {
         });
     }
 
+    // `clone {type} content` for every registered content type (B306): held
+    // implicitly by an administrator and by `administer content`
+    // (`ItemService::clone_item`'s callers check both), granted per type here
+    // like a plugin's own declared permission.
+    for content_type in state.content_types().list() {
+        rows.push(GridPermission {
+            name: format!("clone {} content", content_type.machine_name),
+            provider: "Content types".to_string(),
+            description: format!("Clone a {} into a new draft.", content_type.label),
+        });
+    }
+
     rows
 }
 
