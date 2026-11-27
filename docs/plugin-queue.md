@@ -107,11 +107,11 @@ On a failed attempt the job is rescheduled with **exponential backoff**
 Two execution modes (the ratified hybrid, D-46). The default is unchanged from
 v1.
 
-- **External cron (default).** The queue is drained inside the cron request when
-  something hits `POST /cron/{key}`. **The latency floor is whatever your
-  external trigger's cadence is** (e.g. a systemd timer or crond hitting the
-  endpoint every minute). No in-process scheduler runs. This is the default and
-  the minimal deployment's contract.
+- **Cron (default).** The queue is drained inside each cron run: the built-in
+  scheduler's (every `cron_interval_secs`, default 300 seconds, B178), or one
+  triggered by `POST /cron/{key}`. **The latency floor is the cron cadence.**
+  No resident runner drains between runs. This is the default and the minimal
+  deployment's contract.
 
 - **Resident queue-runner (opt-in).** For sub-cron latency, enable a
   kernel-owned background task that drains on its own cadence. When enabled, the
