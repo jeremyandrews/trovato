@@ -232,20 +232,101 @@ async fn notify(state: &AppState, user_id: Uuid, subject: &str, body: &str) {
 
 // ─── The flow ────────────────────────────────────────────────────────────────
 
+/// The first step's form, `user_recover`: which account. `account-recover.js`
+/// takes its submission and posts the JSON steps; without script it posts
+/// to `POST /user/recover`.
+fn build_identify_form() -> crate::form::Form {
+    use crate::form::{Form, FormElement};
+    Form::new("user_recover")
+        .action("/user/recover")
+        .element(
+            "identifier",
+            FormElement::textfield()
+                .title("Username or email")
+                .required()
+                .attribute("autofocus", "autofocus")
+                .attribute("autocomplete", "username")
+                .weight(0),
+        )
+        .element("start", FormElement::submit("Continue").weight(100))
+}
+
 /// `GET /user/recover` — the recovery entry page.
 async fn recover_page(State(state): State<AppState>, session: Session) -> Response {
-    let csrf_token = crate::form::csrf::generate_csrf_token(&session).await;
+    render_recover_page(&state, &session, &[], false).await
+}
+
+/// The recovery page, its first form showing `errors`. `needs_script` says
+/// the form was posted without script, which the rest of the flow needs.
+async fn render_recover_page(
+    state: &AppState,
+    session: &Session,
+    errors: &[crate::form::ValidationError],
+    needs_script: bool,
+) -> Response {
+    let viewer = crate::routes::helpers::get_user_context(session, state).await;
+    let form =
+        match super::admin_form::render_as(state, session, &viewer, build_identify_form(), errors)
+            .await
+        {
+            Ok(html) => html,
+            Err(refusal) => return refusal,
+        };
+    // The token the page's script sends in `X-CSRF-Token` for its first step;
+    // each answer carries the next.
+    let csrf_token = crate::form::csrf::generate_csrf_token(session).await;
     let mut context = tera::Context::new();
     context.insert("csrf_token", &csrf_token);
-    crate::routes::helpers::inject_site_context(&state, &session, &mut context, "/user/recover")
-        .await;
+    context.insert("identify_form", &form);
+    context.insert("needs_script", &needs_script);
+    crate::routes::helpers::inject_site_context_for(
+        state,
+        session,
+        &viewer,
+        &mut context,
+        "/user/recover",
+    )
+    .await;
 
+    let status = if errors.is_empty() {
+        StatusCode::OK
+    } else {
+        StatusCode::UNPROCESSABLE_ENTITY
+    };
     match state.theme().tera().render("user/recover.html", &context) {
-        Ok(html) => Html(html).into_response(),
+        Ok(html) => (status, Html(html)).into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to render the recovery page");
             render_server_error("Could not render the recovery page.")
         }
+    }
+}
+
+/// `POST /user/recover` — the first form, posted without script.
+///
+/// Checked through the forms pipeline like any form. The flow itself is the
+/// JSON steps the page's script drives, so nothing is started here: the page
+/// comes back saying so.
+async fn recover_submit(
+    State(state): State<AppState>,
+    session: Session,
+    axum::Form(pairs): axum::Form<Vec<(String, String)>>,
+) -> Response {
+    let posted = crate::content::submission::PostedForm(pairs);
+    let viewer = crate::routes::helpers::get_user_context(&session, &state).await;
+    match super::admin_form::check_as(
+        &state,
+        &session,
+        &viewer,
+        &posted,
+        "user_recover",
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(_) => render_recover_page(&state, &session, &[], true).await,
+        Err(Err(refusal)) => refusal,
+        Err(Ok(errors)) => render_recover_page(&state, &session, &errors, false).await,
     }
 }
 
@@ -1054,7 +1135,7 @@ pub fn router() -> Router<AppState> {
         .route("/user/recover/reset", post(recover_reset))
         .route_layer(axum::middleware::from_fn(recovery_csrf));
     Router::new()
-        .route("/user/recover", get(recover_page))
+        .route("/user/recover", get(recover_page).post(recover_submit))
         .merge(steps)
         .route(
             "/user/recovery-codes/generate",

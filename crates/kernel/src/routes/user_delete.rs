@@ -71,14 +71,13 @@ use tower_sessions::Session;
 use tracing::{info, warn};
 
 use crate::audit::{SecurityEvent, SecurityEventKind};
-use crate::form::csrf::generate_csrf_token;
+use crate::content::submission::PostedForm;
+use crate::form::ValidationError;
 use crate::models::user::ANONYMOUS_USER_ID;
 use crate::services::webauthn::{PendingAuthentication, ceremony_expiry, ceremony_is_live};
 use crate::state::AppState;
 
-use super::helpers::{
-    CsrfOnlyForm, render_server_error, require_csrf, require_csrf_header, require_login,
-};
+use super::helpers::{render_server_error, require_csrf_header, require_login};
 
 /// Session key holding when the deletion step-up completed.
 pub const SESSION_DELETE_REAUTH_AT: &str = "delete_reauth_at";
@@ -111,11 +110,46 @@ pub fn reauth_is_fresh(at: i64, now: i64) -> bool {
     at <= now && now - at <= REAUTH_WINDOW_SECS
 }
 
-#[derive(Debug, Deserialize)]
-struct ReauthForm {
-    #[serde(rename = "_token")]
-    token: String,
-    password: String,
+/// The password step-up form, `user_delete_confirm`.
+fn build_reauth_form() -> crate::form::Form {
+    use crate::form::{Form, FormElement};
+    Form::new("user_delete_confirm")
+        .action("/user/delete/reauth")
+        .element(
+            "password",
+            FormElement::password()
+                .title("Your password")
+                .required()
+                .attribute("autocomplete", "current-password")
+                .weight(0),
+        )
+        .element(
+            "op",
+            FormElement::submit("Continue")
+                .suffix(r#"<a href="/user/profile" class="form-actions__cancel">Cancel</a>"#)
+                .weight(100),
+        )
+}
+
+/// The final confirmation form, `user_delete_final`.
+fn build_final_form() -> crate::form::Form {
+    use crate::form::{Form, FormElement};
+    Form::new("user_delete_final")
+        .action("/user/delete/confirm")
+        .element(
+            "op",
+            FormElement::submit("Delete my account permanently")
+                .attribute(
+                    "data-confirm",
+                    "Delete your account? This cannot be undone.",
+                )
+                .attribute(
+                    "style",
+                    "background: #c00; color: #fff; border: none; border-radius: 4px;",
+                )
+                .suffix(r#"<a href="/user/profile" class="form-actions__cancel">Cancel</a>"#)
+                .weight(100),
+        )
 }
 
 #[derive(Debug, Deserialize)]
@@ -147,7 +181,7 @@ async fn delete_start(State(state): State<AppState>, session: Session) -> Respon
         return Redirect::to("/user/delete/confirm").into_response();
     }
 
-    render_step_up(&state, &session, &user, None).await
+    render_step_up(&state, &session, &user, &[]).await
 }
 
 /// Render the step-up screen, offering whichever methods the account actually has.
@@ -159,19 +193,29 @@ async fn render_step_up(
     state: &AppState,
     session: &Session,
     user: &crate::models::User,
-    error: Option<&str>,
+    errors: &[ValidationError],
 ) -> Response {
     let has_passkey = crate::models::WebauthnCredential::list_for_user(state.db(), user.id)
         .await
         .map(|credentials| !credentials.is_empty())
         .unwrap_or(false);
 
-    let csrf_token = generate_csrf_token(session).await;
     let mut context = tera::Context::new();
-    context.insert("csrf_token", &csrf_token);
-    context.insert("has_password", &!user.pass.is_empty());
+    let has_password = !user.pass.is_empty();
+    if has_password {
+        let viewer = super::helpers::user_context_for(state, user).await;
+        match super::admin_form::render_as(state, session, &viewer, build_reauth_form(), errors)
+            .await
+        {
+            Ok(html) => context.insert("reauth_form", &html),
+            Err(refusal) => return refusal,
+        }
+    } else if let Some(error) = errors.first() {
+        // No password form to show it on: the passkey page says it.
+        context.insert("error", &error.message);
+    }
+    context.insert("has_password", &has_password);
     context.insert("has_passkey", &has_passkey);
-    context.insert("error", &error);
     render_user_template(state, session, "user/delete.html", context).await
 }
 
@@ -180,15 +224,28 @@ async fn delete_reauth(
     State(state): State<AppState>,
     session: Session,
     axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
-    Form(form): Form<ReauthForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
+    let posted = PostedForm(pairs);
     let user = match require_login(&state, &session).await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let viewer = super::helpers::user_context_for(&state, &user).await;
+    let form_state = match super::admin_form::check_as(
+        &state,
+        &session,
+        &viewer,
+        &posted,
+        "user_delete_confirm",
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Err(refusal)) => return refusal,
+        Err(Ok(errors)) => return render_step_up(&state, &session, &user, &errors).await,
+    };
 
     // Same bucket as a password change: this is a password guess against a known
     // account, and the limiter should not care which form it arrived through.
@@ -209,7 +266,7 @@ async fn delete_reauth(
         .await;
     }
 
-    if !user.verify_password(&form.password) {
+    if !user.verify_password(posted.get("password").unwrap_or_default()) {
         warn!(user_id = %user.id, "account deletion step-up failed");
         state
             .security_audit()
@@ -225,6 +282,15 @@ async fn delete_reauth(
     }
 
     mark_step_up(&session).await;
+    state
+        .forms()
+        .submitted(
+            &form_state,
+            &posted,
+            None,
+            &super::item_form::tap_state(&state, &viewer),
+        )
+        .await;
     Redirect::to("/user/delete/confirm").into_response()
 }
 
@@ -235,7 +301,7 @@ async fn reauth_failed(
     user: &crate::models::User,
     message: &str,
 ) -> Response {
-    render_step_up(state, session, user, Some(message)).await
+    render_step_up(state, session, user, &[ValidationError::form(message)]).await
 }
 
 /// `POST /user/delete/passkey/start` — begin a deletion-scoped assertion.
@@ -414,7 +480,17 @@ async fn delete_confirm_form(State(state): State<AppState>, session: Session) ->
     if !step_up_is_fresh(&session).await {
         return Redirect::to("/user/delete").into_response();
     }
+    render_confirm(&state, &session, &user, StatusCode::OK, &[]).await
+}
 
+/// Render the confirmation screen for `user`, its form showing `errors`.
+async fn render_confirm(
+    state: &AppState,
+    session: &Session,
+    user: &crate::models::User,
+    status: StatusCode,
+    errors: &[ValidationError],
+) -> Response {
     let items = crate::models::Item::count_by_author(state.db(), user.id)
         .await
         .unwrap_or(0);
@@ -428,15 +504,26 @@ async fn delete_confirm_form(State(state): State<AppState>, session: Session) ->
         .map(|count| blocks_last_admin(user.is_admin, count))
         .unwrap_or(false);
 
-    let csrf_token = generate_csrf_token(&session).await;
     let mut context = tera::Context::new();
-    context.insert("csrf_token", &csrf_token);
+    if !last_admin {
+        let viewer = super::helpers::user_context_for(state, user).await;
+        match super::admin_form::render_as(state, session, &viewer, build_final_form(), errors)
+            .await
+        {
+            Ok(html) => context.insert("confirm_form", &html),
+            Err(refusal) => return refusal,
+        }
+    }
     context.insert("username", &user.name);
     context.insert("email", &user.mail);
     context.insert("items", &items);
     context.insert("comments", &comments);
     context.insert("last_admin", &last_admin);
-    render_user_template(&state, &session, "user/delete-confirm.html", context).await
+    let mut page = render_user_template(state, session, "user/delete-confirm.html", context).await;
+    if page.status().is_success() {
+        *page.status_mut() = status;
+    }
+    page
 }
 
 /// `POST /user/delete/confirm` — delete the account.
@@ -444,18 +531,40 @@ async fn delete_confirm_submit(
     State(state): State<AppState>,
     session: Session,
     axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
-    Form(form): Form<CsrfOnlyForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
+    let posted = PostedForm(pairs);
     let user = match require_login(&state, &session).await {
         Ok(user) => user,
         Err(redirect) => return redirect,
     };
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
     if !step_up_is_fresh(&session).await {
         return Redirect::to("/user/delete").into_response();
     }
+    let viewer = super::helpers::user_context_for(&state, &user).await;
+    let checked = super::admin_form::check_as(
+        &state,
+        &session,
+        &viewer,
+        &posted,
+        "user_delete_final",
+        Vec::new(),
+    )
+    .await;
+    let form_state = match checked {
+        Ok(form_state) => form_state,
+        Err(Err(refusal)) => return refusal,
+        Err(Ok(errors)) => {
+            return render_confirm(
+                &state,
+                &session,
+                &user,
+                StatusCode::UNPROCESSABLE_ENTITY,
+                &errors,
+            )
+            .await;
+        }
+    };
     // The anonymous account is a sentinel and cannot be signed in as, but the
     // guard is cheap and the consequence of being wrong is a site with no
     // anonymous author.
@@ -523,6 +632,15 @@ async fn delete_confirm_submit(
     }
 
     info!(user_id = %user.id, "account deleted by its holder");
+    state
+        .forms()
+        .submitted(
+            &form_state,
+            &posted,
+            None,
+            &super::item_form::tap_state(&state, &viewer),
+        )
+        .await;
 
     // And this session, which the registry may not have indexed.
     let _ = session.flush().await;

@@ -2,8 +2,10 @@
 //
 // Creating and revoking call the same JSON endpoints an API client does
 // (POST /api/v1/tokens, DELETE /api/v1/tokens/{id}) with the page's CSRF token from
-// the csrf-token meta tag. The raw token is in the create response only: it is
-// shown once, here, and the server never renders it.
+// the csrf-token meta tag. The create form is the forms pipeline's
+// `user_api_token_create`; this takes its submission, and without script it
+// posts to /user/tokens. The raw token is in the create response only: it is
+// shown once, here.
 //
 // A CSRF token is single-use, so the page's one token is spent by the first
 // action. A revoke reloads the page (fresh list, fresh token); a create shows
@@ -14,7 +16,7 @@
   var meta = document.querySelector('meta[name="csrf-token"]');
   var csrf = meta ? meta.getAttribute("content") : "";
   var message = document.getElementById("api-token-message");
-  var form = document.getElementById("api-token-create");
+  var form = document.getElementById("user_api_token_create");
   var created = document.getElementById("api-token-created");
   var value = document.getElementById("api-token-value");
   var done = document.getElementById("api-token-done");

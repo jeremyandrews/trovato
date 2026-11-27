@@ -108,9 +108,10 @@ pub struct UpdateCommentRequest {
 ///
 /// - `application/json` → the existing body; CSRF from the `X-CSRF-Token`
 ///   header.
-/// - `application/x-www-form-urlencoded` → CSRF from the `_token` hidden input,
-///   and the response is a redirect rather than JSON, because the caller is a
-///   browser following a form submission.
+/// - `application/x-www-form-urlencoded` → the form `comment_form`, checked
+///   through the forms pipeline (the `_token` hidden input, its saved state,
+///   `tap_form_validate`), and the response is a redirect rather than JSON,
+///   because the caller is a browser following a form submission.
 #[derive(Debug, Default)]
 pub struct CommentSubmission {
     /// Comment text.
@@ -119,42 +120,28 @@ pub struct CommentSubmission {
     pub subject: Option<String>,
     /// Parent comment, for a threaded reply.
     pub parent_id: Option<Uuid>,
-    /// CSRF token from the form body; `None` when the request is JSON and the
-    /// token belongs in the header instead.
-    pub body_csrf: Option<String>,
+    /// Every posted field of a form submission, for the forms pipeline;
+    /// `None` when the request is JSON and its token is in the header.
+    pub posted: Option<crate::content::submission::PostedForm>,
     /// Whether the caller is a browser posting a form, and so wants a redirect.
     pub wants_redirect: bool,
 }
 
 impl CommentSubmission {
-    /// Verify this submission's CSRF token from whichever place it travels.
-    async fn verify_csrf(&self, session: &Session, headers: &HeaderMap) -> Result<(), AppError> {
-        match self.body_csrf {
-            Some(ref token) => crate::routes::helpers::require_csrf(session, token)
-                .await
-                .map(|_| ())
-                .map_err(|_| AppError::forbidden("Invalid or missing CSRF token")),
-            None => require_csrf_header(session, headers).await,
-        }
-    }
-
     /// Build a submission from a decoded urlencoded form body.
-    fn from_form(form: std::collections::HashMap<String, String>) -> Self {
+    fn from_form(pairs: Vec<(String, String)>) -> Self {
+        let posted = crate::content::submission::PostedForm(pairs);
         Self {
-            body: form.get("body").cloned().unwrap_or_default(),
-            subject: form.get("subject").cloned(),
+            body: posted.get("body").unwrap_or_default().to_string(),
+            subject: posted.get("subject").map(str::to_string),
             // An empty hidden input posts "", which is "no parent" rather than a
             // malformed UUID.
-            parent_id: form
+            parent_id: posted
                 .get("parent_id")
                 .map(|v| v.trim())
                 .filter(|v| !v.is_empty())
                 .and_then(|v| v.parse().ok()),
-            body_csrf: Some(
-                form.get(crate::routes::helpers::CSRF_FORM_FIELD)
-                    .cloned()
-                    .unwrap_or_default(),
-            ),
+            posted: Some(posted),
             wants_redirect: true,
         }
     }
@@ -174,11 +161,10 @@ impl<S: Send + Sync> axum::extract::FromRequest<S> for CommentSubmission {
         let bad_request = |message: String| AppError::with_status(StatusCode::BAD_REQUEST, message);
 
         if content_type.starts_with("application/x-www-form-urlencoded") {
-            let axum::Form(form) =
-                axum::Form::<std::collections::HashMap<String, String>>::from_request(req, state)
-                    .await
-                    .map_err(|e| bad_request(format!("invalid form body: {e}")))?;
-            return Ok(Self::from_form(form));
+            let axum::Form(pairs) = axum::Form::<Vec<(String, String)>>::from_request(req, state)
+                .await
+                .map_err(|e| bad_request(format!("invalid form body: {e}")))?;
+            return Ok(Self::from_form(pairs));
         }
 
         // Everything else keeps the pre-existing JSON behaviour.
@@ -189,10 +175,92 @@ impl<S: Send + Sync> axum::extract::FromRequest<S> for CommentSubmission {
             body: request.body,
             subject: request.subject,
             parent_id: request.parent_id,
-            body_csrf: None,
+            posted: None,
             wants_redirect: false,
         })
     }
+}
+
+/// What a comment form shows: the subject and body to fill in, and on the
+/// item page the reply controls `comment-reply.js` and `comment-post.js` use.
+#[derive(Debug, Default)]
+struct CommentFormValues<'a> {
+    subject: &'a str,
+    body: &'a str,
+}
+
+/// The form a new comment or reply is posted with, `comment_form`: under the
+/// thread on the item page (`inline`), and on the reply page.
+fn build_comment_form(
+    item_id: Uuid,
+    parent_id: Option<Uuid>,
+    values: CommentFormValues<'_>,
+    inline: bool,
+    item_path: &str,
+) -> crate::form::Form {
+    use crate::form::{Form, FormElement};
+    let mut form = Form::new("comment_form")
+        .action(format!("/api/v1/item/{item_id}/comments"))
+        .attribute("class", "comment-form")
+        .element(
+            "parent_id",
+            FormElement::hidden()
+                .default_value(parent_id.map(|p| p.to_string()).unwrap_or_default()),
+        )
+        .element(
+            "subject",
+            FormElement::textfield()
+                .title("Subject (optional)")
+                .max_length(crate::models::comment::SUBJECT_MAX_CHARS)
+                .default_value(values.subject)
+                .weight(0),
+        );
+    let body = FormElement::textarea(if inline { 4 } else { 8 })
+        .required()
+        .default_value(values.body)
+        .weight(1);
+    if inline {
+        // The form `comment-post.js` posts as JSON and `comment-reply.js`
+        // points at a comment.
+        form = form
+            .attribute("data-comment-form", "")
+            .element(
+                "body",
+                body.title("Your comment")
+                    .placeholder("Write your comment..."),
+            )
+            .element("op", FormElement::submit("Post Comment").weight(100))
+            .element(
+                "replying",
+                FormElement::markup(
+                    r#"<span id="replying-to" class="replying-indicator" hidden>Replying to comment <span id="reply-parent-id"></span> <button type="button" class="cancel-reply">Cancel</button></span>"#,
+                )
+                .weight(101),
+            )
+            .element(
+                "status",
+                FormElement::markup(
+                    r#"<p class="comment-form__status" data-comment-status role="status" aria-live="polite"></p>"#,
+                )
+                .weight(102),
+            );
+    } else {
+        form = form.element("body", body.title("Comment")).element(
+            "op",
+            FormElement::submit("Save")
+                .suffix(cancel_link(&format!("{item_path}#comments")))
+                .weight(100),
+        );
+    }
+    form
+}
+
+/// The Cancel link beside a comment page's button, back to `href`.
+fn cancel_link(href: &str) -> String {
+    format!(
+        r#"<a href="{}" class="button">Cancel</a>"#,
+        crate::routes::helpers::html_escape(href)
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -310,12 +378,71 @@ async fn create_comment(
     session: Session,
     headers: HeaderMap,
     Path(item_id): Path<Uuid>,
-    submission: CommentSubmission,
+    mut submission: CommentSubmission,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
 
     let wants_redirect = submission.wants_redirect;
-    let result = create_comment_inner(&state, &session, &headers, item_id, submission).await;
+    // A form submission goes through the forms pipeline first: its CSRF
+    // token, its saved state and `tap_form_validate`. A refusal is the reply
+    // form again, with the errors and what was written.
+    let posted = submission.posted.take();
+    let checked = match &posted {
+        Some(posted) => {
+            let viewer = crate::routes::item::get_user_context(&session, &state).await;
+            match super::admin_form::check_as(
+                &state,
+                &session,
+                &viewer,
+                posted,
+                "comment_form",
+                Vec::new(),
+            )
+            .await
+            {
+                Ok(form_state) => Some(Ok((form_state, viewer))),
+                Err(Ok(errors)) => {
+                    let values = CommentFormValues {
+                        subject: submission.subject.as_deref().unwrap_or_default(),
+                        body: &submission.body,
+                    };
+                    return reply_page(
+                        &state,
+                        &session,
+                        item_id,
+                        submission.parent_id,
+                        values,
+                        &errors,
+                    )
+                    .await;
+                }
+                Err(Err(_)) => Some(Err(AppError::forbidden("Invalid or missing CSRF token"))),
+            }
+        }
+        None => None,
+    };
+    let result = match checked {
+        Some(Err(refusal)) => Err(refusal),
+        Some(Ok((form_state, viewer))) => {
+            let result =
+                create_comment_inner(&state, &session, &headers, item_id, submission, true).await;
+            if result.is_ok()
+                && let Some(posted) = &posted
+            {
+                state
+                    .forms()
+                    .submitted(
+                        &form_state,
+                        posted,
+                        None,
+                        &super::item_form::tap_state(&state, &viewer),
+                    )
+                    .await;
+            }
+            result
+        }
+        None => create_comment_inner(&state, &session, &headers, item_id, submission, false).await,
+    };
 
     if !wants_redirect {
         // JSON in, JSON out: byte-for-byte what an API client got before.
@@ -381,13 +508,17 @@ async fn create_comment_inner(
     headers: &HeaderMap,
     item_id: Uuid,
     request: CommentSubmission,
+    form_checked: bool,
 ) -> Result<CommentResponse, AppError> {
     // Check authentication
     let user = require_login_json(state, session).await?;
     let user_id = user.id;
 
-    // Verify the CSRF token from wherever this submission carries it.
-    request.verify_csrf(session, headers).await?;
+    // A JSON request's CSRF token is in its header. A form submission's was
+    // checked with the rest of the form (`form_checked`) before this.
+    if !form_checked {
+        require_csrf_header(session, headers).await?;
+    }
 
     // Verify item exists (used for notification below)
     let item = state
@@ -1000,10 +1131,14 @@ pub(crate) async fn render_thread(
     context.insert("comment_page", &page);
     context.insert("comment_pages", &pages);
     if can_comment {
-        // The form posts this in `_token`; the JS layer reads the meta tag in the
-        // head instead. Only generated for a viewer who can post.
-        let token = crate::form::csrf::generate_csrf_token(session).await;
-        context.insert("csrf_token", &token);
+        // Built through the forms pipeline, only for a viewer who can post.
+        // The form posts its own `_token`; the JS layer reads the meta tag in
+        // the head instead.
+        let form = build_comment_form(item.id, None, CommentFormValues::default(), true, "");
+        match super::admin_form::render_as(state, session, viewer, form, &[]).await {
+            Ok(html) => context.insert("comment_form", &html),
+            Err(_) => tracing::warn!(item_id = %item.id, "failed to build the comment form"),
+        }
     }
 
     let template = state
@@ -1024,22 +1159,6 @@ pub(crate) async fn render_thread(
 // =============================================================================
 // Comment pages: reply, edit own, delete own
 // =============================================================================
-
-/// The form body of the edit and delete pages.
-#[derive(Debug, Deserialize)]
-pub struct CommentPageForm {
-    /// CSRF token, from the hidden `_token` input.
-    #[serde(rename = "_token", default)]
-    pub csrf: String,
-    /// The new comment text (the edit page only).
-    #[serde(default)]
-    pub body: String,
-    /// The new subject (the edit page only). Empty clears it, since the form
-    /// always carries the field's full, current value rather than a partial
-    /// change.
-    #[serde(default)]
-    pub subject: String,
-}
 
 /// What a comment page is about: the item, and the address it is read at.
 struct PageTarget {
@@ -1166,11 +1285,16 @@ fn comment_page_forbidden(message: &str) -> axum::response::Response {
 /// Reply link leads here, so replying works without JavaScript and an old
 /// link to the reply form still has somewhere to go. The form posts to the
 /// comment route, which redirects back to the item.
+///
+/// A refused submission of the comment form comes back here, showing
+/// `values` and `errors` with a `422`.
 async fn reply_page(
     state: &AppState,
     session: &Session,
     item_id: Uuid,
     parent_id: Option<Uuid>,
+    values: CommentFormValues<'_>,
+    errors: &[crate::form::ValidationError],
 ) -> axum::response::Response {
     let viewer = crate::routes::item::get_user_context(session, state).await;
     let path = match parent_id {
@@ -1217,17 +1341,19 @@ async fn reply_page(
     if let Some(parent) = &parent {
         context.insert("comment", &comment_for_page(state, parent).await);
     }
-    if let Some(parent_id) = parent_id {
-        context.insert("parent_id", &parent_id);
-    }
-    context.insert("item_id", &item_id);
     context.insert("item_title", &target.item.title);
     context.insert("item_path", &target.item_path);
-    context.insert(
-        "csrf_token",
-        &crate::form::csrf::generate_csrf_token(session).await,
-    );
-    render_comment_page(state, session, &path, StatusCode::OK, context).await
+    let form = build_comment_form(item_id, parent_id, values, false, &target.item_path);
+    match super::admin_form::render_as(state, session, &viewer, form, errors).await {
+        Ok(html) => context.insert("comment_form", &html),
+        Err(refusal) => return refusal,
+    }
+    let status = if errors.is_empty() {
+        StatusCode::OK
+    } else {
+        StatusCode::UNPROCESSABLE_ENTITY
+    };
+    render_comment_page(state, session, &path, status, context).await
 }
 
 async fn reply_to_item(
@@ -1235,7 +1361,15 @@ async fn reply_to_item(
     session: Session,
     Path(item_id): Path<Uuid>,
 ) -> axum::response::Response {
-    reply_page(&state, &session, item_id, None).await
+    reply_page(
+        &state,
+        &session,
+        item_id,
+        None,
+        CommentFormValues::default(),
+        &[],
+    )
+    .await
 }
 
 async fn reply_to_comment(
@@ -1243,7 +1377,15 @@ async fn reply_to_comment(
     session: Session,
     Path((item_id, parent_id)): Path<(Uuid, Uuid)>,
 ) -> axum::response::Response {
-    reply_page(&state, &session, item_id, Some(parent_id)).await
+    reply_page(
+        &state,
+        &session,
+        item_id,
+        Some(parent_id),
+        CommentFormValues::default(),
+        &[],
+    )
+    .await
 }
 
 /// The signed-in viewer and a comment they may perform `operation` on, or the
@@ -1271,30 +1413,106 @@ async fn comment_for_operation(
     Ok((viewer, comment, target))
 }
 
-/// The edit page context, showing `body` and `subject` in the form.
-async fn edit_context(
-    state: &AppState,
-    session: &Session,
+/// The edit form for a comment, `comment_edit`, showing `body` and `subject`.
+fn build_edit_form(
     comment: &Comment,
     target: &PageTarget,
     body: &str,
     subject: &str,
-    errors: &[&str],
-) -> tera::Context {
+) -> crate::form::Form {
+    use crate::form::{Form, FormElement};
+    Form::new("comment_edit")
+        .action(format!("/comment/{}/edit", comment.id))
+        .attribute("class", "comment-form")
+        .element(
+            "subject",
+            FormElement::textfield()
+                .title("Subject (optional)")
+                .max_length(crate::models::comment::SUBJECT_MAX_CHARS)
+                .default_value(subject)
+                .weight(0),
+        )
+        .element(
+            "body",
+            FormElement::textarea(8)
+                .title("Comment")
+                .required()
+                .default_value(body)
+                .weight(1),
+        )
+        .element(
+            "op",
+            FormElement::submit("Save")
+                .suffix(cancel_link(&format!(
+                    "{}#comment-{}",
+                    target.item_path, comment.id
+                )))
+                .weight(100),
+        )
+}
+
+/// The delete confirmation form for a comment, `comment_delete`.
+fn build_delete_form(comment: &Comment, target: &PageTarget) -> crate::form::Form {
+    use crate::form::{Form, FormElement};
+    Form::new("comment_delete")
+        .action(format!("/comment/{}/delete", comment.id))
+        .attribute("class", "comment-delete-form")
+        .element(
+            "warning",
+            FormElement::markup(
+                "<p>Are you sure you want to delete this comment? Any replies to it will be \
+                 deleted too. This action cannot be undone.</p>",
+            )
+            .weight(0),
+        )
+        .element(
+            "op",
+            FormElement::submit("Delete")
+                .suffix(cancel_link(&format!(
+                    "{}#comment-{}",
+                    target.item_path, comment.id
+                )))
+                .weight(100),
+        )
+}
+
+/// Render the edit page for `comment`, its form showing `body`, `subject`
+/// and `errors`.
+#[allow(clippy::too_many_arguments)]
+async fn render_edit_page(
+    state: &AppState,
+    session: &Session,
+    viewer: &crate::tap::UserContext,
+    comment: &Comment,
+    target: &PageTarget,
+    body: &str,
+    subject: &str,
+    errors: &[crate::form::ValidationError],
+) -> axum::response::Response {
     let mut context = tera::Context::new();
     context.insert("mode", "edit");
     context.insert("page_title", "Edit comment");
     context.insert("comment", &comment_for_page(state, comment).await);
-    context.insert("body", body);
-    context.insert("subject", subject);
-    context.insert("errors", errors);
     context.insert("item_title", &target.item.title);
     context.insert("item_path", &target.item_path);
-    context.insert(
-        "csrf_token",
-        &crate::form::csrf::generate_csrf_token(session).await,
-    );
-    context
+    let form = build_edit_form(comment, target, body, subject);
+    match super::admin_form::render_as(state, session, viewer, form, errors).await {
+        Ok(html) => context.insert("comment_form", &html),
+        Err(refusal) => return refusal,
+    }
+    let status = if errors.is_empty() {
+        StatusCode::OK
+    } else {
+        StatusCode::UNPROCESSABLE_ENTITY
+    };
+    render_comment_page(
+        state,
+        session,
+        &format!("/comment/{}/edit", comment.id),
+        status,
+        context,
+    )
+    .await
 }
 
 /// The edit form for a comment.
@@ -1309,26 +1527,20 @@ async fn edit_page(
     session: Session,
     Path(id): Path<Uuid>,
 ) -> axum::response::Response {
-    let (_, comment, target) = match comment_for_operation(&state, &session, id, "edit").await {
+    let (viewer, comment, target) = match comment_for_operation(&state, &session, id, "edit").await
+    {
         Ok(found) => found,
         Err(refusal) => return refusal,
     };
-    let context = edit_context(
+    render_edit_page(
         &state,
         &session,
+        &viewer,
         &comment,
         &target,
         &comment.body,
         comment.subject.as_deref().unwrap_or(""),
         &[],
-    )
-    .await;
-    render_comment_page(
-        &state,
-        &session,
-        &format!("/comment/{id}/edit"),
-        StatusCode::OK,
-        context,
     )
     .await
 }
@@ -1340,75 +1552,87 @@ async fn edit_submit(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<Uuid>,
-    axum::Form(form): axum::Form<CommentPageForm>,
+    axum::Form(pairs): axum::Form<Vec<(String, String)>>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
+    let posted = crate::content::submission::PostedForm(pairs);
     let (viewer, comment, target) = match comment_for_operation(&state, &session, id, "edit").await
     {
         Ok(found) => found,
         Err(refusal) => return refusal,
     };
-    if let Err(refusal) = crate::routes::helpers::require_csrf(&session, &form.csrf).await {
-        return refusal;
+    let body = posted.get("body").unwrap_or_default().to_string();
+    // The form always carries the field's full, current value rather than a
+    // partial change, so an empty subject clears it.
+    let subject_field = posted.get("subject").unwrap_or_default().to_string();
+    let mut errors = Vec::new();
+    if body.trim().is_empty() {
+        errors.push(crate::form::ValidationError::form(
+            "Comment body cannot be empty.",
+        ));
     }
-    if form.body.trim().is_empty() {
-        let context = edit_context(
-            &state,
-            &session,
-            &comment,
-            &target,
-            &form.body,
-            &form.subject,
-            &["Comment body cannot be empty."],
-        )
-        .await;
-        return render_comment_page(
-            &state,
-            &session,
-            &format!("/comment/{id}/edit"),
-            StatusCode::UNPROCESSABLE_ENTITY,
-            context,
-        )
-        .await;
+    let subject = validate_subject(Some(&subject_field));
+    if subject.is_err() {
+        errors.push(crate::form::ValidationError::form(format!(
+            "Subject cannot exceed {SUBJECT_MAX_CHARS} characters."
+        )));
     }
-    let Ok(subject) = validate_subject(Some(&form.subject)) else {
-        let context = edit_context(
-            &state,
-            &session,
-            &comment,
-            &target,
-            &form.body,
-            &form.subject,
-            &[&format!(
-                "Subject cannot exceed {SUBJECT_MAX_CHARS} characters."
-            )],
-        )
-        .await;
-        return render_comment_page(
-            &state,
-            &session,
-            &format!("/comment/{id}/edit"),
-            StatusCode::UNPROCESSABLE_ENTITY,
-            context,
-        )
-        .await;
+    let form_state = match super::admin_form::check_as(
+        &state,
+        &session,
+        &viewer,
+        &posted,
+        "comment_edit",
+        errors,
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Err(refusal)) => return refusal,
+        Err(Ok(errors)) => {
+            return render_edit_page(
+                &state,
+                &session,
+                &viewer,
+                &comment,
+                &target,
+                &body,
+                &subject_field,
+                &errors,
+            )
+            .await;
+        }
+    };
+    let Ok(subject) = subject else {
+        return crate::routes::helpers::render_server_error("Failed to update the comment");
     };
     let input = UpdateComment {
-        body: Some(form.body),
+        body: Some(body),
         body_format: None,
         status: None,
         subject: Some(subject),
     };
     match state.comments().update(id, input, &viewer).await {
-        Ok(Some(updated)) => axum::response::Redirect::to(&format!(
-            "{}#comment-{id}",
-            with_query(
-                &comment_location(&state, &updated).await,
-                "comment",
-                "updated"
-            )
-        ))
-        .into_response(),
+        Ok(Some(updated)) => {
+            state
+                .forms()
+                .submitted(
+                    &form_state,
+                    &posted,
+                    None,
+                    &super::item_form::tap_state(&state, &viewer),
+                )
+                .await;
+            axum::response::Redirect::to(&format!(
+                "{}#comment-{id}",
+                with_query(
+                    &comment_location(&state, &updated).await,
+                    "comment",
+                    "updated"
+                )
+            ))
+            .into_response()
+        }
         Ok(None) => crate::routes::helpers::render_not_found(),
         Err(e) => {
             tracing::error!(error = %e, "failed to update comment");
@@ -1429,25 +1653,44 @@ async fn delete_page(
     session: Session,
     Path(id): Path<Uuid>,
 ) -> axum::response::Response {
-    let (_, comment, target) = match comment_for_operation(&state, &session, id, "delete").await {
-        Ok(found) => found,
-        Err(refusal) => return refusal,
-    };
+    let (viewer, comment, target) =
+        match comment_for_operation(&state, &session, id, "delete").await {
+            Ok(found) => found,
+            Err(refusal) => return refusal,
+        };
+    render_delete_page(&state, &session, &viewer, &comment, &target, &[]).await
+}
+
+/// Render the delete confirmation for `comment`, its form showing `errors`.
+async fn render_delete_page(
+    state: &AppState,
+    session: &Session,
+    viewer: &crate::tap::UserContext,
+    comment: &Comment,
+    target: &PageTarget,
+    errors: &[crate::form::ValidationError],
+) -> axum::response::Response {
     let mut context = tera::Context::new();
     context.insert("mode", "delete");
     context.insert("page_title", "Delete comment");
-    context.insert("comment", &comment_for_page(&state, &comment).await);
+    context.insert("comment", &comment_for_page(state, comment).await);
     context.insert("item_title", &target.item.title);
     context.insert("item_path", &target.item_path);
-    context.insert(
-        "csrf_token",
-        &crate::form::csrf::generate_csrf_token(&session).await,
-    );
+    let form = build_delete_form(comment, target);
+    match super::admin_form::render_as(state, session, viewer, form, errors).await {
+        Ok(html) => context.insert("comment_form", &html),
+        Err(refusal) => return refusal,
+    }
+    let status = if errors.is_empty() {
+        StatusCode::OK
+    } else {
+        StatusCode::UNPROCESSABLE_ENTITY
+    };
     render_comment_page(
-        &state,
-        &session,
-        &format!("/comment/{id}/delete"),
-        StatusCode::OK,
+        state,
+        session,
+        &format!("/comment/{}/delete", comment.id),
+        status,
         context,
     )
     .await
@@ -1460,18 +1703,42 @@ async fn delete_submit(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<Uuid>,
-    axum::Form(form): axum::Form<CommentPageForm>,
+    axum::Form(pairs): axum::Form<Vec<(String, String)>>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
-    let (viewer, _, target) = match comment_for_operation(&state, &session, id, "delete").await {
-        Ok(found) => found,
-        Err(refusal) => return refusal,
+    let posted = crate::content::submission::PostedForm(pairs);
+    let (viewer, comment, target) =
+        match comment_for_operation(&state, &session, id, "delete").await {
+            Ok(found) => found,
+            Err(refusal) => return refusal,
+        };
+    let form_state = match super::admin_form::check_as(
+        &state,
+        &session,
+        &viewer,
+        &posted,
+        "comment_delete",
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Err(refusal)) => return refusal,
+        Err(Ok(errors)) => {
+            return render_delete_page(&state, &session, &viewer, &comment, &target, &errors).await;
+        }
     };
-    if let Err(refusal) = crate::routes::helpers::require_csrf(&session, &form.csrf).await {
-        return refusal;
-    }
     match state.comments().delete(id, &viewer).await {
         Ok(true) => {
+            state
+                .forms()
+                .submitted(
+                    &form_state,
+                    &posted,
+                    None,
+                    &super::item_form::tap_state(&state, &viewer),
+                )
+                .await;
             axum::response::Redirect::to(&format!("{}?comment=deleted#comments", target.item_path))
                 .into_response()
         }
@@ -1748,11 +2015,12 @@ mod tests {
     }
 
     fn form(pairs: &[(&str, &str)]) -> CommentSubmission {
-        let map: std::collections::HashMap<String, String> = pairs
-            .iter()
-            .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
-            .collect();
-        CommentSubmission::from_form(map)
+        CommentSubmission::from_form(
+            pairs
+                .iter()
+                .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+                .collect(),
+        )
     }
 
     /// A form submission carries its CSRF token in the body, because an HTML form
@@ -1762,7 +2030,10 @@ mod tests {
         let submission = form(&[("body", "Hello"), ("_token", "token-value")]);
 
         assert_eq!(submission.body, "Hello");
-        assert_eq!(submission.body_csrf.as_deref(), Some("token-value"));
+        assert_eq!(
+            submission.posted.as_ref().and_then(|p| p.get("_token")),
+            Some("token-value")
+        );
         assert!(
             submission.wants_redirect,
             "a browser posting a form wants a page, not JSON"
@@ -1790,14 +2061,18 @@ mod tests {
         assert_eq!(submission.parent_id, Some(parent));
     }
 
-    /// A missing `_token` still routes to the body check rather than falling
+    /// A missing `_token` still routes to the form check rather than falling
     /// through to the header one, so a form post cannot skip CSRF by omitting the
     /// field.
     #[test]
     fn a_form_submission_without_a_token_still_checks_the_body() {
         let submission = form(&[("body", "Hello")]);
 
-        assert_eq!(submission.body_csrf.as_deref(), Some(""));
+        assert!(submission.posted.is_some());
+        assert_eq!(
+            submission.posted.as_ref().and_then(|p| p.get("_token")),
+            None
+        );
     }
 
     /// The behaviour the defect was about: a comment created into the review

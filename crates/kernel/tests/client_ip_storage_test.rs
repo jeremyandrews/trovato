@@ -547,9 +547,7 @@ fn the_deletion_step_up_limit_cannot_be_dodged_with_forwarded_for() {
                     .to_vec(),
             )
             .unwrap();
-            let needle = r#"name="_token" value=""#;
-            let start = html.find(needle).expect("form token") + needle.len();
-            let token = html[start..].split('"').next().unwrap().to_string();
+            let fields = common::form_fields(&html, "user_delete_confirm");
 
             let (spoofed, _) = fresh_ip();
             let response = app
@@ -557,7 +555,7 @@ fn the_deletion_step_up_limit_cannot_be_dodged_with_forwarded_for() {
                     Request::post("/user/delete/reauth")
                         .header("content-type", "application/x-www-form-urlencoded")
                         .header("x-forwarded-for", &spoofed)
-                        .body(Body::from(format!("_token={token}&password=wrong")))
+                        .body(Body::from(format!("{fields}&password=wrong")))
                         .unwrap(),
                     &cookies,
                 )

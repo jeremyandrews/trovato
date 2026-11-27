@@ -98,13 +98,6 @@ impl<S: Subscriber> Layer<S> for CaptureAll {
     }
 }
 
-fn csrf_from(html: &str) -> String {
-    let pos = html.find("csrf-token").expect("csrf-token meta tag");
-    let start = html[pos..].find("content=\"").map(|p| pos + p + 9).unwrap();
-    let end = html[start..].find('"').map(|p| start + p).unwrap();
-    html[start..end].to_string()
-}
-
 async fn send(
     app: &TestApp,
     request: Request<Body>,
@@ -239,15 +232,14 @@ fn no_secret_reaches_any_telemetry() {
         let form_html =
             String::from_utf8_lossy(&to_bytes(form.into_body(), usize::MAX).await.unwrap())
                 .into_owned();
-        let csrf = csrf_from(&form_html);
+        let fields = common::form_fields(&form_html, "user_password_reset_request");
         let (status, _, _) = send(
             &app,
             Request::post("/user/password-reset")
                 .header("content-type", "application/x-www-form-urlencoded")
                 .header("cookie", &reset_cookies)
                 .body(Body::from(format!(
-                    "_token={}&email={}",
-                    urlencoding::encode(&csrf),
+                    "{fields}&email={}",
                     email.replace('@', "%40")
                 )))
                 .unwrap(),

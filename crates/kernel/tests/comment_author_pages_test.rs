@@ -159,11 +159,17 @@ async fn get(app: &TestApp, cookies: &str, uri: &str) -> (StatusCode, String, St
     (status, location, text_of(response).await)
 }
 
-/// The `_token` value of the first form on `html`.
+/// The `_token` value of the first form on `html`, followed by the
+/// `&_form_build_id=` of the page's form, which a pipeline form posts back
+/// with it, when the page has one.
 fn csrf_field(html: &str) -> String {
     let marker = "name=\"_token\" value=\"";
     let start = html.find(marker).expect("a _token field") + marker.len();
-    html[start..].split('"').next().unwrap().to_string()
+    let token = html[start..].split('"').next().unwrap().to_string();
+    match common::input_value_in(html, "_form_build_id") {
+        Some(build) => format!("{token}&_form_build_id={build}"),
+        None => token,
+    }
 }
 
 /// The CSRF token of the page's head, for a JSON call.

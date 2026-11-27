@@ -43,7 +43,10 @@
     });
   }
 
-  document.getElementById("start").addEventListener("click", function () {
+  /* The first step is the form `user_recover`; its submission is taken here
+     and posted as the JSON step, never natively. */
+  document.getElementById("user_recover").addEventListener("submit", function (event) {
+    event.preventDefault();
     post("/user/recover/start", { identifier: document.getElementById("identifier").value })
       .then(function (body) {
         show(body.message, true);

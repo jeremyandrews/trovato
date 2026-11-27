@@ -5373,10 +5373,11 @@ fn password_change_with_correct_current_password() {
             .await;
         let body = response_text(response).await;
         let csrf_token = extract_csrf_token(&body).expect("Should have CSRF token");
+        let build = common::form_build_id(&body, "user_password_change");
 
         // Change password
         let form_body = format!(
-            "_token={}&current_password={}&new_password={}&confirm_password={}",
+            "_token={}&_form_build_id={build}&current_password={}&new_password={}&confirm_password={}",
             urlencoding::encode(&csrf_token),
             urlencoding::encode(password),
             urlencoding::encode(new_password),
@@ -5434,10 +5435,11 @@ fn password_change_rejects_wrong_current_password() {
             .await;
         let body = response_text(response).await;
         let csrf_token = extract_csrf_token(&body).expect("Should have CSRF token");
+        let build = common::form_build_id(&body, "user_password_change");
 
         // Try changing password with wrong current password
         let form_body = format!(
-            "_token={}&current_password={}&new_password={}&confirm_password={}",
+            "_token={}&_form_build_id={build}&current_password={}&new_password={}&confirm_password={}",
             urlencoding::encode(&csrf_token),
             urlencoding::encode("WrongPassword!"),
             urlencoding::encode("NewPassword456!"),
@@ -5484,9 +5486,10 @@ fn password_change_validates_password_mismatch() {
             .await;
         let body = response_text(response).await;
         let csrf_token = extract_csrf_token(&body).expect("Should have CSRF token");
+        let build = common::form_build_id(&body, "user_password_change");
 
         let form_body = format!(
-            "_token={}&current_password={}&new_password={}&confirm_password={}",
+            "_token={}&_form_build_id={build}&current_password={}&new_password={}&confirm_password={}",
             urlencoding::encode(&csrf_token),
             urlencoding::encode(password),
             urlencoding::encode("NewPassword456!"),

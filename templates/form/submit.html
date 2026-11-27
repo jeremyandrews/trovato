@@ -9,4 +9,5 @@
     >
         {{ element.value | default(value="Submit") }}
     </button>
+    {% if element.suffix %}{{ element.suffix | safe }}{% endif %} {# SAFE: kernel FormBuilder-generated HTML — prefix/suffix are kernel-controlled strings #}
 </div>

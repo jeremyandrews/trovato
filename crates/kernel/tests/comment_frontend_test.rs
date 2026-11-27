@@ -265,12 +265,12 @@ fn a_form_encoded_post_creates_the_comment_and_redirects() {
         ensure_item_type(app).await;
         let item_id = create_item(app).await;
         let cookies = commenter(app).await;
-        let (cookies, token) = csrf(app, &cookies).await;
-
+        // The form under the item, with its token and build id.
+        let page = item_page(app, &cookies, item_id).await;
         let body = format!(
-            "body={}&parent_id=&_token={}",
+            "body={}&parent_id=&{}",
             urlencode("Posted without JavaScript"),
-            urlencode(&token)
+            common::form_fields(&page, "comment_form")
         );
         let response = app
             .request_with_cookies(

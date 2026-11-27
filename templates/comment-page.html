@@ -25,54 +25,8 @@
     </article>
     {% endif %}
 
-    {% if errors %}
-    <div class="messages messages--error" role="alert">
-        {% for error in errors %}<p>{{ error }}</p>{% endfor %}
-    </div>
-    {% endif %}
-
-    {% if mode == "reply" %}
-    <form class="comment-form" method="post" action="/api/v1/item/{{ item_id }}/comments">
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
-        <input type="hidden" name="parent_id" value="{{ parent_id | default(value='') }}">
-        <div class="form-group">
-            <label for="comment-subject">Subject (optional)</label>
-            <input type="text" id="comment-subject" name="subject" maxlength="255">
-        </div>
-        <div class="form-group">
-            <label for="comment-body">Comment</label>
-            <textarea id="comment-body" name="body" rows="8" required></textarea>
-        </div>
-        <div class="form-actions">
-            <button type="submit" class="button button--primary">Save</button>
-            <a href="{{ item_path }}#comments" class="button">Cancel</a>
-        </div>
-    </form>
-    {% elif mode == "edit" %}
-    <form class="comment-form" method="post" action="/comment/{{ comment.id }}/edit">
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
-        <div class="form-group">
-            <label for="comment-subject">Subject (optional)</label>
-            <input type="text" id="comment-subject" name="subject" maxlength="255" value="{{ subject }}">
-        </div>
-        <div class="form-group">
-            <label for="comment-body">Comment</label>
-            <textarea id="comment-body" name="body" rows="8" required>{{ body }}</textarea>
-        </div>
-        <div class="form-actions">
-            <button type="submit" class="button button--primary">Save</button>
-            <a href="{{ item_path }}#comment-{{ comment.id }}" class="button">Cancel</a>
-        </div>
-    </form>
-    {% elif mode == "delete" %}
-    <form class="comment-delete-form" method="post" action="/comment/{{ comment.id }}/delete">
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
-        <p>Are you sure you want to delete this comment? Any replies to it will be deleted too. This action cannot be undone.</p>
-        <div class="form-actions">
-            <button type="submit" class="button button--danger">Delete</button>
-            <a href="{{ item_path }}#comment-{{ comment.id }}" class="button">Cancel</a>
-        </div>
-    </form>
-    {% endif %}
+    {# The page's form: `comment_form` (reply), `comment_edit` or
+       `comment_delete`, built through the forms pipeline, with its errors. #}
+    {{ comment_form | safe }} {# SAFE: kernel form renderer output — every value in it is escaped by the form templates #}
 </div>
 {% endblock %}

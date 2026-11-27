@@ -103,6 +103,18 @@ impl Form {
         self
     }
 
+    /// Set one HTML attribute of the `<form>` tag. A `class` is added to the
+    /// form's own `form` class.
+    pub fn attribute(mut self, name: &str, value: impl Into<Value>) -> Self {
+        let attributes = self
+            .attributes
+            .get_or_insert_with(|| Value::Object(Default::default()));
+        if let Some(map) = attributes.as_object_mut() {
+            map.insert(name.to_string(), value.into());
+        }
+        self
+    }
+
     /// Add an element to the form.
     pub fn element(mut self, name: impl Into<String>, element: FormElement) -> Self {
         self.elements.insert(name.into(), element);

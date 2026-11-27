@@ -526,17 +526,14 @@ fn a_self_service_password_change_is_audited() {
             .await
             .unwrap();
         let html = String::from_utf8_lossy(&body);
-        let pos = html.find("csrf-token").expect("csrf-token meta tag");
-        let start = html[pos..].find("content=\"").map(|p| pos + p + 9).unwrap();
-        let end = html[start..].find('"').map(|p| start + p).unwrap();
-        let csrf = &html[start..end];
+        let fields = common::form_fields(&html, "user_password_change");
 
         let response = app
             .request_with_cookies(
                 Request::post("/user/password")
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from(format!(
-                        "_token={csrf}&current_password=test-password-123\
+                        "{fields}&current_password=test-password-123\
                          &new_password=another-password-456&confirm_password=another-password-456"
                     )))
                     .unwrap(),

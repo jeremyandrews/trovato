@@ -214,11 +214,11 @@ fn registration_names_a_taken_name_and_approval_keeps_the_account_blocked() {
         .unwrap();
         let form = get(app, "/user/register", "").await;
         assert_eq!(form.status, StatusCode::OK, "{}", form.body);
-        let token = hidden(&form.body, "_token");
+        let fields = common::form_fields(&form.body, "user_register");
         let ip = test_ip_for("b156-register");
         app.state.rate_limiter().reset("register", &ip).await.ok();
         let body = format!(
-            "username={}&mail={}&password=long-enough-pass-1&confirm_password=long-enough-pass-1&_token={token}",
+            "username={}&mail={}&password=long-enough-pass-1&confirm_password=long-enough-pass-1&{fields}",
             enc(&taken),
             enc("b156-fresh@example.com")
         );
@@ -234,10 +234,10 @@ fn registration_names_a_taken_name_and_approval_keeps_the_account_blocked() {
         let name = common::username("b156-applicant");
         delete_user_named_on_exit(app, &name);
         let form = get(app, "/user/register", "").await;
-        let token = hidden(&form.body, "_token");
+        let fields = common::form_fields(&form.body, "user_register");
         app.state.rate_limiter().reset("register", &ip).await.ok();
         let body = format!(
-            "username={}&mail={}&password=long-enough-pass-1&confirm_password=long-enough-pass-1&_token={token}",
+            "username={}&mail={}&password=long-enough-pass-1&confirm_password=long-enough-pass-1&{fields}",
             enc(&name),
             enc(&format!("{name}@example.com"))
         );
