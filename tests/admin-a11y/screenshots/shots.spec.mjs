@@ -1,15 +1,17 @@
 // The review images: each set writes to its own directory under docs/images/
-// (b199's sets to docs/images/b199/, b245's to docs/images/b245/). A shot is
-// taken in light, dark, the right-to-left pseudo locale and 320 px wide unless
-// it names its own modes, full page unless it says otherwise. `npm run
-// screenshots` against a seeded site; not part of `npm test`.
+// (b199's sets to docs/images/b199/, b245's to docs/images/b245/, b246's to
+// docs/images/b246/). A shot is taken in light, dark, the right-to-left pseudo
+// locale and 320 px wide unless it names its own modes, full page unless it
+// says otherwise. `npm run screenshots` against a seeded site; not part of
+// `npm test`.
 import { test } from '@playwright/test';
 import { setLanguage } from '../specs/helpers.mjs';
 
 const B199 = '../../docs/images/b199';
 const B245 = '../../docs/images/b245';
+const B246 = '../../docs/images/b246';
 // SHOTS picks the set: the shell's page types (default), "forms", "lists",
-// "search", "dashboard" or "b245". Each set is { out, shots }; a shot is a
+// "search", "dashboard", "b245" or "b246". Each set is { out, shots }; a shot is a
 // path, a function that opens the page, or { open, modes, fullPage }.
 const SETS = {
   shell: { out: B199, shots: {
@@ -87,6 +89,23 @@ const SETS = {
     },
     dashboard: { open: '/admin', fullPage: false },
     'dashboard-full': { open: '/admin', modes: ['light'] },
+  } },
+  b246: { out: B246, shots: {
+    // Listings you can scan: short row actions, dates in the viewer's
+    // timezone, a thumbnail beside each image, a state pill that stands out
+    // only when a row needs someone, titles in natural order. The listings
+    // on their first screen in light; the content list sorted by title in
+    // every mode and as a full page; the Dashboard and the Reports landing
+    // page right to left, where a date sits inside a right to left sentence.
+    'list-content': { open: '/admin/content', modes: ['light'], fullPage: false },
+    'list-people': { open: '/admin/people', modes: ['light'], fullPage: false },
+    'list-files': { open: '/admin/content/files', modes: ['light'], fullPage: false },
+    'list-comments': { open: '/admin/content/comments', modes: ['light'], fullPage: false },
+    'list-log': { open: '/admin/reports/log', modes: ['light'], fullPage: false },
+    'content-by-title': { open: '/admin/content?sort=title', fullPage: false },
+    'content-by-title-full': { open: '/admin/content?sort=title', modes: ['light'] },
+    dashboard: { open: '/admin', modes: ['rtl'] },
+    'landing-reports': { open: '/admin/reports/overview', modes: ['rtl'] },
   } },
 };
 const SET = SETS[process.env.SHOTS || 'shell'];
