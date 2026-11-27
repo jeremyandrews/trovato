@@ -90,6 +90,11 @@ struct ContentTypeFormData {
     comment_threading: Option<String>,
     comment_order: Option<String>,
     comment_per_page: Option<String>,
+    /// Whether items of this type answer at their own URL, are in the
+    /// sitemap and in search (B306). Kept out of [`DEFAULT_SWITCHES`]: every
+    /// key there defaults to off when its checkbox is unchecked, and this one
+    /// defaults to on.
+    has_page: Option<String>,
 }
 
 /// The per-type defaults the content type form edits, by settings key. Each
@@ -135,6 +140,10 @@ impl ContentTypeFormData {
             );
         }
         settings.insert(
+            "has_page".to_string(),
+            serde_json::Value::Bool(self.has_page.is_some()),
+        );
+        settings.insert(
             crate::content::preview::SETTING.to_string(),
             serde_json::Value::from(self.preview_mode().as_str()),
         );
@@ -177,6 +186,7 @@ impl ContentTypeFormData {
         for key in DEFAULT_SWITCHES {
             values[*key] = serde_json::Value::Bool(self.switch(key));
         }
+        values["has_page"] = serde_json::Value::Bool(self.has_page.is_some());
         values[crate::content::preview::SETTING] =
             serde_json::Value::from(self.preview_mode().as_str());
         for (key, value) in self.comment_settings().to_settings() {
@@ -429,6 +439,15 @@ async fn edit_content_type_form(
                 .unwrap_or(false),
         );
     }
+    // Defaults to on, unlike every key above: a missing key (a type never
+    // saved through this form) reads as having its own page.
+    values["has_page"] = serde_json::Value::Bool(
+        db_type
+            .as_ref()
+            .and_then(|it| it.settings.get("has_page"))
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true),
+    );
     values[crate::content::preview::SETTING] = serde_json::Value::from(
         crate::content::preview::PreviewMode::of(db_type.as_ref().map(|it| &it.settings)).as_str(),
     );
@@ -521,6 +540,18 @@ async fn edit_content_type_submit(
     {
         Ok(_) => {
             tracing::info!(machine_name = %type_name, "content type updated");
+            // `has_page` can take a type's items out of search and the
+            // sitemap (or back in): recompute its vectors and queue it for
+            // the Pagefind index now, exactly as a search switches save does.
+            if let Err(e) = state.search().reindex_bundle(&type_name).await {
+                tracing::error!(error = %e, content_type = %type_name, "failed to reindex after content type save");
+            }
+            if let Err(e) =
+                crate::search::index_queue::enqueue_type(state.db(), &type_name, "type_settings")
+                    .await
+            {
+                tracing::error!(error = %e, content_type = %type_name, "failed to queue the type for the search index");
+            }
             Redirect::to("/admin/structure/types").into_response()
         }
         Err(e) => {

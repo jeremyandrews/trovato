@@ -35,6 +35,12 @@ struct ContentTypeRegistryInner {
     pool: PgPool,
     types: Cache<String, ContentTypeDefinition>,
 
+    /// Whether each type's items answer at their own URL, are in the sitemap
+    /// and in search (B306). Kept apart from `types` rather than on
+    /// [`ContentTypeDefinition`], which is the plugin-facing SDK type this
+    /// registry caches verbatim; filled at the same two points `types` is.
+    has_page: Cache<String, bool>,
+
     /// Serializes this server's writes with its reloads. A write holds it from
     /// its database write until its definition is cached; a reload holds it
     /// from reading the rows until it has applied them. Without it a reload
@@ -233,6 +239,15 @@ fn normalize_label(s: &str) -> Option<String> {
     }
 }
 
+/// Read a type's `has_page` setting out of its stored row. A missing key, or
+/// one that is not a boolean, reads as `true`.
+fn has_page_of(row: &ItemType) -> bool {
+    row.settings
+        .get("has_page")
+        .and_then(serde_json::Value::as_bool)
+        .unwrap_or(true)
+}
+
 impl ContentTypeRegistry {
     /// Create a new content type registry.
     pub fn new(pool: PgPool, ttl: Duration, metrics: Arc<Metrics>) -> Self {
@@ -240,6 +255,10 @@ impl ContentTypeRegistry {
             inner: Arc::new(ContentTypeRegistryInner {
                 pool,
                 types: Cache::builder()
+                    .max_capacity(MAX_CAPACITY)
+                    .time_to_live(ttl)
+                    .build(),
+                has_page: Cache::builder()
                     .max_capacity(MAX_CAPACITY)
                     .time_to_live(ttl)
                     .build(),
@@ -406,9 +425,18 @@ impl ContentTypeRegistry {
         for name in self.type_names() {
             if !stored.contains(&name) {
                 self.inner.types.invalidate(&name);
+                self.inner.has_page.invalidate(&name);
             }
         }
         Ok(())
+    }
+
+    /// Whether items of `type_name` answer at their own URL, are in the
+    /// sitemap and in search. A type not cached (a name nobody asked about
+    /// yet, or one that does not exist) reads as `true`: a missing key is "on"
+    /// (B306).
+    pub fn has_page(&self, type_name: &str) -> bool {
+        self.inner.has_page.get(type_name).unwrap_or(true)
     }
 
     /// Get a content type by machine name (sync, cache-only).
@@ -429,6 +457,9 @@ impl ContentTypeRegistry {
         if let Some(db_type) = db_type {
             let def = self.definition_from_row(&db_type);
             self.inner.types.insert(type_name.to_string(), def.clone());
+            self.inner
+                .has_page
+                .insert(type_name.to_string(), has_page_of(&db_type));
             Ok(Some(def))
         } else {
             Ok(None)
@@ -466,6 +497,9 @@ impl ContentTypeRegistry {
         self.inner
             .types
             .insert(row.type_name.clone(), self.definition_from_row(row));
+        self.inner
+            .has_page
+            .insert(row.type_name.clone(), has_page_of(row));
     }
 
     /// Cache the definition a write just returned, and tell every other

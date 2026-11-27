@@ -93,6 +93,8 @@ pub fn ensure_reserved_paths_unclaimed(menus: &[MenuDefinition]) -> anyhow::Resu
 struct SitemapRow {
     id: uuid::Uuid,
     changed: i64,
+    #[sqlx(rename = "type")]
+    item_type: String,
 }
 
 /// Row type for URL alias lookup.
@@ -162,7 +164,7 @@ fn render_url_entry(
 /// Generate sitemap.xml listing all published live-stage items.
 async fn sitemap_xml(State(state): State<AppState>) -> Response {
     let items = match sqlx::query_as::<_, SitemapRow>(
-        "SELECT id, changed FROM item WHERE status = 1 AND stage_id = $1 ORDER BY changed DESC",
+        "SELECT id, changed, type FROM item WHERE status = 1 AND stage_id = $1 ORDER BY changed DESC",
     )
     .bind(LIVE_STAGE_ID)
     .fetch_all(state.db())
@@ -178,6 +180,11 @@ async fn sitemap_xml(State(state): State<AppState>) -> Response {
                 .into_response();
         }
     };
+    // A type with no standalone page is not an address to list (B306).
+    let items: Vec<SitemapRow> = items
+        .into_iter()
+        .filter(|row| state.content_types().has_page(&row.item_type))
+        .collect();
 
     // Bulk-load URL aliases for item sources so we can emit friendly URLs.
     let aliases: std::collections::HashMap<String, String> = match sqlx::query_as::<_, AliasRow>(

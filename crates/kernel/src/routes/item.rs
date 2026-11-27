@@ -490,6 +490,18 @@ async fn view_item(
         }
     };
 
+    // A type with no standalone page answers 404 here too (B306), exactly as
+    // a missing item does, so an alias to it also 404s. An administrator
+    // sees the page anyway, with a warning: `has_page` is a visibility
+    // setting for visitors, not a lock against the people who manage content.
+    let no_standalone_page = !state.content_types().has_page(&item.item_type);
+    if no_standalone_page && !user.can(crate::content::ADMINISTER_CONTENT) {
+        return Err(AppError::with_status(
+            StatusCode::NOT_FOUND,
+            "Item not found",
+        ));
+    }
+
     // Overlay translation if the active language differs from the default
     let active_language = lang.0;
     if active_language != state.default_language() {
@@ -746,6 +758,15 @@ async fn view_item(
         "text_direction",
         crate::middleware::language::text_direction_for_language(&active_language),
     );
+    if no_standalone_page {
+        context.insert(
+            "messages",
+            &[serde_json::json!({
+                "type": "warning",
+                "text": "Items of this type have no standalone page. A visitor gets \"Page not found\" here; you see it because you administer content.",
+            })],
+        );
+    }
 
     let item_html = state
         .theme()

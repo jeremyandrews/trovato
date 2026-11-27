@@ -353,6 +353,21 @@ pub async fn indexable_documents_for(
         })
         .collect();
     let switches_for = |item_type: &str| switches.get(item_type).copied().unwrap_or_default();
+    // A type with no standalone page is left out of search entirely (B306),
+    // same as `include: false`.
+    let has_page: HashMap<String, bool> = type_rows
+        .iter()
+        .map(|row| {
+            let has_page = row
+                .settings
+                .as_ref()
+                .and_then(|s| s.get("has_page"))
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(true);
+            (row.item_type.clone(), has_page)
+        })
+        .collect();
+    let has_page_for = |item_type: &str| has_page.get(item_type).copied().unwrap_or(true);
 
     // The coarse candidate set: published, live stage. Exactly what the seam is
     // then asked about, rather than what it is trusted to have already been.
@@ -371,7 +386,7 @@ pub async fn indexable_documents_for(
     .context("failed to query items for pagefind index")?;
     let candidates: Vec<Item> = candidates
         .into_iter()
-        .filter(|item| switches_for(&item.item_type).include)
+        .filter(|item| switches_for(&item.item_type).include && has_page_for(&item.item_type))
         .collect();
 
     // The anonymous visitor, with the anonymous role's real permission set — not

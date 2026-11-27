@@ -38,6 +38,10 @@
             {{ form::field(name="comment_per_page", label=t(s="Comments per page"), type="number", value=values.comment_per_page | default(value=50), width="4", attrs='min="1" max="300"', errors=errs) }}
         {{ form::fieldset_end() }}
 
+        {{ form::fieldset_start(legend=t(s="Visibility")) }}
+            {{ form::checkbox(name="has_page", label=t(s="Items of this type have their own page"), checked=values.has_page | default(value=true), hint=t(s="Unchecked, an item of this type answers 404 at its own address (to an administrator, its page with a warning), is left out of the sitemap, and is left out of search. It still appears where it is embedded, referenced or listed."), errors=errs) }}
+        {{ form::fieldset_end() }}
+
         {{ form::fieldset_start(legend=t(s="Publishing options")) }}
             {{ form::checkbox(name="published_default", label=t(s="Published by default"), checked=values.published_default | default(value=false), errors=errs) }}
             {{ form::checkbox(name="revision_default", label=t(s="Create new revision by default"), checked=values.revision_default | default(value=false), errors=errs) }}
