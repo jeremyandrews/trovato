@@ -97,6 +97,48 @@ applied, so `trovato migrate` finds nothing to do.
 
 ## Unreleased
 
+### `Link`, `List` and `Telephone` field kinds
+
+**Who is affected:** a plugin that matches on `FieldType`.
+
+**What changed.** **API change:** `trovato_sdk::types::FieldType` has three new
+variants: `Link` (a hyperlink, stored as `{"uri", "title"?, "new_tab"?}`, its
+`uri` an absolute `http`/`https` URL or a local path, `title` omitted when
+empty and `new_tab` omitted when false), `List` (one choice from a fixed set,
+stored as the chosen key, with the allowed keys and labels in
+`FieldDefinition::settings.allowed_values`, built with the new
+`FieldDefinition::allowed_values(&[(key, label), ...])`), and `Telephone` (a
+phone number, stored as `{"value": "<as entered>", "e164": "+<digits>"?}`, its
+`e164` filled in on write when the number has a recognisable country prefix).
+As with `CategoryReference` in 0.105, this is additive: `FieldType` was already
+`#[non_exhaustive]`, so a plugin with an exhaustive `match` on it was already
+impossible to compile against this SDK, and stays that way; a plugin that only
+constructs field types, or already has a `_` arm, is unaffected.
+
+Every write path checks the three kinds the same way: the admin form, the item
+API, `save-item`, `config import` and `trovato import` all refuse a `Link`
+whose `uri` is not an absolute `http`/`https` URL or a local path (a
+`javascript:`, `data:`, `mailto:` or protocol-relative `//host` value among
+them), a `List` value that is not one of the field's allowed keys, and a
+`Telephone` value with any character other than digits, spaces and
+`+ ( ) - . /`. The item page renders a `Link` as an anchor (its scheme
+re-checked at render, never trusted from storage), a `List` as its label, and
+a `Telephone` as a `tel:` link; both search backends index a `Link`'s title and
+a `List` value's label, never a `Link`'s `uri` or a `Telephone` number. Gather
+can filter on a `List` field: a single value field compares by key with
+`equals`, a multi value field matches with the existing JSONB array
+containment condition, and an exposed filter on a `List` field, left at its
+default widget, renders as a select of the field's allowed values rather than
+a free text box.
+
+`item_search_vector` is replaced by a migration that adds these two kinds to
+what it indexes; no reindex is needed, since no field could hold either kind
+before this release.
+
+**How to find out.** `grep -rn "match .*field_type" plugins/*/src` in an out of
+tree plugin finds an exhaustive match, if one still exists despite
+`#[non_exhaustive]` already having made it impossible to compile.
+
 ### `AdminNavDefinition` is `#[non_exhaustive]`, with a new `keywords` field
 
 **Who is affected:** a plugin that builds `trovato_sdk::types::AdminNavDefinition`

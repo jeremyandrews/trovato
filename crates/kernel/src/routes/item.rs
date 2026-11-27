@@ -930,8 +930,10 @@ pub(crate) async fn render_item_fields(
             if let Some(field_def) = content_type_fields.iter().find(|f| f.field_name == *name) {
                 match &field_def.field_type {
                     trovato_sdk::types::FieldType::Link => {
-                        let label =
-                            crate::content::revision_compare::field_label(content_type_fields, name);
+                        let label = crate::content::revision_compare::field_label(
+                            content_type_fields,
+                            name,
+                        );
                         let links: Vec<String> =
                             crate::content::field_value::form_values(Some(value))
                                 .into_iter()
@@ -948,8 +950,10 @@ pub(crate) async fn render_item_fields(
                         continue;
                     }
                     trovato_sdk::types::FieldType::List => {
-                        let label =
-                            crate::content::revision_compare::field_label(content_type_fields, name);
+                        let label = crate::content::revision_compare::field_label(
+                            content_type_fields,
+                            name,
+                        );
                         let text = crate::content::field_value::form_values(Some(value))
                             .into_iter()
                             .filter_map(|v| v.as_str())
@@ -971,8 +975,10 @@ pub(crate) async fn render_item_fields(
                         continue;
                     }
                     trovato_sdk::types::FieldType::Telephone => {
-                        let label =
-                            crate::content::revision_compare::field_label(content_type_fields, name);
+                        let label = crate::content::revision_compare::field_label(
+                            content_type_fields,
+                            name,
+                        );
                         let links: Vec<String> =
                             crate::content::field_value::form_values(Some(value))
                                 .into_iter()
@@ -1215,7 +1221,10 @@ fn render_link_value(
         return Some(html_escape(title));
     }
     let href = aliases.get(uri).map_or(uri, String::as_str);
-    let new_tab = value.get("new_tab").and_then(|v| v.as_bool()).unwrap_or(false);
+    let new_tab = value
+        .get("new_tab")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let attrs = if new_tab {
         " target=\"_blank\" rel=\"noopener noreferrer\""
     } else {
@@ -1240,7 +1249,10 @@ fn render_telephone_value(value: &serde_json::Value) -> Option<String> {
         .unwrap_or_else(|| {
             format!(
                 "+{}",
-                entered.chars().filter(char::is_ascii_digit).collect::<String>()
+                entered
+                    .chars()
+                    .filter(char::is_ascii_digit)
+                    .collect::<String>()
             )
         });
     Some(format!(

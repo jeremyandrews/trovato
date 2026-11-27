@@ -956,7 +956,9 @@ mod tests {
     fn a_link_uri_accepts_http_https_and_local_paths_only() {
         assert!(is_valid_link_uri("https://example.org/a?b#c"));
         assert!(is_valid_link_uri("http://example.org/"));
-        assert!(is_valid_link_uri("/item/0193b72a-0000-7000-8000-000000000001"));
+        assert!(is_valid_link_uri(
+            "/item/0193b72a-0000-7000-8000-000000000001"
+        ));
         assert!(is_valid_link_uri("/about-us"));
 
         assert!(!is_valid_link_uri("javascript:alert(1)"));
@@ -975,11 +977,16 @@ mod tests {
         let field = FieldDefinition::new("f", FieldType::Link).label("Link");
         assert!(check_new_kind(&field, &json!(null)).is_none());
         assert!(
-            check_new_kind(&field, &json!({"uri": "https://example.org/", "title": "Site"}))
-                .is_none()
+            check_new_kind(
+                &field,
+                &json!({"uri": "https://example.org/", "title": "Site"})
+            )
+            .is_none()
         );
         assert!(check_new_kind(&field, &json!({"uri": "javascript:alert(1)"})).is_some());
-        assert!(check_new_kind(&field, &json!({"uri": "/item/x", "title": "a".repeat(256)})).is_some());
+        assert!(
+            check_new_kind(&field, &json!({"uri": "/item/x", "title": "a".repeat(256)})).is_some()
+        );
         assert!(
             check_new_kind(&field, &json!({"uri": "/item/x", "new_tab": "yes"})).is_some(),
             "new_tab must be a bool"
@@ -1075,9 +1082,11 @@ mod tests {
         assert_eq!(same, stored);
 
         // A multi value field's array is canonicalised element by element.
-        let multi_defs = vec![FieldDefinition::new("f", FieldType::Telephone)
-            .label("Tel")
-            .cardinality(-1)];
+        let multi_defs = vec![
+            FieldDefinition::new("f", FieldType::Telephone)
+                .label("Tel")
+                .cardinality(-1),
+        ];
         let mut multi = json!({ "f": ["+39 0583 123456", "0583 123456"] });
         canonicalize_field_values(&mut multi, &multi_defs, None);
         assert_eq!(

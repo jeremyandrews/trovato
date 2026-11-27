@@ -163,8 +163,20 @@ fn a_single_list_filter_matches_by_key_not_label() {
     run_test(async {
         let app = shared_app().await;
         let item_type = fresh_type(app).await;
-        published(app, &item_type, "B302 gold item", serde_json::json!({"field_choice": "gold"})).await;
-        published(app, &item_type, "B302 silver item", serde_json::json!({"field_choice": "silver"})).await;
+        published(
+            app,
+            &item_type,
+            "B302 gold item",
+            serde_json::json!({"field_choice": "gold"}),
+        )
+        .await;
+        published(
+            app,
+            &item_type,
+            "B302 silver item",
+            serde_json::json!({"field_choice": "silver"}),
+        )
+        .await;
 
         let definition = single_choice_definition(&item_type);
         let mut exposed = HashMap::new();
@@ -175,7 +187,14 @@ fn a_single_list_filter_matches_by_key_not_label() {
         let result = app
             .state
             .gather()
-            .execute_definition(&definition, &test_display(), 1, exposed, LIVE_STAGE_ID, &admin_ctx())
+            .execute_definition(
+                &definition,
+                &test_display(),
+                1,
+                exposed,
+                LIVE_STAGE_ID,
+                &admin_ctx(),
+            )
             .await
             .expect("filter by key");
         assert_eq!(result.total, 1, "{:?}", result.items);
@@ -211,7 +230,14 @@ fn a_multi_list_filter_matches_when_the_array_contains_the_key() {
         let result = app
             .state
             .gather()
-            .execute_definition(&definition, &test_display(), 1, exposed, LIVE_STAGE_ID, &admin_ctx())
+            .execute_definition(
+                &definition,
+                &test_display(),
+                1,
+                exposed,
+                LIVE_STAGE_ID,
+                &admin_ctx(),
+            )
             .await
             .expect("filter by containment");
         assert_eq!(result.total, 1, "{:?}", result.items);
@@ -227,34 +253,47 @@ fn the_exposed_filter_form_offers_allowed_values_and_narrows_results() {
     run_test(async {
         let app = shared_app().await;
         let item_type = fresh_type(app).await;
-        published(app, &item_type, "B302 gold row", serde_json::json!({"field_choice": "gold"})).await;
-        published(app, &item_type, "B302 silver row", serde_json::json!({"field_choice": "silver"})).await;
+        published(
+            app,
+            &item_type,
+            "B302 gold row",
+            serde_json::json!({"field_choice": "gold"}),
+        )
+        .await;
+        published(
+            app,
+            &item_type,
+            "B302 silver row",
+            serde_json::json!({"field_choice": "silver"}),
+        )
+        .await;
 
         let query_id = format!("b302_list_filter_{}", Uuid::now_v7().simple());
-        let query: trovato_kernel::gather::GatherQuery = serde_json::from_value(serde_json::json!({
-            "query_id": query_id,
-            "label": "B302 list filter",
-            "definition": {
-                "base_table": "item",
-                "item_type": item_type,
-                "filters": [{
-                    "exposed": true,
-                    "field": "fields.field_choice",
-                    "operator": "equals",
-                    "value": null,
-                    "exposed_label": "Choice",
-                }],
-                "sorts": [{ "field": "title", "direction": "asc", "nulls": null }],
-                "stage_aware": true,
-            },
-            "display": {
-                "format": "table",
-                "items_per_page": 20,
-                "canonical_url": format!("/b302-list-filter-{query_id}"),
-            },
-            "plugin": "core"
-        }))
-        .expect("gather deserializes");
+        let query: trovato_kernel::gather::GatherQuery =
+            serde_json::from_value(serde_json::json!({
+                "query_id": query_id,
+                "label": "B302 list filter",
+                "definition": {
+                    "base_table": "item",
+                    "item_type": item_type,
+                    "filters": [{
+                        "exposed": true,
+                        "field": "fields.field_choice",
+                        "operator": "equals",
+                        "value": null,
+                        "exposed_label": "Choice",
+                    }],
+                    "sorts": [{ "field": "title", "direction": "asc", "nulls": null }],
+                    "stage_aware": true,
+                },
+                "display": {
+                    "format": "table",
+                    "items_per_page": 20,
+                    "canonical_url": format!("/b302-list-filter-{query_id}"),
+                },
+                "plugin": "core"
+            }))
+            .expect("gather deserializes");
         app.state
             .gather()
             .register_query(query)
@@ -268,7 +307,11 @@ fn the_exposed_filter_form_offers_allowed_values_and_narrows_results() {
 
         let name = common::username("b302list");
         let cookies = app
-            .create_and_login_admin(&name, "correct-horse-battery-staple", &format!("{name}@test.local"))
+            .create_and_login_admin(
+                &name,
+                "correct-horse-battery-staple",
+                &format!("{name}@test.local"),
+            )
             .await;
 
         let plain = app
@@ -319,6 +362,9 @@ fn the_exposed_filter_form_offers_allowed_values_and_narrows_results() {
         )
         .to_string();
         assert!(html.contains("B302 gold row"), "{html}");
-        assert!(!html.contains("B302 silver row"), "narrowed to gold: {html}");
+        assert!(
+            !html.contains("B302 silver row"),
+            "narrowed to gold: {html}"
+        );
     });
 }

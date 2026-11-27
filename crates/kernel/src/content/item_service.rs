@@ -937,7 +937,8 @@ impl ItemService {
         // passes every field through.
         if let Some(fields) = input.fields.as_mut() {
             let mut conn = self.inner.pool.acquire().await?;
-            let definitions = file_refs::load_field_definitions(&mut conn, &input.item_type).await?;
+            let definitions =
+                file_refs::load_field_definitions(&mut conn, &input.item_type).await?;
             field_value::canonicalize_field_values(fields, &definitions, None);
         }
 

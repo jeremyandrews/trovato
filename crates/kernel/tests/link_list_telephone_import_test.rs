@@ -87,7 +87,13 @@ fn forget_item(app: &TestApp, id: Uuid) {
     });
 }
 
-fn item_line(id: Uuid, item_type: &str, author: Uuid, title: &str, fields: serde_json::Value) -> serde_json::Value {
+fn item_line(
+    id: Uuid,
+    item_type: &str,
+    author: Uuid,
+    title: &str,
+    fields: serde_json::Value,
+) -> serde_json::Value {
     json!({
         "type": "item", "id": id, "item_type": item_type, "title": title,
         "author_id": author, "created": 1_767_225_600i64, "changed": 1_767_225_600i64,

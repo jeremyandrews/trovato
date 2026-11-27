@@ -718,8 +718,10 @@ fn searchable_fields(
     text_fields: &[SearchableField],
     configs: &[(String, f32)],
 ) -> Vec<IndexedField> {
-    let mut names: Vec<(&str, &SearchFieldKind)> =
-        text_fields.iter().map(|f| (f.name.as_str(), &f.kind)).collect();
+    let mut names: Vec<(&str, &SearchFieldKind)> = text_fields
+        .iter()
+        .map(|f| (f.name.as_str(), &f.kind))
+        .collect();
     for (name, _) in configs {
         if !names.iter().any(|(n, _)| *n == name) {
             names.push((name.as_str(), &SearchFieldKind::Text));
@@ -801,7 +803,11 @@ fn field_plain_text(
             _ => {}
         }
     }
-    fn collect_list(value: &serde_json::Value, options: &[(String, String)], out: &mut Vec<String>) {
+    fn collect_list(
+        value: &serde_json::Value,
+        options: &[(String, String)],
+        out: &mut Vec<String>,
+    ) {
         match value {
             serde_json::Value::String(key) => {
                 if let Some((_, label)) = options.iter().find(|(k, _)| k == key) {

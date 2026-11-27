@@ -238,7 +238,10 @@ fn the_item_page_renders_each_kind() {
         );
         assert!(html.contains("Gold Medal"), "{html}");
         assert!(html.contains("Silver Medal"), "{html}");
-        assert!(!html.contains(">gold<"), "the key is not shown, its label is: {html}");
+        assert!(
+            !html.contains(">gold<"),
+            "the key is not shown, its label is: {html}"
+        );
         assert!(
             html.contains(r#"<a href="tel:+390583123456">+39 0583 123456</a>"#),
             "{html}"
@@ -331,6 +334,9 @@ fn a_stored_javascript_link_never_becomes_an_href() {
             !html.contains("href=\"javascript:"),
             "a javascript: uri must never become an href: {html}"
         );
-        assert!(html.contains("Click me"), "the title still renders, as text: {html}");
+        assert!(
+            html.contains("Click me"),
+            "the title still renders, as text: {html}"
+        );
     });
 }

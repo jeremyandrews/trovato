@@ -728,11 +728,17 @@ async fn config_round_trip_keeps_link_list_telephone_settings_and_allowed_values
     let fields = vec![
         trovato_sdk::types::FieldDefinition::new("field_link", trovato_sdk::types::FieldType::Link)
             .label("Link"),
-        trovato_sdk::types::FieldDefinition::new("field_choice", trovato_sdk::types::FieldType::List)
-            .label("Choice")
-            .allowed_values(&[("gold", "Gold Medal"), ("silver", "Silver Medal")]),
-        trovato_sdk::types::FieldDefinition::new("field_tel", trovato_sdk::types::FieldType::Telephone)
-            .label("Telephone"),
+        trovato_sdk::types::FieldDefinition::new(
+            "field_choice",
+            trovato_sdk::types::FieldType::List,
+        )
+        .label("Choice")
+        .allowed_values(&[("gold", "Gold Medal"), ("silver", "Silver Medal")]),
+        trovato_sdk::types::FieldDefinition::new(
+            "field_tel",
+            trovato_sdk::types::FieldType::Telephone,
+        )
+        .label("Telephone"),
     ];
     let settings = serde_json::json!({ "fields": serde_json::to_value(&fields).unwrap() });
 
@@ -773,9 +779,13 @@ async fn config_round_trip_keeps_link_list_telephone_settings_and_allowed_values
         .await
         .expect("failed to delete item type before reimport");
 
-    let import_result =
-        trovato_kernel::config_storage::yaml::import_config(app.config_storage().as_ref(), &app.db, &dir, false)
-            .await;
+    let import_result = trovato_kernel::config_storage::yaml::import_config(
+        app.config_storage().as_ref(),
+        &app.db,
+        &dir,
+        false,
+    )
+    .await;
     std::fs::remove_dir_all(&dir).ok();
     import_result.expect("failed to reimport the exported content type");
 

@@ -797,7 +797,9 @@ fn parse_allowed_values(text: &str) -> Result<Vec<(String, String)>, String> {
             return Err(format!("\"{line}\": the key must not be empty."));
         }
         if key.chars().count() > 255 {
-            return Err(format!("\"{key}\": the key must be at most 255 characters."));
+            return Err(format!(
+                "\"{key}\": the key must be at most 255 characters."
+            ));
         }
         if label.is_empty() {
             return Err(format!("\"{key}\": the label must not be empty."));
