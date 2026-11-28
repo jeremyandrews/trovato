@@ -670,11 +670,7 @@ impl FileStorage for LocalFileStorage {
             }
             Err(e) => return Err(anyhow::Error::new(e).context("failed to open file")),
         };
-        let total = file
-            .metadata()
-            .await
-            .context("failed to stat file")?
-            .len();
+        let total = file.metadata().await.context("failed to stat file")?.len();
         let (start, end) = resolve_range(range, total)?;
         if start > 0 {
             file.seek(std::io::SeekFrom::Start(start))

@@ -774,7 +774,11 @@ fn s3_range_requests_and_large_downloads_behave_like_local_storage() {
         assert_eq!(plain.status(), StatusCode::OK);
         assert_eq!(header_of(&plain, header::ACCEPT_RANGES), "bytes");
         let body = to_bytes(plain.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(body.len(), data.len(), "the whole 200,000 byte body arrived");
+        assert_eq!(
+            body.len(),
+            data.len(),
+            "the whole 200,000 byte body arrived"
+        );
         assert_eq!(body.as_ref(), data.as_slice(), "every byte, in order");
     });
 }

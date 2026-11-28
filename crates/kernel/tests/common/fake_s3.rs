@@ -176,7 +176,8 @@ async fn get_object(
         Some(range) => match trovato_kernel::file::range::resolve_range(Some(range), total) {
             Ok((start, end)) => {
                 let slice = data[start as usize..end as usize].to_vec();
-                let mut builder = axum::http::Response::builder().status(StatusCode::PARTIAL_CONTENT);
+                let mut builder =
+                    axum::http::Response::builder().status(StatusCode::PARTIAL_CONTENT);
                 for (name, value) in object_headers(slice.len()) {
                     builder = builder.header(name, value);
                 }

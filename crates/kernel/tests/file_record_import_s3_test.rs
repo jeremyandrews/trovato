@@ -217,7 +217,11 @@ fn a_file_already_in_the_bucket_registers_and_serves() {
             "the imported file is servable to its owner"
         );
         let body = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-        assert_eq!(body.as_ref(), FILE_BODY, "the real bytes from the bucket are streamed");
+        assert_eq!(
+            body.as_ref(),
+            FILE_BODY,
+            "the real bytes from the bucket are streamed"
+        );
     });
 }
 
@@ -233,11 +237,20 @@ fn a_missing_key_is_refused() {
 
         let error = run_lines(
             &f.app,
-            &[file_line(missing_id, owner, &path, "ghost.txt", "text/plain", 1)],
+            &[file_line(
+                missing_id,
+                owner,
+                &path,
+                "ghost.txt",
+                "text/plain",
+                1,
+            )],
         )
         .await
         .expect_err("refused");
-        let failed = error.downcast_ref::<ImportFailed>().expect("an ImportFailed");
+        let failed = error
+            .downcast_ref::<ImportFailed>()
+            .expect("an ImportFailed");
         assert!(failed.message.contains("not found"), "{failed}");
         assert!(stored_file(&f.app, missing_id).await.is_none());
     });
@@ -266,7 +279,9 @@ fn a_path_with_dotdot_is_refused_by_shape() {
         )
         .await
         .expect_err("refused");
-        let failed = error.downcast_ref::<ImportFailed>().expect("an ImportFailed");
+        let failed = error
+            .downcast_ref::<ImportFailed>()
+            .expect("an ImportFailed");
         assert!(failed.message.contains("relative path"), "{failed}");
         assert!(stored_file(&f.app, escapee).await.is_none());
     });

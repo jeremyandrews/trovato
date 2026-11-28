@@ -268,7 +268,10 @@ pub(crate) fn range_not_satisfiable_response(total: u64) -> Response {
     #[allow(clippy::unwrap_used)]
     axum::http::Response::builder()
         .status(StatusCode::RANGE_NOT_SATISFIABLE)
-        .header(axum::http::header::CONTENT_RANGE, format!("bytes */{total}"))
+        .header(
+            axum::http::header::CONTENT_RANGE,
+            format!("bytes */{total}"),
+        )
         .body(axum::body::Body::empty())
         .unwrap()
         .into_response()

@@ -185,7 +185,10 @@ async fn range_conformance(storage: &dyn FileStorage) {
         .read_stream(&uri, Some(ByteRange::Bounded(100, 299)))
         .await
         .unwrap();
-    assert_eq!((bounded.start, bounded.end, bounded.total), (100, 300, total));
+    assert_eq!(
+        (bounded.start, bounded.end, bounded.total),
+        (100, 300, total)
+    );
     assert_eq!(collect(bounded.stream).await, data[100..300]);
 
     // bytes=290000-
@@ -217,7 +220,10 @@ async fn range_conformance(storage: &dyn FileStorage) {
     assert_eq!(is_range_not_satisfiable(&past), Some(total));
 
     // A missing file, ranged or not: not found, not a store failure.
-    let missing_uri = format!("local://2026/11/{}_missing-range.bin", Uuid::now_v7().simple());
+    let missing_uri = format!(
+        "local://2026/11/{}_missing-range.bin",
+        Uuid::now_v7().simple()
+    );
     let missing = storage.read_stream(&missing_uri, None).await.unwrap_err();
     assert!(is_not_found(&missing), "{missing:#}");
     let missing_ranged = storage
@@ -230,7 +236,10 @@ async fn range_conformance(storage: &dyn FileStorage) {
     let traversal = storage.read_stream("local://../escape.txt", None).await;
     let traversal = traversal.expect_err("traversal must be refused");
     assert!(!is_not_found(&traversal), "{traversal:#}");
-    assert!(is_range_not_satisfiable(&traversal).is_none(), "{traversal:#}");
+    assert!(
+        is_range_not_satisfiable(&traversal).is_none(),
+        "{traversal:#}"
+    );
 
     storage.delete(&uri).await.unwrap();
 }

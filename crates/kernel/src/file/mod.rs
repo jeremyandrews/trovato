@@ -14,7 +14,7 @@ pub use service::{
     resolve_mime_type,
 };
 pub use storage::{
-    FileStorage, FileStream, LocalFileStorage, REMOTE_STARTUP_CHECK_LIMIT, S3Config,
-    S3FileStorage, StorageConfig, StorageNotFound, StoreUnreachable, build_storage,
-    check_writable, is_not_found, is_unreachable, memory_stream, startup_check,
+    FileStorage, FileStream, LocalFileStorage, REMOTE_STARTUP_CHECK_LIMIT, S3Config, S3FileStorage,
+    StorageConfig, StorageNotFound, StoreUnreachable, build_storage, check_writable, is_not_found,
+    is_unreachable, memory_stream, startup_check,
 };

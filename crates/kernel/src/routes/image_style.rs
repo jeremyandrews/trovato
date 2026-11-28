@@ -148,14 +148,21 @@ async fn serve_derivative(
     // A derivative made before, by any server, is in the file store beside
     // the originals (`styles/<style>/<path>`), so every server finds it.
     let derivative_uri = crate::services::image_style::derivative_uri(&style_name, &file_path);
-    match state.files().storage().read_stream(&derivative_uri, range).await {
+    match state
+        .files()
+        .storage()
+        .read_stream(&derivative_uri, range)
+        .await
+    {
         Ok(stream) => {
             return stream_response(stream, range.is_some(), response_headers());
         }
         Err(e) if crate::file::is_range_not_satisfiable(&e).is_some() => {
             // The derivative exists; the requested range does not.
             #[allow(clippy::unwrap_used)]
-            return range_not_satisfiable_response(crate::file::is_range_not_satisfiable(&e).unwrap());
+            return range_not_satisfiable_response(
+                crate::file::is_range_not_satisfiable(&e).unwrap(),
+            );
         }
         Err(e) if crate::file::is_not_found(&e) => {
             // Not made yet, generate below
@@ -256,7 +263,8 @@ async fn serve_derivative(
     // streamed to this request, exactly as before.
     match memory_stream(derivative, range) {
         Ok(stream) => stream_response(stream, range.is_some(), response_headers()),
-        Err(e) => {
+        Err(e) =>
+        {
             #[allow(clippy::unwrap_used)]
             range_not_satisfiable_response(crate::file::is_range_not_satisfiable(&e).unwrap())
         }

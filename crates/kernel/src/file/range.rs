@@ -120,8 +120,14 @@ mod tests {
             parse_range_header("bytes=500-"),
             Some(ByteRange::Offset(500))
         );
-        assert_eq!(parse_range_header("bytes=-500"), Some(ByteRange::Suffix(500)));
-        assert_eq!(parse_range_header("bytes= 10 - 20 "), Some(ByteRange::Bounded(10, 20)));
+        assert_eq!(
+            parse_range_header("bytes=-500"),
+            Some(ByteRange::Suffix(500))
+        );
+        assert_eq!(
+            parse_range_header("bytes= 10 - 20 "),
+            Some(ByteRange::Bounded(10, 20))
+        );
     }
 
     #[test]
@@ -146,10 +152,19 @@ mod tests {
             resolve_range(Some(ByteRange::Bounded(900, 2000)), 1000),
             Ok((900, 1000))
         );
-        assert_eq!(resolve_range(Some(ByteRange::Offset(500)), 1000), Ok((500, 1000)));
-        assert_eq!(resolve_range(Some(ByteRange::Suffix(100)), 1000), Ok((900, 1000)));
+        assert_eq!(
+            resolve_range(Some(ByteRange::Offset(500)), 1000),
+            Ok((500, 1000))
+        );
+        assert_eq!(
+            resolve_range(Some(ByteRange::Suffix(100)), 1000),
+            Ok((900, 1000))
+        );
         // A suffix longer than the file is the whole file.
-        assert_eq!(resolve_range(Some(ByteRange::Suffix(5000)), 1000), Ok((0, 1000)));
+        assert_eq!(
+            resolve_range(Some(ByteRange::Suffix(5000)), 1000),
+            Ok((0, 1000))
+        );
     }
 
     #[test]
@@ -170,6 +185,10 @@ mod tests {
             resolve_range(Some(ByteRange::Offset(0)), 0),
             Err(RangeNotSatisfiable(0))
         );
-        assert_eq!(resolve_range(None, 0), Ok((0, 0)), "the whole (empty) file is fine");
+        assert_eq!(
+            resolve_range(None, 0),
+            Ok((0, 0)),
+            "the whole (empty) file is fine"
+        );
     }
 }
