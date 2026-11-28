@@ -14,8 +14,8 @@
 //! size) instead.
 //!
 //! The SSRF fence has three layers, all kernel-internal (p11i / G1):
-//! 1. A pre-send string/literal check ([`validate_url`]): scheme, internal
-//!    hostnames, and private/reserved IP literals.
+//! 1. A pre-send string/literal check ([`resolve_outbound_client`]): scheme,
+//!    internal hostnames, and private/reserved IP literals.
 //! 2. A validating DNS resolver ([`ValidatingResolver`]) that resolves the
 //!    hostname, rejects the request if any resolved address is private, and
 //!    pins the connection to the checked addresses — closing the DNS-rebinding
@@ -392,7 +392,7 @@ enum UrlPolicyReject {
 /// must be `http`/`https`, the host must be present and not a known-internal
 /// name, and any IP *literal* must not be private/reserved.
 ///
-/// This is the check shared by the pre-send [`validate_url`] and the
+/// This is the check shared by the pre-send [`resolve_outbound_client`] and the
 /// per-redirect-hop revalidation in [`revalidating_redirect_policy`]. It does
 /// **not** resolve DNS — a hostname that resolves to a private address is caught
 /// separately, at connect time, by [`ValidatingResolver`] (layer 2). Splitting

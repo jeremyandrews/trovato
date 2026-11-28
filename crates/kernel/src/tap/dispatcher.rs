@@ -23,6 +23,8 @@ const BACKGROUND_TAPS: &[&str] = &[
     "tap_cron",
     "tap_queue_worker",
     "tap_queue_info",
+    // A precise timer firing (B278): background work, like a queue job.
+    "tap_timer",
 ];
 
 /// Result from a single tap invocation.

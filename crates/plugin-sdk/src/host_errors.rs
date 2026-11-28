@@ -269,6 +269,29 @@
 //!   - `-90`: the owner type is not one this plugin declared
 //!   - `≥ 0`: bytes written (a JSON array of vocabularies)
 //!
+//! ## Timer (`trovato:kernel/timer`)
+//!
+//! Every call reaches only the calling plugin's own timers (B278).
+//!
+//! - **`set(req_ptr, req_len) → i32`**
+//!   - `-1`: memory missing, `-2`: request read failed
+//!   - `-12`: the write failed
+//!   - `-14`: the request is not valid JSON of its shape
+//!   - `-95`: the name or the time is not valid ([`ERR_TIMER_INVALID`])
+//!   - `-96`: the payload is over the site's limit ([`ERR_TIMER_PAYLOAD_TOO_LARGE`])
+//!   - `-97`: the repeat interval is under the site's minimum ([`ERR_TIMER_REPEAT_TOO_SHORT`])
+//!   - `-98`: the plugin holds as many timers as the site allows ([`ERR_TIMER_LIMIT`])
+//!   - `0`: set
+//!
+//! - **`cancel(name_ptr, name_len) → i32`**
+//!   - `-1`, `-2`, `-12` as above
+//!   - `1`: cancelled, `0`: the plugin had no timer of that name
+//!
+//! - **`get(name_ptr, name_len, out_ptr, out_max_len) → i32`**
+//!   - `-1`, `-2`, `-12` as above; `-3`: output write failed, `-13`: serialize failed
+//!   - `0`: the plugin has no timer of that name
+//!   - `> 0`: bytes written (the timer as JSON)
+//!
 //! ## SDK-side Errors (client-side, before/after WASM boundary)
 //!
 //! These errors are produced by the SDK wrapper functions in `host.rs`, not by host functions:
@@ -506,6 +529,35 @@ pub const ERR_VOCABULARY_INVALID: i32 = -91;
 ///
 /// Added by B108, after 0.104.0.
 pub const ERR_VOCABULARY_EXISTS: i32 = -92;
+
+// =============================================================================
+// Timer errors (`trovato:kernel/timer`)
+// =============================================================================
+
+/// The timer name is empty, over 255 bytes or holds a control character, or
+/// the run time is not a time that can be stored.
+///
+/// Added by B278, after 0.106.0.
+pub const ERR_TIMER_INVALID: i32 = -95;
+
+/// The payload is larger than the site allows (`timer_settings`
+/// `max_payload_bytes`, default 4096 bytes of JSON).
+///
+/// Added by B278, after 0.106.0.
+pub const ERR_TIMER_PAYLOAD_TOO_LARGE: i32 = -96;
+
+/// The repeat interval is shorter than the site allows (`timer_settings`
+/// `min_repeat_secs`, default 60 seconds), or not a positive number.
+///
+/// Added by B278, after 0.106.0.
+pub const ERR_TIMER_REPEAT_TOO_SHORT: i32 = -97;
+
+/// The plugin already holds as many timers as the site allows
+/// (`timer_settings` `max_per_plugin`, default 10,000). Registering a name it
+/// already holds replaces that timer and is not refused.
+///
+/// Added by B278, after 0.106.0.
+pub const ERR_TIMER_LIMIT: i32 = -98;
 
 // =============================================================================
 // HTTP API errors (`trovato:kernel/http`)

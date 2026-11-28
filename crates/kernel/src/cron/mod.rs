@@ -2442,6 +2442,32 @@ impl CronService {
         }
     }
 
+    /// Dispatch a background tap to one plugin, with the background principal
+    /// and the services `tap_cron` and `tap_queue_worker` carry: the timer
+    /// scheduler's `tap_timer` (B278). `None` when no dispatcher is wired.
+    pub async fn dispatch_background_tap(
+        &self,
+        tap_name: &str,
+        plugin_name: &str,
+        input_json: &str,
+    ) -> Option<crate::tap::DispatchOutcome> {
+        let dispatcher = self.tap_dispatcher.as_ref()?;
+        let state = self.background_state(dispatcher);
+        Some(
+            dispatcher
+                .dispatch_to_plugin_outcome(tap_name, input_json, plugin_name, state)
+                .await,
+        )
+    }
+
+    /// How long a background tap may run, seconds, when a dispatcher is
+    /// wired: what a timer's claim lease has to outlast.
+    pub fn background_wallclock_ceiling_secs(&self) -> Option<u64> {
+        self.tap_dispatcher
+            .as_ref()
+            .map(|d| d.runtime().limits().background_wallclock_ceiling_secs)
+    }
+
     /// Build a background `RequestState` for kernel-internal tap dispatch.
     ///
     /// Carries the P11c / D-40 background principal so a plugin holding the

@@ -188,6 +188,9 @@ struct AppStateInner {
     /// Cron service for scheduled operations.
     cron: Arc<CronService>,
 
+    /// Precise timers (B278): registration and the scheduler loop.
+    timers: Arc<crate::timer::TimerService>,
+
     /// Prometheus metrics.
     metrics: Arc<Metrics>,
 
@@ -1375,6 +1378,13 @@ impl AppState {
         // used to be read from the environment inside the tasks themselves.
         cron.apply_runtime_config(&config.runtime);
         let cron = Arc::new(cron);
+        // Precise timers beside cron (B278): plugin timers reach their plugin
+        // through cron's background dispatch, with the same services.
+        crate::timer::set_env_overrides(config.runtime.timer_overrides);
+        let timers = Arc::new(crate::timer::TimerService::new(
+            db.clone(),
+            Some(cron.clone()),
+        ));
 
         // Spawn background cache reload tasks for collection caches.
         // These periodically reload all entries from the database so that
@@ -1452,6 +1462,7 @@ impl AppState {
                 forms,
                 files,
                 cron,
+                timers,
                 metrics,
                 rate_limiter,
                 batch,
@@ -1806,6 +1817,11 @@ impl AppState {
     /// Get the cron service.
     pub fn cron(&self) -> &Arc<CronService> {
         &self.inner.cron
+    }
+
+    /// Get the timer service (B278).
+    pub fn timers(&self) -> &Arc<crate::timer::TimerService> {
+        &self.inner.timers
     }
 
     /// Get the metrics registry.

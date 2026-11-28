@@ -49,6 +49,7 @@ pub mod system_log;
 pub mod tap;
 pub mod telemetry;
 pub mod theme;
+pub mod timer;
 pub mod update_status;
 
 // Re-export key types for testing
