@@ -471,9 +471,10 @@ async fn list_menus(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let rows: Vec<(String, i64, i64)> = match sqlx::query_as(
         "SELECT menu_name, COUNT(*), COUNT(*) FILTER (WHERE plugin = $1) \
@@ -528,8 +529,25 @@ async fn list_menus(
     let total = i64::try_from(menus.len()).unwrap_or(i64::MAX);
     let menus = page_of(&menus, &query);
 
+    let list = query.view(total, menus.len(), Some(&sort));
+    let forms = match super::admin_list::render_forms(
+        &state,
+        &session,
+        &user,
+        &list,
+        "/admin/structure/menus",
+        "Filter menus",
+        "Menu name contains",
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(forms) => forms,
+        Err(response) => return response,
+    };
     let mut context = tera::Context::new();
-    context.insert("list", &query.view(total, menus.len(), Some(&sort)));
+    forms.insert_into(&mut context);
+    context.insert("list", &list);
     context.insert("menus", &menus);
     context.insert("plugin_entries", &plugin_entries(&state));
     context.insert("path", "/admin/structure/menus");
@@ -552,9 +570,10 @@ async fn show_menu(
     Path(menu_name): Path<String>,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let links = match menu_links(&state, &menu_name).await {
         Ok(links) => links,
@@ -574,11 +593,29 @@ async fn show_menu(
     let total = i64::try_from(rows.len()).unwrap_or(i64::MAX);
     let rows = page_of(&rows, &query);
 
+    let list = query.view(total, rows.len(), None);
+    let action = format!("/admin/structure/menus/{menu_name}");
+    let forms = match super::admin_list::render_forms(
+        &state,
+        &session,
+        &user,
+        &list,
+        &action,
+        "Filter links",
+        "Title or path contains",
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(forms) => forms,
+        Err(response) => return response,
+    };
     let mut context = tera::Context::new();
-    context.insert("list", &query.view(total, rows.len(), None));
+    forms.insert_into(&mut context);
+    context.insert("list", &list);
     context.insert("menu_name", &menu_name);
     context.insert("rows", &rows);
-    context.insert("path", &format!("/admin/structure/menus/{menu_name}"));
+    context.insert("path", &action);
 
     render_admin_template(
         &state,

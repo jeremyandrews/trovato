@@ -34,6 +34,10 @@ const CONTENT_FLASH_KEY: &str = "content_admin_flash";
 /// Apply. The row checkboxes join it through their `form` attribute.
 const BULK_FORM_ID: &str = "content_bulk_form";
 
+/// The moderated content list's filter: a GET form with the moderation
+/// state select.
+const MODERATED_FILTER_FORM_ID: &str = "moderated-filter";
+
 /// The form on the page that confirms deleting one item.
 const DELETE_FORM_ID: &str = "content_delete_form";
 
@@ -215,19 +219,8 @@ async fn list_content(
     context.insert("operations", &operations);
     context.insert("authors", &authors);
     context.insert("content_types", &content_types);
-    context.insert("type_filter", &type_filter.unwrap_or(""));
-    // The filter and bulk selects' options, as [value, label] pairs for the
-    // form macros. Type and stage labels are data; the others are English
-    // sources the template translates.
-    let type_options: Vec<(&str, &str)> = content_types
-        .iter()
-        .map(|ct| (ct.machine_name.as_str(), ct.label.as_str()))
-        .collect();
-    context.insert("type_options", &type_options);
-    context.insert(
-        "status_options",
-        &[("1", "Published"), ("0", "Unpublished")],
-    );
+    // The bulk select's options. Stage labels are data; the others are
+    // English sources the form templates translate.
     let mut bulk_options = vec![
         ("publish", "Publish selected"),
         ("unpublish", "Unpublish selected"),
@@ -266,12 +259,49 @@ async fn list_content(
     };
     context.insert("bulk_form", &bulk_form_html);
     context.insert("bulk_form_id", BULK_FORM_ID);
-    context.insert(
-        "status_filter",
-        &status_filter.map(|s| s.to_string()).unwrap_or_default(),
-    );
     context.insert("flash", &flash);
-    context.insert("list", &query.view(total, items.len(), Some(&sort)));
+    let list = query.view(total, items.len(), Some(&sort));
+    // The filter's selects: the type (its labels are data) and the status.
+    let type_options: Vec<(String, String)> = content_types
+        .iter()
+        .map(|ct| (ct.machine_name.clone(), ct.label.clone()))
+        .collect();
+    let status_options = vec![
+        ("1".to_string(), "Published".to_string()),
+        ("0".to_string(), "Unpublished".to_string()),
+    ];
+    let forms = match super::admin_list::render_forms(
+        &state,
+        &session,
+        &user,
+        &list,
+        "/admin/content",
+        "Filter content",
+        "Title contains",
+        vec![
+            (
+                "type",
+                FormElement::select(type_options)
+                    .title("Type")
+                    .placeholder("- Any -")
+                    .default_value(type_filter.unwrap_or("")),
+            ),
+            (
+                "status",
+                FormElement::select(status_options)
+                    .title("Status")
+                    .placeholder("- Any -")
+                    .default_value(status_filter.map(|s| s.to_string()).unwrap_or_default()),
+            ),
+        ],
+    )
+    .await
+    {
+        Ok(forms) => forms,
+        Err(response) => return response,
+    };
+    forms.insert_into(&mut context);
+    context.insert("list", &list);
     context.insert("path", "/admin/content");
 
     render_admin_template(&state, &viewer, "admin/content-list.html", context).await
@@ -361,13 +391,42 @@ async fn list_moderated(
         })
         .collect();
 
+    // The filter: one select, its empty choice every state but Published.
+    let filter = crate::form::Form::new(MODERATED_FILTER_FORM_ID)
+        .method("get")
+        .action("/admin/content/moderated")
+        .attribute("class", "filter-form")
+        .element(
+            "state",
+            FormElement::select(vec![
+                ("draft".to_string(), "Draft".to_string()),
+                ("archived".to_string(), "Archived".to_string()),
+            ])
+            .title("Moderation state")
+            .placeholder("- Any not published -")
+            .default_value(state_filter.unwrap_or(""))
+            .weight(0),
+        )
+        .element(
+            "op",
+            FormElement::submit("Filter")
+                .attribute("class", "button--secondary")
+                .weight(1),
+        );
+    // The list is for a holder of a permission, who may be anonymous on a
+    // site that grants it so; the form is built for whoever is asking.
+    let filter_form = match super::helpers::session_user(&state, &session).await {
+        Some(account) => admin_form::render(&state, &session, &account, filter, &[]).await,
+        None => admin_form::render_as(&state, &session, &viewer, filter, &[]).await,
+    };
+    let filter_form = match filter_form {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+
     let mut context = tera::Context::new();
     context.insert("items", &listed);
-    context.insert("state_filter", &state_filter.unwrap_or(""));
-    context.insert(
-        "state_options",
-        &[("draft", "Draft"), ("archived", "Archived")],
-    );
+    context.insert("filter_form", &filter_form);
     context.insert("path", "/admin/content/moderated");
     render_admin_template(&state, &viewer, "admin/content-moderated.html", context).await
 }

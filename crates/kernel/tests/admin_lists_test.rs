@@ -553,3 +553,99 @@ fn the_content_forms_are_pipeline_forms_and_refuse_a_post_without_a_build_id() {
         assert!(exists(app, id).await, "nothing is deleted");
     });
 }
+
+// =============================================================================
+// B83c PR 5: the content, moderated content, comment, file and media
+// listings' filter and sort forms are GET forms built by the form pipeline.
+// =============================================================================
+
+/// The GET pipeline form `form_id` on `html`: it carries the pipeline marker
+/// and, changing nothing, no CSRF token and no build id.
+fn get_pipeline_form<'a>(html: &'a str, form_id: &str, what: &str) -> &'a str {
+    let form = common::form_in(html, form_id)
+        .unwrap_or_else(|| panic!("{what}: no pipeline form {form_id}: {html}"));
+    assert!(form.contains("data-form-pipeline"), "{what}: {form}");
+    assert!(
+        form.contains(r#"method="get""#),
+        "{what}: a GET form: {form}"
+    );
+    assert!(
+        !form.contains(r#"name="_token""#) && !form.contains(r#"name="_form_build_id""#),
+        "{what}: a GET form carries no token or build id: {form}"
+    );
+    form
+}
+
+/// Every listing's filter (and, where it sorts, its sort form) comes from the
+/// pipeline and keeps the filter values from the address.
+#[test]
+fn the_content_listings_filter_through_pipeline_get_forms() {
+    run_test(async {
+        let app = shared_app().await;
+        let cookies = admin(app, "b83cpr5content").await;
+
+        let (status, page) = get(app, &cookies, "/admin/content?type=page&status=1&q=kept").await;
+        assert_eq!(status, StatusCode::OK);
+        let filter = get_pipeline_form(&page, "list-filter", "content");
+        assert!(filter.contains(r#"role="search""#), "{filter}");
+        assert!(
+            filter.contains(r#"<option value="page" selected>"#),
+            "{filter}"
+        );
+        assert!(
+            filter.contains(r#"<option value="1" selected>"#),
+            "{filter}"
+        );
+        assert!(
+            filter.contains(r#"<option value="">- Any -</option>"#),
+            "{filter}"
+        );
+        assert!(filter.contains(r#"value="kept""#), "{filter}");
+        assert!(filter.contains("Clear filter"), "{filter}");
+        get_pipeline_form(&page, "list-sort", "content sort");
+
+        let (status, page) = get(app, &cookies, "/admin/content/moderated?state=draft").await;
+        assert_eq!(status, StatusCode::OK);
+        let filter = get_pipeline_form(&page, "moderated-filter", "moderated");
+        assert!(
+            filter.contains(r#"<option value="draft" selected>"#),
+            "{filter}"
+        );
+        assert!(
+            filter.contains(r#"<option value="">- Any not published -</option>"#),
+            "{filter}"
+        );
+
+        let (status, page) = get(app, &cookies, "/admin/content/comments?q=kept").await;
+        assert_eq!(status, StatusCode::OK);
+        let filter = get_pipeline_form(&page, "list-filter", "comments");
+        assert!(filter.contains(r#"name="status""#), "{filter}");
+        get_pipeline_form(&page, "list-sort", "comments sort");
+
+        let (status, page) = get(app, &cookies, "/admin/content/files?status=1").await;
+        assert_eq!(status, StatusCode::OK);
+        let filter = get_pipeline_form(&page, "list-filter", "files");
+        assert!(
+            filter.contains(r#"<option value="1" selected>"#),
+            "{filter}"
+        );
+        get_pipeline_form(&page, "list-sort", "files sort");
+
+        let (status, page) = get(app, &cookies, "/admin/media?type=image").await;
+        assert_eq!(status, StatusCode::OK);
+        let filter = get_pipeline_form(&page, "list-filter", "media");
+        assert!(
+            filter.contains(r#"<option value="image" selected>"#),
+            "{filter}"
+        );
+        assert!(
+            filter.contains(r#"<option value="">All files</option>"#),
+            "{filter}"
+        );
+        // The older address for every type still lists every type.
+        let (status, page) = get(app, &cookies, "/admin/media?type=all").await;
+        assert_eq!(status, StatusCode::OK);
+        let filter = get_pipeline_form(&page, "list-filter", "media, all");
+        assert!(!filter.contains(" selected>"), "{filter}");
+    });
+}
