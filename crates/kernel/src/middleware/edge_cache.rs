@@ -220,7 +220,7 @@ fn merge_vary_cookie(headers: &mut HeaderMap) {
 }
 
 /// The tag header's value: every collected tag plus [`SITE`], joined with
-/// commas, or — over [`MAX_TAG_HEADER_BYTES`] — `items` and `site` alone.
+/// commas, or (over [`MAX_TAG_HEADER_BYTES`]) `items` and `site` alone.
 pub(crate) fn tags_header_value(collected: &BTreeSet<String>) -> String {
     let mut tags = collected.clone();
     tags.insert(SITE.to_string());

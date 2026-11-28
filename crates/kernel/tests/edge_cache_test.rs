@@ -29,7 +29,7 @@ use std::sync::Mutex;
 use axum::body::{Body, to_bytes};
 use axum::http::{Request, StatusCode, header};
 use axum::response::Response;
-use common::{TestApp, run_test, username};
+use common::{TestApp, grant_via_role, run_test, user_id_of, username};
 use trovato_kernel::models::CreateItem;
 use trovato_kernel::models::stage::LIVE_STAGE_ID;
 use trovato_kernel::tap::UserContext;
@@ -359,6 +359,31 @@ fn a_gather_listing_carries_the_items_tag() {
         // the pages that load a single item record it), but the listing
         // must not accidentally miss `items` because something else ran
         // first.
+        let _ = id;
+    });
+}
+
+/// The stock front page (no front page configured, so `/` lists promoted
+/// items directly: `routes::front::render_promoted_listing`, a raw query
+/// rather than a gather run) must carry `items` too, the same as a gather
+/// listing: promoting, demoting or editing any item on it should purge a
+/// cached copy. `list_promoted` is its own code path, so this is not covered
+/// by the gather-listing test above.
+#[test]
+fn the_stock_front_page_carries_the_items_tag() {
+    run_test(async {
+        let app = app_with_edge_cache_on().await;
+        let id = create_published_item(&app, "B303 promoted front page item", 1).await;
+
+        // `/it` (bare) rewrites to `/`, the front page route, under a
+        // `UrlPrefix` language source, same as `prefixed_item_path` above.
+        let response = get(&app, "/it").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let tags = assert_public(&response, "surrogate-key");
+        assert!(
+            tags.contains(&"items".to_string()),
+            "the stock front page's promoted listing: {tags:?}"
+        );
         let _ = id;
     });
 }
@@ -725,6 +750,181 @@ fn trovato_cdn_purge_http_delivers_item_tile_and_everything_purges() {
         );
         let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
         assert_eq!(sent["all"], true);
+    });
+}
+
+/// The value of a named `<input>` inside `scoped`, the same lookup
+/// `site_operations_test.rs`'s `input_value` uses.
+fn input_value(html: &str, name: &str) -> Option<String> {
+    let needle = format!(r#"name="{name}""#);
+    let at = html.find(&needle)?;
+    let start = html[..at].rfind('<')?;
+    let end = at + html[at..].find('>')?;
+    let tag = &html[start..end];
+    let vat = tag.find(r#"value=""#)? + 7;
+    let vend = tag[vat..].find('"')? + vat;
+    Some(tag[vat..vend].to_string())
+}
+
+/// The token and build id of the form whose `id` is `form_id`: the admin
+/// performance page carries two forms with the same `action`
+/// (`/admin/config/performance`), so scoping by `action` alone (as
+/// `site_operations_test.rs`'s `form_pairs` does for the single-form pages it
+/// covers) would always find whichever form comes first in the template.
+fn form_pairs_by_form_id(html: &str, form_id: &str) -> (String, String) {
+    let at = html
+        .find(&format!(r#"id="{form_id}""#))
+        .unwrap_or_else(|| panic!("a form with id {form_id}"));
+    let scoped = &html[html[..at].rfind("<form").unwrap()..];
+    let scoped = &scoped[..scoped.find("</form>").unwrap()];
+    (
+        input_value(scoped, "_token").unwrap(),
+        input_value(scoped, "_form_build_id").unwrap(),
+    )
+}
+
+/// The admin's manual purge, through the real route: `POST
+/// /admin/config/performance` with the "Purge the CDN" form, both scopes and
+/// its validation. Covers what
+/// `trovato_cdn_purge_http_delivers_item_tile_and_everything_purges` does
+/// not: the permission gate, the form's own validation
+/// (`validate_purge_request`/`is_valid_purge_tag`), and that both the
+/// "These tags" and "Everything" branches actually call
+/// `edge_cache::purge`/`purge_everything` and `drain_now` rather than one of
+/// the two silently doing nothing.
+///
+/// A `TestApp` loads no real plugin into its own `AppState` (see
+/// `load_purge_http_dispatcher`'s docs on why scenario (h) above uses a
+/// dispatcher of its own instead), so the route's own synchronous
+/// `drain_now(&state)` call always finds `tap_cache_purge` unimplemented and
+/// reports `DrainOutcome::NoPlugin`, after already taking (and so discarding)
+/// whatever was pending: there is no plugin in this process for a *second*,
+/// separately loaded dispatcher to then observe a delivery through, the way
+/// the direct-call test above does. What a flash of "No CDN purge plugin is
+/// enabled" after a valid submission proves is exactly what this test needs:
+/// permission held, the posted scope and tags passed validation, and the
+/// matching `edge_cache` call ran without erroring.
+#[test]
+fn the_admin_purge_form_validates_and_takes_both_scopes() {
+    run_test(async {
+        let app = TestApp::with_config(small_pool).await;
+
+        let name = username("b303purgeform");
+        app.create_test_user(&name, "test-password-123", &format!("{name}@example.com"))
+            .await;
+        let id = user_id_of(&app, &name).await;
+        grant_via_role(&app, id, &["administer site"]).await;
+        let cookies = app.login(&name, "test-password-123").await;
+
+        let response = get_with_cookies(&app, "/admin/config/performance", &cookies).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_string(response).await;
+        assert!(html.contains("Purge the CDN"), "the new section");
+
+        // The CSRF token is single-use (`verify_csrf_token` removes it from
+        // the session on every check, valid or not), so each submission below
+        // gets its own: fetch the page, scope the "Purge the CDN" form's
+        // current token and build id, then POST `body_fields`.
+        async fn post(app: &TestApp, cookies: &str, body_fields: &str) -> (StatusCode, String) {
+            let page = get_with_cookies(app, "/admin/config/performance", cookies).await;
+            let html = body_string(page).await;
+            let (token, build_id) = form_pairs_by_form_id(&html, "cdn_purge_form");
+            let body = format!(
+                "{body_fields}&_token={}&_form_build_id={}",
+                urlencoding::encode(&token),
+                urlencoding::encode(&build_id),
+            );
+            let response = app
+                .request_with_cookies(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/admin/config/performance")
+                        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                        .body(Body::from(body))
+                        .unwrap(),
+                    cookies,
+                )
+                .await;
+            let status = response.status();
+            (status, body_string(response).await)
+        }
+
+        // An invalid tag (one outside the vocabulary's character set) is
+        // refused: the redirect back carries the field's own error as its
+        // flash, same as every other posted form on this page.
+        let (status, body) = post(
+            &app,
+            &cookies,
+            &format!(
+                "scope=tags&tags={}",
+                urlencoding::encode("not a valid tag!")
+            ),
+        )
+        .await;
+        assert!(
+            status.is_redirection(),
+            "a validation error still redirects back, got {status}: {body}"
+        );
+        let response = get_with_cookies(&app, "/admin/config/performance", &cookies).await;
+        let html_after_error = body_string(response).await;
+        assert!(
+            html_after_error.contains("is not a valid tag"),
+            "the field's own error: {html_after_error}"
+        );
+
+        // "These tags": at least one of each kind, through the real
+        // `is_valid_purge_tag` check, posted the way a browser's
+        // `<textarea>` would, one per line.
+        let (status, body) = post(
+            &app,
+            &cookies,
+            &format!(
+                "scope=tags&tags={}",
+                urlencoding::encode("item:00000000-0000-0000-0000-000000000000\nsite"),
+            ),
+        )
+        .await;
+        assert!(
+            status.is_redirection(),
+            "a valid purge redirects back, got {status}: {body}"
+        );
+        let response = get_with_cookies(&app, "/admin/config/performance", &cookies).await;
+        let html = body_string(response).await;
+        assert!(
+            html.contains("No CDN purge plugin is enabled"),
+            "the Tags branch ran purge()+drain_now(), reported honestly for this \
+             plugin-less fixture: {html}"
+        );
+
+        // "Everything": the other branch, same honest report.
+        let (status, body) = post(&app, &cookies, "scope=everything&tags=").await;
+        assert!(status.is_redirection(), "got {status}: {body}");
+        let response = get_with_cookies(&app, "/admin/config/performance", &cookies).await;
+        let html = body_string(response).await;
+        assert!(
+            html.contains("No CDN purge plugin is enabled"),
+            "the Everything branch ran purge_everything()+drain_now() too: {html}"
+        );
+    });
+}
+
+/// An administrator without `clear caches` or `administer site` cannot open
+/// the page or submit either of its forms.
+#[test]
+fn the_admin_purge_form_refuses_anyone_without_permission() {
+    run_test(async {
+        let app = TestApp::with_config(small_pool).await;
+        let name = username("b303purgedenied");
+        app.create_test_user(&name, "test-password-123", &format!("{name}@example.com"))
+            .await;
+        let cookies = app.login(&name, "test-password-123").await;
+
+        let response = get_with_cookies(&app, "/admin/config/performance", &cookies).await;
+        assert!(
+            response.status() == StatusCode::FORBIDDEN || response.status().is_redirection(),
+            "a plain user must not see the page, got {}",
+            response.status()
+        );
     });
 }
 

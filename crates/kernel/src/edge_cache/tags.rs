@@ -2,7 +2,7 @@
 //! a response was built from.
 //!
 //! Three kinds of tag: [`SITE`] (added by the `edge_cache` middleware to
-//! every response it marks public — menus, tiles, aliases, settings, theme
+//! every response it marks public: menus, tiles, aliases, settings, theme
 //! and language all render on every page, so nothing else needs to ask for
 //! it), [`ITEMS`] (a response that ran a gather query), and [`item_tag`] (one
 //! per item loaded while serving a response). [`record_item`] and

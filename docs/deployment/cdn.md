@@ -17,7 +17,7 @@ Three environment settings, read once at startup:
 
 A value that does not parse as a non-negative integer, or a tag header name
 that is not a valid HTTP header token, refuses to start, naming the
-variable — the same way `COOKIE_SECURE` does.
+variable, the same way `COOKIE_SECURE` does.
 
 **The public half is off until `EDGE_CACHE_S_MAXAGE` is set above 0.** This
 is deliberate: no existing site starts being cached by a CDN on upgrade. The
@@ -26,9 +26,9 @@ storing a personal response, which no correct cache should store anyway.
 
 Set the tag header to whatever your CDN's purge API expects:
 
-- `Surrogate-Key` (the default) — Fastly, Varnish.
-- `Cache-Tag` — Cloudflare.
-- `Edge-Cache-Tag` — Akamai.
+- `Surrogate-Key` (the default): Fastly, Varnish.
+- `Cache-Tag`: Cloudflare.
+- `Edge-Cache-Tag`: Akamai.
 
 ## Which responses are public, and which are private
 
@@ -44,7 +44,7 @@ s-maxage=<EDGE_CACHE_S_MAXAGE>` (plus `Vary: Cookie`, merged with any existing
 - the response sets no cookie;
 - the page's language was decided by the URL alone (a language prefix like
   `/fr/...`, or the site's default language when the site has only one
-  language) — never by the visitor's session or an `Accept-Language` header.
+  language), never by the visitor's session or an `Accept-Language` header.
 
 That last rule is the one easy to miss. A CDN that ignores `Vary` for HTML
 (Cloudflare does) would otherwise serve whichever visitor's negotiated
@@ -56,13 +56,13 @@ visitor.
 
 Anything that fails one of these, but was a request carrying a session
 cookie or an `Authorization` header, was not `GET`/`HEAD`, or set a cookie,
-gets `Cache-Control: private, no-store` instead — whatever
+gets `Cache-Control: private, no-store` instead, whatever
 `EDGE_CACHE_S_MAXAGE` is set to. This half needs no setting: it is on by
 default, because a signed-in page, an API response authenticated by a
 bearer token, a form POST and anything that mints a session cookie (the
 login page, for an anonymous visitor) must never sit in a shared cache.
 
-Everything else — an anonymous 404, for example — gets no `Cache-Control`
+Everything else (an anonymous 404, for example) gets no `Cache-Control`
 from this layer at all, exactly as before this change. It is never marked
 public.
 
@@ -73,12 +73,12 @@ check) is left exactly as it answered; this layer never overwrites it.
 
 Three kinds of tag, carried in the configured tag header, comma separated:
 
-- `site` — every response this layer marks public carries it. Menus, tiles,
+- `site`: every response this layer marks public carries it. Menus, tiles,
   aliases, site settings, the theme and the language all render on every
   page, so a write to any of them purges every cached page at once.
-- `items` — carried by a response that ran a Gather query (a listing, the
+- `items`: carried by a response that ran a Gather query (a listing, the
   default front page when it is one).
-- `item:<uuid>` — one per item loaded while serving the response (an item
+- `item:<uuid>`: one per item loaded while serving the response (an item
   page, a tile that shows a specific item).
 
 If the joined header would exceed 8 KiB, the `item:` tags are dropped and
@@ -101,14 +101,14 @@ also purges `items`, so nothing goes stale.
 
 Notably **not** a purge trigger: a plugin variable write (often made from
 `tap_cron`, with no visitor watching), and a command-line write (`config
-import`, `trovato cache clear`) — those wait out `s-maxage`, the same as any
+import`, `trovato cache clear`): those wait out `s-maxage`, the same as any
 other change a running server cannot see until its caches expire.
 
 ## The purge path
 
 A write calls `edge_cache::purge(tags)` (or `purge_everything()` for a
 stage publish) right after it commits. This only adds to a process-wide
-pending set — cheap, and safe to call from anywhere. A background task
+pending set, cheap, and safe to call from anywhere. A background task
 drains the set once a second: if at least one enabled plugin implements the
 `tap_cache_purge` tap, it dispatches the tap once with
 `{"tags": [...], "all": false}` (or `{"tags": [], "all": true}` when more
@@ -118,7 +118,7 @@ set insert that recorded it.
 
 `tap_cache_purge` is a notification: a plugin that implements it only
 enqueues the payload onto its own plugin queue (`queue_push`/`queue_enqueue`)
-and returns. Delivery, retry and backoff are the plugin queue's job —
+and returns. Delivery, retry and backoff are the plugin queue's job:
 `tap_queue_worker` does the actual purge, and a transport failure or a
 non-2xx answer from the CDN is retried with the queue's usual backoff and
 dead-letter handling.
@@ -135,9 +135,9 @@ script, a Fastly purge-by-tag webhook, an internal cache).
 
 Variables (`/admin/extend` → the plugin's settings):
 
-- `url` (required) — where the purge is POSTed. Unset: the purge is dropped
+- `url` (required): where the purge is POSTed. Unset: the purge is dropped
   with a warning in the log, not retried.
-- `secret` (optional) — sent as `Authorization: Bearer <secret>`.
+- `secret` (optional): sent as `Authorization: Bearer <secret>`.
 
 The POST body is the same JSON the tap received:
 `{"tags": ["site", "item:0b6b3b8e-..."], "all": false}` or
@@ -149,8 +149,8 @@ Calls Cloudflare's `purge_cache` API directly.
 
 Variables:
 
-- `zone_id` (required) — the zone to purge.
-- `api_token` (required) — a token scoped to `Cache Purge` on that zone,
+- `zone_id` (required): the zone to purge.
+- `api_token` (required): a token scoped to `Cache Purge` on that zone,
   sent as `Authorization: Bearer <api_token>`. Stored like any other secret
   variable: config export writes `env:TROVATO_SECRET_VARIABLE_PLUGIN_TROVATO_CDN_PURGE_CLOUDFLARE_API_TOKEN_VALUE`
   in its place (see `SECRET_VARIABLE_KEYS`), so the token never sits in a
@@ -158,8 +158,8 @@ Variables:
 
 Named tags become `{"tags": [...]}` requests, chunked at 30 tags each (the
 API's own limit); `all: true` becomes one `{"purge_everything": true}`
-request. A response whose body is not `{"success": true, ...}` — including a
-200 with `"success": false` — is treated as a failure and retried.
+request. A response whose body is not `{"success": true, ...}` (including a
+200 with `"success": false`) is treated as a failure and retried.
 
 ## Configuring Cloudflare
 
@@ -185,7 +185,7 @@ request. A response whose body is not `{"success": true, ...}` — including a
 
 No internal page cache (no in-process or Redis-held rendered page), no
 `ETag`/`304` handling, no `stale-while-revalidate`. Purge by path or URL
-pattern, and a `trovato cache purge` command, are not provided — the tag
+pattern, and a `trovato cache purge` command, are not provided; the tag
 vocabulary above is the whole purge surface. A multilingual site's
 unprefixed pages stay uncacheable; turning off `Accept-Language`
 negotiation so they could be is a later change. See `docs/BACKLOG.md`

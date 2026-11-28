@@ -93,7 +93,7 @@ pub enum DrainOutcome {
 ///
 /// Takes the dispatcher and pool directly, rather than an [`AppState`], so a
 /// test can dispatch to a plugin it loaded into a dispatcher of its own
-/// without needing a whole app built around that plugin — see
+/// without needing a whole app built around that plugin, see
 /// [`drain_now_with`].
 async fn drain(dispatcher: &Arc<TapDispatcher>, db: &PgPool) -> DrainOutcome {
     let pending = take_pending();

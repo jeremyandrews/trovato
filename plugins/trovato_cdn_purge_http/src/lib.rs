@@ -67,8 +67,8 @@ fn build_request(url: &str, secret: Option<&str>, job: &Value) -> HttpRequest {
 }
 
 /// Turn the host's answer into the tap's result (seam for testing without a
-/// live server): a 2xx status is success, anything else — a transport failure
-/// or a non-2xx status — is an error, so the queue retries with backoff.
+/// live server): a 2xx status is success, anything else (a transport failure
+/// or a non-2xx status) is an error, so the queue retries with backoff.
 fn interpret_response(url: &str, result: Result<HttpResponse, i32>) -> Result<Value, String> {
     match result {
         Ok(response) if (200..300).contains(&response.status) => {

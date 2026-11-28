@@ -106,8 +106,8 @@ sets `EDGE_CACHE_S_MAXAGE`, for the public half.
 `Authorization` header, a form POST, or anything that sets a cookie, now
 answers `Cache-Control: private, no-store` wherever the route itself set no
 `Cache-Control`. This is new: before B303 those responses carried no
-`Cache-Control` at all. Nothing else about them changed — no cookie, no
-header, no body is different — and a correct cache was never supposed to
+`Cache-Control` at all. Nothing else about them changed: no cookie, no
+header, no body is different, and a correct cache was never supposed to
 store a personal response anyway, so this should be invisible to every
 visitor and tightens, not loosens, what a misconfigured intermediate cache
 could have done with one of these pages.
