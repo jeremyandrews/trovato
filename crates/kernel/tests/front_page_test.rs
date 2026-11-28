@@ -534,9 +534,7 @@ async fn post_site_form(app: &TestApp, cookies: &str, front_page: &str) -> (Stat
         .await;
     assert_eq!(page.status(), StatusCode::OK);
     let html = body_text(page).await;
-    let needle = r#"name="_token" value=""#;
-    let start = html.find(needle).expect("token input") + needle.len();
-    let token = html[start..start + html[start..].find('"').unwrap()].to_string();
+    let pipeline = common::form_fields(&html, "site_settings_form");
 
     let mut site_mail = SiteConfig::site_mail(&app.db).await.unwrap_or_default();
     if site_mail.is_empty() {
@@ -549,7 +547,6 @@ async fn post_site_form(app: &TestApp, cookies: &str, front_page: &str) -> (Stat
         .and_then(|v| v.as_str().map(String::from))
         .unwrap_or_else(|| "10".to_string());
     let mut fields: Vec<(&str, String)> = vec![
-        ("_token", token),
         ("site_name", SiteConfig::site_name(&app.db).await.unwrap()),
         (
             "site_slogan",
@@ -575,9 +572,12 @@ async fn post_site_form(app: &TestApp, cookies: &str, front_page: &str) -> (Stat
     if trovato_kernel::update_status::setting_allows_check(&app.db).await {
         fields.push(("update_check", "1".to_string()));
     }
-    let form = fields
-        .iter()
-        .map(|(k, v)| format!("{k}={}", urlencoding::encode(v)))
+    let form = std::iter::once(pipeline)
+        .chain(
+            fields
+                .iter()
+                .map(|(k, v)| format!("{k}={}", urlencoding::encode(v))),
+        )
         .collect::<Vec<_>>()
         .join("&");
 

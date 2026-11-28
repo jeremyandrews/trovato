@@ -1,11 +1,12 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/list.html" as list %}
 
 {#- Precise timers (routes::admin_timers). `list` is the filter, sort and
     page; `timers` the rows, each with its next run in the viewer's zone
     (`zone`) and as a relative time; `may_administer` shows the row actions
-    and the links to edit and to the throttles. The shell renders `flash`. -#}
+    and the links to edit and to the throttles; its pause, resume and run
+    buttons belong to `actions_form` (one pipeline form for the table) and
+    name their own address. The shell renders `flash`. -#}
 
 {% block page_title %}{{ t(s="Timers") }}{% endblock page_title %}
 
@@ -13,13 +14,9 @@
 <p>{{ t(s="Timers run work due at a known second, such as a scheduled publish. Routine sweeps belong to cron.") }} <a href="/admin/reports/cron">{{ t(s="Cron") }}</a></p>
 
 <div class="admin-card">
-    {{ list::filter_start(action=path, label=t(s="Filter the timers")) }}
-        {{ form::field(name="q", type="search", label=t(s="Name contains"), value=list.q, width="20", wrapper="filter-item") }}
-        {{ form::select(name="owner", label=t(s="Owner"), options=owner_options, value=owner_filter, empty=t(s="- Any -"), wrapper="filter-item") }}
-        {{ form::select(name="status", label=t(s="Status"), options=status_options, value=status_filter, empty=t(s="- Any -"), translate_options=true, wrapper="filter-item") }}
-    {{ list::filter_end(list=list, action=path) }}
+    {{ filter_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form (routes::admin_list::render_forms); every value is escaped by the form templates #}
 </div>
-{{ list::sort_form(list=list, action=path) }}
+{{ sort_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 
 {% if timers %}
 <div class="admin-card">
@@ -52,27 +49,12 @@
                     <td class="operations">
                         <a href="/admin/reports/timers/{{ timer.id }}/edit" aria-label="{{ t(s="Edit {name}", name=timer.name) }}">{{ t(s="Edit") }}</a>
                         {% if timer.status == "paused" or timer.status == "failed" %}
-                        <form method="post" action="/admin/reports/timers/{{ timer.id }}/resume" class="inline-form" novalidate>
-                            {{ form::csrf(csrf_token=csrf_token) }}
-                            <button type="submit" class="link-button" aria-label="{{ t(s="Resume {name}", name=timer.name) }}">{{ t(s="Resume") }}</button>
-                        </form>
+                        <button type="submit" form="{{ actions_form_id }}" formaction="/admin/reports/timers/{{ timer.id }}/resume" class="link-button" aria-label="{{ t(s="Resume {name}", name=timer.name) }}">{{ t(s="Resume") }}</button>
                         {% else %}
-                        <form method="post" action="/admin/reports/timers/{{ timer.id }}/pause" class="inline-form" novalidate>
-                            {{ form::csrf(csrf_token=csrf_token) }}
-                            <button type="submit" class="link-button" aria-label="{{ t(s="Pause {name}", name=timer.name) }}">{{ t(s="Pause") }}</button>
-                        </form>
+                        <button type="submit" form="{{ actions_form_id }}" formaction="/admin/reports/timers/{{ timer.id }}/pause" class="link-button" aria-label="{{ t(s="Pause {name}", name=timer.name) }}">{{ t(s="Pause") }}</button>
                         {% endif %}
-                        <form method="post" action="/admin/reports/timers/{{ timer.id }}/run" class="inline-form" novalidate>
-                            {{ form::csrf(csrf_token=csrf_token) }}
-                            <button type="submit" class="link-button" aria-label="{{ t(s="Run now: {name}", name=timer.name) }}">{{ t(s="Run now") }}</button>
-                        </form>
-                        {#- delete_button, with a short visible label: the name is in aria-label. -#}
-                        <form method="post" action="/admin/reports/timers/{{ timer.id }}/cancel?confirm" class="inline-form" novalidate>
-                            {{ form::csrf(csrf_token=csrf_token) }}
-                            <input type="hidden" name="_confirm" value="{{ t(s="Cancel the timer {name}? Its owner is not told, and it does not run again unless its owner sets it again.", name=timer.name) }}">
-                            <input type="hidden" name="_confirm_label" value="{{ t(s="Cancel {name}", name=timer.name) }}">
-                            <button type="submit" class="link-button link-button--danger" aria-label="{{ t(s="Cancel {name}", name=timer.name) }}">{{ t(s="Cancel") }}</button>
-                        </form>
+                        <button type="submit" form="{{ actions_form_id }}" formaction="/admin/reports/timers/{{ timer.id }}/run" class="link-button" aria-label="{{ t(s="Run now: {name}", name=timer.name) }}">{{ t(s="Run now") }}</button>
+                        <a class="link-button link-button--danger" href="/admin/reports/timers/{{ timer.id }}/cancel" aria-label="{{ t(s="Cancel {name}", name=timer.name) }}">{{ t(s="Cancel") }}</a>
                     </td>
                     {% endif %}
                 </tr>
@@ -81,6 +63,7 @@
         </table>
     </div>
     {{ list::pager(list=list, action=path, label=t(s="Pages of timers")) }}
+    {{ actions_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 {% elif list.filtered %}
 {{ list::empty(message=t(s="No timer matches this filter."), add_url=path, add_label=t(s="Clear filter")) }}

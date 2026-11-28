@@ -1076,19 +1076,19 @@ async fn s05_cache_invalidated_on_a_misses_on_b() {
     let before = followups(&c, On::B).await;
     let _ = followups(&c, On::B).await;
     let next = if before == json!(4) { 5 } else { 4 };
+    // The settings form is a pipeline form: post what its page built.
+    let settings = c.admin.get_html(On::A, "/admin/config/search").await;
+    let mut fields = pipeline_fields(&settings.body, "search_settings_form");
+    fields.extend([
+        ("expand", "on".to_string()),
+        ("summarize", "on".to_string()),
+        ("followup", "on".to_string()),
+        ("analytics_enabled", "on".to_string()),
+        ("max_followups", next.to_string()),
+    ]);
     let saved = c
         .admin
-        .submit(
-            On::A,
-            "/admin/config/search",
-            &[
-                ("expand", "on".to_string()),
-                ("summarize", "on".to_string()),
-                ("followup", "on".to_string()),
-                ("analytics_enabled", "on".to_string()),
-                ("max_followups", next.to_string()),
-            ],
-        )
+        .post_form(On::A, "/admin/config/search", &fields)
         .await;
     assert!(
         saved.status.is_redirection(),
@@ -1533,18 +1533,11 @@ async fn s13_plugin_disable_waits_for_restart() {
     }
 
     let page = c.admin.get(On::A, "/admin/plugins").await;
-    let token = csrf_in(&page.body).expect("plugin page token");
+    let mut fields = pipeline_fields(&page.body, "plugin_toggle_form");
+    fields.push(("disable", "trovato_categories".to_string()));
     let toggled = c
         .admin
-        .post_form(
-            On::A,
-            "/admin/plugins/toggle",
-            &[
-                ("_token", token),
-                ("plugin_name", "trovato_categories".to_string()),
-                ("action", "disable".to_string()),
-            ],
-        )
+        .post_form(On::A, "/admin/plugins/toggle", &fields)
         .await;
     assert!(toggled.status.is_redirection(), "disable: {}", toggled.body);
 

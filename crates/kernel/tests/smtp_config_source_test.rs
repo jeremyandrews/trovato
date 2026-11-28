@@ -82,13 +82,6 @@ async fn site_page(app: &TestApp, cookies: &str) -> String {
     text_body(response).await
 }
 
-fn csrf_token(html: &str) -> String {
-    let needle = r#"name="_token" value=""#;
-    let start = html.find(needle).expect("token input") + needle.len();
-    let end = start + html[start..].find('"').expect("token end");
-    html[start..end].to_string()
-}
-
 async fn smtp_rows(app: &TestApp) -> Vec<String> {
     sqlx::query_scalar::<_, String>(
         "SELECT key FROM site_config WHERE key LIKE 'smtp\\_%' ORDER BY key",
@@ -139,7 +132,7 @@ async fn post_with_smtp_fields(app: &TestApp, cookies: &str) -> StatusCode {
 /// The POST [`post_with_smtp_fields`] makes.
 async fn post_site_form(app: &TestApp, cookies: &str) -> StatusCode {
     let html = site_page(app, cookies).await;
-    let token = csrf_token(&html);
+    let pipeline = common::form_fields(&html, "site_settings_form");
 
     let site_name = SiteConfig::site_name(&app.db).await.unwrap();
     let site_slogan = SiteConfig::site_slogan(&app.db).await.unwrap_or_default();
@@ -168,7 +161,6 @@ async fn post_site_form(app: &TestApp, cookies: &str) -> StatusCode {
     let update_check = trovato_kernel::update_status::setting_allows_check(&app.db).await;
 
     let mut fields: Vec<(&str, String)> = vec![
-        ("_token", token),
         ("site_name", site_name),
         ("site_slogan", site_slogan),
         ("site_mail", site_mail),
@@ -188,9 +180,12 @@ async fn post_site_form(app: &TestApp, cookies: &str) -> StatusCode {
     if update_check {
         fields.push(("update_check", "1".to_string()));
     }
-    let form = fields
-        .iter()
-        .map(|(k, v)| format!("{k}={}", urlencoding::encode(v)))
+    let form = std::iter::once(pipeline)
+        .chain(
+            fields
+                .iter()
+                .map(|(k, v)| format!("{k}={}", urlencoding::encode(v))),
+        )
         .collect::<Vec<_>>()
         .join("&");
 

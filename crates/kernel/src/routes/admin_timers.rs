@@ -9,21 +9,23 @@
 //! cancelled, and `/admin/reports/timers/{id}/edit` moves its next run or
 //! changes its repeat interval. `/admin/reports/timers/settings` edits the
 //! throttles. No form here creates a timer: what a timer runs comes from
-//! code only. Every change is permission checked, takes the page's form
-//! token, and is recorded in the security log with who made it.
+//! code only. Every change is permission checked, goes through
+//! `FormService` (the page's form token and saved form state), and is
+//! recorded in the security log with who made it.
 
 use std::collections::HashMap;
 
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::{Form, Router};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde::Serialize;
 use tower_sessions::Session;
 
 use crate::audit::{SecurityEvent, SecurityEventKind};
-use crate::form::csrf::generate_csrf_token;
+use crate::content::submission::PostedForm;
+use crate::form::{FormElement, ValidationError};
 use crate::i18n::UiMessage;
 use crate::models::User;
 use crate::state::AppState;
@@ -31,11 +33,12 @@ use crate::timer::{
     AdminChange, Timer, TimerFilter, TimerOverrides, TimerRefused, TimerSettings, TimerStatus,
 };
 
-use super::admin_form::FieldError;
+use super::admin_form;
 use super::admin_list::{ListQuery, PER_PAGE};
+use super::admin_nav::AdminText;
 use super::helpers::{
     render_admin_template, render_not_found, render_server_error, require_any_permission,
-    require_csrf, require_permission,
+    require_permission,
 };
 
 /// Opens the listing.
@@ -47,8 +50,24 @@ const ADMINISTER: &str = "administer timers";
 /// The listing's address.
 const PATH: &str = "/admin/reports/timers";
 
+/// The throttles form's address.
+const SETTINGS_PATH: &str = "/admin/reports/timers/settings";
+
 /// Session key for the message after a change.
 const FLASH_KEY: &str = "timers_report_flash";
+
+/// The form the listing's pause, resume and run buttons submit: one for the
+/// whole table, each button naming its own address (`formaction`).
+const ACTIONS_FORM_ID: &str = "timer_actions_form";
+
+/// The form on the page that asks before a timer is cancelled.
+const CANCEL_FORM_ID: &str = "timer_cancel_form";
+
+/// The form that moves a timer's next run or changes its repeat.
+const EDIT_FORM_ID: &str = "timer_edit_form";
+
+/// The throttles form.
+const SETTINGS_FORM_ID: &str = "timer_settings_form";
 
 /// The listing's sortable columns: key and SQL.
 const SORTS: &[(&str, &str)] = &[
@@ -70,7 +89,10 @@ pub fn router() -> Router<AppState> {
             "/admin/reports/timers/{id}/edit",
             get(edit_form).post(edit_submit),
         )
-        .route("/admin/reports/timers/{id}/{action}", post(row_action))
+        .route(
+            "/admin/reports/timers/{id}/{action}",
+            get(cancel_form).post(row_action),
+        )
 }
 
 // =============================================================================
@@ -284,28 +306,71 @@ async fn list_timers(
         })
         .collect();
 
-    let owner_options: Vec<(&str, &str)> =
-        owners.iter().map(|o| (o.as_str(), o.as_str())).collect();
-    let status_options: Vec<(&str, &str)> = TimerStatus::ALL
+    let owner_options: Vec<(String, String)> =
+        owners.iter().map(|o| (o.clone(), o.clone())).collect();
+    let status_options: Vec<(String, String)> = TimerStatus::ALL
         .iter()
-        .map(|s| (s.as_str(), status_label(*s)))
+        .map(|s| (s.as_str().to_string(), status_label(*s).to_string()))
         .collect();
     let settings = crate::timer::effective_settings(state.db())
         .await
         .unwrap_or_default();
     let flash: Option<UiMessage> = session.remove(FLASH_KEY).await.ok().flatten();
 
+    let list = query.view(total, rows.len(), Some(&sort));
+    let forms = match super::admin_list::render_forms(
+        &state,
+        &session,
+        &user,
+        &list,
+        PATH,
+        "Filter the timers",
+        "Name contains",
+        vec![
+            (
+                "owner",
+                FormElement::select(owner_options)
+                    .title("Owner")
+                    .placeholder("- Any -")
+                    .default_value(owner.unwrap_or_default()),
+            ),
+            (
+                "status",
+                FormElement::select(status_options)
+                    .title("Status")
+                    .placeholder("- Any -")
+                    .default_value(status.map(|s| s.as_str()).unwrap_or("")),
+            ),
+        ],
+    )
+    .await
+    {
+        Ok(forms) => forms,
+        Err(response) => return response,
+    };
+    let may_administer = viewer.can(ADMINISTER);
+    // The row buttons' form, only where there are buttons.
+    let actions_form = if may_administer && !rows.is_empty() {
+        let form = crate::form::Form::new(ACTIONS_FORM_ID)
+            .action(PATH)
+            .attribute("hidden", "hidden");
+        match admin_form::render(&state, &session, &user, form, &[]).await {
+            Ok(html) => html,
+            Err(response) => return response,
+        }
+    } else {
+        String::new()
+    };
+
     let mut context = tera::Context::new();
-    context.insert("list", &query.view(total, rows.len(), Some(&sort)));
+    context.insert("list", &list);
+    forms.insert_into(&mut context);
     context.insert("timers", &rows);
     context.insert("zone", &zone);
-    context.insert("owner_options", &owner_options);
-    context.insert("owner_filter", &owner.unwrap_or_default());
-    context.insert("status_options", &status_options);
-    context.insert("status_filter", &status.map(|s| s.as_str()).unwrap_or(""));
-    context.insert("may_administer", &viewer.can(ADMINISTER));
+    context.insert("may_administer", &may_administer);
+    context.insert("actions_form", &actions_form);
+    context.insert("actions_form_id", ACTIONS_FORM_ID);
     context.insert("settings", &settings);
-    context.insert("csrf_token", &generate_csrf_token(&session).await);
     context.insert("flash", &flash);
     context.insert("path", PATH);
     render_admin_template(&state, &viewer, "admin/reports/timers.html", context).await
@@ -370,21 +435,67 @@ fn log_change(user: &User, action: &str, before: &Timer) {
     );
 }
 
-/// POST /admin/reports/timers/{id}/{action}: `pause`, `resume`, `run` or
-/// `cancel` (which asks first, through the confirmation page).
-async fn row_action(
+/// GET /admin/reports/timers/{id}/cancel: ask before cancelling the timer.
+/// Any other action has no page of its own.
+async fn cancel_form(
     State(state): State<AppState>,
     session: Session,
     Path((id, action)): Path<(i64, String)>,
-    Form(form): Form<super::helpers::CsrfOnlyForm>,
 ) -> Response {
     let user = match require_permission(&state, &session, ADMINISTER).await {
         Ok(user) => user,
         Err(refusal) => return refusal,
     };
-    if let Err(refusal) = require_csrf(&session, &form.token).await {
-        return refusal;
+    if action != "cancel" {
+        return render_not_found();
     }
+    let timer = match crate::timer::find(state.db(), id).await {
+        Ok(Some(t)) => t,
+        Ok(None) => return render_not_found(),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load a timer");
+            return render_server_error("The timer could not be read.");
+        }
+    };
+    let viewer = super::helpers::user_context_for(&state, &user).await;
+    let text = AdminText::for_page(&state, &viewer, PATH).await;
+    let form = crate::form::Form::new(CANCEL_FORM_ID)
+        .action(format!("{PATH}/{id}/cancel"))
+        .element(
+            "op",
+            FormElement::submit("Cancel timer")
+                .attribute("class", "button--danger")
+                .suffix(format!(
+                    r#"<a href="{PATH}" class="button button--secondary">{}</a>"#,
+                    text.html("Cancel", &[])
+                ))
+                .weight(10),
+        );
+    let form_html = match admin_form::render(&state, &session, &user, form, &[]).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+    let mut context = tera::Context::new();
+    context.insert("timer", &timer);
+    context.insert("form", &form_html);
+    context.insert("path", &format!("{PATH}/{id}/cancel"));
+    render_admin_template(&state, &viewer, "admin/reports/timer-cancel.html", context).await
+}
+
+/// POST /admin/reports/timers/{id}/{action}: `pause`, `resume` or `run`
+/// (from the listing's buttons), or `cancel` (from the page that asks
+/// first).
+async fn row_action(
+    State(state): State<AppState>,
+    session: Session,
+    Path((id, action)): Path<(i64, String)>,
+    Form(pairs): Form<Vec<(String, String)>>,
+) -> Response {
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, ADMINISTER).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
     let change = match action.as_str() {
         "pause" => AdminChange::Pause,
         "resume" => AdminChange::Resume,
@@ -392,12 +503,28 @@ async fn row_action(
         "cancel" => AdminChange::Cancel,
         _ => return render_not_found(),
     };
+    let form_id = if matches!(change, AdminChange::Cancel) {
+        CANCEL_FORM_ID
+    } else {
+        ACTIONS_FORM_ID
+    };
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, form_id, Vec::new()).await {
+            Ok(form_state) => form_state,
+            Err(Ok(_)) => {
+                return super::helpers::render_error(
+                    "The form has expired. Reload the page and try again.",
+                );
+            }
+            Err(Err(response)) => return response,
+        };
     match state
         .timers()
         .admin_change_recorded(id, &change, change_record(&state, &user, change.action()))
         .await
     {
         Ok((before, _)) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             log_change(&user, change.action(), &before);
             let message = match change {
                 AdminChange::Pause => UiMessage::new("Paused {name}."),
@@ -432,25 +559,85 @@ async fn render_edit(
     timer: &Timer,
     zone: &str,
     values: &EditValues,
-    errors: &[FieldError],
+    errors: &[ValidationError],
 ) -> Response {
     let viewer = super::helpers::user_context_for(state, user).await;
     let settings = crate::timer::effective_settings(state.db())
         .await
         .unwrap_or_default();
+    let action = format!("/admin/reports/timers/{}/edit", timer.id);
+    let text = AdminText::for_page(state, &viewer, &action).await;
+    let min = settings.min_repeat_secs.to_string();
+    let form = crate::form::Form::new(EDIT_FORM_ID)
+        .action(action.clone())
+        .element(
+            "owner",
+            FormElement::markup(format!(
+                "<p>{}</p>",
+                text.html("Owner: {owner}", &[("owner", &timer.owner)])
+            ))
+            .weight(0),
+        )
+        .element(
+            "run_at",
+            FormElement::input("datetime-local")
+                .title("Next run")
+                .description(words(
+                    state,
+                    &text,
+                    "In {zone}. The timer fires at this second.",
+                    &[("zone", zone)],
+                ))
+                .default_value(values.run_at.clone())
+                .attribute("step", "1")
+                .required()
+                .weight(1),
+        )
+        .element(
+            "repeat_secs",
+            FormElement::input("number")
+                .title("Repeat every (seconds)")
+                .description(words(
+                    state,
+                    &text,
+                    "Leave empty to run once. At least {min} seconds.",
+                    &[("min", &min)],
+                ))
+                .default_value(values.repeat_secs.clone())
+                .attribute("min", "1")
+                .attribute("step", "1")
+                .weight(2),
+        )
+        .element("op", submit_with_cancel(&text, "Save"));
+    let form_html = match admin_form::render(state, session, user, form, errors).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
     let mut context = tera::Context::new();
     context.insert("timer", timer);
-    context.insert("zone", zone);
-    context.insert("values", values);
-    context.insert("errors", errors);
-    context.insert("min_repeat_secs", &settings.min_repeat_secs);
-    context.insert(
-        "action",
-        &format!("/admin/reports/timers/{}/edit", timer.id),
-    );
-    context.insert("csrf_token", &generate_csrf_token(session).await);
-    context.insert("path", &format!("/admin/reports/timers/{}/edit", timer.id));
+    context.insert("form", &form_html);
+    context.insert("path", &action);
     render_admin_template(state, &viewer, "admin/reports/timer-edit.html", context).await
+}
+
+/// `source` with its placeholders filled from `args`, in the viewer's admin
+/// language: for a description that names a value, which the form templates
+/// translate without arguments.
+fn words(state: &AppState, text: &AdminText, source: &str, args: &[(&str, &str)]) -> String {
+    args.iter()
+        .fold(UiMessage::new(source), |m, (k, v)| m.arg(k, *v))
+        .text(state.locale().map(|l| &**l), &text.lang)
+}
+
+/// A form's primary button labelled `label`, with a Cancel link back to the
+/// listing beside it.
+fn submit_with_cancel(text: &AdminText, label: &str) -> FormElement {
+    FormElement::submit(label)
+        .suffix(format!(
+            r#"<a href="{PATH}" class="button button--secondary">{}</a>"#,
+            text.html("Cancel", &[])
+        ))
+        .weight(10)
 }
 
 /// GET /admin/reports/timers/{id}/edit
@@ -485,31 +672,18 @@ async fn edit_form(
     render_edit(&state, &session, &user, &timer, &zone, &values, &[]).await
 }
 
-/// The edit form as posted.
-#[derive(Debug, serde::Deserialize)]
-struct EditForm {
-    #[serde(rename = "_token")]
-    token: String,
-    #[serde(default)]
-    run_at: String,
-    #[serde(default)]
-    repeat_secs: String,
-}
-
 /// POST /admin/reports/timers/{id}/edit
 async fn edit_submit(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<i64>,
-    Form(form): Form<EditForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
+    let posted = PostedForm(pairs);
     let user = match require_permission(&state, &session, ADMINISTER).await {
         Ok(user) => user,
         Err(refusal) => return refusal,
     };
-    if let Err(refusal) = require_csrf(&session, &form.token).await {
-        return refusal;
-    }
     let timer = match crate::timer::find(state.db(), id).await {
         Ok(Some(t)) => t,
         Ok(None) => return render_not_found(),
@@ -520,15 +694,19 @@ async fn edit_submit(
     };
     let zone = viewer_zone(&state, &user).await;
     let values = EditValues {
-        run_at: form.run_at.trim().to_string(),
-        repeat_secs: form.repeat_secs.trim().to_string(),
+        run_at: posted.get("run_at").unwrap_or_default().trim().to_string(),
+        repeat_secs: posted
+            .get("repeat_secs")
+            .unwrap_or_default()
+            .trim()
+            .to_string(),
     };
     let mut errors = Vec::new();
     let run_at = parse_local(&state, &zone, &values.run_at).await;
     if run_at.is_none() {
-        errors.push(FieldError::on(
+        errors.push(ValidationError::field(
             "run_at",
-            UiMessage::new("Enter the next run as a date and time."),
+            "Enter the next run as a date and time.",
         ));
     }
     let repeat_secs = if values.repeat_secs.is_empty() {
@@ -537,13 +715,21 @@ async fn edit_submit(
         values.repeat_secs.parse::<i64>().map(Some)
     };
     if repeat_secs.is_err() {
-        errors.push(FieldError::on(
+        errors.push(ValidationError::field(
             "repeat_secs",
-            UiMessage::new("Enter the repeat interval as a whole number of seconds, or leave it empty to run once."),
+            "Enter the repeat interval as a whole number of seconds, or leave it empty to run once.",
         ));
     }
-    let (Some(run_at), Ok(repeat_secs), true) = (run_at, repeat_secs, errors.is_empty()) else {
-        return render_edit(&state, &session, &user, &timer, &zone, &values, &errors).await;
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, EDIT_FORM_ID, errors).await {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => {
+                return render_edit(&state, &session, &user, &timer, &zone, &values, &errors).await;
+            }
+            Err(Err(response)) => return response,
+        };
+    let (Some(run_at), Ok(repeat_secs)) = (run_at, repeat_secs) else {
+        return render_not_found();
     };
     match state
         .timers()
@@ -558,6 +744,7 @@ async fn edit_submit(
         .await
     {
         Ok((before, _)) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             log_change(&user, "edit", &before);
             let _ = session
                 .insert(
@@ -568,17 +755,23 @@ async fn edit_submit(
             Redirect::to(PATH).into_response()
         }
         Err(TimerRefused::RepeatTooShort { min }) => {
-            let errors = [FieldError::on(
+            let viewer = super::helpers::user_context_for(&state, &user).await;
+            let text = AdminText::for_page(&state, &viewer, PATH).await;
+            let errors = [ValidationError::field(
                 "repeat_secs",
-                UiMessage::new("The repeat interval must be at least {min} seconds.")
-                    .arg("min", min.to_string()),
+                words(
+                    &state,
+                    &text,
+                    "The repeat interval must be at least {min} seconds.",
+                    &[("min", &min.to_string())],
+                ),
             )];
             render_edit(&state, &session, &user, &timer, &zone, &values, &errors).await
         }
         Err(TimerRefused::InvalidTime) => {
-            let errors = [FieldError::on(
+            let errors = [ValidationError::field(
                 "run_at",
-                UiMessage::new("Enter the next run as a date and time."),
+                "Enter the next run as a date and time.",
             )];
             render_edit(&state, &session, &user, &timer, &zone, &values, &errors).await
         }
@@ -671,7 +864,7 @@ async fn render_settings(
     session: &Session,
     user: &User,
     typed: Option<&HashMap<String, String>>,
-    errors: &[FieldError],
+    errors: &[ValidationError],
 ) -> Response {
     let viewer = super::helpers::user_context_for(state, user).await;
     let saved = match crate::timer::saved_settings(state.db()).await {
@@ -681,14 +874,50 @@ async fn render_settings(
             return render_server_error("The timer settings could not be read.");
         }
     };
+    let text = AdminText::for_page(state, &viewer, SETTINGS_PATH).await;
+    let mut form = crate::form::Form::new(SETTINGS_FORM_ID).action(SETTINGS_PATH);
+    for (weight, th) in (0..).zip(throttles(&saved, &crate::timer::env_overrides(), typed)) {
+        let field = FormElement::input("number")
+            .title(th.label)
+            .default_value(th.value)
+            .weight(weight);
+        // A setting the environment holds is shown, read only, and not edited
+        // here.
+        let field = if th.from_environment {
+            field
+                .description(words(
+                    state,
+                    &text,
+                    "Set by the {variable} environment variable, which overrides this form. Change or unset it and restart to change this.",
+                    &[("variable", th.variable)],
+                ))
+                .attribute("readonly", "readonly")
+        } else {
+            field
+                .description(format!(
+                    "{} {}",
+                    words(state, &text, th.hint, &[]),
+                    words(
+                        state,
+                        &text,
+                        "Default {n}.",
+                        &[("n", &th.default.to_string())]
+                    )
+                ))
+                .attribute("min", "1")
+                .attribute("step", "1")
+                .required()
+        };
+        form = form.element(th.name, field);
+    }
+    let form = form.element("op", submit_with_cancel(&text, "Save throttles"));
+    let form_html = match admin_form::render(state, session, user, form, errors).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
     let mut context = tera::Context::new();
-    context.insert(
-        "throttles",
-        &throttles(&saved, &crate::timer::env_overrides(), typed),
-    );
-    context.insert("errors", errors);
-    context.insert("csrf_token", &generate_csrf_token(session).await);
-    context.insert("path", "/admin/reports/timers/settings");
+    context.insert("form", &form_html);
+    context.insert("path", SETTINGS_PATH);
     render_admin_template(state, &viewer, "admin/reports/timer-settings.html", context).await
 }
 
@@ -705,16 +934,14 @@ async fn settings_form(State(state): State<AppState>, session: Session) -> Respo
 async fn save_settings(
     State(state): State<AppState>,
     session: Session,
-    Form(form): Form<HashMap<String, String>>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
+    let posted = PostedForm(pairs);
     let user = match require_permission(&state, &session, ADMINISTER).await {
         Ok(user) => user,
         Err(refusal) => return refusal,
     };
-    let token = form.get("_token").cloned().unwrap_or_default();
-    if let Err(refusal) = require_csrf(&session, &token).await {
-        return refusal;
-    }
+    let form: HashMap<String, String> = posted.0.iter().cloned().collect();
     let before = match crate::timer::saved_settings(state.db()).await {
         Ok(saved) => saved,
         Err(e) => {
@@ -733,9 +960,9 @@ async fn save_settings(
         match form.get(name).map(|v| v.trim().parse::<u32>()) {
             Some(Ok(n)) if n > 0 => n,
             _ => {
-                errors.push(FieldError::on(
+                errors.push(ValidationError::field(
                     name,
-                    UiMessage::new("Enter a whole number above 0."),
+                    "Enter a whole number above 0.",
                 ));
                 current
             }
@@ -748,15 +975,26 @@ async fn save_settings(
         max_payload_bytes: read(3, "max_payload_bytes", before.max_payload_bytes),
     };
     if !set[3] && after.max_payload_bytes > crate::timer::MAX_PAYLOAD_LIMIT {
-        errors.push(FieldError::on(
+        let viewer = super::helpers::user_context_for(&state, &user).await;
+        let text = AdminText::for_page(&state, &viewer, SETTINGS_PATH).await;
+        errors.push(ValidationError::field(
             "max_payload_bytes",
-            UiMessage::new("The largest payload can be at most {max} bytes.")
-                .arg("max", crate::timer::MAX_PAYLOAD_LIMIT.to_string()),
+            words(
+                &state,
+                &text,
+                "The largest payload can be at most {max} bytes.",
+                &[("max", &crate::timer::MAX_PAYLOAD_LIMIT.to_string())],
+            ),
         ));
     }
-    if !errors.is_empty() {
-        return render_settings(&state, &session, &user, Some(&form), &errors).await;
-    }
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, SETTINGS_FORM_ID, errors).await {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => {
+                return render_settings(&state, &session, &user, Some(&form), &errors).await;
+            }
+            Err(Err(response)) => return response,
+        };
     if after != before {
         // The settings and `timer.settings_changed` commit together.
         let event = SecurityEvent::new(SecurityEventKind::TimerSettingsChanged)
@@ -773,6 +1011,7 @@ async fn save_settings(
         }
         tracing::info!(user_id = %user.id, ?before, ?after, "timer settings changed");
     }
+    admin_form::submitted(&state, &user, &form_state, &posted).await;
     let _ = session
         .insert(FLASH_KEY, UiMessage::new("Timer settings saved."))
         .await;

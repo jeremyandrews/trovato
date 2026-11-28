@@ -4946,15 +4946,12 @@ fn e2e_admin_plugin_toggle() {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_text(response).await;
 
-        // Extract CSRF token from the form
-        let csrf_token = body
-            .split("name=\"_token\" value=\"")
-            .nth(1)
-            .and_then(|s| s.split('"').next())
-            .expect("CSRF token");
+        // The listing's buttons all submit one pipeline form; a button posts
+        // its action as its name and the plugin as its value.
+        let fields = common::form_fields(&body, "plugin_toggle_form");
 
         // Disable the redirects plugin (safe to toggle — it has no gated routes)
-        let form_body = format!("_token={csrf_token}&plugin_name=trovato_redirects&action=disable");
+        let form_body = format!("{fields}&disable=trovato_redirects");
 
         let response = app
             .request_with_cookies(
@@ -4996,13 +4993,9 @@ fn e2e_admin_plugin_toggle() {
             .await;
 
         let body = response_text(response).await;
-        let csrf_token = body
-            .split("name=\"_token\" value=\"")
-            .nth(1)
-            .and_then(|s| s.split('"').next())
-            .expect("CSRF token for re-enable");
+        let fields = common::form_fields(&body, "plugin_toggle_form");
 
-        let form_body = format!("_token={csrf_token}&plugin_name=trovato_redirects&action=enable");
+        let form_body = format!("{fields}&enable=trovato_redirects");
 
         let response = app
             .request_with_cookies(
@@ -5056,14 +5049,10 @@ fn e2e_toggle_gated_plugin_waits_for_restart() {
             response_text(response).await
         };
         let toggle = |body: String, action: &'static str| async move {
-            let csrf_token = body
-                .split("name=\"_token\" value=\"")
-                .nth(1)
-                .and_then(|s| s.split('"').next())
-                .expect("CSRF token")
-                .to_string();
-            let form_body =
-                format!("_token={csrf_token}&plugin_name=trovato_categories&action={action}");
+            let form_body = format!(
+                "{}&{action}=trovato_categories",
+                common::form_fields(&body, "plugin_toggle_form")
+            );
             app.request_with_cookies(
                 Request::post("/admin/plugins/toggle")
                     .header("content-type", "application/x-www-form-urlencoded")

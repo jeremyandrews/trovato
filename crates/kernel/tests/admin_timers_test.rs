@@ -45,14 +45,11 @@ async fn post(app: &TestApp, cookies: &str, uri: &str, body: String) -> axum::re
     .await
 }
 
-/// The first form token on a page.
-fn token(html: &str) -> String {
-    let at = html.find(r#"name="_token" value=""#).expect("a form token") + 21;
-    let end = html[at..].find('"').unwrap() + at;
-    html[at..end].to_string()
-}
+/// The row buttons' form on the listing: one pipeline form for the table.
+const ACTIONS_FORM: &str = "timer_actions_form";
 
-/// A fresh token from the listing: each is good for one post.
+/// Fresh fields of the listing's row buttons' form (`_token` and
+/// `_form_build_id`): each token is good for one post.
 async fn fresh_token(app: &TestApp, cookies: &str, owner: &str) -> String {
     let (status, html) = get(
         app,
@@ -61,7 +58,7 @@ async fn fresh_token(app: &TestApp, cookies: &str, owner: &str) -> String {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    token(&html)
+    common::form_fields(&html, ACTIONS_FORM)
 }
 
 fn owner() -> String {
@@ -207,7 +204,7 @@ fn the_report_takes_view_and_every_change_takes_administer() {
                 app,
                 &viewer,
                 &format!("/admin/reports/timers/{id}/{action}"),
-                format!("_token={tok}"),
+                tok.clone(),
             )
             .await;
             assert_eq!(
@@ -257,7 +254,7 @@ fn each_row_action_changes_the_timer_and_is_in_the_security_log() {
         let act = |action: &str| format!("/admin/reports/timers/{id}/{action}");
 
         let tok = fresh_token(app, &cookies, &owner).await;
-        let response = post(app, &cookies, &act("pause"), format!("_token={tok}")).await;
+        let response = post(app, &cookies, &act("pause"), tok.clone()).await;
         assert!(response.status().is_redirection(), "{}", response.status());
         assert_eq!(status_of(&app.db, id).await.as_deref(), Some("paused"));
         let (_, html) = get(
@@ -276,11 +273,11 @@ fn each_row_action_changes_the_timer_and_is_in_the_security_log() {
         );
 
         let tok = fresh_token(app, &cookies, &owner).await;
-        post(app, &cookies, &act("resume"), format!("_token={tok}")).await;
+        post(app, &cookies, &act("resume"), tok.clone()).await;
         assert_eq!(status_of(&app.db, id).await.as_deref(), Some("scheduled"));
 
         let tok = fresh_token(app, &cookies, &owner).await;
-        post(app, &cookies, &act("run"), format!("_token={tok}")).await;
+        post(app, &cookies, &act("run"), tok.clone()).await;
         let due_in: f64 = sqlx::query_scalar(
             "SELECT EXTRACT(EPOCH FROM run_at - now())::float8 FROM scheduled_timer WHERE id = $1",
         )
@@ -298,8 +295,8 @@ fn each_row_action_changes_the_timer_and_is_in_the_security_log() {
             &cookies,
             &act("edit"),
             format!(
-                "_token={}&run_at=2031-01-02T03%3A04%3A05&repeat_secs=5",
-                token(&html)
+                "{}&run_at=2031-01-02T03%3A04%3A05&repeat_secs=5",
+                common::form_fields(&html, "timer_edit_form")
             ),
         )
         .await;
@@ -317,8 +314,8 @@ fn each_row_action_changes_the_timer_and_is_in_the_security_log() {
             &cookies,
             &act("edit"),
             format!(
-                "_token={}&run_at=2031-01-02T03%3A04%3A05&repeat_secs=7200",
-                token(&html)
+                "{}&run_at=2031-01-02T03%3A04%3A05&repeat_secs=7200",
+                common::form_fields(&html, "timer_edit_form")
             ),
         )
         .await;
@@ -340,8 +337,8 @@ fn each_row_action_changes_the_timer_and_is_in_the_security_log() {
             &cookies,
             &act("edit"),
             format!(
-                "_token={}&run_at=2031-01-02T03%3A04%3A05&repeat_secs=",
-                token(&html)
+                "{}&run_at=2031-01-02T03%3A04%3A05&repeat_secs=",
+                common::form_fields(&html, "timer_edit_form")
             ),
         )
         .await;
@@ -353,24 +350,35 @@ fn each_row_action_changes_the_timer_and_is_in_the_security_log() {
                 .unwrap();
         assert_eq!(repeat, None);
 
-        // Cancel asks first: through the confirmation page...
-        let tok = fresh_token(app, &cookies, &owner).await;
-        let response = post(
+        // The listing's buttons, kept for after the timer is gone.
+        let later = fresh_token(app, &cookies, &owner).await;
+        // Cancel asks first: the listing links to a page that asks...
+        let (_, list) = get(
             app,
             &cookies,
-            &format!("{}?confirm", act("cancel")),
-            format!("_token={tok}&_confirm=Cancel%3F&_confirm_label=Cancel"),
+            &format!("/admin/reports/timers?owner={owner}"),
         )
         .await;
-        assert!(response.status().is_redirection());
+        assert!(
+            list.contains(&format!(r#"href="{}""#, act("cancel"))),
+            "Cancel is a link to the page that asks"
+        );
+        let (status, html) = get(app, &cookies, &act("cancel")).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(html.contains("Cancel the timer act:one?"), "{html}");
         assert_eq!(
             status_of(&app.db, id).await.as_deref(),
             Some("scheduled"),
             "not before the answer"
         );
-        // ...and the confirmed post cancels it.
-        let tok = fresh_token(app, &cookies, &owner).await;
-        let response = post(app, &cookies, &act("cancel"), format!("_token={tok}")).await;
+        // ...and its button cancels it.
+        let response = post(
+            app,
+            &cookies,
+            &act("cancel"),
+            common::form_fields(&html, "timer_cancel_form"),
+        )
+        .await;
         assert!(response.status().is_redirection());
         assert_eq!(status_of(&app.db, id).await, None, "cancelled");
 
@@ -394,9 +402,7 @@ fn each_row_action_changes_the_timer_and_is_in_the_security_log() {
         );
 
         // A timer that is gone is a 404, not an error.
-        let (_, settings) = get(app, &cookies, "/admin/reports/timers/settings").await;
-        let tok = token(&settings);
-        let response = post(app, &cookies, &act("pause"), format!("_token={tok}")).await;
+        let response = post(app, &cookies, &act("pause"), later).await;
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
     });
 }
@@ -513,8 +519,8 @@ fn the_throttles_form_saves_validates_and_logs() {
             &cookies,
             "/admin/reports/timers/settings",
             format!(
-                "_token={}&max_concurrent=0&max_per_plugin=x&min_repeat_secs=60&max_payload_bytes=4096",
-                token(&html)
+                "{}&max_concurrent=0&max_per_plugin=x&min_repeat_secs=60&max_payload_bytes=4096",
+                common::form_fields(&html, "timer_settings_form")
             ),
         )
         .await;
@@ -543,8 +549,8 @@ fn the_throttles_form_saves_validates_and_logs() {
             &cookies,
             "/admin/reports/timers/settings",
             format!(
-                "_token={}&max_concurrent={}&max_per_plugin={}&min_repeat_secs={}&max_payload_bytes={}",
-                token(&html),
+                "{}&max_concurrent={}&max_per_plugin={}&min_repeat_secs={}&max_payload_bytes={}",
+                common::form_fields(&html, "timer_settings_form"),
                 wanted.max_concurrent,
                 wanted.max_per_plugin,
                 wanted.min_repeat_secs,
@@ -619,8 +625,8 @@ fn the_throttles_form_refuses_a_payload_limit_past_the_ceiling() {
             &cookies,
             "/admin/reports/timers/settings",
             format!(
-                "_token={}&max_concurrent={}&max_per_plugin={}&min_repeat_secs={}&max_payload_bytes=300000",
-                token(&html),
+                "{}&max_concurrent={}&max_per_plugin={}&min_repeat_secs={}&max_payload_bytes=300000",
+                common::form_fields(&html, "timer_settings_form"),
                 before.max_concurrent,
                 before.max_per_plugin,
                 before.min_repeat_secs

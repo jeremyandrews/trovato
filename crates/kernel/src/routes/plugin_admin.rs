@@ -1,20 +1,28 @@
 //! Admin routes for plugin management (enable/disable).
+//!
+//! The listing's enable and disable buttons all submit one form, built and
+//! checked through `FormService`: each button is named for what it does and
+//! carries its plugin's name.
 
 use axum::extract::State;
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Router};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tower_sessions::Session;
 
-use crate::form::csrf::generate_csrf_token;
+use crate::content::submission::PostedForm;
 use crate::plugin::runtime::PluginRuntime;
 use crate::plugin::status::{self, STATUS_DISABLED, STATUS_ENABLED};
 use crate::state::AppState;
 
-use super::helpers::{render_admin_template, require_admin, require_csrf};
+use super::admin_form;
+use super::helpers::{render_admin_template, require_admin};
 
 const FLASH_KEY: &str = "plugin_admin_flash";
+
+/// The one form the listing's enable and disable buttons submit.
+const TOGGLE_FORM_ID: &str = "plugin_toggle_form";
 
 /// When an enable or disable reaches the running site.
 const RESTART_NOTICE: &str =
@@ -40,12 +48,23 @@ struct PluginRow {
     pending_restart: bool,
 }
 
-#[derive(Debug, Deserialize)]
-struct ToggleForm {
-    #[serde(rename = "_token")]
-    token: String,
-    plugin_name: String,
-    action: String,
+/// What a toggle submission asks: the plugin and `enable` or `disable`.
+///
+/// A listing button posts its action as its name and the plugin as its
+/// value (`enable=blog`); `plugin_name` and `action` say the same in two
+/// fields.
+fn toggle_request(posted: &PostedForm) -> (String, String) {
+    if let (Some(name), Some(action)) = (posted.get("plugin_name"), posted.get("action")) {
+        return (name.to_string(), action.to_string());
+    }
+    ["enable", "disable"]
+        .iter()
+        .find_map(|action| {
+            posted
+                .get(action)
+                .map(|name| (name.to_string(), (*action).to_string()))
+        })
+        .unwrap_or_default()
 }
 
 // =============================================================================
@@ -56,9 +75,10 @@ struct ToggleForm {
 ///
 /// GET /admin/plugins
 async fn list_plugins(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
-        return redirect;
-    }
+    let user = match require_admin(&state, &session).await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let discovered = PluginRuntime::discover_plugins(state.plugins_dirs()).await;
     let statuses = match status::get_all_statuses(state.db()).await {
@@ -125,7 +145,18 @@ async fn list_plugins(State(state): State<AppState>, session: Session) -> Respon
         }
     }
 
-    let csrf_token = generate_csrf_token(&session).await;
+    // The buttons' form, only where there are buttons.
+    let toggle_form = if rows.iter().any(|row| row.is_installed) {
+        let form = crate::form::Form::new(TOGGLE_FORM_ID)
+            .action("/admin/plugins/toggle")
+            .attribute("hidden", "hidden");
+        match admin_form::render(&state, &session, &user, form, &[]).await {
+            Ok(html) => html,
+            Err(response) => return response,
+        }
+    } else {
+        String::new()
+    };
 
     // Read and clear flash message
     // A plain sentence, or an i18n::UiMessage for a failure.
@@ -138,7 +169,8 @@ async fn list_plugins(State(state): State<AppState>, session: Session) -> Respon
     let raw_sql_count = rows.iter().filter(|row| row.raw_sql).count();
     context.insert("plugins", &rows);
     context.insert("raw_sql_count", &raw_sql_count);
-    context.insert("csrf_token", &csrf_token);
+    context.insert("toggle_form", &toggle_form);
+    context.insert("toggle_form_id", TOGGLE_FORM_ID);
     context.insert("flash", &flash);
     context.insert("restart_notice", RESTART_NOTICE);
     context.insert("path", "/admin/plugins");
@@ -158,28 +190,37 @@ async fn list_plugins(State(state): State<AppState>, session: Session) -> Respon
 async fn toggle_plugin(
     State(state): State<AppState>,
     session: Session,
-    Form(form): Form<ToggleForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_admin(&state, &session).await {
-        return redirect;
-    }
-
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_admin(&state, &session).await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, TOGGLE_FORM_ID, Vec::new()).await
+        {
+            Ok(form_state) => form_state,
+            Err(Ok(_)) => {
+                return super::helpers::render_error(
+                    "The form has expired. Reload the page and try again.",
+                );
+            }
+            Err(Err(response)) => return response,
+        };
+    let (plugin_name, action) = toggle_request(&posted);
 
     // Validate plugin name (alphanumeric + underscore only)
-    if !form
-        .plugin_name
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+    if plugin_name.is_empty()
+        || !plugin_name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
     {
         return render_plugin_error(&state, &session, "Invalid plugin name.").await;
     }
 
     // Check plugin is installed
-    let installed = match status::is_installed(state.db(), &form.plugin_name).await {
+    let installed = match status::is_installed(state.db(), &plugin_name).await {
         Ok(v) => v,
         Err(e) => {
             tracing::error!(error = %e, "failed to check plugin install status");
@@ -196,7 +237,7 @@ async fn toggle_plugin(
         .await;
     }
 
-    let (new_status, action_word) = match form.action.as_str() {
+    let (new_status, action_word) = match action.as_str() {
         "enable" => (STATUS_ENABLED, "enabled"),
         "disable" => (STATUS_DISABLED, "disabled"),
         _ => return render_plugin_error(&state, &session, "Invalid action.").await,
@@ -206,7 +247,7 @@ async fn toggle_plugin(
     // enabled in the stored statuses (mirrors the CLI's install-time check).
     if new_status == STATUS_ENABLED {
         let discovered = PluginRuntime::discover_plugins(state.plugins_dirs()).await;
-        if let Some((info, _)) = discovered.get(&form.plugin_name) {
+        if let Some((info, _)) = discovered.get(&plugin_name) {
             let enabled = match status::get_enabled_names(state.db()).await {
                 Ok(names) => names,
                 Err(e) => {
@@ -220,7 +261,7 @@ async fn toggle_plugin(
                     let msg = crate::i18n::UiMessage::new(
                         "Cannot enable {plugin}: it depends on {dependency}, which is not enabled.",
                     )
-                    .arg("plugin", form.plugin_name.clone())
+                    .arg("plugin", plugin_name.clone())
                     .arg("dependency", dep.clone())
                     .error();
                     let _ = session.insert(FLASH_KEY, &msg).await;
@@ -233,19 +274,17 @@ async fn toggle_plugin(
     // Only the stored status changes. The running server keeps the plugins it
     // started with: every server loads the enabled set once at boot, so a
     // change made here takes effect on each server when it restarts.
-    match status::set_status(state.db(), &form.plugin_name, new_status).await {
+    match status::set_status(state.db(), &plugin_name, new_status).await {
         Ok(true) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(
                 log_type = "plugin",
-                plugin = %form.plugin_name,
+                plugin = %plugin_name,
                 "plugin {action_word}"
             );
             // Flash messages are rendered in Tera templates that autoescape
             // .html files, so we must NOT pre-escape here.
-            let msg = format!(
-                "Plugin '{}' {}. {}",
-                form.plugin_name, action_word, RESTART_NOTICE
-            );
+            let msg = format!("Plugin '{plugin_name}' {action_word}. {RESTART_NOTICE}");
             let _ = session.insert(FLASH_KEY, &msg).await;
         }
         Ok(false) => {

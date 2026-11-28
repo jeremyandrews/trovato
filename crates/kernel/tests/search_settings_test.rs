@@ -59,16 +59,8 @@ fn encode(value: &str) -> String {
     out
 }
 
-/// Pull the CSRF token out of a rendered form.
-fn csrf_from(html: &str) -> String {
-    let needle = r#"name="_token" value=""#;
-    let start = html
-        .find(needle)
-        .map(|i| i + needle.len())
-        .expect("a form on this page must carry a CSRF token");
-    let end = html[start..].find('"').expect("token must be terminated");
-    html[start..start + end].to_string()
-}
+/// The id of the settings form, a pipeline form.
+const FORM_ID: &str = "search_settings_form";
 
 async fn admin_session(app: &TestApp) -> String {
     let name = common::username("srchadm");
@@ -100,9 +92,7 @@ async fn save_settings(app: &TestApp, fields: &[(&str, &str)]) -> StatusCode {
         StatusCode::OK,
         "the settings screen must render for an administrator: {html}"
     );
-    let token = csrf_from(&html);
-
-    let mut body = format!("_token={}", encode(&token));
+    let mut body = common::form_fields(&html, FORM_ID);
     for (key, value) in fields {
         body.push_str(&format!("&{}={}", encode(key), encode(value)));
     }
@@ -181,7 +171,7 @@ fn the_settings_screen_is_for_site_administrators_only() {
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
         assert!(
-            html.contains(r#"action="/admin/config/search""#),
+            common::form_in(&html, FORM_ID).is_some(),
             "the screen must carry its own form: {html}"
         );
 
@@ -309,11 +299,10 @@ fn an_invalid_value_is_refused_with_a_message() {
         } else {
             refreshed
         };
-        let token = csrf_from(&body_text(response).await);
-
+        let page = body_text(response).await;
         let body = format!(
-            "_token={}&recency_half_life_days=NaN&priority_keyword=team&priority_path=no-slash",
-            encode(&token)
+            "{}&recency_half_life_days=NaN&priority_keyword=team&priority_path=no-slash",
+            common::form_fields(&page, FORM_ID)
         );
         let response = app
             .request_with_cookies(

@@ -118,8 +118,25 @@ async fn audit_report(
         }
     };
 
+    let list = query.view(total, rows.len(), Some(&sort));
+    let forms = match super::admin_list::render_forms(
+        &state,
+        &session,
+        &user,
+        &list,
+        "/admin/reports/audit",
+        "Filter the audit log",
+        "Action, type, ID or user contains",
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(forms) => forms,
+        Err(response) => return response,
+    };
     let mut context = tera::Context::new();
-    context.insert("list", &query.view(total, rows.len(), Some(&sort)));
+    context.insert("list", &list);
+    forms.insert_into(&mut context);
     context.insert("entries", &rows);
     context.insert("path", "/admin/reports/audit");
     render_admin_template(&state, &viewer, "admin/reports/audit.html", context).await

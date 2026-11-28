@@ -1,5 +1,9 @@
 {% extends "page--admin.html" %}
 
+{#- The plugins (routes::plugin_admin): `plugins`, one row each. Every
+    enable and disable button belongs to `toggle_form`, one pipeline form for
+    the table, and posts its action as its name and the plugin as its value. -#}
+
 {% block page_title %}{{ t(s="Plugins") }}{% endblock page_title %}
 
 {% block content %}
@@ -49,19 +53,9 @@
                 <td class="operations">
                     {% if plugin.is_installed %}
                         {% if plugin.status == "Enabled" %}
-                        <form method="post" action="/admin/plugins/toggle" class="inline-form" novalidate>
-                            <input type="hidden" name="_token" value="{{ csrf_token }}">
-                            <input type="hidden" name="plugin_name" value="{{ plugin.name }}">
-                            <input type="hidden" name="action" value="disable">
-                            <button type="submit" class="link-button">{{ t(s="Disable {name}", name=plugin.name) }}</button>
-                        </form>
+                        <button type="submit" form="{{ toggle_form_id }}" name="disable" value="{{ plugin.name }}" class="link-button">{{ t(s="Disable {name}", name=plugin.name) }}</button>
                         {% else %}
-                        <form method="post" action="/admin/plugins/toggle" class="inline-form" novalidate>
-                            <input type="hidden" name="_token" value="{{ csrf_token }}">
-                            <input type="hidden" name="plugin_name" value="{{ plugin.name }}">
-                            <input type="hidden" name="action" value="enable">
-                            <button type="submit" class="link-button">{{ t(s="Enable {name}", name=plugin.name) }}</button>
-                        </form>
+                        <button type="submit" form="{{ toggle_form_id }}" name="enable" value="{{ plugin.name }}" class="link-button">{{ t(s="Enable {name}", name=plugin.name) }}</button>
                         {% endif %}
                     {% else %}
                     <span class="plugin-install-hint">{{ t(s="Use CLI to install") }}</span>
@@ -72,6 +66,7 @@
         </tbody>
     </table>
 </div>
+{{ toggle_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 {% else %}
 <div class="empty-state"><p>{{ t(s="No plugins found.") }}</p></div>
 {% endif %}

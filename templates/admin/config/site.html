@@ -1,101 +1,15 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
+
+{#- The site settings (routes::admin_config): `site_form`, `test_email_form`
+    and `maintenance_form`, each built and rendered by the form pipeline. -#}
 
 {% block page_title %}{{ t(s="Site settings") }}{% endblock page_title %}
 
 {% block content %}
-{% set errs = errors | default(value=[]) %}
 <div class="admin-card">
-    <form method="post" action="/admin/config/site" novalidate>
-        {{ form::csrf(csrf_token=csrf_token) }}
+    {{ site_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 
-        {{ form::error_summary(errors=errs) }}
-
-        {{ form::fieldset_start(legend=t(s="General")) }}
-            {{ form::field(name="site_name", label=t(s="Site name"), value=site_name, required=true, errors=errs, width="30") }}
-            {{ form::field(name="site_slogan", label=t(s="Site slogan"), value=site_slogan, errors=errs) }}
-            {{ form::field(name="site_mail", type="email", label=t(s="Site email"), value=site_mail, hint=t(s="Used as the From address for system emails."), required=true, errors=errs, width="30", autocomplete="email", attrs='spellcheck="false"') }}
-        {{ form::fieldset_end() }}
-
-        {{ form::fieldset_start(legend=t(s="Front page")) }}
-            {{ form::field(name="front_page", label=t(s="Default front page"), value=front_page, hint=t(s="Any path on this site: an item, a gather listing, a plugin route, or an alias of one (e.g., /blog or /conferences). / shows exactly what that path shows, with no redirect. The path must resolve when you save. Leave empty for the promoted items listing."), errors=errs, width="30", attrs='placeholder="/" spellcheck="false"') }}
-            {{ form::field(name="items_per_page", type="number", label=t(s="Items per page"), value=items_per_page, errors=errs, width="4", attrs='min="1" max="100"') }}
-        {{ form::fieldset_end() }}
-
-        {# Three modes: open, open with administrator approval (Drupal's
-           "Visitors, but administrator approval is required"), and admin only.
-           "Admin only" and the old "closed" differed in wording only; a site
-           that stored "closed" shows as admin only, and its register route
-           behaves exactly as before. #}
-        {% set reg_open_label = t(s="Open — anyone can register") %}
-        {% set reg_approval_label = t(s="Visitors, but administrator approval is required — a new account stays blocked until an administrator activates it") %}
-        {% set reg_admin_label = t(s="Admin only — administrators create accounts, and {path} is closed", path="/user/register") %}
-        {% set reg_open = ["open", reg_open_label] %}
-        {% set reg_approval = ["approval", reg_approval_label] %}
-        {% set reg_admin = ["admin_only", reg_admin_label] %}
-        {% set reg_options = [reg_open, reg_approval, reg_admin] %}
-        {% if registration_mode == "open" or registration_mode == "approval" %}{% set reg_value = registration_mode %}{% else %}{% set reg_value = "admin_only" %}{% endif %}
-        {{ form::choices(name="registration_mode", id="reg_open", legend=t(s="User registration"), options=reg_options, value=reg_value, errors=errs) }}
-
-        {{ form::fieldset_start(legend=t(s="Email delivery")) }}
-                {# Read only. SMTP is configured in the server environment and
-                   nowhere else; this shows what the kernel is using. The
-                   username and password say only whether they are set. #}
-                <dl class="settings-facts">
-                    <dt>{{ t(s="SMTP host") }}</dt>
-                    <dd id="smtp-host">{% if smtp.host %}{{ smtp.host }}{% else %}{{ t(s="not configured: mail is not sent") }}{% endif %}</dd>
-                    <dt>{{ t(s="Port") }}</dt>
-                    <dd id="smtp-port">{{ smtp.port }}</dd>
-                    <dt>{{ t(s="Encryption") }}</dt>
-                    <dd id="smtp-encryption">{{ smtp.encryption }}</dd>
-                    <dt>{{ t(s="From address") }}</dt>
-                    <dd id="smtp-from">{{ smtp.from }}</dd>
-                    <dt>{{ t(s="Username") }}</dt>
-                    <dd id="smtp-username">{% if smtp.username_set %}{{ t(s="set") }}{% else %}{{ t(s="not set") }}{% endif %}</dd>
-                    <dt>{{ t(s="Password") }}</dt>
-                    <dd id="smtp-password">{% if smtp.password_set %}{{ t(s="set") }}{% else %}{{ t(s="not set") }}{% endif %}</dd>
-                </dl>
-                <p class="description">{{ t(s="Set in the server environment ({variables}) and read at startup; change them there and restart the server.", variables="SMTP_HOST, SMTP_PORT, SMTP_ENCRYPTION, SMTP_FROM_EMAIL, SMTP_USERNAME, SMTP_PASSWORD") }}</p>
-        {{ form::fieldset_end() }}
-
-        {{ form::fieldset_start(legend=t(s="Session cookie")) }}
-                {# Read only, like Email delivery: COOKIE_SECURE is read at startup. #}
-                <dl class="settings-facts">
-                    <dt>{{ t(s="Secure flag ({setting})", setting="COOKIE_SECURE") }}</dt>
-                    <dd id="cookie-secure">{{ cookie_secure }}</dd>
-                </dl>
-                {% if cookie_secure == "never" %}
-                <div class="notice notice--warning" id="cookie-secure-warning" role="status">
-                    <strong class="notice__label">{{ t(s="Warning:") }}</strong>
-                    {{ t(s="The session cookie is not Secure.") }}
-                    {{ t(s="{setting} sends the login cookie over plain HTTP, where anyone on the network path can read it and take over the session. Use it only for a plain HTTP LAN or development site, never on the internet.", setting="COOKIE_SECURE=never") }}
-                </div>
-                {% endif %}
-                <p class="description">{{ t(s="Set in the server environment and read at startup; change it there and restart the server.") }}</p>
-        {{ form::fieldset_end() }}
-
-        {{ form::fieldset_start(legend=t(s="Notifications")) }}
-            {{ form::checkbox(name="notify_admin_on_register", label=t(s="Notify admin when new users register"), checked=notify_admin_on_register, errors=errs) }}
-
-            {{ form::checkbox(name="update_check", label=t(s="Check for Trovato releases"), checked=update_check, hint=t(s="One outbound HTTPS request to {host}, at most once a day, carrying no site data: no URL, no version, no identifier. GitHub learns that an IP address asked about a public repository.", host="api.github.com"), errors=errs) }}
-            <div class="description update-check-details">
-                <p>{{ t(s="When a newer release exists an administrator sees a banner on the dashboard, styled as an alarm if the release announces itself as a security release. Nobody but an administrator sees it, and no page render ever makes the request.") }}</p>
-                <p>{% if update_status %}{{ t(s="Last checked: latest release {latest}, this site runs {running}.", latest=update_status.latest_version, running=running_version) }}{% else %}{{ t(s="No check has completed yet; it runs from cron.") }}{% endif %}</p>
-                <p>{{ t(s="A deployment that must make no outbound requests at all should set {setting} in the environment rather than rely on this checkbox.", setting="UPDATE_CHECK=0") }}</p>
-            </div>
-
-            {{ form::checkbox(name="count_content_views", label=t(s="Count content views"), checked=count_content_views, hint=t(s='Each view of an item adds one to its count, shown as "N reads" to roles with the {permission} permission. One database write per item view while it is on.', permission="view post access counter"), errors=errs) }}
-        {{ form::fieldset_end() }}
-
-        {{ form::effect(text=t(s="the site name, slogan, email address, front page, registration rule and notifications, for every visitor, as soon as you save. The email delivery and session cookie settings are read only here.")) }}
-        {{ form::actions(submit_label=t(s="Save settings")) }}
-    </form>
-
-    <form class="site-test-email" method="post" action="/admin/config/site/test-email" novalidate>
-        {{ form::csrf(csrf_token=csrf_token) }}
-        <p class="description" id="test-email-hint">{{ t(s="Sends a test email to the site email address.") }}</p>
-        <button type="submit" class="button button--secondary" aria-describedby="test-email-hint">{{ t(s="Send test email") }}</button>
-    </form>
+    {{ test_email_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 
 {# Maintenance mode: its own form, through the forms pipeline, so turning the
