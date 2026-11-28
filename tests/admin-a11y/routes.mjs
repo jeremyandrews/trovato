@@ -45,6 +45,7 @@ export const EXPECTED_UNSEEDED = new Map([
   ['/admin/system/ai-providers/{id}/edit', 'no AI provider is configured'],
   ['/admin/config/formats/{format}/delete', 'the built-in text formats cannot be deleted'],
   ['/admin/config/redirects/{id}/edit', 'no redirect is defined'],
+  ['/admin/config/redirects/{id}/delete', 'no redirect is defined'],
   ['/admin/reports/timers/{id}/edit', 'no timer is set'],
   ['/admin/config/languages/{code}/delete', 'the site has one language, the default, which cannot be deleted'],
 ]);
@@ -61,6 +62,7 @@ export const SEEDED_PLUGINS = new Set(
 /** Routes whose instances are linked from another page than their parent path. */
 const LISTED_ON = {
   '/admin/structure/tags/{id}/edit': '/admin/structure/categories/{id}/tags',
+  '/admin/structure/tags/{id}/delete': '/admin/structure/categories/{id}/tags',
 };
 
 /** Pages that link to no instance of a route, and where one is found. */

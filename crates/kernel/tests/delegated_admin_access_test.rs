@@ -319,14 +319,8 @@ fn term_permissions_open_the_term_forms_without_administer_categories() {
 
         let (_, creator) = member(app, "b156-tagger", &["create category terms"]).await;
         let add = format!("/admin/structure/categories/{id}/tags/add");
-        let t = token(app, &add, &creator).await;
-        let a = post_form(
-            app,
-            &add,
-            &creator,
-            format!("_token={t}&_form_build_id=x&label=B156+term"),
-        )
-        .await;
+        let fields = common::form_fields(&get(app, &add, &creator).await.body, "category_tag_form");
+        let a = post_form(app, &add, &creator, format!("{fields}&label=B156+term")).await;
         assert!(a.status.is_redirection(), "{}: {}", a.status, a.body);
         let tags = categories.list_tags(&id).await.unwrap();
         assert_eq!(tags.len(), 1, "the term is created");
@@ -339,20 +333,19 @@ fn term_permissions_open_the_term_forms_without_administer_categories() {
             StatusCode::FORBIDDEN
         );
         let (_, editor) = member(app, "b156-tag-editor", &["edit category terms"]).await;
-        let t = token(app, &edit, &editor).await;
-        let a = post_form(
-            app,
-            &edit,
-            &editor,
-            format!("_token={t}&_form_build_id=x&label=B156+renamed"),
-        )
-        .await;
+        let fields = common::form_fields(&get(app, &edit, &editor).await.body, "category_tag_form");
+        let a = post_form(app, &edit, &editor, format!("{fields}&label=B156+renamed")).await;
         assert!(a.status.is_redirection(), "{}: {}", a.status, a.body);
         assert_eq!(
             categories.get_tag(tag).await.unwrap().unwrap().label,
             "B156 renamed"
         );
         let delete = format!("/admin/structure/tags/{tag}/delete");
+        assert_eq!(
+            get(app, &delete, &editor).await.status,
+            StatusCode::FORBIDDEN
+        );
+        let t = token(app, &edit, &editor).await;
         post_form(app, &delete, &editor, format!("_token={t}")).await;
         assert!(
             categories.get_tag(tag).await.unwrap().is_some(),
@@ -360,13 +353,21 @@ fn term_permissions_open_the_term_forms_without_administer_categories() {
         );
 
         let (_, deleter) = member(app, "b156-tag-deleter", &["delete category terms"]).await;
-        let t = token(
+        let list = get(
             app,
             &format!("/admin/structure/categories/{id}/tags"),
             &deleter,
         )
         .await;
-        let a = post_form(app, &delete, &deleter, format!("_token={t}")).await;
+        assert!(
+            list.body.replace("&#x2F;", "/").contains(&delete),
+            "the list links to the confirmation"
+        );
+        let fields = common::form_fields(
+            &get(app, &delete, &deleter).await.body,
+            "category_tag_delete_form",
+        );
+        let a = post_form(app, &delete, &deleter, fields).await;
         assert!(a.status.is_redirection(), "{}: {}", a.status, a.body);
         assert!(categories.get_tag(tag).await.unwrap().is_none(), "deleted");
 

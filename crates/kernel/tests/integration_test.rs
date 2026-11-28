@@ -2287,15 +2287,33 @@ fn e2e_admin_delete_category() {
             .create_and_login_admin("admin_cat_3", "password123", "cat3@test.com")
             .await;
 
-        // Fetch CSRF token from categories list page
-        let (cookies, csrf_token) =
-            fetch_csrf_token(app, &cookies, "/admin/structure/categories").await;
+        // The list links to the confirmation page, whose form deletes.
+        let delete = format!("/admin/structure/categories/{cat_id}/delete");
+        let list = admin_page(
+            app,
+            &cookies,
+            &format!("/admin/structure/categories?q={cat_id}"),
+        )
+        .await;
+        assert!(
+            list.replace("&#x2F;", "/")
+                .contains(&format!(r#"href="{delete}""#)),
+            "the list links to the confirmation"
+        );
+        let confirm = admin_page(app, &cookies, &delete).await;
+        assert!(
+            confirm.contains("Are you sure you want to delete this category and all its tags?"),
+            "the confirmation asks"
+        );
 
         let response = app
             .request_with_cookies(
-                Request::post(format!("/admin/structure/categories/{cat_id}/delete"))
+                Request::post(&delete)
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(csrf_form_body(&csrf_token))
+                    .body(Body::from(common::form_fields(
+                        &confirm,
+                        "category_delete_form",
+                    )))
                     .unwrap(),
                 &cookies,
             )
@@ -2491,14 +2509,33 @@ fn e2e_admin_delete_tag() {
             .create_and_login_admin("admin_cat_6", "password123", "cat6@test.com")
             .await;
 
-        // Fetch CSRF token (use /admin/people which always has CSRF tokens)
-        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/admin/people").await;
+        // The list links to the confirmation page, whose form deletes.
+        let delete = format!("/admin/structure/tags/{tag_id}/delete");
+        let list = admin_page(
+            app,
+            &cookies,
+            &format!("/admin/structure/categories/{cat_id}/tags"),
+        )
+        .await;
+        assert!(
+            list.replace("&#x2F;", "/")
+                .contains(&format!(r#"href="{delete}""#)),
+            "the list links to the confirmation"
+        );
+        let confirm = admin_page(app, &cookies, &delete).await;
+        assert!(
+            confirm.contains("Are you sure you want to delete this tag?"),
+            "the confirmation asks"
+        );
 
         let response = app
             .request_with_cookies(
-                Request::post(format!("/admin/structure/tags/{tag_id}/delete"))
+                Request::post(&delete)
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(csrf_form_body(&csrf_token))
+                    .body(Body::from(common::form_fields(
+                        &confirm,
+                        "category_tag_delete_form",
+                    )))
                     .unwrap(),
                 &cookies,
             )
@@ -2519,6 +2556,214 @@ fn e2e_admin_delete_tag() {
         .unwrap();
 
         assert!(!exists, "Tag should be deleted");
+    });
+}
+
+// =============================================================================
+// B83c: the category and tag forms on the form pipeline
+// =============================================================================
+
+/// GET an admin page as `cookies`, expecting 200, and its HTML.
+async fn admin_page(app: &TestApp, cookies: &str, uri: &str) -> String {
+    let response = app
+        .request_with_cookies(Request::get(uri).body(Body::empty()).unwrap(), cookies)
+        .await;
+    let status = response.status();
+    let html = response_text(response).await;
+    assert_eq!(status, StatusCode::OK, "GET {uri}: {html}");
+    html
+}
+
+/// POST a form body to `uri` as `cookies`: the status and the page.
+async fn admin_post(app: &TestApp, cookies: &str, uri: &str, body: String) -> (StatusCode, String) {
+    let response = app
+        .request_with_cookies(
+            Request::post(uri)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    (status, response_text(response).await)
+}
+
+/// The category form, the tag form and both delete confirmations are
+/// pipeline forms: rendered with a build id, a post without one refused as
+/// expired, and a validation error shown on its field.
+#[test]
+fn b83c_the_category_and_tag_forms_go_through_the_pipeline() {
+    run_test(async {
+        common::hold_until_cleanup(PLUGIN_STATE_LOCK.read().await);
+        let app = shared_app().await;
+        app.ensure_plugin_enabled("trovato_categories").await;
+        let unique_id = uuid::Uuid::now_v7().simple().to_string();
+        let cat_id = format!("b83c_{}", &unique_id[..16]);
+        sqlx::query(
+            "INSERT INTO category (id, label, hierarchy, weight) VALUES ($1, 'B83c Category', 1, 0)",
+        )
+        .bind(&cat_id)
+        .execute(&app.db)
+        .await
+        .expect("create the category");
+        let db = app.db.clone();
+        let cleanup_id = cat_id.clone();
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query("DELETE FROM category_tag WHERE category_id = $1")
+                .bind(&cleanup_id)
+                .execute(&db)
+                .await;
+            let _ = sqlx::query("DELETE FROM category WHERE id = $1")
+                .bind(&cleanup_id)
+                .execute(&db)
+                .await;
+        });
+        let cookies = app
+            .create_and_login_admin("admin_cat_b83c", "password123", "catb83c@test.com")
+            .await;
+
+        // The category form.
+        let add = "/admin/structure/categories/add";
+        let html = admin_page(app, &cookies, add).await;
+        assert!(common::form_in(&html, "category_form").is_some(), "{html}");
+        assert!(html.contains("Create category"), "the add button");
+        let (status, text) = admin_post(
+            app,
+            &cookies,
+            add,
+            format!(
+                "_token={}&id=b83c_never&label=Never&hierarchy=0",
+                urlencoding::encode(&extract_csrf_token(&html).unwrap())
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        assert!(text.contains("expired"), "{text}");
+        let html = admin_page(app, &cookies, add).await;
+        let (status, text) = admin_post(
+            app,
+            &cookies,
+            add,
+            format!(
+                "{}&id=b83c_never&label=&hierarchy=0",
+                common::form_fields(&html, "category_form")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let form = common::form_in(&text, "category_form").expect("the form again");
+        assert!(form.contains("Name is required."), "{form}");
+        assert!(form.contains(r#"aria-invalid="true""#), "{form}");
+        let edit = format!("/admin/structure/categories/{cat_id}/edit");
+        let html = admin_page(app, &cookies, &edit).await;
+        let form = common::form_in(&html, "category_form").expect("the edit form");
+        assert!(form.contains("readonly"), "the machine name is read only");
+        let (status, _) = admin_post(
+            app,
+            &cookies,
+            &edit,
+            format!(
+                "{}&id={cat_id}&label=B83c+Renamed&hierarchy=1",
+                common::form_fields(&html, "category_form")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        let label: String = sqlx::query_scalar("SELECT label FROM category WHERE id = $1")
+            .bind(&cat_id)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        assert_eq!(label, "B83c Renamed");
+
+        // The tag form.
+        let add = format!("/admin/structure/categories/{cat_id}/tags/add");
+        let html = admin_page(app, &cookies, &add).await;
+        assert!(
+            common::form_in(&html, "category_tag_form").is_some(),
+            "{html}"
+        );
+        let (status, text) = admin_post(
+            app,
+            &cookies,
+            &add,
+            format!(
+                "_token={}&label=Never&weight=0",
+                urlencoding::encode(&extract_csrf_token(&html).unwrap())
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        assert!(text.contains("expired"), "{text}");
+        let html = admin_page(app, &cookies, &add).await;
+        let (status, text) = admin_post(
+            app,
+            &cookies,
+            &add,
+            format!(
+                "{}&label=B83c+tag&slug=Not+A+Slug&weight=0",
+                common::form_fields(&html, "category_tag_form")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let form = common::form_in(&text, "category_tag_form").expect("the form again");
+        assert!(form.contains("Slug must start with"), "{form}");
+        assert!(form.contains(r#"aria-invalid="true""#), "{form}");
+        let html = admin_page(app, &cookies, &add).await;
+        let (status, _) = admin_post(
+            app,
+            &cookies,
+            &add,
+            format!(
+                "{}&label=B83c+tag&slug=b83c-tag&weight=0&parent_id=",
+                common::form_fields(&html, "category_tag_form")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        let tag_id: uuid::Uuid =
+            sqlx::query_scalar("SELECT id FROM category_tag WHERE category_id = $1")
+                .bind(&cat_id)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+
+        // The delete confirmations refuse a post without a build id.
+        for (uri, form_id) in [
+            (
+                format!("/admin/structure/tags/{tag_id}/delete"),
+                "category_tag_delete_form",
+            ),
+            (
+                format!("/admin/structure/categories/{cat_id}/delete"),
+                "category_delete_form",
+            ),
+        ] {
+            let html = admin_page(app, &cookies, &uri).await;
+            assert!(common::form_in(&html, form_id).is_some(), "{html}");
+            assert!(html.contains("button--danger"), "{html}");
+            let (status, text) = admin_post(
+                app,
+                &cookies,
+                &uri,
+                format!(
+                    "_token={}",
+                    urlencoding::encode(&extract_csrf_token(&html).unwrap())
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {text}");
+            assert!(text.contains("expired"), "{text}");
+        }
+        let exists: bool =
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM category_tag WHERE id = $1)")
+                .bind(tag_id)
+                .fetch_one(&app.db)
+                .await
+                .unwrap();
+        assert!(exists, "a refused delete deleted nothing");
     });
 }
 

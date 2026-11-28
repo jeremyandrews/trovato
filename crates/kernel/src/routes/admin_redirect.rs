@@ -1,29 +1,49 @@
 //! Admin routes for URL redirect management (B164).
 //!
 //! Registered only while `trovato_redirects` is enabled; see
-//! [`super::gated_plugin_routes`].
+//! [`super::gated_plugin_routes`]. Every form here is built and checked by
+//! the form pipeline (`routes::admin_form`): the add and edit form, and the
+//! confirmation that deletes a redirect.
 
 use axum::extract::{Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Redirect, Response};
-use axum::routing::{get, post};
-use axum::{Form, Router};
+use axum::routing::get;
+use axum::{Form as PostedBody, Router};
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
+use crate::content::submission::PostedForm;
 use crate::error::AppError;
-use crate::form::csrf::generate_csrf_token;
+use crate::form::{Form, FormElement, ValidationError};
+use crate::models::User;
 use crate::pagination::{Page, PageParams};
 use crate::services::redirect::Redirect as RedirectModel;
 use crate::state::AppState;
 
+use super::admin_form;
 use super::helpers::{
-    CsrfOnlyForm, render_admin_template, render_not_found, render_server_error, require_csrf,
+    render_admin_template, render_error, render_not_found, render_server_error,
     require_csrf_header, require_permission, require_permission_json,
 };
 
+/// The permission that opens the redirect list.
+const VIEW: &str = "view redirects";
+
+/// The permission every redirect form takes.
+const ADMINISTER: &str = "administer redirects";
+
+/// The redirect list, under which every redirect screen hangs.
+const BASE: &str = "/admin/config/redirects";
+
+/// The add and edit form.
+const REDIRECT_FORM_ID: &str = "redirect_form";
+
+/// The form that confirms deleting a redirect.
+const DELETE_FORM_ID: &str = "redirect_delete_form";
+
 /// The redirect status choices: code and English label, translated by the
-/// select macro.
+/// select template.
 const STATUS_OPTIONS: &[(&str, &str)] = &[
     ("301", "301 Moved Permanently"),
     ("302", "302 Found"),
@@ -42,14 +62,24 @@ const LIST_MAX: i64 = 500;
 // Form data
 // =============================================================================
 
-#[derive(Debug, Deserialize)]
-struct RedirectFormData {
-    #[serde(rename = "_token")]
-    token: String,
+/// What the redirect form's fields hold.
+#[derive(Debug)]
+struct RedirectValues {
     source: String,
     destination: String,
-    status_code: i16,
-    language: Option<String>,
+    status_code: String,
+    language: String,
+}
+
+impl Default for RedirectValues {
+    fn default() -> Self {
+        Self {
+            source: String::new(),
+            destination: String::new(),
+            status_code: "301".to_string(),
+            language: String::new(),
+        }
+    }
 }
 
 /// Redirect display struct for templates.
@@ -75,7 +105,7 @@ async fn list_redirects(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "view redirects").await {
+    if let Err(redirect) = require_permission(&state, &session, VIEW).await {
         return redirect;
     }
 
@@ -112,15 +142,12 @@ async fn list_redirects(
         })
         .collect();
 
-    let csrf_token = generate_csrf_token(&session).await;
-
     let mut context = tera::Context::new();
     context.insert("redirects", &redirects_display);
     context.insert("total", &total);
     context.insert("page", &page);
     context.insert("total_pages", &total_pages);
-    context.insert("csrf_token", &csrf_token);
-    context.insert("path", "/admin/config/redirects");
+    context.insert("path", BASE);
 
     render_admin_template(
         &state,
@@ -131,29 +158,200 @@ async fn list_redirects(
     .await
 }
 
+// =============================================================================
+// Forms
+// =============================================================================
+
+/// A text field for a path or a code: no spell checking, no capitals.
+fn plain_text() -> FormElement {
+    FormElement::textfield()
+        .attribute("spellcheck", "false")
+        .attribute("autocapitalize", "none")
+}
+
+/// The add and edit form: `action` is where it posts, `values` what its
+/// fields hold, `editing` whether it saves an existing redirect, and
+/// `cancel` the link beside its button.
+fn redirect_form(action: &str, values: &RedirectValues, editing: bool, cancel: String) -> Form {
+    let status_options = STATUS_OPTIONS
+        .iter()
+        .map(|(code, label)| ((*code).to_string(), (*label).to_string()))
+        .collect();
+    Form::new(REDIRECT_FORM_ID)
+        .action(action)
+        .element(
+            "source",
+            plain_text()
+                .title("Source path")
+                .description(
+                    "The old path to redirect from, with an optional query string, for \
+                     example /article.php?sid=123. A source with a query matches only a \
+                     request with that query; a source with no query matches any query. \
+                     Parameter order and percent-encoding are normalized, so the source is \
+                     shown back as it is stored.",
+                )
+                .default_value(values.source.clone())
+                .required()
+                .weight(0),
+        )
+        .element(
+            "destination",
+            plain_text()
+                .title("Destination")
+                .description(
+                    "A path on this site, such as /blog/the-new-page, or an http or https \
+                     address.",
+                )
+                .default_value(values.destination.clone())
+                .required()
+                .weight(1),
+        )
+        .element(
+            "status_code",
+            FormElement::select(status_options)
+                .title("Redirect type")
+                .default_value(values.status_code.clone())
+                .required()
+                .weight(2),
+        )
+        .element(
+            "language",
+            plain_text()
+                .title("Language")
+                .description("A language code, such as en. Leave blank to match every language.")
+                .default_value(values.language.clone())
+                .weight(3),
+        )
+        .element(
+            "op",
+            FormElement::submit(if editing {
+                "Save changes"
+            } else {
+                "Create redirect"
+            })
+            .suffix(cancel)
+            .weight(10),
+        )
+}
+
+/// The confirmation form that deletes the redirect `id`.
+fn delete_form_for(id: uuid::Uuid, cancel: String) -> Form {
+    Form::new(DELETE_FORM_ID)
+        .action(format!("{BASE}/{id}/delete"))
+        .element(
+            "op",
+            FormElement::submit("Delete")
+                .attribute("class", "button--danger")
+                .suffix(cancel)
+                .weight(10),
+        )
+}
+
+/// A Cancel link back to the redirect list, in `user`'s admin language on
+/// `path`.
+async fn cancel_link(state: &AppState, user: &User, path: &str) -> String {
+    let viewer = super::helpers::user_context_for(state, user).await;
+    let text = super::admin_nav::AdminText::for_page(state, &viewer, path).await;
+    format!(
+        r#"<a href="{BASE}" class="button button--secondary">{}</a>"#,
+        text.html("Cancel", &[])
+    )
+}
+
+/// What the redirect form posted, its status code when that is one of the
+/// choices, and the errors that keep it from saving.
+fn read_redirect(posted: &PostedForm) -> (RedirectValues, Option<i16>, Vec<ValidationError>) {
+    let values = RedirectValues {
+        source: posted.get("source").unwrap_or_default().to_string(),
+        destination: posted.get("destination").unwrap_or_default().to_string(),
+        status_code: posted.get("status_code").unwrap_or_default().to_string(),
+        language: posted.get("language").unwrap_or_default().to_string(),
+    };
+    let mut errors = Vec::new();
+    if values.source.trim().is_empty() {
+        errors.push(ValidationError::field("source", "Source path is required."));
+    }
+    if values.destination.trim().is_empty() {
+        errors.push(ValidationError::field(
+            "destination",
+            "Destination is required.",
+        ));
+    }
+    let status_code = STATUS_OPTIONS
+        .iter()
+        .any(|(code, _)| *code == values.status_code)
+        .then(|| values.status_code.parse::<i16>().ok())
+        .flatten();
+    if status_code.is_none() {
+        errors.push(ValidationError::field(
+            "status_code",
+            "Choose a redirect type.",
+        ));
+    }
+    (values, status_code, errors)
+}
+
+/// Render the add form, or the edit form of the redirect `editing`.
+async fn render_redirect_form(
+    state: &AppState,
+    session: &Session,
+    user: &User,
+    editing: Option<uuid::Uuid>,
+    values: &RedirectValues,
+    errors: &[ValidationError],
+) -> Response {
+    let action = match editing {
+        Some(id) => format!("{BASE}/{id}/edit"),
+        None => format!("{BASE}/add"),
+    };
+    let cancel = cancel_link(state, user, &action).await;
+    let form_html = match admin_form::render(
+        state,
+        session,
+        user,
+        redirect_form(&action, values, editing.is_some(), cancel),
+        errors,
+    )
+    .await
+    {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+    let viewer = super::helpers::user_context_for(state, user).await;
+    let mut context = tera::Context::new();
+    context.insert("editing", &editing.is_some());
+    context.insert("form", &form_html);
+    context.insert("path", &action);
+    render_admin_template(state, &viewer, "admin/redirect-form.html", context).await
+}
+
+/// The redirect `id`, or the page that says why it is not there.
+async fn load_redirect(state: &AppState, id: uuid::Uuid) -> Result<RedirectModel, Response> {
+    match RedirectModel::find_by_id(state.db(), id).await {
+        Ok(Some(redirect)) => Ok(redirect),
+        Ok(None) => Err(render_not_found()),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load redirect");
+            Err(render_server_error("Failed to load redirect."))
+        }
+    }
+}
+
 /// Add redirect form.
 ///
 /// GET /admin/config/redirects/add
 async fn add_redirect_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer redirects").await {
-        return redirect;
-    }
-
-    let csrf_token = generate_csrf_token(&session).await;
-
-    let mut context = tera::Context::new();
-    context.insert("csrf_token", &csrf_token);
-    context.insert("action", "/admin/config/redirects/add");
-    context.insert("editing", &false);
-    context.insert("status_options", STATUS_OPTIONS);
-    context.insert("values", &serde_json::json!({}));
-    context.insert("path", "/admin/config/redirects/add");
-
-    render_admin_template(
+    let user = match require_permission(&state, &session, ADMINISTER).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
+    render_redirect_form(
         &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/redirect-form.html",
-        context,
+        &session,
+        &user,
+        None,
+        &RedirectValues::default(),
+        &[],
     )
     .await
 }
@@ -164,23 +362,40 @@ async fn add_redirect_form(State(state): State<AppState>, session: Session) -> R
 async fn add_redirect_submit(
     State(state): State<AppState>,
     session: Session,
-    Form(form): Form<RedirectFormData>,
+    PostedBody(pairs): PostedBody<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer redirects").await {
-        return redirect;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, ADMINISTER).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
+    let (values, status_code, errors) = read_redirect(&posted);
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, REDIRECT_FORM_ID, errors).await {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => {
+                return render_redirect_form(&state, &session, &user, None, &values, &errors).await;
+            }
+            Err(Err(response)) => return response,
+        };
+    let Some(status_code) = status_code else {
+        return render_not_found();
+    };
 
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-
-    let language = form.language.unwrap_or_default();
     match state
         .redirects()
-        .create(&form.source, &form.destination, form.status_code, &language)
+        .create(
+            &values.source,
+            &values.destination,
+            status_code,
+            &values.language,
+        )
         .await
     {
-        Ok(_) => Redirect::to("/admin/config/redirects").into_response(),
+        Ok(_) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
+            Redirect::to(BASE).into_response()
+        }
         Err(e) => {
             tracing::error!(error = %e, "failed to create redirect");
             render_server_error(&format!("Failed to create redirect: {e}"))
@@ -196,50 +411,21 @@ async fn edit_redirect_form(
     session: Session,
     Path(redirect_id): Path<uuid::Uuid>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer redirects").await {
-        return redirect;
-    }
-
-    let redirect = match RedirectModel::find_by_id(state.db(), redirect_id).await {
-        Ok(Some(redirect)) => redirect,
-        Ok(None) => return render_not_found(),
-        Err(e) => {
-            tracing::error!(error = %e, "failed to load redirect");
-            return render_server_error("Failed to load redirect.");
-        }
+    let user = match require_permission(&state, &session, ADMINISTER).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
     };
-
-    let csrf_token = generate_csrf_token(&session).await;
-
-    let mut context = tera::Context::new();
-    context.insert("csrf_token", &csrf_token);
-    context.insert(
-        "action",
-        &format!("/admin/config/redirects/{redirect_id}/edit"),
-    );
-    context.insert("editing", &true);
-    context.insert("status_options", STATUS_OPTIONS);
-    context.insert(
-        "values",
-        &serde_json::json!({
-            "source": redirect.source,
-            "destination": redirect.destination,
-            "status_code": redirect.status_code,
-            "language": redirect.language,
-        }),
-    );
-    context.insert(
-        "path",
-        &format!("/admin/config/redirects/{redirect_id}/edit"),
-    );
-
-    render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/redirect-form.html",
-        context,
-    )
-    .await
+    let redirect = match load_redirect(&state, redirect_id).await {
+        Ok(redirect) => redirect,
+        Err(response) => return response,
+    };
+    let values = RedirectValues {
+        source: redirect.source,
+        destination: redirect.destination,
+        status_code: redirect.status_code.to_string(),
+        language: redirect.language,
+    };
+    render_redirect_form(&state, &session, &user, Some(redirect_id), &values, &[]).await
 }
 
 /// Edit redirect submit.
@@ -249,35 +435,93 @@ async fn edit_redirect_submit(
     State(state): State<AppState>,
     session: Session,
     Path(redirect_id): Path<uuid::Uuid>,
-    Form(form): Form<RedirectFormData>,
+    PostedBody(pairs): PostedBody<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer redirects").await {
-        return redirect;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, ADMINISTER).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
+    let (values, status_code, errors) = read_redirect(&posted);
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, REDIRECT_FORM_ID, errors).await {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => {
+                return render_redirect_form(
+                    &state,
+                    &session,
+                    &user,
+                    Some(redirect_id),
+                    &values,
+                    &errors,
+                )
+                .await;
+            }
+            Err(Err(response)) => return response,
+        };
+    let Some(status_code) = status_code else {
+        return render_not_found();
+    };
 
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-
-    let language = form.language.unwrap_or_default();
     match state
         .redirects()
         .update(
             redirect_id,
-            &form.source,
-            &form.destination,
-            form.status_code,
-            &language,
+            &values.source,
+            &values.destination,
+            status_code,
+            &values.language,
         )
         .await
     {
-        Ok(Some(_)) => Redirect::to("/admin/config/redirects").into_response(),
+        Ok(Some(_)) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
+            Redirect::to(BASE).into_response()
+        }
         Ok(None) => render_not_found(),
         Err(e) => {
             tracing::error!(error = %e, "failed to update redirect");
             render_server_error(&format!("Failed to update redirect: {e}"))
         }
     }
+}
+
+/// Confirm deleting a redirect.
+///
+/// GET /admin/config/redirects/{id}/delete
+async fn delete_redirect_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path(redirect_id): Path<uuid::Uuid>,
+) -> Response {
+    let user = match require_permission(&state, &session, ADMINISTER).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
+    let redirect = match load_redirect(&state, redirect_id).await {
+        Ok(redirect) => redirect,
+        Err(response) => return response,
+    };
+    let path = format!("{BASE}/{redirect_id}/delete");
+    let cancel = cancel_link(&state, &user, &path).await;
+    let form_html = match admin_form::render(
+        &state,
+        &session,
+        &user,
+        delete_form_for(redirect_id, cancel),
+        &[],
+    )
+    .await
+    {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+    let viewer = super::helpers::user_context_for(&state, &user).await;
+    let mut context = tera::Context::new();
+    context.insert("source", &redirect.source);
+    context.insert("form", &form_html);
+    context.insert("path", &path);
+    render_admin_template(&state, &viewer, "admin/redirect-delete.html", context).await
 }
 
 /// Delete redirect.
@@ -287,20 +531,28 @@ async fn delete_redirect(
     State(state): State<AppState>,
     session: Session,
     Path(redirect_id): Path<uuid::Uuid>,
-    Form(form): Form<CsrfOnlyForm>,
+    PostedBody(pairs): PostedBody<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer redirects").await {
-        return redirect;
-    }
-
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, ADMINISTER).await {
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, DELETE_FORM_ID, Vec::new()).await
+        {
+            Ok(form_state) => form_state,
+            Err(Ok(_)) => {
+                return render_error("The form has expired. Reload the page and try again.");
+            }
+            Err(Err(response)) => return response,
+        };
 
     match state.redirects().delete(redirect_id).await {
         Ok(true) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(redirect_id = %redirect_id, "redirect deleted");
-            Redirect::to("/admin/config/redirects").into_response()
+            Redirect::to(BASE).into_response()
         }
         Ok(false) => render_not_found(),
         Err(e) => {
@@ -317,14 +569,18 @@ async fn delete_redirect(
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/admin/config/redirects", get(list_redirects))
-        .route("/admin/config/redirects/add", get(add_redirect_form))
-        .route("/admin/config/redirects/add", post(add_redirect_submit))
-        .route("/admin/config/redirects/{id}/edit", get(edit_redirect_form))
+        .route(
+            "/admin/config/redirects/add",
+            get(add_redirect_form).post(add_redirect_submit),
+        )
         .route(
             "/admin/config/redirects/{id}/edit",
-            post(edit_redirect_submit),
+            get(edit_redirect_form).post(edit_redirect_submit),
         )
-        .route("/admin/config/redirects/{id}/delete", post(delete_redirect))
+        .route(
+            "/admin/config/redirects/{id}/delete",
+            get(delete_redirect_form).post(delete_redirect),
+        )
 }
 
 // =============================================================================
