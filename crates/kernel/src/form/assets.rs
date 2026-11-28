@@ -130,6 +130,13 @@ pub const LIBRARIES: &[Library] = &[
         js: &[local("/static/js/record-ref.js")],
     },
     Library {
+        // The media library picker dialog (BL-115 / B290): opened by a
+        // `RecordReference("media")` field's widget.
+        name: "media_reference",
+        css: &["/static/css/media-reference-picker.css"],
+        js: &[local("/static/js/media-reference-picker.js")],
+    },
+    Library {
         name: "form_states",
         css: &[],
         js: &[local("/static/js/form-states.js")],
@@ -153,6 +160,7 @@ fn widget_library(widget: &str) -> Option<&'static str> {
         "compound" => Some("compound_field"),
         "file" => Some("file_upload"),
         "record_reference" => Some("record_ref"),
+        "media_reference" => Some("media_reference"),
         "page_builder" => Some("page_builder"),
         _ => None,
     }

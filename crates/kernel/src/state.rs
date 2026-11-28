@@ -131,6 +131,18 @@ struct AppStateInner {
     /// `tap_admin_nav`, collected once at boot.
     plugin_admin_nav: Arc<crate::plugin::admin_nav_registry::AdminNavRegistry>,
 
+    /// Media sources plugins declared through `tap_media_source`, collected
+    /// once at boot. See [`crate::plugin::media_source_registry`].
+    ///
+    /// A `parking_lot::RwLock` rather than a bare `Arc`, as every other
+    /// boot-collected registry is: media sources are the one of the four a
+    /// test needs to vary per test (a route gated on a specific registered
+    /// content type), and the shared test `AppState`'s plugin directory does
+    /// not discover real plugins, so there is no `tap_media_source` dispatch
+    /// to collect from. [`AppState::set_media_sources_for_test`] is the seam.
+    media_sources:
+        parking_lot::RwLock<Arc<crate::plugin::media_source_registry::MediaSourceRegistry>>,
+
     /// Content type registry.
     content_types: Arc<ContentTypeRegistry>,
 
@@ -785,6 +797,29 @@ impl AppState {
             Arc::new(registry)
         };
 
+        // Media sources, collected the same way and for the same reason: a
+        // media source names a content type the library and picker already
+        // treat as a constant fact once the plugin that owns it is loaded,
+        // not something to ask for mid-request. Dispatched without services,
+        // like `tap_menu` and `tap_admin_nav`.
+        let media_sources = {
+            let media_source_state = RequestState::without_services(UserContext::anonymous());
+            let results = tap_dispatcher
+                .dispatch("tap_media_source", "{}", media_source_state)
+                .await;
+            let registry =
+                crate::plugin::media_source_registry::MediaSourceRegistry::from_tap_results(
+                    results
+                        .into_iter()
+                        .map(|r| (r.plugin_name, r.output))
+                        .collect(),
+                );
+            if !registry.is_empty() {
+                info!(count = registry.len(), "registered plugin media sources");
+            }
+            Arc::new(registry)
+        };
+
         // Assistant scopes, collected the same way and for the same reason: a
         // scope names a route the kernel has to serve and a permission it has to
         // check, so it must be known before the first request. Dispatched
@@ -1400,6 +1435,7 @@ impl AppState {
                 openapi,
                 plugin_permissions,
                 plugin_admin_nav,
+                media_sources: parking_lot::RwLock::new(media_sources),
                 assistant_scopes,
                 content_types,
                 record_types,
@@ -1676,6 +1712,22 @@ impl AppState {
     /// plugin-enablement filter.
     pub fn plugin_admin_nav(&self) -> &Arc<crate::plugin::admin_nav_registry::AdminNavRegistry> {
         &self.inner.plugin_admin_nav
+    }
+
+    /// The media sources plugins declared through `tap_media_source`: which
+    /// content types the media library lists and the media picker widget
+    /// (a `RecordReference("media")` field) offers.
+    pub fn media_sources(&self) -> Arc<crate::plugin::media_source_registry::MediaSourceRegistry> {
+        self.inner.media_sources.read().clone()
+    }
+
+    /// Replace the media source registry. Tests use it in place of a real
+    /// `tap_media_source` dispatch — see the field's doc comment.
+    pub fn set_media_sources_for_test(
+        &self,
+        registry: crate::plugin::media_source_registry::MediaSourceRegistry,
+    ) {
+        *self.inner.media_sources.write() = Arc::new(registry);
     }
 
     /// Get the content type registry.

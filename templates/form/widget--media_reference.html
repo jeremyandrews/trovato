@@ -1,0 +1,28 @@
+{#- The media picker widget (BL-115 / B290): a `RecordReference("media")`
+    field. The hidden input is the value JavaScript writes and starts
+    disabled, so it posts nothing until a script enables it; the select is
+    the no-JavaScript fallback and starts enabled, so a browser with no
+    script posts its value under the field's own name. Exactly one of the
+    two is ever enabled at a time (static/js/media-reference-picker.js makes
+    the swap), so the field never posts two values for one name. -#}
+<div class="form-item form-item--media-reference media-reference-field" data-field="{{ name }}">
+    {% if element.title %}
+    <label for="{{ name }}_select" class="form-item__label{% if element.required %} form-item__label--required{% endif %}">{{ element.title }}</label>
+    {% endif %}
+    <input type="hidden" id="{{ name }}" name="{{ name }}" class="media-reference-field__value" value="{{ element.default_value | default(value='') }}" disabled>
+    <div class="media-reference-field__preview" hidden>
+        <span class="media-reference-field__preview-label">{% if element.attributes['data-display'] %}{{ element.attributes['data-display'] }}{% else %}{{ t(s="No media selected") }}{% endif %}</span>
+    </div>
+    <div class="media-reference-field__actions" hidden>
+        <button type="button" class="button button--small media-reference-field__choose" data-target="{{ name }}"{% if element.disabled %} disabled{% endif %}>{{ t(s="Choose media") }}</button>
+        <button type="button" class="button button--small button--secondary media-reference-field__clear"{% if element.disabled %} disabled{% endif %}>{{ t(s="Remove") }}</button>
+    </div>
+    <select name="{{ name }}" id="{{ name }}_select" class="media-reference-field__fallback" aria-label="{{ element.title | default(value=t(s='Choose media')) }}"{% if element.required %} required{% endif %}{% if element.disabled %} disabled{% endif %}>
+        <option value="">{{ t(s="- None -") }}</option>
+        {% if element.default_value %}<option value="{{ element.default_value }}" selected>{{ element.attributes['data-display'] | default(value=element.default_value) }}</option>{% endif %}
+        {{ element.attributes['data-options-html'] | default(value='') | safe }}
+    </select>
+    <p class="form-item__description media-reference-field__noscript-hint">{{ t(s="Without JavaScript, choose from the most recent media above. To upload something new first, open the media library in another tab, add it there, then come back and choose it here.") }}</p>
+    <p class="media-reference-field__noscript-link"><a href="/admin/content/media/add" target="_blank" rel="noopener">{{ t(s="Open the media library to upload") }}</a></p>
+    {% if field_error %}<div id="error-{{ name }}" class="form-item__error" role="alert">{{ field_error }}</div>{% endif %}
+</div>

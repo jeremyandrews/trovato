@@ -71,7 +71,8 @@ pub(crate) async fn build(
         .with_default_placeholder(translate(state, "Search...", &language))
         .with_owner_hint(translate(state, "Choose the owner first", &language))
         .with_field_modes(modes)
-        .with_publish_allowed(user.can(PUBLISH_CONTENT) && moderation.is_none());
+        .with_publish_allowed(user.can(PUBLISH_CONTENT) && moderation.is_none())
+        .with_media_options_html(media_options_html(state, content_type).await);
     let mut extra = extra;
     if let Some(moderation) = &moderation {
         let text = super::admin_nav::AdminText::for_page(state, user, action).await;
@@ -316,6 +317,58 @@ fn record_reference_placeholders(
         }
     }
     placeholders
+}
+
+/// Most recent media items an editor may pick without JavaScript: `<option>`
+/// markup, already HTML-escaped, for the no-JS `<select>` fallback a
+/// `RecordReference("media")` field's widget renders alongside its picker
+/// dialog. Empty when `content_type` has no such field, so the query only
+/// runs where it is needed.
+///
+/// Capped at 200 rows: a complete no-JS listing is what the library page
+/// itself is for (it has the filter and the pager); this is a fallback that
+/// only needs to make the common "pick one of the newest" case possible.
+const MEDIA_OPTIONS_LIMIT: i64 = 200;
+
+async fn media_options_html(state: &AppState, content_type: &ContentTypeDefinition) -> String {
+    let wants_media_picker = content_type
+        .fields
+        .iter()
+        .any(|f| matches!(&f.field_type, FieldType::RecordReference(t) if t == "media"));
+    if !wants_media_picker {
+        return String::new();
+    }
+    let media_types: Vec<String> = state
+        .media_sources()
+        .content_types()
+        .map(str::to_string)
+        .collect();
+    if media_types.is_empty() {
+        return String::new();
+    }
+    let rows: Vec<(Uuid, String)> = match sqlx::query_as(
+        "SELECT id, title FROM item WHERE type = ANY($1) ORDER BY created DESC LIMIT $2",
+    )
+    .bind(&media_types)
+    .bind(MEDIA_OPTIONS_LIMIT)
+    .fetch_all(state.db())
+    .await
+    {
+        Ok(rows) => rows,
+        Err(e) => {
+            tracing::warn!(error = %e, "failed to list media items for the no-JS picker fallback");
+            return String::new();
+        }
+    };
+    let mut html = String::new();
+    for (id, title) in rows {
+        html.push_str(&format!(
+            r#"<option value="{}">{}</option>"#,
+            super::helpers::html_escape(&id.to_string()),
+            super::helpers::html_escape(&title),
+        ));
+    }
+    html
 }
 
 /// What the item form needs of content moderation, on a moderated type.

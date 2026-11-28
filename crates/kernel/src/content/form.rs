@@ -94,6 +94,12 @@ pub struct FormBuilder {
     /// missing checkbox reads as "unpublished" on submit, so the honest default
     /// is to omit it and let the submission say nothing about status.
     publish_allowed: bool,
+    /// Pre-rendered `<option>` markup for a `RecordReference("media")`
+    /// field's no-JavaScript fallback `<select>` — already HTML-escaped by
+    /// the caller (`routes::item_form::build`, the one place with database
+    /// access to list media items), so `widget()` only has to place it.
+    /// Empty when the content type has no such field.
+    media_options_html: String,
 }
 
 /// Weight of the title element: first.
@@ -118,7 +124,16 @@ impl FormBuilder {
             owner_hint: "Choose the owner first".to_string(),
             field_modes: std::collections::HashMap::new(),
             publish_allowed: false,
+            media_options_html: String::new(),
         }
+    }
+
+    /// Supply the pre-rendered, already-escaped `<option>` markup a
+    /// `RecordReference("media")` field's widget uses for its no-JavaScript
+    /// `<select>` fallback (see the `media_options_html` field).
+    pub fn with_media_options_html(mut self, html: impl Into<String>) -> Self {
+        self.media_options_html = html.into();
+        self
     }
 
     /// Set the per-field render modes, from the route's field-access decisions.
@@ -429,35 +444,48 @@ impl FormBuilder {
                     .get(target_type)
                     .cloned()
                     .unwrap_or_else(|| self.default_placeholder.clone());
-                let mut element = FormElement::widget("record_reference")
-                    .attribute("data-target-type", target_type.clone())
-                    .attribute("data-display", display)
-                    .attribute("data-placeholder", placeholder);
-                // A term search is decided per field: which field of which
-                // type, on which item, and — for a field limited to the item's
-                // owner — the form's owner field. The widget sends these.
-                if target_type == "category_term" {
-                    element = element
-                        .attribute("data-item-type", self.content_type.machine_name.clone())
-                        .attribute("data-field", field.field_name.clone());
-                    if let Some(item_id) = self.item_id {
-                        element = element.attribute("data-item", item_id.to_string());
-                    }
-                    // The owner field is named only when it is on the form for
-                    // the widget to read. A viewer who may not see it gets no
-                    // control for it, so the widget would take its absence for
-                    // an empty owner and never search; with no `owner` sent,
-                    // the endpoint uses the stored owner, which is what the
-                    // save sees for a field this editor cannot write.
-                    if let Some(limit) = crate::content::owned_vocabulary::limit_of(&field.settings)
-                        && self.mode_of(&limit.owner_field) != FieldMode::Hidden
-                    {
+                // "media" is the sentinel a field uses to ask for the media
+                // library picker rather than the plain autocomplete box: any
+                // registered media source (crate::plugin::media_source_registry)
+                // is offered, not one specific content type (BL-115 / B290).
+                if target_type == "media" {
+                    FormElement::widget("media_reference")
+                        .attribute("data-display", display)
+                        .attribute("data-cardinality", field.cardinality.to_string())
+                        .attribute("data-options-html", self.media_options_html.clone())
+                        .default_value(id)
+                } else {
+                    let mut element = FormElement::widget("record_reference")
+                        .attribute("data-target-type", target_type.clone())
+                        .attribute("data-display", display)
+                        .attribute("data-placeholder", placeholder);
+                    // A term search is decided per field: which field of which
+                    // type, on which item, and — for a field limited to the item's
+                    // owner — the form's owner field. The widget sends these.
+                    if target_type == "category_term" {
                         element = element
-                            .attribute("data-owner-field", limit.owner_field)
-                            .attribute("data-owner-hint", self.owner_hint.clone());
+                            .attribute("data-item-type", self.content_type.machine_name.clone())
+                            .attribute("data-field", field.field_name.clone());
+                        if let Some(item_id) = self.item_id {
+                            element = element.attribute("data-item", item_id.to_string());
+                        }
+                        // The owner field is named only when it is on the form for
+                        // the widget to read. A viewer who may not see it gets no
+                        // control for it, so the widget would take its absence for
+                        // an empty owner and never search; with no `owner` sent,
+                        // the endpoint uses the stored owner, which is what the
+                        // save sees for a field this editor cannot write.
+                        if let Some(limit) =
+                            crate::content::owned_vocabulary::limit_of(&field.settings)
+                            && self.mode_of(&limit.owner_field) != FieldMode::Hidden
+                        {
+                            element = element
+                                .attribute("data-owner-field", limit.owner_field)
+                                .attribute("data-owner-hint", self.owner_hint.clone());
+                        }
                     }
+                    element.default_value(id)
                 }
-                element.default_value(id)
             }
             // The tag picker: the same widget and script, asking the tags
             // endpoint for this category. One slot holds one tag uuid; the
@@ -959,5 +987,70 @@ mod tests {
         assert_eq!(placeholder_of(&html, "field_unlabeled"), "Search...");
         assert!(!html.contains("Search person..."), "{html}");
         assert!(!html.contains("Search mystery_type..."), "{html}");
+    }
+
+    /// `RecordReference("media")` is the sentinel that asks for the media
+    /// picker (BL-115 / B290): a different widget than any other
+    /// `RecordReference`, carrying the pre-rendered no-JS option list the
+    /// route supplied, and the current value's display title.
+    #[test]
+    fn a_media_reference_renders_the_picker_widget() {
+        let ct = ContentTypeDefinition {
+            machine_name: "page".to_string(),
+            label: "Page".to_string(),
+            description: String::new(),
+            title_label: None,
+            fields: vec![
+                FieldDefinition::new("field_hero", FieldType::RecordReference("media".into()))
+                    .required()
+                    .label("Hero image"),
+            ],
+        };
+        let item =
+            item(serde_json::json!({ "field_hero": "11111111-1111-1111-1111-111111111111" }));
+        let mut titles = std::collections::HashMap::new();
+        titles.insert(
+            "11111111-1111-1111-1111-111111111111".to_string(),
+            "Sunset.jpg".to_string(),
+        );
+        let html = render(
+            &FormBuilder::new(ct)
+                .with_reference_titles(titles)
+                .with_media_options_html(r#"<option value="other-id">Other.png</option>"#)
+                .build_edit_form(&item, "/x"),
+        );
+        assert!(html.contains("form-item--media-reference"), "{html}");
+        assert!(
+            !html.contains("record-ref-autocomplete"),
+            "a media field must not render the plain record_reference widget: {html}"
+        );
+        assert!(html.contains("Sunset.jpg"), "{html}");
+        assert!(
+            html.contains(r#"<option value="other-id">Other.png</option>"#),
+            "{html}"
+        );
+        assert!(
+            html.contains(r#"value="11111111-1111-1111-1111-111111111111""#),
+            "{html}"
+        );
+    }
+
+    /// A plain `RecordReference` to any other target still renders the
+    /// ordinary autocomplete widget, unaffected by the "media" special case.
+    #[test]
+    fn a_non_media_record_reference_is_unaffected() {
+        let ct = ContentTypeDefinition {
+            machine_name: "page".to_string(),
+            label: "Page".to_string(),
+            description: String::new(),
+            title_label: None,
+            fields: vec![FieldDefinition::new(
+                "field_author",
+                FieldType::RecordReference("person".into()),
+            )],
+        };
+        let html = render(&FormBuilder::new(ct).build_add_form("/x"));
+        assert!(html.contains("record-ref-autocomplete"), "{html}");
+        assert!(!html.contains("form-item--media-reference"), "{html}");
     }
 }

@@ -1,0 +1,124 @@
+{% extends "page--admin.html" %}
+{% import "admin/macros/form.html" as form %}
+{% import "admin/macros/list.html" as list %}
+
+{#- The media library (BL-115 / B290): every item of a registered media
+    source (trovato_media's media_file, media_image, media_remote_video,
+    media_remote_embed, and whatever another plugin adds through
+    `tap_media_source`). `list` is the filter/sort/page view
+    (routes::admin_list); `items`, `operations`, `authors`, `thumbnails` and
+    `usage` are keyed the same way routes::admin_content's content list is. -#}
+
+{% block page_title %}{{ t(s="Media") }}{% endblock page_title %}
+{% block page_actions %}
+{% if can_create %}{{ list::add_link(url="/admin/content/media/add", label=t(s="Add media")) }}{% endif %}
+{% endblock page_actions %}
+
+{% block content %}
+<div class="admin-card">
+    {{ list::filter_start(action="/admin/content/media", label=t(s="Filter media")) }}
+        {{ form::field(name="q", type="search", label=t(s="Name contains"), value=list.q, width="20", wrapper="filter-item") }}
+        {{ form::select(name="type", label=t(s="Media type"), options=type_options, value=type_filter, empty=t(s="- Any -"), wrapper="filter-item") }}
+        {{ form::select(name="author", label=t(s="Uploader"), options=uploader_options, value=author_filter, empty=t(s="- Any -"), wrapper="filter-item") }}
+        <input type="hidden" name="view" value="{{ view }}">
+    {{ list::filter_end(list=list, action="/admin/content/media") }}
+</div>
+{{ list::sort_form(list=list, action="/admin/content/media") }}
+
+<p class="media-library__view-toggle">
+    <a href="?view=grid{% if list.query %}&{{ list.query }}{% endif %}"{% if view == "grid" %} aria-current="page"{% endif %}>{{ t(s="Grid") }}</a>
+    <a href="?view=table{% if list.query %}&{{ list.query }}{% endif %}"{% if view == "table" %} aria-current="page"{% endif %}>{{ t(s="Table") }}</a>
+</p>
+
+{% if items %}
+<div class="admin-card">
+    {{ list::count(list=list) }}
+    {% if view == "table" %}
+    <form method="post" action="/admin/content/media/bulk?confirm=delete" id="bulk-form" novalidate>
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <div class="bulk-actions">
+            <button type="submit" name="action" value="delete" class="button button--secondary button--small">{{ t(s="Delete selected") }}</button>
+            <p class="bulk-actions__count" data-selected-count role="status" aria-live="polite"></p>
+        </div>
+        <div class="table-scroll" role="region" aria-labelledby="media-caption" tabindex="0">
+            <table class="table table--stack">
+                <caption id="media-caption">{{ t(s="Media items") }}</caption>
+                <thead>
+                    <tr>
+                        <th scope="col" class="th-check"><input type="checkbox" id="select-all" data-select-all><label class="visually-hidden" for="select-all">{{ t(s="Select all items") }}</label></th>
+                        {{ list::sort_th(label=t(s="Name"), key="name", list=list) }}
+                        <th scope="col">{{ t(s="Type") }}</th>
+                        <th scope="col">{{ t(s="Uploader") }}</th>
+                        <th scope="col">{{ t(s="Used by") }}</th>
+                        {{ list::sort_th(label=t(s="Updated"), key="newest", list=list) }}
+                        <th scope="col" class="operations">{{ t(s="Operations") }}</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for item in items %}
+                    {% set author = authors[item.author_id] | default(value="") %}
+                    {% set ops = operations[item.id] %}
+                    <tr>
+                        <td class="th-check"><input type="checkbox" name="ids[]" value="{{ item.id }}" id="select-{{ item.id }}" data-select-row><label class="visually-hidden" for="select-{{ item.id }}">{{ t(s="Select {title}", title=item.title) }}</label></td>
+                        <th scope="row"><a href="/admin/content/media/{{ item.id }}/edit">{{ item.title }}</a></th>
+                        <td>{{ item.type }}</td>
+                        <td>{% if author %}{{ author }}{% else %}{{ t(s="Unknown") }}{% endif %}</td>
+                        <td>{{ usage[item.id] | default(value=0) }}</td>
+                        <td>{{ item.changed | date(format="%Y-%m-%d %H:%M") }}</td>
+                        <td class="operations">
+                            {% if ops.edit %}<a href="/admin/content/media/{{ item.id }}/edit">{{ t(s="Edit {title}", title=item.title) }}</a>{% endif %}
+                            {% if ops.delete %}<button type="submit" form="delete-{{ item.id }}" class="link-button link-button--danger">{{ t(s="Delete {title}", title=item.title) }}</button>{% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </form>
+    {% for item in items %}{% if operations[item.id].delete %}
+    <form id="delete-{{ item.id }}" method="post" action="/admin/content/media/{{ item.id }}/delete?confirm" novalidate hidden>
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <input type="hidden" name="_confirm" value="{{ t(s='Delete {title}? This cannot be undone.', title=item.title) }}">
+        <input type="hidden" name="_confirm_label" value="{{ t(s='Delete {title}', title=item.title) }}">
+    </form>
+    {% endif %}{% endfor %}
+    {% else %}
+    <ul class="media-grid">
+        {% for item in items %}
+        {% set ops = operations[item.id] %}
+        <li class="media-card">
+            <a href="/admin/content/media/{{ item.id }}/edit" class="media-card__link">
+                {% if thumbnails[item.id] %}
+                <div class="media-card__preview">
+                    <img src="{{ thumbnails[item.id] }}" alt="" loading="lazy">
+                </div>
+                {% else %}
+                <div class="media-card__preview media-card__preview--icon">
+                    <span class="media-card__icon">{{ item.type | truncate(length=4, end="") | upper }}</span>
+                </div>
+                {% endif %}
+                <div class="media-card__info">
+                    <div class="media-card__name">{{ item.title }}</div>
+                    <div class="media-card__meta">{{ t(s="Used by {count}", count=usage[item.id] | default(value=0)) }}</div>
+                </div>
+            </a>
+            {% if ops.delete %}
+            <form method="post" action="/admin/content/media/{{ item.id }}/delete?confirm" novalidate>
+                <input type="hidden" name="_token" value="{{ csrf_token }}">
+                <input type="hidden" name="_confirm" value="{{ t(s='Delete {title}? This cannot be undone.', title=item.title) }}">
+                <input type="hidden" name="_confirm_label" value="{{ t(s='Delete {title}', title=item.title) }}">
+                <button type="submit" class="link-button link-button--danger">{{ t(s="Delete {title}", title=item.title) }}</button>
+            </form>
+            {% endif %}
+        </li>
+        {% endfor %}
+    </ul>
+    {% endif %}
+    {{ list::pager(list=list, action="/admin/content/media", label=t(s="Pages of media")) }}
+</div>
+{% elif list.filtered %}
+{{ list::empty(message=t(s="No media matches this filter."), add_url="/admin/content/media", add_label=t(s="Clear filter")) }}
+{% else %}
+{{ list::empty(message=t(s="No media yet."), add_url="/admin/content/media/add", add_label=t(s="Add media")) }}
+{% endif %}
+{% endblock content %}

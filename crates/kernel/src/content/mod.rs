@@ -24,6 +24,7 @@ pub(crate) mod file_refs;
 mod filter;
 mod form;
 pub(crate) mod item_service;
+pub(crate) mod media_refs;
 pub mod moderation;
 pub mod owned_vocabulary;
 pub mod page_builder;

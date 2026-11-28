@@ -1008,6 +1008,68 @@ impl Item {
         Ok((items, total))
     }
 
+    /// The media library's listing (B290): items of any of `item_types`
+    /// (the registered media sources), optionally filtered by title and
+    /// uploader, same shape as [`Self::admin_page`] but across more than one
+    /// content type at once — the one thing `admin_page`'s single
+    /// `item_type` cannot do.
+    pub async fn media_page(
+        pool: &PgPool,
+        item_types: &[String],
+        title_like: Option<&str>,
+        author_id: Option<Uuid>,
+        order_by: &str,
+        limit: i64,
+        offset: i64,
+    ) -> Result<(Vec<Self>, i64)> {
+        let mut conditions = String::from(" AND type = ANY($1)");
+        let mut n = 1;
+        if title_like.is_some() {
+            n += 1;
+            conditions.push_str(&format!(" AND title ILIKE ${n}"));
+        }
+        if author_id.is_some() {
+            n += 1;
+            conditions.push_str(&format!(" AND author_id = ${n}"));
+        }
+        let ties = if order_by.starts_with("changed ") {
+            "id DESC"
+        } else {
+            "changed DESC, id DESC"
+        };
+        let list_sql = format!(
+            "SELECT id, current_revision_id, type, title, author_id, status, created, changed, \
+             promote, sticky, fields, stage_id, language, item_group_id, retention_days \
+             FROM item WHERE 1=1{conditions} ORDER BY {order_by}, {ties} \
+             LIMIT ${} OFFSET ${}",
+            n + 1,
+            n + 2
+        );
+        let count_sql = format!("SELECT COUNT(*) FROM item WHERE 1=1{conditions}");
+
+        let mut list = sqlx::query_as::<_, Item>(AssertSqlSafe(list_sql)).bind(item_types);
+        let mut count = sqlx::query_scalar::<_, i64>(AssertSqlSafe(count_sql)).bind(item_types);
+        if let Some(t) = title_like {
+            list = list.bind(t);
+            count = count.bind(t);
+        }
+        if let Some(a) = author_id {
+            list = list.bind(a);
+            count = count.bind(a);
+        }
+        let items = list
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(pool)
+            .await
+            .context("failed to list the media library page")?;
+        let total = count
+            .fetch_one(pool)
+            .await
+            .context("failed to count the media library page")?;
+        Ok((items, total))
+    }
+
     /// Count all items.
     pub async fn count_all(pool: &PgPool) -> Result<i64> {
         let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM item")

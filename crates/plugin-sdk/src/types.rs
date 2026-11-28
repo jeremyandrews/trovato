@@ -1414,6 +1414,44 @@ impl PermissionDefinition {
     }
 }
 
+/// A media source a plugin declares from `tap_media_source` (BL-115 / B290).
+///
+/// A media source names a content type (declared the usual way, from
+/// `tap_item_info`) that the media library and the media picker widget treat
+/// as reusable media: it is listed on `/admin/content/media`, it is offered
+/// in the picker dialog opened by a `RecordReference("media")` field, and an
+/// item it is referenced by counts toward its usage total.
+///
+/// This is the whole seam: a plugin that wants to add a new kind of media
+/// (say, a document-preview source) declares a content type as it always
+/// would, then names it here. No second field system, no separate admin UI
+/// for "media types" — a media type is a content type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct MediaSourceDefinition {
+    /// The content type's machine name, already declared by `tap_item_info`.
+    pub content_type: String,
+    /// Shown in the media type filter and the "add media" chooser.
+    pub label: String,
+    /// One line, shown beside the label in the chooser.
+    #[serde(default)]
+    pub description: String,
+}
+
+impl MediaSourceDefinition {
+    pub fn new(
+        content_type: impl Into<String>,
+        label: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
+        Self {
+            content_type: content_type.into(),
+            label: label.into(),
+            description: description.into(),
+        }
+    }
+}
+
 /// Input for `tap_cron`.
 ///
 /// Sent by the kernel during each cron cycle to plugins that implement

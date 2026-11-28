@@ -1913,6 +1913,21 @@
         color: var(--danger);
     }
 
+    /* The media library (B290): grid/table toggle and the "add media" chooser. */
+    .media-library__view-toggle {
+        display: flex;
+        gap: var(--space-3);
+        margin-block-end: var(--space-3);
+    }
+
+    .media-add-choose__list {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--space-3);
+        list-style: none;
+        padding: 0;
+    }
+
     /* Revisions and diffs: added and removed are words and marks, not only
        colours. */
     .diff-added {

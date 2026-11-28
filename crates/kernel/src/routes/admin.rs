@@ -1129,8 +1129,11 @@ pub fn router() -> Router<AppState> {
             "/admin/content/files/{id}/alt-text",
             post(set_file_alt_text),
         )
-        // Media library
+        // Media library (raw file browser; kept as it is)
         .route("/admin/media", get(media_library))
+        // Media library (reusable media items) and the media picker's JSON
+        // API, and the BL-115 fix for the dead `/media` menu entry.
+        .merge(super::admin_media_library::router())
         // Content type and search configuration management
         .merge(super::admin_content_type::router())
         .merge(super::admin_record_type::router())

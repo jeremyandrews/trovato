@@ -1,0 +1,129 @@
+/* The media reference picker (BL-115 / B290): the field widget and its
+   dialog. Tokens come from static/css/admin.css; this file loads after it
+   wherever the media_reference widget library is attached. */
+
+.media-reference-field__preview {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-block-end: var(--space-2);
+}
+
+.media-reference-field__preview-label {
+    color: var(--text-muted);
+}
+
+.media-reference-field__actions {
+    display: flex;
+    gap: var(--space-2);
+    margin-block-end: var(--space-2);
+}
+
+.media-reference-field__fallback {
+    inline-size: 100%;
+    max-inline-size: 28rem;
+}
+
+.media-ref-picker {
+    inline-size: min(52rem, calc(100vw - 2 * var(--space-4)));
+    max-block-size: calc(100vh - 2 * var(--space-5));
+    padding: var(--space-5);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--surface-raised);
+    color: var(--text);
+}
+
+.media-ref-picker::backdrop {
+    background: rgb(0 0 0 / 0.55);
+}
+
+.media-ref-picker__head,
+.media-ref-picker__foot,
+.media-ref-picker__tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: var(--space-3);
+}
+
+.media-ref-picker__title {
+    margin: 0;
+    font-size: var(--step-1);
+}
+
+.media-ref-picker__tools {
+    justify-content: flex-start;
+    margin-block: var(--space-4);
+}
+
+.media-ref-picker__tools .form-item {
+    margin-block-end: 0;
+}
+
+.media-ref-picker__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+    gap: var(--space-3);
+    margin: 0 0 var(--space-4);
+    padding: 0;
+    list-style: none;
+}
+
+.media-ref-picker__item {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-1);
+    inline-size: 100%;
+    min-block-size: var(--target-primary);
+    padding: var(--space-2);
+    border: 1px solid var(--border-strong);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    text-align: start;
+    cursor: pointer;
+}
+
+.media-ref-picker__item[aria-pressed="true"] {
+    border: 3px solid var(--accent);
+    font-weight: 650;
+}
+
+.media-ref-picker__item img {
+    inline-size: 100%;
+    aspect-ratio: 4 / 3;
+    object-fit: cover;
+}
+
+.media-ref-picker__ext {
+    display: grid;
+    place-items: center;
+    aspect-ratio: 4 / 3;
+    background: var(--surface-raised);
+    font-weight: 650;
+}
+
+.media-ref-picker__name {
+    overflow-wrap: anywhere;
+    font-size: var(--step--1);
+}
+
+.media-ref-picker__chosen {
+    flex: 1 1 12rem;
+    margin: 0;
+}
+
+.media-ref-picker__upload {
+    margin-block: var(--space-4);
+    padding: var(--space-3);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+.media-ref-picker__upload .form-item {
+    margin-block: var(--space-2);
+}

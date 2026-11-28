@@ -20,6 +20,7 @@ pub mod admin_embed;
 pub mod admin_form;
 pub mod admin_language;
 pub mod admin_list;
+pub mod admin_media_library;
 pub mod admin_menu;
 pub mod admin_nav;
 pub mod admin_pathauto;

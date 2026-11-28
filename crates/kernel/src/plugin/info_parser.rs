@@ -469,6 +469,9 @@ pub const KNOWN_TAPS: &[&str] = &[
     "tap_perm",
     // Admin sidebar links and dashboard cards (BL-162).
     "tap_admin_nav",
+    // Media sources the library and picker widget treat as reusable media
+    // (BL-115 / B290).
+    "tap_media_source",
     // Theme
     "tap_theme",
     "tap_preprocess_item",

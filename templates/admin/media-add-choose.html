@@ -1,0 +1,17 @@
+{% extends "page--admin.html" %}
+
+{#- Choose which registered media source to add (BL-115 / B290). One link
+    per `tap_media_source` declaration — trovato_media's four, plus whatever
+    another plugin registers the same way. -#}
+
+{% block page_title %}{{ t(s="Add media") }}{% endblock page_title %}
+
+{% block content %}
+<div class="admin-card">
+    <ul class="media-add-choose__list">
+        {% for type in media_types %}
+        <li><a class="button button--secondary" href="/admin/content/media/add/{{ type.content_type }}">{{ type.label }}</a></li>
+        {% endfor %}
+    </ul>
+</div>
+{% endblock content %}

@@ -8,7 +8,9 @@ dependencies = []
 implements = [
     "tap_item_info",
     "tap_item_access",
+    "tap_media_source",
     "tap_menu",
+    "tap_admin_nav",
     "tap_perm",
 ]
 weight = 0
@@ -18,6 +20,7 @@ files = [
     "migrations/001_gather_queries.sql",
     "migrations/002_url_aliases.sql",
     "migrations/003_roles.sql",
+    "migrations/004_media_library_roles.sql",
 ]
 
 # Declared plugin capabilities (WASM-1, deny-unless-declared). The kernel

@@ -13,7 +13,7 @@ const doc = fs.readFileSync(path.join(here, '../../docs/admin/inventory.md'), 'u
 const kernel = doc.split('<!-- kernel routes -->')[1].split('<!-- end kernel routes -->')[0];
 
 /** Not pages: an image and JSON endpoints. */
-const NOT_PAGES = new Set(['/admin/appearance/{theme}/screenshot', '/admin/stage/current', '/admin/embed/status', '/admin/search/suggest']);
+const NOT_PAGES = new Set(['/admin/appearance/{theme}/screenshot', '/admin/stage/current', '/admin/embed/status', '/admin/search/suggest', '/admin/content/media/picker']);
 
 export const routes = kernel
   .split('\n')
@@ -46,6 +46,7 @@ export const EXPECTED_UNSEEDED = new Map([
   ['/admin/config/formats/{format}/delete', 'the built-in text formats cannot be deleted'],
   ['/admin/config/redirects/{id}/edit', 'no redirect is defined'],
   ['/admin/config/languages/{code}/delete', 'the site has one language, the default, which cannot be deleted'],
+  ['/admin/content/media/{id}/edit', 'no media item is seeded'],
 ]);
 
 /**

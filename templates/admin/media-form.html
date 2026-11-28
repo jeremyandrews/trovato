@@ -1,0 +1,38 @@
+{% extends "page--admin.html" %}
+
+{#- The media add/edit form (BL-115 / B290): the generic item form pipeline
+    (routes::item_form), with the media library's own chrome. `usage` is the
+    reference count (crate::content::media_refs); a "Force delete" button is
+    offered only when it is more than zero, the one case the library's own
+    plain delete button refuses. -#}
+
+{% block page_title %}{% if editing %}{{ t(s="Edit {type}", type=content_type.label) }}{% else %}{{ t(s="Add {type}", type=content_type.label) }}{% endif %}{% endblock page_title %}
+
+{% block content %}
+<div class="admin-card">
+    {{ form_html | safe }}
+    {# SAFE: form_html is rendered by ThemeEngine::render_form_with_errors, which escapes every value it writes. #}
+</div>
+
+{% if editing %}
+<div class="admin-card">
+    <p>{{ t(s="Used by {count} item", plural="Used by {count} items", count=usage) }}</p>
+    {% if usage > 0 %}
+    <form method="post" action="/admin/content/media/{{ item_id }}/delete?confirm" novalidate>
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <input type="hidden" name="force" value="1">
+        <input type="hidden" name="_confirm" value="{{ t(s='This media item is used by {count} item. Delete it anyway? This cannot be undone.', plural='This media item is used by {count} items. Delete it anyway? This cannot be undone.', count=usage) }}">
+        <input type="hidden" name="_confirm_label" value="{{ t(s='Force delete') }}">
+        <button type="submit" class="button button--danger">{{ t(s="Force delete") }}</button>
+    </form>
+    {% else %}
+    <form method="post" action="/admin/content/media/{{ item_id }}/delete?confirm" novalidate>
+        <input type="hidden" name="_token" value="{{ csrf_token }}">
+        <input type="hidden" name="_confirm" value="{{ t(s='Delete this media item? This cannot be undone.') }}">
+        <input type="hidden" name="_confirm_label" value="{{ t(s='Delete') }}">
+        <button type="submit" class="button button--danger">{{ t(s="Delete") }}</button>
+    </form>
+    {% endif %}
+</div>
+{% endif %}
+{% endblock content %}

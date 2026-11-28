@@ -17,6 +17,7 @@ mod error;
 pub mod gate;
 mod info_parser;
 pub mod limits;
+pub mod media_source_registry;
 pub mod migration;
 pub mod permission_registry;
 pub mod runtime;

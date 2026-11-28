@@ -15,6 +15,7 @@ use uuid::Uuid;
 
 use super::field_values;
 use super::file_refs::{self, FileReferences};
+use super::media_refs;
 use super::moderation;
 use super::reentry::{self, MAX_ITEM_WRITE_DEPTH, WriteTooDeep};
 use crate::cache::generation::{CacheKind, bump};
@@ -952,6 +953,7 @@ impl ItemService {
         .await?;
 
         self.write_alias(&item, true).await;
+        self.sync_media_references(&item).await;
 
         // tap_item_insert is a notification: the row exists, and what a handler
         // returns is not read (BL-88). Failures are logged by the dispatcher.
@@ -1777,6 +1779,7 @@ impl ItemService {
 
         if let Some(ref i) = item {
             self.write_alias(i, false).await;
+            self.sync_media_references(i).await;
 
             // tap_item_update is a notification, as tap_item_insert is.
             let item_json = serde_json::to_string(i).context("serialize item")?;
@@ -1995,6 +1998,32 @@ impl ItemService {
         // (`ON DELETE CASCADE` on `item_id`) when the item row is deleted above.
 
         Ok(deleted)
+    }
+
+    /// Rebuild `item`'s `item_reference` rows from its current field values
+    /// (see [`crate::content::media_refs`]). Best-effort: a failure is logged
+    /// and does not fail the write that is already committed — the rows this
+    /// maintains back a usage count shown to editors, not a security check.
+    async fn sync_media_references(&self, item: &Item) {
+        let mut conn = match self.inner.pool.acquire().await {
+            Ok(conn) => conn,
+            Err(e) => {
+                warn!(item_id = %item.id, error = %e, "failed to acquire a connection to sync item references");
+                return;
+            }
+        };
+        let definitions = match file_refs::load_field_definitions(&mut conn, &item.item_type).await
+        {
+            Ok(definitions) => definitions,
+            Err(e) => {
+                warn!(item_id = %item.id, error = %e, "failed to load field definitions to sync item references");
+                return;
+            }
+        };
+        let refs = media_refs::extract_media_references(&item.fields, &definitions);
+        if let Err(e) = media_refs::sync_item_media_references(&mut conn, item.id, &refs).await {
+            warn!(item_id = %item.id, error = %e, "failed to sync item references");
+        }
     }
 
     /// The files `fields` references, for an item of `item_type`, after its
