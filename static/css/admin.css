@@ -407,6 +407,13 @@
         min-inline-size: 0;
     }
 
+    /* The form pipeline wraps the banner's and the palette's fields in one
+       markup item (admin_nav::search_forms); the form lays them out. */
+    .admin-search > .form-item--markup,
+    .admin-palette__form > .form-item--markup {
+        display: contents;
+    }
+
     .admin-search__button,
     .admin-palette-open {
         white-space: nowrap;

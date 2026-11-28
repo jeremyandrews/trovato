@@ -1974,3 +1974,195 @@ fn b83c_admin_forms_are_altered_refused_and_submitted() {
         }
     });
 }
+
+// =============================================================================
+// B83c: the site-wide and front-end GET forms: a gather's exposed filters,
+// the site search (its page and the page-not-found page), and the admin
+// banner search, command palette and search results page. Each is a GET
+// pipeline form: built through FormService (so `tap_form_alter` runs) with no
+// token and no saved state. The installer's two POST forms are tested in
+// zz_operator_cli_test, which runs a site that is not yet installed.
+// =============================================================================
+
+/// The GET forms of this block; none may ever have a saved state.
+const GET_FORMS: [&str; 5] = [
+    "gather_exposed_filters",
+    "search_form",
+    "admin_search_form",
+    "admin_palette_form",
+    "admin_search_page_form",
+];
+
+/// `id`'s form on `html`, asserted to be a GET pipeline form with no token
+/// or build id.
+fn get_form<'a>(html: &'a str, id: &str) -> &'a str {
+    let form = common::form_in(html, id).unwrap_or_else(|| panic!("no form {id}: {html}"));
+    assert!(form.contains(r#"method="get""#), "{id}: {form}");
+    assert!(form.contains("data-form-pipeline"), "{id}: {form}");
+    assert!(
+        !form.contains(r#"name="_token""#) && !form.contains(r#"name="_form_build_id""#),
+        "{id}: a GET form carries no token and no build id: {form}"
+    );
+    form
+}
+
+/// How many saved states the GET forms have: building one saves nothing.
+async fn get_form_states(app: &TestApp) -> i64 {
+    sqlx::query_scalar("SELECT count(*) FROM form_state_cache WHERE form_id = ANY($1)")
+        .bind(GET_FORMS.map(str::to_string).to_vec())
+        .fetch_one(&app.db)
+        .await
+        .unwrap()
+}
+
+/// A gather's exposed filters are a GET pipeline form to the listing, the
+/// filter named as the gather reads it and holding the value asked for, with
+/// Apply and a Clear link.
+#[test]
+fn b83c_a_gathers_exposed_filters_are_a_get_pipeline_form() {
+    run(|app| async move {
+        let (_, cookies, _) = b83b_user(app, "b83c_gather", &["access content"]).await;
+        let ip = common::test_ip_for("b83c_gather");
+        let query: trovato_kernel::gather::types::GatherQuery = serde_json::from_value(json!({
+            "query_id": "b83c_exposed_probe",
+            "label": "Exposed probe",
+            "definition": {
+                "base_table": "item",
+                "item_type": "conference",
+                "filters": [{
+                    "field": "title",
+                    "operator": "contains",
+                    "value": "",
+                    "exposed": true,
+                    "exposed_label": "Title contains"
+                }],
+                "sorts": [{ "field": "title", "direction": "asc", "nulls": null }]
+            },
+            "display": { "format": "list", "items_per_page": 2, "pager": { "enabled": true, "zero_based": false } },
+            "plugin": "core"
+        }))
+        .expect("gather deserializes");
+        app.state
+            .gather()
+            .register_query(query)
+            .await
+            .expect("register gather");
+        let pool = app.db.clone();
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query("DELETE FROM gather_query WHERE query_id = 'b83c_exposed_probe'")
+                .execute(&pool)
+                .await;
+        });
+
+        let (_, html) = visit(
+            app,
+            &cookies,
+            "/gather/b83c_exposed_probe?title=Zed&op=Apply",
+            &ip,
+        )
+        .await;
+        let form = get_form(&html, "gather_exposed_filters");
+        assert!(
+            form.contains(r#"action="/gather/b83c_exposed_probe""#),
+            "{form}"
+        );
+        assert!(form.contains("gather-exposed-filters"), "{form}");
+        assert!(form.contains(r#"for="title""#) && form.contains("Title contains"));
+        assert!(
+            form.contains(r#"name="title""#) && form.contains(r#"value="Zed""#),
+            "the filter keeps its value: {form}"
+        );
+        assert!(form.contains("Apply"), "{form}");
+        assert!(
+            form.contains(r#"href="/gather/b83c_exposed_probe" class="btn btn--secondary">Clear"#),
+            "{form}"
+        );
+        assert_eq!(get_form_states(app).await, 0);
+    });
+}
+
+/// The search page's box and the page-not-found page's are the one search
+/// form, a GET pipeline form to `/search`.
+#[test]
+fn b83c_the_site_search_forms_are_get_pipeline_forms() {
+    run(|app| async move {
+        let (_, cookies, _) = b83b_user(app, "b83c_search", &["search content"]).await;
+        let ip = common::test_ip_for("b83c_search");
+
+        let (_, html) = visit(app, &cookies, "/search?q=b83c+probe", &ip).await;
+        let form = get_form(&html, "search_form");
+        assert!(form.contains(r#"action="/search""#), "{form}");
+        assert!(form.contains("search-form"), "{form}");
+        assert!(
+            form.contains(r#"type="search""#)
+                && form.contains(r#"name="q""#)
+                && form.contains(r#"value="b83c probe""#)
+                && form.contains(r#"placeholder="Search...""#)
+                && form.contains(r#"aria-label="Search""#),
+            "the query is kept in the search field: {form}"
+        );
+
+        let response = app
+            .request_with_cookies(
+                Request::get("/b83c-no-such-page")
+                    .header(header::ACCEPT, "text/html")
+                    .header("x-forwarded-for", &ip)
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let html = body_string(response).await.replace("&#x2F;", "/");
+        let form = get_form(&html, "search_form");
+        assert!(
+            form.contains("error-page__search") && form.contains(r#"role="search""#),
+            "{form}"
+        );
+        assert!(form.contains("Search this site"), "{form}");
+        assert_eq!(get_form_states(app).await, 0);
+    });
+}
+
+/// Every admin page's banner search and command palette are GET pipeline
+/// forms that keep the ids the palette script drives, and the search results
+/// page asks again through its own; none of them saves a state.
+#[test]
+fn b83c_the_admin_search_forms_are_get_pipeline_forms() {
+    run(|app| async move {
+        let (_, cookies, _) =
+            b83b_user(app, "b83c_admin_search", &["access administration pages"]).await;
+        let ip = common::test_ip_for("b83c_admin_search");
+
+        let (_, html) = visit(app, &cookies, "/admin/search?q=menu", &ip).await;
+        let banner = get_form(&html, "admin_search_form");
+        assert!(banner.contains(r#"action="/admin/search""#), "{banner}");
+        assert!(banner.contains("admin-search"), "{banner}");
+        assert!(
+            banner.contains(r#"id="admin-search-q""#) && banner.contains(r#"value="menu""#),
+            "the banner keeps the query: {banner}"
+        );
+        let palette = get_form(&html, "admin_palette_form");
+        for id in [
+            "admin-palette-q",
+            "admin-palette-results",
+            "admin-palette-count",
+        ] {
+            assert!(
+                palette.contains(&format!(r#"id="{id}""#)),
+                "{id}: {palette}"
+            );
+        }
+        assert!(palette.contains("data-palette-close"), "{palette}");
+        let page = get_form(&html, "admin_search_page_form");
+        assert!(
+            page.contains("search-page-form") && page.contains(r#"aria-label="Search again""#),
+            "{page}"
+        );
+        assert!(
+            page.contains(r#"name="q""#) && page.contains("Search for"),
+            "{page}"
+        );
+        assert_eq!(get_form_states(app).await, 0);
+    });
+}

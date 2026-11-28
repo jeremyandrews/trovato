@@ -12,50 +12,25 @@ use axum::{
     response::{Html, IntoResponse, Redirect, Response},
     routing::{get, post},
 };
-use serde::Deserialize;
 use tower_sessions::Session;
 use uuid::Uuid;
 
+use crate::content::submission::PostedForm;
+use crate::form::ValidationError;
 use crate::models::{CreateUser, SiteConfig};
-use crate::routes::helpers::{
-    html_escape, is_valid_email, require_csrf, validate_password, validate_username,
-};
+use crate::routes::helpers::{html_escape, is_valid_email, validate_password, validate_username};
 use crate::state::AppState;
 use crate::tap::UserContext;
 
 // =============================================================================
-// Request Types
+// Forms
 // =============================================================================
 
-/// Admin account creation form.
-#[derive(Debug, Deserialize)]
-pub struct CreateAdminForm {
-    pub username: String,
-    pub email: String,
-    pub password: String,
-    pub password_confirm: String,
-    /// CSRF token.
-    #[serde(rename = "_token", default)]
-    pub token: String,
-}
+/// The id of the administrator account form (`/install/admin`).
+const ADMIN_FORM_ID: &str = "install_admin_form";
 
-/// Site configuration form.
-#[derive(Debug, Deserialize)]
-pub struct SiteConfigForm {
-    pub site_name: String,
-    pub site_slogan: Option<String>,
-    pub site_mail: Option<String>,
-    /// CSRF token.
-    #[serde(rename = "_token", default)]
-    pub token: String,
-    /// The administrator's name, asked for only when this session did not
-    /// create the account.
-    #[serde(default)]
-    pub admin_name: Option<String>,
-    /// That administrator's password.
-    #[serde(default)]
-    pub admin_password: Option<String>,
-}
+/// The id of the site configuration form (`/install/site`).
+const SITE_FORM_ID: &str = "install_site_form";
 
 /// Session key holding the id of the administrator this session created.
 ///
@@ -85,22 +60,7 @@ async fn count_admin_users(state: &AppState) -> i64 {
 }
 
 /// Render installer template.
-fn render_installer(
-    title: &str,
-    step: u8,
-    total_steps: u8,
-    content: &str,
-    error: Option<&str>,
-) -> Response {
-    let error_html = error
-        .map(|e| {
-            format!(
-                r#"<div class="alert alert--error">{}</div>"#,
-                html_escape(e)
-            )
-        })
-        .unwrap_or_default();
-
+fn render_installer(title: &str, step: u8, total_steps: u8, content: &str) -> Response {
     let html = format!(
         r#"<!DOCTYPE html>
 <html lang="en">
@@ -167,16 +127,17 @@ fn render_installer(
         .installer-content {{
             padding: 2rem;
         }}
-        .form-group {{
+        /* The forms are drawn by the form pipeline (templates/form). */
+        .form-item {{
             margin-bottom: 1.5rem;
         }}
-        .form-group label {{
+        .form-item__label {{
             display: block;
             font-weight: 500;
             margin-bottom: 0.5rem;
             color: var(--gray-700);
         }}
-        .form-group input {{
+        .form-text {{
             width: 100%;
             padding: 0.75rem 1rem;
             border: 1px solid var(--gray-300);
@@ -184,15 +145,37 @@ fn render_installer(
             font-size: 1rem;
             transition: border-color 0.15s, box-shadow 0.15s;
         }}
-        .form-group input:focus {{
+        .form-text:focus {{
             outline: none;
             border-color: var(--primary);
             box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
         }}
-        .form-group .help {{
+        .form-text[aria-invalid="true"] {{
+            border-color: var(--red-500);
+        }}
+        .form-item__description {{
             font-size: 0.875rem;
             color: var(--gray-500);
             margin-top: 0.25rem;
+        }}
+        .form-item__error {{
+            font-size: 0.875rem;
+            color: var(--red-500);
+            margin-top: 0.25rem;
+        }}
+        .form__errors {{
+            padding: 1rem;
+            border-radius: 0.5rem;
+            margin-bottom: 1.5rem;
+            background: var(--red-100);
+            color: var(--red-500);
+            list-style: none;
+        }}
+        .form__errors ul {{
+            list-style: none;
+        }}
+        .form-submit {{
+            width: 100%;
         }}
         .button {{
             display: inline-block;
@@ -254,7 +237,6 @@ fn render_installer(
             <div class="step">Step {step} of {total_steps}</div>
         </div>
         <div class="installer-content">
-            {error_html}
             {content}
         </div>
     </div>
@@ -263,7 +245,6 @@ fn render_installer(
         title = html_escape(title),
         step = step,
         total_steps = total_steps,
-        error_html = error_html,
         content = content,
     );
 
@@ -316,52 +297,99 @@ async fn install_welcome(State(state): State<AppState>) -> Response {
         <a href="/install/admin" class="button button--full">Continue</a>
     "#;
 
-    render_installer("Welcome", 1, 4, content, None)
+    render_installer("Welcome", 1, 4, content)
 }
 
-/// The administrator form, carrying the session's CSRF token.
-fn admin_form_html(token: &str) -> String {
-    format!(
-        r#"
+/// Build `form` through the form pipeline for nobody signed in (no account
+/// exists yet, or the one that does is not this browser's) and draw it on an
+/// installer page under `intro`, with `errors` beside their fields.
+///
+/// The form service serves the installer: migrations run before the server
+/// answers a request, so the table its saved state lives in is there.
+async fn render_form_page(
+    state: &AppState,
+    session: &Session,
+    (title, step): (&str, u8),
+    intro: &str,
+    form: crate::form::Form,
+    errors: &[ValidationError],
+) -> Response {
+    let viewer = UserContext::anonymous();
+    match super::admin_form::render_as(state, session, &viewer, form, errors).await {
+        Ok(form) => render_installer(
+            title,
+            step,
+            4,
+            &format!(
+                r#"
         <p style="margin-bottom: 1.5rem; color: var(--gray-700);">
-            Create the administrator account for your site.
+            {}
         </p>
-        <form method="post" action="/install/admin">
-            <input type="hidden" name="_token" value="{token}">
-            <div class="form-group">
-                <label for="username">Username</label>
-                <input type="text" id="username" name="username" required autocomplete="username">
-            </div>
-            <div class="form-group">
-                <label for="email">Email Address</label>
-                <input type="email" id="email" name="email" required autocomplete="email">
-            </div>
-            <div class="form-group">
-                <label for="password">Password</label>
-                <input type="password" id="password" name="password" required minlength="12" autocomplete="new-password">
-                <div class="help">Minimum 12 characters</div>
-            </div>
-            <div class="form-group">
-                <label for="password_confirm">Confirm Password</label>
-                <input type="password" id="password_confirm" name="password_confirm" required autocomplete="new-password">
-            </div>
-            <button type="submit" class="button button--full">Create Admin Account</button>
-        </form>
-    "#,
-        token = html_escape(token),
-    )
+        {form}"#,
+                html_escape(intro)
+            ),
+        ),
+        Err(refusal) => refusal,
+    }
 }
 
-/// Render the administrator form, with an error when there is one.
-async fn render_admin_form(session: &Session, error: Option<&str>) -> Response {
-    let token = crate::form::csrf::generate_csrf_token(session).await;
-    render_installer(
-        "Create Admin Account",
-        2,
-        4,
-        &admin_form_html(&token),
-        error,
+/// The administrator account form.
+fn admin_form() -> crate::form::Form {
+    use crate::form::{Form, FormElement};
+    Form::new(ADMIN_FORM_ID)
+        .action("/install/admin")
+        .element(
+            "username",
+            FormElement::textfield()
+                .title("Username")
+                .required()
+                .attribute("autocomplete", "username")
+                .weight(0),
+        )
+        .element(
+            "email",
+            FormElement::input("email")
+                .title("Email Address")
+                .required()
+                .attribute("autocomplete", "email")
+                .weight(1),
+        )
+        .element(
+            "password",
+            FormElement::password()
+                .title("Password")
+                .description("Minimum 12 characters")
+                .required()
+                .attribute("minlength", "12")
+                .attribute("autocomplete", "new-password")
+                .weight(2),
+        )
+        .element(
+            "password_confirm",
+            FormElement::password()
+                .title("Confirm Password")
+                .required()
+                .attribute("autocomplete", "new-password")
+                .weight(3),
+        )
+        .element("op", FormElement::submit("Create Admin Account").weight(10))
+}
+
+/// Render the administrator form, with `errors` when there are some.
+async fn render_admin_form(
+    state: &AppState,
+    session: &Session,
+    errors: &[ValidationError],
+) -> Response {
+    render_form_page(
+        state,
+        session,
+        ("Create Admin Account", 2),
+        "Create the administrator account for your site.",
+        admin_form(),
+        errors,
     )
+    .await
 }
 
 /// Admin account creation form.
@@ -377,7 +405,30 @@ async fn install_admin_form(State(state): State<AppState>, session: Session) -> 
         return Redirect::to("/install/site").into_response();
     }
 
-    render_admin_form(&session, None).await
+    render_admin_form(&state, &session, &[]).await
+}
+
+/// What is wrong with a submitted administrator form, field by field.
+fn admin_form_errors(posted: &PostedForm) -> Vec<ValidationError> {
+    let username = posted.get("username").unwrap_or_default().trim();
+    let email = posted.get("email").unwrap_or_default().trim();
+    let password = posted.get("password").unwrap_or_default();
+    let mut errors = Vec::new();
+    if let Err(msg) = validate_username(username) {
+        errors.push(ValidationError::field("username", msg));
+    }
+    if email.is_empty() || !is_valid_email(email) {
+        errors.push(ValidationError::field("email", "Valid email is required"));
+    }
+    if let Err(msg) = validate_password(password) {
+        errors.push(ValidationError::field("password", msg));
+    } else if password != posted.get("password_confirm").unwrap_or_default() {
+        errors.push(ValidationError::field(
+            "password_confirm",
+            "Passwords do not match",
+        ));
+    }
+    errors
 }
 
 /// Admin account creation submit.
@@ -386,13 +437,21 @@ async fn install_admin_form(State(state): State<AppState>, session: Session) -> 
 async fn install_admin_submit(
     State(state): State<AppState>,
     session: Session,
-    Form(form): Form<CreateAdminForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
     if check_installed(&state).await {
         return Redirect::to("/").into_response();
     }
 
-    if let Err(refusal) = require_csrf(&session, &form.token).await {
+    // The form pipeline first: the CSRF token and the saved form state, then
+    // the fields.
+    let posted = PostedForm(pairs);
+    let viewer = UserContext::anonymous();
+    let errors = admin_form_errors(&posted);
+    let checked =
+        super::admin_form::check_as(&state, &session, &viewer, &posted, ADMIN_FORM_ID, errors)
+            .await;
+    if let Err(Err(refusal)) = checked {
         return refusal;
     }
 
@@ -402,22 +461,14 @@ async fn install_admin_submit(
         return Redirect::to("/install/site").into_response();
     }
 
-    // Validate
-    if let Err(msg) = validate_username(form.username.trim()) {
-        return render_admin_form(&session, Some(msg)).await;
-    }
-
-    if form.email.trim().is_empty() || !is_valid_email(form.email.trim()) {
-        return render_admin_form(&session, Some("Valid email is required")).await;
-    }
-
-    if let Err(msg) = validate_password(&form.password) {
-        return render_admin_form(&session, Some(msg)).await;
-    }
-
-    if form.password != form.password_confirm {
-        return render_admin_form(&session, Some("Passwords do not match")).await;
-    }
+    let form_state = match checked {
+        Ok(form_state) => form_state,
+        Err(Ok(errors)) => return render_admin_form(&state, &session, &errors).await,
+        Err(Err(refusal)) => return refusal,
+    };
+    let failed = || [ValidationError::form("Failed to create admin account")];
+    let username = posted.get("username").unwrap_or_default().trim();
+    let email = posted.get("email").unwrap_or_default().trim();
 
     // Two submissions at once would both count no administrator and both
     // create one, since hashing the password leaves a wide gap between the
@@ -431,7 +482,7 @@ async fn install_admin_submit(
         Ok(tx) => tx,
         Err(e) => {
             tracing::error!(error = %e, "failed to begin the installer's admin lock");
-            return render_admin_form(&session, Some("Failed to create admin account")).await;
+            return render_admin_form(&state, &session, &failed()).await;
         }
     };
     match sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_xact_lock(hashtext($1))")
@@ -443,7 +494,7 @@ async fn install_admin_submit(
         Ok(false) => return Redirect::to("/install/site").into_response(),
         Err(e) => {
             tracing::error!(error = %e, "failed to take the installer's admin lock");
-            return render_admin_form(&session, Some("Failed to create admin account")).await;
+            return render_admin_form(&state, &session, &failed()).await;
         }
     }
     if count_admin_users(&state).await > 0 {
@@ -451,25 +502,37 @@ async fn install_admin_submit(
     }
 
     // Check if username already exists
-    if let Ok(Some(_)) = state.users().find_by_name(&form.username).await {
-        return render_admin_form(&session, Some("Username already exists")).await;
+    if let Ok(Some(_)) = state
+        .users()
+        .find_by_name(posted.get("username").unwrap_or_default())
+        .await
+    {
+        let errors = [ValidationError::field(
+            "username",
+            "Username already exists",
+        )];
+        return render_admin_form(&state, &session, &errors).await;
     }
 
     // Check if email already exists
-    if let Ok(Some(_)) = state.users().find_by_mail(&form.email).await {
-        return render_admin_form(&session, Some("Email already in use")).await;
+    if let Ok(Some(_)) = state
+        .users()
+        .find_by_mail(posted.get("email").unwrap_or_default())
+        .await
+    {
+        let errors = [ValidationError::field("email", "Email already in use")];
+        return render_admin_form(&state, &session, &errors).await;
     }
 
     // Create admin user (anonymous context — no user exists yet)
     let input = CreateUser {
-        name: form.username.trim().to_string(),
-        password: form.password,
-        mail: form.email.trim().to_string(),
+        name: username.to_string(),
+        password: posted.get("password").unwrap_or_default().to_string(),
+        mail: email.to_string(),
         is_admin: true,
     };
 
-    let anon = UserContext::anonymous();
-    let created = state.users().create(input, &anon, "installer").await;
+    let created = state.users().create(input, &viewer, "installer").await;
     // The account is written (or not): the next submission may count.
     if let Err(e) = lock.commit().await {
         tracing::warn!(error = %e, "failed to release the installer's admin lock");
@@ -479,11 +542,12 @@ async fn install_admin_submit(
             if let Err(e) = session.insert(SESSION_INSTALL_ADMIN, admin.id).await {
                 tracing::error!(error = %e, "failed to remember the installing administrator");
             }
+            submitted(&state, &form_state, &posted).await;
             Redirect::to("/install/site").into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to create admin user");
-            render_admin_form(&session, Some("Failed to create admin account")).await
+            render_admin_form(&state, &session, &failed()).await
         }
     }
 }
@@ -497,64 +561,96 @@ async fn installing_admin(state: &AppState, session: &Session) -> Option<Uuid> {
     }
 }
 
-/// The site form, carrying the session's CSRF token. A session that did not
-/// create the administrator is also asked to sign in as one.
-fn site_form_html(token: &str, ask_admin: bool) -> String {
-    let admin_fields = if ask_admin {
-        r#"
-            <p style="margin-bottom: 1.5rem; color: var(--gray-700);">
-                The administrator account was created in another browser session.
-                Sign in as that administrator to finish.
-            </p>
-            <div class="form-group">
-                <label for="admin_name">Administrator username</label>
-                <input type="text" id="admin_name" name="admin_name" required autocomplete="username">
-            </div>
-            <div class="form-group">
-                <label for="admin_password">Administrator password</label>
-                <input type="password" id="admin_password" name="admin_password" required autocomplete="current-password">
-            </div>"#
-    } else {
-        ""
-    };
-    format!(
-        r#"
-        <p style="margin-bottom: 1.5rem; color: var(--gray-700);">
-            Configure your site's basic information.
-        </p>
-        <form method="post" action="/install/site">
-            <input type="hidden" name="_token" value="{token}">{admin_fields}
-            <div class="form-group">
-                <label for="site_name">Site Name</label>
-                <input type="text" id="site_name" name="site_name" value="Trovato" required>
-            </div>
-            <div class="form-group">
-                <label for="site_slogan">Site Slogan</label>
-                <input type="text" id="site_slogan" name="site_slogan" placeholder="Optional tagline">
-            </div>
-            <div class="form-group">
-                <label for="site_mail">Site Email</label>
-                <input type="email" id="site_mail" name="site_mail" placeholder="admin@example.com">
-                <div class="help">Used for system notifications</div>
-            </div>
-            <button type="submit" class="button button--full">Save and Continue</button>
-        </form>
-    "#,
-        token = html_escape(token),
+/// The site form. A session that did not create the administrator
+/// (`ask_admin`) is also asked to sign in as one.
+fn site_form(ask_admin: bool) -> crate::form::Form {
+    use crate::form::{Form, FormElement};
+    let mut form = Form::new(SITE_FORM_ID).action("/install/site");
+    if ask_admin {
+        form = form
+            .element(
+                "admin_intro",
+                FormElement::markup(
+                    "<p style=\"margin-bottom: 1.5rem; color: var(--gray-700);\">\
+                     The administrator account was created in another browser session. \
+                     Sign in as that administrator to finish.</p>",
+                )
+                .weight(0),
+            )
+            .element(
+                "admin_name",
+                FormElement::textfield()
+                    .title("Administrator username")
+                    .required()
+                    .attribute("autocomplete", "username")
+                    .weight(1),
+            )
+            .element(
+                "admin_password",
+                FormElement::password()
+                    .title("Administrator password")
+                    .required()
+                    .attribute("autocomplete", "current-password")
+                    .weight(2),
+            );
+    }
+    form.element(
+        "site_name",
+        FormElement::textfield()
+            .title("Site Name")
+            .default_value("Trovato")
+            .required()
+            .weight(3),
     )
+    .element(
+        "site_slogan",
+        FormElement::textfield()
+            .title("Site Slogan")
+            .placeholder("Optional tagline")
+            .weight(4),
+    )
+    .element(
+        "site_mail",
+        FormElement::input("email")
+            .title("Site Email")
+            .description("Used for system notifications")
+            .placeholder("admin@example.com")
+            .weight(5),
+    )
+    .element("op", FormElement::submit("Save and Continue").weight(10))
 }
 
-/// Render the site form, with an error when there is one.
-async fn render_site_form(state: &AppState, session: &Session, error: Option<&str>) -> Response {
+/// Render the site form, with `errors` when there are some.
+async fn render_site_form(
+    state: &AppState,
+    session: &Session,
+    errors: &[ValidationError],
+) -> Response {
     let ask_admin = installing_admin(state, session).await.is_none();
-    let token = crate::form::csrf::generate_csrf_token(session).await;
-    render_installer(
-        "Site Configuration",
-        3,
-        4,
-        &site_form_html(&token, ask_admin),
-        error,
+    render_form_page(
+        state,
+        session,
+        ("Site Configuration", 3),
+        "Configure your site's basic information.",
+        site_form(ask_admin),
+        errors,
     )
+    .await
+}
+
+/// Tell plugins a submission of an installer form was saved
+/// (`tap_form_submit`), once, after the save.
+async fn submitted(state: &AppState, form_state: &crate::form::FormState, posted: &PostedForm) {
+    let viewer = UserContext::anonymous();
+    state
+        .forms()
+        .submitted(
+            form_state,
+            posted,
+            None,
+            &super::item_form::tap_state(state, &viewer),
+        )
+        .await;
 }
 
 /// Site configuration form.
@@ -570,7 +666,7 @@ async fn install_site_form(State(state): State<AppState>, session: Session) -> R
         return Redirect::to("/install/admin").into_response();
     }
 
-    render_site_form(&state, &session, None).await
+    render_site_form(&state, &session, &[]).await
 }
 
 /// Site configuration submit.
@@ -580,30 +676,46 @@ async fn install_site_submit(
     State(state): State<AppState>,
     session: Session,
     axum::Extension(client_ip): axum::Extension<crate::middleware::ClientIp>,
-    Form(form): Form<SiteConfigForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
     if check_installed(&state).await {
         return Redirect::to("/").into_response();
     }
 
-    if let Err(refusal) = require_csrf(&session, &form.token).await {
-        return refusal;
+    // The form pipeline first: the CSRF token, the saved form state and the
+    // fields.
+    let posted = PostedForm(pairs);
+    let site_name = posted.get("site_name").unwrap_or_default().trim();
+    let mut errors = Vec::new();
+    if site_name.is_empty() {
+        errors.push(ValidationError::field("site_name", "Site name is required"));
     }
+    let form_state = match super::admin_form::check_as(
+        &state,
+        &session,
+        &UserContext::anonymous(),
+        &posted,
+        SITE_FORM_ID,
+        errors,
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(errors)) => return render_site_form(&state, &session, &errors).await,
+        Err(Err(refusal)) => return refusal,
+    };
+    let refuse = |message: &str| [ValidationError::form(message)];
 
     // The step belongs to the administrator: the session that created them,
     // or one that signs in as an administrator on this form.
     if installing_admin(&state, &session).await.is_none() {
-        let name = form.admin_name.as_deref().unwrap_or("").trim();
-        let password = form.admin_password.as_deref().unwrap_or("");
+        let name = posted.get("admin_name").unwrap_or_default().trim();
+        let password = posted.get("admin_password").unwrap_or_default();
         // The same lockout as the sign-in form, by name and address, so the
         // password cannot be guessed here at a rate sign-in would refuse.
         if let Ok(true) = state.lockout().is_locked(name, &client_ip.0).await {
-            return render_site_form(
-                &state,
-                &session,
-                Some("Too many failed attempts. Try again in a few minutes."),
-            )
-            .await;
+            let errors = refuse("Too many failed attempts. Try again in a few minutes.");
+            return render_site_form(&state, &session, &errors).await;
         }
         let admin = match state.users().find_by_name(name).await {
             Ok(Some(user)) if user.is_admin => Some(user),
@@ -619,12 +731,8 @@ async fn install_site_submit(
             {
                 tracing::warn!(error = %e, "failed to record a failed installer sign in");
             }
-            return render_site_form(
-                &state,
-                &session,
-                Some("Sign in as the site's administrator to finish the installation"),
-            )
-            .await;
+            let errors = refuse("Sign in as the site's administrator to finish the installation");
+            return render_site_form(&state, &session, &errors).await;
         }
         if let Err(e) = state.lockout().clear_attempts(name, &client_ip.0).await {
             tracing::warn!(error = %e, "failed to clear installer sign in attempts");
@@ -636,24 +744,20 @@ async fn install_site_submit(
         }
     }
 
-    // Validate
-    if form.site_name.trim().is_empty() {
-        return render_site_form(&state, &session, Some("Site name is required")).await;
-    }
-
     // Save configuration
-    if let Err(e) = SiteConfig::set_site_name(state.db(), form.site_name.trim()).await {
+    if let Err(e) = SiteConfig::set_site_name(state.db(), site_name).await {
         tracing::error!(error = %e, "failed to set site name");
-        return render_site_form(&state, &session, Some("Failed to save configuration")).await;
+        let errors = refuse("Failed to save configuration");
+        return render_site_form(&state, &session, &errors).await;
     }
 
-    if let Some(ref slogan) = form.site_slogan
+    if let Some(slogan) = posted.get("site_slogan")
         && let Err(e) = SiteConfig::set_site_slogan(state.db(), slogan.trim()).await
     {
         tracing::error!(error = %e, "failed to set site slogan");
     }
 
-    if let Some(ref mail) = form.site_mail
+    if let Some(mail) = posted.get("site_mail")
         && let Err(e) = SiteConfig::set_site_mail(state.db(), mail.trim()).await
     {
         tracing::error!(error = %e, "failed to set site mail");
@@ -662,9 +766,11 @@ async fn install_site_submit(
     // Mark as installed
     if let Err(e) = SiteConfig::mark_installed(state.db()).await {
         tracing::error!(error = %e, "failed to mark site as installed");
-        return render_site_form(&state, &session, Some("Failed to complete installation")).await;
+        let errors = refuse("Failed to complete installation");
+        return render_site_form(&state, &session, &errors).await;
     }
 
+    submitted(&state, &form_state, &posted).await;
     Redirect::to("/install/complete").into_response()
 }
 
@@ -692,7 +798,7 @@ async fn install_complete(State(state): State<AppState>) -> Response {
         html_escape(&site_name)
     );
 
-    render_installer("Installation Complete", 4, 4, &content, None)
+    render_installer("Installation Complete", 4, 4, &content)
 }
 
 // =============================================================================

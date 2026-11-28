@@ -1862,6 +1862,14 @@ pub async fn insert_context(
             && path != super::admin_who_can::PATH),
     );
     context.insert("admin_theme_stylesheets", &admin_theme_stylesheets(state));
+    let q = context
+        .get("q")
+        .and_then(|q| q.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let (search_form, palette_form) = search_forms(state, viewer, &lang, &q).await;
+    context.insert("admin_search_form", &search_form);
+    context.insert("admin_palette_form", &palette_form);
     if !context.contains_key("site_name") {
         let site_name = crate::models::SiteConfig::site_name(state.db())
             .await
@@ -1869,6 +1877,97 @@ pub async fn insert_context(
         context.insert("site_name", &site_name);
     }
     AdminShell { lang }
+}
+
+/// The id of the banner's search form on every admin page.
+pub const SEARCH_FORM_ID: &str = "admin_search_form";
+
+/// The id of the command palette's search form on every admin page.
+pub const PALETTE_FORM_ID: &str = "admin_palette_form";
+
+/// The banner's search form and the command palette's, rendered for
+/// `viewer` in their admin language `lang`, the banner's field holding `q`
+/// (B83c). Both are GET forms to [`SEARCH`] built through the form pipeline,
+/// so building them runs `tap_form_alter` and writes nothing: an admin page
+/// gains no query by them.
+///
+/// Their fields are markup rather than form elements because the banner's,
+/// the palette's and the results page's fields are all named `q` and must
+/// keep their own ids (`admin-search-q`, and `admin-palette-q`, which
+/// `admin-palette.js` drives as a combobox beside its listbox), and an
+/// element's id is its name. The words are translated here: the shell's
+/// language is not yet in scope while the forms render.
+///
+/// A GET form reads no session (it gets no token), so it is built with a
+/// throwaway one: the shell is drawn by callers that do not all hold the
+/// request's.
+async fn search_forms(
+    state: &crate::state::AppState,
+    viewer: &UserContext,
+    lang: &str,
+    q: &str,
+) -> (String, String) {
+    use crate::form::{Form, FormElement};
+    let locale = state.locale().map(|l| &**l);
+    let text = |source: &str| crate::i18n::ui_html(locale, lang, source, &[]);
+    let session = tower_sessions::Session::new(
+        None,
+        std::sync::Arc::new(tower_sessions::MemoryStore::default()),
+        None,
+    );
+
+    let banner = Form::new(SEARCH_FORM_ID)
+        .method("get")
+        .action(SEARCH)
+        .attribute("class", "admin-search")
+        .attribute("role", "search")
+        .element(
+            "search",
+            FormElement::markup(format!(
+                r#"<label class="visually-hidden" for="admin-search-q">{label}</label>
+<input class="admin-search__input" id="admin-search-q" type="search" name="q" value="{q}" autocomplete="off" spellcheck="false">
+<button class="button admin-search__button" type="submit">{button}</button>"#,
+                label = text("Search the administration"),
+                q = tera::escape_html(q),
+                button = text("Search"),
+            )),
+        );
+    let palette = Form::new(PALETTE_FORM_ID)
+        .method("get")
+        .action(SEARCH)
+        .attribute("class", "admin-palette__form")
+        .attribute("role", "search")
+        .element(
+            "palette",
+            FormElement::markup(format!(
+                r#"<h2 class="admin-palette__title" id="admin-palette-title">{title}</h2>
+<label class="admin-palette__label" for="admin-palette-q">{label}</label>
+<input class="admin-palette__input" id="admin-palette-q" type="text" name="q" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="false" aria-autocomplete="list" aria-controls="admin-palette-results" aria-describedby="admin-palette-help">
+<p class="admin-palette__help hint" id="admin-palette-help">{help}</p>
+<div class="admin-palette__results" id="admin-palette-results" role="listbox" aria-label="{results}" hidden></div>
+<p class="admin-palette__count" id="admin-palette-count" role="status"></p>
+<div class="admin-palette__actions">
+    <button class="button" type="submit">{all}</button>
+    <button class="button button--secondary" type="button" data-palette-close>{close}</button>
+</div>"#,
+                title = text("Quick search"),
+                label = text("Search the administration"),
+                help = text("Up and Down move through the results, Enter opens one, Escape closes."),
+                results = text("Results"),
+                all = text("All results"),
+                close = text("Close"),
+            )),
+        );
+
+    // A form that cannot be built leaves its place empty rather than fail
+    // the page around it.
+    let banner = super::admin_form::render_as(state, &session, viewer, banner, &[])
+        .await
+        .unwrap_or_default();
+    let palette = super::admin_form::render_as(state, &session, viewer, palette, &[])
+        .await
+        .unwrap_or_default();
+    (banner, palette)
 }
 
 /// The stylesheets of the theme chosen as the admin theme (B108): every

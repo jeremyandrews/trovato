@@ -5,7 +5,7 @@
 
 ["admin_content.admin.cold"]
 queries = 20
-cache_gets = 11
+cache_gets = 13
 cache_misses = 10
 cache_sets = 0
 plugin_calls = 0
@@ -55,7 +55,7 @@ sql = "select * from users where id = $?"
 
 ["admin_content.admin.warm"]
 queries = 9
-cache_gets = 11
+cache_gets = 13
 cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
@@ -89,8 +89,8 @@ sql = "select value from site_config where key = $? and tenant_id = $?"
 
 ["admin_content_landing.admin.cold"]
 queries = 9
-cache_gets = 2
-cache_misses = 2
+cache_gets = 4
+cache_misses = 3
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
@@ -131,7 +131,7 @@ sql = "select * from users where id = $?"
 
 ["admin_content_landing.admin.warm"]
 queries = 5
-cache_gets = 2
+cache_gets = 4
 cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
@@ -157,8 +157,8 @@ sql = "select value from site_config where key = $? and tenant_id = $?"
 
 ["admin_dashboard.admin.cold"]
 queries = 18
-cache_gets = 3
-cache_misses = 2
+cache_gets = 5
+cache_misses = 3
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
@@ -227,7 +227,7 @@ sql = "select count(*) from users where status = ?"
 
 ["admin_dashboard.admin.warm"]
 queries = 14
-cache_gets = 3
+cache_gets = 5
 cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
@@ -285,8 +285,8 @@ sql = "select count(*) from users where status = ?"
 
 ["admin_people_landing.admin.cold"]
 queries = 8
-cache_gets = 2
-cache_misses = 2
+cache_gets = 4
+cache_misses = 3
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
@@ -323,7 +323,7 @@ sql = "select count(*) from users where status = ?"
 
 ["admin_people_landing.admin.warm"]
 queries = 4
-cache_gets = 2
+cache_gets = 4
 cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
@@ -345,8 +345,8 @@ sql = "select count(*) from users where status = ?"
 
 ["admin_reports_landing.admin.cold"]
 queries = 8
-cache_gets = 2
-cache_misses = 2
+cache_gets = 4
+cache_misses = 3
 cache_sets = 0
 plugin_calls = 0
 host_calls = 0
@@ -383,7 +383,7 @@ sql = "select * from users where id = $?"
 
 ["admin_reports_landing.admin.warm"]
 queries = 4
-cache_gets = 2
+cache_gets = 4
 cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
@@ -1471,8 +1471,8 @@ sql = "select * from users where lower(mail) = lower($?)"
 
 ["search.anonymous.cold"]
 queries = 14
-cache_gets = 8
-cache_misses = 6
+cache_gets = 9
+cache_misses = 7
 cache_sets = 1
 plugin_calls = 0
 host_calls = 0
@@ -1517,7 +1517,7 @@ sql = "select * from users where id = $?"
 
 ["search.anonymous.warm"]
 queries = 10
-cache_gets = 8
+cache_gets = 9
 cache_misses = 0
 cache_sets = 0
 plugin_calls = 0
@@ -1551,8 +1551,8 @@ sql = "select * from users where id = $?"
 
 ["search.user.cold"]
 queries = 16
-cache_gets = 8
-cache_misses = 6
+cache_gets = 9
+cache_misses = 7
 cache_sets = 1
 plugin_calls = 0
 host_calls = 0
@@ -1605,7 +1605,7 @@ sql = "select * from users where id = $?"
 
 ["search.user.warm"]
 queries = 10
-cache_gets = 8
+cache_gets = 9
 cache_misses = 0
 cache_sets = 0
 plugin_calls = 0

@@ -52,6 +52,24 @@ pub fn api() -> super::api::ApiRoutes {
 /// a migrated role keeps or lacks it as it did.
 pub const SEARCH_PERMISSION: &str = "search content";
 
+/// The id of the site search form, on the search page and on the page-not-found
+/// page.
+pub const SEARCH_FORM_ID: &str = "search_form";
+
+/// The site search form (B83c): a GET form to `/search` holding `field` as
+/// its search field `q` (an `input("search")`, labelled as its page needs),
+/// with a Search button. The search page and the page-not-found page each
+/// build it through the form pipeline; as a GET form it carries no token and
+/// saves nothing.
+pub fn search_form(field: crate::form::FormElement) -> crate::form::Form {
+    use crate::form::{Form, FormElement};
+    Form::new(SEARCH_FORM_ID)
+        .method("get")
+        .action("/search")
+        .element("q", field.weight(0))
+        .element("op", FormElement::submit("Search").weight(1))
+}
+
 /// Default page size of the JSON search.
 const SEARCH_PER_PAGE: i64 = 10;
 
@@ -181,8 +199,23 @@ async fn search_html(
     // Calculate pagination
     let total_pages = (results.total + limit - 1) / limit;
 
+    // The search box again, through the form pipeline.
+    let form = search_form(
+        crate::form::FormElement::input("search")
+            .default_value(query.clone())
+            .placeholder("Search...")
+            .attribute("aria-label", "Search"),
+    )
+    .attribute("class", "search-form");
+    let search_form = match super::admin_form::render_as(&state, &session, &viewer, form, &[]).await
+    {
+        Ok(html) => html,
+        Err(refusal) => return refusal,
+    };
+
     // Build template context
     let mut context = Context::new();
+    context.insert("search_form", &search_form);
     context.insert("query", &query);
     // Each snippet is already HTML, escaped exactly once by
     // `crate::search::snippet::render`; the template prints it `| safe`.

@@ -365,7 +365,8 @@ async fn install(client: &Client) {
             On::Any,
             "/install/admin",
             &[
-                ("_token", form_token(&form.body)),
+                ("_token", hidden_value(&form.body, "_token")),
+                ("_form_build_id", hidden_value(&form.body, "_form_build_id")),
                 ("username", ADMIN_NAME.to_string()),
                 ("email", "admin@cluster.test".to_string()),
                 ("password", ADMIN_PASSWORD.to_string()),
@@ -384,7 +385,8 @@ async fn install(client: &Client) {
             On::Any,
             "/install/site",
             &[
-                ("_token", form_token(&form.body)),
+                ("_token", hidden_value(&form.body, "_token")),
+                ("_form_build_id", hidden_value(&form.body, "_form_build_id")),
                 ("site_name", "Cluster".to_string()),
             ],
         )
@@ -392,10 +394,12 @@ async fn install(client: &Client) {
     assert!(site.status.is_redirection(), "install site: {}", site.body);
 }
 
-/// The `_token` an installer form carries, or nothing if it carries none.
-fn form_token(html: &str) -> String {
-    let marker = "name=\"_token\" value=\"";
-    html.find(marker)
+/// The value of the hidden field `name` an installer form carries (its
+/// `_token`, its `_form_build_id`), or nothing if it carries none. The form
+/// may be posted to either server: its saved state is in the shared database.
+fn hidden_value(html: &str, name: &str) -> String {
+    let marker = format!("name=\"{name}\" value=\"");
+    html.find(&marker)
         .map(|at| &html[at + marker.len()..])
         .and_then(|rest| rest.split('"').next())
         .unwrap_or_default()
