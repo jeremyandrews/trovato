@@ -663,6 +663,21 @@ fn resolve(raw: Option<&serde_json::Value>, zone: Option<&str>) -> Resolved {
     }
 }
 
+/// Whether a resolved value is an actual change from what is stored, not
+/// a submission that merely carries the same value (or clears a date that
+/// was never set) along with the rest of the item's unrelated fields, as
+/// the JSON item API's own "send the whole object back" contract asks a
+/// client to. `Gap`/`Unreadable` count as a change: both are an attempt to
+/// set something, just a malformed one.
+fn is_change(resolved: &Resolved, stored: Option<i64>) -> bool {
+    match resolved {
+        Resolved::Unset => false,
+        Resolved::At(v) => Some(*v) != stored,
+        Resolved::Clear => stored.is_some(),
+        Resolved::Gap | Resolved::Unreadable => true,
+    }
+}
+
 /// Which of the two schedule fields an error names.
 #[derive(Clone, Copy)]
 enum Which {
@@ -988,6 +1003,34 @@ pub fn tap_form_validate(input: serde_json::Value) -> serde_json::Value {
     let zone = (!is_json).then(viewer_zone);
     let publish = resolve(raw_publish.as_ref(), zone.as_deref());
     let unpublish = resolve(raw_unpublish.as_ref(), zone.as_deref());
+
+    // The JSON item API has no `rendered_fields` gate the way the form
+    // does (the comment above explains why that check is skipped there),
+    // but the feature is still named for a permission ("an editor with
+    // `schedule publishing`...") — a client that may write the item's other
+    // fields must not be able to change its schedule through the one path
+    // that is not permission-checked at all. Resaving the *same* value (or
+    // clearing a date that was never set) is not a change, so round-
+    // tripping the whole `fields` object this API's own contract asks for
+    // never refuses a client that never touches the schedule.
+    if is_json && !host::current_user_has_permission(PERM) {
+        let out: Vec<serde_json::Value> = [
+            (Which::Publish, &publish, stored_publish),
+            (Which::Unpublish, &unpublish, stored_unpublish),
+        ]
+        .into_iter()
+        .filter(|(_, resolved, stored)| is_change(resolved, *stored))
+        .map(|(which, _, _)| {
+            serde_json::json!({
+                "field": error_field(is_json, which),
+                "message": "Changing this requires the schedule publishing permission.",
+            })
+        })
+        .collect();
+        if !out.is_empty() {
+            return serde_json::json!({"errors": out});
+        }
+    }
 
     let errors = schedule_errors(
         &publish,
@@ -1379,6 +1422,21 @@ mod tests {
             resolve(Some(&serde_json::json!("soon")), None),
             Resolved::Unreadable
         ));
+    }
+
+    #[test]
+    fn is_change_is_false_only_for_unset_or_a_genuine_no_op() {
+        assert!(!is_change(&Resolved::Unset, Some(1)));
+        // Resaving the exact stored value is not a change.
+        assert!(!is_change(&Resolved::At(1), Some(1)));
+        // Clearing a date that was never set is not a change either.
+        assert!(!is_change(&Resolved::Clear, None));
+
+        assert!(is_change(&Resolved::At(1), Some(2)));
+        assert!(is_change(&Resolved::At(1), None));
+        assert!(is_change(&Resolved::Clear, Some(1)));
+        assert!(is_change(&Resolved::Gap, Some(1)));
+        assert!(is_change(&Resolved::Unreadable, None));
     }
 
     /// Permission and form-shape checks that do not need the database: a

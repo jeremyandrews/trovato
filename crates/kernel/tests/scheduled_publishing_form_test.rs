@@ -288,6 +288,49 @@ fn the_group_shows_only_with_the_permission() {
     });
 }
 
+/// Creating a new item through `/item/add/{type}` with a schedule set works
+/// the same as scheduling one on an existing item: `tap_form_submit` gets
+/// `item_id` from the item this very save just created (the item form route
+/// passes the new item's id into `FormService::submitted`, not an id that
+/// existed when the form was built, the way every other test here reaches
+/// it), so this is a materially different sequencing to prove.
+#[test]
+fn creating_an_item_with_a_schedule_stores_it_and_sets_the_timer() {
+    run(|app| async move {
+        let (_uid, cookies) = editor(app, "b326create", "UTC").await;
+
+        let add_path = format!("/item/add/{TYPE}");
+        let html = get_page(app, &cookies, &add_path).await;
+        // `_status_rendered` without `status`: an explicitly unchecked
+        // "Published" box, the same as a real browser posts, so the new
+        // item is created unpublished, the state a publish date can
+        // usefully arm a timer from (the checkbox's own *default* is
+        // checked for a new item, `content/form.rs`, but nothing here
+        // accepts that default unless the submission actually carries it).
+        let body = format!(
+            "{}&title=New+via+add+form&body=x&_status_rendered=1&\
+             schedule_publish_on=2027-06-15T12%3A00",
+            form_tokens(&html)
+        );
+        let (status, text) = post_form(app, &cookies, &add_path, body).await;
+        assert!(status.is_success(), "{status}: {text}");
+        let id: Uuid = serde_json::from_str::<Value>(&text).unwrap()["id"]
+            .as_str()
+            .unwrap()
+            .parse()
+            .unwrap();
+        assert_eq!(item_status(app, id).await, 0);
+
+        // 2027-06-15 12:00 UTC: this editor's zone is UTC, no conversion.
+        let expected: i64 = 1_813_060_800;
+        assert_eq!(
+            stored_fields(app, id).await["field_publish_on"],
+            json!(expected)
+        );
+        assert_eq!(timer_run_at(app, id, "publish").await, Some(expected));
+    });
+}
+
 /// Reopening the edit form shows what is scheduled, in the viewer's zone.
 #[test]
 fn the_edit_form_shows_the_stored_schedule_in_the_viewers_zone() {
@@ -479,6 +522,50 @@ fn clearing_the_input_removes_the_key_and_cancels_the_timer() {
     });
 }
 
+/// The same, for "Unpublish on" on a published item: `apply_resolved` and
+/// `tap_form_submit` call the publish and unpublish paths through separate,
+/// hardcoded key strings rather than one shared loop, so only testing one
+/// direction would miss a copy-paste slip that clears or cancels the wrong
+/// one.
+#[test]
+fn clearing_the_unpublish_input_removes_the_key_and_cancels_the_timer() {
+    run(|app| async move {
+        let (uid, cookies) = editor(app, "b326clearun", "UTC").await;
+        let future = chrono::Utc::now().timestamp() + 3600;
+        let id = seed_page(
+            app,
+            uid,
+            1,
+            json!({"body": "x", "field_unpublish_on": future}),
+        )
+        .await;
+        assert_eq!(timer_run_at(app, id, "unpublish").await, Some(future));
+
+        let edit_path = format!("/item/{id}/edit");
+        let html = get_page(app, &cookies, &edit_path).await;
+        let body = format!(
+            "{}&title=Schedule+probe&body=x&status=1&_status_rendered=1&\
+             schedule_unpublish_on=",
+            form_tokens(&html)
+        );
+        let (status, text) = post_form(app, &cookies, &edit_path, body).await;
+        assert!(status.is_success(), "{status}: {text}");
+
+        assert!(
+            stored_fields(app, id)
+                .await
+                .get("field_unpublish_on")
+                .is_none(),
+            "clearing the input must remove the stored key"
+        );
+        assert_eq!(
+            timer_run_at(app, id, "unpublish").await,
+            None,
+            "clearing the input must cancel the timer"
+        );
+    });
+}
+
 // =============================================================================
 // Refusals
 // =============================================================================
@@ -501,6 +588,15 @@ fn a_past_date_is_refused() {
         assert!(
             text.contains("future"),
             "the past date must be refused with its message: {text}"
+        );
+        // Not just present on the page: attached to the right input, the
+        // same way every other item form field error is announced
+        // (`templates/form/input.html`, `error-{name}`, `role="alert"`).
+        assert!(
+            text.contains(
+                r#"<div id="error-schedule_publish_on" class="form-item__error" role="alert">"#
+            ),
+            "the error must be tied to the publish input, not just present somewhere: {text}"
         );
         assert!(
             stored_fields(app, id)
@@ -776,6 +872,81 @@ fn the_json_item_api_refuses_a_publish_on_an_already_published_item() {
                 .get("field_publish_on")
                 .is_none(),
             "a refused JSON save must not write"
+        );
+    });
+}
+
+/// The JSON item API has no `rendered_fields` gate the way the form does,
+/// but the feature is still named for a permission: a client without
+/// `schedule publishing` cannot change the schedule through it either, even
+/// though it may freely write the item's other, declared fields.
+#[test]
+fn the_json_item_api_refuses_a_schedule_change_without_the_permission() {
+    run(|app| async move {
+        let (owner, _owner_cookies) = editor(app, "b326jsonowner", "UTC").await;
+        let future = chrono::Utc::now().timestamp() + 3600;
+        let id = seed_page(
+            app,
+            owner,
+            0,
+            json!({"body": "x", "field_publish_on": future}),
+        )
+        .await;
+        let (_uid, cookies) = common::user_holding(
+            app,
+            "b326jsonnoperm",
+            &["create page content", "edit any content"],
+        )
+        .await;
+
+        let edit_path = format!("/item/{id}/edit");
+        let page = get_page(app, &cookies, &edit_path).await;
+        let csrf = input_value(&page, "_token").unwrap();
+
+        // Changing the date is refused.
+        let (status, text) = post_json(
+            app,
+            &cookies,
+            &edit_path,
+            &csrf,
+            json!({
+                "title": "Schedule probe",
+                "fields": {"body": "x", "field_publish_on": future + 60},
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        assert!(text.contains("schedule publishing"), "{text}");
+        assert_eq!(
+            stored_fields(app, id).await["field_publish_on"],
+            json!(future),
+            "a refused save must not write"
+        );
+
+        // Saving the item's other fields, resending the same unchanged
+        // date as the "send the whole object back" JSON contract asks,
+        // still succeeds: the permission gate is on a *change*, not on the
+        // date's bare presence in the body. A fresh token: the kernel's are
+        // single use, and the refused attempt above already spent one.
+        let page = get_page(app, &cookies, &edit_path).await;
+        let csrf = input_value(&page, "_token").unwrap();
+        let (status, text) = post_json(
+            app,
+            &cookies,
+            &edit_path,
+            &csrf,
+            json!({
+                "title": "Schedule probe",
+                "fields": {"body": "y", "field_publish_on": future},
+            }),
+        )
+        .await;
+        assert!(status.is_success(), "{status}: {text}");
+        assert_eq!(stored_fields(app, id).await["body"], json!("y"));
+        assert_eq!(
+            stored_fields(app, id).await["field_publish_on"],
+            json!(future),
+            "the unchanged date must survive an unrelated field's save"
         );
     });
 }
