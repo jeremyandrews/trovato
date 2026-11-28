@@ -166,6 +166,65 @@ fn a_full_html_body_renders_cleaned_on_the_item_page() {
     });
 }
 
+/// Legacy presentational markup a migrated site's `full_html` body might
+/// hold: a coloured interview question, a named anchor, a table laid out
+/// with presentation attributes and an inline `style`, plus a dangerous
+/// style value riding along on an otherwise allowlisted property.
+const LEGACY_PAYLOAD: &str = r#"<font color="red" face="Arial" size="4">Q:</font> <a name="q1">anchor</a><table border="1" cellpadding="2" cellspacing="3" width="100%" bgcolor="white"><tr><td align="left" valign="top" bgcolor="silver" nowrap style="color: red; text-align: center; position: fixed; background: url(javascript:alert(1))">Cell</td></tr></table>"#;
+
+// B308: legacy presentational markup survives full_html end to end, and a
+// dangerous style value is still stripped even riding on a safe property.
+#[test]
+fn a_full_html_body_keeps_legacy_markup_and_safe_style() {
+    run_test(async {
+        let app = shared_app().await;
+        ensure_type(app).await;
+        let name = common::username("b308legacy");
+        let cookies = app
+            .create_and_login_admin(
+                &name,
+                "correct-horse-battery-staple",
+                &format!("{name}@test.local"),
+            )
+            .await;
+        let uid = common::user_id_of(app, &name).await;
+        let id = create(
+            app,
+            uid,
+            json!({"f_body": {"value": LEGACY_PAYLOAD, "format": "full_html"}}),
+        )
+        .await;
+
+        let (status, html) = get(app, &cookies, &format!("/item/{id}")).await;
+        assert_eq!(status, StatusCode::OK, "{html}");
+
+        assert!(html.contains(r#"color="red""#), "font color: {html}");
+        assert!(html.contains(r#"face="Arial""#), "font face: {html}");
+        assert!(html.contains(r#"size="4""#), "font size: {html}");
+        assert!(html.contains(r#"name="q1""#), "a[name]: {html}");
+        assert!(html.contains(r#"border="1""#), "table border: {html}");
+        assert!(
+            html.contains(r#"cellpadding="2""#),
+            "table cellpadding: {html}"
+        );
+        assert!(html.contains(r#"valign="top""#), "td valign: {html}");
+        assert!(html.contains(r#"bgcolor="silver""#), "td bgcolor: {html}");
+        assert!(html.contains("nowrap"), "td nowrap: {html}");
+        assert!(html.contains("color:red"), "style color: {html}");
+        assert!(
+            html.contains("text-align:center"),
+            "style text-align: {html}"
+        );
+        assert!(!html.contains("position"), "position survived: {html}");
+        assert!(!html.contains("background"), "background survived: {html}");
+        assert!(!html.contains("url("), "url( survived: {html}");
+        assert!(
+            !html.contains("javascript:"),
+            "javascript: survived: {html}"
+        );
+    });
+}
+
 // SECURITY REGRESSION TEST — B151: the same cleaning applies inside a
 // compound section's full_html sub-field.
 #[test]

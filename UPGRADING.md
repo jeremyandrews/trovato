@@ -97,6 +97,26 @@ applied, so `trovato migrate` finds nothing to do.
 
 ## Unreleased
 
+### `full_html` renders more markup than before
+
+**Who is affected:** a site with stored `full_html` content, in particular
+content migrated from an older site.
+
+**What changed.** `full_html`'s allowlist now keeps legacy presentational
+markup it used to strip: the `font` tag with `color`, `face` and `size`;
+`a[name]`; `img[border hspace vspace]`; table and cell presentation
+attributes (`border`, `cellpadding`, `cellspacing`, `width`, `bgcolor`,
+`valign`, `height`, `nowrap`; `align` was already kept); and a `style`
+attribute, limited to a small allowlist of properties (color, font and text
+styling, box layout and spacing, not `position` or anything that can reach
+outside the element). This is presentational only: nothing that was
+dangerous before is allowed now, a `style` declaration whose value contains
+`url(`, `expression(`, a `javascript:` scheme, a backslash escape or a `/*`
+comment is still dropped regardless of its property. A site that relied on
+`full_html` silently stripping this markup, or that added its own `| safe`
+to work around the stripping, should review stored content for anything
+that now renders differently.
+
 ### `AdminNavDefinition` is `#[non_exhaustive]`, with a new `keywords` field
 
 **Who is affected:** a plugin that builds `trovato_sdk::types::AdminNavDefinition`

@@ -277,20 +277,117 @@ impl TextFilter for ConfiguredHtmlFilter {
     }
 }
 
+/// CSS properties kept in a `style` attribute on `full_html` content: enough
+/// to reproduce legacy presentational markup (text color and weight, table
+/// and cell layout, spacing) without anything that can reach outside the
+/// element's box or load or execute remote content (no `position`,
+/// `behavior`, `-moz-binding` or `background-image`). Passed to ammonia's
+/// `filter_style_properties`, which filters by property name only; value
+/// safety is handled separately, see [`strip_dangerous_style_values`].
+const TRUSTED_STYLE_PROPERTIES: &[&str] = &[
+    "color",
+    "background-color",
+    "font-family",
+    "font-size",
+    "font-style",
+    "font-weight",
+    "text-align",
+    "text-decoration",
+    "vertical-align",
+    "width",
+    "height",
+    "border",
+    "border-collapse",
+    "border-color",
+    "border-style",
+    "border-width",
+    "padding",
+    "padding-top",
+    "padding-right",
+    "padding-bottom",
+    "padding-left",
+    "margin",
+    "margin-top",
+    "margin-right",
+    "margin-bottom",
+    "margin-left",
+    "float",
+    "clear",
+    "list-style-type",
+    "white-space",
+];
+
+/// Substrings that make a `style` declaration's value dangerous no matter
+/// which allowlisted property carries it: ammonia's `filter_style_properties`
+/// only filters by property name, so this is the value-level backstop
+/// (checked case-insensitively).
+const DANGEROUS_STYLE_VALUE_PATTERNS: &[&str] = &["url(", "expression(", "javascript:", "\\", "/*"];
+
+/// Drops any declaration from a `style` attribute value whose value contains
+/// a [`DANGEROUS_STYLE_VALUE_PATTERNS`] substring, keeping the rest. None of
+/// `TRUSTED_STYLE_PROPERTIES` legitimately needs a `url(...)`, an old-IE
+/// `expression(...)`, a `javascript:` scheme, a backslash escape or a `/*`
+/// comment, so a declaration containing one is dropped outright rather than
+/// repaired.
+fn strip_dangerous_style_values(value: &str) -> String {
+    value
+        .split(';')
+        .map(str::trim)
+        .filter(|decl| !decl.is_empty())
+        .filter(|decl| {
+            let value_part = decl.split_once(':').map_or(*decl, |(_, v)| v);
+            let lower = value_part.to_ascii_lowercase();
+            !DANGEROUS_STYLE_VALUE_PATTERNS
+                .iter()
+                .any(|pattern| lower.contains(pattern))
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// The ammonia builder [`TrustedHtmlFilter`] cleans with: built once, not per
 /// call. Ammonia's default tag and attribute allowlist (ordinary article
 /// markup: `div`, `span`, `figure`, `table`, headings, lists, images and the
-/// rest), plus `class` and `id` on every tag and `target` on `a`, with
-/// `rel="noopener noreferrer"` set on every link and ammonia's default URL
-/// schemes. `script` and `style` content is always removed by ammonia's
-/// defaults, as is every `on*` attribute, a `style` attribute (never added
-/// here) and a `javascript:` or `data:` URL.
+/// rest), plus:
+/// - `class`, `id` and `style` on every tag, `style` kept only to
+///   [`TRUSTED_STYLE_PROPERTIES`] with dangerous values stripped by
+///   [`strip_dangerous_style_values`]
+/// - `target` and `name` on `a`
+/// - the `font` tag with `color`, `face` and `size`
+/// - `border`, `hspace`, `vspace` and `align` on `img` (ammonia's default
+///   already keeps `align`)
+/// - `border`, `cellpadding`, `cellspacing`, `width`, `bgcolor` on `table`
+///   (ammonia's default already keeps `align`)
+/// - `valign`, `width`, `height`, `bgcolor`, `nowrap` on `td` and `th`
+///   (ammonia's default already keeps `align`)
+///
+/// `rel="noopener noreferrer"` is set on every link, using ammonia's default
+/// URL schemes. `script` and `style` elements and their content are always
+/// removed by ammonia's defaults, as is every `on*` attribute and a
+/// `javascript:` or `data:` URL.
 static TRUSTED_HTML_BUILDER: std::sync::LazyLock<ammonia::Builder<'static>> =
     std::sync::LazyLock::new(|| {
         let mut builder = ammonia::Builder::default();
         builder
-            .add_generic_attributes(["class", "id"])
-            .add_tag_attributes("a", ["target"])
+            .add_tags(["font"])
+            .add_generic_attributes(["class", "id", "style"])
+            .add_tag_attributes("a", ["target", "name"])
+            .add_tag_attributes("font", ["color", "face", "size"])
+            .add_tag_attributes("img", ["border", "hspace", "vspace"])
+            .add_tag_attributes(
+                "table",
+                ["border", "cellpadding", "cellspacing", "width", "bgcolor"],
+            )
+            .add_tag_attributes("td", ["valign", "width", "height", "bgcolor", "nowrap"])
+            .add_tag_attributes("th", ["valign", "width", "height", "bgcolor", "nowrap"])
+            .filter_style_properties(TRUSTED_STYLE_PROPERTIES.iter().copied().collect())
+            .attribute_filter(|_element, attribute, value| {
+                if attribute == "style" {
+                    Some(strip_dangerous_style_values(value).into())
+                } else {
+                    Some(value.into())
+                }
+            })
             .link_rel(Some("noopener noreferrer"));
         builder
     });
@@ -813,13 +910,116 @@ mod tests {
         assert!(output.contains("<p>Visible</p>"));
     }
 
-    // SECURITY REGRESSION TEST — B151: a style attribute is always stripped
+    // B308: an allowlisted style declaration survives
     #[test]
-    fn trusted_html_removes_style_attribute() {
+    fn trusted_html_keeps_allowlisted_style() {
         let filter = TrustedHtmlFilter;
         let output = filter.process(r#"<p style="color:red">Text</p>"#);
-        assert!(!output.contains("style"));
+        assert!(output.contains(r#"style="color:red""#), "{output}");
         assert!(output.contains("Text"));
+    }
+
+    // B308: multiple allowlisted declarations survive together
+    #[test]
+    fn trusted_html_keeps_multiple_allowlisted_style_declarations() {
+        let filter = TrustedHtmlFilter;
+        let output =
+            filter.process(r#"<p style="color: red; text-align: center; width: 50%">Text</p>"#);
+        assert!(output.contains("color:red"), "{output}");
+        assert!(output.contains("text-align:center"), "{output}");
+        assert!(output.contains("width:50%"), "{output}");
+    }
+
+    // B308: a style property not on the allowlist is dropped, the rest kept
+    #[test]
+    fn trusted_html_strips_non_allowlisted_style_properties() {
+        let filter = TrustedHtmlFilter;
+        for property in ["position", "behavior", "-moz-binding", "background-image"] {
+            let input = format!(r#"<p style="color: red; {property}: evil">Text</p>"#);
+            let output = filter.process(&input);
+            assert!(!output.contains(property), "{property} survived: {output}");
+            assert!(output.contains("color:red"), "{property}: {output}");
+        }
+    }
+
+    // B308: a declaration whose value smuggles a URL, expression, javascript:
+    // scheme, backslash escape or comment is dropped even on an allowlisted
+    // property
+    #[test]
+    fn trusted_html_strips_dangerous_style_values() {
+        let filter = TrustedHtmlFilter;
+        for value in [
+            "color: url(evil.css)",
+            "width: expression(alert(1))",
+            "color: javascript:alert(1)",
+            r"width: 1\65 x",
+            "color: red/*comment*/",
+        ] {
+            let input = format!(r#"<p style="{value}">Text</p>"#);
+            let output = filter.process(&input);
+            assert!(
+                !output.contains("url(")
+                    && !output.contains("expression(")
+                    && !output.contains("javascript:"),
+                "{value} survived: {output}"
+            );
+            assert!(output.contains("Text"));
+        }
+    }
+
+    #[test]
+    fn strip_dangerous_style_values_keeps_safe_declarations() {
+        let output = strip_dangerous_style_values("color: red; text-align: center");
+        assert_eq!(output, "color: red; text-align: center");
+    }
+
+    #[test]
+    fn strip_dangerous_style_values_drops_only_the_bad_declaration() {
+        let output = strip_dangerous_style_values("color: red; width: expression(alert(1))");
+        assert_eq!(output, "color: red");
+    }
+
+    #[test]
+    fn strip_dangerous_style_values_case_insensitive() {
+        let output = strip_dangerous_style_values("color: JAVASCRIPT:alert(1)");
+        assert_eq!(output, "");
+    }
+
+    // B308: legacy presentational tags and attributes survive full_html
+    #[test]
+    fn trusted_html_keeps_legacy_presentational_markup() {
+        let filter = TrustedHtmlFilter;
+
+        let font = filter.process(r#"<font color="red" face="Arial" size="4">Q:</font>"#);
+        assert!(font.contains(r#"color="red""#));
+        assert!(font.contains(r#"face="Arial""#));
+        assert!(font.contains(r#"size="4""#));
+
+        let anchor = filter.process(r#"<a name="section1">Jump</a>"#);
+        assert!(anchor.contains(r#"name="section1""#));
+
+        let img =
+            filter.process(r#"<img src="/a.png" border="1" hspace="5" vspace="5" align="left">"#);
+        assert!(img.contains(r#"border="1""#));
+        assert!(img.contains(r#"hspace="5""#));
+        assert!(img.contains(r#"vspace="5""#));
+        assert!(img.contains(r#"align="left""#));
+
+        let table = filter.process(
+            r#"<table border="1" cellpadding="2" cellspacing="3" width="100%" align="center" bgcolor="white"><tr><td align="left" valign="top" width="50" height="20" bgcolor="silver" nowrap style="color: red; text-align: center">Cell</td></tr></table>"#,
+        );
+        assert!(table.contains(r#"border="1""#));
+        assert!(table.contains(r#"cellpadding="2""#));
+        assert!(table.contains(r#"cellspacing="3""#));
+        assert!(table.contains(r#"width="100%""#));
+        assert!(table.contains(r#"align="center""#));
+        assert!(table.contains(r#"bgcolor="white""#));
+        assert!(table.contains(r#"valign="top""#));
+        assert!(table.contains(r#"height="20""#));
+        assert!(table.contains(r#"bgcolor="silver""#));
+        assert!(table.contains("nowrap"));
+        assert!(table.contains("color:red"));
+        assert!(table.contains("text-align:center"));
     }
 
     // SECURITY REGRESSION TEST — B151: every on* handler is stripped

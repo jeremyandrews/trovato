@@ -570,11 +570,19 @@ Three content formats exist (`content/filter.rs:38-69`): `plain_text`,
 `filtered_html` and `full_html`, defaulting to `plain_text`. `full_html` is
 gated on the `use full_html` permission but is never unfiltered: it is cleaned
 by a fixed, permissive ammonia allowlist (`TrustedHtmlFilter`, `div`, `span`,
-`figure`, tables, headings, lists, images, `class`/`id` on every tag; `script`,
-`style`, every `on*` attribute and `javascript:`/`data:` URLs always removed).
-`FilterPipeline::for_format` builds a pipeline that sanitizes whichever format
-it is given — including an untrusted or made-up format string, which falls
-back to `plain_text` — so every public render path uses it safely (B151).
+`figure`, tables, headings, lists, images, `font`, `class`/`id`/`style` on
+every tag, legacy presentational attributes migrated content relies on
+(`a[name]`, `img[border hspace vspace align]`, table and cell layout
+attributes), B308; `script`, every `on*` attribute and `javascript:`/`data:`
+URLs always removed). A `style` attribute keeps only the properties on
+`TRUSTED_STYLE_PROPERTIES` (color, font and text properties, box layout and
+spacing, no `position` or anything that can reach outside the element), and a
+declaration is dropped outright if its value contains `url(`, `expression(`,
+`javascript:`, a backslash escape or a `/*` comment regardless of its
+property. `FilterPipeline::for_format` builds a pipeline that sanitizes
+whichever format it is given — including an untrusted or made-up format
+string, which falls back to `plain_text` — so every public render path uses
+it safely (B151).
 
 Ammonia 4.1.4 is applied at five places with five different allowlists: the
 filtered HTML pipeline, the markdown filter (defaults plus `class` on `code`,
@@ -588,8 +596,9 @@ excluding `script`, `iframe`, `object`, `embed`, `form`, `style`, `link`,
 
 **Tests.** Mostly unit rather than integration. `content/filter.rs` carries a
 `TrustedHtmlFilter` block of security regression tests (script and style
-elements, the `style` attribute, every `on*` handler, `javascript:`/`data:`
-URLs, SVG `onload`, `iframe`, an unclosed tag) plus
+elements, a non-allowlisted `style` property, a dangerous `style` value,
+every `on*` handler, `javascript:`/`data:` URLs, SVG `onload`, `iframe`, an
+unclosed tag) plus
 `for_format_rejects_script_in_full_html` and
 `for_format_checked_downgrades_full_html`. `theme/engine.rs` has
 `markdown_filter_sanitizes_dangerous_html`,
