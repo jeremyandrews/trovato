@@ -78,6 +78,7 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 | `COOKIE_SAME_SITE` | `strict` | Cookie SameSite policy (`strict`, `lax`, `none`) |
 | `COOKIE_SECURE` | `always` | Whether the session cookie is `Secure`: `always` or `never`. Leave it at `always` for any site reached over HTTPS. `never` is for a plain HTTP LAN or development site only. See "Serving over plain HTTP" below. |
 | `TRUSTED_PROXIES` | *(empty: trust none)* | Reverse proxies whose `X-Forwarded-For` and `X-Forwarded-Proto` are believed, as comma-separated addresses and CIDR ranges. See "Behind a reverse proxy" below. |
+| `PLUGIN_HTTP_PRIVATE_ALLOW` | *(empty: no plugin reaches one)* | Lets one named plugin reach one named private or loopback destination and port over HTTP, for example a self-hosted Varnish cache: `<plugin>@<destination>:<port>` entries, comma-separated. See [docs/plugin-development.md](docs/plugin-development.md#reaching-private-addresses-from-plugins). |
 | `CLIENT_IP_STORAGE` | `full` | How much of a client address is stored: `full`, `truncated` or `none`. See "Client addresses and privacy" below. |
 | `CRON_KEY` | *(none)* | Shared secret in the cron URL, `POST /cron/<CRON_KEY>`. Change it before exposing the server. |
 | `CRON_INTERVAL_SECS` | *(none)* | Seconds between the built-in scheduler's cron runs, overriding the `cron_interval_secs` site setting (default 300). `0` turns the scheduler off. Unset leaves the site setting in charge; see [Cron](#cron). |

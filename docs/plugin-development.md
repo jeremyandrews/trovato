@@ -1132,6 +1132,58 @@ output buffer. Filter with the format the text was written in, and when the
 author's format is not one the viewer's request may use, fall back to
 `plain_text`, which is always allowed and escapes everything.
 
+### Reaching private addresses from plugins
+
+A plugin's outbound HTTP (`request` and the streaming `http-open`) refuses a
+private or loopback destination by default: no plugin reaches `127.0.0.1`,
+`10.0.0.0/8`, `192.168.0.0/16`, `fd00::/8`, `169.254.0.0/16` (which includes
+the cloud-metadata address), a hostname ending `.local`, `.internal` or
+`.localhost`, or `localhost` itself — and a redirect to any of those is
+refused mid-chain even when the first hop was public. This is the kernel's
+SSRF fence; it exists because a plugin's URL is frequently built from
+something a visitor supplied, directly or indirectly, and a kernel that
+followed it anywhere could be turned into a proxy onto the site's own LAN.
+
+An operator can still let one named plugin reach one named destination,
+through the `PLUGIN_HTTP_PRIVATE_ALLOW` server setting (see
+[INSTALL.md](../INSTALL.md)) — there is no manifest declaration or runtime
+call a plugin itself can make for this; it is an operator's decision, made
+outside the plugin entirely. The setting is a comma-separated list of
+
+```
+<plugin_machine_name>@<destination>:<port>
+```
+
+entries, where `<destination>` is an IPv4 literal, a bracketed IPv6 literal, a
+CIDR range, or a hostname, and `<port>` is required. For a purge plugin
+reaching a self-hosted Varnish cache:
+
+```
+PLUGIN_HTTP_PRIVATE_ALLOW=trovato_cdn_purge@10.0.0.5:6081
+```
+
+Only a request from `trovato_cdn_purge`, to `10.0.0.5`, on port `6081`,
+clears the fence this way. The match is exact and narrow on purpose: the
+calling plugin's machine name, an `http`/`https` scheme, the exact port, and
+the destination (literal equality, CIDR containment, or, for a hostname
+entry, case-insensitive name equality). A different plugin, a different
+port, or any other destination — including the same address on a different
+port — still meets the refusal every request meets by default, and a
+redirect away from the granted destination is refused the same way a redirect
+to any other private target always is. An entry is per plugin and per port
+because granting a destination more broadly than the one plugin and the one
+port that needs it is exactly the access an operator reaching for this
+setting is trying to avoid.
+
+Whatever an entry names, link-local (including the cloud-metadata address),
+multicast, broadcast and unspecified addresses can never be reached this way;
+an entry naming one refuses the server from starting at all, and a hostname
+entry that happens to resolve to one is refused at request time instead. A
+malformed entry, one missing its port, or one naming a plugin that parses but
+is not installed also gets attention at startup: the first two refuse to
+start, naming the bad entry; the last logs one warning and is otherwise
+inert, since the plugin may simply not be installed on this deployment yet.
+
 ---
 
 ## Access Control

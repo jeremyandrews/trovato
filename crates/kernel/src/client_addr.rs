@@ -80,6 +80,11 @@ impl IpNet {
         let ip = ip.to_canonical();
         ip.is_ipv4() == self.network.is_ipv4() && mask(ip, self.prefix) == self.network
     }
+
+    /// This range's network address (the masked base, not a host within it).
+    pub(crate) fn network(&self) -> IpAddr {
+        self.network
+    }
 }
 
 impl fmt::Display for IpNet {

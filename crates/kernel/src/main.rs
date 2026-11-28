@@ -38,6 +38,7 @@ mod pagination;
 mod password_prompt;
 mod permissions;
 mod plugin;
+mod plugin_http_allow;
 mod recovery;
 mod redis_conn;
 mod routes;

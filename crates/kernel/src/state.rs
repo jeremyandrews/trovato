@@ -426,8 +426,36 @@ impl AppState {
         let lockout =
             LockoutService::new(redis.clone()).with_ip_storage(config.runtime.client_ip_storage);
 
+        // The operator allowlist (`PLUGIN_HTTP_PRIVATE_ALLOW`): one client per
+        // entry, built once here and shared (behind an `Arc`) by every
+        // dispatch path that issues plugin-influenced HTTP — the request
+        // path's `tap_services` below, `tap_install`, and `CronService`'s
+        // `tap_cron`/`tap_queue_worker` dispatch.
+        let plugin_http_allow = Arc::new(crate::host::http::build_plugin_http_allow_runtime(
+            &config.plugin_http_private_allow,
+        ));
+
         // Discover plugins on disk (parse info.toml without compiling WASM)
         let discovered = PluginRuntime::discover_plugins(&config.plugins_dirs).await;
+
+        // An allowlist entry naming a plugin that was never discovered on
+        // disk is inert rather than an error: the plugin may simply not be
+        // installed on this deployment yet. One warning per start, naming
+        // every such entry, so an operator sees a typo rather than silently
+        // wondering why the plugin never reaches its destination.
+        let allow_unknown_plugins: Vec<&str> = config
+            .plugin_http_private_allow
+            .entries()
+            .iter()
+            .map(|entry| entry.plugin.as_str())
+            .filter(|name| !discovered.contains_key(*name))
+            .collect();
+        if !allow_unknown_plugins.is_empty() {
+            warn!(
+                plugins = ?allow_unknown_plugins,
+                "PLUGIN_HTTP_PRIVATE_ALLOW names a plugin that is not installed; the entry is inert"
+            );
+        }
 
         // Auto-install any new plugins into plugin_status table.
         // Compute per-plugin should_enable from default_enabled and DISABLED_PLUGINS.
@@ -630,6 +658,7 @@ impl AppState {
             let tap_install_dispatcher = tap_dispatcher.clone();
             let tap_install_limiter = rate_limiter.clone();
             let tap_install_email = email.clone();
+            let tap_install_http_allow = plugin_http_allow.clone();
             tokio::spawn(async move {
                 let http = crate::host::http::build_outbound_client();
                 // The sender drops only when `AppState::new` failed before
@@ -669,7 +698,8 @@ impl AppState {
                         http.clone(),
                     )
                     .with_plugin_runtime(tap_install_dispatcher.runtime().clone())
-                    .with_rate_limiter(tap_install_limiter.clone());
+                    .with_rate_limiter(tap_install_limiter.clone())
+                    .with_http_allow(tap_install_http_allow.clone());
                     if let Some(ref email) = tap_install_email {
                         install_services = install_services.with_email(email.clone());
                     }
@@ -1056,7 +1086,8 @@ impl AppState {
         .with_field_access_cache(field_access_cache)
         // Arms the per-plugin `mail` bucket on every request-path dispatch; the
         // cron and queue-worker paths get it from `CronService` below.
-        .with_rate_limiter(rate_limiter.clone());
+        .with_rate_limiter(rate_limiter.clone())
+        .with_http_allow(plugin_http_allow.clone());
         if let Some(ref email) = email {
             tap_services = tap_services.with_email(email.clone());
         }
@@ -1112,6 +1143,10 @@ impl AppState {
         // And the gather service, so `query` from `tap_cron` and
         // `tap_queue_worker` runs on the same one request dispatch binds above.
         cron.set_gather_service(gather.clone());
+        // Same allowlist runtime `tap_services` carries, so `tap_cron` and
+        // `tap_queue_worker` dispatch honor the same per-plugin grants a
+        // request-path call does.
+        cron.set_http_allow(plugin_http_allow.clone());
 
         // Create batch service
         let batch = Arc::new(BatchService::new(redis.clone()));

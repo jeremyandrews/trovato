@@ -97,6 +97,24 @@ applied, so `trovato migrate` finds nothing to do.
 
 ## Unreleased
 
+### An operator can let one plugin reach one private destination over HTTP
+
+**Who is affected:** nobody, unless you set the new `PLUGIN_HTTP_PRIVATE_ALLOW`
+server setting yourself.
+
+**What changed.** A plugin's outbound HTTP has always refused a private or
+loopback destination (the SSRF fence), with no override. A new setting,
+`PLUGIN_HTTP_PRIVATE_ALLOW`, lets an operator name one plugin, one
+private/loopback destination and one port it may reach — for example a
+self-hosted Varnish cache a purge plugin needs to reach. It is empty by
+default, which is exactly today's behaviour: no plugin reaches a private or
+loopback address, and nothing changes unless you set it. See
+[docs/plugin-development.md](docs/plugin-development.md#reaching-private-addresses-from-plugins)
+for the syntax and what still can never be reached this way.
+
+**How to find out.** You are unaffected unless `PLUGIN_HTTP_PRIVATE_ALLOW` is
+set in your environment.
+
 ### `AdminNavDefinition` is `#[non_exhaustive]`, with a new `keywords` field
 
 **Who is affected:** a plugin that builds `trovato_sdk::types::AdminNavDefinition`
