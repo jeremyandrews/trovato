@@ -14,10 +14,7 @@
     <div id="scolta-search"></div>
 
     <div id="search-fallback" class="search-fallback">
-        <form action="/search" method="get" class="search-form">
-            <input type="search" name="q" value="{{ query }}" placeholder="Search..." class="search-input" aria-label="Search">
-            <button type="submit" class="search-button">Search</button>
-        </form>
+        {{ search_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 
         {% if query %}
             {% if not no_terms %}

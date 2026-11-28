@@ -253,6 +253,20 @@ async fn themed_page(
     }
     let admin_path = crate::theme::ThemeEngine::is_admin_path(path);
     context.insert("admin_path", &admin_path);
+    // A page that was not found offers the site search, outside the admin:
+    // the search form, through the forms pipeline (a GET form, so building
+    // it saves nothing).
+    if marker.status == StatusCode::NOT_FOUND && !admin_path {
+        let form = crate::routes::search::search_form(
+            crate::form::FormElement::input("search").title("Search this site"),
+        )
+        .attribute("class", "error-page__search")
+        .attribute("role", "search");
+        match crate::routes::admin_form::render_as(state, session, &viewer, form, &[]).await {
+            Ok(html) => context.insert("search_form", &html),
+            Err(_) => tracing::warn!("the page-not-found page's search form could not be built"),
+        }
+    }
     crate::routes::helpers::inject_site_context_for(state, session, &viewer, &mut context, path)
         .await;
     let shell = if admin_path {

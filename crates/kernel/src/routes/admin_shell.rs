@@ -393,14 +393,18 @@ struct SearchQuery {
 /// Longest query read; the rest is ignored.
 const MAX_QUERY_LEN: usize = 200;
 
-/// The viewer, their admin language, and what `q` finds for them; or the
-/// refusal when they may not use the administration.
+/// The id of the results page's own search form.
+const SEARCH_PAGE_FORM_ID: &str = "admin_search_page_form";
+
+/// The signed-in user and their viewer, their admin language, and what `q`
+/// finds for them; or the refusal when they may not use the administration.
 async fn run_search(
     state: &AppState,
     session: &Session,
     raw: &str,
 ) -> Result<
     (
+        crate::models::User,
         crate::tap::UserContext,
         String,
         String,
@@ -427,20 +431,47 @@ async fn run_search(
         ))
     };
     let groups = admin_search_index::search(state, &viewer, &q, &translate).await;
-    Ok((viewer, q, lang, groups))
+    Ok((user, viewer, q, lang, groups))
 }
 
-/// GET /admin/search?q=: the results page, grouped under headings.
+/// GET /admin/search?q=: the results page, grouped under headings, below
+/// its own search form (a GET form through the form pipeline, B83c).
 async fn search(
     State(state): State<AppState>,
     session: Session,
     Query(query): Query<SearchQuery>,
 ) -> Response {
-    let (viewer, q, _, groups) = match run_search(&state, &session, &query.q).await {
+    use crate::form::{Form, FormElement};
+    let (user, viewer, q, lang, groups) = match run_search(&state, &session, &query.q).await {
         Ok(found) => found,
         Err(refusal) => return refusal,
     };
+    // The form's name for assistive technology; an attribute, so translated
+    // here rather than by the templates.
+    let again = crate::i18n::strip_markers(
+        &crate::i18n::UiMessage::new("Search again").text(state.locale().map(|l| &**l), &lang),
+    );
+    let form = Form::new(SEARCH_PAGE_FORM_ID)
+        .method("get")
+        .action(admin_nav::SEARCH)
+        .attribute("class", "search-page-form")
+        .attribute("role", "search")
+        .attribute("aria-label", again)
+        .element(
+            "q",
+            FormElement::input("search")
+                .title("Search for")
+                .default_value(q.clone())
+                .attribute("autocomplete", "off")
+                .weight(0),
+        )
+        .element("op", FormElement::submit("Search").weight(1));
+    let form = match super::admin_form::render(&state, &session, &user, form, &[]).await {
+        Ok(html) => html,
+        Err(refusal) => return refusal,
+    };
     let mut context = tera::Context::new();
+    context.insert("form", &form);
     context.insert("q", &q);
     context.insert("count", &admin_search_index::count(&groups));
     context.insert("groups", &groups);
@@ -480,7 +511,7 @@ async fn suggest(
     session: Session,
     Query(query): Query<SearchQuery>,
 ) -> Response {
-    let Ok((_, q, lang, groups)) = run_search(&state, &session, &query.q).await else {
+    let Ok((_, _, q, lang, groups)) = run_search(&state, &session, &query.q).await else {
         return StatusCode::FORBIDDEN.into_response();
     };
     let locale = state.locale().cloned();
