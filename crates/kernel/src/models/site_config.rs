@@ -197,6 +197,21 @@ impl SiteConfig {
 
     /// Set a configuration value (default tenant).
     pub async fn set(pool: &PgPool, key: &str, value: serde_json::Value) -> Result<()> {
+        Self::set_in(pool, key, value).await?;
+        // Every server drops its in-memory site config (the front page path).
+        crate::cache::generation::bump(crate::cache::generation::CacheKind::SiteConfig);
+
+        Ok(())
+    }
+
+    /// [`Self::set`] on `executor` (a transaction the caller commits),
+    /// without telling the other servers: the caller bumps
+    /// `CacheKind::SiteConfig` once the write has committed.
+    pub(crate) async fn set_in<'e, E: sqlx::PgExecutor<'e>>(
+        executor: E,
+        key: &str,
+        value: serde_json::Value,
+    ) -> Result<()> {
         sqlx::query(
             r#"
             INSERT INTO site_config (key, value, updated)
@@ -206,11 +221,9 @@ impl SiteConfig {
         )
         .bind(key)
         .bind(value)
-        .execute(pool)
+        .execute(executor)
         .await
         .context("failed to set site config")?;
-        // Every server drops its in-memory site config (the front page path).
-        crate::cache::generation::bump(crate::cache::generation::CacheKind::SiteConfig);
 
         Ok(())
     }

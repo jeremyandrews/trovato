@@ -1402,16 +1402,28 @@ async fn run_user_command(action: UserAction) -> Result<()> {
             let (user, role) = find_user_and_role(&pool, &username, &role).await?;
             // Idempotent: `assign_to_user` upserts, so re-running is not an
             // error, and saying which it was is more use than a bare "done".
-            let already = models::Role::get_user_roles(&pool, user.id)
-                .await?
-                .into_iter()
-                .any(|r| r.id == role.id);
-            models::Role::assign_to_user(&pool, user.id, role.id).await?;
+            //
+            // The grant and its `user.roles_changed` commit together.
+            let audit = services::audit::AuditTrail::offline(pool.clone()).await;
+            // Whether this assigned the role is the insert's own answer, so a
+            // grant is recorded exactly when this run made it.
+            let mut tx = pool.begin().await?;
+            let already = !models::Role::assign_to_user(&mut *tx, user.id, role.id).await?;
+            let name = if already {
+                None
+            } else {
+                Some(
+                    services::role::membership_event_in(&audit, &mut tx, user.id, role.id, "added")
+                        .await?,
+                )
+            };
+            tx.commit().await?;
+            if let Some(name) = name {
+                services::role::record_membership(&audit, user.id, role.id, &name, "added").await;
+            }
             if already {
                 println!("User '{username}' already had role '{}'.", role.name);
             } else {
-                let audit = services::audit::AuditTrail::offline(pool.clone()).await;
-                services::role::audit_membership(&audit, &pool, user.id, role.id, "added").await?;
                 println!("User '{username}' now has role '{}'.", role.name);
                 println!(
                     "{}",
@@ -1421,9 +1433,15 @@ async fn run_user_command(action: UserAction) -> Result<()> {
         }
         UserAction::RoleRemove { username, role } => {
             let (user, role) = find_user_and_role(&pool, &username, &role).await?;
-            models::Role::remove_from_user(&pool, user.id, role.id).await?;
+            // The removal and its `user.roles_changed` commit together.
             let audit = services::audit::AuditTrail::offline(pool.clone()).await;
-            services::role::audit_membership(&audit, &pool, user.id, role.id, "removed").await?;
+            let mut tx = pool.begin().await?;
+            models::Role::remove_from_user(&mut *tx, user.id, role.id).await?;
+            let name =
+                services::role::membership_event_in(&audit, &mut tx, user.id, role.id, "removed")
+                    .await?;
+            tx.commit().await?;
+            services::role::record_membership(&audit, user.id, role.id, &name, "removed").await;
             println!("User '{username}' no longer has role '{}'.", role.name);
             println!(
                 "{}",

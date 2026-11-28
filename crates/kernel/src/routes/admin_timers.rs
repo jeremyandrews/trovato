@@ -334,28 +334,33 @@ fn snapshot(t: &Timer) -> serde_json::Value {
     })
 }
 
-/// Record an administrator's change to a timer in the security log.
-async fn audit_change(
-    state: &AppState,
+/// What records an administrator's change to a timer in the security log:
+/// `timer.changed`, written in the change's own transaction.
+fn change_record<'a>(
+    state: &'a AppState,
     user: &User,
-    action: &str,
-    before: &Timer,
-    after: Option<&Timer>,
-) {
-    state
-        .security_audit()
-        .emit(
+    action: &'static str,
+) -> crate::timer::ChangeRecord<'a> {
+    let actor = user.id;
+    let request = crate::services::audit::AuditActor::current();
+    (
+        state.security_audit(),
+        Box::new(move |before: &Timer, after: Option<&Timer>| {
             SecurityEvent::new(SecurityEventKind::TimerChanged)
-                .actor(user.id)
-                .with_request_context(&crate::services::audit::AuditActor::current())
+                .actor(actor)
+                .with_request_context(&request)
                 .detail("action", action)
                 .detail("timer_id", before.id)
                 .detail("owner", &before.owner)
                 .detail("name", &before.name)
                 .detail("before", snapshot(before))
-                .detail("after", after.map(snapshot)),
-        )
-        .await;
+                .detail("after", after.map(snapshot))
+        }),
+    )
+}
+
+/// Log an administrator's committed change to a timer.
+fn log_change(user: &User, action: &str, before: &Timer) {
     tracing::info!(
         user_id = %user.id,
         action,
@@ -387,9 +392,13 @@ async fn row_action(
         "cancel" => AdminChange::Cancel,
         _ => return render_not_found(),
     };
-    match state.timers().admin_change(id, &change).await {
-        Ok((before, after)) => {
-            audit_change(&state, &user, change.action(), &before, after.as_ref()).await;
+    match state
+        .timers()
+        .admin_change_recorded(id, &change, change_record(&state, &user, change.action()))
+        .await
+    {
+        Ok((before, _)) => {
+            log_change(&user, change.action(), &before);
             let message = match change {
                 AdminChange::Pause => UiMessage::new("Paused {name}."),
                 AdminChange::Resume => UiMessage::new("Resumed {name}."),
@@ -538,17 +547,18 @@ async fn edit_submit(
     };
     match state
         .timers()
-        .admin_change(
+        .admin_change_recorded(
             id,
             &AdminChange::Edit {
                 run_at,
                 repeat_secs,
             },
+            change_record(&state, &user, "edit"),
         )
         .await
     {
-        Ok((before, after)) => {
-            audit_change(&state, &user, "edit", &before, after.as_ref()).await;
+        Ok((before, _)) => {
+            log_change(&user, "edit", &before);
             let _ = session
                 .insert(
                     FLASH_KEY,
@@ -748,20 +758,19 @@ async fn save_settings(
         return render_settings(&state, &session, &user, Some(&form), &errors).await;
     }
     if after != before {
-        if let Err(e) = crate::timer::save_settings(state.db(), after).await {
+        // The settings and `timer.settings_changed` commit together.
+        let event = SecurityEvent::new(SecurityEventKind::TimerSettingsChanged)
+            .actor(user.id)
+            .with_request_context(&crate::services::audit::AuditActor::current())
+            .detail("before", before)
+            .detail("after", after);
+        if let Err(e) =
+            crate::timer::save_settings_recorded(state.db(), after, state.security_audit(), event)
+                .await
+        {
             tracing::error!(error = %e, "failed to save the timer settings");
             return render_server_error("The timer settings could not be saved.");
         }
-        state
-            .security_audit()
-            .emit(
-                SecurityEvent::new(SecurityEventKind::TimerSettingsChanged)
-                    .actor(user.id)
-                    .with_request_context(&crate::services::audit::AuditActor::current())
-                    .detail("before", before)
-                    .detail("after", after),
-            )
-            .await;
         tracing::info!(user_id = %user.id, ?before, ?after, "timer settings changed");
     }
     let _ = session
