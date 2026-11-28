@@ -46,10 +46,10 @@ use crate::tap::UserContext;
 
 /// Build the Scolta search API router.
 pub fn api() -> super::api::ApiRoutes {
+    use super::api::doc;
     use axum::extract::DefaultBodyLimit;
     use axum::http::Method;
     use axum::routing::post;
-    use super::api::doc;
 
     /// The three endpoints take a query and a short list of result URLs; this
     /// is a generous ceiling for that, not a target. Nothing a legitimate
@@ -316,7 +316,8 @@ async fn summarize(
         return refusal;
     }
 
-    let context_text = build_results_context(state.db(), state.items(), &viewer, &settings, &body.results).await;
+    let context_text =
+        build_results_context(state.db(), state.items(), &viewer, &settings, &body.results).await;
     if context_text.is_empty() {
         // Nothing the caller named resolved to anything they may see: answer
         // with an empty summary rather than ask the provider to summarize
@@ -366,7 +367,11 @@ async fn followup(
     }
 
     // The opening question plus `max_followups` follow-ups.
-    let user_turns = body.messages.iter().filter(|m| is_user_role(&m.role)).count();
+    let user_turns = body
+        .messages
+        .iter()
+        .filter(|m| is_user_role(&m.role))
+        .count();
     if user_turns > settings.max_followups as usize + 1 {
         return AppError::bad_request(format!(
             "A conversation may hold at most {} follow-up questions",
@@ -389,13 +394,18 @@ async fn followup(
         .messages
         .iter()
         .map(|m| {
-            let role = if is_user_role(&m.role) { "user" } else { "assistant" };
+            let role = if is_user_role(&m.role) {
+                "user"
+            } else {
+                "assistant"
+            };
             format!("{role}: {}", truncate_on_word(&m.content, max_chars))
         })
         .collect::<Vec<_>>()
         .join("\n\n");
 
-    let results_context = build_results_context(state.db(), state.items(), &viewer, &settings, &body.results).await;
+    let results_context =
+        build_results_context(state.db(), state.items(), &viewer, &settings, &body.results).await;
     if !results_context.is_empty() {
         user_prompt.push_str(&format!(
             "\n\nAdditional search results for this follow-up:\n{results_context}",
@@ -640,7 +650,10 @@ pub(crate) const SEARCH_USAGE_SOURCE: &str = "kernel_search";
 /// gets expansion, summaries and follow-ups. A signed-in person's calls count
 /// against their token budget; an anonymous visitor's against the site-level
 /// anonymous cap.
-async fn ai_caller(state: &AppState, session: &Session) -> Result<(UserContext, AiCaller), Response> {
+async fn ai_caller(
+    state: &AppState,
+    session: &Session,
+) -> Result<(UserContext, AiCaller), Response> {
     let viewer = crate::routes::item::get_user_context(session, state).await;
     if !viewer.can(USE_AI_PERMISSION) {
         return Err(super::helpers::refusal_for(
