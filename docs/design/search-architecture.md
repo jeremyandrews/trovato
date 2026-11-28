@@ -205,9 +205,15 @@ next index build.
 
 `/api/v1/search/expand`, `/summarize` and `/followup` read the settings first
 and answer 404 with a short JSON error when their stage is off, before any cache
-or provider work. `/followup` answers 400 to a conversation holding more user
-turns than `max_followups` plus one (the opening question), counted on `messages`
-or on `history` plus `query`, whichever it received.
+or provider work. None of the three takes prompt text from the browser:
+`/summarize` and `/followup` take `results: [{url}]`, the server resolves each
+URL to an item and reads only what the calling viewer may see
+(`ItemService::filter_page_for_view`), cut to `ai_summary_max_chars` per item.
+`/followup`'s `messages` must carry a role of `user` or `assistant`
+(case-insensitively) or the request is refused with 400; it then answers 400 to
+a conversation holding more `user` turns than `max_followups` plus one (the
+opening question). A query over `search::MAX_QUERY_LENGTH`, on any of the
+three, is refused with 400, and a request body over 64 KiB with 413.
 
 ---
 
