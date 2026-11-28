@@ -205,14 +205,38 @@ fn is_never_allowable_v4(v4: Ipv4Addr) -> bool {
     v4.is_link_local() || v4.is_multicast() || v4.is_broadcast() || v4.is_unspecified()
 }
 
+/// Is `addr` a bare IPv6 literal, or an IPv6 CIDR range (the part before `/`
+/// an IPv6 literal)? Used to hold both forms the bracket grammar is for to the
+/// same check: brackets, and only brackets, are for IPv6.
+fn is_ipv6_literal_or_cidr(addr: &str) -> bool {
+    if addr.parse::<std::net::Ipv6Addr>().is_ok() {
+        return true;
+    }
+    match addr.split_once('/') {
+        Some((network, _)) => network.parse::<std::net::Ipv6Addr>().is_ok(),
+        None => false,
+    }
+}
+
 /// Split `<destination>:<port>` into its two parts, handling a bracketed IPv6
 /// literal (`[::1]:6081`) whose own colons must not be mistaken for the port
 /// separator.
+///
+/// Brackets are for an IPv6 literal or CIDR range only, matching the
+/// documented `[<ipv6>]:<port>` grammar: `[cache.internal]:6081` (a hostname
+/// in brackets) and an unbracketed IPv6 literal (`2001:db8::1:6081`, which
+/// would otherwise split at the wrong colon) are both refused rather than
+/// silently accepted as something they are not.
 fn parse_destination_and_port(rest: &str) -> Result<(String, u16), String> {
     let (dest, port_str) = if let Some(stripped) = rest.strip_prefix('[') {
         let (addr, after) = stripped
             .split_once(']')
             .ok_or_else(|| "missing closing `]` for a bracketed IPv6 literal".to_string())?;
+        if !is_ipv6_literal_or_cidr(addr) {
+            return Err(format!(
+                "`[{addr}]` is not a valid IPv6 literal or CIDR range (brackets are only for IPv6)"
+            ));
+        }
         let port_str = after.strip_prefix(':').ok_or_else(|| {
             "missing port after the bracketed IPv6 literal (expected ]:<port>)".to_string()
         })?;
@@ -221,6 +245,11 @@ fn parse_destination_and_port(rest: &str) -> Result<(String, u16), String> {
         let (dest, port_str) = rest
             .rsplit_once(':')
             .ok_or_else(|| "missing port (expected <destination>:<port>)".to_string())?;
+        if dest.parse::<std::net::Ipv6Addr>().is_ok() {
+            return Err(format!(
+                "`{dest}` is an IPv6 literal and must be bracketed (expected [{dest}]:<port>)"
+            ));
+        }
         (dest.to_string(), port_str)
     };
     if dest.is_empty() {
@@ -232,6 +261,21 @@ fn parse_destination_and_port(rest: &str) -> Result<(String, u16), String> {
     Ok((dest, port))
 }
 
+/// Does `dest` have the dotted-quad shape of an IPv4 literal (four
+/// dot-separated all-digit groups), whether or not the digits are valid
+/// octets? `999.999.999.999` is not a parseable [`IpAddr`], but it is a typo'd
+/// address, not a hostname: no real hostname has every label numeric four
+/// levels deep, and the HTTP URL parser refuses it as a numeric host too, so
+/// letting it through here would produce an entry no request could ever
+/// match.
+fn looks_like_ipv4_literal(dest: &str) -> bool {
+    let parts: Vec<&str> = dest.split('.').collect();
+    parts.len() == 4
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+}
+
 /// Classify a destination string as an IP literal, a CIDR range, or a hostname.
 fn parse_destination(dest: &str) -> Result<Destination, String> {
     if let Ok(ip) = dest.parse::<IpAddr>() {
@@ -240,6 +284,9 @@ fn parse_destination(dest: &str) -> Result<Destination, String> {
     if dest.contains('/') {
         let net = IpNet::parse(dest)?;
         return Ok(Destination::Cidr(net));
+    }
+    if looks_like_ipv4_literal(dest) {
+        return Err(format!("`{dest}` is not a valid IPv4 literal"));
     }
     let valid_hostname = !dest.is_empty()
         && dest
@@ -409,6 +456,43 @@ mod tests {
     fn unknown_destination_shape_is_refused() {
         let err = PluginHttpAllow::parse("p1@not a hostname!!:6081").unwrap_err();
         assert!(err.contains("valid"), "got: {err}");
+    }
+
+    /// A hostname in brackets is not an IPv6 literal: brackets are only for
+    /// the documented `[<ipv6>]:<port>` grammar, so wrapping an ordinary name
+    /// in them must not silently strip the brackets and parse it as a hostname.
+    #[test]
+    fn bracketed_hostname_is_refused() {
+        let err = PluginHttpAllow::parse("p1@[cache.internal]:6081").unwrap_err();
+        assert!(err.contains("IPv6"), "got: {err}");
+    }
+
+    /// An unbracketed IPv6 literal is ambiguous with the port separator and
+    /// must be refused rather than silently split at its last colon.
+    #[test]
+    fn unbracketed_ipv6_literal_is_refused() {
+        let err = PluginHttpAllow::parse("p1@2001:db8::1:6081").unwrap_err();
+        assert!(err.contains("bracketed"), "got: {err}");
+    }
+
+    /// A bracketed IPv6 CIDR range still parses: the bracket grammar is for
+    /// IPv6, not only a single literal.
+    #[test]
+    fn bracketed_ipv6_cidr_entry_parses() {
+        let allow = PluginHttpAllow::parse("p1@[fd00::/8]:6081").unwrap();
+        assert!(matches!(
+            allow.entries()[0].destination,
+            Destination::Cidr(_)
+        ));
+    }
+
+    /// A numeric destination that is not a valid IPv4 literal (an out-of-range
+    /// octet) must be refused at startup, not silently accepted as an inert
+    /// hostname entry no request could ever match.
+    #[test]
+    fn invalid_numeric_destination_is_refused() {
+        let err = PluginHttpAllow::parse("p1@999.999.999.999:6081").unwrap_err();
+        assert!(err.contains("IPv4"), "got: {err}");
     }
 
     /// Point (g): link-local (including the cloud-metadata address),

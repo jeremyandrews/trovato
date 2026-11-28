@@ -1169,9 +1169,10 @@ calling plugin's machine name, an `http`/`https` scheme, the exact port, and
 the destination (literal equality, CIDR containment, or, for a hostname
 entry, case-insensitive name equality). A different plugin, a different
 port, or any other destination (including the same address on a different
-port) still meets the refusal every request meets by default, and a
-redirect away from the granted destination is refused the same way a redirect
-to any other private target always is. An entry is per plugin and per port
+port) still meets the refusal every request meets by default. The grant
+covers the first request only: every redirect hop, even one back to the
+granted destination itself, meets the same refusal a redirect to any other
+private target always does. An entry is per plugin and per port
 because granting a destination more broadly than the one plugin and the one
 port that needs it is exactly the access an operator reaching for this
 setting is trying to avoid.

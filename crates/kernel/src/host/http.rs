@@ -181,7 +181,13 @@ pub fn register_http_functions(linker: &mut Linker<PluginState>) -> Result<()> {
                     };
 
                     // Execute request
-                    let response = match execute_http_request(client, &request, &plugin_name).await
+                    let response = match execute_http_request(
+                        client,
+                        &request,
+                        &plugin_name,
+                        http_allow.has_entries_for(&plugin_name),
+                    )
+                    .await
                     {
                         Ok(r) => r,
                         Err(code) => return code,
@@ -647,21 +653,26 @@ fn revalidating_redirect_policy() -> reqwest::redirect::Policy {
 
 /// [`revalidating_redirect_policy`], plus one extra rule only a hostname
 /// entry's client needs: a hop back to the entry's own granted hostname is
-/// refused unless it is on the entry's exact granted port.
+/// always refused, on any port, including the entry's own granted port.
 ///
-/// `check_url_policy` cannot see this by itself. An ordinary hostname (not a
-/// private IP literal or a reserved suffix like `*.internal`) always passes
-/// it, whatever port the URL names, because it never resolves DNS. Without
-/// this check, a redirect from the granted destination to the identical
-/// hostname on a different port would pass `check_url_policy` and then
-/// resolve under [`EntryAllowResolver`], whose own relaxation is scoped to
-/// the hostname only, not the port — exactly the "same destination, another
-/// port" case the allowlist must still refuse. A redirect to any other
-/// hostname is unaffected: it falls straight through to the same
-/// `check_url_policy` check every other redirect gets, and (unless it also
-/// resolves to a public address) is caught at connect time by
-/// [`EntryAllowResolver`]'s strict branch for a non-matching name.
-fn entry_redirect_policy(allow_host: String, allow_port: u16) -> reqwest::redirect::Policy {
+/// The grant covers the original request only, not a redirect hop. A literal
+/// or CIDR entry already gets this for free: `check_url_policy` unconditionally
+/// rejects a private IP literal on every redirect hop, even the exact address
+/// the entry grants, because that check knows nothing of the allowlist. A
+/// hostname entry has no such address to reject by string alone — an ordinary
+/// domain name always passes `check_url_policy`, whatever port the URL names,
+/// because it never resolves DNS — so without this explicit rule a redirect
+/// back to the granted hostname would fall through to
+/// [`EntryAllowResolver`]'s relaxation and re-resolve it, on the granted port
+/// or any other, exactly the asymmetry a literal entry's client does not have.
+/// Closing it here keeps every entry's client to the same rule: the first
+/// request may land on the granted private destination; every redirect hop
+/// after it must resolve a public address. A redirect to any other hostname is
+/// unaffected: it falls straight through to the same `check_url_policy` check
+/// every other redirect gets, and (unless it also resolves to a public
+/// address) is caught at connect time by [`EntryAllowResolver`]'s strict
+/// branch for a non-matching name.
+fn entry_redirect_policy(allow_host: String) -> reqwest::redirect::Policy {
     reqwest::redirect::Policy::custom(move |attempt| {
         if attempt.previous().len() > 10 {
             return attempt.error(TooManyRedirects);
@@ -669,7 +680,6 @@ fn entry_redirect_policy(allow_host: String, allow_port: u16) -> reqwest::redire
         let url = attempt.url();
         if let Some(url::Host::Domain(host)) = url.host()
             && host.eq_ignore_ascii_case(&allow_host)
-            && url.port_or_known_default() != Some(allow_port)
         {
             return attempt.error(SsrfBlocked);
         }
@@ -822,24 +832,35 @@ impl PluginHttpAllowRuntime {
     }
 }
 
-/// Build the per-entry clients for `allow` and log each entry once, at info,
-/// naming the plugin, destination and port it grants, not per request, since
-/// the entries are static for the process's lifetime.
+/// Build the per-entry clients for `allow` and log each entry naming a known
+/// plugin once, at info, naming the plugin, destination and port it grants,
+/// not per request, since the entries are static for the process's lifetime.
+///
+/// `is_known_plugin` is the same discovered-plugins check the caller also
+/// uses to warn about an inert entry (naming a plugin never installed): an
+/// entry for an unknown plugin gets no active-entry log here, only that
+/// warning, so an operator never sees the two contradict each other (an
+/// "active" line immediately followed by a warning that it is inert).
 ///
 /// Called once at startup; the result is shared (behind an `Arc`) by every
 /// dispatch path that issues plugin-influenced HTTP, the same way
 /// [`build_outbound_client`]'s result is.
-pub(crate) fn build_plugin_http_allow_runtime(allow: &PluginHttpAllow) -> PluginHttpAllowRuntime {
+pub(crate) fn build_plugin_http_allow_runtime(
+    allow: &PluginHttpAllow,
+    is_known_plugin: impl Fn(&str) -> bool,
+) -> PluginHttpAllowRuntime {
     let entries = allow
         .entries()
         .iter()
         .map(|entry| {
-            tracing::info!(
-                plugin = %entry.plugin,
-                destination = %entry.destination,
-                port = entry.port,
-                "plugin HTTP private-address allowlist entry active"
-            );
+            if is_known_plugin(&entry.plugin) {
+                tracing::info!(
+                    plugin = %entry.plugin,
+                    destination = %entry.destination,
+                    port = entry.port,
+                    "plugin HTTP private-address allowlist entry active"
+                );
+            }
             AllowedEntry {
                 entry: entry.clone(),
                 client: build_entry_client(entry, Arc::new(SystemResolver)),
@@ -863,7 +884,7 @@ fn build_entry_client(
                 backend,
                 allow_host: name.clone(),
             }))
-            .redirect(entry_redirect_policy(name.clone(), entry.port)),
+            .redirect(entry_redirect_policy(name.clone())),
         plugin_http_allow::Destination::Ip(_) | plugin_http_allow::Destination::Cidr(_) => {
             builder_with_resolver(backend)
         }
@@ -920,10 +941,19 @@ fn build_open_metadata(
 }
 
 /// Execute an HTTP request with timeout and size restrictions.
+///
+/// `has_allowlist_entries` carries the same operator-visibility detail the
+/// pre-send [`resolve_outbound_client`] refusal already logs: whether
+/// `plugin_name` has any `PLUGIN_HTTP_PRIVATE_ALLOW` entry at all, regardless
+/// of whether it matches this request. Without it, a refusal from the
+/// client-level SSRF layers (DNS-rebinding resolution, a redirect hop) would
+/// log less than the string-check refusal does, for the same underlying
+/// denial.
 async fn execute_http_request(
     http: &reqwest::Client,
     request: &trovato_sdk::types::HttpRequest,
     plugin_name: &str,
+    has_allowlist_entries: bool,
 ) -> std::result::Result<trovato_sdk::types::HttpResponse, i32> {
     let method: reqwest::Method = request.method.parse().map_err(|_| {
         warn!(
@@ -961,6 +991,7 @@ async fn execute_http_request(
             warn!(
                 plugin = %plugin_name,
                 url = %request.url,
+                has_allowlist_entries,
                 "blocked HTTP request (rebinding or redirect to private target)"
             );
             host_errors::ERR_HTTP_INVALID_URL
@@ -1164,7 +1195,14 @@ async fn open_stream(
     // streaming through the kernel; the network fetch below is only ever
     // reached for a URL that has cleared it.
     let client = resolve_outbound_client(&request.url, plugin_name, http, http_allow)?;
-    fetch_stream(client, request, plugin_name, max_transfer).await
+    fetch_stream(
+        client,
+        request,
+        plugin_name,
+        max_transfer,
+        http_allow.has_entries_for(plugin_name),
+    )
+    .await
 }
 
 /// The post-SSRF network half of [`open_stream`]: send the request and build the
@@ -1172,11 +1210,15 @@ async fn open_stream(
 /// a loopback fixture server (which the SSRF fence would otherwise block) while
 /// [`open_stream`]'s `validate_url` call is tested independently against blocked
 /// hosts. Production code always reaches this through [`open_stream`].
+///
+/// `has_allowlist_entries` is the same operator-visibility detail
+/// [`execute_http_request`] carries into its own client-level SSRF refusal.
 async fn fetch_stream(
     http: &reqwest::Client,
     request: &trovato_sdk::types::HttpRequest,
     plugin_name: &str,
     max_transfer: u64,
+    has_allowlist_entries: bool,
 ) -> std::result::Result<HttpStream, i32> {
     let method: reqwest::Method = request.method.parse().map_err(|_| {
         warn!(
@@ -1214,7 +1256,12 @@ async fn fetch_stream(
         Ok(Ok(r)) => r,
         Ok(Err(e)) => {
             return Err(if is_ssrf_block(&e) {
-                warn!(plugin = %plugin_name, url = %request.url, "blocked streaming HTTP open (rebinding or redirect to private target)");
+                warn!(
+                    plugin = %plugin_name,
+                    url = %request.url,
+                    has_allowlist_entries,
+                    "blocked streaming HTTP open (rebinding or redirect to private target)"
+                );
                 host_errors::ERR_HTTP_INVALID_URL
             } else if e.is_timeout() {
                 warn!(plugin = %plugin_name, url = %request.url, "streaming HTTP open timed out");
@@ -1409,7 +1456,7 @@ mod tests {
         let base = body_server(body.clone(), Framing::ContentLength).await;
         let client = reqwest::Client::new();
         // 8 MB ceiling comfortably clears the 5 MB body.
-        let mut stream = fetch_stream(&client, &get(&base), "test", 8 * 1024 * 1024)
+        let mut stream = fetch_stream(&client, &get(&base), "test", 8 * 1024 * 1024, false)
             .await
             .expect("open should succeed under the ceiling");
 
@@ -1438,7 +1485,7 @@ mod tests {
         let body = make_body(5 * 1024 * 1024);
         let base = body_server(body, Framing::ContentLength).await;
         let client = reqwest::Client::new();
-        let err = execute_http_request(&client, &get(&base), "test")
+        let err = execute_http_request(&client, &get(&base), "test", false)
             .await
             .expect_err("one-shot request must reject a 5 MB body");
         assert_eq!(err, host_errors::ERR_HTTP_RESPONSE_TOO_LARGE);
@@ -1452,7 +1499,7 @@ mod tests {
         let base = body_server(body, Framing::ContentLength).await;
         let client = reqwest::Client::new();
         // 1 MB ceiling, 2 MB declared body.
-        let err = fetch_stream(&client, &get(&base), "test", 1024 * 1024)
+        let err = fetch_stream(&client, &get(&base), "test", 1024 * 1024, false)
             .await
             .expect_err("Content-Length over the ceiling must fail preflight");
         assert_eq!(err, host_errors::ERR_HTTP_TRANSFER_BUDGET);
@@ -1467,7 +1514,7 @@ mod tests {
         let base = body_server(body, Framing::NoContentLength).await;
         let client = reqwest::Client::new();
         // 1 MB ceiling with an undeclared 3 MB body: preflight can't see it.
-        let mut stream = fetch_stream(&client, &get(&base), "test", 1024 * 1024)
+        let mut stream = fetch_stream(&client, &get(&base), "test", 1024 * 1024, false)
             .await
             .expect("open succeeds — no Content-Length to preflight");
 
@@ -1549,9 +1596,15 @@ mod tests {
     async fn handles_are_store_scoped_and_die_on_close() {
         let base = body_server(b"hello".to_vec(), Framing::ContentLength).await;
         let client = reqwest::Client::new();
-        let stream = fetch_stream(&client, &get(&base), "test", DEFAULT_TRANSFER_CEILING)
-            .await
-            .expect("open");
+        let stream = fetch_stream(
+            &client,
+            &get(&base),
+            "test",
+            DEFAULT_TRANSFER_CEILING,
+            false,
+        )
+        .await
+        .expect("open");
 
         let mut call_a = PluginState::new(RequestState::default(), "p".to_string());
         let handle = call_a.http_stream_insert(stream).expect("first handle");
@@ -1592,17 +1645,29 @@ mod tests {
         let client = reqwest::Client::new();
         let mut state = PluginState::new(RequestState::default(), "p".to_string());
         for i in 0..MAX_OPEN_HTTP_STREAMS {
-            let stream = fetch_stream(&client, &get(&base), "test", DEFAULT_TRANSFER_CEILING)
-                .await
-                .expect("open under cap");
+            let stream = fetch_stream(
+                &client,
+                &get(&base),
+                "test",
+                DEFAULT_TRANSFER_CEILING,
+                false,
+            )
+            .await
+            .expect("open under cap");
             assert!(
                 state.http_stream_insert(stream).is_some(),
                 "insert {i} should be under the cap"
             );
         }
-        let overflow = fetch_stream(&client, &get(&base), "test", DEFAULT_TRANSFER_CEILING)
-            .await
-            .expect("open");
+        let overflow = fetch_stream(
+            &client,
+            &get(&base),
+            "test",
+            DEFAULT_TRANSFER_CEILING,
+            false,
+        )
+        .await
+        .expect("open");
         assert!(
             state.http_stream_insert(overflow).is_none(),
             "the {}th open must be refused",
@@ -1630,7 +1695,7 @@ mod tests {
         }))
         .build()
         .expect("hardened client builds");
-        let err = execute_http_request(&client, &get("http://rebind.invalid/"), "test")
+        let err = execute_http_request(&client, &get("http://rebind.invalid/"), "test", false)
             .await
             .expect_err("a name resolving to loopback must be denied");
         assert_eq!(
@@ -1654,6 +1719,7 @@ mod tests {
             &get("http://metadata.invalid/"),
             "test",
             DEFAULT_TRANSFER_CEILING,
+            false,
         )
         .await
         .expect_err("a name resolving to link-local must be denied");
@@ -1673,7 +1739,7 @@ mod tests {
         }))
         .build()
         .expect("hardened client builds");
-        let err = execute_http_request(&client, &get("http://mixed.invalid/"), "test")
+        let err = execute_http_request(&client, &get("http://mixed.invalid/"), "test", false)
             .await
             .expect_err("any private resolved address must deny the whole request");
         assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
@@ -1687,7 +1753,7 @@ mod tests {
     async fn one_shot_denies_redirect_to_private_target() {
         let base = redirect_server("http://169.254.169.254/latest/meta-data/".to_string()).await;
         let client = build_outbound_client();
-        let err = execute_http_request(&client, &get(&base), "test")
+        let err = execute_http_request(&client, &get(&base), "test", false)
             .await
             .expect_err("a redirect to a private target must be denied");
         assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
@@ -1703,7 +1769,7 @@ mod tests {
         // a regression shows up as the SSRF code being absent, never as a hang.
         let base = redirect_server("http://[::1]:9/".to_string()).await;
         let client = build_outbound_client();
-        let err = execute_http_request(&client, &get(&base), "test")
+        let err = execute_http_request(&client, &get(&base), "test", false)
             .await
             .expect_err("a redirect to an IPv6 loopback literal must be denied");
         assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
@@ -1719,7 +1785,7 @@ mod tests {
         }))
         .build()
         .expect("hardened client builds");
-        let err = execute_http_request(&client, &get("http://mapped.invalid/"), "test")
+        let err = execute_http_request(&client, &get("http://mapped.invalid/"), "test", false)
             .await
             .expect_err("an IPv4-mapped loopback answer must be denied");
         assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
@@ -1730,9 +1796,15 @@ mod tests {
     async fn streaming_denies_redirect_to_private_target() {
         let base = redirect_server("http://127.0.0.1:9/".to_string()).await;
         let client = build_outbound_client();
-        let err = fetch_stream(&client, &get(&base), "test", DEFAULT_TRANSFER_CEILING)
-            .await
-            .expect_err("a redirect to loopback must be denied");
+        let err = fetch_stream(
+            &client,
+            &get(&base),
+            "test",
+            DEFAULT_TRANSFER_CEILING,
+            false,
+        )
+        .await
+        .expect_err("a redirect to loopback must be denied");
         assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
     }
 
@@ -1747,7 +1819,7 @@ mod tests {
             .resolve("loop.test", addr_of(&base))
             .build()
             .expect("hardened client builds");
-        let err = execute_http_request(&client, &get("http://loop.test/"), "test")
+        let err = execute_http_request(&client, &get("http://loop.test/"), "test", false)
             .await
             .expect_err("an endless redirect loop must stop at the cap");
         assert_eq!(
@@ -1770,7 +1842,7 @@ mod tests {
             .resolve("dest.test", addr_of(&final_base))
             .build()
             .expect("hardened client builds");
-        let resp = execute_http_request(&client, &get("http://start.test/"), "test")
+        let resp = execute_http_request(&client, &get("http://start.test/"), "test", false)
             .await
             .expect("a policy-clean redirect chain must succeed");
         assert_eq!(resp.status, 200);
@@ -1859,9 +1931,15 @@ mod tests {
         let base = raw_server(raw).await;
         let client = reqwest::Client::new();
 
-        let stream = fetch_stream(&client, &get(&base), "test", DEFAULT_TRANSFER_CEILING)
-            .await
-            .expect("streaming open should succeed");
+        let stream = fetch_stream(
+            &client,
+            &get(&base),
+            "test",
+            DEFAULT_TRANSFER_CEILING,
+            false,
+        )
+        .await
+        .expect("streaming open should succeed");
         assert_eq!(stream.status, 200, "streaming open must capture the status");
         assert_eq!(
             stream.headers.get("etag").map(String::as_str),
@@ -1878,7 +1956,7 @@ mod tests {
         );
 
         // Parity: the one-shot path reports the identical status and headers.
-        let one_shot = execute_http_request(&client, &get(&base), "test")
+        let one_shot = execute_http_request(&client, &get(&base), "test", false)
             .await
             .expect("one-shot request should succeed");
         assert_eq!(
@@ -1903,9 +1981,15 @@ mod tests {
         let base = raw_server(raw).await;
         let client = reqwest::Client::new();
 
-        let mut stream = fetch_stream(&client, &get(&base), "test", DEFAULT_TRANSFER_CEILING)
-            .await
-            .expect("streaming open should succeed even for 304");
+        let mut stream = fetch_stream(
+            &client,
+            &get(&base),
+            "test",
+            DEFAULT_TRANSFER_CEILING,
+            false,
+        )
+        .await
+        .expect("streaming open should succeed even for 304");
         assert_eq!(
             stream.status, 304,
             "the 304 must be visible in the metadata"
@@ -1961,6 +2045,7 @@ mod tests {
     fn allow_for_literal(plugin: &str, ip_port: &str) -> PluginHttpAllowRuntime {
         build_plugin_http_allow_runtime(
             &PluginHttpAllow::parse(&format!("{plugin}@{ip_port}")).expect("entry parses"),
+            |_| true,
         )
     }
 
@@ -1975,7 +2060,7 @@ mod tests {
 
         let client = resolve_outbound_client(&base, "p1", &default, &allow)
             .expect("the named plugin must be granted its named destination");
-        let resp = execute_http_request(client, &get(&base), "p1")
+        let resp = execute_http_request(client, &get(&base), "p1", allow.has_entries_for("p1"))
             .await
             .expect("the request must reach the mock");
         assert_eq!(resp.body, "purged");
@@ -2049,7 +2134,7 @@ mod tests {
         // address: "its resolved address is accepted only for that request".
         let client = resolve_outbound_client(&url, "p1", &default, &allow)
             .expect("p1 must be granted through the hostname");
-        let resp = execute_http_request(client, &get(&url), "p1")
+        let resp = execute_http_request(client, &get(&url), "p1", allow.has_entries_for("p1"))
             .await
             .expect("the request must reach the mock");
         assert_eq!(resp.body, "varnish-ok");
@@ -2093,7 +2178,7 @@ mod tests {
         // refuses the link-local address it resolved to.
         let client = resolve_outbound_client(url, "p1", &default, &allow)
             .expect("layer 1 grants the matched hostname and port");
-        let err = execute_http_request(client, &get(url), "p1")
+        let err = execute_http_request(client, &get(url), "p1", allow.has_entries_for("p1"))
             .await
             .expect_err("a link-local resolved address must still be refused");
         assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
@@ -2129,7 +2214,7 @@ mod tests {
 
         let client = resolve_outbound_client(&url, "p1", &default, &allow)
             .expect("an ordinary hostname entry must still be granted");
-        let resp = execute_http_request(client, &get(&url), "p1")
+        let resp = execute_http_request(client, &get(&url), "p1", allow.has_entries_for("p1"))
             .await
             .expect("the entry's relaxed resolver must accept the loopback address it resolved to");
         assert_eq!(resp.body, "cache-ok");
@@ -2154,7 +2239,7 @@ mod tests {
 
         let client = resolve_outbound_client(&base, "p1", &default, &allow)
             .expect("p1 is granted the first hop");
-        let err = execute_http_request(client, &get(&base), "p1")
+        let err = execute_http_request(client, &get(&base), "p1", allow.has_entries_for("p1"))
             .await
             .expect_err("a redirect off the granted destination must be refused");
         assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
@@ -2196,10 +2281,70 @@ mod tests {
 
         let client = resolve_outbound_client(&url, "p1", &default, &allow)
             .expect("p1 is granted the first hop, on the granted port");
-        let err = execute_http_request(client, &get(&url), "p1")
+        let err = execute_http_request(client, &get(&url), "p1", allow.has_entries_for("p1"))
             .await
             .expect_err(
                 "a redirect to the same granted hostname on a different port must be refused",
+            );
+        assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
+    }
+
+    /// (f) for a hostname entry: a redirect back to the identical granted
+    /// hostname, on its own granted port, is refused too. The grant covers
+    /// the first request, not a redirect hop back to the same destination:
+    /// a literal or CIDR entry already refuses this (`check_url_policy`
+    /// rejects a private IP literal on every hop, granted or not), and a
+    /// hostname entry's client must refuse it the same way, not fall through
+    /// to `EntryAllowResolver`'s relaxation a second time.
+    #[tokio::test]
+    async fn redirect_to_the_granted_hostname_on_its_own_port_is_also_refused() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        // A server that redirects to itself: bind first so the granted port
+        // is known before the self-referential `Location` is built.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let granted_port = listener.local_addr().unwrap().port();
+        let location = format!("http://cache.example.com:{granted_port}/");
+        let resp = format!(
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        );
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    break;
+                };
+                let resp = resp.clone();
+                tokio::spawn(async move {
+                    let mut buf = [0u8; 2048];
+                    let _ = sock.read(&mut buf).await;
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                    let _ = sock.flush().await;
+                });
+            }
+        });
+
+        let entry = PluginHttpAllow::parse(&format!("p1@cache.example.com:{granted_port}"))
+            .expect("entry parses")
+            .entries()[0]
+            .clone();
+        let client = build_entry_client(
+            &entry,
+            Arc::new(StubResolver {
+                ips: vec![IpAddr::from([127, 0, 0, 1])],
+            }),
+        );
+        let allow = PluginHttpAllowRuntime {
+            entries: vec![AllowedEntry { entry, client }],
+        };
+        let default = reqwest::Client::new();
+        let url = format!("http://cache.example.com:{granted_port}/");
+
+        let client = resolve_outbound_client(&url, "p1", &default, &allow)
+            .expect("p1 is granted the first hop, on the granted hostname and port");
+        let err = execute_http_request(client, &get(&url), "p1", allow.has_entries_for("p1"))
+            .await
+            .expect_err(
+                "a redirect back to the granted hostname, even on its own port, must be refused",
             );
         assert_eq!(err, host_errors::ERR_HTTP_INVALID_URL);
     }
@@ -2236,5 +2381,29 @@ mod tests {
         let allow = allow_for_literal("p1", "127.0.0.1:80");
         assert!(allow.has_entries_for("p1"));
         assert!(!allow.has_entries_for("p2"));
+    }
+
+    /// An entry whose plugin `is_known_plugin` reports as not installed still
+    /// gets a working client built: the gate on `build_plugin_http_allow_runtime`
+    /// only decides whether the active-entry info line is logged at startup
+    /// (never for a plugin nobody installed, so it cannot contradict the
+    /// separate inert-entry warning), not whether the entry itself functions
+    /// once that plugin exists.
+    #[tokio::test]
+    async fn entry_for_an_unknown_plugin_still_builds_a_working_client() {
+        let base = body_server(b"purged".to_vec(), Framing::ContentLength).await;
+        let port = addr_of(&base).port();
+        let allow = build_plugin_http_allow_runtime(
+            &PluginHttpAllow::parse(&format!("p1@127.0.0.1:{port}")).expect("entry parses"),
+            |_| false,
+        );
+        let default = reqwest::Client::new();
+
+        let client = resolve_outbound_client(&base, "p1", &default, &allow)
+            .expect("the entry still grants its destination, logging aside");
+        let resp = execute_http_request(client, &get(&base), "p1", allow.has_entries_for("p1"))
+            .await
+            .expect("the request must reach the mock");
+        assert_eq!(resp.body, "purged");
     }
 }

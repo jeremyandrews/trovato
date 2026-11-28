@@ -429,6 +429,13 @@ impl AppState {
         let lockout =
             LockoutService::new(redis.clone()).with_ip_storage(config.runtime.client_ip_storage);
 
+        // Discover plugins on disk (parse info.toml without compiling WASM).
+        // Done before the operator allowlist below so its startup log can
+        // tell a known plugin's entry from one naming a plugin nobody
+        // installed, rather than announcing every configured entry as active
+        // before that is known.
+        let discovered = PluginRuntime::discover_plugins(&config.plugins_dirs).await;
+
         // The operator allowlist (`PLUGIN_HTTP_PRIVATE_ALLOW`): one client per
         // entry, built once here and shared (behind an `Arc`) by every
         // dispatch path that issues plugin-influenced HTTP: the request
@@ -436,10 +443,8 @@ impl AppState {
         // `tap_cron`/`tap_queue_worker` dispatch.
         let plugin_http_allow = Arc::new(crate::host::http::build_plugin_http_allow_runtime(
             &config.plugin_http_private_allow,
+            |name| discovered.contains_key(name),
         ));
-
-        // Discover plugins on disk (parse info.toml without compiling WASM)
-        let discovered = PluginRuntime::discover_plugins(&config.plugins_dirs).await;
 
         // An allowlist entry naming a plugin that was never discovered on
         // disk is inert rather than an error: the plugin may simply not be
