@@ -352,6 +352,13 @@ fn insert_language_context(context: &mut tera::Context, active_language: &str) {
 /// without `access content`, or one a plugin denies an item to, is not shown
 /// it, and a field they may not view is not used for its teaser.
 async fn render_promoted_listing(state: &AppState, viewer: &UserContext) -> String {
+    // A listing of items, same as a gather query's (B303): promoting,
+    // demoting or editing any item should purge this page from a CDN, so it
+    // carries the `items` tag rather than one `item:<uuid>` tag per row
+    // (`list_promoted` is a raw query, not `ItemService::load`, so nothing
+    // else records it).
+    crate::edge_cache::tags::record_items();
+
     // Over-fetch so a few items the viewer may not see do not leave the
     // listing short.
     let candidates = state

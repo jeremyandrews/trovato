@@ -6272,6 +6272,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "trovato_cdn_purge_cloudflare"
+version = "0.106.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
+name = "trovato_cdn_purge_http"
+version = "0.106.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "trovato-sdk",
+]
+
+[[package]]
 name = "trovato_comments"
 version = "0.106.0"
 dependencies = [

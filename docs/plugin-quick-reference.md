@@ -99,6 +99,7 @@ refuses the call with a documented error rather than truncating it.
 | **System** | `tap_perm` | - | `Vec<PermissionDefinition>` |
 | **System** | `tap_admin_nav` | - | `Vec<AdminNavDefinition>` |
 | **System** | `tap_cron` | - | `Result<(), String>` |
+| **System** | `tap_cache_purge` | `{tags: [string], all: bool}` | `Result<_, String>`, enqueue only, see [cdn.md](deployment/cdn.md) |
 | **System** | `tap_timer` | `TimerInput {name, payload, run_at, fired_at, repeat_secs, attempt}` | `{}` or `{"error": "..."}` |
 | **Lifecycle** | `tap_install` | - | `Result<(), String>` |
 | **Lifecycle** | `tap_enable` | - | `Result<(), String>` |

@@ -18,6 +18,7 @@ mod config_storage;
 mod content;
 mod cron;
 mod db;
+mod edge_cache;
 mod error;
 mod file;
 mod form;
@@ -770,6 +771,10 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         info!(workers = mail_workers.len(), "Mail workers started");
     }
 
+    // The edge cache purge drain (B303): turns pending tags into one
+    // `tap_cache_purge` dispatch a second, for as long as the process runs.
+    crate::edge_cache::spawn_drain(state.clone());
+
     // Create session layer
     let same_site = match config.cookie_same_site.as_str() {
         "lax" => SameSite::Lax,
@@ -955,6 +960,13 @@ async fn run_server(log_receiver: system_log::SystemLogReceiver) -> Result<()> {
         // page is drawn in the request's theme too.
         .layer(axum::middleware::from_fn(crate::middleware::scope_theme))
         .layer(session_layer)
+        // Edge caching headers (B303): outside the session layer, so it sees
+        // the session layer's `Set-Cookie`, and inside the security headers
+        // layer below.
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::set_cache_headers,
+        ))
         .layer(cors)
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),

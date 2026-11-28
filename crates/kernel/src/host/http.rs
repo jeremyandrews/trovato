@@ -409,6 +409,48 @@ fn check_url_policy(parsed: &Url) -> std::result::Result<(), UrlPolicyReject> {
     Ok(())
 }
 
+/// URLs a test explicitly allowed through the loopback fence (B303), set by
+/// [`allow_loopback_http_for_tests`]. Empty in every production process: the
+/// setter is `#[doc(hidden)]` and nothing in production or configuration
+/// calls it.
+static TEST_LOOPBACK_URLS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+/// Let plugin HTTP reach exactly one loopback URL, for a test that runs a
+/// mock server on `127.0.0.1`. Mirrors
+/// [`crate::services::ai_provider::allow_loopback_provider_for_tests`]
+/// exactly: only an `http://127.0.0.1:<port>` URL may be allowed, and the
+/// fence still refuses every other loopback or private address.
+///
+/// # Panics
+///
+/// Panics if `url` is not `http://127.0.0.1:<port>`.
+#[doc(hidden)]
+pub fn allow_loopback_http_for_tests(url: &str) {
+    let parsed = Url::parse(url).ok();
+    let is_loopback_literal = parsed.as_ref().is_some_and(|u| {
+        u.scheme() == "http"
+            && u.host() == Some(url::Host::Ipv4(std::net::Ipv4Addr::LOCALHOST))
+            && u.port().is_some()
+    });
+    assert!(
+        is_loopback_literal,
+        "only an http://127.0.0.1:<port> URL may be allowed, got {url}"
+    );
+    TEST_LOOPBACK_URLS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(url.trim_end_matches('/').to_string());
+}
+
+fn loopback_allowed_for_tests(url: &str) -> bool {
+    TEST_LOOPBACK_URLS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .contains(url.trim_end_matches('/'))
+}
+
 /// Validate a URL for safe outbound use before sending (scheme + string/literal
 /// SSRF protection).
 ///
@@ -418,6 +460,10 @@ fn check_url_policy(parsed: &Url) -> std::result::Result<(), UrlPolicyReject> {
 /// bypasses are closed by the client-level layers ([`ValidatingResolver`] and
 /// [`revalidating_redirect_policy`]) that every outbound client is built with.
 fn validate_url(raw_url: &str, plugin_name: &str) -> std::result::Result<(), i32> {
+    if loopback_allowed_for_tests(raw_url) {
+        return Ok(());
+    }
+
     let parsed = Url::parse(raw_url).map_err(|_| {
         warn!(plugin = %plugin_name, url = %raw_url, "malformed URL");
         host_errors::ERR_HTTP_INVALID_URL

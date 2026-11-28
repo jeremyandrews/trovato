@@ -953,6 +953,13 @@ impl ItemService {
 
         self.write_alias(&item, true).await;
 
+        // The CDN purge: a new item is a page a visitor had never asked for,
+        // but it can appear on every listing page that already is one.
+        crate::edge_cache::purge([
+            crate::edge_cache::tags::item_tag(item.id),
+            crate::edge_cache::tags::ITEMS.to_string(),
+        ]);
+
         // tap_item_insert is a notification: the row exists, and what a handler
         // returns is not read (BL-88). Failures are logged by the dispatcher.
         let item_json = serde_json::to_string(&item).context("serialize item")?;
@@ -1136,6 +1143,7 @@ impl ItemService {
     pub async fn load(&self, id: Uuid) -> Result<Option<Item>> {
         // Check cache first
         if let Some(item) = self.cached_item(id) {
+            crate::edge_cache::tags::record_item(id);
             return Ok(Some(item));
         }
 
@@ -1145,6 +1153,7 @@ impl ItemService {
         // Cache if found
         if let Some(ref i) = item {
             self.inner.cache.insert(id, i.clone());
+            crate::edge_cache::tags::record_item(id);
         }
 
         Ok(item)
@@ -1163,6 +1172,7 @@ impl ItemService {
         if let Some(item) = self.cached_item(id) {
             // Verify the item's stage is in our overlay list
             if stage_ids.contains(&item.stage_id) {
+                crate::edge_cache::tags::record_item(id);
                 return Ok(Some(item));
             }
         }
@@ -1174,6 +1184,7 @@ impl ItemService {
             // Only return if the item is in one of the visible stages
             if stage_ids.contains(&i.stage_id) {
                 self.inner.cache.insert(id, i.clone());
+                crate::edge_cache::tags::record_item(id);
                 return Ok(Some(i.clone()));
             }
         }
@@ -3353,6 +3364,10 @@ impl ItemService {
     pub fn invalidate(&self, id: Uuid) {
         self.inner.cache.invalidate(&id);
         bump(CacheKind::Items);
+        crate::edge_cache::purge([
+            crate::edge_cache::tags::item_tag(id),
+            crate::edge_cache::tags::ITEMS.to_string(),
+        ]);
     }
 
     /// Clear all cached items, here and on every other server.

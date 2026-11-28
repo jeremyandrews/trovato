@@ -149,6 +149,25 @@ impl RegistrationMode {
     }
 }
 
+/// Purge the CDN for a `site_config` write to `key`, unless it is state
+/// rather than configuration ([`crate::config_storage::RUNTIME_STATE_KEYS`])
+/// or a plugin variable (`plugin.<name>.<key>`, often written from cron: out
+/// of scope for B303, see the prompt's "Out of scope").
+///
+/// Every other key renders on every page (the front page path, a feature
+/// flag read while building chrome, and so on), so it purges `site`.
+///
+/// `pub(crate)` so a caller that writes through [`SiteConfig::set_in`] on its
+/// own transaction (one that must purge only after its own commit, as
+/// [`crate::timer::save_settings_recorded`] does) can call this directly
+/// rather than duplicate the same exclusion rule.
+pub(crate) fn purge_for_key(key: &str) {
+    if key.starts_with("plugin.") || crate::config_storage::RUNTIME_STATE_KEYS.contains(&key) {
+        return;
+    }
+    crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
+}
+
 impl SiteConfig {
     /// Get a configuration value by key (default tenant).
     pub async fn get(pool: &PgPool, key: &str) -> Result<Option<serde_json::Value>> {
@@ -200,6 +219,7 @@ impl SiteConfig {
         Self::set_in(pool, key, value).await?;
         // Every server drops its in-memory site config (the front page path).
         crate::cache::generation::bump(crate::cache::generation::CacheKind::SiteConfig);
+        purge_for_key(key);
 
         Ok(())
     }
@@ -294,6 +314,7 @@ impl SiteConfig {
             .await
             .context("failed to delete site config")?;
         crate::cache::generation::bump(crate::cache::generation::CacheKind::SiteConfig);
+        purge_for_key(key);
 
         Ok(result.rows_affected() > 0)
     }

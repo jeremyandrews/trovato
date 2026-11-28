@@ -355,6 +355,7 @@ pub async fn changed(pool: &PgPool) {
         tracing::warn!(error = %e, "failed to reload text formats after a change");
     }
     crate::cache::generation::bump(crate::cache::generation::CacheKind::TextFormats);
+    crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
 }
 
 /// Every problem with `format`, as `(field, message)`; empty when it may be

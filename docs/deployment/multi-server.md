@@ -142,6 +142,13 @@ A plugin's `tap_install` runs once per site, not once per server: the first
 server to start after the plugin is enabled claims it in `plugin_status`
 before running it, and the others skip it.
 
+## Behind a CDN
+
+The edge cache purge drain (B303) runs on every server; each one dispatches
+its own pending tags once a second to whichever purge plugin is enabled, so
+no coordination between servers is needed. See
+[docs/deployment/cdn.md](cdn.md).
+
 ## Testing it locally
 
 The repository has a two server harness: two kernels from one image behind

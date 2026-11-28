@@ -526,6 +526,7 @@ impl RedirectService {
             cache.clear();
         }
         bump(CacheKind::Redirects);
+        crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
     }
 
     /// Record one redirect write in the audit log.

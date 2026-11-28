@@ -32,6 +32,10 @@ members = [
 "plugins/trovato_seo",
     "plugins/trovato_page_builder",
     "plugins/trovato_captcha",
+    # Edge caching CDN purge (B303): one tap_cache_purge plugin per CDN. The
+    # plain HTTP POST plugin and the Cloudflare-specific one.
+    "plugins/trovato_cdn_purge_http",
+    "plugins/trovato_cdn_purge_cloudflare",
     "plugins/test_plugin_api",
     "plugins/test_form_taps",
     "plugins/test_form_taps_b",

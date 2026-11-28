@@ -12,6 +12,11 @@ use tower_sessions::cookie::time::Duration;
 use tower_sessions::{Expiry, SessionManagerLayer};
 use tower_sessions_redis_store::RedisStore;
 
+/// The session cookie's name: the only cookie the kernel sets, so this is
+/// also the one name `edge_cache` middleware checks for to tell an anonymous
+/// request from one that carries a session.
+pub const SESSION_COOKIE_NAME: &str = "id";
+
 /// Default session expiry (24 hours).
 pub const DEFAULT_SESSION_EXPIRY_HOURS: i64 = 24;
 
@@ -102,6 +107,7 @@ pub async fn create_session_layer(
     let store = RedisStore::new(pool);
 
     let session_layer = SessionManagerLayer::new(store)
+        .with_name(SESSION_COOKIE_NAME)
         .with_secure(cookie_secure.is_secure()) // COOKIE_SECURE, default always
         .with_http_only(true) // Cookie not accessible via JavaScript
         .with_same_site(same_site)

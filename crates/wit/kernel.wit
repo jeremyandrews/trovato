@@ -673,6 +673,16 @@ world plugin {
     // with an `error` string, is a failed attempt, retried with backoff.
     export tap-timer: func(timer-json: string) -> result<_, string>;
 
+    // Edge cache purge (B303): the kernel dispatches this once per drain of
+    // its pending set, to whichever enabled plugin implements it. The input
+    // is a JSON object `{"tags": [string, ...], "all": bool}`: the cache tags
+    // that changed, or `all: true` (tags then empty) when more changed than
+    // is worth naming, or a stage publish moved everything at once. A plugin
+    // only enqueues delivery on its own queue here (`queue.enqueue`);
+    // `tap-queue-worker` does the actual purge, so the plugin queue's retry
+    // and backoff cover a CDN that is briefly unreachable.
+    export tap-cache-purge: func(purge-json: string) -> result<_, string>;
+
     // User lifecycle — the login/logout/register/update/delete taps all receive
     // a JSON object carrying the affected user's id (`{"user_id": "..."}`).
     export tap-user-login: func(user-json: string) -> result<_, string>;

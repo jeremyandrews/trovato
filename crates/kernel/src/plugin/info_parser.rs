@@ -478,6 +478,9 @@ pub const KNOWN_TAPS: &[&str] = &[
     "tap_cron",
     "tap_queue_info",
     "tap_queue_worker",
+    // Edge cache purge (B303): the kernel dispatches this to whichever
+    // enabled plugin implements it when its pending purge set drains.
+    "tap_cache_purge",
     // A precise timer the plugin registered is due (added by B278).
     "tap_timer",
     // User

@@ -591,6 +591,7 @@ use `tap_form_validate` for that.
 | `tap_timer` | `TimerInput` | `{}`, or `{"error": "..."}` (fail) | One of the plugin's timers is due ([timer docs](plugin-timers.md)): **should be idempotent** |
 | `tap_queue_info` | None | `[{name, concurrency}]` | Declare owned queues + worker concurrency ([queue docs](plugin-queue.md)) |
 | `tap_queue_worker` | Job payload | Any (return) / trap (fail) | Process one queued job — **must be idempotent** ([queue docs](plugin-queue.md)) |
+| `tap_cache_purge` | `{tags: [string], all: bool}` | `Result<_, String>` | Edge cache purge (B303): the tags that changed, or `all: true` for everything. A notification: only enqueue delivery (`queue_push`/`queue_enqueue`) and let `tap_queue_worker` do the actual purge, so the plugin queue's retry and backoff cover a CDN that is briefly unreachable. See [docs/deployment/cdn.md](deployment/cdn.md). |
 | `tap_install` | None | `Result<(), String>` | First-time setup |
 | `tap_enable` | None | `Result<(), String>` | On plugin enable |
 | `tap_disable` | None | `Result<(), String>` | On plugin disable |

@@ -432,6 +432,11 @@ pub struct RuntimeConfig {
     /// precedence `UPDATE_CHECK` gives the environment over a site setting.
     pub cron_interval_override: Option<u64>,
 
+    /// Edge caching headers (B303): `EDGE_CACHE_MAX_AGE`,
+    /// `EDGE_CACHE_S_MAXAGE` and `EDGE_CACHE_TAG_HEADER`. See
+    /// `crate::middleware::edge_cache`.
+    pub edge_cache: crate::middleware::EdgeCacheConfig,
+
     /// Process-level overrides of the timer throttles (B278):
     /// `TIMER_MAX_CONCURRENT`, `TIMER_MAX_PER_PLUGIN`, `TIMER_MIN_REPEAT_SECS`
     /// and `TIMER_MAX_PAYLOAD_BYTES`. Each one set wins over the
@@ -976,6 +981,7 @@ impl Config {
                 .map(|raw| raw.trim().parse::<u64>())
                 .transpose()
                 .context("CRON_INTERVAL_SECS must be a valid non-negative integer")?,
+            edge_cache: crate::middleware::EdgeCacheConfig::from_lookup(get)?,
             timer_overrides: crate::timer::TimerOverrides::from_lookup(get)?,
         };
 

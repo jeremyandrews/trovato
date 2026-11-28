@@ -103,6 +103,7 @@ impl CategoryService {
         self.category_cache
             .insert(category.id.clone(), category.clone());
         bump(CacheKind::Categories);
+        crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
         self.audit(
             "create",
             "category",
@@ -123,6 +124,7 @@ impl CategoryService {
         if let Some(ref c) = category {
             self.category_cache.insert(id.to_string(), c.clone());
             bump(CacheKind::Categories);
+            crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
             self.audit(
                 "update",
                 "category",
@@ -141,6 +143,7 @@ impl CategoryService {
             self.category_cache.invalidate(id);
             self.tag_cache.invalidate(id);
             bump(CacheKind::Categories);
+            crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
             self.audit("delete", "category", id, serde_json::json!({}))
                 .await;
         }
@@ -362,6 +365,7 @@ impl CategoryService {
     pub fn invalidate_cache(&self, category_id: &str) {
         self.tag_cache.invalidate(category_id);
         bump(CacheKind::Categories);
+        crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
     }
 
     /// Clear all caches, here and on every other server.

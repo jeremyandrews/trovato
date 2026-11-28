@@ -541,6 +541,14 @@ file store (a read-write volume for `UPLOADS_DIR`, or an S3 bucket with
 Kubernetes, migrations run as their own step; see
 [docs/deployment/upgrades.md](docs/deployment/upgrades.md).
 
+## Behind a CDN
+
+`EDGE_CACHE_MAX_AGE` and `EDGE_CACHE_S_MAXAGE` (both unset by default, so
+nothing changes on upgrade) let anonymous pages be marked
+`Cache-Control: public` for a CDN, with a tag header a purge plugin
+(`trovato_cdn_purge_http`, `trovato_cdn_purge_cloudflare`) uses to tell the
+CDN what changed. See [docs/deployment/cdn.md](docs/deployment/cdn.md).
+
 ## Configuration Export/Import
 
 Trovato supports exporting and importing site configuration as YAML files:

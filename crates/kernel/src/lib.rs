@@ -17,6 +17,7 @@ pub mod config_storage;
 pub mod content;
 pub mod cron;
 pub mod db;
+pub mod edge_cache;
 pub mod error;
 pub mod file;
 pub mod form;

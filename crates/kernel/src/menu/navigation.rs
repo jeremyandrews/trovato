@@ -56,6 +56,7 @@ static CONFIG_MENUS: LazyLock<Cache<(Uuid, String), Arc<ConfigMenus>>> = LazyLoc
 pub fn invalidate_config_menus() {
     clear_local_config_menus();
     crate::cache::generation::bump(crate::cache::generation::CacheKind::Menus);
+    crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
 }
 
 /// Drop this server's cached config menus only: what another server's bump

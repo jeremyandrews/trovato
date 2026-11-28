@@ -319,6 +319,7 @@ pub async fn save_settings_recorded(
     tx.commit().await?;
     // Every server drops its in-memory site config, as `SiteConfig::set` does.
     crate::cache::generation::bump(crate::cache::generation::CacheKind::SiteConfig);
+    crate::models::site_config::purge_for_key(TIMER_SETTINGS_KEY);
     Ok(())
 }
 

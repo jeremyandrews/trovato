@@ -214,6 +214,9 @@ impl RoleService {
         let change = self.grants_event_in(&mut tx, role_id, diff).await?;
         tx.commit().await?;
         self.inner.permissions.invalidate_all();
+        // A permission change is site-wide (B303): what any page lets a
+        // viewer see or do can depend on it.
+        crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
         self.record_grants(role_id, change).await;
         Ok(())
     }
@@ -408,6 +411,9 @@ impl RoleService {
         }
         tx.commit().await?;
         self.inner.permissions.invalidate_all();
+        // A permission change is site-wide (B303): what any page lets a
+        // viewer see or do can depend on it.
+        crate::edge_cache::purge([crate::edge_cache::tags::SITE]);
         for (role_id, change) in changes {
             self.record_grants(role_id, change).await;
         }
