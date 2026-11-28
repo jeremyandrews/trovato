@@ -61,16 +61,36 @@ const MAX_MESSAGE: usize = 10_000;
 /// Prefix on the mail subject, so the owner can filter contact mail from the rest.
 const SUBJECT_PREFIX: &str = "[contact]";
 
-/// Register the two routes.
+/// The permission both routes ask, with Drupal's name, so a site can take the
+/// form away from some roles or all of them (jibnotes denied it to everyone).
 ///
-/// Both are public: `permission` is empty, which the kernel reads as "anybody",
-/// and a contact form that needs an account is not a contact form. `visible` is
-/// left on so the page appears in navigation like any other.
+/// Granted to the anonymous and authenticated roles when the plugin's
+/// migrations run (on enable, and on upgrade for a site that already has it
+/// enabled; `migrations/001_grant_contact_permission.sql`), so a site that does
+/// nothing keeps a form anybody can use, as before.
+const PERMISSION: &str = "access site-wide contact form";
+
+/// Declare [`PERMISSION`], so it is listed on the permissions page.
+#[plugin_tap]
+pub fn tap_perm() -> Vec<PermissionDefinition> {
+    vec![PermissionDefinition::new(
+        PERMISSION,
+        "Use the site-wide contact form",
+    )]
+}
+
+/// Register the two routes, both behind [`PERMISSION`]: a role without it gets
+/// 403 (401 when not signed in, the kernel's answer for every plugin route).
+/// `visible` is left on so the page appears in navigation like any other.
 #[plugin_tap]
 pub fn tap_menu() -> Vec<MenuRoute> {
     vec![
-        MenuRoute::api("GET", PATH, "show").title("Contact"),
-        MenuRoute::api("POST", PATH, "submit").title("Contact"),
+        MenuRoute::api("GET", PATH, "show")
+            .title("Contact")
+            .permission(PERMISSION),
+        MenuRoute::api("POST", PATH, "submit")
+            .title("Contact")
+            .permission(PERMISSION),
     ]
 }
 
@@ -336,14 +356,21 @@ mod tests {
     }
 
     #[test]
+    fn it_declares_the_permission_its_routes_ask() {
+        let perms = __inner_tap_perm();
+        assert_eq!(perms.len(), 1);
+        assert_eq!(perms[0].name, "access site-wide contact form");
+    }
+
+    #[test]
     fn the_menu_registers_one_path_for_two_methods() {
         let menus = __inner_tap_menu();
         assert_eq!(menus.len(), 2);
         assert!(menus.iter().all(|m| m.path == PATH));
         assert!(menus.iter().all(|m| m.handler_type == "api"));
         assert!(
-            menus.iter().all(|m| m.permission.is_empty()),
-            "a contact form that needs an account is not a contact form"
+            menus.iter().all(|m| m.permission == PERMISSION),
+            "both routes ask the one permission a site can take away"
         );
         let methods: Vec<&str> = menus.iter().map(|m| m.method.as_str()).collect();
         assert!(methods.contains(&"GET"), "{methods:?}");

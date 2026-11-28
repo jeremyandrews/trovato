@@ -69,6 +69,7 @@ const TILE_CHOICES: &[(&str, &[(&str, &str)])] = &[
             ("gather_query", "Gather query"),
             ("chat", "Chat"),
             ("language_switcher", "Language switcher"),
+            ("user_login", "User login"),
         ],
     ),
     (
@@ -147,6 +148,7 @@ impl TileFormData {
             }),
             "chat" => serde_json::json!({}),
             "language_switcher" => serde_json::json!({}),
+            "user_login" => serde_json::json!({}),
             _ => serde_json::json!({}),
         })
     }

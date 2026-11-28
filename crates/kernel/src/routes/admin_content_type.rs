@@ -562,6 +562,7 @@ async fn manage_fields(
     context.insert("content_type", &content_type);
     context.insert("fields", &content_type.fields);
     context.insert("field_type_options", FIELD_TYPE_OPTIONS);
+    field_index_context(&state, &type_name, &content_type.fields, &mut context).await;
     context.insert("category_options", &category_options(&state).await);
     context.insert("csrf_token", &csrf_token);
     context.insert("form_build_id", &form_build_id);
@@ -723,6 +724,13 @@ async fn rerender_field_list(
     let mut context = tera::Context::new();
     context.insert("content_type", &content_type);
     context.insert("fields", &content_type.fields);
+    field_index_context(
+        state,
+        &content_type.machine_name,
+        &content_type.fields,
+        &mut context,
+    )
+    .await;
     context.insert("field_type_options", FIELD_TYPE_OPTIONS);
     context.insert("category_options", &category_options(state).await);
     context.insert("csrf_token", &csrf_token);
@@ -768,6 +776,77 @@ struct FieldEditFormData {
     /// A category reference field's category.
     #[serde(default)]
     category: Option<String>,
+    /// "Filterable and sortable" (B207): present when checked.
+    #[serde(default)]
+    filterable: Option<String>,
+    /// Present when the form offered the checkbox at all (an indexable
+    /// field), so an unchecked box is told apart from no box.
+    #[serde(default)]
+    filterable_offered: Option<String>,
+}
+
+/// Each field's index column on the field list (B207): `field_indexes`, by
+/// field name, with whether the field is marked and its index's state and
+/// build progress; and `field_indexes_building`, so the page refreshes
+/// itself while a build runs.
+async fn field_index_context(
+    state: &AppState,
+    type_name: &str,
+    fields: &[trovato_sdk::types::FieldDefinition],
+    context: &mut tera::Context,
+) {
+    use crate::gather::field_index;
+    let used = field_index::fields_used_by_gathers(state.gather());
+    let statuses = field_index::statuses(state.db(), type_name)
+        .await
+        .unwrap_or_default();
+    let mut by_field = serde_json::Map::new();
+    let mut building = false;
+    for field in fields {
+        let available = crate::gather::field_sql::FieldKind::of(field).is_some();
+        let marked = available
+            && field_index::is_marked(
+                field,
+                used.contains(&(type_name.to_string(), field.field_name.clone())),
+            );
+        let status = statuses.iter().find(|s| s.field_name == field.field_name);
+        building |= status.is_some_and(|s| s.state == "queued" || s.state == "building");
+        by_field.insert(
+            field.field_name.clone(),
+            serde_json::json!({
+                "available": available,
+                "marked": marked,
+                "status": status,
+            }),
+        );
+    }
+    context.insert("field_indexes", &by_field);
+    context.insert("field_indexes_building", &building);
+}
+
+/// The "Filterable and sortable" facts the field form shows (B207): whether
+/// the field can have an index, whether it is marked, whether that is its
+/// own setting or the default, and its index's state.
+async fn filterable_context(
+    state: &AppState,
+    type_name: &str,
+    field: &trovato_sdk::types::FieldDefinition,
+    context: &mut tera::Context,
+) {
+    use crate::gather::field_index;
+    let available = crate::gather::field_sql::FieldKind::of(field).is_some();
+    let used = field_index::fields_used_by_gathers(state.gather())
+        .contains(&(type_name.to_string(), field.field_name.clone()));
+    let status = field_index::statuses(state.db(), type_name)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|s| s.field_name == field.field_name);
+    context.insert("filterable_available", &available);
+    context.insert("filterable", &field_index::is_marked(field, used));
+    context.insert("filterable_own", &field_index::has_own_setting(field));
+    context.insert("filterable_used_by_gathers", &used);
+    context.insert("field_index", &status);
 }
 
 /// The category a field holds tags of, when it is a category reference.
@@ -808,6 +887,7 @@ async fn edit_field_form(
     let mut context = tera::Context::new();
     context.insert("type_name", &type_name);
     context.insert("field", field);
+    filterable_context(&state, &type_name, field, &mut context).await;
     context.insert("field_category", &field_category(field));
     context.insert("category_options", &category_options(&state).await);
     context.insert("csrf_token", &csrf_token);
@@ -907,6 +987,7 @@ async fn edit_field_submit(
         context.insert("type_name", &type_name);
         context.insert("field", &edited_field);
         context.insert("field_category", &category);
+        filterable_context(&state, &type_name, field, &mut context).await;
         context.insert("category_options", &category_options(&state).await);
         context.insert("csrf_token", &csrf_token);
         context.insert("form_build_id", &form_build_id);
@@ -937,12 +1018,29 @@ async fn edit_field_submit(
         return render_server_error("Failed to update field.");
     }
 
+    if form.filterable_offered.is_some()
+        && let Err(e) = state
+            .content_types()
+            .set_field_setting(
+                &type_name,
+                &field_name,
+                crate::gather::field_index::SETTING,
+                serde_json::Value::Bool(form.filterable.is_some()),
+            )
+            .await
+    {
+        tracing::error!(error = %e, "failed to change the field's filterable setting");
+        return render_server_error("Failed to update field.");
+    }
+
     match state
         .content_types()
         .update_field(&type_name, &field_name, &form.label, required, cardinality)
         .await
     {
         Ok(_) => {
+            // Build or drop the field's index in the background (B207).
+            state.reconcile_field_indexes();
             tracing::info!(
                 content_type = %type_name,
                 field = %field_name,
@@ -990,6 +1088,8 @@ async fn delete_field_submit(
                 field = %field_name,
                 "field deleted"
             );
+            // Drop the deleted field's index, if it had one (B207).
+            state.reconcile_field_indexes();
             Redirect::to(&format!("/admin/structure/types/{type_name}/fields")).into_response()
         }
         Err(e) => {
@@ -1466,6 +1566,7 @@ pub(crate) async fn handle_ajax_add_field(
             <td><code>{name_esc}</code></td>
             <td>{type_esc}</td>
             <td>{no}</td>
+            <td class="field-index" data-field-index="none">{not_indexed}</td>
             <td class="operations">
                 <a href="/admin/structure/types/{ct_esc}/fields/{name_esc}/edit">{edit}</a>
             </td>
@@ -1475,6 +1576,7 @@ pub(crate) async fn handle_ajax_add_field(
         type_esc = html_escape(field_type),
         ct_esc = html_escape(type_name),
         no = html_escape(&tr("No", &[])),
+        not_indexed = html_escape(&tr("Not indexed", &[])),
         edit = html_escape(&tr(
             "Edit {name}",
             &[("name".to_string(), label.to_string())]

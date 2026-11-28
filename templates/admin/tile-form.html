@@ -51,6 +51,10 @@
             <p class="description">{{ t(s="One link per enabled language, to this same page in that language. Hidden automatically on a site with only one language.") }}</p>
         </div>
 
+        <div id="fields-user_login" class="tile-type-fields">
+            <p class="description">{{ t(s="The login form, for visitors who are not signed in. It signs in through the login page and returns to the page the visitor was on. Not shown to signed-in users or on the login page.") }}</p>
+        </div>
+
         {% if values.audience is defined and values.audience %}{% set audience = values.audience %}{% else %}{% set audience = "" %}{% endif %}
         {{ form::select(name="audience", label=t(s="Show to"), options=audience_options, value=audience, translate_options=true, hint=t(s="Who may see this tile, regardless of its other visibility rules."), errors=errs) }}
 

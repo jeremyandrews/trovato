@@ -8,6 +8,7 @@
 
 use super::access::ACCESS_COLUMNS;
 use super::extension::{FilterContext, GatherExtensionRegistry};
+use super::field_sql::{self, FieldKind};
 use super::handlers::is_safe_identifier;
 use super::types::{
     AggregateFunction, Conjunction, FilterGroup, FilterOperator, FilterValue, JoinType, NullsOrder,
@@ -18,6 +19,7 @@ use sea_query::{
     Alias, Asterisk, Cond, Expr, ExprTrait, Func, Iden, Order, PostgresQueryBuilder, Query,
     SelectStatement, SimpleExpr, extension::postgres::PgExpr,
 };
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use uuid::Uuid;
 
@@ -26,6 +28,14 @@ use uuid::Uuid;
 #[derive(Iden)]
 #[iden = "item"]
 struct ItemTable;
+
+/// The fewest equalities on served text fields worth asking a type's GIN
+/// over the whole copy column for at once (B207). Measured at a million
+/// items: three or more narrow the rows far below what any one field's
+/// B-tree reaches (five fields ANDed: 60 ms on B-trees, 15 ms with the
+/// GIN), while for two the planner, which underrates containment, takes the
+/// GIN even where a B-tree walk in date order is twenty times faster.
+pub(crate) const CONTAINMENT_MIN_EQUALITIES: usize = 3;
 
 /// Query builder for Gather queries.
 pub struct GatherQueryBuilder {
@@ -54,6 +64,17 @@ pub struct GatherQueryBuilder {
     /// record published column) and for always-published record types, leaving
     /// the emitted Item SQL untouched.
     record_published_column: Option<String>,
+    /// How each field of the definition's item type is read in SQL
+    /// ([`FieldKind`]), by field name. A field missing here is read as text,
+    /// or as a number when it is compared with one.
+    field_kinds: HashMap<String, FieldKind>,
+    /// The fields of the item type whose copy in `item.filter_values` and
+    /// index are ready ([`field_sql::read`]); every other field is read
+    /// from `item.fields`.
+    served: HashSet<String>,
+    /// Whether the item type's GIN over the whole copy is ready, so several
+    /// equalities can be asked of it at once.
+    type_gin: bool,
 }
 
 impl GatherQueryBuilder {
@@ -67,6 +88,9 @@ impl GatherQueryBuilder {
             tenant_id: None,
             viewer: None,
             record_published_column: None,
+            field_kinds: HashMap::new(),
+            served: HashSet::new(),
+            type_gin: false,
         }
     }
 
@@ -83,6 +107,9 @@ impl GatherQueryBuilder {
             tenant_id: None,
             viewer: None,
             record_published_column: None,
+            field_kinds: HashMap::new(),
+            served: HashSet::new(),
+            type_gin: false,
         }
     }
 
@@ -106,6 +133,21 @@ impl GatherQueryBuilder {
     /// mandatory predicate (Story 3.4). Applied by `build`/`build_count`.
     pub fn with_viewer(mut self, viewer: Option<UserContext>) -> Self {
         self.viewer = viewer;
+        self
+    }
+
+    /// Set how each field of the item type is read ([`FieldKind`]), so a
+    /// filter or sort on it emits the expression its index covers.
+    pub fn with_field_kinds(mut self, kinds: HashMap<String, FieldKind>) -> Self {
+        self.field_kinds = kinds;
+        self
+    }
+
+    /// Set which fields are served from the copy column and its indexes,
+    /// and whether the type's GIN over the whole copy is ready.
+    pub fn with_served(mut self, served: HashSet<String>, type_gin: bool) -> Self {
+        self.served = served;
+        self.type_gin = type_gin;
         self
     }
 
@@ -537,16 +579,57 @@ impl GatherQueryBuilder {
 
     /// Add WHERE conditions from filters.
     fn add_filters(&self, query: &mut SelectStatement) {
+        let mut equalities: Vec<(String, String)> = Vec::new();
         for filter in &self.definition.filters {
             if let Some(condition) = self.build_filter_condition(filter) {
                 query.and_where(condition);
+                if let Some(pair) = self.served_text_equality(filter) {
+                    equalities.push(pair);
+                }
             }
+        }
+        if let Some(containment) = self.combined_containment(&equalities) {
+            query.and_where(containment);
         }
         for group in &self.definition.filter_groups {
             if let Some(condition) = self.build_group_condition(group) {
                 query.cond_where(condition);
             }
         }
+    }
+
+    /// `(field, value)` when `filter` is an equality on a served text field:
+    /// the comparison [`Self::combined_containment`] can repeat.
+    fn served_text_equality(&self, filter: &QueryFilter) -> Option<(String, String)> {
+        if filter.operator != FilterOperator::Equals {
+            return None;
+        }
+        let key = self.top_level_key(&filter.field)?;
+        if !self.served.contains(key) || self.field_kinds.get(key) != Some(&FieldKind::Text) {
+            return None;
+        }
+        Some((key.to_string(), filter.value.as_string()?))
+    }
+
+    /// The equalities in `pairs`, repeated as one containment of the copy
+    /// column, which the type's GIN answers by intersecting the fields'
+    /// lists of items: `filter_values @> {"a": "x", "b": "y", "c": "z"}`. It
+    /// matches exactly the rows the equalities do, since a served text
+    /// field's copy is always the same text as a JSON string. `None` below
+    /// [`CONTAINMENT_MIN_EQUALITIES`] or without the GIN.
+    fn combined_containment(&self, pairs: &[(String, String)]) -> Option<SimpleExpr> {
+        if !self.type_gin || pairs.len() < CONTAINMENT_MIN_EQUALITIES {
+            return None;
+        }
+        let placeholders: Vec<(String, String)> = pairs
+            .iter()
+            .enumerate()
+            .map(|(i, (field, _))| (field.clone(), format!("${}::text", i + 1)))
+            .collect();
+        Some(Expr::cust_with_values(
+            field_sql::containment_sql(&self.definition.base_table, &placeholders),
+            pairs.iter().map(|(_, value)| value.clone()),
+        ))
     }
 
     /// A filter group's condition, or `None` when it places no constraint: it
@@ -635,6 +718,9 @@ impl GatherQueryBuilder {
 
     /// Build a single filter condition.
     fn build_filter_condition(&self, filter: &QueryFilter) -> Option<SimpleExpr> {
+        if let Some(handled) = self.typed_field_condition(filter) {
+            return handled;
+        }
         let field_expr = self.field_expr(&filter.field);
 
         match &filter.operator {
@@ -828,6 +914,204 @@ impl GatherQueryBuilder {
         }
     }
 
+    /// The key of a top level field (`fields.city` is `city`), when `field`
+    /// names one and the key is a safe identifier. A nested path
+    /// (`fields.meta.order`) is not one: it has no index and keeps the
+    /// generic text reader.
+    fn top_level_key<'a>(&self, field: &'a str) -> Option<&'a str> {
+        let key = field.strip_prefix("fields.")?;
+        (!key.contains('.')
+            && is_safe_identifier(key)
+            && is_safe_identifier(&self.definition.base_table))
+        .then_some(key)
+    }
+
+    /// How `key` is read: its declared kind, or, for a field this gather's
+    /// item type does not declare, a number when it is compared with one and
+    /// text otherwise.
+    fn kind_for(&self, key: &str, value: Option<&FilterValue>) -> Option<FieldKind> {
+        if let Some(kind) = self.field_kinds.get(key) {
+            return Some(*kind);
+        }
+        let numeric =
+            |v: &FilterValue| matches!(v, FilterValue::Integer(_) | FilterValue::Float(_));
+        match value {
+            Some(FilterValue::List(items)) if !items.is_empty() && items.iter().all(numeric) => {
+                Some(FieldKind::Number)
+            }
+            Some(v) if numeric(v) => Some(FieldKind::Number),
+            _ => None,
+        }
+    }
+
+    /// The SQL reader of `key` as `kind` on the base table: the one
+    /// expression [`field_sql::index_ddl`] indexes.
+    fn reader_expr(&self, key: &str, kind: FieldKind) -> SimpleExpr {
+        Expr::cust(self.read(key, kind))
+    }
+
+    /// The containment target of a list field: its list reader for a top
+    /// level key, so its GIN index is used; a nested path keeps the plain
+    /// extraction it always had. Both names are validated by the caller.
+    fn list_target(&self, table: &str, path: &str) -> String {
+        if path.contains('.') {
+            format!("{table}.fields->'{path}'")
+        } else if table == self.definition.base_table {
+            self.read(path, FieldKind::List)
+        } else {
+            field_sql::reader(table, path, FieldKind::List)
+        }
+    }
+
+    /// Whether the list field `path` on `table` contains `$1`: on the
+    /// field's index (the `text[]` form of the copy) when the base table's
+    /// field is served, on its jsonb reader otherwise.
+    fn list_contains(&self, table: &str, path: &str) -> String {
+        if path.contains('.') || table != self.definition.base_table {
+            return format!(
+                "{} @> json_build_array($1::text)::jsonb",
+                self.list_target(table, path)
+            );
+        }
+        let served =
+            self.served.contains(path) && self.field_kinds.get(path) == Some(&FieldKind::List);
+        field_sql::list_contains(table, path, served, "$1")
+    }
+
+    /// One overlap condition for "contains any of `n` values" (`$1`..`$n`)
+    /// on a served list field of the base table; `None` when the field is
+    /// not served, and the caller ORs [`Self::list_contains`] instead.
+    fn list_overlaps(&self, table: &str, path: &str, n: usize) -> Option<String> {
+        let served = !path.contains('.')
+            && table == self.definition.base_table
+            && self.served.contains(path)
+            && self.field_kinds.get(path) == Some(&FieldKind::List);
+        if !served || n < 2 {
+            return None;
+        }
+        let placeholders: Vec<String> = (1..=n).map(|i| format!("${i}")).collect();
+        field_sql::list_overlaps(table, path, true, &placeholders)
+    }
+
+    /// The SQL reader of `key` as `kind` on the base table, from the copy
+    /// column when the field is served, from `fields` otherwise.
+    fn read(&self, key: &str, kind: FieldKind) -> String {
+        field_sql::read(
+            &self.definition.base_table,
+            key,
+            kind,
+            self.served.contains(key) && self.field_kinds.get(key) == Some(&kind),
+        )
+    }
+
+    /// A condition on a top level field read as a number or a list, or on a
+    /// text field compared with a number. `None` when the generic path below
+    /// handles it (text compared with text, and every operator a typed reader
+    /// has no meaning for); `Some(None)` places no constraint.
+    fn typed_field_condition(&self, filter: &QueryFilter) -> Option<Option<SimpleExpr>> {
+        let key = self.top_level_key(&filter.field)?;
+        match self.kind_for(key, Some(&filter.value))? {
+            FieldKind::Number => self.number_condition(key, filter),
+            FieldKind::List => self.list_condition(key, filter),
+            FieldKind::Text => self.text_with_number_condition(key, filter),
+        }
+    }
+
+    fn number_condition(&self, key: &str, filter: &QueryFilter) -> Option<Option<SimpleExpr>> {
+        let expr = self.reader_expr(key, FieldKind::Number);
+        let one = || number_value(&filter.value);
+        Some(Some(match filter.operator {
+            FilterOperator::Equals => expr.eq(one()?),
+            FilterOperator::NotEquals => expr.ne(one()?),
+            FilterOperator::GreaterThan => expr.gt(one()?),
+            FilterOperator::LessThan => expr.lt(one()?),
+            FilterOperator::GreaterOrEqual => expr.gte(one()?),
+            FilterOperator::LessOrEqual => expr.lte(one()?),
+            FilterOperator::In | FilterOperator::NotIn => {
+                let values: Vec<SimpleExpr> = match &filter.value {
+                    FilterValue::List(items) => {
+                        items.iter().map(number_value).collect::<Option<_>>()?
+                    }
+                    v => vec![number_value(v)?],
+                };
+                if values.is_empty() {
+                    return Some(None);
+                }
+                if filter.operator == FilterOperator::In {
+                    expr.is_in(values)
+                } else {
+                    expr.is_not_in(values)
+                }
+            }
+            FilterOperator::IsNull => expr.is_null(),
+            FilterOperator::IsNotNull => expr.is_not_null(),
+            _ => return None,
+        }))
+    }
+
+    /// Whether the list field holds any of `values`: one overlap when the
+    /// field is served, a containment for each value, ORed, otherwise.
+    fn contains_any(&self, key: &str, values: &[String]) -> SimpleExpr {
+        if let Some(sql) = self.list_overlaps(&self.definition.base_table, key, values.len()) {
+            return Expr::cust_with_values(sql, values.iter().cloned());
+        }
+        let contains = self.list_contains(&self.definition.base_table, key);
+        let mut cond = Cond::any();
+        for value in values {
+            cond = cond.add(Expr::cust_with_values(contains.clone(), [value.clone()]));
+        }
+        cond.into()
+    }
+
+    fn list_condition(&self, key: &str, filter: &QueryFilter) -> Option<Option<SimpleExpr>> {
+        let values = self.extract_string_list(&filter.value);
+        Some(match filter.operator {
+            FilterOperator::Equals | FilterOperator::In => {
+                (!values.is_empty()).then(|| self.contains_any(key, &values))
+            }
+            FilterOperator::NotEquals | FilterOperator::NotIn => {
+                (!values.is_empty()).then(|| self.contains_any(key, &values).not())
+            }
+            FilterOperator::IsNull => Some(self.reader_expr(key, FieldKind::List).is_null()),
+            FilterOperator::IsNotNull => Some(self.reader_expr(key, FieldKind::List).is_not_null()),
+            _ => return None,
+        })
+    }
+
+    /// A text field compared with a number: compared with the number's text,
+    /// as `text = text`. (Comparing the text reader with an integer is a
+    /// PostgreSQL error, `operator does not exist: text >= integer`.)
+    fn text_with_number_condition(
+        &self,
+        key: &str,
+        filter: &QueryFilter,
+    ) -> Option<Option<SimpleExpr>> {
+        let text = match &filter.value {
+            FilterValue::Integer(v) => v.to_string(),
+            FilterValue::Float(v) => v.to_string(),
+            _ => return None,
+        };
+        let expr = self.reader_expr(key, FieldKind::Text);
+        Some(Some(match filter.operator {
+            FilterOperator::Equals => expr.eq(text),
+            FilterOperator::NotEquals => expr.ne(text),
+            FilterOperator::GreaterThan => expr.gt(text),
+            FilterOperator::LessThan => expr.lt(text),
+            FilterOperator::GreaterOrEqual => expr.gte(text),
+            FilterOperator::LessOrEqual => expr.lte(text),
+            _ => return None,
+        }))
+    }
+
+    /// The `ORDER BY` expression of a top level field with a declared kind:
+    /// its reader, so the sort reads the index. `None` for an undeclared or
+    /// nested field, which keeps [`Self::jsonb_sort_expr`].
+    fn typed_sort_expr(&self, field: &str) -> Option<SimpleExpr> {
+        let key = self.top_level_key(field)?;
+        let kind = self.field_kinds.get(key)?;
+        Some(self.reader_expr(key, *kind))
+    }
+
     /// Build expression for a field (handles JSONB paths).
     fn field_expr(&self, field: &str) -> SimpleExpr {
         if let Some(jsonb_path) = field.strip_prefix("fields.") {
@@ -842,6 +1126,17 @@ impl GatherQueryBuilder {
     /// Validates table and path components against SQL identifier rules
     /// (defense-in-depth). Returns NULL expression if validation fails.
     fn jsonb_extract_expr(&self, table: &str, path: &str) -> SimpleExpr {
+        // A served text field compares its copy: the same text, from the
+        // row instead of the compressed document, and the expression its
+        // index covers.
+        if table == self.definition.base_table
+            && self.served.contains(path)
+            && self.field_kinds.get(path) == Some(&FieldKind::Text)
+            && is_safe_identifier(table)
+            && is_safe_identifier(path)
+        {
+            return Expr::cust(self.read(path, FieldKind::Text));
+        }
         Self::cust_or_null(self.jsonb_path_sql(table, path))
     }
 
@@ -1068,26 +1363,17 @@ impl GatherQueryBuilder {
                 Some(cond.into())
             }
         } else {
-            // Exact membership: field->'path' @> json_build_array($uuid::text)::jsonb
+            // Exact membership, on the list field's index when it has one.
+            let contains = self.list_contains(table, jsonb_path);
             if tag_ids.len() == 1 {
-                Some(Expr::cust_with_values(
-                    format!(
-                        "{table}.fields->'{jsonb_path}' @> \
-                         json_build_array($1::text)::jsonb"
-                    ),
-                    [tag_ids[0]],
-                ))
+                Some(Expr::cust_with_values(contains, [tag_ids[0]]))
+            } else if let Some(sql) = self.list_overlaps(table, jsonb_path, tag_ids.len()) {
+                Some(Expr::cust_with_values(sql, tag_ids))
             } else {
                 // OR: item matches any of the specified tags.
                 let mut cond = Cond::any();
                 for uuid in tag_ids {
-                    cond = cond.add(Expr::cust_with_values(
-                        format!(
-                            "{table}.fields->'{jsonb_path}' @> \
-                             json_build_array($1::text)::jsonb"
-                        ),
-                        [uuid],
-                    ));
+                    cond = cond.add(Expr::cust_with_values(contains.clone(), [uuid]));
                 }
                 Some(cond.into())
             }
@@ -1124,6 +1410,7 @@ impl GatherQueryBuilder {
         jsonb_path: &str,
         root_uuid: Uuid,
     ) -> SimpleExpr {
+        let target = self.list_target(table, jsonb_path);
         Expr::cust_with_values(
             format!(
                 "EXISTS (\
@@ -1134,7 +1421,7 @@ impl GatherQueryBuilder {
                     JOIN td ON h.parent_id = td.id\
                 ) \
                 SELECT 1 FROM td \
-                WHERE {table}.fields->'{jsonb_path}' \
+                WHERE {target} \
                       @> json_build_array(td.id::text)::jsonb\
             )"
             ),
@@ -1179,7 +1466,9 @@ impl GatherQueryBuilder {
                 }
             } else if sort.field.starts_with("fields.") {
                 let jsonb_path = &sort.field[7..];
-                let expr = self.jsonb_sort_expr(&self.definition.base_table, jsonb_path);
+                let expr = self.typed_sort_expr(&sort.field).unwrap_or_else(|| {
+                    self.jsonb_sort_expr(&self.definition.base_table, jsonb_path)
+                });
                 if let Some(nulls) = null_order {
                     query.order_by_expr_with_nulls(expr, order, nulls);
                 } else {
@@ -1261,14 +1550,35 @@ impl GatherQueryBuilder {
 /// key supplied at query time — PostgreSQL accepts either as the right-hand
 /// side of `->`/`->>`.
 pub(super) fn field_value_text_sql(column: &str, key: &str) -> String {
-    format!("COALESCE({column}->{key}->>'value', {column}->>{key})")
+    field_sql::text_sql(column, key)
 }
 
 /// The `jsonb` twin of [`field_value_text_sql`], for `ORDER BY`: reads the
 /// same payload but as `jsonb` rather than text, so a wrapped number still
 /// sorts numerically.
 fn field_value_jsonb_sql(column: &str, key: &str) -> String {
-    format!("COALESCE({column}->{key}->'value', {column}->{key})")
+    field_sql::json_sql(column, key)
+}
+
+/// A filter value as a SQL number: an integer, a float, or a string that
+/// spells one. `None` for anything else.
+fn number_value(value: &FilterValue) -> Option<SimpleExpr> {
+    match value {
+        FilterValue::Integer(v) => Some((*v).into()),
+        FilterValue::Float(v) if v.is_finite() => Some((*v).into()),
+        FilterValue::String(s) => {
+            let s = s.trim();
+            if let Ok(v) = s.parse::<i64>() {
+                Some(v.into())
+            } else {
+                s.parse::<f64>()
+                    .ok()
+                    .filter(|v| v.is_finite())
+                    .map(Into::into)
+            }
+        }
+        _ => None,
+    }
 }
 
 /// Escape SQL LIKE wildcard characters (`%`, `_`, `\`) in a value.
