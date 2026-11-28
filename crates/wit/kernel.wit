@@ -469,6 +469,27 @@ interface vocabulary {
     list-owned: func(owner-type: string, owner-id: string) -> result<string, string>;
 }
 
+/// Precise timers (B278): work due at a known second, not on the next cron run.
+///
+/// A plugin sets, cancels and reads its **own** timers only: the owner is the
+/// calling plugin, injected by the kernel, so no call can name another owner.
+/// `set` takes `{"name", "run_at", "repeat_secs"?, "payload"?}` (`run_at` in
+/// Unix seconds, UTC); setting a name again replaces that timer, so it is
+/// idempotent. When a timer is due the kernel dispatches `tap-timer` to its
+/// plugin, once across every kernel instance. `get` returns the timer as JSON,
+/// or `none`; `cancel` says whether there was one.
+///
+/// Refused, each with its own error code: a bad name or time, a payload over
+/// the site's limit, a repeat under the site's minimum, and a plugin already
+/// holding as many timers as the site allows.
+///
+/// Added by B278, after 0.106.0: a new interface; no existing signature changed.
+interface timer {
+    set: func(timer-json: string) -> result<_, string>;
+    cancel: func(name: string) -> result<bool, string>;
+    get: func(name: string) -> result<option<string>, string>;
+}
+
 /// The plugin world — all imports and exports for a Trovato plugin.
 /// All tap functions use full-serialization (JSON in, JSON out).
 ///
@@ -516,6 +537,7 @@ world plugin {
     import text-format;
     import query;
     import vocabulary;
+    import timer;
 
     // --- Tap export naming convention (PF-3 / D-1, sub-decision 1) ----------
     // Host *import* fields above are kebab-case and match these WIT identifiers
@@ -646,6 +668,10 @@ world plugin {
     export tap-cron: func() -> result<_, string>;
     export tap-queue-info: func() -> string;
     export tap-queue-worker: func(item-json: string) -> result<_, string>;
+    // A precise timer the plugin set is due (B278): `{"name", "payload",
+    // "run_at", "fired_at", "repeat_secs", "attempt"}`. A trap, or an object
+    // with an `error` string, is a failed attempt, retried with backoff.
+    export tap-timer: func(timer-json: string) -> result<_, string>;
 
     // User lifecycle — the login/logout/register/update/delete taps all receive
     // a JSON object carrying the affected user's id (`{"user_id": "..."}`).

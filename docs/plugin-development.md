@@ -588,6 +588,7 @@ use `tap_form_validate` for that.
 | `tap_perm` | None | `Vec<PermissionDefinition>` | Define permissions |
 | `tap_admin_nav` | None | `Vec<AdminNavDefinition>` | Admin sidebar links and dashboard cards ([below](#admin-sidebar-links-and-dashboard-cards)) |
 | `tap_cron` | None | `Result<(), String>` | Background tasks |
+| `tap_timer` | `TimerInput` | `{}`, or `{"error": "..."}` (fail) | One of the plugin's timers is due ([timer docs](plugin-timers.md)): **should be idempotent** |
 | `tap_queue_info` | None | `[{name, concurrency}]` | Declare owned queues + worker concurrency ([queue docs](plugin-queue.md)) |
 | `tap_queue_worker` | Job payload | Any (return) / trap (fail) | Process one queued job — **must be idempotent** ([queue docs](plugin-queue.md)) |
 | `tap_install` | None | `Result<(), String>` | First-time setup |
@@ -1131,6 +1132,31 @@ exist, `ERR_TEXT_FORMAT_TOO_LARGE` (-72) when the result is larger than the
 output buffer. Filter with the format the text was written in, and when the
 author's format is not one the viewer's request may use, fall back to
 `plain_text`, which is always allowed and escapes everything.
+
+
+### Timers
+
+Declare `timer` in `host_interfaces` and `tap_timer` in `taps`. A timer runs
+work at a known Unix second, once or every `repeat_secs`, on exactly one
+server; the kernel calls `tap_timer` with its name and payload. Use it for
+work due at a time you know, and `tap_cron` for routine sweeps.
+
+```rust
+use trovato_sdk::host;
+use trovato_sdk::types::TimerRequest;
+
+host::timer_set(&TimerRequest {
+    name: format!("close:{poll_id}"),
+    run_at: closes_at,
+    repeat_secs: None,
+    payload: serde_json::json!({ "poll": poll_id }),
+})?;
+host::timer_cancel(&format!("close:{poll_id}"))?;
+```
+
+Setting a name again replaces the timer. A plugin sees and changes only its
+own timers. Errors -95 to -98 say which limit refused it. The whole contract,
+retries and the exactly once guarantee are in [plugin-timers.md](plugin-timers.md).
 
 ---
 

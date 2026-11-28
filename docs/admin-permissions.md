@@ -261,6 +261,8 @@ neither.
 | `/admin/config/site/maintenance`, the maintenance mode toggle | POST | `administer site` |
 | `/admin/reports/cron`, the cron report and its Run now button | GET, POST | `administer site` |
 | `/admin/reports/log`, the site log | GET | `administer site` |
+| `/admin/reports/timers`, the timers report | GET | `view timers` or `administer timers` |
+| `/admin/reports/timers/settings`, `/admin/reports/timers/{id}/edit` and the row actions (pause, resume, run now, cancel) | GET, POST | `administer timers` |
 
 While maintenance mode is on, a signed-in user without `bypass maintenance mode`
 gets the maintenance page like an anonymous visitor. Administrators hold it

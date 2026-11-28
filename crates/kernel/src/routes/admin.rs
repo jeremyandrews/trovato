@@ -596,6 +596,10 @@ struct CommentSettingsForm {
     token: String,
     /// `published` or `pending`.
     default_status: String,
+    /// The "E-mail content authors about new comments" checkbox: posted as
+    /// `1` when ticked, absent when not.
+    #[serde(default)]
+    notify_authors: Option<String>,
 }
 
 /// A comment as the moderation list renders it.
@@ -735,6 +739,10 @@ async fn list_comments(
     context.insert("comments", &rows);
     context.insert("status_options", &filters);
     context.insert("default_status_pending", &default_status.awaits_review());
+    context.insert(
+        "notify_authors",
+        &crate::models::comment::notify_authors(state.db()).await,
+    );
     context.insert(
         "default_status_options",
         &[
@@ -1064,16 +1072,24 @@ async fn save_comment_settings(
         }
     };
 
-    match SiteConfig::set(
-        state.db(),
-        crate::models::comment::DEFAULT_STATUS_KEY,
-        serde_json::Value::String(value.to_string()),
-    )
-    .await
-    {
+    let saved = async {
+        SiteConfig::set(
+            state.db(),
+            crate::models::comment::DEFAULT_STATUS_KEY,
+            serde_json::Value::String(value.to_string()),
+        )
+        .await?;
+        SiteConfig::set(
+            state.db(),
+            crate::models::comment::NOTIFY_AUTHORS_KEY,
+            serde_json::Value::Bool(form.notify_authors.is_some()),
+        )
+        .await
+    };
+    match saved.await {
         Ok(_) => Redirect::to("/admin/content/comments").into_response(),
         Err(e) => {
-            tracing::error!(error = %e, "failed to save comment default status");
+            tracing::error!(error = %e, "failed to save comment settings");
             render_server_error("Failed to save setting")
         }
     }
@@ -1162,6 +1178,7 @@ pub fn router() -> Router<AppState> {
         .merge(super::admin_search_report::router())
         // The cron report and the site log (B107)
         .merge(super::admin_reports::router())
+        .merge(super::admin_timers::router())
         .merge(super::admin_who_can::router())
         // Access rules (B108)
         .merge(super::admin_access_rules::router())
