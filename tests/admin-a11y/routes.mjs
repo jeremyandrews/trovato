@@ -40,6 +40,7 @@ export const EXPECTED_UNSEEDED = new Map([
   ['/admin/structure/records/{type}', 'no record type is defined'],
   ['/admin/structure/records/{type}/{id}', 'no record type is defined'],
   ['/admin/structure/tiles/{id}/edit', 'no tile is placed'],
+  ['/admin/structure/tiles/{id}/delete', 'no tile is placed'],
   ['/admin/people/rules/{id}/edit', 'no access rule is defined'],
   ['/admin/people/rules/{id}/delete', 'no access rule is defined'],
   ['/admin/system/ai-providers/{id}/edit', 'no AI provider is configured'],
