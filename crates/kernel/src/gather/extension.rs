@@ -561,10 +561,13 @@ mod tests {
 
         registry.apply_declarations(vec![("plugin".to_string(), decl)]);
 
+        // Plus the built-in "jsonb_array_contains" extension (B302), which a
+        // multi value List field's Gather filter reaches with no plugin.
         let names = registry.filter_names();
-        assert_eq!(names.len(), 2);
+        assert_eq!(names.len(), 3);
         assert!(names.contains(&"alpha"));
         assert!(names.contains(&"beta"));
+        assert!(names.contains(&"jsonb_array_contains"));
     }
 
     #[test]
@@ -624,7 +627,9 @@ mod tests {
         for w in &warnings {
             assert!(w.contains("invalid"));
         }
-        assert!(registry.filter_names().is_empty());
+        // Nothing from this declaration registered, but the built-in
+        // "jsonb_array_contains" extension (B302) is always there.
+        assert_eq!(registry.filter_names(), vec!["jsonb_array_contains"]);
     }
 
     #[test]
