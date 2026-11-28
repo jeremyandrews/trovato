@@ -78,12 +78,21 @@ impl EdgeCacheConfig {
                 .context("EDGE_CACHE_S_MAXAGE must be a non-negative number of seconds")?,
             None => 0,
         };
-        let tag_header = lookup("EDGE_CACHE_TAG_HEADER")
-            .map(|v| v.trim().to_string())
-            .filter(|v| !v.is_empty())
-            .unwrap_or_else(|| DEFAULT_TAG_HEADER.to_string());
+        // A value that is present but blank (or all whitespace) is a mistake
+        // to report, not a reason to fall back to the default: only an
+        // *absent* setting takes the default.
+        let tag_header = match lookup("EDGE_CACHE_TAG_HEADER") {
+            Some(raw) => raw.trim().to_string(),
+            None => DEFAULT_TAG_HEADER.to_string(),
+        };
         if !is_valid_header_token(&tag_header) {
             anyhow::bail!("EDGE_CACHE_TAG_HEADER ({tag_header:?}) is not a valid HTTP header name");
+        }
+        if RESERVED_TAG_HEADER_NAMES.contains(&tag_header.to_ascii_lowercase().as_str()) {
+            anyhow::bail!(
+                "EDGE_CACHE_TAG_HEADER ({tag_header:?}) would overwrite a header this response \
+                 already sets"
+            );
         }
 
         Ok(Self {
@@ -93,6 +102,16 @@ impl EdgeCacheConfig {
         })
     }
 }
+
+/// Header names this middleware, or the response it decorates, already owns:
+/// a tag header configured to one of these would silently overwrite it.
+const RESERVED_TAG_HEADER_NAMES: &[&str] = &[
+    "cache-control",
+    "vary",
+    "content-length",
+    "content-type",
+    "set-cookie",
+];
 
 /// Whether `s` is a legal HTTP header name (RFC 7230 `token`).
 fn is_valid_header_token(s: &str) -> bool {
@@ -187,11 +206,17 @@ pub(crate) fn decide(input: &DecisionInput) -> Decision {
 }
 
 /// Whether `headers` carries a `Cookie` header naming `name`.
+///
+/// A request may legally repeat the `Cookie` field (split across more than
+/// one header line), so this reads every one of them with [`HeaderMap::get_all`]
+/// rather than only the first (`HeaderMap::get`): a session cookie carried
+/// in a second `Cookie` line must still mark the response private.
 fn request_has_cookie(headers: &HeaderMap, name: &str) -> bool {
     headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .is_some_and(|raw| {
+        .get_all(header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|raw| {
             raw.split(';').any(|pair| {
                 pair.split_once('=')
                     .map(|(k, _)| k.trim() == name)
@@ -200,39 +225,84 @@ fn request_has_cookie(headers: &HeaderMap, name: &str) -> bool {
         })
 }
 
-/// Merge `Cookie` into any existing `Vary` header, without duplicating it.
+/// Merge `Cookie` into any existing `Vary` header, without duplicating it and
+/// without dropping any other variation dimension a handler already set.
+///
+/// A handler may send more than one `Vary` field (rather than one
+/// comma-joined value), so this reads every one of them with
+/// [`HeaderMap::get_all`] and re-joins them into the single merged header
+/// this function leaves behind.
 fn merge_vary_cookie(headers: &mut HeaderMap) {
     const COOKIE: &str = "Cookie";
-    let merged = match headers.get(header::VARY).and_then(|v| v.to_str().ok()) {
-        Some(existing)
-            if existing
-                .split(',')
-                .any(|v| v.trim().eq_ignore_ascii_case(COOKIE)) =>
-        {
-            return;
+    let mut values: Vec<String> = Vec::new();
+    for existing in headers
+        .get_all(header::VARY)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+    {
+        for part in existing.split(',') {
+            let part = part.trim();
+            if !part.is_empty() && !values.iter().any(|v| v.eq_ignore_ascii_case(part)) {
+                values.push(part.to_string());
+            }
         }
-        Some(existing) => format!("{existing}, {COOKIE}"),
-        None => COOKIE.to_string(),
-    };
-    if let Ok(value) = HeaderValue::from_str(&merged) {
+    }
+    if !values.iter().any(|v| v.eq_ignore_ascii_case(COOKIE)) {
+        values.push(COOKIE.to_string());
+    }
+    if let Ok(value) = HeaderValue::from_str(&values.join(", ")) {
+        // `insert` (unlike `append`) replaces every existing value for this
+        // header with the one merged value built above.
         headers.insert(header::VARY, value);
     }
 }
 
+/// Fastly and Varnish's `Surrogate-Key` convention separates keys with
+/// whitespace, not commas: a comma is a legal character inside a key there,
+/// so joining with one would merge every tag into a single, unpurgeable key.
+/// Cloudflare's `Cache-Tag` and Akamai's `Edge-Cache-Tag` both split on
+/// commas. The separator therefore follows the configured header's name, not
+/// a single hardcoded choice.
+fn tag_separator(tag_header: &str) -> &'static str {
+    if tag_header.eq_ignore_ascii_case(DEFAULT_TAG_HEADER) {
+        " "
+    } else {
+        ","
+    }
+}
+
 /// The tag header's value: every collected tag plus [`SITE`], joined with
-/// commas, or (over [`MAX_TAG_HEADER_BYTES`]) `items` and `site` alone.
-pub(crate) fn tags_header_value(collected: &BTreeSet<String>) -> String {
+/// [`tag_separator`], or (over [`MAX_TAG_HEADER_BYTES`]) `items` and `site`
+/// alone.
+///
+/// `items` is always kept in the overflow case, whether or not a gather ran:
+/// once the per-item tags are dropped, the page's dependency on individual
+/// items can no longer be named, so it falls back to depending on all of
+/// them, the same fallback an actual gather-listed page already carries.
+pub(crate) fn tags_header_value(collected: &BTreeSet<String>, tag_header: &str) -> String {
+    let separator = tag_separator(tag_header);
     let mut tags = collected.clone();
     tags.insert(SITE.to_string());
-    let joined = tags.iter().cloned().collect::<Vec<_>>().join(",");
+    let joined = tags.iter().cloned().collect::<Vec<_>>().join(separator);
     if joined.len() <= MAX_TAG_HEADER_BYTES {
         return joined;
     }
+    tags.insert(crate::edge_cache::tags::ITEMS.to_string());
     tags.iter()
         .filter(|t| !t.starts_with("item:"))
         .cloned()
         .collect::<Vec<_>>()
-        .join(",")
+        .join(separator)
+}
+
+/// Whether a `Content-Type` value is exactly `text/html`, optionally with
+/// parameters (`; charset=utf-8`), case-insensitively: a media type's type
+/// and subtype are case-insensitive, and the subtype must match exactly, not
+/// merely start with it (`text/html-example` is a different, made-up type).
+fn is_html_content_type(ct: &str) -> bool {
+    ct.split(';')
+        .next()
+        .is_some_and(|mime| mime.trim().eq_ignore_ascii_case("text/html"))
 }
 
 /// The middleware. See the module docs for where it goes in the stack.
@@ -255,7 +325,7 @@ pub async fn set_cache_headers(
         .headers()
         .get(header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|ct| ct.starts_with("text/html"));
+        .is_some_and(is_html_content_type);
     let sets_cookie = response.headers().contains_key(header::SET_COOKIE);
 
     let single_language_site = state.languages().known().len() <= 1;
@@ -297,7 +367,7 @@ pub async fn set_cache_headers(
             merge_vary_cookie(response.headers_mut());
 
             let collected = collected.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            let header_value = tags_header_value(&collected);
+            let header_value = tags_header_value(&collected, &settings.tag_header);
             if let (Ok(name), Ok(value)) = (
                 HeaderName::from_bytes(settings.tag_header.as_bytes()),
                 HeaderValue::from_str(&header_value),
@@ -468,18 +538,59 @@ mod tests {
     }
 
     #[test]
+    fn a_whitespace_only_tag_header_refuses_to_start_rather_than_defaulting() {
+        let settings: std::collections::HashMap<&str, &str> =
+            [("EDGE_CACHE_TAG_HEADER", "   ")].into_iter().collect();
+        let err =
+            EdgeCacheConfig::from_lookup(&|name| settings.get(name).map(|v| (*v).to_string()))
+                .expect_err("a blank, but present, setting must refuse to start");
+        assert!(err.to_string().contains("EDGE_CACHE_TAG_HEADER"));
+    }
+
+    #[test]
+    fn a_tag_header_that_would_overwrite_a_reserved_header_refuses_to_start() {
+        for name in ["Vary", "Cache-Control", "content-length", "Content-Type"] {
+            let settings: std::collections::HashMap<&str, &str> =
+                [("EDGE_CACHE_TAG_HEADER", name)].into_iter().collect();
+            let err = EdgeCacheConfig::from_lookup(&|n| settings.get(n).map(|v| (*v).to_string()))
+                .expect_err(&format!("{name} must refuse to start"));
+            assert!(err.to_string().contains("EDGE_CACHE_TAG_HEADER"));
+        }
+    }
+
+    #[test]
     fn tags_header_includes_site_always() {
         let collected = BTreeSet::new();
-        assert_eq!(tags_header_value(&collected), "site");
+        assert_eq!(tags_header_value(&collected, "Cache-Tag"), "site");
     }
 
     #[test]
     fn tags_header_joins_every_collected_tag() {
         let collected = BTreeSet::from(["items".to_string(), "item:abc".to_string()]);
-        let value = tags_header_value(&collected);
+        let value = tags_header_value(&collected, "Cache-Tag");
         assert!(value.contains("site"));
         assert!(value.contains("items"));
         assert!(value.contains("item:abc"));
+    }
+
+    #[test]
+    fn the_default_surrogate_key_header_is_space_separated() {
+        let collected = BTreeSet::from(["item:abc".to_string()]);
+        let value = tags_header_value(&collected, DEFAULT_TAG_HEADER);
+        // Fastly and Varnish split a `Surrogate-Key` value on whitespace, not
+        // commas: joining with a comma would make every tag part of one
+        // single, unpurgeable key.
+        assert!(!value.contains(','), "{value:?} must not be comma joined");
+        let parts: Vec<&str> = value.split(' ').collect();
+        assert!(parts.contains(&"site"));
+        assert!(parts.contains(&"item:abc"));
+    }
+
+    #[test]
+    fn a_configured_cloudflare_style_header_is_comma_separated() {
+        let collected = BTreeSet::from(["item:abc".to_string()]);
+        let value = tags_header_value(&collected, "Cache-Tag");
+        assert_eq!(value, "item:abc,site");
     }
 
     #[test]
@@ -489,13 +600,33 @@ mod tests {
             collected.insert(format!("item:{n:032}"));
         }
         collected.insert("items".to_string());
-        let value = tags_header_value(&collected);
+        let value = tags_header_value(&collected, "Cache-Tag");
         assert!(
             value.len() <= MAX_TAG_HEADER_BYTES,
             "dropping item: tags must bring it under the cap"
         );
         assert!(value.contains("items"));
         assert!(value.contains("site"));
+        assert!(!value.contains("item:"));
+    }
+
+    #[test]
+    fn an_oversized_tag_header_keeps_items_even_when_no_gather_ran() {
+        // A page that loaded enough individual items to overflow the cap, but
+        // ran no gather query, still has nothing to name each item by once
+        // the overflow fallback drops them: it must fall back to depending on
+        // every item, the same as a gather-listed page, or an edit to any one
+        // of those items would never purge it.
+        let mut collected = BTreeSet::new();
+        for n in 0..2000 {
+            collected.insert(format!("item:{n:032}"));
+        }
+        let value = tags_header_value(&collected, "Cache-Tag");
+        assert!(value.len() <= MAX_TAG_HEADER_BYTES);
+        assert!(
+            value.contains("items"),
+            "items must be kept even without a prior gather: {value:?}"
+        );
         assert!(!value.contains("item:"));
     }
 
@@ -508,6 +639,27 @@ mod tests {
         );
         assert!(request_has_cookie(&headers, "id"));
         assert!(!request_has_cookie(&headers, "nonexistent"));
+    }
+
+    #[test]
+    fn request_cookie_detection_checks_every_split_cookie_header() {
+        // HTTP allows a request to repeat the `Cookie` field across more than
+        // one header line; the session cookie landing in anything but the
+        // first one must still be found.
+        let mut headers = HeaderMap::new();
+        headers.append(header::COOKIE, HeaderValue::from_static("other=1"));
+        headers.append(header::COOKIE, HeaderValue::from_static("id=abc123"));
+        assert!(request_has_cookie(&headers, "id"));
+    }
+
+    #[test]
+    fn is_html_content_type_matches_only_the_exact_subtype_case_insensitively() {
+        assert!(is_html_content_type("text/html"));
+        assert!(is_html_content_type("Text/HTML; charset=utf-8"));
+        assert!(is_html_content_type("  text/html ; charset=utf-8"));
+        assert!(!is_html_content_type("text/html-example"));
+        assert!(!is_html_content_type("application/json"));
+        assert!(!is_html_content_type("text/plain"));
     }
 
     #[test]
@@ -529,5 +681,21 @@ mod tests {
         headers.insert(header::VARY, HeaderValue::from_static("Cookie"));
         merge_vary_cookie(&mut headers);
         assert_eq!(headers.get(header::VARY).unwrap(), "Cookie");
+    }
+
+    #[test]
+    fn vary_cookie_keeps_every_dimension_from_separate_vary_header_lines() {
+        // A handler may send `Vary` as more than one header field rather than
+        // one comma-joined value; merging in Cookie must not drop the others.
+        let mut headers = HeaderMap::new();
+        headers.append(header::VARY, HeaderValue::from_static("Accept"));
+        headers.append(header::VARY, HeaderValue::from_static("Accept-Encoding"));
+        merge_vary_cookie(&mut headers);
+        let merged = headers.get(header::VARY).unwrap().to_str().unwrap();
+        let parts: Vec<&str> = merged.split(',').map(str::trim).collect();
+        assert!(parts.contains(&"Accept"), "{merged:?}");
+        assert!(parts.contains(&"Accept-Encoding"), "{merged:?}");
+        assert!(parts.contains(&"Cookie"), "{merged:?}");
+        assert_eq!(headers.get_all(header::VARY).iter().count(), 1);
     }
 }

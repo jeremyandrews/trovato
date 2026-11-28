@@ -171,6 +171,11 @@ async fn search_html(
         }
     };
 
+    // A search page lists items the same way a gather listing does: an edit
+    // to any item must be able to purge a cached copy, whether or not that
+    // edit changes this query's results (B303).
+    crate::edge_cache::tags::record_items();
+
     // FR-8 Story 3.7 — route result rows through the shared access seam: drop
     // items the viewer cannot see and redact restricted-field snippets.
     results.results = state

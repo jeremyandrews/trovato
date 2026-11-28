@@ -107,8 +107,14 @@ impl CommentService {
 
     /// What follows a committed insert: `tap_comment_insert`, search, audit.
     async fn created(&self, comment: &Comment, user: &UserContext) -> Result<()> {
-        // A comment changes the page it was posted on.
-        crate::edge_cache::purge([crate::edge_cache::tags::item_tag(comment.item_id)]);
+        // A comment changes the page it was posted on. Also purge `items`:
+        // once a page is large enough to drop its individual item tags (see
+        // `middleware::edge_cache::tags_header_value`'s overflow fallback),
+        // `items` is the only tag left that still covers it.
+        crate::edge_cache::purge([
+            crate::edge_cache::tags::item_tag(comment.item_id),
+            crate::edge_cache::tags::ITEMS.to_string(),
+        ]);
 
         let json = serde_json::to_string(comment).context("serialize comment")?;
         let state = self.tap_state(user);
@@ -168,7 +174,10 @@ impl CommentService {
     /// search index queue row was written with the update, by the database.
     async fn updated(&self, comment: Option<&Comment>, user: &UserContext) -> Result<()> {
         if let Some(c) = comment {
-            crate::edge_cache::purge([crate::edge_cache::tags::item_tag(c.item_id)]);
+            crate::edge_cache::purge([
+                crate::edge_cache::tags::item_tag(c.item_id),
+                crate::edge_cache::tags::ITEMS.to_string(),
+            ]);
 
             let json = serde_json::to_string(c).context("serialize comment")?;
             let state = self.tap_state(user);
@@ -201,7 +210,10 @@ impl CommentService {
         let deleted = Comment::delete(&self.inner.pool, id).await?;
         if deleted {
             if let Some(item_id) = existing.as_ref().map(|c| c.item_id) {
-                crate::edge_cache::purge([crate::edge_cache::tags::item_tag(item_id)]);
+                crate::edge_cache::purge([
+                    crate::edge_cache::tags::item_tag(item_id),
+                    crate::edge_cache::tags::ITEMS.to_string(),
+                ]);
             }
             info!(comment_id = %id, "comment deleted");
             self.audit("delete", id, existing.as_ref().map(|c| c.item_id), user)

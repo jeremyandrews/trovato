@@ -209,7 +209,15 @@ fn assert_public(response: &Response, tag_header: &str) -> Vec<String> {
     );
     let tags = header_str(response, tag_header)
         .unwrap_or_else(|| panic!("a public response must carry the {tag_header} tag header"));
-    let tags: Vec<String> = tags.split(',').map(|t| t.trim().to_string()).collect();
+    // `Surrogate-Key` (the default) is whitespace-separated (Fastly/Varnish's
+    // convention); a configured name like `Cache-Tag` is comma-separated
+    // (Cloudflare's). Splitting on either covers both without the caller
+    // needing to know which convention its header name follows.
+    let tags: Vec<String> = tags
+        .split(|c: char| c == ',' || c.is_whitespace())
+        .map(|t| t.trim().to_string())
+        .filter(|t| !t.is_empty())
+        .collect();
     assert!(
         tags.contains(&"site".to_string()),
         "every public page carries site: {tags:?}"
@@ -275,6 +283,14 @@ fn an_anonymous_item_page_is_public_with_site_and_item_tags() {
 
         let response = get(&app, &prefixed_item_path(id)).await;
         assert_eq!(response.status(), StatusCode::OK);
+        // The default `Surrogate-Key` header follows Fastly/Varnish's
+        // convention: keys separated by whitespace, not commas, so each one
+        // purges on its own.
+        let raw = header_str(&response, "surrogate-key").expect("a tag header");
+        assert!(
+            !raw.contains(','),
+            "Surrogate-Key must be whitespace separated, not comma joined: {raw:?}"
+        );
         let tags = assert_public(&response, "surrogate-key");
         assert!(
             tags.contains(&format!("item:{id}")),
@@ -402,6 +418,31 @@ fn the_stock_front_page_carries_the_items_tag() {
     });
 }
 
+/// The HTML search page lists items the same way a gather listing does, but
+/// runs its own query (`SearchService::search`) rather than a gather
+/// definition: without its own `record_items`, an *empty* result has no
+/// matching item to tag the page with at all, so an item that later becomes
+/// searchable would never purge a cached copy of the page that reported zero
+/// results for it.
+#[test]
+fn a_search_page_carries_the_items_tag_even_with_no_results() {
+    run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
+        let app = app_with_edge_cache_on().await;
+
+        // `/it` is a `UrlPrefix` language source, the one source this
+        // module's tests ever mark public; the query need not match anything
+        // for `items` to be recorded.
+        let response = get(&app, "/it/search?q=b303-search-tag-regression-no-such-term").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let tags = assert_public(&response, "surrogate-key");
+        assert!(
+            tags.contains(&"items".to_string()),
+            "an empty search result must still carry items: {tags:?}"
+        );
+    });
+}
+
 // --- (c) Personal, token-bearing, mutating and error responses are never public ---
 
 #[test]
@@ -422,6 +463,42 @@ fn a_signed_in_session_cookie_is_always_private_no_store() {
         let response = get_with_cookies(&app, &prefixed_item_path(id), &cookies).await;
         assert_eq!(response.status(), StatusCode::OK);
         assert_private_no_store(&response, "a signed-in GET of a published item page");
+    });
+}
+
+#[test]
+fn a_session_cookie_in_a_second_cookie_header_field_is_still_private_no_store() {
+    run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
+        let app = app_with_edge_cache_on().await;
+        let id = create_published_item(&app, "B303 split cookie item", 0).await;
+        let name = username("b303splitcookie");
+        let cookies = app
+            .create_and_login_admin(
+                &name,
+                "correct-horse-battery-staple-9",
+                &format!("{name}@test.local"),
+            )
+            .await;
+
+        // HTTP permits a request to repeat the `Cookie` field across more
+        // than one header line; an unrelated cookie occupying the first one
+        // must not hide the session cookie carried in the second.
+        let mut request = Request::get(prefixed_item_path(id))
+            .body(Body::empty())
+            .unwrap();
+        request
+            .headers_mut()
+            .append(header::COOKIE, "unrelated=1".parse().unwrap());
+        request
+            .headers_mut()
+            .append(header::COOKIE, cookies.parse().unwrap());
+        let response = app.request(request).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_private_no_store(
+            &response,
+            "a session cookie split across two Cookie header fields",
+        );
     });
 }
 
@@ -719,6 +796,16 @@ fn trovato_cdn_purge_http_delivers_item_tile_and_everything_purges() {
             })
             .await
             .expect("create tile");
+        // Drain and clear what the tile's own creation already purged (also
+        // `site`), so the assertion after the update below can only pass
+        // because the update's own purge call ran, not because creation's
+        // did.
+        trovato_kernel::edge_cache::drain_now_with(&dispatcher, &app.db).await;
+        cron.drain_plugin_queues()
+            .await
+            .expect("drain the plugin queue");
+        bodies.lock().unwrap_or_else(|e| e.into_inner()).clear();
+
         app.state
             .tiles()
             .update(
@@ -757,6 +844,48 @@ fn trovato_cdn_purge_http_delivers_item_tile_and_everything_purges() {
                 .map(|v| v.as_str().unwrap().to_string())
                 .collect();
             assert!(tags.contains(&"site".to_string()), "{tags:?}");
+        }
+        bodies.lock().unwrap_or_else(|e| e.into_inner()).clear();
+
+        // Posting a comment: the purge names the commented item and `items`,
+        // not only the item (see `services::comment`'s doc comment on why).
+        app.state
+            .comments()
+            .create(
+                trovato_kernel::models::CreateComment {
+                    item_id: id,
+                    parent_id: None,
+                    author_id: Uuid::nil(),
+                    subject: None,
+                    body: "B303 purge-on-comment".to_string(),
+                    body_format: None,
+                    status: Some(1),
+                },
+                &admin(),
+            )
+            .await
+            .expect("create comment");
+        trovato_kernel::edge_cache::drain_now_with(&dispatcher, &app.db).await;
+        cron.drain_plugin_queues()
+            .await
+            .expect("drain the plugin queue");
+        {
+            let bodies = bodies.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(bodies.len(), 1, "exactly one purge POST for the comment");
+            let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+            let tags: Vec<String> = sent["tags"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|v| v.as_str().unwrap().to_string())
+                .collect();
+            assert!(tags.contains(&format!("item:{id}")), "{tags:?}");
+            assert!(
+                tags.contains(&"items".to_string()),
+                "a comment must also purge items, so a page that already \
+                 dropped this item's own tag under the overflow cap still \
+                 sees the comment: {tags:?}"
+            );
         }
         bodies.lock().unwrap_or_else(|e| e.into_inner()).clear();
 
@@ -944,6 +1073,122 @@ fn the_admin_purge_form_validates_and_takes_both_scopes() {
             html.contains("No CDN purge plugin is enabled"),
             "the Everything branch ran purge_everything()+drain_now() too: {html}"
         );
+    });
+}
+
+/// `the_admin_purge_form_validates_and_takes_both_scopes` proves both scopes
+/// take the same path up to `DrainOutcome::NoPlugin` on a plugin-less
+/// fixture, which cannot by itself tell "Everything" and "These tags" apart:
+/// a bug that mapped Everything to, say, the literal tag `"all"` would report
+/// the same "No CDN purge plugin is enabled" flash either way. This test
+/// enables the real `trovato_cdn_purge_http` plugin *in this `TestApp`'s own
+/// `AppState`* (not a second, separately loaded dispatcher, as
+/// `trovato_cdn_purge_http_delivers_item_tile_and_everything_purges` uses),
+/// so the route's own `drain_now(&state)` call reaches it, and asserts the
+/// real "Everything" submission's delivered payload is `{"all": true}`.
+#[test]
+fn the_admin_everything_purge_dispatches_all_true_through_a_real_plugin() {
+    run_test(async {
+        let _guard = TEST_SERIAL.lock().await;
+        let (mock_url, bodies) = recording_server().await;
+        trovato_kernel::host::allow_loopback_http_for_tests(&mock_url);
+
+        // `AppState` resolves its enabled plugin set at construction, so the
+        // database has to say "enabled" before the app exists (the pattern
+        // `field_access_write_test.rs`'s `build_app` uses).
+        trovato_test_utils::env::load_dotenv();
+        let database_url = std::env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+        let setup_pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&database_url)
+            .await
+            .expect("connect for fixture setup");
+        trovato_kernel::plugin::status::install_plugin(
+            &setup_pool,
+            "trovato_cdn_purge_http",
+            "1.0.0",
+        )
+        .await
+        .expect("install trovato_cdn_purge_http");
+        setup_pool.close().await;
+
+        let app = TestApp::with_config(|c| {
+            small_pool(c);
+            c.plugins_dirs = vec![plugins_dir()];
+        })
+        .await;
+        trovato_kernel::models::SiteConfig::set(
+            &app.db,
+            "plugin.trovato_cdn_purge_http.url",
+            serde_json::json!(mock_url),
+        )
+        .await
+        .expect("configure the purge plugin's url");
+
+        let name = username("b303everythingform");
+        app.create_test_user(&name, "test-password-123", &format!("{name}@example.com"))
+            .await;
+        let id = user_id_of(&app, &name).await;
+        grant_via_role(&app, id, &["administer site"]).await;
+        let cookies = app.login(&name, "test-password-123").await;
+
+        let page = get_with_cookies(&app, "/admin/config/performance", &cookies).await;
+        let html = body_string(page).await;
+        let (token, build_id) = form_pairs_by_form_id(&html, "cdn_purge_form");
+        let body = format!(
+            "scope=everything&tags=&_token={}&_form_build_id={}",
+            urlencoding::encode(&token),
+            urlencoding::encode(&build_id),
+        );
+        let response = app
+            .request_with_cookies(
+                Request::builder()
+                    .method("POST")
+                    .uri("/admin/config/performance")
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .body(Body::from(body))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert!(
+            response.status().is_redirection(),
+            "got {}",
+            response.status()
+        );
+
+        // The route's own `drain_now` already dispatched `tap_cache_purge`,
+        // which only enqueued; deliver the queued job through this app's own
+        // dispatcher.
+        let redis =
+            redis::Client::open(trovato_test_utils::env::redis_url()).expect("redis client");
+        let mut cron = trovato_kernel::cron::CronService::new(redis, app.db.clone());
+        cron.set_tap_dispatcher(app.state.tap_dispatcher().clone());
+        cron.drain_plugin_queues()
+            .await
+            .expect("drain the plugin queue");
+
+        {
+            let bodies = bodies.lock().unwrap_or_else(|e| e.into_inner());
+            assert_eq!(
+                bodies.len(),
+                1,
+                "exactly one purge POST for the Everything submission"
+            );
+            let sent: serde_json::Value = serde_json::from_str(&bodies[0]).unwrap();
+            assert_eq!(sent["all"], true);
+            assert_eq!(
+                sent["tags"].as_array().map(Vec::len).unwrap_or_default(),
+                0,
+                "Everything names no individual tags: {sent}"
+            );
+        }
+
+        sqlx::query("UPDATE plugin_status SET status = 0 WHERE name = $1")
+            .bind("trovato_cdn_purge_http")
+            .execute(&app.db)
+            .await
+            .expect("disable the fixture plugin so no other test binary loads it");
     });
 }
 

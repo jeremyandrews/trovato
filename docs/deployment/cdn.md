@@ -15,9 +15,12 @@ Three environment settings, read once at startup:
 | `EDGE_CACHE_S_MAXAGE` | `0` | Seconds a shared cache (the CDN) may cache a public page for (`s-maxage`). |
 | `EDGE_CACHE_TAG_HEADER` | `Surrogate-Key` | The header name the tags are sent in. |
 
-A value that does not parse as a non-negative integer, or a tag header name
-that is not a valid HTTP header token, refuses to start, naming the
-variable, the same way `COOKIE_SECURE` does.
+A value that does not parse as a non-negative integer, a tag header name
+that is not a valid HTTP header token (including one that is present but
+blank), or a tag header name that would overwrite a header this layer, or
+the response it decorates, already sends (`Cache-Control`, `Vary`,
+`Content-Length`, `Content-Type`, `Set-Cookie`), refuses to start, naming
+the variable, the same way `COOKIE_SECURE` does.
 
 **The public half is off until `EDGE_CACHE_S_MAXAGE` is set above 0.** This
 is deliberate: no existing site starts being cached by a CDN on upgrade. The
@@ -71,26 +74,39 @@ check) is left exactly as it answered; this layer never overwrites it.
 
 ## The tag vocabulary
 
-Three kinds of tag, carried in the configured tag header, comma separated:
+Three kinds of tag, carried in the configured tag header:
 
 - `site`: every response this layer marks public carries it. Menus, tiles,
   aliases, site settings, the theme and the language all render on every
   page, so a write to any of them purges every cached page at once.
-- `items`: carried by a response that ran a Gather query (a listing, the
-  default front page when it is one).
+- `items`: carried by a response that ran a listing query (a Gather
+  listing, the default front page when it is one, or the search page, even
+  when it reports no results).
 - `item:<uuid>`: one per item loaded while serving the response (an item
   page, a tile that shows a specific item).
 
+The separator between tags follows the configured header's own convention,
+not one fixed choice: `Surrogate-Key` (the default) is whitespace separated,
+Fastly and Varnish's own convention, because a comma is a legal character
+inside one of their keys and joining with one would merge every tag into a
+single, unpurgeable key. Any other configured name (`Cache-Tag`,
+`Edge-Cache-Tag`, or anything else) is comma separated, Cloudflare and
+Akamai's convention.
+
 If the joined header would exceed 8 KiB, the `item:` tags are dropped and
-`items`/`site` are kept: any write that would have purged an `item:` tag
-also purges `items`, so nothing goes stale.
+`items`/`site` are kept, whether or not a listing query actually ran: once
+the per-item tags are gone, the page's dependency on any one of them can no
+longer be named, so it falls back to depending on all of them. Comment
+writes purge `items` as well as the commented item's own tag for the same
+reason: a page large enough to hit this cap may have already lost its own
+`item:<uuid>` tag by the time a comment on it is posted.
 
 ## What a write purges
 
 | Write | Tags purged |
 |---|---|
 | Item create, update, delete, revision delete, translation write | `item:<uuid>`, `items` |
-| Comment create, update, delete | `item:<the commented item's uuid>` |
+| Comment create, update, delete | `item:<the commented item's uuid>`, `items` |
 | Tile create, update, delete | `site` |
 | Menu link write, URL alias write, config import of either | `site` |
 | Site setting write (`site_config`), except a runtime-state key (`installed`, the update check's own state) or a plugin variable (`plugin.<name>.<key>`) | `site` |

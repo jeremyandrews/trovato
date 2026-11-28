@@ -36,25 +36,20 @@ fn tap_cache_purge(purge: Value) -> Result<Value, String> {
 }
 
 /// Deliver one purge, in as many requests as the tag count needs.
+///
+/// An unset `zone_id` or `api_token` is already reported, once per process,
+/// by the host itself (`host::variables_get` warns the first time a plugin
+/// reads a variable that was never set): logging it again here on every job
+/// would turn that single warning into one per purge.
 #[plugin_tap_result]
 fn tap_queue_worker(job: Value) -> Result<Value, String> {
     let zone_id = match host::variables_get("zone_id", "") {
         Ok(v) if !v.is_empty() => v,
-        _ => {
-            host::log("warn", PLUGIN, "no zone_id configured; dropping the purge");
-            return Ok(json!({ "status": "dropped", "reason": "no zone_id configured" }));
-        }
+        _ => return Ok(json!({ "status": "dropped", "reason": "no zone_id configured" })),
     };
     let api_token = match host::variables_get("api_token", "") {
         Ok(v) if !v.is_empty() => v,
-        _ => {
-            host::log(
-                "warn",
-                PLUGIN,
-                "no api_token configured; dropping the purge",
-            );
-            return Ok(json!({ "status": "dropped", "reason": "no api_token configured" }));
-        }
+        _ => return Ok(json!({ "status": "dropped", "reason": "no api_token configured" })),
     };
 
     let all = job.get("all").and_then(Value::as_bool).unwrap_or(false);
