@@ -1355,11 +1355,13 @@ fn field_edit_form(
             "cardinality",
             FormElement::input("number")
                 .title("Number of values")
-                .description(if matches!(field.field_type, trovato_sdk::types::FieldType::Link) {
-                    "A Link field holds a single value: this must be 1."
-                } else {
-                    "Maximum number of values. Use 1 for a single value, -1 for unlimited."
-                })
+                .description(
+                    if matches!(field.field_type, trovato_sdk::types::FieldType::Link) {
+                        "A Link field holds a single value: this must be 1."
+                    } else {
+                        "Maximum number of values. Use 1 for a single value, -1 for unlimited."
+                    },
+                )
                 .default_value(values.cardinality.to_string())
                 .attribute("min", "-1")
                 .weight(4),

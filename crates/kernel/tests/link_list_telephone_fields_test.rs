@@ -12,8 +12,8 @@
 mod common;
 
 use axum::body::Body;
-use axum::http::{Request, StatusCode};
-use common::{TestApp, run_test, shared_app};
+use axum::http::{Request, StatusCode, header};
+use common::{TestApp, run_test, shared_app, test_ip_for};
 use trovato_kernel::models::CreateItem;
 use trovato_kernel::tap::UserContext;
 use trovato_sdk::types::{FieldDefinition, FieldType};
@@ -378,6 +378,168 @@ fn a_list_key_no_longer_allowed_renders_as_the_escaped_key() {
         assert!(
             html.contains("&lt;bronze&gt;"),
             "a key no longer allowed still renders, escaped: {html}"
+        );
+    });
+}
+
+async fn get_as(app: &TestApp, path: &str, cookies: &str, bucket: &str) -> (StatusCode, String) {
+    let response = app
+        .request_with_cookies(
+            Request::get(path)
+                .header("x-forwarded-for", test_ip_for(bucket))
+                .body(Body::empty())
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    (status, body_string(response).await)
+}
+
+/// Pull a named input's `value` attribute out of rendered form HTML.
+fn input_value(html: &str, name: &str) -> Option<String> {
+    let needle = format!(r#"name="{name}""#);
+    let at = html.find(&needle)?;
+    let start = html[..at].rfind('<')?;
+    let end = at + html[at..].find('>')?;
+    let tag = &html[start..end];
+    let vat = tag.find(r#"value=""#)? + 7;
+    let vend = tag[vat..].find('"')? + vat;
+    Some(tag[vat..vend].to_string())
+}
+
+/// Pull a named `<textarea>`'s body out of rendered form HTML.
+fn textarea_value(html: &str, name: &str) -> Option<String> {
+    let needle = format!(r#"name="{name}""#);
+    let at = html.find(&needle)?;
+    let open_end = at + html[at..].find('>')? + 1;
+    let close_at = open_end + html[open_end..].find("</textarea>")?;
+    Some(html[open_end..close_at].to_string())
+}
+
+/// The admin field edit form shows a List field's allowed values as its
+/// stored `key|label` pairs, one per line, and a posted change to that
+/// textarea is parsed, validated and saved the same way it was before the
+/// B83c form pipeline migration rewrote this route.
+#[test]
+fn the_admin_field_edit_form_round_trips_a_lists_allowed_values() {
+    run_test(async {
+        let app = shared_app().await;
+        let item_type = fresh_type(app).await;
+        let cookies = app
+            .create_and_login_admin(
+                "b302adminfield",
+                "b302-admin-field-pass",
+                "b302adminfield@test.local",
+            )
+            .await;
+        let path = format!("/admin/structure/types/{item_type}/fields/field_choice/edit");
+
+        let (status, html) = get_as(app, &path, &cookies, "b302adminfield").await;
+        assert_eq!(status, StatusCode::OK, "{html}");
+        assert_eq!(
+            textarea_value(&html, "allowed_values").as_deref(),
+            Some("gold|Gold Medal\nsilver|Silver Medal"),
+            "the edit form shows the field's allowed values:\n{html}"
+        );
+
+        let csrf = input_value(&html, "_token").expect("csrf token");
+        let build = input_value(&html, "_form_build_id").expect("form build id");
+
+        let response = app
+            .request_with_cookies(
+                Request::post(&path)
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header("x-forwarded-for", test_ip_for("b302adminfield"))
+                    .body(Body::from(format!(
+                        "_token={csrf}&_form_build_id={build}&label=Choice&required=&\
+                         cardinality=1&allowed_values=gold%7CGold+Medal%0Abronze%7CBronze+Medal"
+                    )))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert!(
+            response.status().is_redirection(),
+            "a valid allowed values textarea saves: {}",
+            body_string(response).await
+        );
+
+        let updated = app
+            .state
+            .content_types()
+            .get(&item_type)
+            .expect("type still exists");
+        let field = updated
+            .fields
+            .iter()
+            .find(|f| f.field_name == "field_choice")
+            .expect("field still exists");
+        assert_eq!(
+            trovato_kernel::content::field_value::list_options(&field.settings),
+            vec![
+                ("gold".to_string(), "Gold Medal".to_string()),
+                ("bronze".to_string(), "Bronze Medal".to_string()),
+            ],
+            "the posted allowed values are saved, in the posted order"
+        );
+    });
+}
+
+/// The admin field edit form refuses a cardinality other than 1 for a Link
+/// field, with a clear message: a Link ships single valued only (B302).
+#[test]
+fn the_admin_field_edit_form_refuses_a_multi_value_link() {
+    run_test(async {
+        let app = shared_app().await;
+        let item_type = fresh_type(app).await;
+        let cookies = app
+            .create_and_login_admin(
+                "b302adminlink",
+                "b302-admin-link-pass",
+                "b302adminlink@test.local",
+            )
+            .await;
+        let path = format!("/admin/structure/types/{item_type}/fields/field_link/edit");
+
+        let (status, html) = get_as(app, &path, &cookies, "b302adminlink").await;
+        assert_eq!(status, StatusCode::OK, "{html}");
+        let csrf = input_value(&html, "_token").expect("csrf token");
+        let build = input_value(&html, "_form_build_id").expect("form build id");
+
+        let response = app
+            .request_with_cookies(
+                Request::post(&path)
+                    .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                    .header("x-forwarded-for", test_ip_for("b302adminlink"))
+                    .body(Body::from(format!(
+                        "_token={csrf}&_form_build_id={build}&label=Link&required=&cardinality=-1"
+                    )))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::OK, "no redirect: refused");
+        let html = body_string(response).await;
+        assert!(
+            html.contains("A Link field holds a single value"),
+            "the refusal names why:\n{html}"
+        );
+
+        let unchanged = app
+            .state
+            .content_types()
+            .get(&item_type)
+            .expect("type still exists");
+        assert_eq!(
+            unchanged
+                .fields
+                .iter()
+                .find(|f| f.field_name == "field_link")
+                .expect("field still exists")
+                .cardinality,
+            1,
+            "the field's cardinality is unchanged"
         );
     });
 }
