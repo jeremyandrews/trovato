@@ -71,12 +71,19 @@ const LISTED_ON = {
 /** Pages that link to no instance of a route, and where one is found. */
 const SOURCES = {
   '/admin/users/{user_id}/sessions': '/admin/people/{id}/edit',
-  '/admin/people/{id}/cancel': '/admin/people/{id}/edit',
+  '/admin/people/{id}/cancel': '/admin/people/{id}/delete',
   '/admin/content/{id}/translate': '/admin/content/{id}/edit',
   '/admin/structure/types/{type}/search': '/admin/structure/types/{type}/edit',
   '/admin/structure/categories/{id}/tags/add': '/admin/structure/categories/{id}/tags',
   '/admin/system/ai-budgets/user/{id}': '/admin/people/{id}/edit',
 };
+
+/**
+ * Routes whose first listed instance may refuse to open: the people list
+ * starts with the signed-in administrator, whose own account the delete page
+ * refuses. The first listed instance that opens is taken instead.
+ */
+const FIRST_THAT_OPENS = new Set(['/admin/people/{id}/delete']);
 
 const toRegex = (pattern) => new RegExp('^' + pattern.replace(/\{[^}]+\}/g, '[^/?#]+') + '$');
 const resolved = new Map();
@@ -132,6 +139,16 @@ async function concrete(page, pattern) {
       const full = toRegex(pattern);
       let links = await linksOn(page, listing);
       found = links.find((h) => full.test(h)) || null;
+      if (found && FIRST_THAT_OPENS.has(pattern)) {
+        found = null;
+        for (const candidate of [...new Set(links.filter((h) => full.test(h)))].slice(0, 5)) {
+          const response = await page.goto(candidate);
+          if (response && response.status() === 200) {
+            found = candidate;
+            break;
+          }
+        }
+      }
       // A listing that loaded but showed no such link is read once more:
       // a page the site was still settling (a cache being refilled) has
       // been seen to list none once.
