@@ -1,7 +1,10 @@
-<form id="{{ form.form_id }}" action="{{ form.action | escape_xml | safe }}" method="{{ form.method }}" class="form{% if form.attributes and form.attributes.class %} {{ form.attributes.class }}{% endif %}"{% if form.attributes %}{% for key, value in form.attributes %}{% if key != "class" %} {{ key }}="{{ value }}"{% endif %}{% endfor %}{% endif %}>
+<form id="{{ form.form_id }}" action="{{ form.action | escape_xml | safe }}" method="{{ form.method }}" class="form{% if form.attributes and form.attributes.class %} {{ form.attributes.class }}{% endif %}"{% if form.attributes %}{% for key, value in form.attributes %}{% if key != "class" %} {{ key }}="{{ value }}"{% endif %}{% endfor %}{% endif %} data-form-pipeline>
     {# SAFE: the action is escaped by escape_xml, which leaves its slashes as they are (an attribute value needs no more) #}
+    {#- `data-form-pipeline` marks a form FormService built; a GET form carries no token and no build id. #}
+    {%- if form.method | lower != "get" %}
     <input type="hidden" name="_token" value="{{ form.token }}">
     <input type="hidden" name="_form_build_id" value="{{ form.form_build_id }}">
+    {%- endif %}
     {% if form.ajax_token %}<input type="hidden" name="_ajax_token" value="{{ form.ajax_token }}">{% endif %}
 
     {% if form.title %}

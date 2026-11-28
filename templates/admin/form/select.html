@@ -1,7 +1,9 @@
 {%- import "admin/macros/form.html" as f -%}
 {%- import "admin/macros/builder.html" as b -%}
 {#- The form builder's admin template: maps the element onto the field macro
-    every admin form uses (admin/macros/form.html). -#}
+    every admin form uses (admin/macros/form.html). An optional select's
+    empty choice reads "- Select -", or its placeholder ("- Any -" on a
+    listing's filter). -#}
 {%- if element.title %}{% set label = t(s=element.title) %}{% else %}{% set label = "" %}{% endif -%}
 {%- if element.description %}{% set hint = t(s=element.description) %}{% else %}{% set hint = "" %}{% endif -%}
 {%- set attrs = b::attrs(element=element) -%}
@@ -9,6 +11,6 @@
 {%- if element.default_value is defined %}{% set dv = element.default_value %}{% else %}{% set dv = "" %}{% endif -%}
 {%- if element.prefix %}{{ element.prefix | safe }}{% endif %} {# SAFE: kernel FormBuilder-generated HTML — prefix/suffix are kernel-controlled strings #}
 {%- if element.multiple %}{% set field_name = name ~ "[]" %}{% if dv is iterable %}{% set vals = dv %}{% else %}{% set vals = [] %}{% endif %}{% else %}{% set field_name = name %}{% set vals = [] %}{% endif -%}
-{%- if not element.required and not element.multiple %}{% set empty = t(s="- Select -") %}{% else %}{% set empty = "" %}{% endif -%}
+{%- if element.required or element.multiple %}{% set empty = "" %}{% elif element.placeholder %}{% set empty = t(s=element.placeholder) %}{% else %}{% set empty = t(s="- Select -") %}{% endif -%}
 {{ f::select(name=field_name, id=name, label=label, options=element.options, value=dv, values=vals, multiple=element.multiple | default(value=false), empty=empty, translate_options=true, hint=hint, required=element.required, disabled=element.disabled, errors=errs, attrs=attrs) }}
 {%- if element.suffix %}{{ element.suffix | safe }}{% endif %} {# SAFE: kernel FormBuilder-generated HTML — prefix/suffix are kernel-controlled strings #}

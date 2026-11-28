@@ -35,7 +35,8 @@ impl FormService {
     }
 
     /// Finish building `form`: mint its CSRF token, let plugins alter it, and
-    /// save `form_state` with the inputs the altered form renders.
+    /// save `form_state` with the inputs the altered form renders. A GET form
+    /// is only altered: it gets no token and nothing is saved.
     ///
     /// `tap_form_alter` runs once per implementing plugin in weight order, each
     /// receiving the previous plugin's output, so two plugins altering one form
@@ -52,7 +53,12 @@ impl FormService {
         state: &RequestState,
         mut form_state: FormState,
     ) -> Result<Form> {
-        form.token = generate_csrf_token(session).await;
+        // A GET form (a listing's filter, a search box) changes nothing, so it
+        // carries no token and no saved state: only plugins' alterations.
+        let get = form.method.eq_ignore_ascii_case("get");
+        if !get {
+            form.token = generate_csrf_token(session).await;
+        }
         let (form_id, build_id, token) = (
             form.form_id.clone(),
             form.form_build_id.clone(),
@@ -87,6 +93,9 @@ impl FormService {
             }
         }
 
+        if get {
+            return Ok(form);
+        }
         if form.uses_ajax() {
             form.ajax_token = generate_csrf_token(session).await;
         }

@@ -232,6 +232,113 @@ pub fn page_of<T: Clone>(rows: &[T], query: &ListQuery) -> Vec<T> {
         .collect()
 }
 
+/// A listing's filter and sort forms, drawn through the form pipeline: what
+/// the handler puts in its template's context as `filter_form` and
+/// `sort_form`.
+#[derive(Debug, Clone, Serialize)]
+pub struct ListForms {
+    /// The filter form: the text filter, the listing's own `fields`, the
+    /// sort kept, and Filter (with Clear filter beside it once a filter is
+    /// applied).
+    pub filter_form: String,
+    /// The hidden form each sort button submits through its `form`
+    /// attribute, keeping the filters.
+    pub sort_form: String,
+}
+
+impl ListForms {
+    /// Put both forms in `context`.
+    pub fn insert_into(&self, context: &mut tera::Context) {
+        context.insert("filter_form", &self.filter_form);
+        context.insert("sort_form", &self.sort_form);
+    }
+}
+
+/// Build and render `list`'s filter and sort forms for `user` on the
+/// listing at `action`. `label` names the filter form ("Filter content"),
+/// `q_label` labels its text filter ("Title contains"); both are English
+/// source strings, translated here. `fields` are the listing's own filters
+/// (a type or status select), in order after the text filter; a select's
+/// placeholder is its empty choice ("- Any -").
+pub async fn render_forms(
+    state: &crate::state::AppState,
+    session: &tower_sessions::Session,
+    user: &crate::models::User,
+    list: &ListView,
+    action: &str,
+    label: &str,
+    q_label: &str,
+    fields: Vec<(&str, crate::form::FormElement)>,
+) -> Result<ListForms, axum::response::Response> {
+    use crate::form::{Form, FormElement};
+
+    let viewer = super::helpers::user_context_for(state, user).await;
+    let text = super::admin_nav::AdminText::for_page(state, &viewer, action).await;
+    let label = crate::i18n::UiMessage::new(label).text(state.locale().map(|l| &**l), &text.lang);
+    let clear = if list.filtered {
+        format!(
+            r#"<a class="filter-clear" href="{}">{}</a>"#,
+            tera::escape_html(action),
+            text.html("Clear filter", &[])
+        )
+    } else {
+        String::new()
+    };
+    let mut filter = Form::new("list-filter")
+        .method("get")
+        .action(action)
+        .attribute("class", "filter-form")
+        .attribute("role", "search")
+        .attribute("aria-label", label)
+        .element(
+            "q",
+            FormElement::input("search")
+                .title(q_label)
+                .default_value(list.q.clone())
+                .weight(0),
+        );
+    for (weight, (name, field)) in (1..).zip(fields) {
+        filter = filter.element(name, field.weight(weight));
+    }
+    if !list.sort_param.is_empty() {
+        filter = filter.element(
+            "sort",
+            FormElement::hidden()
+                .default_value(list.sort_param.clone())
+                .weight(98),
+        );
+    }
+    let filter = filter.element(
+        "op",
+        FormElement::submit("Filter")
+            .attribute("class", "button--secondary")
+            .suffix(clear)
+            .weight(99),
+    );
+    // The filters now applied, kept as they came: several may share a name,
+    // which form elements cannot, so they are one markup element.
+    let kept: String = list
+        .keep_for_sort
+        .iter()
+        .map(|(k, v)| {
+            format!(
+                r#"<input type="hidden" name="{}" value="{}">"#,
+                tera::escape_html(k),
+                tera::escape_html(v)
+            )
+        })
+        .collect();
+    let sort = Form::new("list-sort")
+        .method("get")
+        .action(action)
+        .attribute("hidden", "hidden")
+        .element("kept", FormElement::markup(kept));
+    Ok(ListForms {
+        filter_form: super::admin_form::render(state, session, user, filter, &[]).await?,
+        sort_form: super::admin_form::render(state, session, user, sort, &[]).await?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
