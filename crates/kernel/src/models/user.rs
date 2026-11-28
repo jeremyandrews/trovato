@@ -170,7 +170,15 @@ impl User {
     }
 
     /// Find a user by email (case-insensitive).
+    ///
+    /// An empty or whitespace-only `mail` matches nothing: that is how "no
+    /// address" is stored (`User::mail_address`), and it is never unique, so
+    /// treating it as a lookup value would return an arbitrary account with no
+    /// address instead of the intended "not found".
     pub async fn find_by_mail(pool: &PgPool, mail: &str) -> Result<Option<Self>> {
+        if mail.trim().is_empty() {
+            return Ok(None);
+        }
         let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE LOWER(mail) = LOWER($1)")
             .bind(mail)
             .fetch_optional(pool)
@@ -650,6 +658,17 @@ impl User {
         .context("failed to count active administrators")?;
 
         Ok(count)
+    }
+
+    /// This account's e-mail address, or `None` when it has none.
+    ///
+    /// An empty (or whitespace-only) stored value is the one representation of
+    /// "no address"; every caller that would mail this account reads the
+    /// address through here rather than repeating the emptiness check, so none
+    /// of them can send to, or log about, an address that is not there.
+    pub fn mail_address(&self) -> Option<&str> {
+        let mail = self.mail.trim();
+        if mail.is_empty() { None } else { Some(mail) }
     }
 
     /// Verify a password against this user's hash.

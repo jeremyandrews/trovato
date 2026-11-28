@@ -152,7 +152,7 @@ Needs the `trovato_redirects` plugin's table.
 | Key | Required | Meaning |
 |---|---|---|
 | `name` | yes | As the "Add user" form checks it; unique ignoring case. |
-| `mail` | yes | Unique ignoring case. |
+| `mail` | no | Unique ignoring case when given; empty or left out is an account with no address, which logs in by name only. |
 | `status` | no | 0 blocked, 1 active; default 1. |
 | `created` | yes | |
 | `password_hash` | no | An Argon2 PHC string (`$argon2id$…`), the only format the kernel verifies. Anything else is refused. Without one the account has no password and cannot sign in until `trovato user reset-password` (or a password reset) sets one. |

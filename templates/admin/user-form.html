@@ -16,7 +16,7 @@
 
         {{ form::field(name="name", label=t(s="Username"), value=values.name | default(value=""), hint=t(s="The unique username for this account."), required=true, errors=errs, width="20", autocomplete="username", attrs='spellcheck="false" autocapitalize="none"') }}
 
-        {{ form::field(name="mail", type="email", label=t(s="Email"), value=values.mail | default(value=""), hint=t(s="A valid email address for this user."), required=true, errors=errs, width="30", autocomplete="email", attrs='spellcheck="false"') }}
+        {{ form::field(name="mail", type="email", label=t(s="Email"), value=values.mail | default(value=""), hint=t(s="Without an address this account cannot reset its password by email."), required=false, errors=errs, width="30", autocomplete="email", attrs='spellcheck="false"') }}
 
         {% if editing %}{% set password_hint = t(s="Leave blank to keep the current password. Minimum 12 characters.") %}{% else %}{% set password_hint = t(s="Minimum 12 characters.") %}{% endif %}
         {{ form::field(name="password", type="password", label=t(s="Password"), hint=password_hint, required=not editing, errors=errs, width="20", autocomplete="new-password", attrs='minlength="12"') }}

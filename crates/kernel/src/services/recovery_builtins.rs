@@ -165,14 +165,14 @@ impl RecoveryProvider for EmailRecoveryProvider {
                         expires_in_secs: 0,
                     });
                 };
-                if user.mail.trim().is_empty() {
+                let Some(address) = user.mail_address() else {
                     return Some(RecoveryTapResult::Initiated {
                         status: "unavailable".to_string(),
                         challenge_hint: "Email recovery is not available for this account."
                             .to_string(),
                         expires_in_secs: 0,
                     });
-                }
+                };
 
                 // The code is minted by the mail worker immediately before the
                 // send (`mint_email_code`), so it is never stored in the clear,
@@ -204,7 +204,7 @@ impl RecoveryProvider for EmailRecoveryProvider {
                 );
                 let mail = crate::services::email::NewMail::account(
                     "recovery_code",
-                    &user.mail,
+                    address,
                     &format!("Account recovery code for {}", self.site_name),
                     &body,
                 )

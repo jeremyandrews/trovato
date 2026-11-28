@@ -1,9 +1,10 @@
 //! Accounts, with the ids and dates the file gives.
 //!
 //! Checked as the admin "Add user" form and `trovato user create` check an
-//! account (`routes::admin_user::new_account_problems`): a name and an email
-//! address, neither belonging to another account, ignoring case. A password
-//! arrives only as a hash, and only as an Argon2 PHC string, the one format
+//! account (`routes::admin_user::new_account_problems`): a name is required,
+//! an email address is not, and whichever of them is given may not belong to
+//! another account, ignoring case. A password arrives only as a hash, and
+//! only as an Argon2 PHC string, the one format
 //! `User::verify_password` accepts; anything else is refused, never stored,
 //! and never echoed. No `tap_user_register`: a migrated account gets no
 //! welcome mail. Roles are granted by name; none is taken away, and the
@@ -68,9 +69,6 @@ pub(crate) async fn import_user(run: &mut Run<'_>, r: UserRecord) -> Result<Outc
     if name.is_empty() {
         anyhow::bail!("Username is required.");
     }
-    if mail.is_empty() {
-        anyhow::bail!("Email is required.");
-    }
     if name.chars().count() > MAX_LENGTH || mail.chars().count() > MAX_LENGTH {
         anyhow::bail!("name and mail are at most {MAX_LENGTH} characters");
     }
@@ -106,13 +104,18 @@ pub(crate) async fn import_user(run: &mut Run<'_>, r: UserRecord) -> Result<Outc
     if taken.is_some() {
         anyhow::bail!("Username '{name}' is already taken.");
     }
-    let taken: Option<Uuid> =
+    // Empty (no address) is never unique, so it is never looked up: every
+    // such account would otherwise collide with every other one.
+    let taken: Option<Uuid> = if mail.is_empty() {
+        None
+    } else {
         sqlx::query_scalar("SELECT id FROM users WHERE lower(mail) = lower($1) AND id <> $2")
             .bind(&mail)
             .bind(r.id)
             .fetch_optional(&mut *run.tx)
             .await
-            .context("failed to look up the email address")?;
+            .context("failed to look up the email address")?
+    };
     if taken.is_some() {
         anyhow::bail!("Email '{mail}' is already in use.");
     }

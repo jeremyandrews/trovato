@@ -74,9 +74,9 @@
   - text: Username (required)
   - paragraph: The unique username for this account.
   - textbox "Username (required)"
-  - text: Email (required)
-  - paragraph: A valid email address for this user.
-  - textbox "Email (required)"
+  - text: Email
+  - paragraph: Without an address this account cannot reset its password by email.
+  - textbox "Email"
   - text: Password (required)
   - paragraph: Minimum 12 characters.
   - textbox "Password (required)"

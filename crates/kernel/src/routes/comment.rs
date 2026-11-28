@@ -1943,14 +1943,12 @@ pub(crate) async fn comment_mail_context(
             return None;
         }
     };
-    if author.mail.is_empty() {
-        return None;
-    }
+    let to = author.mail_address()?.to_string();
     let site_name = crate::models::SiteConfig::site_name(state.db())
         .await
         .unwrap_or_else(|_| "Trovato".to_string());
     Some(CommentMail {
-        to: author.mail,
+        to,
         site_name,
         action_url: format!("{}/item/{}", email_service.site_url(), item.id),
         item_title: item.title.clone(),

@@ -305,10 +305,9 @@ enum UserAction {
     Create {
         /// Username.
         username: String,
-        /// Email address (required, as on the admin form).
-        // An `Option` rather than a required argument so that a missing
-        // address fails as an empty one does, with the form's message and
-        // exit code 1, not clap's usage error and exit code 2.
+        /// Email address (optional, as on the admin form). Without one the
+        /// account logs in by name only, and anything that would mail it
+        /// simply does not.
         #[arg(long, value_name = "ADDRESS")]
         mail: Option<String>,
         /// Give the account this role (repeatable).

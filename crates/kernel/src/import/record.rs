@@ -147,6 +147,8 @@ pub(crate) struct RedirectRecord {
 pub(crate) struct UserRecord {
     pub id: Uuid,
     pub name: String,
+    /// Empty, or left out, is an account with no address.
+    #[serde(default)]
     pub mail: String,
     #[serde(default)]
     pub status: Option<i16>,

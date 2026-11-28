@@ -413,10 +413,26 @@ fn a_failed_hand_written_form_leads_with_a_linked_error_summary() {
             "person fields say what they hold"
         );
 
+        // An address is not required on this form (an account may have none),
+        // so the mail field's error here is "already in use", forced by an
+        // account this test makes for the purpose.
+        let taken_name = common::username("b199formstaken");
+        let taken_mail = format!("{taken_name}@test.local");
+        app.create_test_user(&taken_name, "correct-horse-battery-staple", &taken_mail)
+            .await;
+        let pool = app.db.clone();
+        common::defer_cleanup(move || async move {
+            let _ = sqlx::query("DELETE FROM users WHERE name = $1")
+                .bind(&taken_name)
+                .execute(&pool)
+                .await;
+        });
+
         let form = format!(
-            "_token={}&_form_build_id={}&name=&mail=&password=short",
+            "_token={}&_form_build_id={}&name=&mail={}&password=short",
             urlencoding::encode(&hidden(&page, "_token")),
             urlencoding::encode(&hidden(&page, "_form_build_id")),
+            urlencoding::encode(&taken_mail),
         );
         let (_, page) = post(app, &cookies, "/admin/people/add", form).await;
 

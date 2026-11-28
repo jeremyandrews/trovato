@@ -15,7 +15,7 @@ and `trovato <command> --help` print the same, from the binary.
 | `trovato plugin enable <name>` / `disable <name>` | Change a plugin's stored status (servers apply it on restart). |
 | `trovato config export [<dir>] [--clean]` | Export configuration to YAML. |
 | `trovato config import [<dir>] [--dry-run]` | Import configuration from YAML. |
-| `trovato user create <user> --mail <address> [--role <role>]... [--blocked] [--no-password]` | Create an account, as the admin "Add user" form does; the password is read from stdin. |
+| `trovato user create <user> [--mail <address>] [--role <role>]... [--blocked] [--no-password]` | Create an account, as the admin "Add user" form does; the password is read from stdin. |
 | `trovato user reset-password <user> [<password>]` | Set a password (read from stdin if omitted) and end the user's sessions. |
 | `trovato user role-add <user> <role>` / `role-remove <user> <role>` / `roles <user>` | Manage a user's roles. |
 | `trovato cache clear [--kind <kind>]...` | Tell every running server to drop its in-memory caches (all kinds, or the ones named). |
@@ -83,7 +83,7 @@ See [docs/deployment/upgrades.md](deployment/upgrades.md).
 ## `trovato user create`
 
 ```
-trovato user create <user> --mail <address> [--role <role>]... [--blocked] [--no-password]
+trovato user create <user> [--mail <address>] [--role <role>]... [--blocked] [--no-password]
 ```
 
 Creates an account with the checks the admin "Add user" form makes, and writes
@@ -106,13 +106,14 @@ is read and the account has no password: it cannot sign in until
 
 At a terminal the password is not shown as it is typed.
 
-`--mail` is required and may not be empty, as on the form. The command exits 1
-and creates nothing when the name is empty, the address is missing or empty,
-either already belongs to an account (compared case-insensitively), the
-password is too short or too long, or a role does not exist; it prints every
-problem at once, in the form's words. Leaving out the name altogether is a usage
-error, which exits 2 as every command's usage errors do. An access rule blocking
-the name or address is a warning, as on the form, not a refusal.
+`--mail` is optional, as on the form: without one the account logs in by name
+only, and anything that would mail it simply does not. The command exits 1 and
+creates nothing when the name is empty, the name or a given address already
+belongs to an account (compared case-insensitively), the password is too short
+or too long, or a role does not exist; it prints every problem at once, in the
+form's words. Leaving out the name altogether is a usage error, which exits 2
+as every command's usage errors do. An access rule blocking the name or
+address is a warning, as on the form, not a refusal.
 
 The account is written before its roles. If a role cannot be granted after all
 (it was deleted in between, or the database refused), the command still grants

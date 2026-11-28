@@ -648,9 +648,12 @@ async fn delete_confirm_submit(
     Redirect::to("/?account_deleted=1").into_response()
 }
 
-/// Tell the address on file that the account is gone.
+/// Tell the address on file that the account is gone, when there is one.
 async fn send_farewell(state: &AppState, user: &crate::models::User) {
     let Some(email) = state.email() else {
+        return;
+    };
+    let Some(address) = user.mail_address() else {
         return;
     };
     let site_name = crate::models::SiteConfig::site_name(state.db())
@@ -669,7 +672,7 @@ async fn send_farewell(state: &AppState, user: &crate::models::User) {
 
     let message = crate::services::email::NewMail::account(
         "account_deleted",
-        &user.mail,
+        address,
         &format!("Your {site_name} account has been deleted"),
         &text,
     )

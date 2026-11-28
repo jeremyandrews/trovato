@@ -90,7 +90,7 @@ pub async fn active_recovery_path_count(state: &AppState, user: &crate::models::
         flow_id: Uuid::new_v4().to_string(),
         account: crate::recovery::RecoveryAccount {
             user_id: user.id,
-            email_present: !user.mail.trim().is_empty(),
+            email_present: user.mail_address().is_some(),
         },
         locale: None,
     };
@@ -220,11 +220,11 @@ async fn notify(state: &AppState, user_id: Uuid, subject: &str, body: &str) {
     let Ok(Some(user)) = crate::models::User::find_by_id(state.db(), user_id).await else {
         return;
     };
-    if user.mail.trim().is_empty() {
+    let Some(address) = user.mail_address() else {
         return;
-    }
+    };
     let message =
-        crate::services::email::NewMail::account("recovery_notice", &user.mail, subject, body);
+        crate::services::email::NewMail::account("recovery_notice", address, subject, body);
     if let Err(e) = email_service.queue_now(message).await {
         warn!(error = %e, "failed to queue a recovery notification");
     }
@@ -414,7 +414,7 @@ async fn recover_start(
     }
 
     let now = chrono::Utc::now().timestamp();
-    let email_present = !user.mail.trim().is_empty();
+    let email_present = user.mail_address().is_some();
     let flow = match state
         .recovery_flows()
         .start(user.id, email_present, now)

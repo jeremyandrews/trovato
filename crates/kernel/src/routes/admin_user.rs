@@ -291,10 +291,12 @@ async fn add_user_form(State(state): State<AppState>, session: Session) -> Respo
 /// empty when it may be created.
 ///
 /// The one set of rules for an account an administrator creates, on this form
-/// and with `trovato user create`. A name and an email address are required,
-/// and neither may belong to another account (compared case-insensitively). A
-/// `password` of `None` is an account created with no password at all
-/// (`--no-password`); `Some` is checked by [`validate_password`].
+/// and with `trovato user create`. A name is required; an email address is
+/// not (an account with none logs in by name, and anything that would mail it
+/// simply does not), but when one is given it may not belong to another
+/// account (compared case-insensitively). A `password` of `None` is an
+/// account created with no password at all (`--no-password`); `Some` is
+/// checked by [`validate_password`].
 pub(crate) async fn new_account_problems(
     state: &AppState,
     name: &str,
@@ -305,10 +307,6 @@ pub(crate) async fn new_account_problems(
 
     if name.trim().is_empty() {
         errors.push(FieldError::on("name", "Username is required."));
-    }
-
-    if mail.trim().is_empty() {
-        errors.push(FieldError::on("mail", "Email is required."));
     }
 
     if let Some(password) = password
@@ -511,6 +509,10 @@ async fn send_welcome_mail(state: AppState, user: User) {
         }
         return;
     };
+    let Some(address) = user.mail_address() else {
+        // Nothing on file to notify: the account was created with no address.
+        return;
+    };
     let site_name = crate::models::SiteConfig::site_name(state.db())
         .await
         .unwrap_or_default();
@@ -537,15 +539,11 @@ async fn send_welcome_mail(state: AppState, user: User) {
         }
     };
     // The link is made when the mail is sent, as the password reset's is.
-    let message = crate::services::email::NewMail::account(
-        "admin_created_account",
-        &user.mail,
-        &subject,
-        &text,
-    )
-    .html(html)
-    .secret(crate::services::email::MailSecret::PasswordReset { user_id: user.id })
-    .dedupe(format!("admin-created-account:{}", user.id));
+    let message =
+        crate::services::email::NewMail::account("admin_created_account", address, &subject, &text)
+            .html(html)
+            .secret(crate::services::email::MailSecret::PasswordReset { user_id: user.id })
+            .dedupe(format!("admin-created-account:{}", user.id));
     match email_service.queue_now(message).await {
         Ok(_) => tracing::info!(user_id = %user.id, "welcome mail queued"),
         Err(e) => {
@@ -692,10 +690,6 @@ async fn edit_user_submit(
 
     if form.name.trim().is_empty() {
         errors.push(FieldError::on("name", "Username is required."));
-    }
-
-    if form.mail.trim().is_empty() {
-        errors.push(FieldError::on("mail", "Email is required."));
     }
 
     // Check if new username is taken by someone else
