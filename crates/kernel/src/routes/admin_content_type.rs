@@ -58,6 +58,9 @@ const FIELD_TYPE_OPTIONS: &[(&str, &str)] = &[
     ("email", "Email"),
     ("record_reference", "Reference"),
     ("category_reference", "Category reference (tags)"),
+    ("link", "Link"),
+    ("list", "List (fixed choices)"),
+    ("telephone", "Telephone"),
 ];
 
 /// The preview choices of a content type: value and English label,
@@ -1230,6 +1233,54 @@ struct FieldEditValues {
     cardinality: i32,
     category: Option<String>,
     filterable: bool,
+    /// A List field's allowed values, one `key|label` per line.
+    allowed_values: Option<String>,
+}
+
+/// Parse a List field's "Allowed values" textarea: one `key|label` per line,
+/// blank lines skipped, a line with no `|` using its text as both. Keys must
+/// be non empty, at most 255 characters, hold no `|` and be unique; labels
+/// must be non empty. Returns every refused line's message, or the parsed
+/// pairs.
+fn parse_allowed_values(text: &str) -> Result<Vec<(String, String)>, String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut values = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (key, label) = match line.split_once('|') {
+            Some((k, l)) => (k.trim(), l.trim()),
+            None => (line, line),
+        };
+        if key.is_empty() {
+            return Err(format!("\"{line}\": the key must not be empty."));
+        }
+        if key.chars().count() > 255 {
+            return Err(format!(
+                "\"{key}\": the key must be at most 255 characters."
+            ));
+        }
+        if label.is_empty() {
+            return Err(format!("\"{key}\": the label must not be empty."));
+        }
+        if !seen.insert(key.to_string()) {
+            return Err(format!("\"{key}\": every key must be unique."));
+        }
+        values.push((key.to_string(), label.to_string()));
+    }
+    Ok(values)
+}
+
+/// A List field's allowed values as the edit form's textarea shows them, one
+/// `key|label` per line.
+fn allowed_values_text(field: &trovato_sdk::types::FieldDefinition) -> String {
+    crate::content::field_value::list_options(&field.settings)
+        .into_iter()
+        .map(|(key, label)| format!("{key}|{label}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// The field edit form of `field` of `type_name`, showing `values`.
@@ -1274,6 +1325,21 @@ fn field_edit_form(
                 .weight(2),
         );
     }
+    if let Some(allowed_values) = &values.allowed_values {
+        form = form.element(
+            "allowed_values",
+            FormElement::textarea(6)
+                .title("Allowed values")
+                .description(
+                    "One value per line, as key|label (a line with no | uses the text as \
+                     both). Values already saved that name a key you remove here are not \
+                     changed.",
+                )
+                .default_value(allowed_values.clone())
+                .required()
+                .weight(2),
+        );
+    }
     form = form
         .element(
             "required",
@@ -1290,7 +1356,11 @@ fn field_edit_form(
             FormElement::input("number")
                 .title("Number of values")
                 .description(
-                    "Maximum number of values. Use 1 for a single value, -1 for unlimited.",
+                    if matches!(field.field_type, trovato_sdk::types::FieldType::Link) {
+                        "A Link field holds a single value: this must be 1."
+                    } else {
+                        "Maximum number of values. Use 1 for a single value, -1 for unlimited."
+                    },
                 )
                 .default_value(values.cardinality.to_string())
                 .attribute("min", "-1")
@@ -1343,12 +1413,14 @@ async fn render_field_edit(
     };
 
     let filterable = Filterable::of(state, type_name, field).await;
+    let is_list_field = matches!(field.field_type, trovato_sdk::types::FieldType::List);
     let values = values.unwrap_or_else(|| FieldEditValues {
         label: field.label.clone(),
         required: field.required,
         cardinality: field.cardinality,
         category: field_category(field).map(str::to_string),
         filterable: filterable.marked,
+        allowed_values: is_list_field.then(|| allowed_values_text(field)),
     });
     let path = format!("/admin/structure/types/{type_name}/fields/{field_name}/edit");
     let viewer = super::helpers::user_context_for(state, user).await;
@@ -1451,6 +1523,33 @@ async fn edit_field_submit(
             other.unwrap_or(1)
         }
     };
+    if matches!(field.field_type, trovato_sdk::types::FieldType::Link) && cardinality != 1 {
+        errors.push(ValidationError::field(
+            "cardinality",
+            "A Link field holds a single value: Number of values must be 1.",
+        ));
+    }
+
+    let is_list_field = matches!(field.field_type, trovato_sdk::types::FieldType::List);
+    let allowed_values_input = posted.get("allowed_values").unwrap_or_default().to_string();
+    let allowed_values = if is_list_field {
+        match parse_allowed_values(&allowed_values_input) {
+            Ok(values) if values.is_empty() => {
+                errors.push(ValidationError::field(
+                    "allowed_values",
+                    "At least one allowed value is required.",
+                ));
+                None
+            }
+            Ok(values) => Some(values),
+            Err(message) => {
+                errors.push(ValidationError::field("allowed_values", message));
+                None
+            }
+        }
+    } else {
+        None
+    };
 
     // A category reference keeps a category: the one chosen, which must exist.
     let category = match field_category(field) {
@@ -1486,6 +1585,7 @@ async fn edit_field_submit(
                     cardinality,
                     category,
                     filterable,
+                    allowed_values: is_list_field.then_some(allowed_values_input),
                 };
                 return render_field_edit(
                     &state,
@@ -1508,6 +1608,16 @@ async fn edit_field_submit(
             .await
     {
         tracing::error!(error = %e, "failed to change the field's category");
+        return render_server_error("Failed to update field.");
+    }
+
+    if let Some(values) = allowed_values
+        && let Err(e) = state
+            .content_types()
+            .set_field_allowed_values(&type_name, &field_name, &values)
+            .await
+    {
+        tracing::error!(error = %e, "failed to change the field's allowed values");
         return render_server_error("Failed to update field.");
     }
 

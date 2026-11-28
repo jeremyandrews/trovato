@@ -873,6 +873,11 @@ struct WidgetPreloadData {
     category_options: HashMap<String, Vec<TagWithDepth>>,
     /// Distinct values for `DynamicOptions` widgets, keyed by source field path.
     dynamic_options: HashMap<String, Vec<String>>,
+    /// A `List` field's allowed values (key, label), keyed by the filter's
+    /// field path (`fields.<name>`), for a `Text` (the default) widget on a
+    /// `List` field of the query's `item_type`: no new `ExposedWidget`
+    /// variant, the field's own type decides the control.
+    list_options: HashMap<String, Vec<(String, String)>>,
 }
 
 /// Pre-fetch all widget data required by the exposed filters of `query`.
@@ -893,9 +898,25 @@ async fn preload_widget_data(
     let all_exposed = &query.definition.filters;
     let mut category_options: HashMap<String, Vec<TagWithDepth>> = HashMap::new();
     let mut dynamic_options: HashMap<String, Vec<String>> = HashMap::new();
+    let mut list_options: HashMap<String, Vec<(String, String)>> = HashMap::new();
 
     for filter in query.definition.filters.iter().filter(|f| f.exposed) {
         match &filter.widget {
+            ExposedWidget::Text => {
+                if let Some(field_name) = filter.field.strip_prefix("fields.")
+                    && let Some(content_type) = state.content_types().get(item_type)
+                    && let Some(def) = content_type
+                        .fields
+                        .iter()
+                        .find(|f| f.field_name == field_name)
+                    && matches!(def.field_type, trovato_sdk::types::FieldType::List)
+                {
+                    list_options.insert(
+                        filter.field.clone(),
+                        crate::content::field_value::list_options(&def.settings),
+                    );
+                }
+            }
             ExposedWidget::CategorySelect { category } => {
                 if !category_options.contains_key(category) {
                     // No options from a vocabulary the viewer may not read
@@ -983,13 +1004,14 @@ async fn preload_widget_data(
                     dynamic_options.insert(source_field.clone(), values);
                 }
             }
-            ExposedWidget::Text | ExposedWidget::Boolean => {}
+            ExposedWidget::Boolean => {}
         }
     }
 
     WidgetPreloadData {
         category_options,
         dynamic_options,
+        list_options,
     }
 }
 
@@ -1176,11 +1198,22 @@ fn collect_exposed_filters(
                         "is_autocomplete": is_autocomplete,
                     })
                 }
-                ExposedWidget::Text => serde_json::json!({
-                    "field": f.field,
-                    "label": label,
-                    "widget_type": "text",
-                }),
+                ExposedWidget::Text => match preload.list_options.get(&f.field) {
+                    Some(options) => serde_json::json!({
+                        "field": f.field,
+                        "label": label,
+                        "widget_type": "list_select",
+                        "options": options
+                            .iter()
+                            .map(|(key, label)| serde_json::json!({ "value": key, "label": label }))
+                            .collect::<Vec<_>>(),
+                    }),
+                    None => serde_json::json!({
+                        "field": f.field,
+                        "label": label,
+                        "widget_type": "text",
+                    }),
+                },
             }
         })
         .collect()
@@ -1307,13 +1340,31 @@ fn render_exposed_filter_form(
                     html.push_str("</select>\n");
                 }
             }
-            ExposedWidget::Text => {
-                html.push_str(&format!(
-                    "<input type=\"text\" id=\"filter-{field_escaped}\" \
-                     name=\"{field_escaped}\" value=\"{value}\" class=\"form-control\">\n",
-                    value = escape_html(current),
-                ));
-            }
+            ExposedWidget::Text => match preload.list_options.get(&filter.field) {
+                Some(options) => {
+                    html.push_str(&format!(
+                        "<select id=\"filter-{field_escaped}\" name=\"{field_escaped}\" \
+                         class=\"form-control\">\n\
+                         <option value=\"\">Any</option>\n"
+                    ));
+                    for (key, label) in options {
+                        let selected = if current == key { " selected" } else { "" };
+                        html.push_str(&format!(
+                            "<option value=\"{}\"{selected}>{}</option>\n",
+                            escape_html(key),
+                            escape_html(label)
+                        ));
+                    }
+                    html.push_str("</select>\n");
+                }
+                None => {
+                    html.push_str(&format!(
+                        "<input type=\"text\" id=\"filter-{field_escaped}\" \
+                         name=\"{field_escaped}\" value=\"{value}\" class=\"form-control\">\n",
+                        value = escape_html(current),
+                    ));
+                }
+            },
         }
 
         html.push_str("</div>\n");
@@ -1619,6 +1670,7 @@ mod widget_tests {
         WidgetPreloadData {
             category_options: HashMap::new(),
             dynamic_options: HashMap::new(),
+            list_options: HashMap::new(),
         }
     }
 

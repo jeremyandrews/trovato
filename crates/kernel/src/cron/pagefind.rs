@@ -406,18 +406,36 @@ pub async fn indexable_documents_for(
             .push((row.field_name, pagefind_weight(letter)));
     }
 
-    let mut text_fields: HashMap<String, Vec<String>> = HashMap::new();
+    // A Telephone field's name, by type, so a config-only entry below (an
+    // admin can give any field name a search weight, not only a text one,
+    // same gap `item_search_vector`'s own `field_kinds` CTE closes) never
+    // indexes a phone number either: a field this type-agnostic and this
+    // other backend never agree is no better than one backend keeping the
+    // guarantee and the other leaking it.
+    let mut telephone_fields: HashMap<String, std::collections::HashSet<String>> = HashMap::new();
+    let mut text_fields: HashMap<String, Vec<SearchableField>> = HashMap::new();
     for row in type_rows {
-        let names = text_fields.entry(row.item_type).or_default();
+        let names = text_fields.entry(row.item_type.clone()).or_default();
+        let telephones = telephone_fields.entry(row.item_type).or_default();
         if let Some(serde_json::Value::Array(defs)) = row.fields {
             for def in defs {
                 if let Ok(def) = serde_json::from_value::<trovato_sdk::types::FieldDefinition>(def)
-                    && crate::search::is_text_field(&def.field_type)
                 {
-                    names.push(def.field_name);
+                    if crate::search::is_text_field(&def.field_type) {
+                        names.push(SearchableField {
+                            name: def.field_name,
+                            kind: SearchFieldKind::of(&def.field_type, &def.settings),
+                        });
+                    } else if matches!(def.field_type, trovato_sdk::types::FieldType::Telephone) {
+                        telephones.insert(def.field_name);
+                    }
                 }
             }
         }
+    }
+    for (bundle, names) in &mut config_map {
+        let telephones = telephone_fields.get(bundle);
+        names.retain(|(name, _)| !telephones.is_some_and(|t| t.contains(name)));
     }
 
     // Every visible comment on every visible item whose type has comments in
@@ -493,6 +511,7 @@ pub async fn indexable_documents_for(
         .map(|r| (r.source, r.alias))
         .collect();
 
+    let empty_telephones = std::collections::HashSet::new();
     let mut documents = Vec::with_capacity(visible.len());
     for item in &visible {
         let fields = searchable_fields(
@@ -505,6 +524,9 @@ pub async fn indexable_documents_for(
                 .get(&item.item_type)
                 .map(Vec::as_slice)
                 .unwrap_or_default(),
+            telephone_fields
+                .get(&item.item_type)
+                .unwrap_or(&empty_telephones),
         );
 
         // Use friendly URL alias if available, otherwise /item/{id}
@@ -513,9 +535,20 @@ pub async fn indexable_documents_for(
 
         // Extract structured metadata from fields for richer result cards
         // The long text field under either of its two names (BL-21), so a
-        // `page` item's result card is not left with no description.
+        // `page` item's result card is not left with no description. Not
+        // when that name is a Telephone field on this type: the description
+        // meta is shown in a result snippet, so a phone number has no more
+        // business there than it does in the indexed content.
+        let item_telephones = telephone_fields.get(&item.item_type);
         let description = extract_field_text(&item.fields, "field_description")
-            .or_else(|| crate::content::body_field::body_text(&item.fields))
+            .or_else(|| {
+                let name = crate::content::body_field::body_field_name(&item.fields)?;
+                if item_telephones.is_some_and(|t| t.contains(name)) {
+                    None
+                } else {
+                    crate::content::body_field::body_text(&item.fields)
+                }
+            })
             .unwrap_or_default();
         // Plain text, then truncated, for a clean description meta.
         let description_clean = plain_text(&description);
@@ -671,6 +704,35 @@ fn truncate_meta(s: &str, max_len: usize) -> String {
     format!("{}…", &s[..end])
 }
 
+/// What text a field type contributes to search: a `Text`/`TextLong` value
+/// (and its summary), a Link's `title` (never its `uri`), or a List's label
+/// for the key it stores (looked up in its own `allowed_values`). A
+/// Telephone's number is never indexed.
+#[derive(Debug, Clone)]
+enum SearchFieldKind {
+    Text,
+    Link,
+    List(Vec<(String, String)>),
+}
+
+impl SearchFieldKind {
+    fn of(field_type: &trovato_sdk::types::FieldType, settings: &serde_json::Value) -> Self {
+        use trovato_sdk::types::FieldType;
+        match field_type {
+            FieldType::Link => Self::Link,
+            FieldType::List => Self::List(crate::content::field_value::list_options(settings)),
+            _ => Self::Text,
+        }
+    }
+}
+
+/// One field name this type declares text for, and what kind of text it is.
+#[derive(Debug, Clone)]
+struct SearchableField {
+    name: String,
+    kind: SearchFieldKind,
+}
+
 /// Every text field an item has text in, as plain text, heaviest first, then by
 /// field name.
 ///
@@ -683,19 +745,36 @@ fn truncate_meta(s: &str, max_len: usize) -> String {
 /// access pass, so a field the seam dropped is not there to be read.
 fn searchable_fields(
     fields: &serde_json::Value,
-    text_fields: &[String],
+    text_fields: &[SearchableField],
     configs: &[(String, f32)],
+    telephone_fields: &std::collections::HashSet<String>,
 ) -> Vec<IndexedField> {
-    let mut names: Vec<&str> = text_fields.iter().map(String::as_str).collect();
-    names.extend(configs.iter().map(|(name, _)| name.as_str()));
-    names.extend(crate::content::body_field::BODY_FIELD_NAMES);
-    names.sort_unstable();
-    names.dedup();
+    let mut names: Vec<(&str, &SearchFieldKind)> = text_fields
+        .iter()
+        .map(|f| (f.name.as_str(), &f.kind))
+        .collect();
+    for (name, _) in configs {
+        if !names.iter().any(|(n, _)| *n == name) {
+            names.push((name.as_str(), &SearchFieldKind::Text));
+        }
+    }
+    // The long text field's fallback names (BL-21) assume a field by either
+    // name is text, which held until a type could name a field `field_body`
+    // or `body` and give it a different kind: a Telephone field with one of
+    // those names must still never be indexed, so it is excluded here too,
+    // the same as a `search_field_config` entry.
+    for name in crate::content::body_field::BODY_FIELD_NAMES {
+        if !names.iter().any(|(n, _)| *n == name) && !telephone_fields.contains(name) {
+            names.push((name, &SearchFieldKind::Text));
+        }
+    }
+    names.sort_unstable_by_key(|(n, _)| *n);
+    names.dedup_by_key(|(n, _)| *n);
 
     let mut indexed: Vec<IndexedField> = names
         .into_iter()
-        .filter_map(|name| {
-            let text = field_plain_text(fields, name)?;
+        .filter_map(|(name, kind)| {
+            let text = field_plain_text(fields, name, kind)?;
             let weight = configs
                 .iter()
                 .find(|(configured, _)| configured == name)
@@ -717,11 +796,17 @@ fn searchable_fields(
     indexed
 }
 
-/// One text field's searchable text, as plain text: its value, and its summary
-/// when it has one. A field holding more than one value (an array of either
-/// shape) contributes every value. `None` when nothing is left.
-fn field_plain_text(fields: &serde_json::Value, name: &str) -> Option<String> {
-    fn collect<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
+/// One field's searchable text, as plain text, read the way its
+/// [`SearchFieldKind`] says to: a `Text`/`TextLong` value (and its summary), a
+/// Link's `title`, or a List's label for the key it stores. A field holding
+/// more than one value (an array) contributes every value. `None` when
+/// nothing is left.
+fn field_plain_text(
+    fields: &serde_json::Value,
+    name: &str,
+    kind: &SearchFieldKind,
+) -> Option<String> {
+    fn collect_text<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
         match value {
             serde_json::Value::String(s) => out.push(s),
             serde_json::Value::Object(obj) => {
@@ -733,15 +818,66 @@ fn field_plain_text(fields: &serde_json::Value, name: &str) -> Option<String> {
             }
             serde_json::Value::Array(values) => {
                 for v in values {
-                    collect(v, out);
+                    collect_text(v, out);
                 }
             }
             _ => {}
         }
     }
-    let mut parts = Vec::new();
-    collect(fields.get(name)?, &mut parts);
-    let text = plain_text(&parts.join(" "));
+    fn collect_link<'a>(value: &'a serde_json::Value, out: &mut Vec<&'a str>) {
+        match value {
+            serde_json::Value::Object(obj) => {
+                if let Some(serde_json::Value::String(s)) = obj.get("title") {
+                    out.push(s);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for v in values {
+                    collect_link(v, out);
+                }
+            }
+            _ => {}
+        }
+    }
+    fn collect_list(
+        value: &serde_json::Value,
+        options: &[(String, String)],
+        out: &mut Vec<String>,
+    ) {
+        match value {
+            serde_json::Value::String(key) => {
+                if let Some((_, label)) = options.iter().find(|(k, _)| k == key) {
+                    out.push(label.clone());
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for v in values {
+                    collect_list(v, options, out);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let value = fields.get(name)?;
+    let joined = match kind {
+        SearchFieldKind::Text => {
+            let mut parts = Vec::new();
+            collect_text(value, &mut parts);
+            parts.join(" ")
+        }
+        SearchFieldKind::Link => {
+            let mut parts = Vec::new();
+            collect_link(value, &mut parts);
+            parts.join(" ")
+        }
+        SearchFieldKind::List(options) => {
+            let mut parts = Vec::new();
+            collect_list(value, options, &mut parts);
+            parts.join(" ")
+        }
+    };
+    let text = plain_text(&joined);
     (!text.is_empty()).then_some(text)
 }
 

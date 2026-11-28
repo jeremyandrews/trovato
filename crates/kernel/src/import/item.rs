@@ -113,7 +113,7 @@ pub(crate) async fn import_item(run: &mut Run<'_>, r: ItemRecord) -> Result<Outc
         .clone()
         .unwrap_or_else(|| run.default_language.clone());
     require_language(run, &language).await?;
-    let fields = r
+    let mut fields = r
         .fields
         .clone()
         .unwrap_or_else(|| Value::Object(Default::default()));
@@ -127,6 +127,16 @@ pub(crate) async fn import_item(run: &mut Run<'_>, r: ItemRecord) -> Result<Outc
             r.id,
             stored.item_type,
             r.item_type
+        );
+    }
+    // A Telephone value is filled in with its E.164 form, when it has one,
+    // before the write is checked: the same canonicalisation every other
+    // write path runs.
+    if let Some(content_type) = run.state.content_types().get(&r.item_type) {
+        crate::content::field_value::canonicalize_field_values(
+            &mut fields,
+            &content_type.fields,
+            stored.as_ref().map(|s| &s.fields),
         );
     }
     let refs = check_fields(

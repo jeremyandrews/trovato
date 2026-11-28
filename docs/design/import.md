@@ -238,7 +238,11 @@ the kernel already makes on its own writes:
   references, field cardinality and category references
   (`field_values::validate_field_values`), and the file references the fields
   hold (`file_refs`), which are recorded with the item as a form save records
-  them. The title length is the forms' limit.
+  them. The title length is the forms' limit. A Link field's `uri` must be an
+  absolute `http`/`https` URL or a local path; a List field's value must be one
+  of its `settings.allowed_values` keys; a Telephone field is filled in with
+  its E.164 form (when one can be derived from it) before the check runs, as
+  on every other write path.
 - **References**: every id a record names (author, item, parent comment) must
   be stored or on an earlier line.
 - **The other types**: the checks their forms make, listed per type above.

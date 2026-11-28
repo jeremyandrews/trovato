@@ -205,6 +205,9 @@ fn parse_field_type(field_type: &str) -> Option<trovato_sdk::types::FieldType> {
             max_items: None,
         },
         "blocks" => FieldType::Blocks,
+        "link" => FieldType::Link,
+        "list" => FieldType::List,
+        "telephone" => FieldType::Telephone,
         _ => return None,
     })
 }
@@ -814,6 +817,44 @@ impl ContentTypeRegistry {
         *current = category;
         self.persist_fields(type_name, &def).await?;
         info!(type_name = %type_name, field = %field_name, "field category changed");
+        Ok(())
+    }
+
+    /// Set a `List` field's allowed values, replacing whatever it held.
+    ///
+    /// Values already stored that name a key no longer in `values` are not
+    /// rewritten: the next write of the field is checked against the new
+    /// list, and the item page shows the escaped key for one not on it.
+    pub async fn set_field_allowed_values(
+        &self,
+        type_name: &str,
+        field_name: &str,
+        values: &[(String, String)],
+    ) -> Result<()> {
+        let mut def = self
+            .get_or_load(type_name)
+            .await?
+            .context("content type not found")?;
+        let field = def
+            .fields
+            .iter_mut()
+            .find(|f| f.field_name == field_name)
+            .context("field not found")?;
+        if !matches!(field.field_type, FieldType::List) {
+            anyhow::bail!("field '{field_name}' is not a list");
+        }
+        if !field.settings.is_object() {
+            field.settings = serde_json::Value::Object(Default::default());
+        }
+        if let Some(settings) = field.settings.as_object_mut() {
+            let array: Vec<serde_json::Value> = values
+                .iter()
+                .map(|(key, label)| serde_json::json!({ "key": key, "label": label }))
+                .collect();
+            settings.insert("allowed_values".into(), serde_json::Value::Array(array));
+        }
+        self.persist_fields(type_name, &def).await?;
+        info!(type_name = %type_name, field = %field_name, "field allowed values changed");
         Ok(())
     }
 

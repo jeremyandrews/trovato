@@ -208,6 +208,9 @@ Trovato supports these field types:
 | `Integer` | Whole number | Attendee count |
 | `Float` | Decimal number | Rating score |
 | `Email` | Email address | Contact email |
+| `Link` | A hyperlink, stored as `{"uri", "title"?, "new_tab"?}` | Website, sponsor link |
+| `List` | One choice from a fixed set of keys, with labels in `settings.allowed_values` | Status, difficulty level |
+| `Telephone` | A phone number, stored as `{"value", "e164"?}` | Organizer phone |
 
 <details>
 <summary>Under the Hood: JSONB Field Storage</summary>

@@ -86,16 +86,22 @@ impl SearchSwitches {
     }
 }
 
-/// Whether a field type carries text that search indexes: `Text` (string) and
-/// `TextLong` (long text, with or without a summary). Files, references,
-/// numbers, dates, booleans and structured fields do not.
+/// Whether a field type carries text that search indexes: `Text` (string),
+/// `TextLong` (long text, with or without a summary), `Link` (its `title`,
+/// never its `uri`) and `List` (the label of its stored key, not the key
+/// itself). Files, references, numbers, dates, booleans, Telephone and
+/// structured fields do not.
 ///
-/// Both backends index every field of these types: the Pagefind export and
-/// the `item_search_vector` SQL function, which reads the same two types out
-/// of `item_type.settings`.
+/// Both backends index the same fields: the Pagefind export
+/// (`cron::pagefind::SearchFieldKind`) and the `item_search_vector` SQL
+/// function, which reads the same field list and kinds out of
+/// `item_type.settings`.
 pub fn is_text_field(field_type: &trovato_sdk::types::FieldType) -> bool {
     use trovato_sdk::types::FieldType;
-    matches!(field_type, FieldType::Text { .. } | FieldType::TextLong)
+    matches!(
+        field_type,
+        FieldType::Text { .. } | FieldType::TextLong | FieldType::Link | FieldType::List
+    )
 }
 
 /// Search result with ranking information.
