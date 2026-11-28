@@ -266,14 +266,6 @@ impl Client {
         self.post_form(on, path, &all).await
     }
 
-    /// A form post carrying a fresh `_token` (minted on the same node).
-    async fn submit(&self, on: On, path: &str, fields: &[(&str, String)]) -> Resp {
-        let token = self.csrf(on).await;
-        let mut all = vec![("_token", token), ("_form_build_id", "x".to_string())];
-        all.extend(fields.iter().cloned());
-        self.post_form(on, path, &all).await
-    }
-
     async fn login(&self, on: On, name: &str, password: &str) -> Resp {
         self.send(
             on,
