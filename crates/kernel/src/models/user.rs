@@ -77,6 +77,32 @@ pub struct UpdateUser {
     pub data: Option<serde_json::Value>,
 }
 
+/// An account's fields a change to which is a security event, as they were
+/// before an update ([`User::update_returning_before`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AccountBefore {
+    /// The username.
+    pub name: String,
+    /// The e-mail address.
+    pub mail: String,
+    /// `1` active, `0` blocked.
+    pub status: i16,
+    /// The superuser flag.
+    pub is_admin: bool,
+}
+
+impl AccountBefore {
+    /// `user`'s fields as they are now.
+    pub fn of(user: &User) -> Self {
+        Self {
+            name: user.name.clone(),
+            mail: user.mail.clone(),
+            status: user.status,
+            is_admin: user.is_admin,
+        }
+    }
+}
+
 impl User {
     /// Check if this is the anonymous user.
     pub fn is_anonymous(&self) -> bool {
@@ -155,7 +181,7 @@ impl User {
     }
 
     /// Create a new user (active by default).
-    pub async fn create(pool: &PgPool, input: CreateUser) -> Result<Self> {
+    pub async fn create<'e, E: sqlx::PgExecutor<'e>>(pool: E, input: CreateUser) -> Result<Self> {
         let id = Uuid::now_v7();
         let pass = stored_password(&input.password)?;
 
@@ -221,6 +247,33 @@ impl User {
 
     /// Update a user.
     pub async fn update(pool: &PgPool, id: Uuid, input: UpdateUser) -> Result<Option<Self>> {
+        let mut conn = pool
+            .acquire()
+            .await
+            .context("failed to acquire a connection to update a user")?;
+        Ok(Self::update_returning_before(&mut conn, id, input)
+            .await?
+            .map(|(user, _)| user))
+    }
+
+    /// [`Self::update`] on `conn` (a transaction the caller commits), also
+    /// returning the fields a change to which is a security event, as they
+    /// were before the update.
+    ///
+    /// One statement either way: the earlier values come from a subquery the
+    /// `UPDATE` joins, which reads the row as it was before the statement
+    /// changed it, so recording what changed costs no read of its own.
+    ///
+    /// The subquery locks the row (`FOR UPDATE`). Without the lock it would
+    /// read the statement's snapshot, and an update that waited on a
+    /// concurrent one would report the values from before that one committed:
+    /// an address the other request had just set, then replaced here, would
+    /// appear in no event at all. Locking reads the row as last committed.
+    pub async fn update_returning_before(
+        conn: &mut sqlx::PgConnection,
+        id: Uuid,
+        input: UpdateUser,
+    ) -> Result<Option<(Self, AccountBefore)>> {
         // Build dynamic update query
         let mut query = String::from("UPDATE users SET ");
         let mut params: Vec<String> = Vec::new();
@@ -256,16 +309,28 @@ impl User {
         }
 
         if params.is_empty() {
-            // Nothing to update, just return the user
-            return Self::find_by_id(pool, id).await;
+            // Nothing to update: the account as it is, unchanged.
+            let user = sqlx::query_as::<_, User>("SELECT * FROM users WHERE id = $1")
+                .bind(id)
+                .fetch_optional(&mut *conn)
+                .await
+                .context("failed to fetch user by id")?;
+            return Ok(user.map(|u| {
+                let before = AccountBefore::of(&u);
+                (u, before)
+            }));
         }
 
         query.push_str(&params.join(", "));
-        query.push_str(&format!(" WHERE id = ${param_idx} RETURNING *"));
+        query.push_str(&format!(
+            " FROM (SELECT id, name, mail, status, is_admin FROM users WHERE id = ${param_idx} \
+             FOR UPDATE) \
+             AS before WHERE users.id = before.id \
+             RETURNING users.*, before.name AS before_name, before.mail AS before_mail, \
+             before.status AS before_status, before.is_admin AS before_is_admin"
+        ));
 
-        // Use a simpler approach - fetch and update
-        // In production, you'd use a query builder like sea-query
-        let mut query_builder = sqlx::query_as::<_, User>(AssertSqlSafe(query));
+        let mut query_builder = sqlx::query(AssertSqlSafe(query));
 
         if let Some(ref name) = input.name {
             query_builder = query_builder.bind(name);
@@ -290,12 +355,22 @@ impl User {
         }
         query_builder = query_builder.bind(id);
 
-        let user = query_builder
-            .fetch_optional(pool)
+        let Some(row) = query_builder
+            .fetch_optional(&mut *conn)
             .await
-            .context("failed to update user")?;
-
-        Ok(user)
+            .context("failed to update user")?
+        else {
+            return Ok(None);
+        };
+        use sqlx::{FromRow, Row};
+        let user = User::from_row(&row).context("failed to read the updated user")?;
+        let before = AccountBefore {
+            name: row.try_get("before_name")?,
+            mail: row.try_get("before_mail")?,
+            status: row.try_get("before_status")?,
+            is_admin: row.try_get("before_is_admin")?,
+        };
+        Ok(Some((user, before)))
     }
 
     /// Update the user's password.
@@ -312,11 +387,36 @@ impl User {
         Ok(result.rows_affected() > 0)
     }
 
+    /// Store `hashed` (from [`hash_password`], made before the caller's
+    /// transaction began) as the account's password, on `conn`.
+    ///
+    /// Returns whether the account had a password before, read in the same
+    /// statement (from the row as last committed, locked as
+    /// [`Self::update_returning_before`] locks it), or `None` when there is
+    /// no such account.
+    pub(crate) async fn replace_password<'e, E: sqlx::PgExecutor<'e>>(
+        executor: E,
+        id: Uuid,
+        hashed: &str,
+    ) -> Result<Option<bool>> {
+        sqlx::query_scalar(
+            "UPDATE users SET pass = $1 \
+             FROM (SELECT id, pass <> '' AS had_password FROM users WHERE id = $2 FOR UPDATE) \
+             AS before \
+             WHERE users.id = before.id RETURNING before.had_password",
+        )
+        .bind(hashed)
+        .bind(id)
+        .fetch_optional(executor)
+        .await
+        .context("failed to update password")
+    }
+
     /// Clear the user's password, leaving their passkeys as the way in.
     ///
     /// Whether they may go without one is the caller's to decide
     /// (`AccountAccess::can_remove_password`).
-    pub async fn clear_password(pool: &PgPool, id: Uuid) -> Result<bool> {
+    pub async fn clear_password<'e, E: sqlx::PgExecutor<'e>>(pool: E, id: Uuid) -> Result<bool> {
         let result = sqlx::query("UPDATE users SET pass = '' WHERE id = $1")
             .bind(id)
             .execute(pool)
@@ -435,31 +535,38 @@ impl User {
 
     /// Delete a user.
     pub async fn delete(pool: &PgPool, id: Uuid) -> Result<bool> {
+        let mut tx = pool
+            .begin()
+            .await
+            .context("failed to start the account deletion transaction")?;
+        let deleted = Self::delete_in(&mut tx, id).await?;
+        tx.commit()
+            .await
+            .context("failed to commit the account deletion")?;
+        Ok(deleted)
+    }
+
+    /// [`Self::delete`] inside `tx`, which the caller commits.
+    pub async fn delete_in(
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        id: Uuid,
+    ) -> Result<bool> {
         // Prevent deletion of anonymous user
         if id == ANONYMOUS_USER_ID {
             anyhow::bail!("cannot delete anonymous user");
         }
 
-        let mut tx = pool
-            .begin()
-            .await
-            .context("failed to start the account deletion transaction")?;
-
         // Everything that points at this account and is not `ON DELETE CASCADE`
         // has to be dealt with first, or the delete below fails on a foreign key.
         // One transaction, because a half-reattributed account is worse than
         // either outcome.
-        Self::reattribute_content(&mut tx, id).await?;
+        Self::reattribute_content(tx, id).await?;
 
         let result = sqlx::query("DELETE FROM users WHERE id = $1")
             .bind(id)
-            .execute(&mut *tx)
+            .execute(&mut **tx)
             .await
             .context("failed to delete user")?;
-
-        tx.commit()
-            .await
-            .context("failed to commit the account deletion")?;
 
         Ok(result.rows_affected() > 0)
     }

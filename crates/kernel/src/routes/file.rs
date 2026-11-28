@@ -186,8 +186,33 @@ pub(crate) async fn served_file_cache_control(
 /// holds image derivatives, which are only served through the image style route
 /// (it checks access against the original). Callers still apply their own
 /// traversal guard.
-fn is_original_upload_path(path: &str) -> bool {
-    path.split('/').next() != Some("styles") && path.split('/').all(|c| !c.is_empty() && c != ".")
+///
+/// Trovato's own working names are refused too: the startup write check's
+/// `.trovato-write-check-*` and a local write's `.trovato-tmp-*`, which
+/// a crash can leave behind and which have no `file_managed` row, so the
+/// access check would otherwise treat them as unmanaged files anyone may fetch.
+pub(crate) fn is_original_upload_path(path: &str) -> bool {
+    !path
+        .split('/')
+        .next()
+        .is_some_and(|first| first.eq_ignore_ascii_case("styles"))
+        && path
+            .split('/')
+            .all(|c| !c.is_empty() && c != "." && !is_working_name(c))
+}
+
+/// Whether a path with no `file_managed` row may be served as an unmanaged
+/// file: not when it is a managed file spelled in other letter case, which a
+/// case-insensitive directory would read as that (perhaps private) file.
+pub(crate) async fn unmanaged_is_servable(state: &AppState, uri: &str) -> anyhow::Result<bool> {
+    Ok(!state.files().is_other_spelling_of_managed(uri).await?)
+}
+
+/// One of Trovato's own working file names (see [`is_original_upload_path`]).
+fn is_working_name(c: &str) -> bool {
+    // Case-blind, for a case-insensitive local filesystem.
+    let c = c.to_ascii_lowercase();
+    c.starts_with(".trovato-write-check-") || c.starts_with(".trovato-tmp-")
 }
 
 /// Get file info.
@@ -267,9 +292,16 @@ async fn serve_uploaded_file(
     let viewer = crate::routes::item::get_user_context(&session, &state).await;
     let content_type = match state.items().file_access(&uri, &viewer).await {
         Ok(FileAccess::Allowed { filemime }) => filemime,
-        Ok(FileAccess::Unmanaged) => mime_for_filename(path)
-            .unwrap_or("application/octet-stream")
-            .to_string(),
+        Ok(FileAccess::Unmanaged) => match unmanaged_is_servable(&state, &uri).await {
+            Ok(true) => mime_for_filename(path)
+                .unwrap_or("application/octet-stream")
+                .to_string(),
+            Ok(false) => return StatusCode::NOT_FOUND.into_response(),
+            Err(e) => {
+                warn!(error = %format!("{e:#}"), path = %path, "failed to authorize file access");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        },
         Ok(FileAccess::Denied) => return StatusCode::NOT_FOUND.into_response(),
         Err(e) => {
             warn!(error = %e, path = %path, "failed to authorize file access");
@@ -489,6 +521,17 @@ mod tests {
         assert!(is_original_upload_path("photo.jpg"));
         assert!(is_original_upload_path("file..name.txt"));
         assert!(is_original_upload_path("stylesheet/notes.txt"));
+    }
+
+    #[test]
+    fn original_upload_path_rejects_trovato_working_names() {
+        assert!(!is_original_upload_path(".trovato-write-check-0197"));
+        assert!(!is_original_upload_path(".Trovato-Write-Check-0197"));
+        assert!(!is_original_upload_path("Styles/w400/photo.jpg"));
+        assert!(!is_original_upload_path("STYLES/w400/photo.jpg"));
+        assert!(!is_original_upload_path("2026/11/.trovato-tmp-0197abc"));
+        assert!(is_original_upload_path("2026/11/a_trovato-tmp.jpg"));
+        assert!(is_original_upload_path(".well-known/x.txt"));
     }
 
     #[test]

@@ -184,7 +184,12 @@ fn removing_a_password_goes_through_the_user_service() {
         let users = app.state.users();
         assert!(!users.find_by_id(id).await.unwrap().unwrap().pass.is_empty());
 
-        assert!(users.remove_password(id, &admin()).await.unwrap());
+        // `password.removed` commits with the change (B277).
+        let event = trovato_kernel::audit::SecurityEvent::new(
+            trovato_kernel::audit::SecurityEventKind::PasswordRemoved,
+        )
+        .user(id);
+        assert!(users.remove_password(id, &admin(), event).await.unwrap());
         assert!(
             users.find_by_id(id).await.unwrap().unwrap().pass.is_empty(),
             "the cached user has no password either"

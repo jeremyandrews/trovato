@@ -49,6 +49,16 @@ pub struct ImageEffect {
     pub output_format: Option<String>,
 }
 
+/// The file store URI of `original_path`'s derivative in `style_name`:
+/// `local://styles/<style>/<path>`, beside the originals, so with an S3 store
+/// every server shares one copy, and with a directory it is the same file the
+/// disk cache always used (`UPLOADS_DIR/styles/...`). The `/files/` route never
+/// serves this tree (`is_original_upload_path`); derivatives are served only by
+/// the image style route, which checks access against the original.
+pub fn derivative_uri(style_name: &str, original_path: &str) -> String {
+    format!("local://styles/{style_name}/{original_path}")
+}
+
 /// Image style service.
 #[derive(Clone)]
 pub struct ImageStyleService {

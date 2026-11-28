@@ -13,6 +13,7 @@ use uuid::Uuid;
 
 use crate::audit::{SecurityEvent, SecurityEventKind};
 use crate::models::Role;
+use crate::models::role::GrantDiff;
 use crate::permissions::PermissionService;
 use crate::services::audit::AuditTrail;
 
@@ -31,23 +32,52 @@ struct RoleServiceInner {
     audit: AuditTrail,
 }
 
-/// Record a role assigned to (`change = "added"`) or removed from
-/// (`"removed"`) an account: a content audit row and `user.roles_changed`.
+/// Write `user.roles_changed` for a role assigned to (`change = "added"`) or
+/// removed from (`"removed"`) an account, on `conn`: the transaction that
+/// makes the change, so the two commit together. Returns the role's name,
+/// for [`record_membership`] once the change has committed.
 ///
 /// [`RoleService`] calls it for every membership change it makes, and the
-/// command line, which writes memberships without a running site, calls it
-/// directly.
-pub async fn audit_membership(
+/// command line and `trovato import`, which write memberships without a
+/// running site, call it directly.
+///
+/// # Errors
+///
+/// When the role cannot be read or the event cannot be written; the caller's
+/// transaction must then roll back.
+pub async fn membership_event_in(
     audit: &AuditTrail,
-    pool: &PgPool,
+    conn: &mut sqlx::PgConnection,
     user_id: Uuid,
     role_id: Uuid,
     change: &str,
-) -> Result<()> {
-    let name = Role::find_by_id(pool, role_id)
+) -> Result<String> {
+    let name = Role::find_by_id(&mut *conn, role_id)
         .await?
         .map(|r| r.name)
         .unwrap_or_default();
+    audit
+        .security_in(
+            conn,
+            SecurityEvent::new(SecurityEventKind::UserRolesChanged)
+                .user(user_id)
+                .detail("change", change)
+                .detail("role", &name)
+                .detail("role_id", role_id),
+        )
+        .await?;
+    Ok(name)
+}
+
+/// Record a committed membership change (see [`membership_event_in`]) as a
+/// content audit row, when `trovato_audit_log` is enabled.
+pub async fn record_membership(
+    audit: &AuditTrail,
+    user_id: Uuid,
+    role_id: Uuid,
+    name: &str,
+    change: &str,
+) {
     audit
         .record(
             "roles",
@@ -57,16 +87,31 @@ pub async fn audit_membership(
             serde_json::json!({ "change": change, "role": name, "role_id": role_id }),
         )
         .await;
-    audit
-        .security(
-            SecurityEvent::new(SecurityEventKind::UserRolesChanged)
-                .user(user_id)
-                .detail("change", change)
-                .detail("role", &name)
-                .detail("role_id", role_id),
-        )
-        .await;
-    Ok(())
+}
+
+/// The security event for a role written, deleted or renamed.
+fn role_event(kind: SecurityEventKind, role_id: Uuid, name: &str) -> SecurityEvent {
+    SecurityEvent::new(kind)
+        .detail("role_id", role_id)
+        .detail("role", name)
+}
+
+/// A membership change [`RoleService::assign_in`] or
+/// [`RoleService::remove_in`] made, for its audit row once it commits.
+#[derive(Debug, Clone)]
+pub struct MembershipChange {
+    pub role_id: Uuid,
+    /// The role's name, as `user.roles_changed` recorded it.
+    pub name: String,
+    /// `added` or `removed`.
+    pub change: &'static str,
+}
+
+/// What changed in a role's grants, for its events and its audit row.
+struct GrantChange {
+    name: String,
+    granted: Vec<String>,
+    revoked: Vec<String>,
 }
 
 impl RoleService {
@@ -81,10 +126,10 @@ impl RoleService {
         }
     }
 
-    /// Record a role write: a content audit row and a security event.
-    async fn audit_role(&self, action: &str, kind: SecurityEventKind, role_id: Uuid, name: &str) {
-        let audit = &self.inner.audit;
-        audit
+    /// Record a committed role write as a content audit row.
+    async fn record_role(&self, action: &str, role_id: Uuid, name: &str) {
+        self.inner
+            .audit
             .record(
                 action,
                 "role",
@@ -93,58 +138,84 @@ impl RoleService {
                 serde_json::json!({ "name": name }),
             )
             .await;
-        audit
-            .security(
-                SecurityEvent::new(kind)
-                    .detail("role_id", role_id)
-                    .detail("role", name),
-            )
-            .await;
     }
 
-    /// Record a change to a role's grants, if there was one.
-    async fn audit_grants(&self, role_id: Uuid, before: &[String]) -> Result<()> {
-        let after = Role::get_permissions(&self.inner.pool, role_id).await?;
-        let granted: Vec<&String> = after.iter().filter(|p| !before.contains(p)).collect();
-        let revoked: Vec<&String> = before.iter().filter(|p| !after.contains(p)).collect();
-        if granted.is_empty() && revoked.is_empty() {
-            return Ok(());
+    /// Write `role.permissions_changed` for `diff` (what a write on `tx`
+    /// changed), there, unless it changed nothing. Returns the change, for
+    /// [`Self::record_grants`] once it has committed.
+    ///
+    /// The lists are what the write's own statements changed, not a
+    /// comparison of the grants before and after it: a grant another
+    /// transaction makes meanwhile is that transaction's to record.
+    async fn grants_event_in(
+        &self,
+        tx: &mut sqlx::PgConnection,
+        role_id: Uuid,
+        diff: GrantDiff,
+    ) -> Result<Option<GrantChange>> {
+        if diff.is_empty() {
+            return Ok(None);
         }
-        let name = Role::find_by_id(&self.inner.pool, role_id)
+        let GrantDiff { granted, revoked } = diff;
+        let name = Role::find_by_id(&mut *tx, role_id)
             .await?
             .map(|r| r.name)
             .unwrap_or_default();
-        let details = serde_json::json!({
-            "name": name,
-            "granted": granted,
-            "revoked": revoked,
-        });
-        let audit = &self.inner.audit;
-        audit
-            .record("permissions", "role", role_id, None, details.clone())
-            .await;
-        audit
-            .security(
+        self.inner
+            .audit
+            .security_in(
+                tx,
                 SecurityEvent::new(SecurityEventKind::RolePermissionsChanged)
                     .detail("role_id", role_id)
                     .detail("role", &name)
                     .detail("granted", &granted)
                     .detail("revoked", &revoked),
             )
-            .await;
-        Ok(())
+            .await?;
+        Ok(Some(GrantChange {
+            name,
+            granted,
+            revoked,
+        }))
     }
 
-    /// Record a role assigned to or removed from an account.
-    async fn audit_membership(&self, user_id: Uuid, role_id: Uuid, change: &str) -> Result<()> {
-        audit_membership(
-            &self.inner.audit,
-            &self.inner.pool,
-            user_id,
-            role_id,
-            change,
-        )
-        .await
+    /// Record a committed change to a role's grants as a content audit row.
+    async fn record_grants(&self, role_id: Uuid, change: Option<GrantChange>) {
+        let Some(change) = change else { return };
+        self.inner
+            .audit
+            .record(
+                "permissions",
+                "role",
+                role_id,
+                None,
+                serde_json::json!({
+                    "name": change.name,
+                    "granted": change.granted,
+                    "revoked": change.revoked,
+                }),
+            )
+            .await;
+    }
+
+    /// Change a role's grants with `apply`, on one transaction that also
+    /// writes the event recording what `apply` changed, then invalidate the
+    /// cache and write the audit row.
+    async fn change_grants<F>(&self, role_id: Uuid, apply: F) -> Result<()>
+    where
+        F: for<'c> FnOnce(
+            &'c mut sqlx::PgConnection,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<GrantDiff>> + Send + 'c>,
+        >,
+    {
+        let mut tx = self.inner.pool.begin().await?;
+        let diff = apply(&mut tx).await?;
+        let change = self.grants_event_in(&mut tx, role_id, diff).await?;
+        tx.commit().await?;
+        self.inner.permissions.invalidate_all();
+        self.record_grants(role_id, change).await;
+        Ok(())
     }
 
     /// Find a role by ID.
@@ -162,29 +233,42 @@ impl RoleService {
         Role::list(&self.inner.pool).await
     }
 
-    /// Create a new role.
+    /// Create a new role. The role and `role.created` commit together.
     pub async fn create(&self, name: &str) -> Result<Role> {
-        let role = Role::create(&self.inner.pool, name).await?;
+        let mut tx = self.inner.pool.begin().await?;
+        let role = Role::create(&mut *tx, name).await?;
+        self.inner
+            .audit
+            .security_in(
+                &mut tx,
+                role_event(SecurityEventKind::RoleCreated, role.id, &role.name),
+            )
+            .await?;
+        tx.commit().await?;
         info!(role_id = %role.id, name = %role.name, "role created");
-        self.audit_role(
-            "create",
-            SecurityEventKind::RoleCreated,
-            role.id,
-            &role.name,
-        )
-        .await;
+        self.record_role("create", role.id, &role.name).await;
         Ok(role)
     }
 
-    /// Update a role's name.
+    /// Update a role's name. The rename and `role.changed` commit together.
     pub async fn update(&self, id: Uuid, name: &str) -> Result<Option<Role>> {
-        let role = Role::update(&self.inner.pool, id, name).await?;
+        let mut tx = self.inner.pool.begin().await?;
+        let role = Role::update(&mut *tx, id, name).await?;
+        if let Some(ref r) = role {
+            self.inner
+                .audit
+                .security_in(
+                    &mut tx,
+                    role_event(SecurityEventKind::RoleChanged, r.id, &r.name),
+                )
+                .await?;
+        }
+        tx.commit().await?;
         if let Some(ref r) = role {
             // Cached access carries role names, so a rename changes it.
             self.inner.permissions.invalidate_all();
             info!(role_id = %r.id, name = %r.name, "role updated");
-            self.audit_role("update", SecurityEventKind::RoleChanged, r.id, &r.name)
-                .await;
+            self.record_role("update", r.id, &r.name).await;
         }
         Ok(role)
     }
@@ -193,18 +277,29 @@ impl RoleService {
     ///
     /// Prevents deletion of well-known roles (anonymous, authenticated).
     /// Invalidates the entire permission cache because any user with this
-    /// role will have different effective permissions after deletion.
+    /// role will have different effective permissions after deletion. The
+    /// delete and `role.deleted` commit together.
     pub async fn delete(&self, id: Uuid) -> Result<bool> {
-        let name = Role::find_by_id(&self.inner.pool, id)
+        let mut tx = self.inner.pool.begin().await?;
+        let name = Role::find_by_id(&mut *tx, id)
             .await?
             .map(|r| r.name)
             .unwrap_or_default();
-        let deleted = Role::delete(&self.inner.pool, id).await?;
+        let deleted = Role::delete(&mut *tx, id).await?;
+        if deleted {
+            self.inner
+                .audit
+                .security_in(
+                    &mut tx,
+                    role_event(SecurityEventKind::RoleDeleted, id, &name),
+                )
+                .await?;
+        }
+        tx.commit().await?;
         if deleted {
             self.inner.permissions.invalidate_all();
             info!(role_id = %id, "role deleted, permission cache invalidated");
-            self.audit_role("delete", SecurityEventKind::RoleDeleted, id, &name)
-                .await;
+            self.record_role("delete", id, &name).await;
         }
         Ok(deleted)
     }
@@ -221,33 +316,49 @@ impl RoleService {
 
     /// Add a permission to a role and invalidate the permission cache.
     pub async fn add_permission(&self, role_id: Uuid, permission: &str) -> Result<()> {
-        let before = Role::get_permissions(&self.inner.pool, role_id).await?;
-        Role::add_permission(&self.inner.pool, role_id, permission).await?;
-        self.inner.permissions.invalidate_all();
-        self.audit_grants(role_id, &before).await
+        let permission = permission.to_string();
+        self.change_grants(role_id, move |tx| {
+            Box::pin(async move {
+                let added = Role::add_permission(tx, role_id, &permission).await?;
+                Ok(GrantDiff {
+                    granted: added.then_some(permission).into_iter().collect(),
+                    revoked: Vec::new(),
+                })
+            })
+        })
+        .await
     }
 
     /// Remove a permission from a role and invalidate the permission cache.
     pub async fn remove_permission(&self, role_id: Uuid, permission: &str) -> Result<()> {
-        let before = Role::get_permissions(&self.inner.pool, role_id).await?;
-        Role::remove_permission(&self.inner.pool, role_id, permission).await?;
-        self.inner.permissions.invalidate_all();
-        self.audit_grants(role_id, &before).await
+        let permission = permission.to_string();
+        self.change_grants(role_id, move |tx| {
+            Box::pin(async move {
+                let removed = Role::remove_permission(tx, role_id, &permission).await?;
+                Ok(GrantDiff {
+                    granted: Vec::new(),
+                    revoked: removed.then_some(permission).into_iter().collect(),
+                })
+            })
+        })
+        .await
     }
 
     /// Bulk-update permissions for a role.
     ///
     /// Computes the diff between current and desired permissions, applies
-    /// adds/removes, and invalidates the permission cache once.
+    /// adds/removes, and invalidates the permission cache once. The grants
+    /// and `role.permissions_changed` commit together.
     pub async fn save_permissions(&self, role_id: Uuid, desired: &[String]) -> Result<()> {
         // The set arithmetic lives on the model, because `config import` needs the
         // same replace semantics and two implementations of it would drift. What
         // this wrapper adds is the cache invalidation, which is a service concern:
         // the import CLI runs in its own process and has no cache to invalidate.
-        let before = Role::get_permissions(&self.inner.pool, role_id).await?;
-        Role::set_permissions(&self.inner.pool, role_id, desired).await?;
-        self.inner.permissions.invalidate_all();
-        self.audit_grants(role_id, &before).await
+        let desired = desired.to_vec();
+        self.change_grants(role_id, move |tx| {
+            Box::pin(async move { Role::set_permissions(tx, role_id, &desired).await })
+        })
+        .await
     }
 
     /// Update a role's permissions **within a known subset**, leaving any
@@ -262,10 +373,45 @@ impl RoleService {
         desired: &[String],
         rendered: &std::collections::HashSet<String>,
     ) -> Result<()> {
-        let before = Role::get_permissions(&self.inner.pool, role_id).await?;
-        Role::set_permissions_within(&self.inner.pool, role_id, desired, rendered).await?;
+        let desired = desired.to_vec();
+        let rendered = rendered.clone();
+        self.change_grants(role_id, move |tx| {
+            Box::pin(async move {
+                Role::set_permissions_within(tx, role_id, &desired, Some(&rendered)).await
+            })
+        })
+        .await
+    }
+
+    /// [`Self::save_permissions_within`] for several roles at once, as the
+    /// permission grid saves: every role's grants and every
+    /// `role.permissions_changed` commit together, so a save either changes
+    /// what the form asked for on every role or changes nothing.
+    ///
+    /// # Errors
+    ///
+    /// When any write or event fails; then no role's grants changed.
+    pub async fn save_grid(
+        &self,
+        desired: &[(Uuid, Vec<String>)],
+        rendered: &std::collections::HashSet<String>,
+    ) -> Result<()> {
+        let mut tx = self.inner.pool.begin().await?;
+        let mut changes = Vec::new();
+        for (role_id, wanted) in desired {
+            let diff =
+                Role::set_permissions_within(&mut tx, *role_id, wanted, Some(rendered)).await?;
+            changes.push((
+                *role_id,
+                self.grants_event_in(&mut tx, *role_id, diff).await?,
+            ));
+        }
+        tx.commit().await?;
         self.inner.permissions.invalidate_all();
-        self.audit_grants(role_id, &before).await
+        for (role_id, change) in changes {
+            self.record_grants(role_id, change).await;
+        }
+        Ok(())
     }
 
     /// Get all roles for a user.
@@ -274,31 +420,84 @@ impl RoleService {
     }
 
     /// Assign a role to a user and invalidate that user's permission cache.
+    /// The assignment and `user.roles_changed` commit together.
     pub async fn assign_to_user(&self, user_id: Uuid, role_id: Uuid) -> Result<()> {
-        let held = Role::get_user_roles(&self.inner.pool, user_id)
-            .await?
-            .iter()
-            .any(|r| r.id == role_id);
-        Role::assign_to_user(&self.inner.pool, user_id, role_id).await?;
-        self.inner.permissions.invalidate_user(user_id);
-        if held {
-            return Ok(());
-        }
-        self.audit_membership(user_id, role_id, "added").await
+        let mut tx = self.inner.pool.begin().await?;
+        let change = self.assign_in(&mut tx, user_id, role_id).await?;
+        tx.commit().await?;
+        self.membership_committed(user_id, change.as_ref()).await;
+        Ok(())
     }
 
     /// Remove a role from a user and invalidate that user's permission cache.
+    /// The removal and `user.roles_changed` commit together.
     pub async fn remove_from_user(&self, user_id: Uuid, role_id: Uuid) -> Result<()> {
-        let held = Role::get_user_roles(&self.inner.pool, user_id)
-            .await?
-            .iter()
-            .any(|r| r.id == role_id);
-        Role::remove_from_user(&self.inner.pool, user_id, role_id).await?;
-        self.inner.permissions.invalidate_user(user_id);
-        if !held {
-            return Ok(());
+        let mut tx = self.inner.pool.begin().await?;
+        let change = self.remove_in(&mut tx, user_id, role_id).await?;
+        tx.commit().await?;
+        self.membership_committed(user_id, change.as_ref()).await;
+        Ok(())
+    }
+
+    /// Assign a role to a user on `tx`, the caller's transaction, writing
+    /// `user.roles_changed` there when this assigned it. Whether it did is the
+    /// insert's own answer, not an earlier read, so a membership a concurrent
+    /// request removed meanwhile is still recorded when this puts it back.
+    ///
+    /// Returns the change, for [`Self::membership_committed`] once `tx` has
+    /// committed; `None` when the user already held the role.
+    pub async fn assign_in(
+        &self,
+        tx: &mut sqlx::PgConnection,
+        user_id: Uuid,
+        role_id: Uuid,
+    ) -> Result<Option<MembershipChange>> {
+        if !Role::assign_to_user(&mut *tx, user_id, role_id).await? {
+            return Ok(None);
         }
-        self.audit_membership(user_id, role_id, "removed").await
+        let name = membership_event_in(&self.inner.audit, tx, user_id, role_id, "added").await?;
+        Ok(Some(MembershipChange {
+            role_id,
+            name,
+            change: "added",
+        }))
+    }
+
+    /// [`Self::assign_in`] for a removal: `user.roles_changed` is written
+    /// when this removed the role, and `None` returned when the user did not
+    /// hold it.
+    pub async fn remove_in(
+        &self,
+        tx: &mut sqlx::PgConnection,
+        user_id: Uuid,
+        role_id: Uuid,
+    ) -> Result<Option<MembershipChange>> {
+        if !Role::remove_from_user(&mut *tx, user_id, role_id).await? {
+            return Ok(None);
+        }
+        let name = membership_event_in(&self.inner.audit, tx, user_id, role_id, "removed").await?;
+        Ok(Some(MembershipChange {
+            role_id,
+            name,
+            change: "removed",
+        }))
+    }
+
+    /// What follows a committed membership change made with
+    /// [`Self::assign_in`] or [`Self::remove_in`]: the user's permission cache
+    /// is dropped, and the content audit row written.
+    pub async fn membership_committed(&self, user_id: Uuid, change: Option<&MembershipChange>) {
+        self.inner.permissions.invalidate_user(user_id);
+        if let Some(change) = change {
+            record_membership(
+                &self.inner.audit,
+                user_id,
+                change.role_id,
+                &change.name,
+                change.change,
+            )
+            .await;
+        }
     }
 
     /// Get all permissions for a user (aggregated from all their roles).

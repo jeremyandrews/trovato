@@ -933,7 +933,11 @@ pub async fn import_config_with_env(
     // a permission it does not name is revoked. A file that omits the key entirely
     // is not in this list at all and leaves the role's grants untouched.
     for (filename, role_id, permissions) in &role_grants {
-        if let Err(e) = Role::set_permissions(pool, *role_id, permissions).await {
+        let applied = match pool.acquire().await {
+            Ok(mut conn) => Role::set_permissions(&mut conn, *role_id, permissions).await,
+            Err(e) => Err(e.into()),
+        };
+        if let Err(e) = applied {
             failures.push(ConfigImportFailure {
                 filename: filename.clone(),
                 error: format!("failed to set permissions for role {role_id}: {e:#}"),

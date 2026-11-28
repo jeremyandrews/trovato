@@ -149,8 +149,8 @@ impl WebauthnCredential {
     /// credential belongs to exactly one account": re-registering an
     /// authenticator that is already known fails here rather than silently
     /// rebinding it.
-    pub async fn create(
-        pool: &PgPool,
+    pub async fn create<'e, E: sqlx::PgExecutor<'e>>(
+        pool: E,
         user_id: Uuid,
         passkey: &Passkey,
         device_name: Option<&str>,
@@ -232,7 +232,12 @@ impl WebauthnCredential {
     /// Rename a credential, scoped to its owner.
     ///
     /// Returns `false` if no such credential belongs to the user.
-    pub async fn rename(pool: &PgPool, id: Uuid, user_id: Uuid, name: &str) -> Result<bool> {
+    pub async fn rename<'e, E: sqlx::PgExecutor<'e>>(
+        pool: E,
+        id: Uuid,
+        user_id: Uuid,
+        name: &str,
+    ) -> Result<bool> {
         let result = sqlx::query(
             "UPDATE webauthn_credentials SET device_name = $1 WHERE id = $2 AND user_id = $3",
         )
@@ -250,7 +255,11 @@ impl WebauthnCredential {
     /// This does **not** enforce the ≥1-active-recovery-path invariant; that
     /// gate lives in the credential-management route (Story 4.3) where the
     /// account's whole recovery posture is in view.
-    pub async fn delete_owned(pool: &PgPool, id: Uuid, user_id: Uuid) -> Result<bool> {
+    pub async fn delete_owned<'e, E: sqlx::PgExecutor<'e>>(
+        pool: E,
+        id: Uuid,
+        user_id: Uuid,
+    ) -> Result<bool> {
         let result = sqlx::query("DELETE FROM webauthn_credentials WHERE id = $1 AND user_id = $2")
             .bind(id)
             .bind(user_id)

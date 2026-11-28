@@ -808,9 +808,23 @@ async fn recover_reset(
             crate::tap::UserContext::authenticated(grant.user_id, vec![])
         }
     };
+    // The recovery's stored change is this password: `recovery.completed`
+    // commits with it and its `password.changed`, or none of them happens.
+    let completed = SecurityEvent::new(SecurityEventKind::RecoveryCompleted)
+        .user(grant.user_id)
+        .subject(&grant.flow_id)
+        .ip(ip)
+        .user_agent(ua)
+        .detail("granted", "scoped_credential_reset");
     match state
         .users()
-        .update_password(grant.user_id, &body.new_password, &user_ctx, "recovery")
+        .update_password_recorded(
+            grant.user_id,
+            &body.new_password,
+            &user_ctx,
+            "recovery",
+            vec![completed],
+        )
         .await
     {
         Ok(true) => {}
@@ -855,17 +869,6 @@ async fn recover_reset(
     }
 
     info!(user_id = %grant.user_id, "recovery completed");
-    state
-        .security_audit()
-        .emit(
-            SecurityEvent::new(SecurityEventKind::RecoveryCompleted)
-                .user(grant.user_id)
-                .subject(&grant.flow_id)
-                .ip(ip)
-                .user_agent(ua)
-                .detail("granted", "scoped_credential_reset"),
-        )
-        .await;
 
     notify(
         &state,

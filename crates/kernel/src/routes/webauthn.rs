@@ -255,8 +255,21 @@ async fn register_finish(
         .map(str::trim)
         .filter(|n| !n.is_empty());
 
+    // The credential and `passkey.registered` commit together, or neither
+    // happens.
+    let mut tx = match state.db().begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            tracing::error!(error = %e, user_id = %user.id, "failed to start storing a passkey");
+            return crate::error::AppError::with_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Could not store the passkey.",
+            )
+            .into_response();
+        }
+    };
     let credential =
-        match WebauthnCredential::create(state.db(), user.id, &passkey, device_name).await {
+        match WebauthnCredential::create(&mut *tx, user.id, &passkey, device_name).await {
             Ok(c) => c,
             Err(e) => {
                 // The unique constraint on `credential_id` is load-bearing here: it
@@ -275,10 +288,10 @@ async fn register_finish(
             }
         };
 
-    info!(user_id = %user.id, credential = %credential.id, "passkey registered");
-    state
+    let recorded = state
         .security_audit()
-        .emit(
+        .record_in(
+            &mut tx,
             SecurityEvent::new(SecurityEventKind::PasskeyRegistered)
                 .user(user.id)
                 .subject(&credential.credential_id)
@@ -288,6 +301,18 @@ async fn register_finish(
                 .detail("backup_eligible", credential.backup_eligible),
         )
         .await;
+    if let Err(e) = match recorded {
+        Ok(()) => tx.commit().await.map_err(anyhow::Error::from),
+        Err(e) => Err(e),
+    } {
+        tracing::error!(error = %e, user_id = %user.id, "failed to store a registered passkey");
+        return crate::error::AppError::with_status(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Could not store the passkey.",
+        )
+        .into_response();
+    }
+    info!(user_id = %user.id, credential = %credential.id, "passkey registered");
 
     Json(serde_json::json!({
         "success": true,
@@ -771,17 +796,28 @@ async fn rename_credential(
 
     // Scoped to the owner, so guessing another account's credential id achieves
     // nothing.
-    match WebauthnCredential::rename(state.db(), id, user.id, name).await {
-        Ok(true) => {
+    //
+    // The new name and `passkey.renamed` commit together, or neither happens.
+    let renamed = async {
+        let mut tx = state.db().begin().await?;
+        let renamed = WebauthnCredential::rename(&mut *tx, id, user.id, name).await?;
+        if renamed {
             state
                 .security_audit()
-                .emit(
+                .record_in(
+                    &mut tx,
                     SecurityEvent::new(SecurityEventKind::PasskeyRenamed)
                         .user(user.id)
                         .subject(&id.to_string())
                         .ip(client_ip.0),
                 )
-                .await;
+                .await?;
+        }
+        tx.commit().await?;
+        anyhow::Ok(renamed)
+    };
+    match renamed.await {
+        Ok(true) => {
             Json(serde_json::json!({ "success": true, "device_name": name })).into_response()
         }
         Ok(false) => crate::error::AppError::with_status(StatusCode::NOT_FOUND, "No such passkey.")
@@ -857,19 +893,29 @@ async fn revoke_credential(
             .into_response();
     }
 
-    match WebauthnCredential::delete_owned(state.db(), id, user.id).await {
-        Ok(true) => {
-            info!(user_id = %user.id, credential = %id, "passkey revoked");
+    // The delete and `passkey.revoked` commit together, or neither happens.
+    let revoked = async {
+        let mut tx = state.db().begin().await?;
+        let deleted = WebauthnCredential::delete_owned(&mut *tx, id, user.id).await?;
+        if deleted {
             state
                 .security_audit()
-                .emit(
+                .record_in(
+                    &mut tx,
                     SecurityEvent::new(SecurityEventKind::PasskeyRevoked)
                         .user(user.id)
                         .subject(&id.to_string())
                         .ip(ip)
                         .detail("remaining_passkeys", access.passkey_count.saturating_sub(1)),
                 )
-                .await;
+                .await?;
+        }
+        tx.commit().await?;
+        anyhow::Ok(deleted)
+    };
+    match revoked.await {
+        Ok(true) => {
+            info!(user_id = %user.id, credential = %id, "passkey revoked");
             Json(serde_json::json!({ "success": true })).into_response()
         }
         Ok(false) => crate::error::AppError::with_status(StatusCode::NOT_FOUND, "No such passkey.")
@@ -932,7 +978,13 @@ async fn remove_password(
     }
 
     let acting = crate::routes::helpers::user_context_for(&state, &user).await;
-    if let Err(e) = state.users().remove_password(user.id, &acting).await {
+    // `password.removed` commits with the change, or neither happens.
+    let event = SecurityEvent::new(SecurityEventKind::PasswordRemoved)
+        .user(user.id)
+        .ip(ip)
+        .detail("passkey_count", access.passkey_count)
+        .detail("recovery_paths", access.non_password_recovery_paths);
+    if let Err(e) = state.users().remove_password(user.id, &acting, event).await {
         tracing::error!(error = %e, "failed to remove password");
         return crate::error::AppError::with_status(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -947,16 +999,6 @@ async fn remove_password(
     }
 
     info!(user_id = %user.id, "account went passwordless");
-    state
-        .security_audit()
-        .emit(
-            SecurityEvent::new(SecurityEventKind::PasswordRemoved)
-                .user(user.id)
-                .ip(ip)
-                .detail("passkey_count", access.passkey_count)
-                .detail("recovery_paths", access.non_password_recovery_paths),
-        )
-        .await;
 
     Json(serde_json::json!({ "success": true })).into_response()
 }
