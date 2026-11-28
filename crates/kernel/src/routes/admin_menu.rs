@@ -26,23 +26,29 @@
 
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Redirect, Response};
-use axum::routing::{get, post};
+use axum::routing::get;
 use axum::{Form, Router};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use tower_sessions::Session;
 use uuid::Uuid;
 
-use crate::form::csrf::generate_csrf_token;
+use crate::content::submission::PostedForm;
+use crate::form::{FormElement, ValidationError};
 use crate::models::stage::LIVE_STAGE_ID;
-use crate::models::{CreateMenuLink, MenuLink, UpdateMenuLink};
-use crate::routes::admin_form::FieldError;
+use crate::models::{CreateMenuLink, MenuLink, UpdateMenuLink, User};
 use crate::state::AppState;
 
+use super::admin_form;
 use super::admin_list::{ListQuery, page_of, sort_rows};
 use super::helpers::{
-    CsrfOnlyForm, render_admin_template, render_not_found, render_server_error, require_csrf,
-    require_permission,
+    render_admin_template, render_not_found, render_server_error, require_permission,
 };
+
+/// The id of the add and edit form.
+const LINK_FORM_ID: &str = "menu_link_form";
+
+/// The id of the form that confirms a link's deletion.
+const DELETE_FORM_ID: &str = "menu_link_delete_form";
 
 /// The menu listing's sortable columns. The list is sorted in memory, so the
 /// second value is only the key's name.
@@ -73,20 +79,64 @@ const MAX_TREE_DEPTH: usize = 16;
 // Form data
 // =============================================================================
 
-/// The add/edit form's fields.
-///
-/// `hidden` is an HTML checkbox, which submits nothing at all when unchecked, so
-/// it is an `Option` and absence means false.
-#[derive(Debug, Deserialize)]
-struct MenuLinkFormData {
-    #[serde(rename = "_token")]
-    token: String,
+/// What the add and edit form shows in its fields: a link's saved values, or
+/// what was submitted when the form is shown again with its errors.
+#[derive(Debug, Clone)]
+struct LinkValues {
     title: String,
     path: String,
-    /// The parent link's UUID, or empty for a top-level link.
-    parent_id: Option<String>,
-    weight: Option<i32>,
-    hidden: Option<String>,
+    /// The parent link's id, or empty for a top-level link.
+    parent_id: String,
+    /// The weight as typed, so a value that is not a number is shown back.
+    weight: String,
+    hidden: bool,
+}
+
+impl LinkValues {
+    /// The values of a link not yet made.
+    fn blank() -> Self {
+        Self {
+            title: String::new(),
+            path: String::new(),
+            parent_id: String::new(),
+            weight: "0".to_string(),
+            hidden: false,
+        }
+    }
+
+    /// A saved link's values.
+    fn of(link: &MenuLink) -> Self {
+        Self {
+            title: link.title.clone(),
+            path: link.path.clone(),
+            parent_id: link.parent_id.map(|p| p.to_string()).unwrap_or_default(),
+            weight: link.weight.to_string(),
+            hidden: link.hidden,
+        }
+    }
+
+    /// What was posted. `hidden` is an HTML checkbox, which submits nothing
+    /// at all when unchecked, so absence means false.
+    fn posted(posted: &PostedForm) -> Self {
+        Self {
+            title: posted.get("title").unwrap_or_default().to_string(),
+            path: posted.get("path").unwrap_or_default().to_string(),
+            parent_id: posted.get("parent_id").unwrap_or_default().to_string(),
+            weight: posted.get("weight").unwrap_or_default().to_string(),
+            hidden: posted.get("hidden").is_some(),
+        }
+    }
+}
+
+/// The submitted weight: blank means `fallback`, anything else must be a
+/// whole number.
+fn parse_weight(raw: &str, fallback: i32) -> Result<i32, String> {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return Ok(fallback);
+    }
+    raw.parse::<i32>()
+        .map_err(|_| "Weight must be a whole number.".to_string())
 }
 
 // =============================================================================
@@ -514,8 +564,6 @@ async fn show_menu(
         }
     };
 
-    let csrf_token = generate_csrf_token(&session).await;
-
     // The links keep their tree order (depth first, by weight): filtered,
     // never sorted.
     let query = ListQuery::from_params(&params);
@@ -530,7 +578,6 @@ async fn show_menu(
     context.insert("list", &query.view(total, rows.len(), None));
     context.insert("menu_name", &menu_name);
     context.insert("rows", &rows);
-    context.insert("csrf_token", &csrf_token);
     context.insert("path", &format!("/admin/structure/menus/{menu_name}"));
 
     render_admin_template(
@@ -542,14 +589,109 @@ async fn show_menu(
     .await
 }
 
+/// The Cancel link beside a form's button, back to `href`, in the viewer's
+/// admin language.
+async fn cancel_link(state: &AppState, user: &User, href: &str) -> String {
+    let viewer = super::helpers::user_context_for(state, user).await;
+    let text = super::admin_nav::AdminText::for_page(state, &viewer, href).await;
+    format!(
+        r#"<a href="{}" class="button button--secondary">{}</a>"#,
+        tera::escape_html(href),
+        text.html("Cancel", &[])
+    )
+}
+
+/// The add and edit form, filled with `values`. `parents` are the links the
+/// parent select offers, already without the edited link's own subtree.
+fn link_form(
+    action: &str,
+    editing: bool,
+    parents: Vec<(String, String)>,
+    values: &LinkValues,
+    cancel: String,
+) -> crate::form::Form {
+    // The empty choice is the top level. The select draws its own empty
+    // choice too, since the field is optional; both post the same value.
+    let mut options = vec![(String::new(), "<Top level>".to_string())];
+    options.extend(parents);
+    crate::form::Form::new(LINK_FORM_ID)
+        .action(action)
+        .element(
+            "title",
+            FormElement::textfield()
+                .title("Title")
+                .description("The text the link shows.")
+                .default_value(values.title.clone())
+                .required()
+                .weight(0),
+        )
+        .element(
+            "path",
+            FormElement::textfield()
+                .title("Path")
+                .description(
+                    "A local absolute path, beginning with /. External URLs are not accepted. \
+                     A path that does not resolve is saved and returns 404 when followed, so \
+                     check it.",
+                )
+                .default_value(values.path.clone())
+                .attribute("spellcheck", "false")
+                .attribute("autocapitalize", "none")
+                .required()
+                .weight(1),
+        )
+        .element(
+            "parent_id",
+            FormElement::select(options)
+                .title("Parent link")
+                .description(
+                    "The link this one nests under. A link cannot be placed below itself, so \
+                     its own descendants are not offered.",
+                )
+                .default_value(values.parent_id.clone())
+                .weight(2),
+        )
+        .element(
+            "weight",
+            FormElement::input("number")
+                .title("Weight")
+                .description("Lower sorts first among siblings. Ties break on title.")
+                .default_value(values.weight.clone())
+                .attribute("step", "1")
+                .weight(3),
+        )
+        .element(
+            "hidden",
+            FormElement::checkbox()
+                .title("Hidden")
+                .description(
+                    "A hidden link stays in the menu and is not rendered. Its children are \
+                     still rendered.",
+                )
+                .default_value(values.hidden)
+                .weight(4),
+        )
+        .element(
+            "op",
+            FormElement::submit(if editing {
+                "Save changes"
+            } else {
+                "Create link"
+            })
+            .suffix(cancel)
+            .weight(10),
+        )
+}
+
 /// Render the add/edit form.
 async fn render_form(
     state: &AppState,
     session: &Session,
+    user: &User,
     menu_name: &str,
     link_id: Option<Uuid>,
-    values: serde_json::Value,
-    errors: Vec<FieldError>,
+    values: &LinkValues,
+    errors: &[ValidationError],
 ) -> Response {
     let links = match menu_links(state, menu_name).await {
         Ok(links) => links,
@@ -563,27 +705,26 @@ async fn render_form(
         Some(id) => format!("/admin/structure/menus/{menu_name}/{id}/edit"),
         None => format!("/admin/structure/menus/{menu_name}/add"),
     };
-
-    let csrf_token = generate_csrf_token(session).await;
-
-    let mut context = tera::Context::new();
-    context.insert("csrf_token", &csrf_token);
-    context.insert("menu_name", &menu_name);
-    context.insert("action", &action);
-    context.insert("editing", &link_id.is_some());
-    context.insert("values", &values);
-    // [id, label] pairs for the select macro.
     let parents: Vec<(String, String)> = parent_options(&links, link_id)
         .into_iter()
         .map(|p| (p.id.to_string(), p.label))
         .collect();
-    context.insert("parents", &parents);
-    context.insert("errors", &errors);
+    let cancel = cancel_link(state, user, &format!("/admin/structure/menus/{menu_name}")).await;
+    let form = link_form(&action, link_id.is_some(), parents, values, cancel);
+    let form_html = match admin_form::render(state, session, user, form, errors).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+
+    let mut context = tera::Context::new();
+    context.insert("menu_name", &menu_name);
+    context.insert("editing", &link_id.is_some());
+    context.insert("form", &form_html);
     context.insert("path", &action);
 
     render_admin_template(
         state,
-        &crate::routes::helpers::get_user_context(session, state).await,
+        &super::helpers::user_context_for(state, user).await,
         "admin/menu-link-form.html",
         context,
     )
@@ -598,20 +739,92 @@ async fn add_link_form(
     session: Session,
     Path(menu_name): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    render_form(
+        &state,
+        &session,
+        &user,
+        &menu_name,
+        None,
+        &LinkValues::blank(),
+        &[],
+    )
+    .await
+}
+
+/// The submitted title, path, parent and weight, checked: the parts both the
+/// add and the edit submission share. `link_id` is the edited link, whose
+/// parent must not be one of its own descendants; `fallback_weight` is the
+/// weight a blank field means.
+async fn read_link(
+    state: &AppState,
+    menu_name: &str,
+    link_id: Option<Uuid>,
+    values: &LinkValues,
+    fallback_weight: i32,
+) -> (Vec<ValidationError>, String, String, Option<Uuid>, i32) {
+    let mut errors = Vec::new();
+    let title = values.title.trim().to_string();
+    if title.is_empty() {
+        errors.push(ValidationError::field("title", "Title is required."));
     }
-    // Every field the template reads is present, empty rather than absent: Tera
-    // errors on an undefined variable in a bare `{% if %}`, so a partial context
-    // is a 500 on the add form and nothing else.
-    let values = serde_json::json!({
-        "title": "",
-        "path": "",
-        "parent_id": "",
-        "weight": 0,
-        "hidden": false,
-    });
-    render_form(&state, &session, &menu_name, None, values, Vec::new()).await
+    let path = match validate_path(&values.path) {
+        Ok(path) => path,
+        Err(e) => {
+            errors.push(ValidationError::field("path", e));
+            String::new()
+        }
+    };
+    let parent_id = match parse_parent(Some(&values.parent_id)) {
+        Ok(parent) => parent,
+        Err(e) => {
+            errors.push(ValidationError::field("parent_id", e));
+            None
+        }
+    };
+    let weight = match parse_weight(&values.weight, fallback_weight) {
+        Ok(weight) => weight,
+        Err(e) => {
+            errors.push(ValidationError::field("weight", e));
+            fallback_weight
+        }
+    };
+
+    // A parent has to be a link in this menu; anything else would render as a
+    // root anyway and would be a silent lie about the tree.
+    if let Some(parent) = parent_id {
+        match MenuLink::find_by_id(state.db(), parent).await {
+            Ok(Some(row)) if row.menu_name == menu_name => {}
+            Ok(_) => errors.push(ValidationError::field(
+                "parent_id",
+                "Parent must be a link in this menu.",
+            )),
+            Err(e) => {
+                tracing::error!(error = %e, "failed to verify menu link parent");
+                errors.push(ValidationError::form("Failed to verify the parent link."));
+            }
+        }
+
+        if let Some(link_id) = link_id {
+            match would_cycle(state, link_id, parent).await {
+                Ok(true) => errors.push(ValidationError::field(
+                    "parent_id",
+                    "A link cannot be its own ancestor. Choose a parent that is not below this \
+                     link.",
+                )),
+                Ok(false) => {}
+                Err(e) => {
+                    tracing::error!(error = %e, "failed to check the menu link parent chain");
+                    errors.push(ValidationError::form("Failed to check the parent chain."));
+                }
+            }
+        }
+    }
+
+    (errors, title, path, parent_id, weight)
 }
 
 /// Add-link submit.
@@ -621,76 +834,41 @@ async fn add_link_submit(
     State(state): State<AppState>,
     session: Session,
     Path(menu_name): Path<String>,
-    Form(form): Form<MenuLinkFormData>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-
-    let mut errors = Vec::new();
-    let title = form.title.trim().to_string();
-    if title.is_empty() {
-        errors.push(FieldError::on("title", "Title is required."));
-    }
-    let path = match validate_path(&form.path) {
-        Ok(path) => path,
-        Err(e) => {
-            errors.push(FieldError::on("path", e));
-            String::new()
-        }
-    };
-    let parent_id = match parse_parent(form.parent_id.as_deref()) {
-        Ok(parent) => parent,
-        Err(e) => {
-            errors.push(FieldError::on("parent_id", e));
-            None
-        }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
     };
 
-    // A parent has to be a link in this menu; anything else would render as a
-    // root anyway and would be a silent lie about the tree.
-    if let Some(parent) = parent_id {
-        match MenuLink::find_by_id(state.db(), parent).await {
-            Ok(Some(row)) if row.menu_name == menu_name => {}
-            Ok(_) => errors.push(FieldError::on(
-                "parent_id",
-                "Parent must be a link in this menu.",
-            )),
-            Err(e) => {
-                tracing::error!(error = %e, "failed to verify menu link parent");
-                errors.push(FieldError::form("Failed to verify the parent link."));
-            }
+    let values = LinkValues::posted(&posted);
+    let (errors, title, path, parent_id, weight) =
+        read_link(&state, &menu_name, None, &values, 0).await;
+    let form_state = match admin_form::check(&state, &session, &user, &posted, LINK_FORM_ID, errors)
+        .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(errors)) => {
+            return render_form(&state, &session, &user, &menu_name, None, &values, &errors).await;
         }
-    }
-
-    let values = serde_json::json!({
-        "title": title,
-        "path": form.path,
-        "parent_id": parent_id.map(|p| p.to_string()).unwrap_or_default(),
-        "weight": form.weight.unwrap_or(0),
-        "hidden": form.hidden.is_some(),
-    });
-
-    if !errors.is_empty() {
-        return render_form(&state, &session, &menu_name, None, values, errors).await;
-    }
+        Err(Err(response)) => return response,
+    };
 
     let input = CreateMenuLink {
         menu_name: Some(menu_name.clone()),
         path,
         title,
         parent_id,
-        weight: Some(form.weight.unwrap_or(0)),
-        hidden: Some(form.hidden.is_some()),
+        weight: Some(weight),
+        hidden: Some(values.hidden),
         plugin: Some(CORE_PLUGIN.to_string()),
         stage_id: Some(LIVE_STAGE_ID),
     };
 
     match state.menu_links().create(input).await {
         Ok(link) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(link_id = %link.id, menu = %menu_name, "menu link created");
             Redirect::to(&format!("/admin/structure/menus/{menu_name}")).into_response()
         }
@@ -699,16 +877,31 @@ async fn add_link_submit(
             render_form(
                 &state,
                 &session,
+                &user,
                 &menu_name,
                 None,
-                values,
-                vec![FieldError::on(
+                &values,
+                &[ValidationError::field(
                     "path",
                     "Failed to create the link. A link with this path may already exist in this \
                      menu.",
                 )],
             )
             .await
+        }
+    }
+}
+
+/// Load the link `link_id`, refusing one that does not exist or that a plugin
+/// owns.
+async fn editable_link(state: &AppState, link_id: Uuid) -> Result<MenuLink, Response> {
+    match MenuLink::find_by_id(state.db(), link_id).await {
+        Ok(Some(link)) if link.plugin == CORE_PLUGIN => Ok(link),
+        Ok(Some(link)) => Err(plugin_owned_response(&link.plugin)),
+        Ok(None) => Err(render_not_found()),
+        Err(e) => {
+            tracing::error!(error = %e, "failed to load menu link");
+            Err(render_server_error("Failed to load the menu link."))
         }
     }
 }
@@ -721,37 +914,22 @@ async fn edit_link_form(
     session: Session,
     Path((menu_name, link_id)): Path<(String, Uuid)>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
-
-    let link = match MenuLink::find_by_id(state.db(), link_id).await {
-        Ok(Some(link)) => link,
-        Ok(None) => return render_not_found(),
-        Err(e) => {
-            tracing::error!(error = %e, "failed to load menu link");
-            return render_server_error("Failed to load the menu link.");
-        }
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
     };
-    if link.plugin != CORE_PLUGIN {
-        return plugin_owned_response(&link.plugin);
-    }
-
-    let values = serde_json::json!({
-        "title": link.title,
-        "path": link.path,
-        "parent_id": link.parent_id.map(|p| p.to_string()).unwrap_or_default(),
-        "weight": link.weight,
-        "hidden": link.hidden,
-    });
-
+    let link = match editable_link(&state, link_id).await {
+        Ok(link) => link,
+        Err(response) => return response,
+    };
     render_form(
         &state,
         &session,
+        &user,
         &menu_name,
         Some(link_id),
-        values,
-        Vec::new(),
+        &LinkValues::of(&link),
+        &[],
     )
     .await
 }
@@ -763,84 +941,38 @@ async fn edit_link_submit(
     State(state): State<AppState>,
     session: Session,
     Path((menu_name, link_id)): Path<(String, Uuid)>,
-    Form(form): Form<MenuLinkFormData>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-
-    let existing = match MenuLink::find_by_id(state.db(), link_id).await {
-        Ok(Some(link)) => link,
-        Ok(None) => return render_not_found(),
-        Err(e) => {
-            tracing::error!(error = %e, "failed to load menu link");
-            return render_server_error("Failed to load the menu link.");
-        }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
     };
-    if existing.plugin != CORE_PLUGIN {
-        return plugin_owned_response(&existing.plugin);
-    }
-
-    let mut errors = Vec::new();
-    let title = form.title.trim().to_string();
-    if title.is_empty() {
-        errors.push(FieldError::on("title", "Title is required."));
-    }
-    let path = match validate_path(&form.path) {
-        Ok(path) => path,
-        Err(e) => {
-            errors.push(FieldError::on("path", e));
-            String::new()
-        }
-    };
-    let parent_id = match parse_parent(form.parent_id.as_deref()) {
-        Ok(parent) => parent,
-        Err(e) => {
-            errors.push(FieldError::on("parent_id", e));
-            None
-        }
+    let existing = match editable_link(&state, link_id).await {
+        Ok(link) => link,
+        Err(response) => return response,
     };
 
-    if let Some(parent) = parent_id {
-        match MenuLink::find_by_id(state.db(), parent).await {
-            Ok(Some(row)) if row.menu_name == menu_name => {}
-            Ok(_) => errors.push(FieldError::on(
-                "parent_id",
-                "Parent must be a link in this menu.",
-            )),
-            Err(e) => {
-                tracing::error!(error = %e, "failed to verify menu link parent");
-                errors.push(FieldError::form("Failed to verify the parent link."));
+    let values = LinkValues::posted(&posted);
+    let (errors, title, path, parent_id, weight) =
+        read_link(&state, &menu_name, Some(link_id), &values, existing.weight).await;
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, LINK_FORM_ID, errors).await {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => {
+                return render_form(
+                    &state,
+                    &session,
+                    &user,
+                    &menu_name,
+                    Some(link_id),
+                    &values,
+                    &errors,
+                )
+                .await;
             }
-        }
-
-        match would_cycle(&state, link_id, parent).await {
-            Ok(true) => errors.push(FieldError::on(
-                "parent_id",
-                "A link cannot be its own ancestor. Choose a parent that is not below this link.",
-            )),
-            Ok(false) => {}
-            Err(e) => {
-                tracing::error!(error = %e, "failed to check the menu link parent chain");
-                errors.push(FieldError::form("Failed to check the parent chain."));
-            }
-        }
-    }
-
-    let values = serde_json::json!({
-        "title": title,
-        "path": form.path,
-        "parent_id": parent_id.map(|p| p.to_string()).unwrap_or_default(),
-        "weight": form.weight.unwrap_or(existing.weight),
-        "hidden": form.hidden.is_some(),
-    });
-
-    if !errors.is_empty() {
-        return render_form(&state, &session, &menu_name, Some(link_id), values, errors).await;
-    }
+            Err(Err(response)) => return response,
+        };
 
     let input = UpdateMenuLink {
         menu_name: None,
@@ -849,14 +981,15 @@ async fn edit_link_submit(
         // The outer Some means "change it"; the inner value may be None, which
         // is how a link is moved back to the top level.
         parent_id: Some(parent_id),
-        weight: Some(form.weight.unwrap_or(existing.weight)),
-        hidden: Some(form.hidden.is_some()),
+        weight: Some(weight),
+        hidden: Some(values.hidden),
         plugin: None,
         stage_id: None,
     };
 
     match state.menu_links().update(link_id, input).await {
         Ok(Some(_)) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(link_id = %link_id, menu = %menu_name, "menu link updated");
             Redirect::to(&format!("/admin/structure/menus/{menu_name}")).into_response()
         }
@@ -866,10 +999,11 @@ async fn edit_link_submit(
             render_form(
                 &state,
                 &session,
+                &user,
                 &menu_name,
                 Some(link_id),
-                values,
-                vec![FieldError::on(
+                &values,
+                &[ValidationError::field(
                     "path",
                     "Failed to save the link. A link with this path may already exist in this \
                      menu.",
@@ -880,6 +1014,76 @@ async fn edit_link_submit(
     }
 }
 
+/// The form that confirms a link's deletion: one button.
+fn delete_form_for(menu_name: &str, link_id: Uuid) -> crate::form::Form {
+    crate::form::Form::new(DELETE_FORM_ID)
+        .action(format!(
+            "/admin/structure/menus/{menu_name}/{link_id}/delete"
+        ))
+        .element(
+            "op",
+            FormElement::submit("Delete")
+                .attribute("class", "button--danger")
+                .weight(10),
+        )
+}
+
+/// Ask before deleting a link, saying what happens to its children.
+///
+/// GET /admin/structure/menus/{menu}/{id}/delete
+async fn delete_link_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path((menu_name, link_id)): Path<(String, Uuid)>,
+) -> Response {
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    let link = match editable_link(&state, link_id).await {
+        Ok(link) => link,
+        Err(response) => return response,
+    };
+    let links = match menu_links(&state, &menu_name).await {
+        Ok(links) => links,
+        Err(e) => {
+            tracing::error!(error = %e, menu = %menu_name, "failed to load menu links");
+            return render_server_error("Failed to load menu links.");
+        }
+    };
+    let children = links
+        .iter()
+        .filter(|l| l.parent_id == Some(link_id))
+        .count();
+    let form_html = match admin_form::render(
+        &state,
+        &session,
+        &user,
+        delete_form_for(&menu_name, link_id),
+        &[],
+    )
+    .await
+    {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+
+    let path = format!("/admin/structure/menus/{menu_name}/{link_id}/delete");
+    let mut context = tera::Context::new();
+    context.insert("menu_name", &menu_name);
+    context.insert("title", &link.title);
+    context.insert("children", &children);
+    context.insert("form", &form_html);
+    context.insert("path", &path);
+    render_admin_template(
+        &state,
+        &super::helpers::user_context_for(&state, &user).await,
+        "admin/menu-link-delete.html",
+        context,
+    )
+    .await
+}
+
 /// Delete a link, promoting its children to its own parent.
 ///
 /// POST /admin/structure/menus/{menu}/{id}/delete
@@ -887,26 +1091,29 @@ async fn delete_link(
     State(state): State<AppState>,
     session: Session,
     Path((menu_name, link_id)): Path<(String, Uuid)>,
-    Form(form): Form<CsrfOnlyForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-
-    let link = match MenuLink::find_by_id(state.db(), link_id).await {
-        Ok(Some(link)) => link,
-        Ok(None) => return render_not_found(),
-        Err(e) => {
-            tracing::error!(error = %e, "failed to load menu link");
-            return render_server_error("Failed to load the menu link.");
-        }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
     };
-    if link.plugin != CORE_PLUGIN {
-        return plugin_owned_response(&link.plugin);
+    // A plugin-owned link is refused before the form is checked: it has no
+    // confirmation page to have built one.
+    if let Err(response) = editable_link(&state, link_id).await {
+        return response;
     }
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, DELETE_FORM_ID, Vec::new()).await
+        {
+            Ok(form_state) => form_state,
+            Err(Ok(_)) => {
+                return super::helpers::render_error(
+                    "The form has expired. Reload the page and try again.",
+                );
+            }
+            Err(Err(response)) => return response,
+        };
 
     // The service promotes the link's children to its own parent, rather than
     // letting the foreign key's ON DELETE SET NULL turn a nested branch into a
@@ -914,6 +1121,7 @@ async fn delete_link(
     // warns which of the two happens, and this is the one it promises.
     match state.menu_links().delete(link_id).await {
         Ok(true) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(link_id = %link_id, menu = %menu_name, "menu link deleted");
             Redirect::to(&format!("/admin/structure/menus/{menu_name}")).into_response()
         }
@@ -947,19 +1155,17 @@ pub fn router() -> Router<AppState> {
     Router::new()
         .route("/admin/structure/menus", get(list_menus))
         .route("/admin/structure/menus/{menu}", get(show_menu))
-        .route("/admin/structure/menus/{menu}/add", get(add_link_form))
-        .route("/admin/structure/menus/{menu}/add", post(add_link_submit))
         .route(
-            "/admin/structure/menus/{menu}/{id}/edit",
-            get(edit_link_form),
+            "/admin/structure/menus/{menu}/add",
+            get(add_link_form).post(add_link_submit),
         )
         .route(
             "/admin/structure/menus/{menu}/{id}/edit",
-            post(edit_link_submit),
+            get(edit_link_form).post(edit_link_submit),
         )
         .route(
             "/admin/structure/menus/{menu}/{id}/delete",
-            post(delete_link),
+            get(delete_link_form).post(delete_link),
         )
 }
 

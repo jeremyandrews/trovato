@@ -1,0 +1,15 @@
+{% extends "page--admin.html" %}
+
+{% block page_title %}{{ t(s="Delete {name}", name=title) }}{% endblock page_title %}
+
+{% block content %}
+<div class="admin-card">
+    {% if children > 0 %}
+    <p>{{ t(s="Delete this link? Its {count} child link will be promoted to its parent.", plural="Delete this link? Its {count} child links will be promoted to its parent.", count=children) }}</p>
+    {% else %}
+    <p>{{ t(s="Delete this link?") }}</p>
+    {% endif %}
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+    <p><a href="/admin/structure/menus/{{ menu_name }}">{{ t(s="Cancel") }}</a></p>
+</div>
+{% endblock content %}
