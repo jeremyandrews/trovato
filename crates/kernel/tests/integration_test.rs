@@ -3132,16 +3132,10 @@ fn e2e_admin_add_search_config() {
             "Search config page should show the new field"
         );
 
-        let csrf_token = extract_csrf_token(&form_html).unwrap_or_else(|| {
-            panic!(
-                "CSRF token not found. HTML: {}",
-                &form_html[..form_html.len().min(2000)]
-            )
-        });
-        let form_build_id = extract_form_build_id(&form_html).unwrap_or_default();
-
+        // The page has several forms; this is the "Weight a field" one.
         let form_data = format!(
-            "_token={csrf_token}&_form_build_id={form_build_id}&field_name={field_name}&weight=B"
+            "{}&field_name={field_name}&weight=B",
+            common::form_fields(&form_html, "search_weight_form")
         );
 
         let response = app
@@ -3205,17 +3199,31 @@ fn e2e_admin_remove_search_config() {
             .create_and_login_admin("admin_search_3", "password123", "search3@test.com")
             .await;
 
-        // Fetch CSRF token (use /admin/people which always has CSRF tokens)
-        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/admin/people").await;
+        // The confirmation page carries the form that removes the weight.
+        let path = format!("/admin/structure/types/{type_name}/search/{field_name}/delete");
+        let confirm = app
+            .request_with_cookies(Request::get(&path).body(Body::empty()).unwrap(), &cookies)
+            .await;
+        assert_eq!(
+            confirm.status(),
+            StatusCode::OK,
+            "the confirmation page renders"
+        );
+        let confirm_html = response_text(confirm).await;
+        assert!(
+            confirm_html.contains("Remove the search weight of"),
+            "the confirmation page asks before removing the weight"
+        );
 
         let response = app
             .request_with_cookies(
-                Request::post(format!(
-                    "/admin/structure/types/{type_name}/search/{field_name}/delete"
-                ))
-                .header("content-type", "application/x-www-form-urlencoded")
-                .body(csrf_form_body(&csrf_token))
-                .unwrap(),
+                Request::post(&path)
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(common::form_fields(
+                        &confirm_html,
+                        "search_weight_delete_form",
+                    )))
+                    .unwrap(),
                 &cookies,
             )
             .await;
@@ -3248,15 +3256,26 @@ fn e2e_admin_reindex_content_type() {
             .create_and_login_admin("admin_search_4", "password123", "search4@test.com")
             .await;
 
-        // Fetch CSRF token (use /admin/people which always has CSRF tokens)
-        let (cookies, csrf_token) = fetch_csrf_token(app, &cookies, "/admin/people").await;
+        // The search settings page carries the reindex form.
+        let page = app
+            .request_with_cookies(
+                Request::get("/admin/structure/types/page/search")
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        let page_html = response_text(page).await;
 
         // Test reindex for 'page' content type (always exists)
         let response = app
             .request_with_cookies(
                 Request::post("/admin/structure/types/page/search/reindex")
                     .header("content-type", "application/x-www-form-urlencoded")
-                    .body(csrf_form_body(&csrf_token))
+                    .body(Body::from(common::form_fields(
+                        &page_html,
+                        "search_reindex_form",
+                    )))
                     .unwrap(),
                 &cookies,
             )

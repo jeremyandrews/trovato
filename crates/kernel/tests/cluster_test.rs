@@ -844,12 +844,22 @@ async fn s04_content_writes_on_a_are_current_on_b() {
     let fields_page = "/admin/structure/types/page/fields";
     let field = format!("cf_{tag}");
     let _ = c.admin.get(On::B, fields_page).await;
+    // The add-field form is a pipeline form: post its own token and build id.
+    let form = c.admin.get(On::A, fields_page).await;
+    let token = csrf_in(&form.body).expect("form token");
+    let build_id = Regex::new(r#"name="_form_build_id" value="([^"]+)""#)
+        .unwrap()
+        .captures(&form.body)
+        .map(|c| c[1].to_string())
+        .expect("form build id");
     let added = c
         .admin
-        .submit(
+        .post_form(
             On::A,
             "/admin/structure/types/page/fields/add",
             &[
+                ("_token", token),
+                ("_form_build_id", build_id),
                 ("label", format!("Cluster {tag}")),
                 ("name", field.clone()),
                 ("field_type", "text".to_string()),

@@ -107,12 +107,9 @@ fn the_field_list_draws_every_index_state() {
         &json!({"machine_name": "event", "label": "Event", "fields": fields}),
     );
     context.insert("fields", &fields);
-    context.insert("field_type_options", &Vec::<(String, String)>::new());
     context.insert("field_indexes", &indexes);
     context.insert("field_indexes_building", &true);
-    context.insert("category_options", &Vec::<serde_json::Value>::new());
-    context.insert("csrf_token", "t");
-    context.insert("form_build_id", "b");
+    context.insert("add_field_form", "");
     context.insert("path", "/admin/structure/types/event/fields");
 
     let engine = engine();
