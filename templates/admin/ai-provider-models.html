@@ -1,0 +1,22 @@
+{%- import "admin/macros/form.html" as form -%}
+{#- The provider form's operation model rows, which routes::admin_ai_provider
+    renders into a markup element of the kernel-built provider form. Rows are
+    added and removed by static/js/ai-admin.js, which keys on #model-rows,
+    .form-item--inline, .js-remove-row and #add-model-row. -#}
+{% set_global op_options = [] %}
+{% for op in operations %}{% set op_label = t(s=op.label) %}{% set pair = [op.key, op_label] %}{% set_global op_options = op_options | concat(with=[pair]) %}{% endfor %}
+{{ form::fieldset_start(legend=t(s="Operation Models"), id="operation-models", hint=t(s="Assign a model identifier to each operation type this provider supports. Leave blank for operations this provider does not serve.")) }}
+    <div id="model-rows">
+        {% if models | length > 0 %}{% set rows = models %}{% else %}{% set rows = [0] %}{% endif %}
+        {% for m in rows %}
+        {% if m is object %}{% set mop = m.operation %}{% set mmodel = m.model | default(value="") %}{% else %}{% set mop = "" %}{% set mmodel = "" %}{% endif %}
+        <div class="model-row form-item--inline">
+            {{ form::select(name="op_" ~ loop.index0, label=t(s="Operation {number}", number=loop.index), options=op_options, value=mop, empty=t(s="— Select operation —")) }}
+            {{ form::field(name="model_" ~ loop.index0, label=t(s="Model {number}", number=loop.index), value=mmodel, attrs='spellcheck="false"') }}
+            <button type="button" class="button button--small button--danger js-remove-row" aria-label="{{ t(s='Remove model {number}', number=loop.index) }}">{{ t(s="Remove") }}</button>
+        </div>
+        {% endfor %}
+    </div>
+
+    <button type="button" id="add-model-row" class="button button--secondary">{{ t(s="Add model") }}</button>
+{{ form::fieldset_end() }}

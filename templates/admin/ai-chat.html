@@ -1,37 +1,9 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
 {% block page_title %}{{ t(s="AI Chat Configuration") }}{% endblock page_title %}
 
 {% block content %}
 <div class="admin-card">
-    <form method="post" action="/admin/system/ai-chat" novalidate>
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
-
-        {{ form::textarea(name="system_prompt", label=t(s="System prompt"), value=config.system_prompt, rows=6, hint=t(s="Use {placeholder} as a placeholder for the site name. This prompt is sent to the AI provider as context before user messages.", placeholder="{site_name}")) }}
-
-        {{ form::fieldset_start(legend=t(s="RAG (Retrieval-Augmented Generation)")) }}
-            {{ form::checkbox(name="rag_enabled", label=t(s="Enable RAG context injection"), checked=config.rag_enabled, hint=t(s="When enabled, relevant site content is included as context for the AI to reference.")) }}
-            {{ form::field(name="rag_max_results", type="number", label=t(s="Max search results"), value=config.rag_max_results, width="4", attrs='min="1" max="20"') }}
-            {{ form::field(name="rag_min_score", type="number", label=t(s="Minimum relevance score"), value=config.rag_min_score, hint=t(s="Results below this score are excluded (0.0 = include all, 1.0 = only exact matches)."), width="10", attrs='min="0" max="1" step="0.01"') }}
-        {{ form::fieldset_end() }}
-
-        {{ form::fieldset_start(legend=t(s="AI Model")) }}
-            {{ form::field(name="max_tokens", type="number", label=t(s="Max tokens"), value=config.max_tokens, hint=t(s="Maximum number of tokens the AI can generate per response (64–16384)."), width="10", attrs='min="64" max="16384"') }}
-            {% if config.temperature is number %}{% set temperature = config.temperature %}{% else %}{% set temperature = "" %}{% endif %}
-            {{ form::field(name="temperature", type="number", label=t(s="Temperature"), value=temperature, hint=t(s="Controls randomness. Lower values (0.0) are more deterministic, higher values (2.0) are more creative. Leave blank to send none and let the model use its own default; current Anthropic models (newer than Claude Sonnet 4.6) refuse a request that sets one."), width="10", attrs='min="0" max="2" step="0.1"') }}
-        {{ form::fieldset_end() }}
-
-        {{ form::fieldset_start(legend=t(s="Conversation")) }}
-            {{ form::field(name="max_history_turns", type="number", label=t(s="Max history turns"), value=config.max_history_turns, hint=t(s="Number of previous conversation turns to include (0 = no history)."), width="4", attrs='min="0" max="20"') }}
-        {{ form::fieldset_end() }}
-
-        {{ form::fieldset_start(legend=t(s="Rate Limiting")) }}
-            {{ form::field(name="rate_limit_per_hour", type="number", label=t(s="Requests per hour per user"), value=config.rate_limit_per_hour, hint=t(s="Maximum chat requests per user per hour (0 = unlimited)."), width="10", attrs='min="0" max="1000"') }}
-        {{ form::fieldset_end() }}
-
-        {{ form::effect(text=t(s="what the site's AI chat tells the provider, how much site content it adds as context, and how often each person may ask, for every chat message from now on.")) }}
-        {{ form::actions(submit_label=t(s="Save configuration")) }}
-    </form>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 {% endblock content %}

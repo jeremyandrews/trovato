@@ -10,10 +10,10 @@
 //! # Without JavaScript
 //!
 //! Everything except sending a message works with JavaScript switched off. The
-//! proposal cards are `<form method="post">` with a `_token` field, and so is
-//! Start over; the kernel accepts a CSRF token from that field exactly as it
-//! accepts one from the `X-CSRF-Token` header (the 0.101 surface a plugin-served
-//! form needed). Sending a message is the exception because the reply is an SSE
+//! proposal cards' buttons belong to one form `FormService` built, and Start
+//! over is another (B83c); an endpoint accepts either a valid `X-CSRF-Token`
+//! header or a submission of its form that `FormService` accepts, token and
+//! saved state alike. Sending a message is the exception because the reply is an SSE
 //! stream, and a stream is what a turn is: the person watches a tool being
 //! called and a proposal appearing while it happens.
 //!
@@ -460,6 +460,56 @@ fn timeline(conversation: &Conversation, proposals: &[Proposal]) -> Vec<serde_js
         .collect()
 }
 
+/// The one form every proposal card's Apply and Discard buttons belong to
+/// (`form=`), each posting to its own proposal's address (`formaction`), so a
+/// page with many cards builds one form, and a card the script adds has a
+/// form to join.
+const PROPOSAL_FORM_ID: &str = "assistant_proposal_form";
+
+/// Start over.
+const RESET_FORM_ID: &str = "assistant_reset_form";
+
+/// The message box. Its id is the one `static/js/assistant.js` finds it by.
+const COMPOSER_FORM_ID: &str = "assistant-composer";
+
+/// The form the proposal cards' buttons belong to. Its own action is the
+/// page: every button names where it posts.
+fn proposal_form(conversation: &Conversation) -> crate::form::Form {
+    crate::form::Form::new(PROPOSAL_FORM_ID).action(back_to(conversation))
+}
+
+/// The Start over form.
+fn reset_form(conversation: &Conversation) -> crate::form::Form {
+    crate::form::Form::new(RESET_FORM_ID)
+        .action(format!("/api/v1/assistant/{}/reset", conversation.id))
+        .element("start_over", crate::form::FormElement::submit("Start over"))
+}
+
+/// The message box. Sending needs the page's script, which posts the message
+/// as JSON and reads the reply as a stream; the form is what it reads from.
+fn composer_form(conversation: &Conversation) -> crate::form::Form {
+    use crate::form::FormElement;
+    crate::form::Form::new(COMPOSER_FORM_ID)
+        .action(format!("/api/v1/assistant/{}/message", conversation.id))
+        .attribute("class", "assistant__composer")
+        .element(
+            "message",
+            FormElement::textarea(3)
+                .title("Message")
+                .placeholder("Ask a question, or say what you want changed.")
+                .attribute("maxlength", MAX_MESSAGE_CHARS.to_string())
+                .weight(0),
+        )
+        .element("send", FormElement::submit("Send").weight(1))
+        .element(
+            "help",
+            FormElement::markup(
+                r#"<p class="assistant__composer-help">Sending needs JavaScript. Everything else on this page works without it.</p>"#,
+            )
+            .weight(2),
+        )
+}
+
 /// Render the conversation into the site's page template.
 ///
 /// Two steps, the way an item page and a plugin-served page both do it: the
@@ -475,10 +525,26 @@ async fn render_conversation(
     let proposals = Proposal::for_conversation(state.db(), conversation.id)
         .await
         .unwrap_or_default();
+    // The token the page's script sends in the X-CSRF-Token header.
     let csrf_token = crate::form::csrf::generate_csrf_token(session).await;
     let read_only = read_only_reason(conversation, config);
 
+    let viewer = get_user_context(session, state).await;
+    let mut forms = vec![
+        ("proposal_form", proposal_form(conversation)),
+        ("reset_form", reset_form(conversation)),
+    ];
+    if read_only.is_none() {
+        forms.push(("composer_form", composer_form(conversation)));
+    }
     let mut inner = tera::Context::new();
+    for (name, form) in forms {
+        match crate::routes::admin_form::render_as(state, session, &viewer, form, &[]).await {
+            Ok(html) => inner.insert(name, &html),
+            Err(response) => return response,
+        }
+    }
+    inner.insert("proposal_form_id", PROPOSAL_FORM_ID);
     inner.insert("entries", &timeline(conversation, &proposals));
     inner.insert("conversation_id", &conversation.id.to_string());
     inner.insert("title", &conversation.title);
@@ -802,14 +868,71 @@ pub struct TokenForm {
     pub token: String,
 }
 
-/// Whether this request carried a valid CSRF token, from either place.
+/// A submission of one of the page's forms that `FormService` accepted: its
+/// saved state, the fields and who sent it, for `tap_form_submit` once the
+/// action is done.
+struct Submission {
+    form_state: crate::form::FormState,
+    posted: crate::content::submission::PostedForm,
+    viewer: UserContext,
+}
+
+impl Submission {
+    /// Tell plugins the submission was carried out, when the response's
+    /// `status` says it was.
+    async fn done(self, state: &AppState, status: StatusCode) {
+        if status.is_success() || status.is_redirection() {
+            state
+                .forms()
+                .submitted(
+                    &self.form_state,
+                    &self.posted,
+                    None,
+                    &crate::routes::item_form::tap_state(state, &self.viewer),
+                )
+                .await;
+        }
+    }
+}
+
+/// Whether this request may go on: a valid `X-CSRF-Token` header (the page's
+/// script, or any API client), or else a url-encoded submission of the page's
+/// form `form_id` that `FormService` accepts (its `_token` and saved state).
 ///
-/// A plain HTML `<form>` cannot set a header, and a proposal card is a plain
-/// HTML form on purpose, so the field has to be accepted alongside the header.
-async fn csrf_ok(session: &Session, headers: &HeaderMap, body: &str) -> bool {
-    crate::routes::helpers::require_csrf_header_or_field(session, headers, body)
+/// A plain HTML `<form>` cannot set a header, and a proposal card works
+/// without JavaScript on purpose, so the form has to be accepted alongside the
+/// header. `Ok(None)` is the header path; `Ok(Some(_))` the form's.
+async fn accepted(
+    state: &AppState,
+    session: &Session,
+    headers: &HeaderMap,
+    body: &[u8],
+    form_id: &str,
+) -> Result<Option<Submission>, Response> {
+    let refused = || AppError::forbidden("Invalid or missing CSRF token").into_response();
+    if crate::routes::helpers::require_csrf_header(session, headers)
         .await
         .is_ok()
+    {
+        return Ok(None);
+    }
+    if wants_json(headers) {
+        return Err(refused());
+    }
+    let posted = crate::content::submission::PostedForm(
+        url::form_urlencoded::parse(body).into_owned().collect(),
+    );
+    let viewer = get_user_context(session, state).await;
+    match crate::routes::admin_form::check_as(state, session, &viewer, &posted, form_id, Vec::new())
+        .await
+    {
+        Ok(form_state) => Ok(Some(Submission {
+            form_state,
+            posted,
+            viewer,
+        })),
+        Err(_) => Err(refused()),
+    }
 }
 
 /// Whether the caller wants JSON back rather than a redirect.
@@ -883,12 +1006,12 @@ async fn resolve_proposal(
     body: axum::body::Bytes,
     apply: bool,
 ) -> Response {
-    let body_str = std::str::from_utf8(&body).unwrap_or("");
-    if !csrf_ok(&session, &headers, body_str).await {
-        return AppError::forbidden("Invalid or missing CSRF token").into_response();
-    }
+    let submission = match accepted(&state, &session, &headers, &body, PROPOSAL_FORM_ID).await {
+        Ok(submission) => submission,
+        Err(refusal) => return refusal,
+    };
     let response = run_resolve(
-        state,
+        state.clone(),
         &session,
         conversation_id,
         proposal_id,
@@ -896,6 +1019,9 @@ async fn resolve_proposal(
         apply,
     )
     .await;
+    if let Some(submission) = submission {
+        submission.done(&state, response.status()).await;
+    }
     with_fresh_token(&session, response).await
 }
 
@@ -1065,11 +1191,14 @@ async fn reset_conversation(
     headers: HeaderMap,
     body: axum::body::Bytes,
 ) -> Response {
-    let body_str = std::str::from_utf8(&body).unwrap_or("");
-    if !csrf_ok(&session, &headers, body_str).await {
-        return AppError::forbidden("Invalid or missing CSRF token").into_response();
+    let submission = match accepted(&state, &session, &headers, &body, RESET_FORM_ID).await {
+        Ok(submission) => submission,
+        Err(refusal) => return refusal,
+    };
+    let response = run_reset(state.clone(), &session, conversation_id, &headers).await;
+    if let Some(submission) = submission {
+        submission.done(&state, response.status()).await;
     }
-    let response = run_reset(state, &session, conversation_id, &headers).await;
     with_fresh_token(&session, response).await
 }
 

@@ -193,7 +193,8 @@
     gap: 0.5rem;
 }
 
-.assistant__composer-label {
+.assistant__composer-label,
+.assistant__composer .form-item__label {
     position: absolute;
     width: 1px;
     height: 1px;

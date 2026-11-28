@@ -1,5 +1,4 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
 {% block page_title %}{{ t(s="AI Budget — {name}", name=user_name) }}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="How much AI this person has used this period, and any limits that apply to them instead of their roles' limits.") }}</p>{% endblock page_intro %}
@@ -46,37 +45,6 @@
     <h2 id="user-overrides-heading">{{ t(s="Per-User Overrides") }}</h2>
     <p id="user-overrides-hint">{{ t(s="Set per-user token limits that override role defaults. Enter 0 for unlimited. Leave blank to use role default.") }}</p>
 
-    <form method="post" action="/admin/system/ai-budgets/user/{{ user_id }}" novalidate>
-        {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
-
-        {% if provider_usage | length > 0 %}
-        <div class="table-scroll" role="region" aria-labelledby="user-overrides-caption" tabindex="0">
-            <table class="table">
-                <caption id="user-overrides-caption">{{ t(s="Token limit overrides for {name}", name=user_name) }}</caption>
-                <thead>
-                    <tr>
-                        <th scope="col">{{ t(s="Provider") }}</th>
-                        <th scope="col">{{ t(s="Current Usage") }}</th>
-                        <th scope="col">{{ t(s="Override Limit") }}</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for u in provider_usage %}
-                    <tr>
-                        <th scope="row">{{ u.label }}</th>
-                        <td>{{ u.used }}</td>
-                        <td>
-                            <label class="visually-hidden" for="override_{{ u.provider_id }}">{{ t(s="Override limit for {provider}", provider=u.label) }}</label>
-                            <input type="number" id="override_{{ u.provider_id }}" name="override_{{ u.provider_id }}" value="{% if u.override is defined and u.override %}{{ u.override }}{% endif %}" min="0" placeholder="{{ t(s='Role default') }}" aria-describedby="user-overrides-hint">
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
-        </div>
-        {% endif %}
-
-        {{ form::actions(submit_label=t(s="Save overrides"), cancel_url="/admin/system/ai-budgets") }}
-    </form>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </section>
 {% endblock content %}

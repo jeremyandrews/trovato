@@ -4,8 +4,9 @@
    page as page--ai--assistant.html without touching this.
 
    Everything here except Send works with JavaScript switched off. The proposal
-   cards and Start over are plain forms carrying a _token field; static/js/
-   assistant.js upgrades them to fetch calls and streams a turn as it happens. #}
+   cards' buttons belong to one kernel-built form (form=, formaction), and Start
+   over is another; static/js/assistant.js upgrades them to fetch calls and
+   streams a turn as it happens. #}
 <link rel="stylesheet" href="/static/css/assistant.css">
 
 <div class="assistant" data-conversation-id="{{ conversation_id }}" data-csrf-token="{{ csrf_token }}">
@@ -68,16 +69,8 @@
                 {% endif %}
                 {% if entry.status is not defined or entry.status == "proposed" %}
                 <div class="assistant-proposal__actions">
-                    <form method="post"
-                          action="/api/v1/assistant/{{ conversation_id }}/proposals/{{ entry.proposal_id }}/apply">
-                        <input type="hidden" name="_token" value="{{ csrf_token }}">
-                        <button type="submit" class="button button--primary">Apply</button>
-                    </form>
-                    <form method="post"
-                          action="/api/v1/assistant/{{ conversation_id }}/proposals/{{ entry.proposal_id }}/discard">
-                        <input type="hidden" name="_token" value="{{ csrf_token }}">
-                        <button type="submit" class="button">Discard</button>
-                    </form>
+                    <button type="submit" form="{{ proposal_form_id }}" formaction="/api/v1/assistant/{{ conversation_id }}/proposals/{{ entry.proposal_id }}/apply" class="button button--primary">Apply</button>
+                    <button type="submit" form="{{ proposal_form_id }}" formaction="/api/v1/assistant/{{ conversation_id }}/proposals/{{ entry.proposal_id }}/discard" class="button">Discard</button>
                 </div>
                 {% endif %}
             </div>
@@ -99,28 +92,19 @@
     {% endif %}
 
     {% if not read_only %}
-    <form class="assistant__composer" id="assistant-composer"
-          method="post" action="/api/v1/assistant/{{ conversation_id }}/message">
-        <label class="assistant__composer-label" for="assistant-message">Message</label>
-        <textarea id="assistant-message" name="message" rows="3"
-                  maxlength="{{ max_message_chars }}"
-                  placeholder="Ask a question, or say what you want changed."></textarea>
-        <button type="submit" class="button button--primary">Send</button>
-        <p class="assistant__composer-help">
-            Sending needs JavaScript. Everything else on this page works without it.
-        </p>
-    </form>
+    {{ composer_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
     {% endif %}
 
     <footer class="assistant__footer">
         <p class="assistant__usage">
             {{ message_count }} of {{ max_messages }} messages, {{ tokens_used }} of {{ max_tokens }} tokens.
         </p>
-        <form method="post" action="/api/v1/assistant/{{ conversation_id }}/reset">
-            <input type="hidden" name="_token" value="{{ csrf_token }}">
-            <button type="submit" class="button assistant__reset">Start over</button>
-        </form>
+        {{ reset_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
     </footer>
+
+    {#- The form every proposal card's Apply and Discard buttons belong to
+        (form=), each posting to its own proposal's address (formaction). #}
+    {{ proposal_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 
 <script src="/static/js/assistant.js"></script>

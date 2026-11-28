@@ -1,0 +1,47 @@
+{%- import "admin/macros/form.html" as form -%}
+{#- The scopes half of the assistant settings form, which
+    routes::admin_ai_assistant renders into a markup element of the
+    kernel-built form: one switch and one prompt override per scope a plugin
+    declared, named scope_enabled[name] and scope_prompt[name], and the scopes
+    that were dropped at startup. -#}
+<h2>{{ t(s="Scopes") }}</h2>
+
+{% if scopes %}
+{% for scope in scopes %}
+<section class="admin-card admin-card--nested" aria-labelledby="scope-heading-{{ loop.index }}">
+    <h3 id="scope-heading-{{ loop.index }}">{{ scope.label }} <code>{{ scope.name }}</code></h3>
+    <p class="form-help">
+        {{ t(s="From {plugin}.", plugin=scope.plugin) }}
+        {% if scope.description %}{{ scope.description }}{% endif %}
+        {{ t(s="Requires {permission}.", permission=scope.permission) }}
+        {{ t(s="{count} tool, {writes} of them writes.", plural="{count} tools, {writes} of them writes.", count=scope.tool_count, writes=scope.write_tool_count) }}
+    </p>
+
+    {{ form::checkbox(name="scope_enabled[" ~ scope.name ~ "]", id="scope-enabled-" ~ loop.index, label=t(s="Enable {scope}", scope=scope.label), checked=scope.enabled) }}
+
+    <details>
+        <summary>{{ t(s="Tools and stock prompt") }}</summary>
+        <ul class="assistant-admin-tools">
+            {% for tool in scope.tools %}
+            <li><code>{{ tool.name }}</code> — {% if tool.kind == "write" %}{{ t(s="{kind}, {risk} risk", kind=t(s=tool.kind), risk=t(s=tool.risk)) }}{% else %}{{ t(s=tool.kind) }}{% endif %}</li>
+            {% endfor %}
+        </ul>
+        <pre class="assistant-admin-prompt">{{ scope.stock_prompt }}</pre>
+    </details>
+
+    {{ form::textarea(name="scope_prompt[" ~ scope.name ~ "]", id="scope_prompt_" ~ scope.name, label=t(s="Prompt override for {scope}", scope=scope.label), value=scope.prompt_override, rows=4, hint=t(s="Leave blank to use the plugin's prompt above.")) }}
+</section>
+{% endfor %}
+{% else %}
+<p>{{ t(s="No plugin declares an assistant scope. Enable a plugin that does, and it appears here.") }}</p>
+{% endif %}
+
+{% if rejections %}
+<h2>{{ t(s="Dropped scopes") }}</h2>
+<p class="form-help">{{ t(s="These were declared and refused at startup. They do nothing until the plugin is fixed.") }}</p>
+<ul class="assistant-admin-rejections">
+    {% for rejection in rejections %}
+    <li><strong>{{ rejection.plugin }}</strong> / <code>{{ rejection.scope }}</code>: {{ rejection.reason }}</li>
+    {% endfor %}
+</ul>
+{% endif %}

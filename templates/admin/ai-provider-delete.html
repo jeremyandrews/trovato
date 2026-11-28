@@ -1,0 +1,11 @@
+{% extends "page--admin.html" %}
+
+{% block page_title %}{{ t(s="Delete AI provider") }}{% endblock page_title %}
+
+{% block content %}
+<div class="admin-card">
+    <p>{{ t(s="Delete the {name} provider?", name=provider.label) }}</p>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+    <p><a href="/admin/system/ai-providers">{{ t(s="Cancel") }}</a></p>
+</div>
+{% endblock content %}

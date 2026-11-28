@@ -74,8 +74,12 @@
     // -------------------------------------------------------------------------
     // AI provider list: connection test
     // -------------------------------------------------------------------------
-    document.querySelectorAll('.js-test-connection').forEach(function(form) {
-        form.addEventListener('submit', function(e) {
+    // Each Test button belongs to the list's one test form (form=) and posts
+    // to its own provider's address (formaction).
+    document.querySelectorAll('.js-test-connection').forEach(function(button) {
+        button.addEventListener('click', function(e) {
+            var form = button.form;
+            if (!form) return;
             e.preventDefault();
             var resultDiv = document.getElementById('test-result');
             var msgEl = document.getElementById('test-message');
@@ -84,7 +88,7 @@
             latEl.textContent = '';
             resultDiv.style.display = 'block';
 
-            fetch(form.action, {
+            fetch(button.formAction, {
                 method: 'POST',
                 body: new FormData(form)
             })
