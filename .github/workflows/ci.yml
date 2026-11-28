@@ -348,6 +348,12 @@ jobs:
           echo "PAGEFIND_BIN=$RUNNER_TEMP/pagefind" >> "$GITHUB_ENV"
           echo "TROVATO_REQUIRE_PAGEFIND_CLI=1" >> "$GITHUB_ENV"
 
+      # The S3 file storage tests (BG16) run against a throwaway MinIO with
+      # random credentials made by the script; they fail, not skip, under CI
+      # when it is missing.
+      - name: Start MinIO for the S3 storage tests
+        run: ./scripts/ci-start-minio.sh
+
       - name: Run integration tests (shard ${{ matrix.shard }}/3)
         env:
           SHARD: ${{ matrix.shard }}
@@ -645,6 +651,9 @@ jobs:
       # request that builds them any other way (B235).
       - name: Build WASM plugins
         run: ./scripts/ci-build-plugins.sh
+
+      - name: Start MinIO for the S3 storage tests
+        run: ./scripts/ci-start-minio.sh
 
       # The same split as the Test job, in one database: the unit tests under
       # nextest, one process each and in parallel; the integration targets

@@ -933,7 +933,11 @@ pub async fn import_config_with_env(
     // a permission it does not name is revoked. A file that omits the key entirely
     // is not in this list at all and leaves the role's grants untouched.
     for (filename, role_id, permissions) in &role_grants {
-        if let Err(e) = Role::set_permissions(pool, *role_id, permissions).await {
+        let applied = match pool.acquire().await {
+            Ok(mut conn) => Role::set_permissions(&mut conn, *role_id, permissions).await,
+            Err(e) => Err(e.into()),
+        };
+        if let Err(e) = applied {
             failures.push(ConfigImportFailure {
                 filename: filename.clone(),
                 error: format!("failed to set permissions for role {role_id}: {e:#}"),
@@ -2477,6 +2481,33 @@ mod tests {
         assert_eq!(parsed.label, "Blog Post");
         assert_eq!(parsed.description, Some("A blog article".to_string()));
         assert!(parsed.has_title);
+    }
+
+    /// B207: a field's "Filterable and sortable" choice lives in its
+    /// `settings.filterable`, so export and import carry it with the type.
+    #[test]
+    fn item_type_yaml_keeps_the_filterable_setting() {
+        let item_type = ItemType {
+            type_name: "event".to_string(),
+            label: "Event".to_string(),
+            description: None,
+            has_title: true,
+            title_label: None,
+            plugin: "core".to_string(),
+            settings: serde_json::json!({"fields": [
+                {"field_name": "city", "field_type": "Text", "label": "City",
+                 "settings": {"filterable": true}},
+                {"field_name": "notes", "field_type": "TextLong", "label": "Notes",
+                 "settings": {"filterable": false}},
+            ]}),
+        };
+
+        let yaml = serde_yml::to_string(&item_type).unwrap();
+        assert!(yaml.contains("filterable: true"), "{yaml}");
+        let parsed = deserialize_entity("item_type", &yaml).unwrap();
+        let it = parsed.entity.as_item_type().expect("item type");
+        assert_eq!(it.settings["fields"][0]["settings"]["filterable"], true);
+        assert_eq!(it.settings["fields"][1]["settings"]["filterable"], false);
     }
 
     #[test]

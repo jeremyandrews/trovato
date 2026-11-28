@@ -121,11 +121,12 @@ pub(crate) struct Run<'a> {
     /// Every text format: the importer writes as an administrator would.
     pub(crate) formats: Vec<String>,
     /// Security events for the accounts this run creates or changes, written
-    /// only once the transaction commits: a run that rolls back (a later
+    /// in the run's transaction just before it commits: the run's changes
+    /// and their events commit together, and a run that rolls back (a later
     /// record failing, or `dry_run`) leaves no record claiming it happened.
     pub(crate) security_events: Vec<crate::audit::SecurityEvent>,
-    /// `(user, role)` grants this run made, audited as `user.roles_changed`
-    /// after the commit, as `trovato user role-add` audits one.
+    /// `(user, role)` grants this run made, recorded as `user.roles_changed`
+    /// in the same transaction, as `trovato user role-add` records one.
     pub(crate) role_grants: Vec<(Uuid, Uuid)>,
 }
 
@@ -200,26 +201,40 @@ pub async fn import(state: &AppState, input: impl BufRead, dry_run: bool) -> Res
             .context("failed to end the import")?;
         return Ok(report);
     }
-    run.tx
-        .commit()
+    // The run's security events go in its own transaction: an import whose
+    // events cannot be written does not happen.
+    state
+        .audit_trail()
+        .security_all_in(&mut run.tx, std::mem::take(&mut run.security_events))
         .await
-        .context("failed to commit the import")?;
-
-    for event in std::mem::take(&mut run.security_events) {
-        state.audit_trail().security(event).await;
-    }
+        .context("failed to record the import's security events")?;
+    let mut grants = Vec::new();
     for (user_id, role_id) in std::mem::take(&mut run.role_grants) {
-        if let Err(e) = crate::services::role::audit_membership(
+        let name = crate::services::role::membership_event_in(
             state.audit_trail(),
-            state.db(),
+            &mut run.tx,
             user_id,
             role_id,
             "added",
         )
         .await
-        {
-            tracing::warn!(error = %e, %user_id, %role_id, "failed to audit an imported role grant");
-        }
+        .context("failed to record an imported role grant")?;
+        grants.push((user_id, role_id, name));
+    }
+    run.tx
+        .commit()
+        .await
+        .context("failed to commit the import")?;
+
+    for (user_id, role_id, name) in grants {
+        crate::services::role::record_membership(
+            state.audit_trail(),
+            user_id,
+            role_id,
+            &name,
+            "added",
+        )
+        .await;
     }
 
     let summary: BTreeMap<&str, serde_json::Value> = report

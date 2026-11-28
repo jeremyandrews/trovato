@@ -22,6 +22,7 @@ and `trovato <command> --help` print the same, from the binary.
 | `trovato item revision-delete <item> <revision>` | Delete a past revision of an item. |
 | `trovato import <file> [--dry-run]` | Import content from another site (users, items and their revisions, comments, aliases, redirects, tiles), keeping each record's id and dates. |
 | `trovato generate --items <N> --admin-password <PASSWORD>` | Write a deterministic test site of a given size (for performance tests and benchmarks). |
+| `trovato files migrate-to-s3 [--from <dir>] [--parallel <n>]` | Copy every uploaded file into the S3 bucket `FILE_STORAGE=s3` names, checked by SHA-256 and resumable. |
 
 ## `trovato migrate`
 
@@ -258,3 +259,51 @@ Imported 150 records from site.ndjson:
 150 change(s).
 Running servers have dropped their cached copies; the next request reads the database.
 ```
+
+## `trovato files migrate-to-s3`
+
+```
+trovato files migrate-to-s3 [--from <dir>] [--parallel <n>]
+```
+
+Copies every file under the uploads directory (`UPLOADS_DIR`, or `--from`) into
+the S3 bucket the settings name (`FILE_STORAGE=s3`, `S3_BUCKET`, and `S3_REGION`
+or `S3_ENDPOINT`), under the same key, `--parallel` at a time (default 16). It
+never connects to the database, though `DATABASE_URL` must be set, as for
+every command. The design is in
+[`docs/design/production-hosting.md`](design/production-hosting.md), decision 5.
+
+- **Same URIs.** A file's URI is `local://<key>` with either store, so nothing
+  in the database changes.
+- **Procedure.** Stop writes first: scale every server to zero and stop
+  anything calling `/cron` (maintenance mode is not enough: administrators and
+  cron still delete files). Readers behind a CDN keep being served from its
+  cache. Run the command into an empty bucket or prefix, then set `FILE_STORAGE=s3` on
+  every server and start them. A warm-up run while the site is live is safe
+  only if no file is deleted before the final run: a file deleted after a run
+  stays in the bucket with no record, and is then served to anyone as an
+  unmanaged file. Never run it after the switch.
+- **Checked.** Each copy is read back from the bucket and compared with the
+  local file by SHA-256; a mismatch is a failure.
+- **Resumable.** A file the bucket already holds with the same SHA-256 is
+  skipped and counted as already there, so an interrupted run, or one that
+  failed on some files, is finished by running it again (while writes are
+  still stopped). A file the bucket holds with other bytes is copied again.
+  Every check downloads the object to compare, so a rerun over a large bucket
+  takes as long as reading it back.
+- **Nothing deleted.** Neither side loses a file. Switching back to
+  `FILE_STORAGE=local` is safe only before any file is uploaded or deleted on
+  the bucket. After that the directory still holds files deleted since, which
+  would be served to anyone as unmanaged files, and lacks the new uploads: past
+  that point the way back is a copy from the bucket, not the old directory, so
+  move the directory out of `UPLOADS_DIR`.
+- **Skipped:** symbolic links (one could name a file outside the directory;
+  each directory on a file's path is opened without following one, so a link
+  swapped in during the run is refused too) and Trovato's own write-check and
+  temporary files.
+- **Reported, not copied:** a file whose name is not UTF-8 (a key is text,
+  and a guessed spelling could be another file's name): rename it and run
+  again.
+- **Output:** after its log lines, one summary line, `<total> files under <dir>: <n> copied, <n> already in
+  s3://<bucket>[/<prefix>], <n> failed`, after a `failed: <key>: <reason>` line
+  per failed file. Exits nonzero when any file failed.

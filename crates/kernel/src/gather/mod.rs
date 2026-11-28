@@ -10,6 +10,8 @@
 mod access;
 mod category_service;
 pub mod extension;
+pub mod field_index;
+pub mod field_sql;
 mod gather_service;
 mod handlers;
 mod query_builder;

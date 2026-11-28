@@ -190,6 +190,22 @@ pub fn permission_diff(current: &[String], desired: &[String]) -> (Vec<String>, 
     (to_add, to_remove)
 }
 
+/// The grants one write actually changed: what it added and what it took
+/// away, each as the statement that made the change found it. A grant another
+/// transaction made or revoked meanwhile is in neither list.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct GrantDiff {
+    pub granted: Vec<String>,
+    pub revoked: Vec<String>,
+}
+
+impl GrantDiff {
+    /// Whether the write changed nothing.
+    pub fn is_empty(&self) -> bool {
+        self.granted.is_empty() && self.revoked.is_empty()
+    }
+}
+
 /// Role record.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Role {
@@ -203,7 +219,10 @@ pub struct Role {
 
 impl Role {
     /// Find a role by ID.
-    pub async fn find_by_id(pool: &PgPool, id: Uuid) -> Result<Option<Self>> {
+    pub async fn find_by_id<'e, E: sqlx::PgExecutor<'e>>(
+        pool: E,
+        id: Uuid,
+    ) -> Result<Option<Self>> {
         let role = sqlx::query_as::<_, Role>("SELECT * FROM roles WHERE id = $1")
             .bind(id)
             .fetch_optional(pool)
@@ -235,7 +254,7 @@ impl Role {
     }
 
     /// Create a new role.
-    pub async fn create(pool: &PgPool, name: &str) -> Result<Self> {
+    pub async fn create<'e, E: sqlx::PgExecutor<'e>>(pool: E, name: &str) -> Result<Self> {
         let id = Uuid::now_v7();
 
         let role =
@@ -250,7 +269,11 @@ impl Role {
     }
 
     /// Update a role's name.
-    pub async fn update(pool: &PgPool, id: Uuid, name: &str) -> Result<Option<Self>> {
+    pub async fn update<'e, E: sqlx::PgExecutor<'e>>(
+        pool: E,
+        id: Uuid,
+        name: &str,
+    ) -> Result<Option<Self>> {
         let result =
             sqlx::query_as::<_, Role>("UPDATE roles SET name = $1 WHERE id = $2 RETURNING *")
                 .bind(name)
@@ -263,7 +286,7 @@ impl Role {
     }
 
     /// Delete a role.
-    pub async fn delete(pool: &PgPool, id: Uuid) -> Result<bool> {
+    pub async fn delete<'e, E: sqlx::PgExecutor<'e>>(pool: E, id: Uuid) -> Result<bool> {
         // Prevent deletion of well-known roles
         if id == well_known::ANONYMOUS_ROLE_ID || id == well_known::AUTHENTICATED_ROLE_ID {
             anyhow::bail!("cannot delete built-in role");
@@ -279,7 +302,10 @@ impl Role {
     }
 
     /// Get all permissions for this role.
-    pub async fn get_permissions(pool: &PgPool, role_id: Uuid) -> Result<Vec<String>> {
+    pub async fn get_permissions<'e, E: sqlx::PgExecutor<'e>>(
+        pool: E,
+        role_id: Uuid,
+    ) -> Result<Vec<String>> {
         let permissions = sqlx::query_scalar::<_, String>(
             "SELECT permission FROM role_permissions WHERE role_id = $1",
         )
@@ -291,9 +317,14 @@ impl Role {
         Ok(permissions)
     }
 
-    /// Add a permission to this role.
-    pub async fn add_permission(pool: &PgPool, role_id: Uuid, permission: &str) -> Result<()> {
-        sqlx::query(
+    /// Add a permission to this role. Returns whether this added it (`false`
+    /// when the role already held it).
+    pub async fn add_permission<'e, E: sqlx::PgExecutor<'e>>(
+        pool: E,
+        role_id: Uuid,
+        permission: &str,
+    ) -> Result<bool> {
+        let result = sqlx::query(
             "INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2) ON CONFLICT DO NOTHING",
         )
         .bind(role_id)
@@ -302,7 +333,7 @@ impl Role {
         .await
         .context("failed to add permission to role")?;
 
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
     /// Make this role hold exactly `desired` and nothing else.
@@ -313,18 +344,14 @@ impl Role {
     /// wraps it to invalidate the permission cache; a caller with no cache to
     /// invalidate (the `config import` CLI runs in its own process) uses this
     /// directly.
-    pub async fn set_permissions(pool: &PgPool, role_id: Uuid, desired: &[String]) -> Result<()> {
-        let current = Self::get_permissions(pool, role_id).await?;
-        let (to_add, to_remove) = permission_diff(&current, desired);
-
-        for permission in &to_add {
-            Self::add_permission(pool, role_id, permission).await?;
-        }
-        for permission in &to_remove {
-            Self::remove_permission(pool, role_id, permission).await?;
-        }
-
-        Ok(())
+    ///
+    /// Returns the grants it changed.
+    pub async fn set_permissions(
+        conn: &mut sqlx::PgConnection,
+        role_id: Uuid,
+        desired: &[String],
+    ) -> Result<GrantDiff> {
+        Self::set_permissions_within(conn, role_id, desired, None).await
     }
 
     /// Make this role hold exactly `desired` **among `rendered`**, touching
@@ -343,28 +370,36 @@ impl Role {
     /// So removals are confined to `rendered`: a permission outside it is left
     /// exactly as it was, granted or not. `desired` is still applied in full, on
     /// the assumption a caller does not ask for something it did not render.
+    /// `None` for `rendered` is the whole universe ([`Self::set_permissions`]).
+    ///
+    /// Returns the grants it changed, each as its own statement found it.
     pub async fn set_permissions_within(
-        pool: &PgPool,
+        conn: &mut sqlx::PgConnection,
         role_id: Uuid,
         desired: &[String],
-        rendered: &std::collections::HashSet<String>,
-    ) -> Result<()> {
-        let current = Self::get_permissions(pool, role_id).await?;
+        rendered: Option<&std::collections::HashSet<String>>,
+    ) -> Result<GrantDiff> {
+        let current = Self::get_permissions(&mut *conn, role_id).await?;
         let (to_add, to_remove) = permission_diff(&current, desired);
 
-        for permission in &to_add {
-            Self::add_permission(pool, role_id, permission).await?;
+        let mut diff = GrantDiff::default();
+        for permission in to_add {
+            if Self::add_permission(&mut *conn, role_id, &permission).await? {
+                diff.granted.push(permission);
+            }
         }
-        for permission in &to_remove {
-            if !rendered.contains(permission) {
+        for permission in to_remove {
+            if rendered.is_some_and(|rendered| !rendered.contains(&permission)) {
                 // Not on the form at all, so its absence from `desired` says
                 // nothing about whether anyone wanted it revoked.
                 continue;
             }
-            Self::remove_permission(pool, role_id, permission).await?;
+            if Self::remove_permission(&mut *conn, role_id, &permission).await? {
+                diff.revoked.push(permission);
+            }
         }
 
-        Ok(())
+        Ok(diff)
     }
 
     /// How many users hold this role.
@@ -400,20 +435,29 @@ impl Role {
         Ok(permissions)
     }
 
-    /// Remove a permission from this role.
-    pub async fn remove_permission(pool: &PgPool, role_id: Uuid, permission: &str) -> Result<()> {
-        sqlx::query("DELETE FROM role_permissions WHERE role_id = $1 AND permission = $2")
-            .bind(role_id)
-            .bind(permission)
-            .execute(pool)
-            .await
-            .context("failed to remove permission from role")?;
+    /// Remove a permission from this role. Returns whether this removed it
+    /// (`false` when the role did not hold it).
+    pub async fn remove_permission<'e, E: sqlx::PgExecutor<'e>>(
+        pool: E,
+        role_id: Uuid,
+        permission: &str,
+    ) -> Result<bool> {
+        let result =
+            sqlx::query("DELETE FROM role_permissions WHERE role_id = $1 AND permission = $2")
+                .bind(role_id)
+                .bind(permission)
+                .execute(pool)
+                .await
+                .context("failed to remove permission from role")?;
 
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
     /// Get all roles for a user.
-    pub async fn get_user_roles(pool: &PgPool, user_id: Uuid) -> Result<Vec<Self>> {
+    pub async fn get_user_roles<'e, E: sqlx::PgExecutor<'e>>(
+        pool: E,
+        user_id: Uuid,
+    ) -> Result<Vec<Self>> {
         let roles = sqlx::query_as::<_, Role>(
             r#"
             SELECT r.* FROM roles r
@@ -430,9 +474,14 @@ impl Role {
         Ok(roles)
     }
 
-    /// Assign a role to a user.
-    pub async fn assign_to_user(pool: &PgPool, user_id: Uuid, role_id: Uuid) -> Result<()> {
-        sqlx::query(
+    /// Assign a role to a user. Returns whether this assigned it (`false`
+    /// when the user already held it).
+    pub async fn assign_to_user<'e, E: sqlx::PgExecutor<'e>>(
+        pool: E,
+        user_id: Uuid,
+        role_id: Uuid,
+    ) -> Result<bool> {
+        let result = sqlx::query(
             "INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2) ON CONFLICT DO NOTHING",
         )
         .bind(user_id)
@@ -441,19 +490,24 @@ impl Role {
         .await
         .context("failed to assign role to user")?;
 
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
-    /// Remove a role from a user.
-    pub async fn remove_from_user(pool: &PgPool, user_id: Uuid, role_id: Uuid) -> Result<()> {
-        sqlx::query("DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2")
+    /// Remove a role from a user. Returns whether this removed it (`false`
+    /// when the user did not hold it).
+    pub async fn remove_from_user<'e, E: sqlx::PgExecutor<'e>>(
+        pool: E,
+        user_id: Uuid,
+        role_id: Uuid,
+    ) -> Result<bool> {
+        let result = sqlx::query("DELETE FROM user_roles WHERE user_id = $1 AND role_id = $2")
             .bind(user_id)
             .bind(role_id)
             .execute(pool)
             .await
             .context("failed to remove role from user")?;
 
-        Ok(())
+        Ok(result.rows_affected() > 0)
     }
 
     /// Get all permissions for a user (aggregated from all their roles).

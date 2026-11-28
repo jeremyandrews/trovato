@@ -101,7 +101,7 @@ struct PermissionFormData {
 /// within the permissions they already hold, and can hand out what they have
 /// and no more. A superuser is unrestricted, as they are everywhere else.
 ///
-/// The rule is applied to a role's membership ([`apply_role_membership`]), to a
+/// The rule is applied to a role's membership ([`plan_role_membership`]), to a
 /// role's deletion ([`delete_role`]), to each box on the permission grid
 /// ([`save_permissions`]), and to an account ([`may_act_on`]). It lives here, in
 /// [`Authority::covers`], so the four cannot drift apart.
@@ -446,9 +446,29 @@ async fn add_user_submit(
     };
 
     let user_ctx = admin_user_context(&state, &current_user).await;
-    match state.users().create(input, &user_ctx, "admin").await {
-        Ok(user) => {
-            apply_role_membership(&state, &current_user, user.id, &form.roles).await;
+    // The account, its roles and every event recording them commit together:
+    // when any part cannot be written, no account is created.
+    let created = async {
+        // Hashed before BEGIN: Argon2 takes a while, and a pooled connection
+        // must not sit idle in a transaction meanwhile.
+        let pass = crate::models::user::stored_password(&input.password)?;
+        let plan =
+            plan_role_membership(&state, &current_user, uuid::Uuid::nil(), true, &form.roles)
+                .await?;
+        let mut tx = state.db().begin().await?;
+        let user = state
+            .users()
+            .create_in(&mut tx, input, &pass, 1, &user_ctx, "admin")
+            .await?;
+        let changed = apply_role_membership_in(&state, &mut tx, user.id, &plan).await?;
+        tx.commit().await?;
+        anyhow::Ok((user, changed))
+    }
+    .await;
+    match created {
+        Ok((user, changed)) => {
+            state.users().created_with_status(&user, 1, &user_ctx).await;
+            membership_committed(&state, user.id, &changed).await;
             tracing::info!(name = %form.name, "user created");
             if form.notify.is_some() {
                 // After the answer, as every kernel mail is: the request does
@@ -763,98 +783,131 @@ async fn edit_user_submit(
     };
 
     let user_ctx = admin_user_context(&state, &current_user).await;
-    match state.users().update(user_id, input, &user_ctx).await {
-        Ok(_) => {
-            apply_role_membership(&state, &current_user, user_id, &form.roles).await;
+    let admin_user_id = current_user.id;
+    let blocking = existing_user.is_active() && status_after == 0;
+    let new_password = form.password.as_deref().filter(|p| !p.is_empty());
 
-            // Update password if provided
-            let password_set = match form.password {
-                Some(ref password) if !password.is_empty() => {
-                    if let Err(e) = state
-                        .users()
-                        .update_password(user_id, password, &user_ctx, "admin")
-                        .await
-                    {
-                        tracing::error!(error = %e, "failed to update user password");
-                        return render_server_error("Failed to update password.");
-                    }
-                    true
-                }
-                _ => false,
-            };
-
-            let admin_user_id = current_user.id;
-            let own_device = session
-                .get::<uuid::Uuid>(crate::services::session_registry::SESSION_DEVICE_ID)
-                .await
-                .ok()
-                .flatten();
-            if existing_user.is_active() && status_after == 0 {
-                // Blocked: nothing the account held may keep working. Every
-                // session ends and every API token is deleted.
-                crate::services::session_registry::end_user_sessions(
+    // Everything the form changes, and every event recording it, commits in
+    // one transaction: the account's fields, its roles, its password and, for
+    // a block, the deletion of its API tokens. When any part cannot be
+    // written, nothing changes and the request reports the failure.
+    let saved = async {
+        // Hashed before BEGIN: Argon2 takes a while, and a pooled connection
+        // must not sit idle in a transaction meanwhile.
+        let hashed = new_password
+            .map(crate::models::user::hash_password)
+            .transpose()?;
+        let plan = plan_role_membership(&state, &current_user, user_id, false, &form.roles).await?;
+        let mut tx = state.db().begin().await?;
+        let Some(updated) = state
+            .users()
+            .update_in(&mut tx, user_id, input, &user_ctx)
+            .await?
+        else {
+            return anyhow::Ok(None);
+        };
+        let changed = apply_role_membership_in(&state, &mut tx, user_id, &plan).await?;
+        let password_set = match hashed {
+            Some(hashed) => {
+                state
+                    .users()
+                    .update_password_in(&mut tx, user_id, &hashed, &user_ctx, "admin")
+                    .await?
+            }
+            None => false,
+        };
+        // Blocked: nothing the account held may keep working, its API tokens
+        // included.
+        let tokens = if blocking {
+            Some(
+                crate::services::api_token::revoke_all_for_user_in(
                     &state,
+                    &mut tx,
                     user_id,
-                    None,
                     Some(admin_user_id),
                     "account_blocked",
                 )
-                .await;
-                match crate::services::api_token::revoke_all_for_user(
-                    &state,
-                    user_id,
-                    Some(admin_user_id),
-                    "account_blocked",
-                )
-                .await
-                {
-                    Ok(n) => tracing::info!(
-                        user_id = %user_id,
-                        admin = %admin_user_id,
-                        tokens = n,
-                        "blocked account's API tokens deleted"
-                    ),
-                    Err(e) => tracing::error!(
-                        error = %e,
-                        user_id = %user_id,
-                        "failed to delete a blocked account's API tokens"
-                    ),
-                }
-            } else if password_set {
-                // A password set by an administrator ends the account's
-                // sessions. When the administrator set their own, the device
-                // they did it from is kept, as a self-service change keeps it.
-                let keep = if user_id == admin_user_id {
-                    own_device
-                } else {
-                    None
-                };
-                crate::services::session_registry::end_user_sessions(
-                    &state,
-                    user_id,
-                    keep,
-                    Some(admin_user_id),
-                    "password_set_by_admin",
-                )
-                .await;
-            }
-
-            // An administrator who changed their own account rotates their
-            // session id, so a copy of the pre-change cookie stops working.
-            if user_id == admin_user_id
-                && let Err(e) = session.cycle_id().await
-            {
-                tracing::warn!(error = %e, "failed to rotate session after self-privilege change");
-            }
-
-            tracing::info!(user_id = %user_id, "user updated");
-            Redirect::to("/admin/people").into_response()
-        }
-        Err(e) => {
-            tracing::error!(error = %e, "failed to update user");
-            render_server_error("Failed to update user.")
-        }
+                .await?,
+            )
+        } else {
+            None
+        };
+        tx.commit().await?;
+        anyhow::Ok(Some((updated, changed, password_set, tokens)))
     }
+    .await;
+
+    let (updated, changed, password_set, tokens) = match saved {
+        Ok(Some(saved)) => saved,
+        Ok(None) => return render_not_found(),
+        Err(e) => {
+            tracing::error!(error = %e, user_id = %user_id, "failed to update user");
+            return render_server_error("Failed to update user.");
+        }
+    };
+
+    // Committed: now what cannot roll back.
+    state.users().updated(&updated, &user_ctx).await;
+    membership_committed(&state, user_id, &changed).await;
+    if password_set {
+        state
+            .users()
+            .password_updated(user_id, &user_ctx, "admin")
+            .await;
+    }
+    if let Some(n) = tokens {
+        tracing::info!(
+            user_id = %user_id,
+            admin = %admin_user_id,
+            tokens = n,
+            "blocked account's API tokens deleted"
+        );
+    }
+
+    let own_device = session
+        .get::<uuid::Uuid>(crate::services::session_registry::SESSION_DEVICE_ID)
+        .await
+        .ok()
+        .flatten();
+    if blocking {
+        // Blocked: every session ends.
+        crate::services::session_registry::end_user_sessions(
+            &state,
+            user_id,
+            None,
+            Some(admin_user_id),
+            "account_blocked",
+        )
+        .await;
+    } else if password_set {
+        // A password set by an administrator ends the account's
+        // sessions. When the administrator set their own, the device
+        // they did it from is kept, as a self-service change keeps it.
+        let keep = if user_id == admin_user_id {
+            own_device
+        } else {
+            None
+        };
+        crate::services::session_registry::end_user_sessions(
+            &state,
+            user_id,
+            keep,
+            Some(admin_user_id),
+            "password_set_by_admin",
+        )
+        .await;
+    }
+
+    // An administrator who changed their own account rotates their
+    // session id, so a copy of the pre-change cookie stops working.
+    if user_id == admin_user_id
+        && let Err(e) = session.cycle_id().await
+    {
+        tracing::warn!(error = %e, "failed to rotate session after self-privilege change");
+    }
+
+    tracing::info!(user_id = %user_id, "user updated");
+    Redirect::to("/admin/people").into_response()
 }
 
 /// Delete a user.
@@ -1596,40 +1649,38 @@ fn submitted_role_ids(
 /// themselves; see [`Authority`].
 ///
 /// Roles the actor may not touch are left exactly as they are on the target,
-/// granted or not, rather than being silently dropped. If the actor's own
-/// permissions cannot be loaded, nothing is changed.
-async fn apply_role_membership(
+/// granted or not, rather than being silently dropped.
+///
+/// Returns the changes to make, each a role and whether the account should
+/// hold it, for the caller to make in the same transaction as the rest of the
+/// form ([`apply_role_membership_in`]). `new_account` is an account not yet
+/// created, which holds no role. When the roles or the actor's own
+/// permissions cannot be read, this fails and the caller changes nothing.
+async fn plan_role_membership(
     state: &AppState,
     actor: &User,
     target_id: uuid::Uuid,
+    new_account: bool,
     submitted: &std::collections::HashMap<String, String>,
-) {
-    let roles = match state.roles().list().await {
-        Ok(roles) => roles,
-        Err(e) => {
-            tracing::error!(error = %e, "failed to list roles while saving a user");
-            return;
-        }
+) -> anyhow::Result<Vec<(uuid::Uuid, bool)>> {
+    let roles = state.roles().list().await?;
+
+    let held: std::collections::HashSet<uuid::Uuid> = if new_account {
+        std::collections::HashSet::new()
+    } else {
+        state
+            .roles()
+            .get_user_roles(target_id)
+            .await?
+            .into_iter()
+            .map(|r| r.id)
+            .collect()
     };
 
-    let held: std::collections::HashSet<uuid::Uuid> = state
-        .roles()
-        .get_user_roles(target_id)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .map(|r| r.id)
-        .collect();
-
-    // What the actor may delegate. Loaded once; a superuser skips the query.
-    let authority = match Authority::of(state, actor).await {
-        Ok(authority) => authority,
-        Err(e) => {
-            tracing::error!(error = %e, actor = %actor.id, "failed to load the actor's permissions while saving a user");
-            return;
-        }
-    };
-
+    let mut changes = Vec::new();
+    // What the actor may delegate, loaded the first time it is needed; a
+    // superuser skips the query.
+    let mut authority = None;
     for role in &roles {
         let wanted = submitted.contains_key(&format!("role_{}", role.id));
         let currently = held.contains(&role.id);
@@ -1638,6 +1689,12 @@ async fn apply_role_membership(
         }
 
         if !actor.is_admin {
+            if authority.is_none() {
+                authority = Some(Authority::of(state, actor).await?);
+            }
+            let Some(authority) = authority.as_ref() else {
+                continue;
+            };
             // Fails closed: a role whose permissions cannot be read is one the
             // actor cannot be shown to hold.
             let may_delegate = match state.roles().get_permissions(role.id).await {
@@ -1655,19 +1712,45 @@ async fn apply_role_membership(
             }
         }
 
-        let result = if wanted {
-            state.roles().assign_to_user(target_id, role.id).await
+        changes.push((role.id, wanted));
+    }
+    Ok(changes)
+}
+
+/// Make the membership changes [`plan_role_membership`] chose on `tx`, the
+/// form's transaction, each with its `user.roles_changed`. Returns what
+/// changed, for [`crate::services::role::RoleService::membership_committed`]
+/// once `tx` has committed.
+async fn apply_role_membership_in(
+    state: &AppState,
+    tx: &mut sqlx::PgConnection,
+    target_id: uuid::Uuid,
+    plan: &[(uuid::Uuid, bool)],
+) -> anyhow::Result<Vec<crate::services::role::MembershipChange>> {
+    let mut changed = Vec::new();
+    for (role_id, wanted) in plan {
+        let change = if *wanted {
+            state.roles().assign_in(tx, target_id, *role_id).await?
         } else {
-            state.roles().remove_from_user(target_id, role.id).await
+            state.roles().remove_in(tx, target_id, *role_id).await?
         };
-        if let Err(e) = result {
-            tracing::error!(
-                error = %e,
-                target = %target_id,
-                role = %role.name,
-                "failed to change role membership"
-            );
-        }
+        changed.extend(change);
+    }
+    Ok(changed)
+}
+
+/// What follows the committed membership changes of a form. A form that
+/// changed no membership has no cache to drop.
+async fn membership_committed(
+    state: &AppState,
+    target_id: uuid::Uuid,
+    changed: &[crate::services::role::MembershipChange],
+) {
+    for change in changed {
+        state
+            .roles()
+            .membership_committed(target_id, Some(change))
+            .await;
     }
 }
 
@@ -1836,7 +1919,7 @@ async fn save_permissions(
     //
     // A permission the actor does not hold is dropped for a non-superuser, so
     // it is neither granted nor revoked on any role: the grid is the
-    // `apply_role_membership` rule applied one box at a time.
+    // `plan_role_membership` rule applied one box at a time.
     let known: std::collections::HashSet<String> = grid_permissions(&state)
         .into_iter()
         .map(|p| p.name)
@@ -1879,27 +1962,31 @@ async fn save_permissions(
     let rendered_names: std::collections::HashSet<String> =
         rendered.iter().map(|(_, name)| name.clone()).collect();
 
-    for role in &roles {
-        let desired: Vec<String> = rendered
-            .iter()
-            .filter(|(index, _)| {
-                form.permissions
-                    .contains_key(&format!("perm_{index}_{}", role.id))
-            })
-            .map(|(_, name)| name.clone())
-            .collect();
+    let desired: Vec<(uuid::Uuid, Vec<String>)> = roles
+        .iter()
+        .map(|role| {
+            let wanted = rendered
+                .iter()
+                .filter(|(index, _)| {
+                    form.permissions
+                        .contains_key(&format!("perm_{index}_{}", role.id))
+                })
+                .map(|(_, name)| name.clone())
+                .collect();
+            (role.id, wanted)
+        })
+        .collect();
 
-        // Scoped to what the form rendered: a permission this screen never
-        // showed is left exactly as it was, granted or not. Replacing the whole
-        // set here is what deleted 29 plugin grants across every role on a
-        // 0.102.0 site.
-        if let Err(e) = state
-            .roles()
-            .save_permissions_within(role.id, &desired, &rendered_names)
-            .await
-        {
-            tracing::error!(error = %e, role_id = %role.id, "failed to save permissions");
-        }
+    // Scoped to what the form rendered: a permission this screen never
+    // showed is left exactly as it was, granted or not. Replacing the whole
+    // set here is what deleted 29 plugin grants across every role on a
+    // 0.102.0 site.
+    //
+    // Every role's grants and their events commit together: a save that
+    // cannot record a change makes none.
+    if let Err(e) = state.roles().save_grid(&desired, &rendered_names).await {
+        tracing::error!(error = %e, "failed to save permissions");
+        return render_server_error("Failed to save permissions.");
     }
 
     tracing::info!(rendered = rendered_names.len(), "permissions updated");
