@@ -159,6 +159,13 @@ impl FormService {
         let validate_input = serde_json::json!({
             "form_id": form_state.form_id,
             "values": posted_values(posted, &form_state.rendered_fields),
+            // The item an edit form edits; `None` on an add form. Added for
+            // B326 (scheduled publishing): a plugin validating a field it owns
+            // may need the item's *current* stored state (its status, or a
+            // field's stored value, for an "unless unchanged" exemption),
+            // which this form's `values` alone cannot give it. Symmetric with
+            // `tap_form_submit`, below, which has carried `item_id` since B71.
+            "item_id": form_state.item_id,
         });
         let input = serde_json::to_string(&validate_input).unwrap_or_default();
         for result in self
@@ -183,6 +190,56 @@ impl FormService {
             Ok(value) if errors.is_empty() => Ok((form_state, value)),
             _ => Err(ProcessError::Invalid(errors)),
         }
+    }
+
+    /// `tap_form_validate` for a submission that is not a form: the JSON item
+    /// API (B326).
+    ///
+    /// A JSON body keeps its own contract (no CSRF form, no `form_build_id`,
+    /// `fields` sent as is — see `routes::item::submitted_fields`), so it
+    /// never calls [`Self::process`]. But a plugin that owns an undeclared
+    /// `fields` key (scheduled publishing's `field_publish_on` /
+    /// `field_unpublish_on`, for one) still needs to refuse a bad value on
+    /// this path, or the HTML form would be the only guard and a client could
+    /// write around it. Rather than invent a second validation tap, this
+    /// dispatches the very same `tap_form_validate` the form path uses, with
+    /// a synthetic `form_id` (`json_item_{item_type}`) a plugin can recognize
+    /// alongside its real form ids, so one function validates both paths.
+    pub async fn validate_fields(
+        &self,
+        item_type: &str,
+        fields: &serde_json::Map<String, Value>,
+        item_id: Option<uuid::Uuid>,
+        state: &RequestState,
+    ) -> Vec<ValidationError> {
+        let input = serde_json::json!({
+            "form_id": format!("json_item_{item_type}"),
+            "values": fields,
+            "item_id": item_id,
+        });
+        let mut errors = Vec::new();
+        for result in self
+            .dispatcher
+            .dispatch(
+                "tap_form_validate",
+                &serde_json::to_string(&input).unwrap_or_default(),
+                state.clone(),
+            )
+            .await
+        {
+            if result.output.is_empty() || result.output == "{}" {
+                continue;
+            }
+            match serde_json::from_str::<TapValidationResult>(&result.output) {
+                Ok(tap) => errors.extend(tap.errors.into_iter().map(TapError::into_error)),
+                Err(e) => warn!(
+                    plugin = %result.plugin_name,
+                    error = %e,
+                    "failed to parse tap_form_validate result (JSON item API)"
+                ),
+            }
+        }
+        errors
     }
 
     /// Tell plugins a submission was saved: `tap_form_submit`, once.

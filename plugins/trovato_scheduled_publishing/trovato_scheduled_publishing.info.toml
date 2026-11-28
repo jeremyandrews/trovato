@@ -13,6 +13,9 @@ implements = [
     "tap_item_update",
     "tap_item_delete",
     "tap_timer",
+    "tap_form_alter",
+    "tap_form_validate",
+    "tap_form_submit",
 ]
 weight = 0
 
@@ -32,7 +35,10 @@ files = [
 # revision is recorded and the item is queued for the search index, as for an
 # editor's save. From cron and from a timer that needs `item_background`.
 # `timer` for the precise timer each future date gets (B278), so an item goes
-# live at the second rather than at the next cron run.
-host_interfaces = ["db", "logging", "item-api", "timer"]
+# live at the second rather than at the next cron run. `user-api` for
+# `current_user_id`/`current_user_has_permission` (B326): the item form's
+# "Publishing schedule" group is shown only to a holder of `schedule
+# publishing`, converted to and from their own time zone.
+host_interfaces = ["db", "logging", "item-api", "timer", "user-api"]
 raw_sql = true
 item_background = true

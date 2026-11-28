@@ -460,6 +460,96 @@ fn tap_form_submit_fires_once_per_save() {
     });
 }
 
+/// B326: `tap_form_validate`'s input carries `item_id`, so a plugin validating
+/// a field it owns can read the item's current stored state (e.g. scheduled
+/// publishing's "already published" check). An edit form names the real item;
+/// an add form, which edits nothing yet, names none.
+#[test]
+fn tap_form_validate_carries_the_item_id() {
+    run(|app| async move {
+        let (uid, cookies) = admin(app, "b71itemid").await;
+        let id = seed_item(app, PROBE, uid, json!({"field_note": "kept"})).await;
+
+        let edit_path = format!("/item/{id}/edit");
+        let html = get_page(app, &cookies, &edit_path).await;
+        let body = format!(
+            "{}&title=Pipeline+probe&field_note=name+the+item+id",
+            form_tokens(&html)
+        );
+        let (_status, text) = post_form(app, &cookies, &edit_path, body).await;
+        assert!(
+            text.contains(&format!("item_id was {id}")),
+            "the edit form must carry the real item id: {text}"
+        );
+
+        let add_path = format!("/item/add/{PROBE}");
+        let html = get_page(app, &cookies, &add_path).await;
+        let body = format!(
+            "{}&title=New+probe&field_note=name+the+item+id",
+            form_tokens(&html)
+        );
+        let (_status, text) = post_form(app, &cookies, &add_path, body).await;
+        assert!(
+            text.contains("no item_id"),
+            "an add form edits no item yet: {text}"
+        );
+    });
+}
+
+/// B326: the JSON item API shares the exact same `tap_form_validate` function
+/// the HTML form uses (`FormService::validate_fields`, dispatched with a
+/// synthetic `json_item_{type}` form id), so a plugin's one validation
+/// function guards both paths.
+#[test]
+fn json_item_api_shares_the_one_validate_function() {
+    run(|app| async move {
+        let (uid, cookies) = admin(app, "b71jsonvalid").await;
+        let id = seed_item(app, PROBE, uid, json!({"field_note": "kept"})).await;
+
+        let edit_path = format!("/item/{id}/edit");
+        let page = app
+            .request_with_cookies(
+                Request::builder()
+                    .uri(&edit_path)
+                    .body(Body::empty())
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        let csrf = input_value(&body_string(page).await, "_token").unwrap();
+
+        let response = app
+            .request_with_cookies(
+                Request::builder()
+                    .method("POST")
+                    .uri(&edit_path)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header("X-CSRF-Token", &csrf)
+                    .body(Body::from(
+                        json!({
+                            "title": "Pipeline probe",
+                            "fields": {"field_note": "refuse me"}
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+                &cookies,
+            )
+            .await;
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let text = body_string(response).await;
+        assert!(
+            text.contains(REFUSED),
+            "the JSON path must see the same refusal as the form: {text}"
+        );
+        assert_eq!(
+            stored_fields(app, id).await["field_note"],
+            json!("kept"),
+            "a refused JSON save must not write"
+        );
+    });
+}
+
 /// **Item 8.** `/item/{id}/edit` for a type with a Blocks field carries the
 /// editor's scripts, pinned with SRI, and its glue script.
 #[test]

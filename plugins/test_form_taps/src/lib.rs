@@ -74,9 +74,14 @@ fn refuses(form_id: &str) -> bool {
 }
 
 /// Whether this fixture acts on the form `form_id`.
+///
+/// `json_item_{PROBE_TYPE}` (B326) is the synthetic id `FormService::validate_fields`
+/// uses for the JSON item API, so this fixture's one `tap_form_validate` can be
+/// proven to run on both paths.
 fn is_probe_form(form_id: &str) -> bool {
     form_id == format!("item_add_{PROBE_TYPE}")
         || form_id == format!("item_edit_{PROBE_TYPE}")
+        || form_id == format!("json_item_{PROBE_TYPE}")
         || (form_id == "user_profile_form" && host::current_user_has_permission(PERM_PROFILE))
 }
 
@@ -134,6 +139,20 @@ pub fn tap_form_validate(input: serde_json::Value) -> serde_json::Value {
             "errors": [{"field": "field_note", "message": "The probe refuses this note."}]
         });
     }
+    // B326: `tap_form_validate`'s input now carries `item_id`, so a plugin
+    // validating a field it owns can read the item's current stored state.
+    // This names what it saw, rather than just whether it saw one, so a
+    // kernel test can tell the real id came through rather than a stray
+    // truthy value.
+    if input["values"]["field_note"].as_str() == Some("name the item id") {
+        let message = match input["item_id"].as_str() {
+            Some(id) => format!("item_id was {id}"),
+            None => "no item_id".to_string(),
+        };
+        return serde_json::json!({
+            "errors": [{"field": "field_note", "message": message}]
+        });
+    }
     serde_json::json!({})
 }
 
@@ -185,4 +204,48 @@ pub fn tap_form_ajax(input: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "commands": [{"command": "replace", "selector": "#b71-count", "html": html}]
     })
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn validate_json_item_form_id_is_recognized_as_a_probe_form() {
+        assert!(is_probe_form(&format!("json_item_{PROBE_TYPE}")));
+    }
+
+    #[test]
+    fn validate_names_the_item_id_it_was_given() {
+        let with_id = __inner_tap_form_validate(serde_json::json!({
+            "form_id": format!("item_edit_{PROBE_TYPE}"),
+            "values": {"field_note": "name the item id"},
+            "item_id": "11111111-1111-1111-1111-111111111111",
+        }));
+        assert_eq!(
+            with_id["errors"][0]["message"],
+            "item_id was 11111111-1111-1111-1111-111111111111"
+        );
+
+        let without_id = __inner_tap_form_validate(serde_json::json!({
+            "form_id": format!("item_add_{PROBE_TYPE}"),
+            "values": {"field_note": "name the item id"},
+            "item_id": null,
+        }));
+        assert_eq!(without_id["errors"][0]["message"], "no item_id");
+    }
+
+    #[test]
+    fn validate_refuses_the_json_item_path_the_same_as_the_form() {
+        let result = __inner_tap_form_validate(serde_json::json!({
+            "form_id": format!("json_item_{PROBE_TYPE}"),
+            "values": {"field_note": "refuse me"},
+            "item_id": null,
+        }));
+        assert_eq!(
+            result["errors"][0]["message"],
+            "The probe refuses this note."
+        );
+    }
 }

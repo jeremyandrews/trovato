@@ -1305,6 +1305,23 @@ async fn submitted_fields(
             .await
             .map_err(|_| AppError::forbidden("Invalid or missing CSRF token"))?;
         check_json_fields(content_type, request.fields.as_ref(), item, user)?;
+        // A plugin that owns an undeclared `fields` key (B326's scheduled
+        // publishing, for one) gets the same refusal here that `tap_form_validate`
+        // gives the HTML form, so the form is not the only guard.
+        if let Some(fields) = request.fields.as_ref().and_then(serde_json::Value::as_object) {
+            let errors = state
+                .forms()
+                .validate_fields(
+                    &content_type.machine_name,
+                    fields,
+                    item.map(|i| i.id),
+                    &super::item_form::tap_state(state, user),
+                )
+                .await;
+            if let Some(first) = errors.first() {
+                return Err(AppError::bad_request(first.message.clone()));
+            }
+        }
         return Ok(Submitted::Fields(request.fields.clone(), None));
     };
     match super::item_form::process(state, session, user, content_type, item, posted).await {
@@ -1750,6 +1767,26 @@ async fn update_item(
                 .unwrap_or(false)
         {
             check_json_fields(&content_type, request.fields.as_ref(), Some(&stored), &user)?;
+            // Same refusal a plugin's `tap_form_validate` gives the HTML
+            // form, for the field(s) it owns (B326): see `submitted_fields`,
+            // whose create path this mirrors (an update's JSON body has its
+            // own branch here, rather than going through that function,
+            // because it needs the stored item before it knows the body is
+            // even well formed enough to check).
+            if let Some(fields) = request.fields.as_ref().and_then(serde_json::Value::as_object) {
+                let errors = state
+                    .forms()
+                    .validate_fields(
+                        &content_type.machine_name,
+                        fields,
+                        Some(id),
+                        &super::item_form::tap_state(&state, &user),
+                    )
+                    .await;
+                if let Some(first) = errors.first() {
+                    return Err(AppError::bad_request(first.message.clone()));
+                }
+            }
         }
         (request.fields.clone(), None)
     };
