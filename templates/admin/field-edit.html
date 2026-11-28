@@ -38,6 +38,22 @@
 
         {{ form::field(name="cardinality", id="edit_field_cardinality", type="number", label=t(s="Number of values"), value=field.cardinality ~ "", hint=t(s="Maximum number of values. Use 1 for a single value, -1 for unlimited."), errors=errs, width="10", attrs='min="-1"') }}
 
+        {% if filterable_available | default(value=false) %}
+        <input type="hidden" name="filterable_offered" value="1">
+        {% if filterable_own %}{% set filterable_hint = t(s="An index on this field lets listings filter and sort on it quickly at any size. It costs a little time on every save and some disk space. Without one, a listing that filters or sorts on this field reads every item of this type, which is slow on large sites.") %}{% elif filterable_used_by_gathers %}{% set filterable_hint = t(s="On by default: a listing filters or sorts on this field. Without an index, such a listing reads every item of this type, which is slow on large sites. An index costs a little time on every save and some disk space.") %}{% else %}{% set filterable_hint = t(s="Off by default: no listing filters or sorts on this field yet. Turn it on before you add one, so it is fast on large sites. An index costs a little time on every save and some disk space.") %}{% endif %}
+        {{ form::checkbox(name="filterable", id="edit_field_filterable", label=t(s="Filterable and sortable"), checked=filterable, hint=filterable_hint, errors=errs) }}
+        {% if field_index %}
+        <p class="field-index-state" data-field-index="{{ field_index.state }}">
+            {%- if field_index.state == "ready" -%}{{ t(s="Index: built.") }}
+            {%- elif field_index.state == "building" -%}{{ t(s="Index: building") }}{% if field_index.percent %} <progress max="100" value="{{ field_index.percent }}">{{ field_index.percent }}%</progress> {{ field_index.percent }}%{% endif %}
+            {%- elif field_index.state == "queued" -%}{{ t(s="Index: queued.") }}
+            {%- elif field_index.state == "failed" -%}{{ t(s="Index: failed.") }} {{ field_index.error }}
+            {%- elif field_index.state == "dropping" -%}{{ t(s="Index: being dropped.") }}
+            {%- endif -%}
+        </p>
+        {% endif %}
+        {% endif %}
+
         {{ form::actions(submit_label=t(s="Save"), cancel_url="/admin/structure/types/" ~ type_name ~ "/fields") }}
     </form>
 </div>

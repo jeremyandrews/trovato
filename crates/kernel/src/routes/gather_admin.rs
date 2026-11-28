@@ -426,6 +426,9 @@ async fn create_submit(
     match state.gather().register_query(query).await {
         Ok(()) => {
             tracing::info!(query_id = %query_id, "gather query created");
+            // A field this gather filters or sorts on is now marked unless it
+            // says otherwise (B207): build its index.
+            state.reconcile_field_indexes();
             Redirect::to("/admin/gather").into_response()
         }
         Err(e) => {
@@ -469,6 +472,15 @@ async fn edit_form(
         "builder_cannot_show",
         &builder_cannot_show(&query.definition),
     );
+    // Fields this gather filters or sorts on that no index serves (B207).
+    let unindexed = crate::gather::field_index::unindexed_fields(
+        state.db(),
+        state.content_types(),
+        state.gather(),
+        &query.definition,
+    )
+    .await;
+    context.insert("unindexed_fields", &unindexed);
     context.insert("definition", &query.definition);
     context.insert("definition_json", &definition_json);
     context.insert("display_json", &display_json);
@@ -622,6 +634,7 @@ async fn save_submit(
     match state.gather().register_query(query).await {
         Ok(()) => {
             tracing::info!(query_id = %id, "gather query updated");
+            state.reconcile_field_indexes();
             Redirect::to("/admin/gather").into_response()
         }
         Err(e) => {

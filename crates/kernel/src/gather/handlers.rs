@@ -77,10 +77,14 @@ impl FilterHandler for HierarchicalInFilterHandler {
         }
 
         let uuid_list: Vec<String> = uuids.iter().map(|u| format!("'{u}'")).collect();
+        // The one text reader (`field_sql`), so a single reference field's
+        // index serves the IN.
         let expr = format!(
-            "{}.fields->>'{}' IN ({})",
-            ctx.base_table,
-            jsonb_path,
+            "{} IN ({})",
+            super::field_sql::text_sql(
+                &format!("{}.fields", ctx.base_table),
+                &format!("'{jsonb_path}'")
+            ),
             uuid_list.join(", ")
         );
 
@@ -236,7 +240,15 @@ impl FilterHandler for JsonbArrayContainsFilterHandler {
         // used by `FullTextSearch` / `descendants_exists_expr`. `base_table` and
         // `jsonb_path` are validated identifiers above, so interpolating them is
         // safe.
-        let expr = format!("{}.fields->'{}' @> $1::jsonb", ctx.base_table, jsonb_path);
+        // The one list reader (`field_sql`), so a list field's GIN index
+        // serves the containment.
+        let expr = format!(
+            "{} @> $1::jsonb",
+            super::field_sql::json_sql(
+                &format!("{}.fields", ctx.base_table),
+                &format!("'{jsonb_path}'")
+            )
+        );
 
         Ok(Some(Expr::cust_with_values(expr, [json_array])))
     }
@@ -477,9 +489,12 @@ mod tests {
         let result = handler.build_condition(&filter, &config, &ctx).unwrap();
         assert!(result.is_some());
 
-        // The legacy code generates: item.fields->>'category' IN ('00000000-0000-0000-0000-000000000000')
-        // Our handler generates the same format
-        let expected_fragment = format!("item.fields->>'category' IN ('{uuid}')");
+        // The handler reads the field the way every unindexed reference
+        // field is read: the stored `{"value": ...}` shape first, then
+        // a bare value, so both shapes match the same tag ids.
+        let expected_fragment = format!(
+            "COALESCE(item.fields->'category'->>'value', item.fields->>'category') IN ('{uuid}')"
+        );
         let expr_debug = format!("{:?}", result.unwrap());
         // Both use Expr::cust with the same SQL pattern
         assert!(

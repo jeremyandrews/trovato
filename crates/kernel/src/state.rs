@@ -1105,6 +1105,12 @@ impl AppState {
         // a gather naming a `record_type` resolves it to its table + field map.
         gather.set_record_types(record_types.clone());
 
+        // Late-bind the content types (B207), so a gather reads each field
+        // through the reader its kind calls for: the expression its index covers.
+        gather.set_content_types(content_types.clone());
+        // Which marked fields Gather reads from the copy column (B207).
+        gather.refresh_served().await;
+
         // Create cron service with file service for proper cleanup
         let mut cron = CronService::with_file_service(redis.clone(), db.clone(), files.clone());
 
@@ -1499,12 +1505,16 @@ impl AppState {
                 if let Err(e) = self.content_types().reload_from_db().await {
                     warn!(error = %e, "failed to reload content types after a bump");
                 }
+                // A field marked or unmarked elsewhere (another server, a config
+                // import): bring its index in line (B207).
+                self.reconcile_field_indexes();
             }
             CacheKind::Categories => self.categories().clear_local(),
             CacheKind::Gather => {
                 if let Err(e) = self.gather().refresh_local().await {
                     warn!(error = %e, "failed to reload gather queries after a bump");
                 }
+                self.reconcile_field_indexes();
             }
             CacheKind::Redirects => {
                 if let Some(redirects) = self.redirect_cache() {
@@ -1692,6 +1702,17 @@ impl AppState {
     /// Get the content type registry.
     pub fn content_types(&self) -> &Arc<ContentTypeRegistry> {
         &self.inner.content_types
+    }
+
+    /// Bring the item field indexes in line with what is marked, in the
+    /// background (B207): queue and build an index for each newly marked
+    /// field, drop the index of each unmarked or deleted one.
+    pub fn reconcile_field_indexes(&self) {
+        crate::gather::field_index::spawn_reconcile(
+            self.db().clone(),
+            self.content_types().clone(),
+            self.gather().clone(),
+        );
     }
 
     /// Get the lightweight-record type registry (P11g / D-53, D-54).
