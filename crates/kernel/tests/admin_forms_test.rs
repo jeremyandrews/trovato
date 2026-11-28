@@ -407,16 +407,15 @@ fn a_failed_hand_written_form_leads_with_a_linked_error_summary() {
         let cookies = admin(app, "b199formsuser").await;
         let (status, page) = get(app, &cookies, "/admin/people/add").await;
         assert_eq!(status, StatusCode::OK);
-        assert!(tag_with_id(&page, "user-form").contains(" novalidate"));
+        assert!(tag_with_id(&page, "user_form").contains(" novalidate"));
         assert!(
             tag_with_id(&page, "mail").contains(r#"autocomplete="email""#),
             "person fields say what they hold"
         );
 
         let form = format!(
-            "_token={}&_form_build_id={}&name=&mail=&password=short",
-            urlencoding::encode(&hidden(&page, "_token")),
-            urlencoding::encode(&hidden(&page, "_form_build_id")),
+            "{}&name=&mail=&password=short",
+            common::form_fields(&page, "user_form")
         );
         let (_, page) = post(app, &cookies, "/admin/people/add", form).await;
 

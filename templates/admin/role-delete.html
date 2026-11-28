@@ -1,0 +1,17 @@
+{% extends "page--admin.html" %}
+
+{#- Confirm deleting a role (routes::admin_user::delete_role_form).
+    Context: `role` (`name`, `members`), `form`. -#}
+
+{% block page_title %}{{ t(s="Delete role") }}{% endblock page_title %}
+
+{% block content %}
+<div class="admin-card">
+    {% if role.members > 0 %}
+    <p>{{ t(s="Delete the {name} role? {count} user(s) hold it and will lose it. Their accounts are not deleted, and no other role is affected.", name=role.name, count=role.members) }}</p>
+    {% else %}
+    <p>{{ t(s="Delete the {name} role? Nobody holds it.", name=role.name) }}</p>
+    {% endif %}
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+</div>
+{% endblock content %}

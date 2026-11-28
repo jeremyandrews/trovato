@@ -76,12 +76,6 @@ async fn forget(app: &TestApp, prefix: &str) {
         .expect("delete this test's users");
 }
 
-/// The CSRF token a page's form carries.
-fn form_token(html: &str) -> String {
-    let at = html.find("name=\"_token\" value=\"").expect("a form token") + 21;
-    html[at..at + html[at..].find('"').unwrap()].to_string()
-}
-
 fn between<'a>(html: &'a str, open: &str, close: &str) -> &'a str {
     let start = html
         .find(open)
@@ -310,14 +304,14 @@ fn preferences_set_the_theme_and_the_admin_language_and_direction() {
         let (status, html) = get(app, &cookies, "/admin/preferences").await;
         assert_eq!(status, StatusCode::OK);
         assert!(html.contains("data-theme=\"system\""));
-        let token = form_token(&html);
+        let fields = common::form_fields(&html, "admin_preferences_form");
 
         let status = post(
             app,
             &cookies,
             "/admin/preferences",
             "application/x-www-form-urlencoded",
-            format!("_token={token}&theme=dark&language="),
+            format!("{fields}&theme=dark&language="),
             &[],
         )
         .await;
@@ -330,13 +324,13 @@ fn preferences_set_the_theme_and_the_admin_language_and_direction() {
         );
 
         // A language that is not offered is refused, with an alert.
-        let token = form_token(&html);
+        let fields = common::form_fields(&html, "admin_preferences_form");
         let status = post(
             app,
             &cookies,
             "/admin/preferences",
             "application/x-www-form-urlencoded",
-            format!("_token={token}&theme=dark&language=xx-nope"),
+            format!("{fields}&theme=dark&language=xx-nope"),
             &[],
         )
         .await;

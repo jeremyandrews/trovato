@@ -1,24 +1,15 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
-{% block page_title %}{% if editing %}{{ t(s="Edit role {name}", name=values.name | default(value="")) }}{% else %}{{ t(s="Add role") }}{% endif %}{% endblock page_title %}
+{#- The add and edit role page. `form` is the role form
+    (routes::admin_user::role_form), `role_name` the name it shows; the edit
+    page lists `role_permissions` under it. -#}
+
+{% block page_title %}{% if editing %}{{ t(s="Edit role {name}", name=role_name) }}{% else %}{{ t(s="Add role") }}{% endif %}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="A role is a named set of permissions. Its permissions are assigned on the permissions screen.") }}</p>{% endblock page_intro %}
 
 {% block content %}
 <div class="admin-card">
-    <form id="role-form" method="post" action="{{ action }}" novalidate>
-        {{ form::hidden_fields(csrf_token=csrf_token, form_build_id=form_build_id) }}
-
-        {{ form::error_summary(errors=errors | default(value=[])) }}
-
-        {{ form::field(name="name", label=t(s="Role name"), value=values.name | default(value=""), hint=t(s="The human-readable name of this role."), required=true, errors=errors | default(value=[]), width="30") }}
-
-        {% if editing %}
-        {{ form::actions(submit_label=t(s="Save changes"), cancel_url="/admin/people/roles") }}
-        {% else %}
-        {{ form::actions(submit_label=t(s="Create role"), cancel_url="/admin/people/roles") }}
-        {% endif %}
-    </form>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 
 {% if editing and role_permissions %}

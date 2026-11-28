@@ -117,12 +117,7 @@ async fn save_grid_roles(
     let (status, html) = get(app, cookies, "/admin/people/permissions").await;
     assert_eq!(status, StatusCode::OK, "the grid must render");
 
-    let token = {
-        let marker = r#"name="_token" value=""#;
-        let start = html.find(marker).expect("no CSRF token on the grid") + marker.len();
-        let end = start + html[start..].find('"').unwrap();
-        html[start..end].to_string()
-    };
+    let fields = common::form_fields(&html, "permissions_form");
 
     // Which `perm_{i}_{role}` boxes the page rendered as already checked.
     let mut already_checked: std::collections::HashSet<String> = std::collections::HashSet::new();
@@ -137,7 +132,7 @@ async fn save_grid_roles(
         }
     }
 
-    let mut body = format!("_token={token}&_form_build_id=x");
+    let mut body = fields;
     let mut index = 0usize;
     loop {
         let marker = format!(r#"name="permname_{index}" value=""#);

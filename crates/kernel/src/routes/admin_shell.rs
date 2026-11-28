@@ -21,13 +21,15 @@ use axum::{Form, Json, Router};
 use serde::{Deserialize, Serialize};
 use tower_sessions::Session;
 
-use crate::form::csrf::generate_csrf_token;
+use crate::content::submission::PostedForm;
+use crate::form::{FormElement, ValidationError};
 use crate::state::AppState;
 
+use super::admin_form;
 use super::admin_nav::{self, GROUPS, Group, Preferences};
 use super::admin_search_index;
 use super::helpers::{
-    admin_user_context, render_admin_template, render_not_found, require_csrf, require_permission,
+    admin_user_context, render_admin_template, render_not_found, require_permission,
     require_permission_json,
 };
 
@@ -36,6 +38,9 @@ const ADMISSION: &str = "access administration pages";
 
 /// Session key for the saved message.
 const FLASH_KEY: &str = "admin_preferences_flash";
+
+/// The admin preferences form.
+const PREFERENCES_FORM_ID: &str = "admin_preferences_form";
 
 /// Build the router.
 pub fn router() -> Router<AppState> {
@@ -112,15 +117,6 @@ async fn landing(
     render_admin_template(&state, &viewer, "admin/landing.html", context).await
 }
 
-/// One choice in a radio group or select.
-#[derive(Debug, Serialize)]
-struct Choice {
-    value: String,
-    label: String,
-    /// Whether the label is a language's own name, not interface text.
-    native: bool,
-}
-
 /// GET /admin/preferences
 async fn preferences_form(State(state): State<AppState>, session: Session) -> Response {
     let user = match require_permission(&state, &session, ADMISSION).await {
@@ -128,122 +124,195 @@ async fn preferences_form(State(state): State<AppState>, session: Session) -> Re
         Err(refusal) => return refusal,
     };
     let prefs = Preferences::load(state.db(), user.id).await;
-    render_preferences(&state, &session, &user, &prefs, None).await
+    render_preferences(&state, &session, &user, &prefs, &[]).await
 }
 
+/// The preferences page: its form showing `prefs` and `errors`, and under
+/// it a sign out button that sends the form's CSRF token to `/user/logout`.
 async fn render_preferences(
     state: &AppState,
     session: &Session,
     user: &crate::models::User,
     prefs: &Preferences,
-    error: Option<&str>,
+    errors: &[ValidationError],
 ) -> Response {
     let viewer = admin_user_context(state, user).await;
     let flash: Option<String> = session.remove(FLASH_KEY).await.ok().flatten();
 
-    let mut languages: Vec<Choice> = crate::models::Language::list_all(state.db())
+    let mut languages: Vec<(String, String)> = crate::models::Language::list_all(state.db())
         .await
         .unwrap_or_default()
         .into_iter()
-        .map(|l| Choice {
-            value: l.id,
-            label: l.label,
-            native: true,
-        })
+        .map(|l| (l.id, l.label))
         .collect();
     if crate::i18n::pseudo_locales_enabled() {
-        languages.push(Choice {
-            value: crate::i18n::PSEUDO_ACCENTED.to_string(),
-            label: "Pseudo (accented, longer)".to_string(),
-            native: false,
-        });
-        languages.push(Choice {
-            value: crate::i18n::PSEUDO_RTL.to_string(),
-            label: "Pseudo (right to left)".to_string(),
-            native: false,
-        });
+        languages.push((
+            crate::i18n::PSEUDO_ACCENTED.to_string(),
+            "Pseudo (accented, longer)".to_string(),
+        ));
+        languages.push((
+            crate::i18n::PSEUDO_RTL.to_string(),
+            "Pseudo (right to left)".to_string(),
+        ));
     }
+    let language = prefs
+        .language
+        .clone()
+        .unwrap_or_else(|| state.default_language().to_string());
 
+    let text = admin_nav::AdminText::for_page(state, &viewer, admin_nav::PREFERENCES).await;
+    let effect = format!(
+        r#"<p class="form__effect"><strong class="form__effect-label">{}</strong> {}</p>"#,
+        text.html("What this changes:", &[]),
+        text.html(
+            "only how this administration looks and reads for you. Nobody else is affected.",
+            &[]
+        )
+    );
+    let form = preferences_form_for(prefs, &language, languages, effect);
+    let form_html = match admin_form::render(state, session, user, form, errors).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
     let mut context = tera::Context::new();
-    context.insert("csrf_token", &generate_csrf_token(session).await);
-    context.insert("theme", prefs.theme());
-    context.insert(
-        "language",
-        &prefs
-            .language
-            .clone()
-            .unwrap_or_else(|| state.default_language().to_string()),
-    );
-    context.insert("languages", &languages);
-    context.insert("search_slash", &!prefs.search_slash_off);
-    context.insert("search_key", prefs.search_key());
-    context.insert(
-        "search_key_options",
-        &[
-            ("", "None"),
-            ("ctrl-k", "Control+K (Command+K on a Mac)"),
-            ("alt-k", "Alt+K (Option+K on a Mac)"),
-        ],
-    );
+    context.insert("form", &form_html);
+    context.insert("form_id", PREFERENCES_FORM_ID);
     context.insert("default_language", &state.default_language());
     context.insert("flash", &flash);
-    context.insert("error_message", &error);
     context.insert("path", admin_nav::PREFERENCES);
     render_admin_template(state, &viewer, "admin/preferences.html", context).await
 }
 
-#[derive(Debug, Deserialize)]
-struct PreferencesForm {
-    #[serde(rename = "_token", default)]
-    token: String,
-    #[serde(default)]
-    theme: String,
-    #[serde(default)]
-    language: String,
-    /// The `/` shortcut checkbox: present when ticked.
-    #[serde(default)]
-    search_slash: Option<String>,
-    #[serde(default)]
-    search_key: String,
+/// The preferences form, showing `prefs` with `language` (the stored admin
+/// language, or the site's) chosen among `languages`. `effect` is the
+/// translated sentence above the button saying what saving changes.
+fn preferences_form_for(
+    prefs: &Preferences,
+    language: &str,
+    languages: Vec<(String, String)>,
+    effect: String,
+) -> crate::form::Form {
+    let choice = |value: &str, label: &str| (value.to_string(), label.to_string());
+    crate::form::Form::new(PREFERENCES_FORM_ID)
+        .action(admin_nav::PREFERENCES)
+        .element(
+            "theme",
+            FormElement::radio(vec![
+                choice("system", "System"),
+                choice("light", "Light"),
+                choice("dark", "Dark"),
+            ])
+            .title("Colour theme")
+            .description("System follows your device's light or dark setting.")
+            .default_value(prefs.theme())
+            .weight(0),
+        )
+        .element(
+            "language",
+            // Required: the list is every language and has no empty choice.
+            FormElement::select(languages)
+                .title("Administration language")
+                .description(
+                    "The language these pages are shown in. It does not change the language of \
+                     your content.",
+                )
+                .default_value(language)
+                .required()
+                .weight(1),
+        )
+        .element(
+            "search_shortcuts",
+            FormElement::fieldset()
+                .title("Search shortcuts")
+                .weight(2)
+                .child(
+                    "search_slash",
+                    FormElement::checkbox()
+                        .title("Open search with /")
+                        .description(
+                            "Pressing / anywhere outside a text field opens search. Turn it off \
+                             if it gets in the way of your screen reader or other keys.",
+                        )
+                        .default_value(!prefs.search_slash_off)
+                        .weight(0),
+                )
+                .child(
+                    "search_key",
+                    // The empty choice, "None", is the select's placeholder.
+                    FormElement::select(vec![
+                        choice("ctrl-k", "Control+K (Command+K on a Mac)"),
+                        choice("alt-k", "Alt+K (Option+K on a Mac)"),
+                    ])
+                    .title("Another key to open search")
+                    .description(
+                        "Works in text fields too. Control+K replaces the browser's own use of \
+                         that key on these pages.",
+                    )
+                    .placeholder("None")
+                    .default_value(prefs.search_key())
+                    .weight(1),
+                ),
+        )
+        .element("effect", FormElement::markup(effect).weight(3))
+        .element("op", FormElement::submit("Save preferences").weight(10))
 }
 
 /// POST /admin/preferences
 async fn preferences_save(
     State(state): State<AppState>,
     session: Session,
-    Form(form): Form<PreferencesForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
+    let posted = PostedForm(pairs);
     let user = match require_permission(&state, &session, ADMISSION).await {
         Ok(user) => user,
         Err(refusal) => return refusal,
     };
-    if let Err(refusal) = require_csrf(&session, &form.token).await {
-        return refusal;
-    }
+    let theme = posted.get("theme").unwrap_or_default();
+    let lang = posted
+        .get("language")
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    let search_key = posted.get("search_key").unwrap_or_default();
+
     let mut prefs = Preferences::load(state.db(), user.id).await;
-    prefs.theme = match form.theme.as_str() {
-        "light" | "dark" => Some(form.theme.clone()),
+    prefs.theme = match theme {
+        "light" | "dark" => Some(theme.to_string()),
         _ => None,
     };
-    let lang = form.language.trim();
-    let known = state.known_languages().iter().any(|l| l == lang)
-        || (crate::i18n::is_pseudo(lang) && crate::i18n::pseudo_locales_enabled());
-    if !lang.is_empty() && !known {
-        return render_preferences(
-            &state,
-            &session,
-            &user,
-            &prefs,
-            Some("Choose one of the languages listed."),
-        )
-        .await;
-    }
+    let known = state.known_languages().contains(&lang)
+        || (crate::i18n::is_pseudo(&lang) && crate::i18n::pseudo_locales_enabled());
+    let errors = if !lang.is_empty() && !known {
+        vec![ValidationError::field(
+            "language",
+            "Choose one of the languages listed.",
+        )]
+    } else {
+        Vec::new()
+    };
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &user,
+        &posted,
+        PREFERENCES_FORM_ID,
+        errors,
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(errors)) => {
+            return render_preferences(&state, &session, &user, &prefs, &errors).await;
+        }
+        Err(Err(refusal)) => return refusal,
+    };
     prefs.language =
         (!lang.is_empty() && lang != state.default_language()).then(|| lang.to_string());
 
-    prefs.search_slash_off = form.search_slash.is_none();
-    prefs.search_key = match form.search_key.as_str() {
-        "ctrl-k" | "alt-k" => Some(form.search_key.clone()),
+    prefs.search_slash_off = !posted.contains("search_slash");
+    prefs.search_key = match search_key {
+        "ctrl-k" | "alt-k" => Some(search_key.to_string()),
         _ => None,
     };
     let changes = serde_json::json!({
@@ -256,6 +325,7 @@ async fn preferences_save(
         tracing::error!(error = %e, "failed to save admin preferences");
         return super::helpers::render_server_error("Your preferences could not be saved.");
     }
+    admin_form::submitted(&state, &user, &form_state, &posted).await;
     if let Err(e) = session
         .insert(FLASH_KEY, "Your preferences were saved.")
         .await

@@ -930,13 +930,77 @@ pub struct RecoveryConfigRequest {
     pub codes_enabled: bool,
 }
 
+/// The admin recovery settings form.
+const ADMIN_RECOVERY_FORM_ID: &str = "admin_recovery_form";
+
+/// The admin recovery settings form, showing the two switches as stored.
+/// Without SMTP the emailed code's switch is shown disabled; a disabled
+/// checkbox is not sent, so its value travels in a hidden field and saving
+/// the form cannot switch the path off by accident. `effect` is the
+/// translated sentence above the button saying what saving changes.
+fn admin_recovery_form(
+    email_enabled: bool,
+    codes_enabled: bool,
+    smtp_configured: bool,
+    effect: String,
+) -> crate::form::Form {
+    use crate::form::FormElement;
+
+    let mut email = FormElement::checkbox()
+        .title("Emailed recovery code")
+        .default_value(email_enabled)
+        .weight(0);
+    email = if smtp_configured {
+        email.description("Sends a one-time code to the address on the account. Phishable.")
+    } else {
+        email
+            .description(
+                "SMTP is not configured, so this path is inert regardless of this setting.",
+            )
+            .disabled()
+    };
+    let mut paths = FormElement::fieldset()
+        .title("Recovery paths offered")
+        .weight(0)
+        .child("email_enabled", email)
+        .child(
+            "codes_enabled",
+            FormElement::checkbox()
+                .title("Saved recovery codes")
+                .description("Users generate codes and keep them. No email, no second device.")
+                .default_value(codes_enabled)
+                .weight(2),
+        );
+    if !smtp_configured && email_enabled {
+        paths = paths.child(
+            "email_enabled_kept",
+            FormElement::markup(r#"<input type="hidden" name="email_enabled" value="1">"#)
+                .weight(1),
+        );
+    }
+    crate::form::Form::new(ADMIN_RECOVERY_FORM_ID)
+        .action("/admin/recovery")
+        .attribute("class", "admin-card")
+        .element("paths", paths)
+        .element("effect", FormElement::markup(effect).weight(1))
+        .element(
+            "op",
+            FormElement::submit("Save recovery settings").weight(10),
+        )
+}
+
 /// `GET /admin/recovery` — the recovery configuration page.
 async fn admin_recovery_page(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(resp) =
-        crate::routes::helpers::require_permission(&state, &session, "administer users").await
+    let user = match crate::routes::helpers::require_permission(
+        &state,
+        &session,
+        "administer users",
+    )
+    .await
     {
-        return resp;
-    }
+        Ok(user) => user,
+        Err(resp) => return resp,
+    };
 
     let email_enabled = crate::models::SiteConfig::get(
         state.db(),
@@ -957,38 +1021,47 @@ async fn admin_recovery_page(State(state): State<AppState>, session: Session) ->
     .and_then(|v| v.as_bool())
     .unwrap_or(true);
 
-    let csrf_token = crate::form::csrf::generate_csrf_token(&session).await;
-    let mut context = tera::Context::new();
-    context.insert("csrf_token", &csrf_token);
-    let flash: Option<String> = session.remove(RECOVERY_FLASH).await.ok().flatten();
-    context.insert("flash", &flash);
-    context.insert("path", "/admin/recovery");
-    context.insert("email_enabled", &email_enabled);
-    context.insert("codes_enabled", &codes_enabled);
-    // An admin needs to know that email recovery is the weakest link, at the
-    // moment they are deciding whether to leave it on.
-    context.insert("smtp_configured", &state.email().is_some());
     // In the admin shell, like every other admin page: it used to render into
     // the front end `page.html`, with no sidebar and no admin styles.
     let viewer = crate::routes::helpers::get_user_context(&session, &state).await;
+    let text = super::admin_nav::AdminText::for_page(&state, &viewer, "/admin/recovery").await;
+    let effect = format!(
+        r#"<p class="form__effect"><strong class="form__effect-label">{}</strong> {}</p>"#,
+        text.html("What this changes:", &[]),
+        text.html(
+            "which ways back into an account the sign-in page offers to everyone who has lost access.",
+            &[]
+        )
+    );
+    // An admin needs to know that email recovery is the weakest link, at the
+    // moment they are deciding whether to leave it on.
+    let form = admin_recovery_form(
+        email_enabled,
+        codes_enabled,
+        state.email().is_some(),
+        effect,
+    );
+    let form_html = match super::admin_form::render(&state, &session, &user, form, &[]).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+    let mut context = tera::Context::new();
+    context.insert("form", &form_html);
+    // For the admin layout's `csrf-token` meta tag, which a script saving
+    // the JSON body sends back in `X-CSRF-Token`; the form carries its own.
+    context.insert(
+        "csrf_token",
+        &crate::form::csrf::generate_csrf_token(&session).await,
+    );
+    let flash: Option<String> = session.remove(RECOVERY_FLASH).await.ok().flatten();
+    context.insert("flash", &flash);
+    context.insert("path", "/admin/recovery");
     crate::routes::helpers::render_admin_template(&state, &viewer, "admin/recovery.html", context)
         .await
 }
 
 /// Session key for the saved message.
 const RECOVERY_FLASH: &str = "admin_recovery_flash";
-
-/// The form the page posts with JavaScript off: an unchecked checkbox is
-/// absent, so both fields are optional.
-#[derive(Deserialize)]
-struct RecoveryConfigForm {
-    #[serde(rename = "_token", default)]
-    token: String,
-    #[serde(default)]
-    email_enabled: Option<String>,
-    #[serde(default)]
-    codes_enabled: Option<String>,
-}
 
 /// `POST /admin/recovery` — save the recovery configuration: an ordinary
 /// form post from the page (JavaScript off or on), answered with a redirect
@@ -1035,53 +1108,47 @@ async fn admin_recovery_save(
     }
 }
 
-/// The form half of [`admin_recovery_save`]: the HTML permission and CSRF
+/// The form half of [`admin_recovery_save`]: the permission and the pipeline
 /// checks every admin form makes, then a redirect back with a message.
 async fn admin_recovery_save_form(state: &AppState, session: &Session, body: &[u8]) -> Response {
-    if let Err(refusal) =
-        crate::routes::helpers::require_permission(state, session, "administer users").await
+    let user = match crate::routes::helpers::require_permission(state, session, "administer users")
+        .await
     {
-        return refusal;
-    }
-    // Parsed by axum's own form extractor, so the encoding rules are the
-    // ones every other admin form is read with. The method must be POST:
-    // for any other the extractor reads the query string, not the body.
-    let request = axum::http::Request::builder()
-        .method(axum::http::Method::POST)
-        .header(
-            axum::http::header::CONTENT_TYPE,
-            "application/x-www-form-urlencoded",
-        )
-        .body(axum::body::Body::from(body.to_vec()));
-    let parsed = match request {
-        Ok(request) => {
-            <axum::Form<RecoveryConfigForm> as axum::extract::FromRequest<()>>::from_request(
-                request,
-                &(),
-            )
-            .await
-            .ok()
+        Ok(user) => user,
+        Err(refusal) => return refusal,
+    };
+    let posted = crate::content::submission::PostedForm(
+        url::form_urlencoded::parse(body).into_owned().collect(),
+    );
+    let form_state = match super::admin_form::check(
+        state,
+        session,
+        &user,
+        &posted,
+        ADMIN_RECOVERY_FORM_ID,
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(_)) => {
+            return crate::routes::helpers::render_error(
+                "The form has expired. Reload the page and try again.",
+            );
         }
-        Err(_) => None,
+        Err(Err(refusal)) => return refusal,
     };
-    let Some(axum::Form(form)) = parsed else {
-        return crate::routes::helpers::render_error(
-            "The form could not be read. Please try again.",
-        );
-    };
-    if let Err(refusal) = crate::routes::helpers::require_csrf(session, &form.token).await {
-        return refusal;
-    }
     if save_recovery_config(
         state,
-        form.email_enabled.is_some(),
-        form.codes_enabled.is_some(),
+        posted.contains("email_enabled"),
+        posted.contains("codes_enabled"),
     )
     .await
     .is_err()
     {
         return render_server_error("Could not save the recovery settings.");
     }
+    super::admin_form::submitted(state, &user, &form_state, &posted).await;
     if let Err(e) = session
         .insert(RECOVERY_FLASH, "The recovery settings were saved.")
         .await

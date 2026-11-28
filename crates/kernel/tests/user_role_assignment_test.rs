@@ -49,13 +49,17 @@ async fn post(app: &TestApp, cookies: &str, path: &str, body: String, bucket: &s
     .status()
 }
 
+/// `_token=…&_form_build_id=…` of the form the page at `path` serves: the
+/// user form on an edit page, the delete form on a delete confirmation.
 async fn csrf_token(app: &TestApp, cookies: &str, path: &str, bucket: &str) -> String {
     let (status, html) = get(app, cookies, path, bucket).await;
-    assert_eq!(status, StatusCode::OK, "cannot read a token from {path}");
-    let marker = r#"name="_token" value=""#;
-    let start = html.find(marker).expect("no CSRF token") + marker.len();
-    let end = start + html[start..].find('"').unwrap();
-    html[start..end].to_string()
+    assert_eq!(status, StatusCode::OK, "cannot read a form from {path}");
+    let form_id = if path.ends_with("/delete") {
+        "user_delete_form"
+    } else {
+        "user_form"
+    };
+    common::form_fields(&html, form_id)
 }
 
 async fn user_id_of(app: &TestApp, name: &str) -> Uuid {
@@ -77,10 +81,11 @@ async fn roles_of(app: &TestApp, user_id: Uuid) -> Vec<String> {
     .expect("read roles")
 }
 
-/// The body that saves a user edit form, with the given role ids ticked.
-fn edit_body(token: &str, name: &str, mail: &str, role_ids: &[Uuid]) -> String {
+/// The body that saves a user edit form, its `fields` (from [`csrf_token`])
+/// first, with the given role ids ticked.
+fn edit_body(fields: &str, name: &str, mail: &str, role_ids: &[Uuid]) -> String {
     let mut body = format!(
-        "_token={token}&_form_build_id=x&name={name}&mail={}&status=1",
+        "{fields}&name={name}&mail={}&status=1",
         mail.replace('@', "%40")
     );
     for id in role_ids {
@@ -451,9 +456,7 @@ fn a_delegated_administrator_cannot_set_the_superuser_flag() {
             app,
             &cookies,
             &path,
-            format!(
-                "_token={token}&_form_build_id=x&name={delegate}&mail={delegate}%40example.com&status=1&is_admin=1"
-            ),
+            format!("{token}&name={delegate}&mail={delegate}%40example.com&status=1&is_admin=1"),
             "rolesuper",
         )
         .await;
@@ -559,10 +562,17 @@ async fn exists(app: &TestApp, user_id: Uuid) -> bool {
         == 1
 }
 
-/// A token for a delegate, read from the listing rather than from the target's
-/// edit form: the form is exactly what a refused delegate may not open.
-async fn listing_token(app: &TestApp, cookies: &str, bucket: &str) -> String {
-    csrf_token(app, cookies, "/admin/people", bucket).await
+/// A user form for a delegate, read from their own edit page rather than from
+/// the target's: the target's form is exactly what a refused delegate may not
+/// open, and a real form posted to the target must still be refused.
+async fn listing_token(app: &TestApp, cookies: &str, own_id: Uuid, bucket: &str) -> String {
+    csrf_token(
+        app,
+        cookies,
+        &format!("/admin/people/{own_id}/edit"),
+        bucket,
+    )
+    .await
 }
 
 /// A superuser, created directly, with their id.
@@ -580,11 +590,11 @@ fn a_delegate_cannot_change_a_superusers_password() {
     run_test(async {
         let app = shared_app().await;
         let tag = Uuid::now_v7().simple().to_string();
-        let (cookies, _delegate, _id) = login_delegate(app, "dlgpass", &tag, &[]).await;
+        let (cookies, _delegate, own_id) = login_delegate(app, "dlgpass", &tag, &[]).await;
         let (target, target_id) = superuser(app, "dlgpasssu", &tag).await;
         let before = stored_pass(app, target_id).await;
 
-        let token = listing_token(app, &cookies, "dlgpass").await;
+        let token = listing_token(app, &cookies, own_id, "dlgpass").await;
         let status = post(
             app,
             &cookies,
@@ -613,10 +623,10 @@ fn a_delegate_cannot_change_a_superusers_mail() {
     run_test(async {
         let app = shared_app().await;
         let tag = Uuid::now_v7().simple().to_string();
-        let (cookies, _delegate, _id) = login_delegate(app, "dlgmail", &tag, &[]).await;
+        let (cookies, _delegate, own_id) = login_delegate(app, "dlgmail", &tag, &[]).await;
         let (target, target_id) = superuser(app, "dlgmailsu", &tag).await;
 
-        let token = listing_token(app, &cookies, "dlgmail").await;
+        let token = listing_token(app, &cookies, own_id, "dlgmail").await;
         let status = post(
             app,
             &cookies,
@@ -644,10 +654,10 @@ fn a_delegate_cannot_block_a_superuser() {
     run_test(async {
         let app = shared_app().await;
         let tag = Uuid::now_v7().simple().to_string();
-        let (cookies, _delegate, _id) = login_delegate(app, "dlgblock", &tag, &[]).await;
+        let (cookies, _delegate, own_id) = login_delegate(app, "dlgblock", &tag, &[]).await;
         let (target, target_id) = superuser(app, "dlgblocksu", &tag).await;
 
-        let token = listing_token(app, &cookies, "dlgblock").await;
+        let token = listing_token(app, &cookies, own_id, "dlgblock").await;
         let body = edit_body(&token, &target, &format!("{target}@example.com"), &[])
             .replace("&status=1", "")
             + "&is_admin=1";
@@ -678,12 +688,24 @@ fn a_delegate_cannot_delete_a_superuser() {
         let (cookies, _delegate, _id) = login_delegate(app, "dlgdel", &tag, &[]).await;
         let (_target, target_id) = superuser(app, "dlgdelsu", &tag).await;
 
-        let token = listing_token(app, &cookies, "dlgdel").await;
+        // A real delete form, for an ordinary account the delegate may delete,
+        // posted to the superuser.
+        let other = format!("dlgdelother_{tag}");
+        app.create_test_user(&other, "test-password-123", &format!("{other}@example.com"))
+            .await;
+        let other_id = user_id_of(app, &other).await;
+        let token = csrf_token(
+            app,
+            &cookies,
+            &format!("/admin/people/{other_id}/delete"),
+            "dlgdel",
+        )
+        .await;
         let status = post(
             app,
             &cookies,
             &format!("/admin/people/{target_id}/delete"),
-            format!("_token={token}"),
+            token,
             "dlgdel",
         )
         .await;
@@ -703,7 +725,7 @@ fn a_delegate_cannot_reset_the_password_of_someone_holding_more_than_they_do() {
     run_test(async {
         let app = shared_app().await;
         let tag = Uuid::now_v7().simple().to_string();
-        let (cookies, _delegate, _id) = login_delegate(app, "dlgmore", &tag, &[]).await;
+        let (cookies, _delegate, own_id) = login_delegate(app, "dlgmore", &tag, &[]).await;
 
         let site_role = Role::create(&app.db, &format!("dlgmoresite_{tag}"))
             .await
@@ -726,7 +748,7 @@ fn a_delegate_cannot_reset_the_password_of_someone_holding_more_than_they_do() {
         app.state.permissions().invalidate_user(target_id);
         let before = stored_pass(app, target_id).await;
 
-        let token = listing_token(app, &cookies, "dlgmore").await;
+        let token = listing_token(app, &cookies, own_id, "dlgmore").await;
         let status = post(
             app,
             &cookies,
@@ -802,15 +824,9 @@ fn a_delegate_can_still_manage_an_ordinary_user() {
         assert_eq!(stored_status(app, target_id).await, 0, "blocked");
 
         // Delete.
-        let token = listing_token(app, &cookies, "dlgok").await;
-        let status = post(
-            app,
-            &cookies,
-            &format!("/admin/people/{target_id}/delete"),
-            format!("_token={token}"),
-            "dlgok",
-        )
-        .await;
+        let delete = format!("/admin/people/{target_id}/delete");
+        let token = csrf_token(app, &cookies, &delete, "dlgok").await;
+        let status = post(app, &cookies, &delete, token, "dlgok").await;
         assert_eq!(status, StatusCode::SEE_OTHER);
         assert!(!exists(app, target_id).await, "deleted");
     });
@@ -849,15 +865,9 @@ fn a_superuser_can_still_edit_and_delete_another_superuser() {
         );
         assert_ne!(stored_pass(app, target_id).await, before);
 
-        let token = listing_token(app, &cookies, "suactor").await;
-        let status = post(
-            app,
-            &cookies,
-            &format!("/admin/people/{target_id}/delete"),
-            format!("_token={token}"),
-            "suactor",
-        )
-        .await;
+        let delete = format!("/admin/people/{target_id}/delete");
+        let token = csrf_token(app, &cookies, &delete, "suactor").await;
+        let status = post(app, &cookies, &delete, token, "suactor").await;
         assert_eq!(status, StatusCode::SEE_OTHER);
         assert!(!exists(app, target_id).await);
     });
