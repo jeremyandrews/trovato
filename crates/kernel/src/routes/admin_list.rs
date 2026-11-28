@@ -334,8 +334,9 @@ pub async fn render_forms(
         .attribute("hidden", "hidden")
         .element("kept", FormElement::markup(kept));
     Ok(ListForms {
-        filter_form: super::admin_form::render(state, session, user, filter, &[]).await?,
-        sort_form: super::admin_form::render(state, session, user, sort, &[]).await?,
+        filter_form: super::admin_form::render_in(state, session, &viewer, &text, filter, &[])
+            .await?,
+        sort_form: super::admin_form::render_in(state, session, &viewer, &text, sort, &[]).await?,
     })
 }
 
