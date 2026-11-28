@@ -299,10 +299,8 @@ pub fn telephone_e164(entered: &str) -> Option<String> {
         .collect();
     let digits = if let Some(rest) = cleaned.strip_prefix('+') {
         rest
-    } else if let Some(rest) = cleaned.strip_prefix("00") {
-        rest
     } else {
-        return None;
+        cleaned.strip_prefix("00")?
     };
     if digits.len() < 7 || digits.len() > 15 {
         return None;
@@ -346,9 +344,9 @@ pub fn check_new_kind(field: &FieldDefinition, value: &Value) -> Option<String> 
                 return Some("is not a valid link.".to_string());
             }
             if let Some(title) = title
-                && !title
+                && title
                     .as_str()
-                    .is_some_and(|s| s.chars().count() <= MAX_LINK_TITLE_LENGTH)
+                    .is_none_or(|s| s.chars().count() > MAX_LINK_TITLE_LENGTH)
             {
                 return Some(format!(
                     "title must be at most {MAX_LINK_TITLE_LENGTH} characters."
