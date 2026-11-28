@@ -791,26 +791,26 @@ fn quantile(samples: &mut [std::time::Duration], q: f64) -> std::time::Duration 
 }
 
 /// What every timed write of one path must leave behind: one event of
-/// `kind`, naming `user` when there is one, per request.
+/// `kind`, naming `user` when there is one and carrying `path` as its
+/// `details.path` when that is set, per request.
 struct Expect<'a> {
     kind: &'a str,
     user: Option<uuid::Uuid>,
+    path: Option<&'a str>,
 }
 
-/// How many events of `expect.kind` (naming `expect.user`, when set) were
-/// written at or after `since`.
-async fn written_since(
-    site: &PerfSite,
-    expect: &Expect<'_>,
-    since: chrono::DateTime<chrono::Utc>,
-) -> i64 {
+/// How many events `expect` describes were written at or after `since`
+/// (Unix seconds, as `security_audit_log.created` holds it).
+async fn written_since(site: &PerfSite, expect: &Expect<'_>, since: i64) -> i64 {
     sqlx::query_scalar(
         "SELECT count(*) FROM security_audit_log WHERE kind = $1 AND created >= $2 \
-         AND ($3::uuid IS NULL OR user_id = $3)",
+         AND ($3::uuid IS NULL OR user_id = $3) \
+         AND ($4::text IS NULL OR details->>'path' = $4)",
     )
     .bind(expect.kind)
     .bind(since)
     .bind(expect.user)
+    .bind(expect.path)
     .fetch_one(&site.app.db)
     .await
     .unwrap()
@@ -834,10 +834,11 @@ async fn time_write<F, Fut>(
     F: FnMut(usize) -> Fut,
     Fut: std::future::Future<Output = common::perf::Written>,
 {
-    let since: chrono::DateTime<chrono::Utc> = sqlx::query_scalar("SELECT clock_timestamp()")
-        .fetch_one(&site.app.db)
-        .await
-        .unwrap();
+    let since: i64 =
+        sqlx::query_scalar("SELECT floor(EXTRACT(EPOCH FROM clock_timestamp()))::bigint")
+            .fetch_one(&site.app.db)
+            .await
+            .unwrap();
     let mut samples = Vec::with_capacity(runs);
     let mut statements = std::collections::BTreeMap::<u32, usize>::new();
     for i in 0..warmup + runs {
@@ -889,6 +890,7 @@ fn security_event_write_latency() {
         let registration = Expect {
             kind: "account.created",
             user: None,
+            path: Some("registration"),
         };
         time_write(
             site,
@@ -911,6 +913,7 @@ fn security_event_write_latency() {
         let changed = Expect {
             kind: "password.changed",
             user: Some(pw_id),
+            path: None,
         };
         time_write(site, "password change", changed, WARMUP, RUNS, |i| {
             let cookies = &cookies;
@@ -940,6 +943,7 @@ fn security_event_write_latency() {
         let edited = Expect {
             kind: "user.mail_changed",
             user: Some(edit_id),
+            path: None,
         };
         time_write(site, "admin user edit", edited, WARMUP, RUNS, |i| {
             let (admin, edit_page, edit_name) = (&admin, &edit_page, &edit_name);
@@ -957,6 +961,7 @@ fn security_event_write_latency() {
         let issued = Expect {
             kind: "api_token.created",
             user: Some(token_id),
+            path: None,
         };
         time_write(site, "api token create", issued, WARMUP, RUNS, |_| {
             let token_cookies = &token_cookies;
