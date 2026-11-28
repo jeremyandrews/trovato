@@ -69,7 +69,7 @@ pub struct ResolvedLanguage(pub String);
 /// alone. The `edge_cache` middleware reads this to decide whether a page may
 /// be shared: only [`LanguageSource::UrlPrefix`] is the same for every visitor
 /// of that URL, and so is [`LanguageSource::Default`] when the site has one
-/// language — no negotiation could have chosen anything else.
+/// language, since no negotiation could have chosen anything else.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LanguageSource {
     /// `/fr/about`: part of the address itself.
@@ -87,7 +87,7 @@ pub enum LanguageSource {
 ///
 /// Stored in both the request's extensions (for a handler) and the
 /// response's (for a middleware outside this one, which no longer holds the
-/// request — see `middleware::edge_cache`).
+/// request, see `middleware::edge_cache`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResolvedLanguageSource(pub LanguageSource);
 

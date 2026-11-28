@@ -4,9 +4,9 @@
 //! An anonymous, cookie-free, `GET`/`HEAD` response that answers 200 with
 //! `text/html`, in a language the URL alone decided, may be marked
 //! `Cache-Control: public` with a tag header listing what it was built from.
-//! Everything else — a signed-in or token-bearing request, a non-`GET`/`HEAD`,
+//! Everything else (a signed-in or token-bearing request, a non-`GET`/`HEAD`,
 //! a response that sets a cookie, or a page whose language an
-//! `Accept-Language` header (rather than the URL) decided — gets
+//! `Accept-Language` header, rather than the URL, decided) gets
 //! `private, no-store` or nothing, never `public`.
 //!
 //! The shared test fixture ([`common::TestApp`]) always seeds three
@@ -110,7 +110,7 @@ async fn create_published_item(app: &TestApp, title: &str, promote: i16) -> Uuid
 
 /// The item's address under the `it` language prefix: a `UrlPrefix` language
 /// source, so whether it is cacheable never depends on the site's language
-/// count (unlike the bare, unprefixed address — see scenario (f) below).
+/// count (unlike the bare, unprefixed address, see scenario (f) below).
 fn prefixed_item_path(id: Uuid) -> String {
     format!("/it/item/{id}")
 }
