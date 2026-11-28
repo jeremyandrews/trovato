@@ -1,0 +1,16 @@
+name = "test_timer"
+description = "B278 fixture: precise timers"
+version = "0.106.0"
+api_version = "0.106"
+default_enabled = false
+dependencies = []
+
+[taps]
+implements = ["tap_timer"]
+weight = 0
+
+# `timer` is the capability under test; `variables` is where tap_timer reports
+# what it saw, so the suite reads it back; `logging` is referenced by the
+# #[plugin_tap] macro's error paths.
+[capabilities]
+host_interfaces = ["timer", "variables", "logging"]

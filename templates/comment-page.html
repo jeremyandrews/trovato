@@ -10,19 +10,17 @@
     <h1>{{ page_title }}</h1>
     <p class="comment-page__item">On <a href="{{ item_path }}">{{ item_title }}</a></p>
 
-    {% if comment %}
-    <article class="comment" id="comment-{{ comment.id }}">
-        <header class="comment__header">
-            <span class="comment__author">{{ comment.author_name | default(value="Anonymous") }}</span>
-            <time class="comment__date" datetime="{{ comment.created }}">{{ comment.created | date(format="%B %d, %Y at %H:%M") }}</time>
-        </header>
-        {% if comment.subject %}
-        <h3 class="comment__subject">{{ comment.subject }}</h3>
-        {% endif %}
-        <div class="comment__body">
-            {{ comment.body_html | safe }} {# SAFE: FilterPipeline::for_format_safe output — render_comment_body sanitizes by the comment's text format #}
-        </div>
-    </article>
+    {% if comment %}{% set shown = comment %}{% set shown_class = "" %}
+    {% include "elements/comment-single.html" %}
+    {% endif %}
+
+    {# A preview: the comment being written, as it will read once posted. Saved
+       only by the form's own button below. #}
+    {% if preview %}{% set shown = preview %}{% set shown_class = "comment--preview" %}
+    <section class="comment-preview" aria-labelledby="comment-preview-heading">
+        <h2 id="comment-preview-heading">Preview comment</h2>
+        {% include "elements/comment-single.html" %}
+    </section>
     {% endif %}
 
     {# The page's form: `comment_form` (reply), `comment_edit` or

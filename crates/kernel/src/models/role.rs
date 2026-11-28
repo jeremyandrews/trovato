@@ -141,6 +141,11 @@ pub const KERNEL_PERMISSIONS: &[&str] = &[
     // "administer site configuration"; `administer site` still opens it.
     // Granted by no migration; an administrator holds it implicitly.
     "clear caches",
+    // `/admin/reports/timers` (B278): see every precise timer, and pause,
+    // resume, run, cancel or reschedule one, and set the throttles. A
+    // migration grants both to every role holding `administer site`.
+    "view timers",
+    "administer timers",
     // Run cron now from `/admin/reports/cron` (B161). `administer site`
     // still does too. Granted by no migration; an administrator holds it
     // implicitly.

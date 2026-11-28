@@ -478,6 +478,8 @@ pub const KNOWN_TAPS: &[&str] = &[
     "tap_cron",
     "tap_queue_info",
     "tap_queue_worker",
+    // A precise timer the plugin registered is due (added by B278).
+    "tap_timer",
     // User
     "tap_user_login",
     "tap_user_logout",
@@ -541,6 +543,8 @@ pub const KNOWN_HOST_INTERFACES: &[&str] = &[
     "query",
     // Create and list owned vocabularies (added by B108, after 0.104.0).
     "vocabulary",
+    // Set, cancel and read the plugin's own precise timers (added by B278).
+    "timer",
 ];
 
 fn default_true() -> bool {

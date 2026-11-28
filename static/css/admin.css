@@ -946,6 +946,12 @@
         margin-inline-start: var(--space-3);
     }
 
+    /* A time on the timers report (B278): a date and a clock time, kept on one
+       line so a row is not four lines tall in a narrow column. */
+    .timer-when {
+        white-space: nowrap;
+    }
+
     /* A link that is not part of a sentence (a row's operations, a "Back to"
        or "Cancel" link alone in its paragraph) is a target, and gets the
        24px a target needs (WCAG 2.5.8) whatever the font's line height. */

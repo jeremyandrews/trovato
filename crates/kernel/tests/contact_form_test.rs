@@ -29,6 +29,7 @@ use axum::http::{Request, StatusCode, header};
 use common::TestApp;
 use common::smtp_sink::{Envelope, SmtpSink};
 use trovato_kernel::models::SiteConfig;
+use uuid::Uuid;
 
 const PLUGIN: &str = "trovato_contact";
 
@@ -41,6 +42,11 @@ const SITE_FROM: &str = "no-reply@contact-test.local";
 /// Serializes the tests that write `site_mail`, which is one site-wide key.
 static SITE_MAIL_LOCK: std::sync::LazyLock<tokio::sync::Mutex<()>> =
     std::sync::LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// `access site-wide contact form` on the anonymous and authenticated roles is
+/// site-wide: every test here reads with it granted, and the one that revokes it
+/// holds this for writing.
+static GRANTS: tokio::sync::RwLock<()> = tokio::sync::RwLock::const_new(());
 
 /// The rate-limit bucket this file's requests land in.
 ///
@@ -205,6 +211,7 @@ async fn set_site_contact(app: &TestApp) {
 #[test]
 fn a_visitor_with_no_account_sends_a_message_to_the_site_owner() {
     common::run_test(async {
+        let _grants = GRANTS.read().await;
         let fixture = fixture();
         common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
@@ -258,6 +265,7 @@ fn a_visitor_with_no_account_sends_a_message_to_the_site_owner() {
 #[test]
 fn the_form_is_rendered_into_the_site_theme() {
     common::run_test(async {
+        let _grants = GRANTS.read().await;
         let fixture = fixture();
 
         let response = fixture
@@ -317,6 +325,7 @@ fn the_form_is_rendered_into_the_site_theme() {
 #[test]
 fn the_themed_page_renders_its_title_as_the_page_heading() {
     common::run_test(async {
+        let _grants = GRANTS.read().await;
         let fixture = fixture();
 
         let response = fixture
@@ -351,6 +360,7 @@ fn the_themed_page_renders_its_title_as_the_page_heading() {
 #[test]
 fn a_submission_with_no_token_is_refused_and_sends_nothing() {
     common::run_test(async {
+        let _grants = GRANTS.read().await;
         let fixture = fixture();
         common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
@@ -374,6 +384,7 @@ fn a_submission_with_no_token_is_refused_and_sends_nothing() {
 #[test]
 fn a_submission_with_a_forged_token_is_refused_and_sends_nothing() {
     common::run_test(async {
+        let _grants = GRANTS.read().await;
         let fixture = fixture();
         common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
@@ -401,6 +412,7 @@ fn a_submission_with_a_forged_token_is_refused_and_sends_nothing() {
 #[test]
 fn an_invalid_submission_can_be_corrected_and_resubmitted() {
     common::run_test(async {
+        let _grants = GRANTS.read().await;
         let fixture = fixture();
         common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
@@ -452,6 +464,7 @@ fn an_invalid_submission_can_be_corrected_and_resubmitted() {
 #[test]
 fn the_plugins_own_check_is_shown_on_the_form() {
     common::run_test(async {
+        let _grants = GRANTS.read().await;
         let fixture = fixture();
         common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
@@ -482,6 +495,7 @@ fn the_plugins_own_check_is_shown_on_the_form() {
 #[test]
 fn a_post_without_the_kernels_form_sends_nothing() {
     common::run_test(async {
+        let _grants = GRANTS.read().await;
         let fixture = fixture();
         common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
@@ -504,6 +518,7 @@ fn a_post_without_the_kernels_form_sends_nothing() {
 #[test]
 fn a_visitor_can_attach_a_copy_of_the_message() {
     common::run_test(async {
+        let _grants = GRANTS.read().await;
         let fixture = fixture();
         common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
@@ -530,6 +545,7 @@ fn a_visitor_can_attach_a_copy_of_the_message() {
 #[test]
 fn markup_a_visitor_types_comes_back_escaped() {
     common::run_test(async {
+        let _grants = GRANTS.read().await;
         let fixture = fixture();
         common::hold_until_cleanup(SITE_MAIL_LOCK.lock().await);
         set_site_contact(&fixture.app).await;
@@ -562,5 +578,130 @@ fn zz_leaves_the_plugin_disabled() {
             .execute(&fixture.app.db)
             .await
             .ok();
+    });
+}
+
+/// The permission both routes ask (B183), Drupal's name for it.
+const PERMISSION: &str = "access site-wide contact form";
+
+/// The well-known role ids (`roles` seed).
+const ANONYMOUS: Uuid = Uuid::from_u128(1);
+const AUTHENTICATED: Uuid = Uuid::from_u128(2);
+
+async fn set_grant(app: &TestApp, role: Uuid, granted: bool) {
+    let sql = if granted {
+        "INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2) ON CONFLICT DO NOTHING"
+    } else {
+        "DELETE FROM role_permissions WHERE role_id = $1 AND permission = $2"
+    };
+    sqlx::query(sql)
+        .bind(role)
+        .bind(PERMISSION)
+        .execute(&app.db)
+        .await
+        .expect("change the grant");
+    app.state.permissions().invalidate_all();
+}
+
+async fn status_of(app: &TestApp, request: Request<Body>, cookies: &str) -> StatusCode {
+    app.request_with_cookies(request, cookies).await.status()
+}
+
+/// `access site-wide contact form`: the plugin's migration grants it to the
+/// anonymous and authenticated roles, so the form is open as it always was;
+/// revoked from a role, both routes refuse that role (403 signed in, and the
+/// 401 the kernel gives every plugin route for nobody signed in).
+#[test]
+fn the_form_follows_the_access_site_wide_contact_form_permission() {
+    common::run_test(async {
+        let guard = GRANTS.write().await;
+        common::hold_until_cleanup(guard);
+        let fixture = fixture();
+        let app = &fixture.app;
+
+        // Granted by the plugin's migration, to both roles.
+        let granted: Vec<Uuid> = sqlx::query_scalar(
+            "SELECT role_id FROM role_permissions WHERE permission = $1 ORDER BY role_id",
+        )
+        .bind(PERMISSION)
+        .fetch_all(&app.db)
+        .await
+        .unwrap();
+        assert!(
+            granted.contains(&ANONYMOUS) && granted.contains(&AUTHENTICATED),
+            "granted to anonymous and authenticated on enable: {granted:?}"
+        );
+        // Whatever happens below, the grants go back.
+        {
+            let db = app.db.clone();
+            common::defer_cleanup(move || async move {
+                for role in [ANONYMOUS, AUTHENTICATED] {
+                    sqlx::query(
+                        "INSERT INTO role_permissions (role_id, permission) VALUES ($1, $2) \
+                         ON CONFLICT DO NOTHING",
+                    )
+                    .bind(role)
+                    .bind(PERMISSION)
+                    .execute(&db)
+                    .await
+                    .expect("restore the grant");
+                }
+            });
+        }
+
+        let name = common::username("b183contact");
+        app.create_test_user(
+            &name,
+            "B183-contact-Password-1",
+            &format!("{name}@example.test"),
+        )
+        .await;
+        let id = common::user_id_of(app, &name).await;
+        {
+            let db = app.db.clone();
+            common::defer_cleanup(move || async move {
+                sqlx::query("DELETE FROM users WHERE id = $1")
+                    .bind(id)
+                    .execute(&db)
+                    .await
+                    .expect("delete the account");
+            });
+        }
+        let member = app.login(&name, "B183-contact-Password-1").await;
+        let get = || {
+            Request::get("/contact")
+                .header("x-forwarded-for", common::test_ip_for(BUCKET))
+                .body(Body::empty())
+                .unwrap()
+        };
+        let post = || {
+            Request::post("/contact")
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .header("x-forwarded-for", common::test_ip_for(BUCKET))
+                .body(Body::from("name=x&email=x%40example.test&message=x"))
+                .unwrap()
+        };
+
+        assert_eq!(status_of(app, get(), &member).await, StatusCode::OK);
+        assert_eq!(status_of(app, get(), "").await, StatusCode::OK);
+
+        // Revoked from authenticated users: a member is refused both routes,
+        // a visitor still has the form.
+        set_grant(app, AUTHENTICATED, false).await;
+        assert_eq!(status_of(app, get(), &member).await, StatusCode::FORBIDDEN);
+        assert_eq!(status_of(app, post(), &member).await, StatusCode::FORBIDDEN);
+        assert_eq!(status_of(app, get(), "").await, StatusCode::OK);
+
+        // Revoked from everyone, as jibnotes had it.
+        set_grant(app, ANONYMOUS, false).await;
+        assert_eq!(status_of(app, get(), "").await, StatusCode::UNAUTHORIZED);
+        assert_eq!(status_of(app, post(), "").await, StatusCode::UNAUTHORIZED);
+
+        // Granted back, the form renders again.
+        set_grant(app, ANONYMOUS, true).await;
+        set_grant(app, AUTHENTICATED, true).await;
+        assert_eq!(status_of(app, get(), &member).await, StatusCode::OK);
+        let form = get_form(app).await;
+        assert!(!form.token.is_empty());
     });
 }
