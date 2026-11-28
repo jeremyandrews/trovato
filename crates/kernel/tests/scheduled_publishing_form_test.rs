@@ -355,7 +355,10 @@ fn clearing_the_input_removes_the_key_and_cancels_the_timer() {
         assert!(status.is_success(), "{status}: {text}");
 
         assert!(
-            stored_fields(app, id).await.get("field_publish_on").is_none(),
+            stored_fields(app, id)
+                .await
+                .get("field_publish_on")
+                .is_none(),
             "clearing the input must remove the stored key"
         );
         assert_eq!(
@@ -384,12 +387,20 @@ fn a_past_date_is_refused() {
             form_tokens(&html)
         );
         let (status, text) = post_form(app, &cookies, &edit_path, body).await;
-        assert!(!status.is_redirection() && status != StatusCode::OK, "{status}");
+        assert!(
+            !status.is_redirection() && status != StatusCode::OK,
+            "{status}"
+        );
         assert!(
             text.contains("future"),
             "the past date must be refused with its message: {text}"
         );
-        assert!(stored_fields(app, id).await.get("field_publish_on").is_none());
+        assert!(
+            stored_fields(app, id)
+                .await
+                .get("field_publish_on")
+                .is_none()
+        );
     });
 }
 
@@ -412,7 +423,12 @@ fn unpublish_before_publish_is_refused() {
             text.contains("after publish on"),
             "the bad order must be refused with its message: {text}"
         );
-        assert!(stored_fields(app, id).await.get("field_publish_on").is_none());
+        assert!(
+            stored_fields(app, id)
+                .await
+                .get("field_publish_on")
+                .is_none()
+        );
     });
 }
 
@@ -435,7 +451,12 @@ fn publish_on_is_refused_on_an_already_published_item() {
             text.contains("already published"),
             "scheduling a publish on an already published item must be refused: {text}"
         );
-        assert!(stored_fields(app, id).await.get("field_publish_on").is_none());
+        assert!(
+            stored_fields(app, id)
+                .await
+                .get("field_publish_on")
+                .is_none()
+        );
     });
 }
 
@@ -459,7 +480,12 @@ fn a_dst_gap_time_is_refused() {
             text.contains("does not exist"),
             "a DST gap time must be refused with its own message: {text}"
         );
-        assert!(stored_fields(app, id).await.get("field_publish_on").is_none());
+        assert!(
+            stored_fields(app, id)
+                .await
+                .get("field_publish_on")
+                .is_none()
+        );
     });
 }
 
@@ -528,7 +554,12 @@ fn the_json_item_api_refuses_a_past_publish_on() {
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
         assert!(text.contains("future"), "{text}");
-        assert!(stored_fields(app, id).await.get("field_publish_on").is_none());
+        assert!(
+            stored_fields(app, id)
+                .await
+                .get("field_publish_on")
+                .is_none()
+        );
     });
 }
 
@@ -620,6 +651,9 @@ fn an_item_scheduled_through_the_form_is_published_within_a_second() {
         assert_eq!(item_status(app, id).await, 1, "published by its timer");
         let late_ms = live_at.timestamp_millis() - publish_at * 1000;
         eprintln!("timer fired {late_ms} ms after the scheduled publish date");
-        assert!((0..1000).contains(&late_ms), "within a second: {late_ms} ms");
+        assert!(
+            (0..1000).contains(&late_ms),
+            "within a second: {late_ms} ms"
+        );
     });
 }

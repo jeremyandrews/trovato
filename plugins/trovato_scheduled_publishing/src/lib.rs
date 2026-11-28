@@ -242,7 +242,10 @@ fn date(fields: Option<&serde_json::Value>, field: &str) -> Option<i64> {
 
 /// [`date`], out of a `fields` map ([`read_item`]'s shape), rather than a
 /// `serde_json::Value` object.
-fn item_date(fields: &std::collections::HashMap<String, serde_json::Value>, field: &str) -> Option<i64> {
+fn item_date(
+    fields: &std::collections::HashMap<String, serde_json::Value>,
+    field: &str,
+) -> Option<i64> {
     as_unix_seconds(fields.get(field)?)
 }
 
@@ -794,7 +797,9 @@ fn schedule_fieldset(
         })
     };
     let status = |label: &str, secs: i64, weight: i32| {
-        let local = utc_to_local(secs, zone).unwrap_or_default().replace('T', " ");
+        let local = utc_to_local(secs, zone)
+            .unwrap_or_default()
+            .replace('T', " ");
         serde_json::json!({
             "type": "markup",
             "value": format!(
@@ -1104,9 +1109,7 @@ mod tests {
             Some("11111111-1111-1111-1111-111111111111".to_string())
         );
         assert_eq!(
-            item_id_from_action(
-                "/admin/content/11111111-1111-1111-1111-111111111111/edit"
-            ),
+            item_id_from_action("/admin/content/11111111-1111-1111-1111-111111111111/edit"),
             Some("11111111-1111-1111-1111-111111111111".to_string())
         );
         assert_eq!(item_id_from_action("/item/add/blog"), None);

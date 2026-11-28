@@ -1308,7 +1308,11 @@ async fn submitted_fields(
         // A plugin that owns an undeclared `fields` key (B326's scheduled
         // publishing, for one) gets the same refusal here that `tap_form_validate`
         // gives the HTML form, so the form is not the only guard.
-        if let Some(fields) = request.fields.as_ref().and_then(serde_json::Value::as_object) {
+        if let Some(fields) = request
+            .fields
+            .as_ref()
+            .and_then(serde_json::Value::as_object)
+        {
             let errors = state
                 .forms()
                 .validate_fields(
@@ -1773,7 +1777,11 @@ async fn update_item(
             // own branch here, rather than going through that function,
             // because it needs the stored item before it knows the body is
             // even well formed enough to check).
-            if let Some(fields) = request.fields.as_ref().and_then(serde_json::Value::as_object) {
+            if let Some(fields) = request
+                .fields
+                .as_ref()
+                .and_then(serde_json::Value::as_object)
+            {
                 let errors = state
                     .forms()
                     .validate_fields(
