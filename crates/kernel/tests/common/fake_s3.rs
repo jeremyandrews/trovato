@@ -81,7 +81,7 @@ async fn delete_object(
 /// of a plain per-object `DELETE` (real S3 and MinIO both support it; this
 /// fake must too, or every `delete()` here would silently 404 and do
 /// nothing). The request and response are both a minimal slice of the real
-/// XML: just the `<Key>` elements in, an `<Deleted><Key>` for each key out —
+/// XML: just the `<Key>` elements in, an `<Deleted><Key>` for each key out,
 /// enough for `object_store`'s own response parsing, no XML parser needed for
 /// a payload this simple.
 async fn bulk_delete(

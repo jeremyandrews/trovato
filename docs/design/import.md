@@ -173,15 +173,20 @@ refused, naming that tile.
 
 ### `file`
 
-A file already copied into the files directory (`UPLOADS_DIR`), from the old
-site's export. The importer never uploads, moves or rewrites a byte of it: it
-only reads the file at `path` to check and measure it, then registers a
-`file_managed` row pointing at that same path.
+A file a migration already copied into the site's own file store (a local
+directory, `UPLOADS_DIR`, or an S3 compatible bucket with `FILE_STORAGE=s3`),
+from the old site's export. The importer never uploads, moves or rewrites a
+byte of it: it only reads the file at `path` through the site's own file
+store ([`FileStorage::read`]) to check and measure it, then registers a
+`file_managed` row pointing at that same path. On a local directory, a
+symlink on the path is resolved and checked to still lead inside the
+directory before the file is trusted at all; an S3 compatible bucket has no
+directory for a symlink to escape, so that check does not apply there.
 
 | Key | Required | Meaning |
 |---|---|---|
 | `owner_id` | yes | A user id, stored or on an earlier line. |
-| `path` | yes | Where the bytes already sit, relative to the files directory. No absolute path, no `..`, no symlink leading outside it. |
+| `path` | yes | Where the bytes already sit, relative to the file store. No absolute path, no `..`, and on a local directory, no symlink leading outside it. |
 | `filename` | yes | The name shown to users. Its extension must agree with `mime_type` ([`EXTENSION_MIME_TYPES`]). |
 | `mime_type` | yes | Checked against the bytes' magic numbers and the allowlist, exactly as an upload's declared type is ([`FileService::validate_file`]). |
 | `created` | yes | When the file was first stored on the old site. |
@@ -196,10 +201,14 @@ lets those items resolve it exactly as they would resolve an uploaded file:
 `file_refs::sync_item_file_references` finds a managed file by id or URI alone
 and does not care how it got there. A `file` record is written `Permanent`
 (not the temporary status a fresh upload gets), since it is already attached
-to the content that references it. Size is measured from the bytes on disk,
-never trusted from the record. The file's storage path (and so its URI) is
-fixed at creation: a later record for the same id may update its owner, name,
-type and date, but not move it to another path.
+to the content that references it. Size is measured from the bytes the file
+store holds, never trusted from the record. The file's storage path (and so
+its URI) is fixed at creation: a later record for the same id may update its
+owner, name, type and date, but not move it to another path.
+
+A ported site should also set `SERVE_UNMANAGED_FILES=false` once every file
+has a `file` record: until then, a copied file with no record yet is served to
+anyone as an unmanaged file (see `docs/design/production-hosting.md`).
 
 ## Upsert by id
 

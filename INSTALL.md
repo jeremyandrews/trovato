@@ -76,6 +76,7 @@ RUST_LOG=info,tower_http=debug,sqlx=warn
 | `S3_ENDPOINT` | AWS | A non-AWS S3 compatible store, for example `http://127.0.0.1:9000` for MinIO. The standard `AWS_ENDPOINT_URL_S3`, if set, overrides it; `AWS_ENDPOINT` is used when neither is set. |
 | `S3_PREFIX` | none | A key prefix, for a bucket shared with other sites. Everything under it (or in the whole bucket, without one) is served as this site's files, and an object with no record is served to anyone, so store nothing else there: give each site sharing a bucket its own prefix, never one inside another's (`a` and `a/b`). |
 | `S3_ALLOW_HTTP` | `false` | Allow a plain `http://` endpoint (a local MinIO only). |
+| `SERVE_UNMANAGED_FILES` | `true` | Whether `/files/` and an image style derivative may serve a stored path with no `file_managed` row. Set to `false` on a ported or hosted site once every migrated file has a `file` record (`trovato import`): see "Serving uploaded files" below. |
 | `TEMPLATES_DIR` | `./templates` | Tera template search path. Several directories may be given, separated by `:`; later ones override templates of the same name. |
 | `THEMES_DIR` | `./themes` | Where themes are found, one directory per theme holding `theme.toml` (`name`, `description`, optional `screenshot`), `templates/` laid over the stock templates, and `static/` served at `/static/themes/<name>/`. Several directories may be given, separated by `:`; a later one's theme replaces an earlier one of the same name. Chosen at `/admin/appearance`. |
 | `STATIC_DIR` | `./static` | Static asset search path, served under `/static`. Several directories may be given, separated by `:`; later ones override assets of the same path. The generated Pagefind index is written to the first directory unless `PAGEFIND_OUTPUT_DIR` says otherwise. |
@@ -123,6 +124,17 @@ maintenance mode is not enough, as administrators and cron still delete files)
 and into an empty bucket or prefix, then switch `FILE_STORAGE` and start the servers. Never
 run it again after the switch: a file deleted since would be copied back with no
 record, and be served to anyone as an unmanaged file.
+
+A site ported from another CMS (not `trovato files migrate-to-s3`, which only
+moves an existing Trovato site's own files between stores) copies its files
+into the store before `trovato import` ever runs, and every one of them is an
+unmanaged file until its `file` record is imported. Set
+`SERVE_UNMANAGED_FILES=false` until that import finishes, so a file the
+migration has not yet registered (a Drupal `private://` file, for instance)
+is `404` rather than served to anyone; set it back to `true` only once every
+migrated file has a row. This is unrelated to `trovato files migrate-to-s3`'s
+own "never run it again" rule above, which is about a Trovato site's own
+uploads, not an import's `file` records.
 
 The kernel answers `/files/` with the type stored when the upload was validated
 and `X-Content-Type-Options: nosniff`; a proxy must pass `Content-Type` through

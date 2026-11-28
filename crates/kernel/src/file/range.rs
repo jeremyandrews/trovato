@@ -24,8 +24,8 @@ pub enum ByteRange {
 ///
 /// `None` is "serve the whole file, `200`": a missing or unparseable header,
 /// a unit other than `bytes`, or a value naming more than one range (a
-/// multi-range request gets the full body — this server never builds the
-/// `multipart/byteranges` response a real multi-range answer needs).
+/// multi-range request gets the full body, since this server never builds
+/// the `multipart/byteranges` response a real multi-range answer needs).
 pub fn parse_range_header(value: &str) -> Option<ByteRange> {
     let spec = value.trim().strip_prefix("bytes=")?;
     if spec.contains(',') {

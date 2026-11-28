@@ -239,8 +239,9 @@ directory, so single server and self hosted installs work exactly as before.
   `aws:PrincipalArn` is not on a named list: the web role, the replication
   role, the drill role and the break-glass admin role. The bucket (or prefix)
   holds only Trovato's files: an object with no `file_managed` row is served as
-  an unmanaged file to anyone the route allows, so nothing else may be put
-  there. One bucket per install: the web role can list the whole bucket
+  an unmanaged file to anyone the route allows (unless `SERVE_UNMANAGED_FILES`
+  is set to `false`, below), so nothing else may be put there. One bucket per
+  install: the web role can list the whole bucket
   (below), so a bucket shared by several sites would let each list the
   others' key names. A derivative is
   served only while its original is stored, so a deleted private image's
@@ -325,9 +326,37 @@ and served from disk by every server. It is derived data, rebuilt from Postgres,
 a few megabytes per site. At launch it stays on a small EFS volume (managed,
 multi-AZ, `ReadWriteMany`, through the EKS EFS CSI add-on; about $0.33 per GB
 a month); moving it into the file store is a named follow-up, not part of
-BG16. `file` import records (`import/file.rs`) still need files in a local
-directory; blog moves between regions (later work) will import into the
-store.
+BG16.
+
+**Streamed reads, `Range`, imports onto the bucket, and `SERVE_UNMANAGED_FILES`
+(B291, follow-up to part 1).** Four gaps part 1 left:
+
+- `FileStorage::read` returned the whole file; serving and the image style
+  route buffered it before sending a byte, so many concurrent downloads at the
+  10 MB upload limit held real memory, and nothing answered a `Range` request
+  (no seeking in audio or video). `FileStorage::read_stream` now streams
+  instead, on both backends, and answers a single `bytes=a-b`, `a-` or `-n`
+  with `206` and `Content-Range`, and a range past the end with `416`. Access
+  is still decided before a byte is read, on every path. `read` stays, for the
+  callers that need the whole file anyway (image processing, migration, the
+  upload and config import validation path).
+- `file` import records (`import/file.rs`) no longer need files in a local
+  directory, resolving the caveat this section used to carry: they are read
+  through the site's own `FileStorage`, so a migration can copy a site's files
+  straight into the bucket and import directly onto it, with no local
+  directory, and no second copy, ever involved. On a local directory the same
+  symlink containment check runs as before; the shape check (no absolute path,
+  no `..`) applies to both.
+- A ported site is exactly the case the previous paragraph's "an object with
+  no `file_managed` row is served as an unmanaged file to anyone the route
+  allows" sentence, above, was written for: a migration's copy and its
+  importer's `file` records do not land atomically, so between them (or on a
+  migration that never finishes registering everything) some objects in the
+  bucket have no row. `SERVE_UNMANAGED_FILES=false` makes `/files/` and a
+  derivative refuse any such path, `404`, before storage is read; the default,
+  `true`, keeps every existing site serving exactly as it does today. A
+  ported site sets it to `false` until the import is complete, then back to
+  `true`.
 
 ### 6. Secrets: Secrets Manager through External Secrets, Pod Identity per service
 
@@ -748,3 +777,46 @@ argument is worth rechecking then.
   `S3_ALLOW_HTTP`.
 - The S3 tests run against MinIO in CI (`scripts/ci-start-minio.sh`, in the
   Test and Coverage jobs) and fail, rather than skip, when it is missing there.
+
+## Tests (B291, the streaming/import/`SERVE_UNMANAGED_FILES` follow-up)
+
+- `crates/kernel/src/file/range.rs`: unit tests for the `Range` header parser
+  and for resolving a range against a real size (the three shapes, a range
+  clamped to the remainder, a range refused past the end, an empty file).
+- `crates/kernel/tests/file_storage_conformance_test.rs` gained
+  `range_conformance`, run against both backends: a whole read, `a-b`, `a-`,
+  `-n`, a range past the end (`416`, by type), a missing file (ranged and
+  not), and a traversal key.
+- `crates/kernel/tests/file_serving_access_test.rs` and
+  `file_storage_s3_serving_test.rs`: a single range gets `206` with the exact
+  slice, `Content-Range` and `Content-Length`; an open ended and a suffix
+  range both resolve against the real size; a range past the end is `416`
+  naming the real size; every response carries `Accept-Ranges`; a download
+  larger than one internal chunk arrives byte for byte, on a directory and
+  from the bucket. A pin, using a counting `FileStorage`, that the access
+  decision itself never reads a byte of the file (there is no seam to swap
+  `TestApp`'s own `FileStorage` for an instrumented one, so this exercises the
+  access layer directly rather than through the HTTP route, which is
+  structurally guaranteed to call it first (see `routes/file.rs`).
+- `crates/kernel/tests/file_record_import_s3_test.rs` (new): a file a
+  migration tool already placed in the bucket, named by a `file` record,
+  registers with the size measured from the bucket and the declared type, and
+  is servable; a record naming a missing key, and one whose path tries `..`,
+  are both refused, the second the same way on S3 as on a directory.
+- `crates/kernel/tests/file_storage_s3_serving_test.rs` gained
+  `serve_unmanaged_files_false_refuses_only_the_unregistered_path` and
+  `unmanaged_object_is_served_by_default`: with `SERVE_UNMANAGED_FILES=false`,
+  an object with no row is `404` and a registered file referenced only by an
+  unpublished item is still `404` to anonymous and still served to its
+  permitted viewer; the default keeps serving an unmanaged path unchanged.
+- No Docker in every environment that runs these tests: CI always has MinIO
+  (`scripts/ci-start-minio.sh`), and a local run with no container runtime
+  starts an in-process, S3 compatible HTTP server instead
+  (`crates/kernel/tests/common/fake_s3.rs`, included by path from the tests
+  that need it, the same convention `common/fake_redis.rs` already used).
+  It implements enough of the S3 API for `object_store`'s AWS client to drive
+  for real (`PUT`, `GET` with `Range`, `HEAD`, both the per-object and the
+  Bulk Delete `DELETE`), with no real SigV4 verification (there is no secret
+  to check one against) beyond requiring an `Authorization` header on `GET`,
+  which is enough to keep the "the bucket answers nothing to an unsigned
+  request" test meaningful.

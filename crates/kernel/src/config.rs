@@ -445,7 +445,7 @@ pub struct RuntimeConfig {
     ///
     /// A ported site's files are copied into the store ahead of the importer,
     /// so between the copy and the last `file` record some, or on a flawed
-    /// migration all, of them have no row — and with no row there is no
+    /// migration all, of them have no row, and with no row there is no
     /// ownership or reference check to refuse a private one with. Set to
     /// `false`, a path with no row is `404` before storage is ever read, so a
     /// migration that failed to register every file can never leak one; set it

@@ -835,7 +835,7 @@ fn other_client(s3: &S3Config) -> std::sync::Arc<dyn FileStorage> {
 
 /// A fresh S3 backed app with `SERVE_UNMANAGED_FILES=false` (the shared
 /// `fixture()` always serves unmanaged files by default, so this setting
-/// needs its own app — kept to one extra `TestApp` for every assertion this
+/// needs its own app, kept to one extra `TestApp` for every assertion this
 /// setting changes, since each one opens its own database pool).
 async fn app_with_unmanaged_files_refused() -> (TestApp, S3Config) {
     let s3 = s3_config().expect("an S3 test store (fake or real)");
@@ -850,7 +850,7 @@ async fn app_with_unmanaged_files_refused() -> (TestApp, S3Config) {
 
 /// With the default `SERVE_UNMANAGED_FILES=true`, an object the bucket holds
 /// but no `file_managed` row names is served exactly as every site has always
-/// served one — the shared `fixture()` already runs with the default, so no
+/// served one; the shared `fixture()` already runs with the default, so no
 /// extra app is needed for this half of the behaviour.
 #[test]
 fn unmanaged_object_is_served_by_default() {
@@ -877,7 +877,7 @@ fn unmanaged_object_is_served_by_default() {
 /// `file_managed` row names (what a migration that copied files before it
 /// finished registering every one leaves behind) is `404` to anyone; a
 /// *registered* file referenced only by an unpublished item is still `404`
-/// to an anonymous visitor and still served to its permitted viewer — the
+/// to an anonymous visitor and still served to its permitted viewer: the
 /// setting only changes what happens to a path with no row, never the
 /// any-referencing access policy (D-29) a registered file already has.
 #[test]

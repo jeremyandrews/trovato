@@ -7,7 +7,7 @@
 //! storage; the `file` record then registers each one under the id, owner and
 //! date it gives. `import/file.rs` reads the bytes through the site's own
 //! `FileStorage` (`FileStorage::read`), so this must work with no local
-//! directory at all — `FileService::local_dir()` is `None` for an S3 backed
+//! directory at all: `FileService::local_dir()` is `None` for an S3 backed
 //! site, and the importer must not require it.
 //!
 //! Needs Postgres, Redis and the S3 test store (`TROVATO_TEST_S3_ENDPOINT`,

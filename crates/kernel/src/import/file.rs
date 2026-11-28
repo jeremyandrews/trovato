@@ -3,9 +3,9 @@
 //!
 //! A migrated site's files arrive in the store before the importer ever runs:
 //! a port copies them in (a directory, `UPLOADS_DIR`, or an S3 compatible
-//! bucket — whatever `FILE_STORAGE` names), then writes a `file` record
+//! bucket, whatever `FILE_STORAGE` names), then writes a `file` record
 //! naming where each one landed. The importer never writes, moves or rewrites
-//! a byte of them — it reads the file at `path` through the site's own
+//! a byte of them: it reads the file at `path` through the site's own
 //! [`FileStorage`](crate::file::FileStorage) to check it the way an upload is
 //! checked ([`FileService::validate_file`]) and to measure its own size, then
 //! writes one `file_managed` row whose `uri` is that same path. An item's File

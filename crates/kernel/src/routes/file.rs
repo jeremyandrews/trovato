@@ -210,7 +210,7 @@ pub(crate) async fn unmanaged_is_servable(state: &AppState, uri: &str) -> anyhow
 
 /// The `Range: bytes=...` header of a request, parsed to the one range it
 /// asks for (`None` for no header, several ranges, or a value this server does
-/// not understand — each served as the whole file, `200`).
+/// not understand: each served as the whole file, `200`).
 pub(crate) fn requested_range(headers: &HeaderMap) -> Option<crate::file::ByteRange> {
     headers
         .get(axum::http::header::RANGE)

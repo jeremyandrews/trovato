@@ -140,7 +140,7 @@ pub async fn startup_check(store: &dyn FileStorage) -> Result<()> {
 
 /// What [`FileStorage::read_stream`] returns: the file's total size, the
 /// half-open byte span `[start, end)` actually returned (the whole file when
-/// no range was asked for), and the bytes of that span as a stream — never
+/// no range was asked for), and the bytes of that span as a stream, never
 /// the whole file held in memory at once by a real backend.
 pub struct FileStream {
     /// The file's total size, regardless of how much of it `stream` carries.
@@ -204,7 +204,7 @@ pub trait FileStorage: Send + Sync {
     ///
     /// The default implementation reads the whole file with [`Self::read`]
     /// and slices it in memory: correct for every backend, just not streamed.
-    /// Only a test double relies on it — [`LocalFileStorage`] and
+    /// Only a test double relies on it; [`LocalFileStorage`] and
     /// [`S3FileStorage`] both override it with a real stream.
     async fn read_stream(&self, uri: &str, range: Option<ByteRange>) -> Result<FileStream> {
         let data = self.read(uri).await?;

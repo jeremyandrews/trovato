@@ -1198,7 +1198,7 @@ impl trovato_kernel::file::FileStorage for CountingStorage {
 
 /// `ItemService::file_access` (what both `serve_uploaded_file` and
 /// `serve_derivative` call, and check, strictly before their own
-/// `FileStorage::read_stream` call — see `routes/file.rs` and
+/// `FileStorage::read_stream` call (see `routes/file.rs` and
 /// `routes/image_style.rs`) never reads a byte of the file it is deciding
 /// about: it is pure `file_managed`/`file_reference`/item-access lookups.
 /// `TestApp` has no seam to swap its own `FileStorage` for an instrumented

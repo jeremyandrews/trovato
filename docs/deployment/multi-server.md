@@ -53,6 +53,14 @@ directory is copied in with `trovato files migrate-to-s3`
 ([command line reference](../cli-reference.md#trovato-files-migrate-to-s3)).
 The design is [docs/design/production-hosting.md](../design/production-hosting.md).
 
+A site ported from another CMS, rather than moved between Trovato's own
+stores, copies its files into the bucket before `trovato import` runs, and
+every one of them is served to anyone until it has a `file` record. Set
+`SERVE_UNMANAGED_FILES=false` until the import finishes: `/files/` and a
+derivative then refuse a path with no `file_managed` row instead of falling
+back to serving it. See [INSTALL.md](../../INSTALL.md) and
+[docs/design/production-hosting.md](../design/production-hosting.md).
+
 Each server's built-in cron scheduler (`cron_interval_secs` in site settings,
 default 300 seconds) calls cron on its own cadence, and an external caller to
 `/cron/{key}` may still poke any server at any time — every one of them, the

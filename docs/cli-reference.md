@@ -223,8 +223,11 @@ Imports content from another site, keeping each record's id and its created
 and changed dates: what a site migration writes instead of SQL. The file is
 newline delimited JSON, one record per line, each with a `type`, a caller
 chosen `id` (a UUID) and that type's keys; `-` reads stdin. Every record
-type in the format is imported: `user`, `item`, `revision`, `comment`, `alias`,
-`redirect` and `tile`. The format, every key and every rule
+type in the format is imported: `user`, `file`, `item`, `revision`, `comment`,
+`alias`, `redirect` and `tile`. A `file` record reads, measures and validates
+the file it registers through the site's own file store, so it works the same
+on a local directory (`UPLOADS_DIR`) and on an S3 compatible bucket
+(`FILE_STORAGE=s3`). The format, every key and every rule
 are in [`docs/design/import.md`](design/import.md); a worked example is in
 [`docs/migrating-a-site.md`](migrating-a-site.md).
 
