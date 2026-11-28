@@ -1,25 +1,44 @@
 //! Admin routes for gather query management.
+//!
+//! Every form here (the query editor, the listing's clone buttons, delete)
+//! is built and checked through `FormService` (`routes::admin_form`).
 
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Router};
-use serde::Deserialize;
 use tower_sessions::Session;
 
-use crate::form::csrf::generate_csrf_token;
+use crate::content::submission::PostedForm;
+use crate::form::{FormElement, ValidationError};
+use crate::gather::field_index::UnindexedField;
 use crate::gather::{
     GatherQuery, GatherService, MAX_ITEMS_PER_PAGE, QueryDefinition, QueryDisplay,
 };
-use crate::i18n::UiMessage;
-use crate::routes::admin_form::FieldError;
+use crate::models::User;
 use crate::state::AppState;
 
+use super::admin_form;
 use super::admin_list::{ListQuery, page_of, sort_rows};
 use super::helpers::{
-    CsrfOnlyForm, render_admin_template, render_not_found, render_server_error, require_csrf,
-    require_permission,
+    render_admin_template, render_error, render_not_found, render_server_error, require_permission,
 };
+
+/// The listing, and where every form here returns.
+const BASE: &str = "/admin/gather";
+
+/// The query editor (create and edit). Its id is the one
+/// `static/js/gather-builder.js` finds the form by, to write the builder's
+/// state into the hidden fields before the form is sent.
+const QUERY_FORM_ID: &str = "gather-form";
+
+/// The listing's one form behind every row's Clone button: each button
+/// belongs to it (`form=`) and posts to its own query's clone address
+/// (`formaction`).
+const CLONE_FORM_ID: &str = "gather_clone_form";
+
+/// The delete confirmation form.
+const DELETE_FORM_ID: &str = "gather_delete_form";
 
 // =============================================================================
 // What the builder can show
@@ -139,10 +158,9 @@ const BUILDER_STRINGS: &[(&str, &str)] = &[
     ("showing_results", "Showing {shown} of {total} results."),
 ];
 
-/// Insert the row-builder option lists into a gather form render's context,
-/// alongside `base_table_options` and `display_format_options`: every render
-/// of `admin/gather-form.html` needs them, success or redisplayed-with-errors
-/// alike.
+/// Insert the row-builder option lists into a gather form render's context:
+/// every render of `admin/gather-form.html` needs them, success or
+/// redisplayed-with-errors alike.
 fn insert_builder_words(context: &mut tera::Context) {
     context.insert("builder_operators", BUILDER_OPERATORS);
     context.insert("builder_join_types", BUILDER_JOIN_TYPES);
@@ -158,24 +176,252 @@ fn builder_cannot_show(definition: &QueryDefinition) -> bool {
 }
 
 // =============================================================================
-// Form data
+// The query editor
 // =============================================================================
 
-/// Form data for creating or editing a gather query.
-#[derive(Debug, Deserialize)]
-struct GatherFormData {
-    #[serde(rename = "_token")]
-    token: String,
-    #[allow(dead_code)]
-    #[serde(rename = "_form_build_id")]
-    form_build_id: String,
+/// What the query editor shows or was sent, each as typed.
+struct QueryFormValues {
+    /// The query's machine name (fixed once the query exists).
     query_id: String,
+    /// The query's label.
     label: String,
-    description: Option<String>,
-    /// JSON-serialized QueryDefinition
+    /// The query's description.
+    description: String,
+    /// The definition as JSON, which the builder script reads and writes.
     definition_json: String,
-    /// JSON-serialized QueryDisplay
+    /// The display as JSON, which the builder script reads and writes.
     display_json: String,
+}
+
+impl QueryFormValues {
+    /// What the query editor posted, the id and label trimmed.
+    fn from_posted(posted: &PostedForm) -> Self {
+        let value = |name: &str| posted.get(name).unwrap_or_default().to_string();
+        Self {
+            query_id: value("query_id").trim().to_string(),
+            label: value("label").trim().to_string(),
+            description: value("description"),
+            definition_json: value("definition_json"),
+            display_json: value("display_json"),
+        }
+    }
+
+    /// The description to store: `None` when left blank.
+    fn stored_description(&self) -> Option<String> {
+        Some(self.description.clone()).filter(|s| !s.trim().is_empty())
+    }
+}
+
+/// One showing of the query editor, besides its field values.
+struct EditorPage<'a> {
+    /// The id of the query being edited; `None` when creating one.
+    editing: Option<&'a str>,
+    /// The fields' values.
+    values: &'a QueryFormValues,
+    /// The definition the builder's base table select starts from.
+    definition: &'a QueryDefinition,
+    /// Whether the query uses a shape the builder cannot show, which turns
+    /// saving off ([`builder_cannot_show`]).
+    cannot_show: bool,
+    /// Fields the query filters or sorts on that no index serves (B207).
+    unindexed: &'a [UnindexedField],
+}
+
+/// The builder's own controls (`admin/gather-builder.html`), in the page's
+/// language: the part of the query editor its script drives. `None` (logged)
+/// when the template fails to render.
+fn builder_html(
+    state: &AppState,
+    text: &super::admin_nav::AdminText,
+    page: &EditorPage<'_>,
+) -> Option<String> {
+    let mut context = tera::Context::new();
+    context.insert("base_table_options", BASE_TABLE_OPTIONS);
+    context.insert("display_format_options", DISPLAY_FORMAT_OPTIONS);
+    context.insert("definition", page.definition);
+    context.insert("unindexed_fields", page.unindexed);
+    text.scope(|| {
+        state
+            .theme()
+            .tera()
+            .render("admin/gather-builder.html", &context)
+    })
+    .map_err(|e| tracing::error!(error = %e, "failed to render the gather builder"))
+    .ok()
+}
+
+/// The query editor form for `page`.
+fn query_form(
+    text: &super::admin_nav::AdminText,
+    page: &EditorPage<'_>,
+    builder: String,
+) -> crate::form::Form {
+    let action = match page.editing {
+        Some(id) => format!("{BASE}/{id}/save"),
+        None => format!("{BASE}/create"),
+    };
+    let values = page.values;
+    let mut query_id = FormElement::textfield()
+        .title("Query ID")
+        .description(
+            "Machine name (e.g., \"blog.recent_posts\"). Lowercase letters, numbers, dots, \
+             colons, hyphens and underscores. Cannot be changed after creation.",
+        )
+        .default_value(values.query_id.clone())
+        .required()
+        .attribute("pattern", "[a-z0-9_.:-]+")
+        .attribute("spellcheck", "false")
+        .attribute("autocapitalize", "none")
+        .weight(3);
+    if page.editing.is_some() {
+        query_id = query_id.attribute("readonly", "readonly");
+    }
+    let mut submit = FormElement::submit(if page.editing.is_some() {
+        "Save changes"
+    } else {
+        "Create query"
+    })
+    .suffix(format!(
+        r#"<a href="{BASE}" class="button button--secondary">{}</a>"#,
+        text.html("Cancel", &[])
+    ))
+    .weight(10);
+    if page.cannot_show {
+        submit = submit.disabled();
+    }
+    let mut form = crate::form::Form::new(QUERY_FORM_ID)
+        .action(action)
+        .element(
+            "definition_json",
+            FormElement::hidden()
+                .default_value(values.definition_json.clone())
+                .weight(0),
+        )
+        .element(
+            "display_json",
+            FormElement::hidden()
+                .default_value(values.display_json.clone())
+                .weight(1),
+        )
+        .element("query_id", query_id)
+        .element(
+            "label",
+            FormElement::textfield()
+                .title("Label")
+                .default_value(values.label.clone())
+                .required()
+                .weight(4),
+        )
+        .element(
+            "description",
+            FormElement::textarea(2)
+                .title("Description")
+                .default_value(values.description.clone())
+                .weight(5),
+        )
+        .element("builder", FormElement::markup(builder).weight(6))
+        .element("op", submit);
+    if page.cannot_show {
+        form = form.element(
+            "cannot_show",
+            FormElement::markup(format!(
+                r#"<div class="notice notice--warning" role="status" id="gather-builder-cannot-show"><strong class="notice__label">{}</strong> {}</div>"#,
+                text.html("Warning:", &[]),
+                text.html(
+                    "This gather uses filter groups or a summary (group_by, aggregates, having, distinct), which this builder cannot show. Saving is off here, because saving would lose them. Change it where it is defined: its config file or the plugin that installs it.",
+                    &[]
+                )
+            ))
+            .weight(2),
+        );
+    }
+    form
+}
+
+/// Show the query editor for `page` with `errors`.
+async fn render_editor(
+    state: &AppState,
+    session: &Session,
+    user: &User,
+    page: &EditorPage<'_>,
+    errors: &[ValidationError],
+) -> Response {
+    let path = match page.editing {
+        Some(id) => format!("{BASE}/{id}/edit"),
+        None => format!("{BASE}/create"),
+    };
+    let viewer = super::helpers::user_context_for(state, user).await;
+    let text = super::admin_nav::AdminText::for_page(state, &viewer, &path).await;
+    let Some(builder) = builder_html(state, &text, page) else {
+        return render_server_error("The form could not be displayed.");
+    };
+    let form = query_form(&text, page, builder);
+    let form_html = match admin_form::render(state, session, user, form, errors).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+    let mut context = tera::Context::new();
+    context.insert("form", &form_html);
+    context.insert("editing", &page.editing.is_some());
+    context.insert("label", &page.values.label);
+    insert_builder_words(&mut context);
+    context.insert("path", &path);
+    super::helpers::inject_site_context(state, session, &mut context, BASE).await;
+    render_admin_template(state, &viewer, "admin/gather-form.html", context).await
+}
+
+/// The definition and display the query editor posted, and every problem
+/// with them. `stored` is the query being edited, whose display the posted
+/// one is laid over ([`display_over_stored`]) and whose definition counts
+/// for [`builder_cannot_show`].
+fn read_query(
+    values: &QueryFormValues,
+    stored: Option<&GatherQuery>,
+) -> (QueryDefinition, QueryDisplay, Vec<ValidationError>) {
+    let mut errors = Vec::new();
+    let definition: QueryDefinition = match serde_json::from_str(&values.definition_json) {
+        Ok(d) => d,
+        Err(e) => {
+            errors.push(ValidationError::form(format!(
+                "Invalid definition JSON: {e}"
+            )));
+            QueryDefinition::default()
+        }
+    };
+    // Over the stored display when editing: a key the form did not send keeps
+    // its stored value (B160). The builder edits only some of a display's
+    // keys, so saving a gather there dropped its feed, its routes, its header
+    // and footer.
+    let display = match stored {
+        Some(stored) => display_over_stored(&stored.display, &values.display_json),
+        None => serde_json::from_str(&values.display_json),
+    };
+    let mut display: QueryDisplay = match display {
+        Ok(d) => d,
+        Err(e) => {
+            errors.push(ValidationError::form(format!("Invalid display JSON: {e}")));
+            QueryDisplay::default()
+        }
+    };
+    errors.extend(
+        GatherService::validate_definition(&definition)
+            .into_iter()
+            .map(ValidationError::form),
+    );
+    // The stored definition counts too: the builder dropped what it could not
+    // show before posting, so the submitted one alone would look fine.
+    if stored.is_some_and(|q| builder_cannot_show(&q.definition))
+        || builder_cannot_show(&definition)
+    {
+        errors.push(ValidationError::form(BUILDER_CANNOT_SHOW));
+    }
+    if display
+        .items_per_page
+        .is_some_and(|n| n > MAX_ITEMS_PER_PAGE)
+    {
+        display.items_per_page = Some(MAX_ITEMS_PER_PAGE);
+    }
+    (definition, display, errors)
 }
 
 // =============================================================================
@@ -199,9 +445,10 @@ async fn list_queries(
     session: Session,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     // A small list held in memory: filtered, sorted and paged here.
     let query = ListQuery::from_params(&params);
@@ -227,14 +474,25 @@ async fn list_queries(
     let total = i64::try_from(queries.len()).unwrap_or(i64::MAX);
     let queries = page_of(&queries, &query);
 
-    let csrf_token = generate_csrf_token(&session).await;
+    // The rows' Clone buttons belong to this one form; a page with no rows
+    // has none to build.
+    let clone_form = if queries.is_empty() {
+        String::new()
+    } else {
+        let form = crate::form::Form::new(CLONE_FORM_ID).action(BASE);
+        match admin_form::render(&state, &session, &user, form, &[]).await {
+            Ok(html) => html,
+            Err(response) => return response,
+        }
+    };
 
     let mut context = tera::Context::new();
     context.insert("list", &query.view(total, queries.len(), Some(&sort)));
     context.insert("queries", &queries);
-    context.insert("csrf_token", &csrf_token);
-    context.insert("path", "/admin/gather");
-    super::helpers::inject_site_context(&state, &session, &mut context, "/admin/gather").await;
+    context.insert("clone_form", &clone_form);
+    context.insert("clone_form_id", CLONE_FORM_ID);
+    context.insert("path", BASE);
+    super::helpers::inject_site_context(&state, &session, &mut context, BASE).await;
 
     render_admin_template(
         &state,
@@ -249,47 +507,27 @@ async fn list_queries(
 ///
 /// GET /admin/gather/create
 async fn create_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
-    let csrf_token = generate_csrf_token(&session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
-
-    let default_definition = QueryDefinition::default();
-    let default_display = QueryDisplay::default();
-    let empty_definition = serde_json::to_string(&default_definition).unwrap_or_default();
-    let empty_display = serde_json::to_string(&default_display).unwrap_or_default();
-
-    let mut context = tera::Context::new();
-    context.insert("action", "/admin/gather/create");
-    context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
-    context.insert("editing", &false);
-    context.insert("base_table_options", BASE_TABLE_OPTIONS);
-    context.insert("display_format_options", DISPLAY_FORMAT_OPTIONS);
-    insert_builder_words(&mut context);
-    context.insert("definition", &default_definition);
-    context.insert("definition_json", &empty_definition);
-    context.insert("display_json", &empty_display);
-    context.insert(
-        "values",
-        &serde_json::json!({
-            "query_id": "",
-            "label": "",
-            "description": "",
-        }),
-    );
-    context.insert("path", "/admin/gather/create");
-    super::helpers::inject_site_context(&state, &session, &mut context, "/admin/gather").await;
-
-    render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/gather-form.html",
-        context,
-    )
-    .await
+    let definition = QueryDefinition::default();
+    let values = QueryFormValues {
+        query_id: String::new(),
+        label: String::new(),
+        description: String::new(),
+        definition_json: serde_json::to_string(&definition).unwrap_or_default(),
+        display_json: serde_json::to_string(&QueryDisplay::default()).unwrap_or_default(),
+    };
+    let page = EditorPage {
+        editing: None,
+        values: &values,
+        definition: &definition,
+        cannot_show: false,
+        unindexed: &[],
+    };
+    render_editor(&state, &session, &user, &page, &[]).await
 }
 
 /// Handle create gather query form submission.
@@ -298,124 +536,60 @@ async fn create_form(State(state): State<AppState>, session: Session) -> Respons
 async fn create_submit(
     State(state): State<AppState>,
     session: Session,
-    Form(form): Form<GatherFormData>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    let values = QueryFormValues::from_posted(&posted);
 
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-
-    // Validate basic fields
     let mut errors = Vec::new();
-
-    let query_id = form.query_id.trim().to_string();
-    let label = form.label.trim().to_string();
-
-    if query_id.is_empty() {
-        errors.push(FieldError::on("query_id", "Query ID is required."));
-    } else if !is_valid_query_id(&query_id) {
-        errors.push(FieldError::on(
+    if values.query_id.is_empty() {
+        errors.push(ValidationError::field("query_id", "Query ID is required."));
+    } else if !is_valid_query_id(&values.query_id) {
+        errors.push(ValidationError::field(
             "query_id",
             "Query ID must start with a letter and contain only lowercase letters, numbers, hyphens, underscores, dots, and colons.",
         ));
     }
-
-    if label.is_empty() {
-        errors.push(FieldError::on("label", "Label is required."));
+    if values.label.is_empty() {
+        errors.push(ValidationError::field("label", "Label is required."));
     }
-
-    // Check if query ID already exists
-    if state.gather().get_query(&query_id).is_some() {
-        errors.push(FieldError::on(
+    if state.gather().get_query(&values.query_id).is_some() {
+        errors.push(ValidationError::field(
             "query_id",
-            UiMessage::new("A gather query with ID '{id}' already exists.").arg("id", &query_id),
+            format!(
+                "A gather query with ID '{}' already exists.",
+                values.query_id
+            ),
         ));
     }
+    let (definition, display, query_errors) = read_query(&values, None);
+    errors.extend(query_errors);
 
-    // Parse definition JSON
-    let definition: QueryDefinition = match serde_json::from_str(&form.definition_json) {
-        Ok(d) => d,
-        Err(e) => {
-            errors.push(FieldError::form(
-                UiMessage::new("Invalid definition JSON: {error}").arg("error", e.to_string()),
-            ));
-            QueryDefinition::default()
-        }
-    };
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, QUERY_FORM_ID, errors).await {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => {
+                let page = EditorPage {
+                    editing: None,
+                    values: &values,
+                    definition: &definition,
+                    cannot_show: false,
+                    unindexed: &[],
+                };
+                return render_editor(&state, &session, &user, &page, &errors).await;
+            }
+            Err(Err(response)) => return response,
+        };
 
-    // Parse display JSON
-    let display: QueryDisplay = match serde_json::from_str(&form.display_json) {
-        Ok(d) => d,
-        Err(e) => {
-            errors.push(FieldError::form(
-                UiMessage::new("Invalid display JSON: {error}").arg("error", e.to_string()),
-            ));
-            QueryDisplay::default()
-        }
-    };
-
-    // Validate definition
-    let definition_errors = GatherService::validate_definition(&definition);
-    errors.extend(definition_errors.into_iter().map(FieldError::form));
-    if builder_cannot_show(&definition) {
-        errors.push(FieldError::form(BUILDER_CANNOT_SHOW));
-    }
-
-    // Cap items_per_page
-    let mut display = display;
-    if display
-        .items_per_page
-        .is_some_and(|n| n > MAX_ITEMS_PER_PAGE)
-    {
-        display.items_per_page = Some(MAX_ITEMS_PER_PAGE);
-    }
-
-    if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await;
-        let form_build_id = uuid::Uuid::new_v4().to_string();
-
-        let mut context = tera::Context::new();
-        context.insert("action", "/admin/gather/create");
-        context.insert("csrf_token", &csrf_token);
-        context.insert("form_build_id", &form_build_id);
-        context.insert("editing", &false);
-        context.insert("base_table_options", BASE_TABLE_OPTIONS);
-        context.insert("display_format_options", DISPLAY_FORMAT_OPTIONS);
-        insert_builder_words(&mut context);
-        context.insert("errors", &errors);
-        context.insert("definition", &definition);
-        context.insert("definition_json", &form.definition_json);
-        context.insert("display_json", &form.display_json);
-        context.insert(
-            "values",
-            &serde_json::json!({
-                "query_id": query_id,
-                "label": label,
-                "description": form.description,
-            }),
-        );
-        context.insert("path", "/admin/gather/create");
-        super::helpers::inject_site_context(&state, &session, &mut context, "/admin/gather").await;
-
-        return render_admin_template(
-            &state,
-            &crate::routes::helpers::get_user_context(&session, &state).await,
-            "admin/gather-form.html",
-            context,
-        )
-        .await;
-    }
-
-    // Build the query
     let now = chrono::Utc::now().timestamp();
     let query = GatherQuery {
-        query_id: query_id.clone(),
-        label,
-        description: form.description.filter(|s| !s.trim().is_empty()),
+        query_id: values.query_id.clone(),
+        label: values.label.clone(),
+        description: values.stored_description(),
         definition,
         display,
         plugin: "admin".to_string(),
@@ -425,11 +599,12 @@ async fn create_submit(
 
     match state.gather().register_query(query).await {
         Ok(()) => {
-            tracing::info!(query_id = %query_id, "gather query created");
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
+            tracing::info!(query_id = %values.query_id, "gather query created");
             // A field this gather filters or sorts on is now marked unless it
             // says otherwise (B207): build its index.
             state.reconcile_field_indexes();
-            Redirect::to("/admin/gather").into_response()
+            Redirect::to(BASE).into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to create gather query");
@@ -446,32 +621,15 @@ async fn edit_form(
     session: Session,
     Path(id): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let Some(query) = state.gather().get_query(&id) else {
         return render_not_found();
     };
 
-    let csrf_token = generate_csrf_token(&session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
-
-    let definition_json = serde_json::to_string(&query.definition).unwrap_or_default();
-    let display_json = serde_json::to_string(&query.display).unwrap_or_default();
-
-    let mut context = tera::Context::new();
-    context.insert("action", &format!("/admin/gather/{id}/save"));
-    context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
-    context.insert("editing", &true);
-    context.insert("base_table_options", BASE_TABLE_OPTIONS);
-    context.insert("display_format_options", DISPLAY_FORMAT_OPTIONS);
-    insert_builder_words(&mut context);
-    context.insert(
-        "builder_cannot_show",
-        &builder_cannot_show(&query.definition),
-    );
     // Fields this gather filters or sorts on that no index serves (B207).
     let unindexed = crate::gather::field_index::unindexed_fields(
         state.db(),
@@ -480,28 +638,21 @@ async fn edit_form(
         &query.definition,
     )
     .await;
-    context.insert("unindexed_fields", &unindexed);
-    context.insert("definition", &query.definition);
-    context.insert("definition_json", &definition_json);
-    context.insert("display_json", &display_json);
-    context.insert(
-        "values",
-        &serde_json::json!({
-            "query_id": query.query_id,
-            "label": query.label,
-            "description": query.description.unwrap_or_default(),
-        }),
-    );
-    context.insert("path", &format!("/admin/gather/{id}/edit"));
-    super::helpers::inject_site_context(&state, &session, &mut context, "/admin/gather").await;
-
-    render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/gather-form.html",
-        context,
-    )
-    .await
+    let values = QueryFormValues {
+        query_id: query.query_id.clone(),
+        label: query.label.clone(),
+        description: query.description.clone().unwrap_or_default(),
+        definition_json: serde_json::to_string(&query.definition).unwrap_or_default(),
+        display_json: serde_json::to_string(&query.display).unwrap_or_default(),
+    };
+    let page = EditorPage {
+        editing: Some(&id),
+        values: &values,
+        definition: &query.definition,
+        cannot_show: builder_cannot_show(&query.definition),
+        unindexed: &unindexed,
+    };
+    render_editor(&state, &session, &user, &page, &[]).await
 }
 
 /// Handle edit gather query form submission.
@@ -511,119 +662,51 @@ async fn save_submit(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<String>,
-    Form(form): Form<GatherFormData>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
-    // Verify the query exists
     let Some(existing) = state.gather().get_query(&id) else {
         return render_not_found();
     };
 
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
-
-    // Validate
+    let mut values = QueryFormValues::from_posted(&posted);
+    // The id is fixed once the query exists: show the stored one.
+    values.query_id = id.clone();
     let mut errors = Vec::new();
-
-    let label = form.label.trim().to_string();
-    if label.is_empty() {
-        errors.push(FieldError::on("label", "Label is required."));
+    if values.label.is_empty() {
+        errors.push(ValidationError::field("label", "Label is required."));
     }
+    let (definition, display, query_errors) = read_query(&values, Some(&existing));
+    errors.extend(query_errors);
 
-    // Parse definition JSON
-    let definition: QueryDefinition = match serde_json::from_str(&form.definition_json) {
-        Ok(d) => d,
-        Err(e) => {
-            errors.push(FieldError::form(
-                UiMessage::new("Invalid definition JSON: {error}").arg("error", e.to_string()),
-            ));
-            QueryDefinition::default()
-        }
-    };
-
-    // Parse display JSON, over the stored display: a key the form did not send
-    // keeps its stored value (B160). The builder edits only some of a
-    // display's keys, so saving a gather there dropped its feed, its routes,
-    // its header and footer.
-    let display: QueryDisplay = match display_over_stored(&existing.display, &form.display_json) {
-        Ok(d) => d,
-        Err(e) => {
-            errors.push(FieldError::form(
-                UiMessage::new("Invalid display JSON: {error}").arg("error", e.to_string()),
-            ));
-            QueryDisplay::default()
-        }
-    };
-
-    // Validate definition
-    let definition_errors = GatherService::validate_definition(&definition);
-    errors.extend(definition_errors.into_iter().map(FieldError::form));
-    // The stored definition counts too: the builder dropped what it could not
-    // show before posting, so the submitted one alone would look fine.
-    if builder_cannot_show(&existing.definition) || builder_cannot_show(&definition) {
-        errors.push(FieldError::form(BUILDER_CANNOT_SHOW));
-    }
-
-    // Cap items_per_page
-    let mut display = display;
-    if display
-        .items_per_page
-        .is_some_and(|n| n > MAX_ITEMS_PER_PAGE)
-    {
-        display.items_per_page = Some(MAX_ITEMS_PER_PAGE);
-    }
-
-    if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await;
-        let form_build_id = uuid::Uuid::new_v4().to_string();
-
-        let mut context = tera::Context::new();
-        context.insert("action", &format!("/admin/gather/{id}/save"));
-        context.insert("csrf_token", &csrf_token);
-        context.insert("form_build_id", &form_build_id);
-        context.insert("editing", &true);
-        context.insert("base_table_options", BASE_TABLE_OPTIONS);
-        context.insert("display_format_options", DISPLAY_FORMAT_OPTIONS);
-        insert_builder_words(&mut context);
-        context.insert(
-            "builder_cannot_show",
-            &(builder_cannot_show(&existing.definition) || builder_cannot_show(&definition)),
-        );
-        context.insert("errors", &errors);
-        context.insert("definition", &definition);
-        context.insert("definition_json", &form.definition_json);
-        context.insert("display_json", &form.display_json);
-        context.insert(
-            "values",
-            &serde_json::json!({
-                "query_id": id,
-                "label": label,
-                "description": form.description,
-            }),
-        );
-        context.insert("path", &format!("/admin/gather/{id}/edit"));
-        super::helpers::inject_site_context(&state, &session, &mut context, "/admin/gather").await;
-
-        return render_admin_template(
-            &state,
-            &crate::routes::helpers::get_user_context(&session, &state).await,
-            "admin/gather-form.html",
-            context,
-        )
-        .await;
-    }
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, QUERY_FORM_ID, errors).await {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => {
+                let page = EditorPage {
+                    editing: Some(&id),
+                    values: &values,
+                    definition: &definition,
+                    cannot_show: builder_cannot_show(&existing.definition)
+                        || builder_cannot_show(&definition),
+                    unindexed: &[],
+                };
+                return render_editor(&state, &session, &user, &page, &errors).await;
+            }
+            Err(Err(response)) => return response,
+        };
 
     // Update the query (preserve original created timestamp and plugin)
     let now = chrono::Utc::now().timestamp();
     let query = GatherQuery {
         query_id: id.clone(),
-        label,
-        description: form.description.filter(|s| !s.trim().is_empty()),
+        label: values.label.clone(),
+        description: values.stored_description(),
         definition,
         display,
         plugin: existing.plugin,
@@ -633,9 +716,10 @@ async fn save_submit(
 
     match state.gather().register_query(query).await {
         Ok(()) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(query_id = %id, "gather query updated");
             state.reconcile_field_indexes();
-            Redirect::to("/admin/gather").into_response()
+            Redirect::to(BASE).into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to update gather query");
@@ -676,16 +760,29 @@ async fn clone_query(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<String>,
-    Form(form): Form<CsrfOnlyForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
-
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &user,
+        &posted,
+        CLONE_FORM_ID,
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(_)) => {
+            return render_error("The form has expired. Reload the page and try again.");
+        }
+        Err(Err(response)) => return response,
+    };
 
     if state.gather().get_query(&id).is_none() {
         return render_not_found();
@@ -696,14 +793,55 @@ async fn clone_query(
 
     match state.gather().clone_query(&id, &new_id).await {
         Ok(_) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(source = %id, new_id = %new_id, "gather query cloned");
-            Redirect::to("/admin/gather").into_response()
+            Redirect::to(BASE).into_response()
         }
         Err(e) => {
             tracing::error!(error = %e, "failed to clone gather query");
             render_server_error("Failed to clone gather query.")
         }
     }
+}
+
+/// The delete confirmation form for the query `id`.
+fn delete_form_for(id: &str) -> crate::form::Form {
+    crate::form::Form::new(DELETE_FORM_ID)
+        .action(format!("{BASE}/{id}/delete"))
+        .element(
+            "op",
+            FormElement::submit("Delete")
+                .attribute("class", "button--danger")
+                .weight(10),
+        )
+}
+
+/// Ask before deleting a gather query.
+///
+/// GET /admin/gather/{id}/delete
+async fn delete_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path(id): Path<String>,
+) -> Response {
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    let Some(query) = state.gather().get_query(&id) else {
+        return render_not_found();
+    };
+    let form_html =
+        match admin_form::render(&state, &session, &user, delete_form_for(&id), &[]).await {
+            Ok(html) => html,
+            Err(response) => return response,
+        };
+    let viewer = super::helpers::user_context_for(&state, &user).await;
+    let mut context = tera::Context::new();
+    context.insert("label", &query.label);
+    context.insert("form", &form_html);
+    context.insert("path", &format!("{BASE}/{id}/delete"));
+    render_admin_template(&state, &viewer, "admin/gather-delete.html", context).await
 }
 
 /// Delete a gather query.
@@ -713,21 +851,28 @@ async fn delete_query(
     State(state): State<AppState>,
     session: Session,
     Path(id): Path<String>,
-    Form(form): Form<CsrfOnlyForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
-
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, DELETE_FORM_ID, Vec::new()).await
+        {
+            Ok(form_state) => form_state,
+            Err(Ok(_)) => {
+                return render_error("The form has expired. Reload the page and try again.");
+            }
+            Err(Err(response)) => return response,
+        };
 
     match state.gather().delete_query(&id).await {
         Ok(true) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(query_id = %id, "gather query deleted");
-            Redirect::to("/admin/gather").into_response()
+            Redirect::to(BASE).into_response()
         }
         Ok(false) => render_not_found(),
         Err(e) => {
@@ -741,7 +886,7 @@ async fn delete_query(
 ///
 /// Must start with a lowercase letter and contain only lowercase letters,
 /// numbers, hyphens, underscores, dots, and colons. Matches the HTML
-/// pattern `[a-z0-9_.:-]+` used in gather-form.html.
+/// pattern `[a-z0-9_.:-]+` the query editor's `query_id` field carries.
 fn is_valid_query_id(id: &str) -> bool {
     if id.is_empty() {
         return false;
@@ -770,11 +915,14 @@ fn is_valid_query_id(id: &str) -> bool {
 /// Create the gather admin router.
 pub fn router() -> Router<AppState> {
     Router::new()
-        .route("/admin/gather", get(list_queries))
+        .route(BASE, get(list_queries))
         .route("/admin/gather/create", get(create_form).post(create_submit))
         .route("/admin/gather/{id}/edit", get(edit_form))
         .route("/admin/gather/{id}/save", post(save_submit))
         .route("/admin/gather/{id}/clone", post(clone_query))
-        .route("/admin/gather/{id}/delete", post(delete_query))
+        .route(
+            "/admin/gather/{id}/delete",
+            get(delete_form).post(delete_query),
+        )
         .layer(axum::middleware::from_fn(super::admin_confirm::ask_first))
 }

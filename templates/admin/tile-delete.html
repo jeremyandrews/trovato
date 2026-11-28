@@ -1,0 +1,11 @@
+{% extends "page--admin.html" %}
+
+{% block page_title %}{{ t(s="Delete tile {name}", name=label) }}{% endblock page_title %}
+
+{% block content %}
+<div class="admin-card">
+    <p>{{ t(s="Delete this tile?") }}</p>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
+    <p><a href="/admin/structure/tiles">{{ t(s="Cancel") }}</a></p>
+</div>
+{% endblock content %}
