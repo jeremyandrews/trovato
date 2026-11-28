@@ -409,3 +409,334 @@ fn a_field_edit_after_a_type_edit_keeps_both_fields() {
         assert_eq!(def.label, "Renamed Type");
     });
 }
+
+// =============================================================================
+// B83c: the content type form, the field list's add-field form and field
+// delete confirmation, the field edit form and the search settings forms are
+// built and checked by the form pipeline.
+// =============================================================================
+
+const PIPELINE_TYPE: &str = "keep_fields_pipeline";
+const PIPELINE_SEARCH_TYPE: &str = "keep_fields_pipeline_search";
+const EXPIRED: &str = "The form has expired. Reload the page and try again.";
+
+/// GET `path` and return (cookies, html).
+async fn page(app: &TestApp, cookies: &str, path: &str) -> (String, String) {
+    let response = app
+        .request_with_cookies(Request::get(path).body(Body::empty()).unwrap(), cookies)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK, "{path} must render");
+    let fresh = common::extract_cookies(&response);
+    let cookies = if fresh.is_empty() {
+        cookies.to_string()
+    } else {
+        fresh
+    };
+    (cookies, body_string(response).await)
+}
+
+/// Post `form_id`'s token without its build id: refused as expired.
+async fn assert_expired_without_build_id(
+    app: &TestApp,
+    cookies: &str,
+    html: &str,
+    form_id: &str,
+    path: &str,
+    rest: &str,
+) {
+    let form = common::form_in(html, form_id).unwrap_or_else(|| panic!("no form {form_id}"));
+    let token = common::input_value_in(form, "_token").expect("the form carries a token");
+    let body = format!("_token={}{rest}", urlencoding::encode(&token));
+    let response = post_form(app, cookies, path, body).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "{form_id} without its build id must be refused"
+    );
+    assert!(
+        body_string(response).await.contains(EXPIRED),
+        "{form_id} without its build id is refused as expired"
+    );
+}
+
+/// Post `form_id` with `rest` and return the page shown again with errors.
+async fn post_with_errors(
+    app: &TestApp,
+    cookies: &str,
+    html: &str,
+    form_id: &str,
+    path: &str,
+    rest: &str,
+) -> String {
+    let body = format!("{}{rest}", common::form_fields(html, form_id));
+    let response = post_form(app, cookies, path, body).await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "{form_id} must come back with its errors"
+    );
+    body_string(response).await
+}
+
+#[test]
+fn b83c_the_content_type_form_is_a_pipeline_form() {
+    run_test(async {
+        let app = shared_app().await;
+        let cookies = app
+            .create_and_login_admin("b83cctform", PASSWORD, "b83cctform@test.local")
+            .await;
+        let path = "/admin/structure/types/add";
+        let (cookies, html) = page(app, &cookies, path).await;
+        let form = common::form_in(&html, "content_type_form").expect("the pipeline form");
+        assert!(form.contains(r#"name="machine_name""#));
+        assert!(form.contains(r#"name="comment_per_page""#));
+        assert!(form.contains(r#"href="/admin/structure/types""#), "Cancel");
+
+        assert_expired_without_build_id(
+            app,
+            &cookies,
+            &html,
+            "content_type_form",
+            path,
+            "&label=X&machine_name=b83c_never",
+        )
+        .await;
+
+        let (cookies, html) = page(app, &cookies, path).await;
+        let shown = post_with_errors(
+            app,
+            &cookies,
+            &html,
+            "content_type_form",
+            path,
+            "&label=&machine_name=Bad-Name",
+        )
+        .await;
+        let form = common::form_in(&shown, "content_type_form").expect("shown again");
+        assert!(form.contains(r#"aria-invalid="true""#));
+        assert!(form.contains("Name is required."));
+        assert!(form.contains("Machine name must start with a letter"));
+        assert!(
+            form.contains(r#"value="Bad-Name""#),
+            "the submitted values are kept"
+        );
+    });
+}
+
+#[test]
+fn b83c_the_field_list_and_field_forms_are_pipeline_forms() {
+    run_test(async {
+        let app = shared_app().await;
+        seed_scratch_type(app, PIPELINE_TYPE).await;
+        let cookies = app
+            .create_and_login_admin("b83cfields", PASSWORD, "b83cfields@test.local")
+            .await;
+        let add_id = format!("manage_fields_{PIPELINE_TYPE}");
+
+        // The field list: the add-field form, and a link to each delete.
+        let list = format!("/admin/structure/types/{PIPELINE_TYPE}/fields");
+        let (cookies, html) = page(app, &cookies, &list).await;
+        let form = common::form_in(&html, &add_id).expect("the add-field form");
+        assert!(form.contains(r#"data-ajax-trigger="add_field""#));
+        let delete = format!("{list}/field_alpha/delete");
+        assert!(
+            html.contains(&format!(
+                r#"<a class="link-button link-button--danger" href="{delete}">Delete Alpha</a>"#
+            )),
+            "each row links to its delete confirmation"
+        );
+        let add = format!("{list}/add");
+        assert_expired_without_build_id(
+            app,
+            &cookies,
+            &html,
+            &add_id,
+            &add,
+            "&label=X&name=field_never&field_type=text",
+        )
+        .await;
+        let (cookies, html) = page(app, &cookies, &list).await;
+        let shown = post_with_errors(
+            app,
+            &cookies,
+            &html,
+            &add_id,
+            &add,
+            "&label=&name=field_kept&field_type=text",
+        )
+        .await;
+        let form = common::form_in(&shown, &add_id).expect("shown again");
+        assert!(form.contains(r#"aria-invalid="true""#));
+        assert!(form.contains("Label is required."));
+        assert!(form.contains(r#"value="field_kept""#));
+
+        // The field edit form.
+        let edit = format!("{list}/field_beta/edit");
+        let (cookies, html) = page(app, &cookies, &edit).await;
+        let form = common::form_in(&html, "field_edit_form").expect("the field edit form");
+        assert!(
+            form.contains("<code>field_beta</code>"),
+            "the field's facts"
+        );
+        assert_expired_without_build_id(
+            app,
+            &cookies,
+            &html,
+            "field_edit_form",
+            &edit,
+            "&label=Never&cardinality=1",
+        )
+        .await;
+        let (cookies, html) = page(app, &cookies, &edit).await;
+        let shown = post_with_errors(
+            app,
+            &cookies,
+            &html,
+            "field_edit_form",
+            &edit,
+            "&label=&cardinality=0",
+        )
+        .await;
+        let form = common::form_in(&shown, "field_edit_form").expect("shown again");
+        assert!(form.contains(r#"aria-invalid="true""#));
+        assert!(form.contains("Label is required."));
+        assert!(form.contains("Number of values must be 1 or more, or -1 for unlimited."));
+
+        // The delete confirmation, then the delete.
+        let (cookies, html) = page(app, &cookies, &delete).await;
+        assert!(html.contains("Are you sure you want to delete the Alpha field?"));
+        common::form_in(&html, "field_delete_form").expect("the delete form");
+        assert_expired_without_build_id(app, &cookies, &html, "field_delete_form", &delete, "")
+            .await;
+        assert_eq!(
+            field_names(&stored_settings(app, PIPELINE_TYPE).await),
+            both_fields(),
+            "a refused delete deletes nothing"
+        );
+        let (cookies, html) = page(app, &cookies, &delete).await;
+        let response = post_form(
+            app,
+            &cookies,
+            &delete,
+            common::form_fields(&html, "field_delete_form"),
+        )
+        .await;
+        assert!(response.status().is_redirection());
+        assert_eq!(
+            field_names(&stored_settings(app, PIPELINE_TYPE).await),
+            vec!["field_beta".to_string()]
+        );
+    });
+}
+
+#[test]
+fn b83c_the_search_settings_forms_are_pipeline_forms() {
+    run_test(async {
+        let app = shared_app().await;
+        seed_scratch_type(app, PIPELINE_SEARCH_TYPE).await;
+        let cookies = app
+            .create_and_login_admin("b83csearch", PASSWORD, "b83csearch@test.local")
+            .await;
+        let path = format!("/admin/structure/types/{PIPELINE_SEARCH_TYPE}/search");
+        let (cookies, html) = page(app, &cookies, &path).await;
+        common::form_in(&html, "search_weight_form").expect("the weight form");
+        let reindex = common::form_in(&html, "search_reindex_form").expect("the reindex form");
+        assert!(reindex.contains("reindex?confirm"), "reindexing asks first");
+        assert!(reindex.contains("Reindex all Keep Fields Type content"));
+
+        let add = format!("{path}/add");
+        assert_expired_without_build_id(
+            app,
+            &cookies,
+            &html,
+            "search_weight_form",
+            &add,
+            "&field_name=field_alpha&weight=B",
+        )
+        .await;
+        let (cookies, html) = page(app, &cookies, &path).await;
+        let shown = post_with_errors(
+            app,
+            &cookies,
+            &html,
+            "search_weight_form",
+            &add,
+            "&field_name=field_alpha&weight=Z",
+        )
+        .await;
+        let form = common::form_in(&shown, "search_weight_form").expect("shown again");
+        assert!(form.contains(r#"aria-invalid="true""#));
+        assert!(form.contains("Invalid weight. Must be A, B, C, or D."));
+
+        // Weight a field, then remove the weight through its confirmation.
+        let (cookies, html) = page(app, &cookies, &path).await;
+        let body = format!(
+            "{}&field_name=field_alpha&weight=B",
+            common::form_fields(&html, "search_weight_form")
+        );
+        assert!(
+            post_form(app, &cookies, &add, body)
+                .await
+                .status()
+                .is_redirection()
+        );
+        let (cookies, html) = page(app, &cookies, &path).await;
+        let remove = format!("{path}/field_alpha/delete");
+        assert!(html.contains(&format!(r#"<a class="link-button" href="{remove}">"#)));
+        let (cookies, html) = page(app, &cookies, &remove).await;
+        assert!(html.contains("Remove the search weight of Alpha?"));
+        let response = post_form(
+            app,
+            &cookies,
+            &remove,
+            common::form_fields(&html, "search_weight_delete_form"),
+        )
+        .await;
+        assert!(response.status().is_redirection());
+        let left: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM search_field_config WHERE bundle = $1 AND field_name = $2",
+        )
+        .bind(PIPELINE_SEARCH_TYPE)
+        .bind("field_alpha")
+        .fetch_one(&app.db)
+        .await
+        .unwrap();
+        assert_eq!(left, 0, "the weight is removed");
+
+        // Reindex asks first, and the confirmation page's button passes the
+        // pipeline check as the reindex form.
+        let (cookies, html) = page(app, &cookies, &path).await;
+        let form = common::form_in(&html, "search_reindex_form").expect("the reindex form");
+        let hidden = |name: &str| {
+            urlencoding::encode(&common::input_value_in(form, name).expect(name)).into_owned()
+        };
+        let body = format!(
+            "{}&_confirm={}&_confirm_label={}",
+            common::form_fields(&html, "search_reindex_form"),
+            hidden("_confirm"),
+            hidden("_confirm_label"),
+        );
+        let response = post_form(app, &cookies, &format!("{path}/reindex?confirm"), body).await;
+        assert_eq!(response.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            response.headers()[header::LOCATION].to_str().unwrap(),
+            "/admin/confirm"
+        );
+        let (cookies, confirm) = page(app, &cookies, "/admin/confirm").await;
+        assert!(confirm.contains(
+            "This will update the search index for all Keep Fields Type content. Continue?"
+        ));
+        let response = post_form(
+            app,
+            &cookies,
+            &format!("{path}/reindex"),
+            common::form_fields(&confirm, "search_reindex_form"),
+        )
+        .await;
+        assert!(
+            response.status().is_redirection(),
+            "the confirmed reindex runs, got {}",
+            response.status()
+        );
+    });
+}

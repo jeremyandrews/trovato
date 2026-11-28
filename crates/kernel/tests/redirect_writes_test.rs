@@ -198,9 +198,8 @@ async fn body_text(response: axum::response::Response) -> String {
     String::from_utf8_lossy(&bytes).into_owned()
 }
 
-/// A fresh, single-use CSRF token, scraped from the redirect add form's
-/// hidden `_token` field.
-async fn csrf_token(app: &TestApp, cookies: &str) -> String {
+/// The redirect add form's page.
+async fn add_form(app: &TestApp, cookies: &str) -> String {
     let response = app
         .request_with_cookies(
             Request::get("/admin/config/redirects/add")
@@ -209,7 +208,13 @@ async fn csrf_token(app: &TestApp, cookies: &str) -> String {
             cookies,
         )
         .await;
-    let html = body_text(response).await;
+    body_text(response).await
+}
+
+/// A fresh, single-use CSRF token, scraped from the redirect add form's
+/// hidden `_token` field.
+async fn csrf_token(app: &TestApp, cookies: &str) -> String {
+    let html = add_form(app, cookies).await;
     let marker = "name=\"_token\" value=\"";
     let start = html.find(marker).expect("csrf token field") + marker.len();
     html[start..].split('"').next().unwrap().to_string()
@@ -232,9 +237,9 @@ fn an_admin_form_write_is_audited() {
         )
         .await;
         let source = unique("b266-form");
-        let token = csrf_token(app, &cookies).await;
+        let fields = common::form_fields(&add_form(app, &cookies).await, "redirect_form");
         let body = format!(
-            "_token={token}&source={}&destination=%2Fb266-form-dest&status_code=301&language=",
+            "{fields}&source={}&destination=%2Fb266-form-dest&status_code=301&language=",
             source.replace('/', "%2F")
         );
 
@@ -302,5 +307,139 @@ fn an_api_write_is_audited() {
         forget(app, id);
 
         assert_eq!(audit_actions(app, id).await, ["create"]);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// B83c: the redirect form and its delete confirmation on the form pipeline
+// ---------------------------------------------------------------------------
+
+/// POST a form body to `uri` as `cookies`: the status and the page.
+async fn post_body(app: &TestApp, cookies: &str, uri: &str, body: String) -> (StatusCode, String) {
+    let response = app
+        .request_with_cookies(
+            Request::post(uri)
+                .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded")
+                .body(Body::from(body))
+                .unwrap(),
+            cookies,
+        )
+        .await;
+    let status = response.status();
+    (status, body_text(response).await)
+}
+
+/// GET `uri` as `cookies`, expecting 200: the page.
+async fn page(app: &TestApp, cookies: &str, uri: &str) -> String {
+    let response = app
+        .request_with_cookies(Request::get(uri).body(Body::empty()).unwrap(), cookies)
+        .await;
+    assert_eq!(response.status(), StatusCode::OK, "GET {uri}");
+    body_text(response).await
+}
+
+/// The redirect form and the delete confirmation are pipeline forms: a post
+/// without a build id is refused as expired, a validation error is shown on
+/// its field, and the confirmation's own form deletes.
+#[test]
+fn the_redirect_forms_go_through_the_pipeline() {
+    run_test(async {
+        let app = app().await;
+        let (_, cookies) = user_holding(
+            app,
+            "b83c-redirect",
+            &[
+                "access administration pages",
+                "view redirects",
+                "administer redirects",
+            ],
+        )
+        .await;
+        let add = "/admin/config/redirects/add";
+        let html = add_form(app, &cookies).await;
+        assert!(common::form_in(&html, "redirect_form").is_some(), "{html}");
+
+        let source = unique("b83c-form");
+        let token = csrf_token(app, &cookies).await;
+        let (status, text) = post_body(
+            app,
+            &cookies,
+            add,
+            format!(
+                "_token={token}&source={}&destination=%2Fb83c-dest&status_code=301",
+                source.replace('/', "%2F")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        assert!(text.contains("expired"), "{text}");
+        assert_eq!(count_with_source(app, &source).await, 0);
+
+        let fields = common::form_fields(&add_form(app, &cookies).await, "redirect_form");
+        let (status, text) = post_body(
+            app,
+            &cookies,
+            add,
+            format!(
+                "{fields}&source={}&destination=&status_code=301",
+                source.replace('/', "%2F")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{text}");
+        let form = common::form_in(&text, "redirect_form").expect("the form again");
+        assert!(form.contains("Destination is required."), "{form}");
+        assert!(form.contains(r#"aria-invalid="true""#), "{form}");
+        assert_eq!(count_with_source(app, &source).await, 0);
+
+        let fields = common::form_fields(&add_form(app, &cookies).await, "redirect_form");
+        let (status, _) = post_body(
+            app,
+            &cookies,
+            add,
+            format!(
+                "{fields}&source={}&destination=%2Fb83c-dest&status_code=302&language=",
+                source.replace('/', "%2F")
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        let id: Uuid = sqlx::query_scalar("SELECT id FROM redirect WHERE source = $1")
+            .bind(&source)
+            .fetch_one(&app.db)
+            .await
+            .unwrap();
+        forget(app, id);
+
+        let edit = format!("/admin/config/redirects/{id}/edit");
+        let html = page(app, &cookies, &edit).await;
+        let form = common::form_in(&html, "redirect_form").expect("the edit form");
+        assert!(form.contains(r#"value="302" selected"#), "{form}");
+
+        let delete = format!("/admin/config/redirects/{id}/delete");
+        let html = page(app, &cookies, &delete).await;
+        assert!(
+            common::form_in(&html, "redirect_delete_form").is_some(),
+            "{html}"
+        );
+        let (status, text) = post_body(
+            app,
+            &cookies,
+            &delete,
+            format!("_token={}", csrf_token(app, &cookies).await),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{text}");
+        assert_eq!(count_with_source(app, &source).await, 1, "not deleted");
+        let html = page(app, &cookies, &delete).await;
+        let (status, _) = post_body(
+            app,
+            &cookies,
+            &delete,
+            common::form_fields(&html, "redirect_delete_form"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::SEE_OTHER);
+        assert_eq!(count_with_source(app, &source).await, 0, "deleted");
     });
 }

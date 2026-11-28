@@ -1,34 +1,10 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
 {% block page_title %}{% if editing %}{{ t(s="Edit link in menu “{menu}”", menu=menu_name) }}{% else %}{{ t(s="Add link in menu “{menu}”", menu=menu_name) }}{% endif %}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="A menu link points at a page on this site. Where it sits in the menu is set by its parent and its weight.") }}</p>{% endblock page_intro %}
 
 {% block content %}
-{% set errs = errors | default(value=[]) %}
 <div class="admin-card">
-    <form id="menu-link-form" method="post" action="{{ action }}" novalidate>
-        {{ form::csrf(csrf_token=csrf_token) }}
-
-        {{ form::error_summary(errors=errs) }}
-
-        {{ form::field(name="title", label=t(s="Title"), value=values.title | default(value=""), hint=t(s="The text the link shows."), required=true, errors=errs, width="30") }}
-
-        {{ form::field(name="path", label=t(s="Path"), value=values.path | default(value=""), hint=t(s="A local absolute path, beginning with /. External URLs are not accepted. A path that does not resolve is saved and returns 404 when followed, so check it."), required=true, errors=errs, width="30", attrs='spellcheck="false" autocapitalize="none"') }}
-
-        {% if values.parent_id is defined and values.parent_id %}{% set parent = values.parent_id %}{% else %}{% set parent = "" %}{% endif %}
-        {{ form::select(name="parent_id", label=t(s="Parent link"), options=parents, value=parent, empty=t(s="<Top level>"), hint=t(s="The link this one nests under. A link cannot be placed below itself, so its own descendants are not offered."), errors=errs) }}
-
-        {% if values.weight is defined and values.weight %}{% set weight = values.weight ~ "" %}{% else %}{% set weight = "0" %}{% endif %}
-        {{ form::field(name="weight", type="number", label=t(s="Weight"), value=weight, hint=t(s="Lower sorts first among siblings. Ties break on title."), errors=errs, width="10", attrs='step="1"') }}
-
-        {{ form::checkbox(name="hidden", label=t(s="Hidden"), checked=values.hidden | default(value=false), hint=t(s="A hidden link stays in the menu and is not rendered. Its children are still rendered."), errors=errs) }}
-
-        {% if editing %}
-        {{ form::actions(submit_label=t(s="Save changes"), cancel_url="/admin/structure/menus/" ~ menu_name) }}
-        {% else %}
-        {{ form::actions(submit_label=t(s="Create link"), cancel_url="/admin/structure/menus/" ~ menu_name) }}
-        {% endif %}
-    </form>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 {% endblock content %}

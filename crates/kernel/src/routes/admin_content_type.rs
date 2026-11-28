@@ -1,29 +1,53 @@
 //! Admin routes for content type management.
+//!
+//! Every form these screens serve is built and checked by the kernel's form
+//! pipeline (`super::admin_form`): the content type add and edit form, the
+//! add-field form on the field list, the field edit form, the field delete
+//! confirmation, and the search settings page's forms.
 
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router};
-use serde::Deserialize;
 use tower_sessions::Session;
 
+use crate::content::submission::PostedForm;
 use crate::content::{AddFieldError, CreateContentTypeError};
-use crate::form::csrf::generate_csrf_token;
-use crate::routes::admin_form::FieldError;
+use crate::form::{FormElement, ValidationError};
 use crate::search::SearchSwitches;
 use crate::state::AppState;
 
+use super::admin_form;
 use super::helpers::{
-    CsrfOnlyForm, MACHINE_NAME_ERROR, html_escape, is_valid_machine_name, render_admin_template,
-    render_error, render_not_found, render_server_error, require_csrf, require_permission,
+    MACHINE_NAME_ERROR, html_escape, is_valid_machine_name, render_admin_template, render_error,
+    render_not_found, render_server_error, require_permission,
 };
 
 // =============================================================================
 // Form data
 // =============================================================================
 
+/// The form id of the content type add and edit form.
+const CONTENT_TYPE_FORM_ID: &str = "content_type_form";
+
+/// The form id of the field edit form.
+const FIELD_EDIT_FORM_ID: &str = "field_edit_form";
+
+/// The form id of the field delete confirmation.
+const FIELD_DELETE_FORM_ID: &str = "field_delete_form";
+
+/// The form id of the add-field form on the field list of `type_name`.
+///
+/// It names the content type because the form's "Add field" button also
+/// works over AJAX, and [`handle_ajax_add_field`] reads which content type
+/// to add the field to from the saved form state's id, never from the
+/// request.
+fn field_add_form_id(type_name: &str) -> String {
+    format!("manage_fields_{type_name}")
+}
+
 /// The field types the add-field form offers: value and English label,
-/// translated by the select macro.
+/// translated by the select template.
 const FIELD_TYPE_OPTIONS: &[(&str, &str)] = &[
     ("text", "Text (plain)"),
     ("text_long", "Text (long)"),
@@ -37,8 +61,8 @@ const FIELD_TYPE_OPTIONS: &[(&str, &str)] = &[
 ];
 
 /// The preview choices of a content type: value and English label,
-/// translated by the select macro. Each label says what it means on its own,
-/// so none needs a translation context.
+/// translated by the select template. Each label says what it means on its
+/// own, so none needs a translation context.
 const PREVIEW_OPTIONS: &[(&str, &str)] = &[
     ("disabled", "No preview"),
     ("optional", "Preview offered"),
@@ -61,21 +85,37 @@ const COMMENT_THREADING_OPTIONS: &[(&str, &str)] = &[
 const COMMENT_ORDER_OPTIONS: &[(&str, &str)] =
     &[("oldest", "Oldest first"), ("newest", "Newest first")];
 
-/// Put the form's option lists in `context`.
-fn insert_options(context: &mut tera::Context) {
-    context.insert("preview_options", PREVIEW_OPTIONS);
-    context.insert("comment_mode_options", COMMENT_MODE_OPTIONS);
-    context.insert("comment_threading_options", COMMENT_THREADING_OPTIONS);
-    context.insert("comment_order_options", COMMENT_ORDER_OPTIONS);
+/// A constant option list as the form's select takes it.
+fn options(list: &[(&str, &str)]) -> Vec<(String, String)> {
+    list.iter()
+        .map(|(value, label)| ((*value).to_string(), (*label).to_string()))
+        .collect()
 }
 
-/// Content type form data.
-#[derive(Debug, Deserialize)]
+/// The string at `key` of a form's values, or `fallback` when it is missing
+/// or empty.
+fn value_or(values: &serde_json::Value, key: &str, fallback: &str) -> String {
+    match values.get(key).and_then(serde_json::Value::as_str) {
+        Some(s) if !s.is_empty() => s.to_string(),
+        _ => fallback.to_string(),
+    }
+}
+
+/// The Cancel link beside a form's button, back to `href`, in the viewer's
+/// admin language.
+async fn cancel_link(state: &AppState, user: &crate::models::User, href: &str) -> String {
+    let viewer = super::helpers::user_context_for(state, user).await;
+    let text = super::admin_nav::AdminText::for_page(state, &viewer, href).await;
+    format!(
+        r#"<a href="{}" class="button button--secondary">{}</a>"#,
+        html_escape(href),
+        text.html("Cancel", &[])
+    )
+}
+
+/// Content type form data, as posted.
+#[derive(Debug)]
 struct ContentTypeFormData {
-    #[serde(rename = "_token")]
-    token: String,
-    #[serde(rename = "_form_build_id")]
-    form_build_id: String,
     label: String,
     machine_name: String,
     description: Option<String>,
@@ -105,6 +145,27 @@ const DEFAULT_SWITCHES: &[&str] = &[
 ];
 
 impl ContentTypeFormData {
+    /// Read the posted fields.
+    fn from_posted(posted: &PostedForm) -> Self {
+        let get = |name: &str| posted.get(name).map(str::to_string);
+        Self {
+            label: get("label").unwrap_or_default(),
+            machine_name: get("machine_name").unwrap_or_default(),
+            description: get("description"),
+            title_label: get("title_label"),
+            published_default: get("published_default"),
+            revision_default: get("revision_default"),
+            promote_default: get("promote_default"),
+            sticky_default: get("sticky_default"),
+            moderation: get("moderation"),
+            preview_mode: get("preview_mode"),
+            comment_mode: get("comment_mode"),
+            comment_threading: get("comment_threading"),
+            comment_order: get("comment_order"),
+            comment_per_page: get("comment_per_page"),
+        }
+    }
+
     /// Whether the checkbox for settings key `key` was checked.
     fn switch(&self, key: &str) -> bool {
         match key {
@@ -186,30 +247,194 @@ impl ContentTypeFormData {
     }
 }
 
-/// Field form data.
-#[derive(Debug, Deserialize)]
-struct FieldFormData {
-    #[serde(rename = "_token")]
-    token: String,
-    #[serde(rename = "_form_build_id")]
-    form_build_id: String,
-    label: String,
-    name: String,
-    field_type: String,
-    /// The category a `category_reference` field holds tags of.
-    #[serde(default)]
-    category: Option<String>,
-}
-
-/// Search field configuration form data.
-#[derive(Debug, Deserialize)]
-struct SearchConfigFormData {
-    #[serde(rename = "_token")]
-    token: String,
-    #[serde(rename = "_form_build_id")]
-    form_build_id: String,
-    field_name: String,
-    weight: String,
+/// The content type add and edit form, showing `values`. On the edit form
+/// the machine name is read only. `cancel` is the Cancel link beside the
+/// button.
+fn content_type_form(
+    action: &str,
+    editing: bool,
+    values: &serde_json::Value,
+    cancel: String,
+) -> crate::form::Form {
+    let mut machine_name = FormElement::textfield()
+        .title("Machine name")
+        .description(
+            "A unique machine-readable name. Can only contain lowercase letters, numbers, and \
+             underscores.",
+        )
+        .default_value(value_or(values, "machine_name", ""))
+        .required()
+        .attribute("pattern", "[a-z][a-z0-9_]*")
+        .attribute("spellcheck", "false")
+        .attribute("autocapitalize", "none")
+        .weight(1);
+    if editing {
+        machine_name = machine_name.attribute("readonly", "readonly");
+    }
+    let switch = |key: &str| {
+        values
+            .get(key)
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false)
+    };
+    let per_page = values
+        .get(crate::content::comment_settings::PER_PAGE)
+        .cloned()
+        .unwrap_or_else(|| serde_json::Value::from(50));
+    crate::form::Form::new(CONTENT_TYPE_FORM_ID)
+        .action(action)
+        .element(
+            "label",
+            FormElement::textfield()
+                .title("Name")
+                .description("The human-readable name of this content type.")
+                .default_value(value_or(values, "label", ""))
+                .required()
+                .attribute("data-machine-name-source", "machine_name")
+                .weight(0),
+        )
+        .element("machine_name", machine_name)
+        .element(
+            "description",
+            FormElement::textarea(3)
+                .title("Description")
+                .description(
+                    "Describe this content type. The text will be displayed on the content \
+                     type administration page.",
+                )
+                .default_value(value_or(values, "description", ""))
+                .weight(2),
+        )
+        .element(
+            "submission_settings",
+            FormElement::fieldset()
+                .title("Submission form settings")
+                .weight(3)
+                .child(
+                    "title_label",
+                    FormElement::textfield()
+                        .title("Title field label")
+                        .default_value(value_or(values, "title_label", "Title")),
+                ),
+        )
+        .element(
+            "preview_settings",
+            FormElement::fieldset()
+                .title("Preview before submitting")
+                .weight(4)
+                .child(
+                    "preview_mode",
+                    FormElement::select(options(PREVIEW_OPTIONS))
+                        .title("Preview")
+                        .description(
+                            "Whether the item form offers a Preview button, and whether an \
+                             item must be previewed before it can be saved.",
+                        )
+                        .default_value(value_or(
+                            values,
+                            crate::content::preview::SETTING,
+                            "optional",
+                        )),
+                ),
+        )
+        .element(
+            "comment_settings",
+            FormElement::fieldset()
+                .title("Comment settings")
+                .weight(5)
+                .child(
+                    "comment_mode",
+                    FormElement::select(options(COMMENT_MODE_OPTIONS))
+                        .title("Comments")
+                        .description(
+                            "Open: readers with permission may comment. Closed: existing \
+                             comments are shown and no new ones are taken. Hidden: no comments \
+                             are shown and none are taken.",
+                        )
+                        .default_value(value_or(values, "comment_mode", "open"))
+                        .weight(0),
+                )
+                .child(
+                    "comment_threading",
+                    FormElement::select(options(COMMENT_THREADING_OPTIONS))
+                        .title("Display mode")
+                        .default_value(value_or(values, "comment_threading", "threaded"))
+                        .weight(1),
+                )
+                .child(
+                    "comment_order",
+                    FormElement::select(options(COMMENT_ORDER_OPTIONS))
+                        .title("Display order")
+                        .description(
+                            "In threaded mode this orders the threads; replies stay under the \
+                             comment they answer, in the order they were written.",
+                        )
+                        .default_value(value_or(values, "comment_order", "oldest"))
+                        .weight(2),
+                )
+                .child(
+                    "comment_per_page",
+                    FormElement::input("number")
+                        .title("Comments per page")
+                        .default_value(per_page)
+                        .attribute("min", "1")
+                        .attribute("max", "300")
+                        .weight(3),
+                ),
+        )
+        .element(
+            "publishing_options",
+            FormElement::fieldset()
+                .title("Publishing options")
+                .weight(6)
+                .child(
+                    "published_default",
+                    FormElement::checkbox()
+                        .title("Published by default")
+                        .default_value(switch("published_default"))
+                        .weight(0),
+                )
+                .child(
+                    "revision_default",
+                    FormElement::checkbox()
+                        .title("Create new revision by default")
+                        .default_value(switch("revision_default"))
+                        .weight(1),
+                )
+                .child(
+                    "promote_default",
+                    FormElement::checkbox()
+                        .title("Promoted to front page by default")
+                        .default_value(switch("promote_default"))
+                        .weight(2),
+                )
+                .child(
+                    "sticky_default",
+                    FormElement::checkbox()
+                        .title("Sticky at top of lists by default")
+                        .default_value(switch("sticky_default"))
+                        .weight(3),
+                )
+                .child(
+                    "moderation",
+                    FormElement::checkbox()
+                        .title("Moderate content of this type")
+                        .description(
+                            "Items move between Draft, Published and Archived by transitions \
+                             each role is granted (use editorial transition …). A draft saved \
+                             over a published item waits beside it: visitors keep seeing the \
+                             published version until the draft is published.",
+                        )
+                        .default_value(switch("moderation"))
+                        .weight(4),
+                ),
+        )
+        .element(
+            "op",
+            FormElement::submit("Save content type")
+                .suffix(cancel)
+                .weight(10),
+        )
 }
 
 // =============================================================================
@@ -239,33 +464,52 @@ async fn list_content_types(State(state): State<AppState>, session: Session) -> 
     .await
 }
 
+/// The content type add or edit page: the form at `action` showing `values`
+/// and `errors`. `editing` is the machine name of the type being edited,
+/// `None` on the add page.
+async fn render_content_type_form(
+    state: &AppState,
+    session: &Session,
+    user: &crate::models::User,
+    editing: Option<&str>,
+    values: &serde_json::Value,
+    errors: &[ValidationError],
+) -> Response {
+    let action = match editing {
+        Some(type_name) => format!("/admin/structure/types/{type_name}/edit"),
+        None => "/admin/structure/types/add".to_string(),
+    };
+    let cancel = cancel_link(state, user, "/admin/structure/types").await;
+    let form_html = match admin_form::render(
+        state,
+        session,
+        user,
+        content_type_form(&action, editing.is_some(), values, cancel),
+        errors,
+    )
+    .await
+    {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+    let viewer = super::helpers::user_context_for(state, user).await;
+    let mut context = tera::Context::new();
+    context.insert("editing", &editing.is_some());
+    context.insert("values", values);
+    context.insert("form", &form_html);
+    context.insert("path", &action);
+    render_admin_template(state, &viewer, "admin/content-type-form.html", context).await
+}
+
 /// Show add content type form.
 ///
 /// GET /admin/structure/types/add
 async fn add_content_type_form(State(state): State<AppState>, session: Session) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
-
-    let csrf_token = generate_csrf_token(&session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
-
-    let mut context = tera::Context::new();
-    context.insert("action", "/admin/structure/types/add");
-    context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
-    context.insert("editing", &false);
-    insert_options(&mut context);
-    context.insert("values", &serde_json::json!({}));
-    context.insert("path", "/admin/structure/types/add");
-
-    render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/content-type-form.html",
-        context,
-    )
-    .await
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    render_content_type_form(&state, &session, &user, None, &serde_json::json!({}), &[]).await
 }
 
 /// Handle add content type form submission.
@@ -274,34 +518,35 @@ async fn add_content_type_form(State(state): State<AppState>, session: Session) 
 async fn add_content_type_submit(
     State(state): State<AppState>,
     session: Session,
-    Form(form): Form<ContentTypeFormData>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
-
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    let form = ContentTypeFormData::from_posted(&posted);
 
     // Validate
     let mut errors = Vec::new();
 
     if form.label.trim().is_empty() {
-        errors.push(FieldError::on("label", "Name is required."));
+        errors.push(ValidationError::field("label", "Name is required."));
     }
 
     if form.machine_name.trim().is_empty() {
-        errors.push(FieldError::on("machine_name", "Machine name is required."));
+        errors.push(ValidationError::field(
+            "machine_name",
+            "Machine name is required.",
+        ));
     } else if !is_valid_machine_name(&form.machine_name) {
-        errors.push(FieldError::on("machine_name", MACHINE_NAME_ERROR));
+        errors.push(ValidationError::field("machine_name", MACHINE_NAME_ERROR));
     }
 
     // Check if machine name already exists. The cache answers the common
     // case; `create` refuses a name only the database knows.
     if state.content_types().get(&form.machine_name).is_some() {
-        errors.push(FieldError::on(
+        errors.push(ValidationError::field(
             "machine_name",
             CreateContentTypeError::AlreadyExists {
                 machine_name: form.machine_name.clone(),
@@ -310,9 +555,30 @@ async fn add_content_type_submit(
         ));
     }
 
-    if !errors.is_empty() {
-        return render_add_form_with_errors(&state, &session, &form, &errors).await;
-    }
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &user,
+        &posted,
+        CONTENT_TYPE_FORM_ID,
+        errors,
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(errors)) => {
+            return render_content_type_form(
+                &state,
+                &session,
+                &user,
+                None,
+                &form.values(),
+                &errors,
+            )
+            .await;
+        }
+        Err(Err(response)) => return response,
+    };
 
     // Create the content type
     let settings = form.settings();
@@ -328,15 +594,18 @@ async fn add_content_type_submit(
         .await
     {
         Ok(()) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(machine_name = %form.machine_name, "content type created");
             Redirect::to("/admin/structure/types").into_response()
         }
         Err(e @ CreateContentTypeError::AlreadyExists { .. }) => {
-            render_add_form_with_errors(
+            render_content_type_form(
                 &state,
                 &session,
-                &form,
-                &[FieldError::on("machine_name", e.to_string())],
+                &user,
+                None,
+                &form.values(),
+                &[ValidationError::field("machine_name", e.to_string())],
             )
             .await
         }
@@ -347,36 +616,6 @@ async fn add_content_type_submit(
     }
 }
 
-/// Render the add content type form again, with `errors` and the submitted
-/// values.
-async fn render_add_form_with_errors(
-    state: &AppState,
-    session: &Session,
-    form: &ContentTypeFormData,
-    errors: &[FieldError],
-) -> Response {
-    let csrf_token = generate_csrf_token(session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
-
-    let mut context = tera::Context::new();
-    context.insert("action", "/admin/structure/types/add");
-    context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
-    context.insert("editing", &false);
-    insert_options(&mut context);
-    context.insert("errors", &errors);
-    context.insert("values", &form.values());
-    context.insert("path", "/admin/structure/types/add");
-
-    render_admin_template(
-        state,
-        &crate::routes::helpers::get_user_context(session, state).await,
-        "admin/content-type-form.html",
-        context,
-    )
-    .await
-}
-
 /// Show edit content type form.
 ///
 /// GET /admin/structure/types/{type}/edit
@@ -385,26 +624,15 @@ async fn edit_content_type_form(
     session: Session,
     Path(type_name): Path<String>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let Some(content_type) = state.content_types().get(&type_name) else {
         return render_not_found();
     };
 
-    let csrf_token = generate_csrf_token(&session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
-
-    let mut context = tera::Context::new();
-    context.insert(
-        "action",
-        &format!("/admin/structure/types/{type_name}/edit"),
-    );
-    context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
-    context.insert("editing", &true);
-    insert_options(&mut context);
     // Load the database model to access settings (not available on ContentTypeDefinition)
     let db_type = crate::models::ItemType::find_by_type(state.db(), &type_name)
         .await
@@ -439,16 +667,8 @@ async fn edit_content_type_form(
     {
         values[key] = value;
     }
-    context.insert("values", &values);
-    context.insert("path", &format!("/admin/structure/types/{type_name}/edit"));
 
-    render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/content-type-form.html",
-        context,
-    )
-    .await
+    render_content_type_form(&state, &session, &user, Some(&type_name), &values, &[]).await
 }
 
 /// Handle edit content type form submission.
@@ -458,53 +678,53 @@ async fn edit_content_type_submit(
     State(state): State<AppState>,
     session: Session,
     Path(type_name): Path<String>,
-    Form(form): Form<ContentTypeFormData>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
-
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let Some(_content_type) = state.content_types().get(&type_name) else {
         return render_not_found();
     };
+    let form = ContentTypeFormData::from_posted(&posted);
 
     // Validate
     let mut errors = Vec::new();
 
     if form.label.trim().is_empty() {
-        errors.push(FieldError::on("label", "Name is required."));
+        errors.push(ValidationError::field("label", "Name is required."));
     }
 
-    if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await;
-        let form_build_id = uuid::Uuid::new_v4().to_string();
-
-        let mut context = tera::Context::new();
-        context.insert(
-            "action",
-            &format!("/admin/structure/types/{type_name}/edit"),
-        );
-        context.insert("csrf_token", &csrf_token);
-        context.insert("form_build_id", &form_build_id);
-        context.insert("editing", &true);
-        insert_options(&mut context);
-        context.insert("errors", &errors);
-        context.insert("values", &form.values());
-        context.insert("path", &format!("/admin/structure/types/{type_name}/edit"));
-
-        return render_admin_template(
-            &state,
-            &crate::routes::helpers::get_user_context(&session, &state).await,
-            "admin/content-type-form.html",
-            context,
-        )
-        .await;
-    }
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &user,
+        &posted,
+        CONTENT_TYPE_FORM_ID,
+        errors,
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(errors)) => {
+            // The machine name cannot change: show the type's own.
+            let mut values = form.values();
+            values["machine_name"] = serde_json::Value::from(type_name.as_str());
+            return render_content_type_form(
+                &state,
+                &session,
+                &user,
+                Some(&type_name),
+                &values,
+                &errors,
+            )
+            .await;
+        }
+        Err(Err(response)) => return response,
+    };
 
     // Update the content type
     let settings = form.settings();
@@ -520,6 +740,7 @@ async fn edit_content_type_submit(
         .await
     {
         Ok(_) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(machine_name = %type_name, "content type updated");
             Redirect::to("/admin/structure/types").into_response()
         }
@@ -530,6 +751,143 @@ async fn edit_content_type_submit(
     }
 }
 
+// =============================================================================
+// Field list and add field
+// =============================================================================
+
+/// The add-field form's posted values, kept to show a refused add again.
+#[derive(Debug, Default)]
+struct FieldFormData {
+    label: String,
+    name: String,
+    field_type: String,
+    /// The category a `category_reference` field holds tags of.
+    category: Option<String>,
+}
+
+impl FieldFormData {
+    /// Read the posted fields.
+    fn from_posted(posted: &PostedForm) -> Self {
+        Self {
+            label: posted.get("label").unwrap_or_default().to_string(),
+            name: posted.get("name").unwrap_or_default().to_string(),
+            field_type: posted.get("field_type").unwrap_or_default().to_string(),
+            category: posted
+                .get("category")
+                .filter(|c| !c.is_empty())
+                .map(str::to_string),
+        }
+    }
+}
+
+/// The add-field form of `type_name`'s field list, showing `values`.
+///
+/// Its button adds the field over AJAX when scripts run
+/// ([`handle_ajax_add_field`]) and posts the form when they do not.
+fn field_add_form(
+    type_name: &str,
+    values: &FieldFormData,
+    category_options: Vec<(String, String)>,
+) -> crate::form::Form {
+    crate::form::Form::new(field_add_form_id(type_name))
+        .action(format!("/admin/structure/types/{type_name}/fields/add"))
+        .element(
+            "label",
+            FormElement::textfield()
+                .title("Label")
+                .default_value(values.label.clone())
+                .required()
+                .attribute("data-machine-name-source", "name")
+                .attribute("data-machine-name-prefix", "field_")
+                .attribute("data-machine-name-max", "32")
+                .weight(0),
+        )
+        .element(
+            "name",
+            FormElement::textfield()
+                .title("Machine name")
+                .default_value(values.name.clone())
+                .required()
+                .attribute("pattern", "[a-z][a-z0-9_]*")
+                .attribute("spellcheck", "false")
+                .attribute("autocapitalize", "none")
+                .weight(1),
+        )
+        .element(
+            "field_type",
+            FormElement::select(options(FIELD_TYPE_OPTIONS))
+                .title("Type")
+                .default_value(values.field_type.clone())
+                .required()
+                .weight(2),
+        )
+        .element(
+            "category",
+            FormElement::select(category_options)
+                .title("Category")
+                .description(
+                    "Required for a category reference: the field holds tags of this category.",
+                )
+                .default_value(values.category.clone().unwrap_or_default())
+                .weight(3),
+        )
+        .element(
+            "op",
+            FormElement::submit("Add field")
+                .attribute("data-ajax-trigger", "add_field")
+                .attribute("data-ajax-wrapper", "#fields-wrapper")
+                .weight(10),
+        )
+}
+
+/// The manage-fields page of `type_name`, its add-field form showing
+/// `values` and `errors`, so a refused add does not make the person type it
+/// again.
+async fn render_field_list(
+    state: &AppState,
+    session: &Session,
+    user: &crate::models::User,
+    type_name: &str,
+    values: &FieldFormData,
+    errors: &[ValidationError],
+) -> Response {
+    let Some(content_type) = state.content_types().get(type_name) else {
+        return render_not_found();
+    };
+
+    let form_html = match admin_form::render(
+        state,
+        session,
+        user,
+        field_add_form(type_name, values, category_options(state).await),
+        errors,
+    )
+    .await
+    {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+
+    let mut context = tera::Context::new();
+    context.insert("content_type", &content_type);
+    context.insert("fields", &content_type.fields);
+    field_index_context(
+        state,
+        &content_type.machine_name,
+        &content_type.fields,
+        &mut context,
+    )
+    .await;
+    context.insert("add_field_form", &form_html);
+    context.insert(
+        "path",
+        &format!("/admin/structure/types/{type_name}/fields"),
+    );
+
+    let viewer = super::helpers::user_context_for(state, user).await;
+    render_admin_template(state, &viewer, "admin/field-list.html", context).await
+}
+
 /// Show manage fields page.
 ///
 /// GET /admin/structure/types/{type}/fields
@@ -538,44 +896,17 @@ async fn manage_fields(
     session: Session,
     Path(type_name): Path<String>,
 ) -> Response {
-    use crate::form::FormState;
-
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
-
-    let Some(content_type) = state.content_types().get(&type_name) else {
-        return render_not_found();
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
     };
-
-    let csrf_token = generate_csrf_token(&session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
-
-    // Save initial form state for AJAX callbacks
-    let form_state = FormState::new(format!("manage_fields_{type_name}"), form_build_id.clone());
-
-    if let Err(e) = state.forms().save_state(&form_build_id, &form_state).await {
-        tracing::warn!(error = %e, "failed to save initial form state");
-    }
-
-    let mut context = tera::Context::new();
-    context.insert("content_type", &content_type);
-    context.insert("fields", &content_type.fields);
-    context.insert("field_type_options", FIELD_TYPE_OPTIONS);
-    field_index_context(&state, &type_name, &content_type.fields, &mut context).await;
-    context.insert("category_options", &category_options(&state).await);
-    context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
-    context.insert(
-        "path",
-        &format!("/admin/structure/types/{type_name}/fields"),
-    );
-
-    render_admin_template(
+    render_field_list(
         &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/field-list.html",
-        context,
+        &session,
+        &user,
+        &type_name,
+        &FieldFormData::default(),
+        &[],
     )
     .await
 }
@@ -592,8 +923,8 @@ async fn categories(state: &AppState) -> Vec<crate::models::Category> {
         })
 }
 
-/// The category select's choices: id and label, for the form macros. The
-/// labels are the site's data, shown as they are.
+/// The category select's choices: id and label. The labels are the site's
+/// data, shown as they are.
 async fn category_options(state: &AppState) -> Vec<(String, String)> {
     categories(state)
         .await
@@ -609,44 +940,55 @@ async fn add_field(
     State(state): State<AppState>,
     session: Session,
     Path(type_name): Path<String>,
-    Form(form): Form<FieldFormData>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
-
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let Some(_content_type) = state.content_types().get(&type_name) else {
         return render_not_found();
     };
+    let form = FieldFormData::from_posted(&posted);
 
     // Validate
     let mut errors = Vec::new();
 
     if form.label.trim().is_empty() {
-        errors.push(FieldError::on("new_field_label", "Label is required."));
+        errors.push(ValidationError::field("label", "Label is required."));
     }
 
     if form.name.trim().is_empty() {
-        errors.push(FieldError::on(
-            "new_field_name",
-            "Machine name is required.",
-        ));
+        errors.push(ValidationError::field("name", "Machine name is required."));
     } else if !is_valid_machine_name(&form.name) {
-        errors.push(FieldError::on("new_field_name", MACHINE_NAME_ERROR));
+        errors.push(ValidationError::field("name", MACHINE_NAME_ERROR));
     }
 
     if form.field_type.is_empty() {
-        errors.push(FieldError::on("new_field_type", "Field type is required."));
+        errors.push(ValidationError::field(
+            "field_type",
+            "Field type is required.",
+        ));
     }
 
-    if !errors.is_empty() {
-        return rerender_field_list(&state, &session, &type_name, &form, errors).await;
-    }
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &user,
+        &posted,
+        &field_add_form_id(&type_name),
+        errors,
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(errors)) => {
+            return render_field_list(&state, &session, &user, &type_name, &form, &errors).await;
+        }
+        Err(Err(response)) => return response,
+    };
 
     // Add the field
     match state
@@ -661,6 +1003,7 @@ async fn add_field(
         .await
     {
         Ok(_) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(
                 content_type = %type_name,
                 field = %form.name,
@@ -677,18 +1020,19 @@ async fn add_field(
             | AddFieldError::UnknownCategory { .. }),
         ) => {
             let field = match e {
-                AddFieldError::UnknownFieldType { .. } => "new_field_type",
+                AddFieldError::UnknownFieldType { .. } => "field_type",
                 AddFieldError::CategoryRequired | AddFieldError::UnknownCategory { .. } => {
-                    "new_field_category"
+                    "category"
                 }
-                _ => "new_field_name",
+                _ => "name",
             };
-            rerender_field_list(
+            render_field_list(
                 &state,
                 &session,
+                &user,
                 &type_name,
                 &form,
-                vec![FieldError::on(field, e.to_string())],
+                &[ValidationError::field(field, e.to_string())],
             )
             .await
         }
@@ -699,91 +1043,9 @@ async fn add_field(
     }
 }
 
-/// Re-render the manage-fields page with `errors` shown and the submitted
-/// values kept, so a refused add does not make the person type it again.
-async fn rerender_field_list(
-    state: &AppState,
-    session: &Session,
-    type_name: &str,
-    form: &FieldFormData,
-    errors: Vec<FieldError>,
-) -> Response {
-    let Some(content_type) = state.content_types().get(type_name) else {
-        return render_not_found();
-    };
-    let csrf_token = generate_csrf_token(session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
-
-    // Save form state for AJAX callbacks
-    let form_state =
-        crate::form::FormState::new(format!("manage_fields_{type_name}"), form_build_id.clone());
-    if let Err(e) = state.forms().save_state(&form_build_id, &form_state).await {
-        tracing::warn!(error = %e, "failed to save form state");
-    }
-
-    let mut context = tera::Context::new();
-    context.insert("content_type", &content_type);
-    context.insert("fields", &content_type.fields);
-    field_index_context(
-        state,
-        &content_type.machine_name,
-        &content_type.fields,
-        &mut context,
-    )
-    .await;
-    context.insert("field_type_options", FIELD_TYPE_OPTIONS);
-    context.insert("category_options", &category_options(state).await);
-    context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
-    context.insert("errors", &errors);
-    context.insert(
-        "values",
-        &serde_json::json!({
-            "label": form.label,
-            "name": form.name,
-            "field_type": form.field_type,
-            "category": form.category,
-        }),
-    );
-    context.insert(
-        "path",
-        &format!("/admin/structure/types/{type_name}/fields"),
-    );
-
-    render_admin_template(
-        state,
-        &crate::routes::helpers::get_user_context(session, state).await,
-        "admin/field-list.html",
-        context,
-    )
-    .await
-}
-
 // =============================================================================
 // Field Edit / Delete
 // =============================================================================
-
-/// Form data for field editing.
-#[derive(Debug, Deserialize)]
-struct FieldEditFormData {
-    #[serde(rename = "_token")]
-    token: String,
-    #[serde(rename = "_form_build_id")]
-    _form_build_id: String,
-    label: String,
-    required: Option<String>,
-    cardinality: Option<i32>,
-    /// A category reference field's category.
-    #[serde(default)]
-    category: Option<String>,
-    /// "Filterable and sortable" (B207): present when checked.
-    #[serde(default)]
-    filterable: Option<String>,
-    /// Present when the form offered the checkbox at all (an indexable
-    /// field), so an unchecked box is told apart from no box.
-    #[serde(default)]
-    filterable_offered: Option<String>,
-}
 
 /// Each field's index column on the field list (B207): `field_indexes`, by
 /// field name, with whether the field is marked and its index's state and
@@ -827,26 +1089,55 @@ async fn field_index_context(
 /// The "Filterable and sortable" facts the field form shows (B207): whether
 /// the field can have an index, whether it is marked, whether that is its
 /// own setting or the default, and its index's state.
-async fn filterable_context(
-    state: &AppState,
-    type_name: &str,
-    field: &trovato_sdk::types::FieldDefinition,
-    context: &mut tera::Context,
-) {
-    use crate::gather::field_index;
-    let available = crate::gather::field_sql::FieldKind::of(field).is_some();
-    let used = field_index::fields_used_by_gathers(state.gather())
-        .contains(&(type_name.to_string(), field.field_name.clone()));
-    let status = field_index::statuses(state.db(), type_name)
-        .await
-        .unwrap_or_default()
-        .into_iter()
-        .find(|s| s.field_name == field.field_name);
-    context.insert("filterable_available", &available);
-    context.insert("filterable", &field_index::is_marked(field, used));
-    context.insert("filterable_own", &field_index::has_own_setting(field));
-    context.insert("filterable_used_by_gathers", &used);
-    context.insert("field_index", &status);
+struct Filterable {
+    available: bool,
+    marked: bool,
+    own: bool,
+    used_by_gathers: bool,
+    status: Option<crate::gather::field_index::FieldIndexStatus>,
+}
+
+impl Filterable {
+    /// The facts of `field` of `type_name`.
+    async fn of(
+        state: &AppState,
+        type_name: &str,
+        field: &trovato_sdk::types::FieldDefinition,
+    ) -> Self {
+        use crate::gather::field_index;
+        let used = field_index::fields_used_by_gathers(state.gather())
+            .contains(&(type_name.to_string(), field.field_name.clone()));
+        let status = field_index::statuses(state.db(), type_name)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .find(|s| s.field_name == field.field_name);
+        Self {
+            available: crate::gather::field_sql::FieldKind::of(field).is_some(),
+            marked: field_index::is_marked(field, used),
+            own: field_index::has_own_setting(field),
+            used_by_gathers: used,
+            status,
+        }
+    }
+
+    /// The checkbox's hint: what an index does, and why it is on or off.
+    fn hint(&self) -> &'static str {
+        if self.own {
+            "An index on this field lets listings filter and sort on it quickly at any size. \
+             It costs a little time on every save and some disk space. Without one, a listing \
+             that filters or sorts on this field reads every item of this type, which is slow \
+             on large sites."
+        } else if self.used_by_gathers {
+            "On by default: a listing filters or sorts on this field. Without an index, such a \
+             listing reads every item of this type, which is slow on large sites. An index \
+             costs a little time on every save and some disk space."
+        } else {
+            "Off by default: no listing filters or sorts on this field yet. Turn it on before \
+             you add one, so it is fast on large sites. An index costs a little time on every \
+             save and some disk space."
+        }
+    }
 }
 
 /// The category a field holds tags of, when it is a category reference.
@@ -857,22 +1148,192 @@ fn field_category(field: &trovato_sdk::types::FieldDefinition) -> Option<&str> {
     }
 }
 
-/// Show field edit form.
-///
-/// GET /admin/structure/types/{type}/fields/{field}/edit
-async fn edit_field_form(
-    State(state): State<AppState>,
-    session: Session,
-    Path((type_name, field_name)): Path<(String, String)>,
-) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
+/// A field type's name as the field screens show it: the type's variant
+/// name, which the template filter `field_type_label` also gives.
+fn field_type_name(field_type: &trovato_sdk::types::FieldType) -> String {
+    match serde_json::to_value(field_type) {
+        Ok(serde_json::Value::String(s)) => s,
+        Ok(serde_json::Value::Object(map)) => map
+            .keys()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| "Unknown".to_string()),
+        _ => "Unknown".to_string(),
     }
+}
 
-    let Some(content_type) = state.content_types().get(&type_name) else {
+/// What the field is and cannot become, shown in the edit form below its
+/// label: facts, not fields.
+fn field_facts_markup(
+    text: &super::admin_nav::AdminText,
+    field: &trovato_sdk::types::FieldDefinition,
+) -> String {
+    format!(
+        r#"<dl class="field-facts">
+    <div class="field-facts__row">
+        <dt>{machine_name}</dt>
+        <dd><code>{name}</code></dd>
+        <dd class="description">{name_fixed}</dd>
+    </div>
+    <div class="field-facts__row">
+        <dt>{field_type}</dt>
+        <dd><code>{type_label}</code></dd>
+        <dd class="description">{type_fixed}</dd>
+    </div>
+</dl>"#,
+        machine_name = text.html("Machine name", &[]),
+        name = crate::i18n::data_html(&field.field_name),
+        name_fixed = text.html("Machine names cannot be changed after creation.", &[]),
+        field_type = text.html("Field type", &[]),
+        type_label = text.html(&field_type_name(&field.field_type), &[]),
+        type_fixed = text.html("Field types cannot be changed after creation.", &[]),
+    )
+}
+
+/// The state of the field's index, shown under the "Filterable and
+/// sortable" checkbox.
+fn index_state_markup(
+    text: &super::admin_nav::AdminText,
+    status: &crate::gather::field_index::FieldIndexStatus,
+) -> String {
+    let words = match status.state.as_str() {
+        "ready" => text.html("Index: built.", &[]),
+        "building" => {
+            let mut words = text.html("Index: building", &[]);
+            if let Some(percent) = status.percent.filter(|p| *p != 0) {
+                words.push_str(&format!(
+                    r#" <progress max="100" value="{percent}">{percent}%</progress> {percent}%"#
+                ));
+            }
+            words
+        }
+        "queued" => text.html("Index: queued.", &[]),
+        "failed" => format!(
+            "{} {}",
+            text.html("Index: failed.", &[]),
+            crate::i18n::data_html(status.error.as_deref().unwrap_or_default())
+        ),
+        "dropping" => text.html("Index: being dropped.", &[]),
+        _ => String::new(),
+    };
+    format!(
+        r#"<p class="field-index-state" data-field-index="{}">{words}</p>"#,
+        html_escape(&status.state)
+    )
+}
+
+/// The values the field edit form shows: the field's own, or a refused
+/// submission's.
+struct FieldEditValues {
+    label: String,
+    required: bool,
+    cardinality: i32,
+    category: Option<String>,
+    filterable: bool,
+}
+
+/// The field edit form of `field` of `type_name`, showing `values`.
+fn field_edit_form(
+    type_name: &str,
+    field: &trovato_sdk::types::FieldDefinition,
+    values: &FieldEditValues,
+    filterable: &Filterable,
+    category_options: Vec<(String, String)>,
+    text: &super::admin_nav::AdminText,
+    cancel: String,
+) -> crate::form::Form {
+    let mut form = crate::form::Form::new(FIELD_EDIT_FORM_ID)
+        .action(format!(
+            "/admin/structure/types/{type_name}/fields/{}/edit",
+            field.field_name
+        ))
+        .element(
+            "label",
+            FormElement::textfield()
+                .title("Label")
+                .default_value(values.label.clone())
+                .required()
+                .weight(0),
+        )
+        .element(
+            "field_facts",
+            FormElement::markup(field_facts_markup(text, field)).weight(1),
+        );
+    if let Some(category) = &values.category {
+        form = form.element(
+            "category",
+            FormElement::select(category_options)
+                .title("Category")
+                .description(
+                    "The field holds tags of this category. Values already saved are not \
+                     changed; the next save of the field is checked against the category \
+                     chosen here.",
+                )
+                .default_value(category.clone())
+                .required()
+                .weight(2),
+        );
+    }
+    form = form
+        .element(
+            "required",
+            FormElement::checkbox()
+                .title("Required")
+                .description(
+                    "If checked, this field must be filled in when creating or editing content.",
+                )
+                .default_value(values.required)
+                .weight(3),
+        )
+        .element(
+            "cardinality",
+            FormElement::input("number")
+                .title("Number of values")
+                .description(
+                    "Maximum number of values. Use 1 for a single value, -1 for unlimited.",
+                )
+                .default_value(values.cardinality.to_string())
+                .attribute("min", "-1")
+                .weight(4),
+        );
+    if filterable.available {
+        form = form
+            .element(
+                "filterable_offered",
+                FormElement::hidden().default_value("1").weight(5),
+            )
+            .element(
+                "filterable",
+                FormElement::checkbox()
+                    .title("Filterable and sortable")
+                    .description(filterable.hint())
+                    .default_value(values.filterable)
+                    .weight(6),
+            );
+        if let Some(status) = &filterable.status {
+            form = form.element(
+                "field_index_state",
+                FormElement::markup(index_state_markup(text, status)).weight(7),
+            );
+        }
+    }
+    form.element("op", FormElement::submit("Save").suffix(cancel).weight(10))
+}
+
+/// The field edit page of `field_name` of `type_name`. `values` are a
+/// refused submission's, shown with `errors`; `None` shows the field's own.
+async fn render_field_edit(
+    state: &AppState,
+    session: &Session,
+    user: &crate::models::User,
+    type_name: &str,
+    field_name: &str,
+    values: Option<FieldEditValues>,
+    errors: &[ValidationError],
+) -> Response {
+    let Some(content_type) = state.content_types().get(type_name) else {
         return render_not_found();
     };
-
     let Some(field) = content_type
         .fields
         .iter()
@@ -881,29 +1342,58 @@ async fn edit_field_form(
         return render_not_found();
     };
 
-    let csrf_token = generate_csrf_token(&session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
+    let filterable = Filterable::of(state, type_name, field).await;
+    let values = values.unwrap_or_else(|| FieldEditValues {
+        label: field.label.clone(),
+        required: field.required,
+        cardinality: field.cardinality,
+        category: field_category(field).map(str::to_string),
+        filterable: filterable.marked,
+    });
+    let path = format!("/admin/structure/types/{type_name}/fields/{field_name}/edit");
+    let viewer = super::helpers::user_context_for(state, user).await;
+    let text = super::admin_nav::AdminText::for_page(state, &viewer, &path).await;
+    let cancel = cancel_link(
+        state,
+        user,
+        &format!("/admin/structure/types/{type_name}/fields"),
+    )
+    .await;
+    let form = field_edit_form(
+        type_name,
+        field,
+        &values,
+        &filterable,
+        category_options(state).await,
+        &text,
+        cancel,
+    );
+    let form_html = match admin_form::render(state, session, user, form, errors).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
 
     let mut context = tera::Context::new();
-    context.insert("type_name", &type_name);
+    context.insert("type_name", type_name);
     context.insert("field", field);
-    filterable_context(&state, &type_name, field, &mut context).await;
-    context.insert("field_category", &field_category(field));
-    context.insert("category_options", &category_options(&state).await);
-    context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
-    context.insert(
-        "path",
-        &format!("/admin/structure/types/{type_name}/fields/{field_name}/edit"),
-    );
+    context.insert("form", &form_html);
+    context.insert("path", &path);
+    render_admin_template(state, &viewer, "admin/field-edit.html", context).await
+}
 
-    render_admin_template(
-        &state,
-        &crate::routes::helpers::get_user_context(&session, &state).await,
-        "admin/field-edit.html",
-        context,
-    )
-    .await
+/// Show field edit form.
+///
+/// GET /admin/structure/types/{type}/fields/{field}/edit
+async fn edit_field_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path((type_name, field_name)): Path<(String, String)>,
+) -> Response {
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    render_field_edit(&state, &session, &user, &type_name, &field_name, None, &[]).await
 }
 
 /// Handle field edit form submission.
@@ -913,15 +1403,13 @@ async fn edit_field_submit(
     State(state): State<AppState>,
     session: Session,
     Path((type_name, field_name)): Path<(String, String)>,
-    Form(form): Form<FieldEditFormData>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
-
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let Some(content_type) = state.content_types().get(&type_name) else {
         return render_not_found();
@@ -935,33 +1423,47 @@ async fn edit_field_submit(
         return render_not_found();
     };
 
+    let label = posted.get("label").unwrap_or_default().to_string();
+    let required = posted.contains("required");
+    let filterable_offered = posted.contains("filterable_offered");
+    let filterable = posted.contains("filterable");
+
     // Validate
     let mut errors = Vec::new();
 
-    if form.label.trim().is_empty() {
-        errors.push(FieldError::on("edit_field_label", "Label is required."));
+    if label.trim().is_empty() {
+        errors.push(ValidationError::field("label", "Label is required."));
     }
 
-    let cardinality = form.cardinality.unwrap_or(1);
-    if cardinality == 0 || cardinality < -1 {
-        errors.push(FieldError::on(
-            "edit_field_cardinality",
-            "Number of values must be 1 or more, or -1 for unlimited.",
-        ));
-    }
+    // An empty or missing number is a single value; one that is not a number
+    // at all is refused like any other invalid count.
+    let cardinality = match posted.get("cardinality").map(str::trim) {
+        None | Some("") => Some(1),
+        Some(raw) => raw.parse::<i32>().ok(),
+    };
+    let cardinality = match cardinality {
+        Some(n) if n != 0 && n >= -1 => n,
+        other => {
+            errors.push(ValidationError::field(
+                "cardinality",
+                "Number of values must be 1 or more, or -1 for unlimited.",
+            ));
+            other.unwrap_or(1)
+        }
+    };
 
     // A category reference keeps a category: the one chosen, which must exist.
     let category = match field_category(field) {
         Some(current) => {
-            let chosen = form.category.as_deref().map(str::trim).unwrap_or(current);
+            let chosen = posted.get("category").map(str::trim).unwrap_or(current);
             if chosen.is_empty() {
-                errors.push(FieldError::on(
-                    "edit_field_category",
+                errors.push(ValidationError::field(
+                    "category",
                     AddFieldError::CategoryRequired.to_string(),
                 ));
             } else if !categories(&state).await.iter().any(|c| c.id == chosen) {
-                errors.push(FieldError::on(
-                    "edit_field_category",
+                errors.push(ValidationError::field(
+                    "category",
                     AddFieldError::UnknownCategory {
                         category: chosen.to_string(),
                     }
@@ -973,40 +1475,31 @@ async fn edit_field_submit(
         None => None,
     };
 
-    if !errors.is_empty() {
-        let csrf_token = generate_csrf_token(&session).await;
-        let form_build_id = uuid::Uuid::new_v4().to_string();
-
-        // Build a modified field with form values for re-rendering
-        let mut edited_field = field.clone();
-        edited_field.label = form.label;
-        edited_field.required = form.required.is_some();
-        edited_field.cardinality = cardinality;
-
-        let mut context = tera::Context::new();
-        context.insert("type_name", &type_name);
-        context.insert("field", &edited_field);
-        context.insert("field_category", &category);
-        filterable_context(&state, &type_name, field, &mut context).await;
-        context.insert("category_options", &category_options(&state).await);
-        context.insert("csrf_token", &csrf_token);
-        context.insert("form_build_id", &form_build_id);
-        context.insert("errors", &errors);
-        context.insert(
-            "path",
-            &format!("/admin/structure/types/{type_name}/fields/{field_name}/edit"),
-        );
-
-        return render_admin_template(
-            &state,
-            &crate::routes::helpers::get_user_context(&session, &state).await,
-            "admin/field-edit.html",
-            context,
-        )
-        .await;
-    }
-
-    let required = form.required.is_some();
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, FIELD_EDIT_FORM_ID, errors).await
+        {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => {
+                let values = FieldEditValues {
+                    label,
+                    required,
+                    cardinality,
+                    category,
+                    filterable,
+                };
+                return render_field_edit(
+                    &state,
+                    &session,
+                    &user,
+                    &type_name,
+                    &field_name,
+                    Some(values),
+                    &errors,
+                )
+                .await;
+            }
+            Err(Err(response)) => return response,
+        };
 
     if let Some(category) = category.as_deref()
         && let Err(e) = state
@@ -1018,14 +1511,14 @@ async fn edit_field_submit(
         return render_server_error("Failed to update field.");
     }
 
-    if form.filterable_offered.is_some()
+    if filterable_offered
         && let Err(e) = state
             .content_types()
             .set_field_setting(
                 &type_name,
                 &field_name,
                 crate::gather::field_index::SETTING,
-                serde_json::Value::Bool(form.filterable.is_some()),
+                serde_json::Value::Bool(filterable),
             )
             .await
     {
@@ -1035,10 +1528,11 @@ async fn edit_field_submit(
 
     match state
         .content_types()
-        .update_field(&type_name, &field_name, &form.label, required, cardinality)
+        .update_field(&type_name, &field_name, &label, required, cardinality)
         .await
     {
         Ok(_) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             // Build or drop the field's index in the background (B207).
             state.reconcile_field_indexes();
             tracing::info!(
@@ -1056,6 +1550,50 @@ async fn edit_field_submit(
     }
 }
 
+/// Ask before deleting a field.
+///
+/// GET /admin/structure/types/{type}/fields/{field}/delete
+async fn delete_field_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path((type_name, field_name)): Path<(String, String)>,
+) -> Response {
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    let Some(content_type) = state.content_types().get(&type_name) else {
+        return render_not_found();
+    };
+    let Some(field) = content_type
+        .fields
+        .iter()
+        .find(|f| f.field_name == field_name)
+    else {
+        return render_not_found();
+    };
+    let path = format!("/admin/structure/types/{type_name}/fields/{field_name}/delete");
+    let form = crate::form::Form::new(FIELD_DELETE_FORM_ID)
+        .action(path.clone())
+        .element(
+            "op",
+            FormElement::submit("Delete")
+                .attribute("class", "button--danger")
+                .weight(10),
+        );
+    let form_html = match admin_form::render(&state, &session, &user, form, &[]).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+    let viewer = super::helpers::user_context_for(&state, &user).await;
+    let mut context = tera::Context::new();
+    context.insert("type_name", &type_name);
+    context.insert("field", field);
+    context.insert("form", &form_html);
+    context.insert("path", &path);
+    render_admin_template(&state, &viewer, "admin/field-delete.html", context).await
+}
+
 /// Handle field deletion.
 ///
 /// POST /admin/structure/types/{type}/fields/{field}/delete
@@ -1063,15 +1601,30 @@ async fn delete_field_submit(
     State(state): State<AppState>,
     session: Session,
     Path((type_name, field_name)): Path<(String, String)>,
-    Form(form): Form<CsrfOnlyForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &user,
+        &posted,
+        FIELD_DELETE_FORM_ID,
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(_)) => {
+            return render_error("The form has expired. Reload the page and try again.");
+        }
+        Err(Err(response)) => return response,
+    };
 
     let Some(_content_type) = state.content_types().get(&type_name) else {
         return render_not_found();
@@ -1083,6 +1636,7 @@ async fn delete_field_submit(
         .await
     {
         Ok(_) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(
                 content_type = %type_name,
                 field = %field_name,
@@ -1106,6 +1660,23 @@ async fn delete_field_submit(
 /// The form id of the search switches form.
 const SEARCH_SWITCHES_FORM_ID: &str = "search_switches_form";
 
+/// The form id of the "Weight a field" form.
+const SEARCH_WEIGHT_FORM_ID: &str = "search_weight_form";
+
+/// The form id of the confirmation that removes a field's search weight.
+const SEARCH_WEIGHT_DELETE_FORM_ID: &str = "search_weight_delete_form";
+
+/// The form id of the "Reindex content" form.
+const SEARCH_REINDEX_FORM_ID: &str = "search_reindex_form";
+
+/// The weights a field may be given (A is the title's): value and English
+/// label, translated by the select template.
+const SEARCH_WEIGHT_OPTIONS: &[(&str, &str)] = &[
+    ("B", "B - High priority"),
+    ("C", "C - Normal priority"),
+    ("D", "D - Low priority"),
+];
+
 /// A content type's search switches as stored, defaults when it has none.
 async fn stored_search_switches(state: &AppState, type_name: &str) -> SearchSwitches {
     match crate::models::ItemType::find_by_type(state.db(), type_name).await {
@@ -1120,7 +1691,6 @@ async fn stored_search_switches(state: &AppState, type_name: &str) -> SearchSwit
 
 /// The two checkboxes, through the kernel's form pipeline.
 fn search_switches_form(type_name: &str, switches: SearchSwitches) -> crate::form::Form {
-    use crate::form::FormElement;
     crate::form::Form::new(SEARCH_SWITCHES_FORM_ID)
         .action(format!("/admin/structure/types/{type_name}/search"))
         .element(
@@ -1148,6 +1718,112 @@ fn search_switches_form(type_name: &str, switches: SearchSwitches) -> crate::for
         .element("op", FormElement::submit("Save search settings").weight(10))
 }
 
+/// The "Weight a field" form: one of the fields with no weight yet, and the
+/// weight to give it, `weight` chosen.
+fn search_weight_form(
+    type_name: &str,
+    unweighted: Vec<(String, String)>,
+    field_name: &str,
+    weight: &str,
+) -> crate::form::Form {
+    crate::form::Form::new(SEARCH_WEIGHT_FORM_ID)
+        .action(format!("/admin/structure/types/{type_name}/search/add"))
+        .element(
+            "field_name",
+            FormElement::select(unweighted)
+                .title("Field")
+                .default_value(field_name.to_string())
+                .required()
+                .weight(0),
+        )
+        .element(
+            "weight",
+            FormElement::select(options(SEARCH_WEIGHT_OPTIONS))
+                .title("Weight")
+                .default_value(if weight.is_empty() { "C" } else { weight })
+                .required()
+                .weight(1),
+        )
+        .element("op", FormElement::submit("Set weight").weight(10))
+}
+
+/// Interface text for a form field's value: `source` translated into
+/// `lang` with `args` filled, not escaped (the form template escapes it).
+fn field_text(state: &AppState, lang: &str, source: &str, args: &[(&str, &str)]) -> String {
+    let args: Vec<(String, String)> = args
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), (*v).to_string()))
+        .collect();
+    crate::i18n::translate(
+        state.locale().map(|l| l.as_ref()),
+        lang,
+        &crate::i18n::Message::new(source),
+        &args,
+    )
+}
+
+/// The "Reindex content" form. It asks first (`?confirm`, see
+/// `super::admin_confirm`), with the question and the button of the
+/// confirmation page in its hidden fields, in the viewer's admin language.
+fn search_reindex_form(
+    state: &AppState,
+    lang: &str,
+    type_name: &str,
+    type_label: &str,
+) -> crate::form::Form {
+    let args = [("type", type_label)];
+    crate::form::Form::new(SEARCH_REINDEX_FORM_ID)
+        .action(format!(
+            "/admin/structure/types/{type_name}/search/reindex?confirm"
+        ))
+        .element(
+            "_confirm",
+            FormElement::hidden()
+                .default_value(field_text(
+                    state,
+                    lang,
+                    "This will update the search index for all {type} content. Continue?",
+                    &args,
+                ))
+                .weight(0),
+        )
+        .element(
+            "_confirm_label",
+            FormElement::hidden()
+                .default_value(field_text(state, lang, "Reindex all {type} content", &args))
+                .weight(1),
+        )
+        .element(
+            "op",
+            FormElement::submit("Reindex all content")
+                .attribute("class", "button--secondary")
+                .weight(10),
+        )
+}
+
+/// What the search settings page shows in its forms: the switches, and the
+/// "Weight a field" form's choice, each with its errors.
+struct SearchPageForms {
+    switches: SearchSwitches,
+    switch_errors: Vec<ValidationError>,
+    weight_field: String,
+    weight: String,
+    weight_errors: Vec<ValidationError>,
+}
+
+impl SearchPageForms {
+    /// The forms as stored: no choice made, no errors.
+    fn stored(switches: SearchSwitches) -> Self {
+        Self {
+            switches,
+            switch_errors: Vec::new(),
+            weight_field: String::new(),
+            weight: String::new(),
+            weight_errors: Vec::new(),
+        }
+    }
+}
+
 /// Manage search field configuration for a content type.
 ///
 /// GET /admin/structure/types/{type}/search
@@ -1161,28 +1837,34 @@ async fn manage_search_config(
         Err(redirect) => return redirect,
     };
     let switches = stored_search_switches(&state, &type_name).await;
-    render_search_config(&state, &session, &user, &type_name, switches, &[]).await
+    render_search_config(
+        &state,
+        &session,
+        &user,
+        &type_name,
+        SearchPageForms::stored(switches),
+    )
+    .await
 }
 
-/// The search settings page, its switches form showing `switches`.
+/// The search settings page, its forms showing `forms`.
 async fn render_search_config(
     state: &AppState,
     session: &Session,
     user: &crate::models::User,
     type_name: &str,
-    switches: SearchSwitches,
-    errors: &[crate::form::ValidationError],
+    forms: SearchPageForms,
 ) -> Response {
     let Some(content_type) = state.content_types().get(type_name) else {
         return render_not_found();
     };
 
-    let switches_form = match super::admin_form::render(
+    let switches_form = match admin_form::render(
         state,
         session,
         user,
-        search_switches_form(type_name, switches),
-        errors,
+        search_switches_form(type_name, forms.switches),
+        &forms.switch_errors,
     )
     .await
     {
@@ -1190,9 +1872,6 @@ async fn render_search_config(
         Err(response) => return response,
     };
     let flash: Option<String> = session.remove(SEARCH_SWITCHES_FLASH).await.ok().flatten();
-
-    let csrf_token = generate_csrf_token(session).await;
-    let form_build_id = uuid::Uuid::new_v4().to_string();
 
     // Get current search configs
     let search_configs = match state.search().list_field_configs(type_name).await {
@@ -1218,21 +1897,57 @@ async fn render_search_config(
         .map(|f| f.field_name.as_str())
         .collect();
 
+    // The weight form, when there are fields to weight.
+    let weight_form = if content_type.fields.is_empty() {
+        None
+    } else {
+        let unweighted: Vec<(String, String)> = content_type
+            .fields
+            .iter()
+            .filter(|f| !config_map.contains_key(&f.field_name))
+            .map(|f| (f.field_name.clone(), f.label.clone()))
+            .collect();
+        match admin_form::render(
+            state,
+            session,
+            user,
+            search_weight_form(type_name, unweighted, &forms.weight_field, &forms.weight),
+            &forms.weight_errors,
+        )
+        .await
+        {
+            Ok(html) => Some(html),
+            Err(response) => return response,
+        }
+    };
+
+    let viewer = super::helpers::user_context_for(state, user).await;
+    let path = format!("/admin/structure/types/{type_name}/search");
+    let text = super::admin_nav::AdminText::for_page(state, &viewer, &path).await;
+    let reindex_form = match admin_form::render(
+        state,
+        session,
+        user,
+        search_reindex_form(state, &text.lang, type_name, &content_type.label),
+        &[],
+    )
+    .await
+    {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+
     let mut context = tera::Context::new();
     context.insert("content_type", &content_type);
     context.insert("fields", &content_type.fields);
     context.insert("search_configs", &config_map);
     context.insert("text_fields", &text_fields);
     context.insert("switches_form", &switches_form);
+    context.insert("weight_form", &weight_form);
+    context.insert("reindex_form", &reindex_form);
     context.insert("flash", &flash);
-    context.insert("csrf_token", &csrf_token);
-    context.insert("form_build_id", &form_build_id);
-    context.insert(
-        "path",
-        &format!("/admin/structure/types/{type_name}/search"),
-    );
+    context.insert("path", &path);
 
-    let viewer = super::helpers::user_context_for(state, user).await;
     render_admin_template(state, &viewer, "admin/search-config.html", context).await
 }
 
@@ -1253,7 +1968,7 @@ async fn save_search_switches(
     Path(type_name): Path<String>,
     Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    let posted = crate::content::submission::PostedForm(pairs);
+    let posted = PostedForm(pairs);
     let user = match require_permission(&state, &session, "administer site").await {
         Ok(user) => user,
         Err(refusal) => return refusal,
@@ -1265,7 +1980,7 @@ async fn save_search_switches(
         include: posted.contains("include"),
         comments: posted.contains("comments"),
     };
-    match super::admin_form::check(
+    let form_state = match admin_form::check(
         &state,
         &session,
         &user,
@@ -1275,13 +1990,14 @@ async fn save_search_switches(
     )
     .await
     {
-        Ok(()) => {}
+        Ok(form_state) => form_state,
         Err(Ok(errors)) => {
-            return render_search_config(&state, &session, &user, &type_name, wanted, &errors)
-                .await;
+            let mut forms = SearchPageForms::stored(wanted);
+            forms.switch_errors = errors;
+            return render_search_config(&state, &session, &user, &type_name, forms).await;
         }
         Err(Err(response)) => return response,
-    }
+    };
 
     let patch = serde_json::json!({ SearchSwitches::SETTINGS_KEY: wanted });
     if let Err(e) = state
@@ -1297,6 +2013,7 @@ async fn save_search_switches(
         tracing::error!(error = %e, content_type = %type_name, "failed to save search switches");
         return render_server_error("The search settings could not be saved.");
     }
+    admin_form::submitted(&state, &user, &form_state, &posted).await;
     if let Err(e) = state.search().reindex_bundle(&type_name).await {
         tracing::error!(error = %e, content_type = %type_name, "failed to reindex after search switches");
     }
@@ -1331,37 +2048,64 @@ async fn add_search_config(
     State(state): State<AppState>,
     session: Session,
     Path(type_name): Path<String>,
-    Form(form): Form<SearchConfigFormData>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
-
-    // Verify CSRF token
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
     let Some(_content_type) = state.content_types().get(&type_name) else {
         return render_not_found();
     };
 
+    let field_name = posted.get("field_name").unwrap_or_default().to_string();
+    let weight_raw = posted.get("weight").unwrap_or_default().to_string();
+
     // Validate weight
-    let weight = form.weight.chars().next().unwrap_or('C');
+    let weight = weight_raw.chars().next().unwrap_or('C');
+    let mut errors = Vec::new();
     if !['A', 'B', 'C', 'D'].contains(&weight) {
-        return render_error("Invalid weight. Must be A, B, C, or D.");
+        errors.push(ValidationError::field(
+            "weight",
+            "Invalid weight. Must be A, B, C, or D.",
+        ));
     }
+
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &user,
+        &posted,
+        SEARCH_WEIGHT_FORM_ID,
+        errors,
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(errors)) => {
+            let switches = stored_search_switches(&state, &type_name).await;
+            let mut forms = SearchPageForms::stored(switches);
+            forms.weight_field = field_name;
+            forms.weight = weight_raw;
+            forms.weight_errors = errors;
+            return render_search_config(&state, &session, &user, &type_name, forms).await;
+        }
+        Err(Err(response)) => return response,
+    };
 
     // Configure the field
     match state
         .search()
-        .configure_field(&type_name, &form.field_name, weight)
+        .configure_field(&type_name, &field_name, weight)
         .await
     {
         Ok(_) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(
                 content_type = %type_name,
-                field = %form.field_name,
+                field = %field_name,
                 weight = %weight,
                 "search field configured"
             );
@@ -1374,6 +2118,50 @@ async fn add_search_config(
     }
 }
 
+/// Ask before removing a field's search weight.
+///
+/// GET /admin/structure/types/{type}/search/{field}/delete
+async fn remove_search_config_form(
+    State(state): State<AppState>,
+    session: Session,
+    Path((type_name, field_name)): Path<(String, String)>,
+) -> Response {
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
+    let Some(content_type) = state.content_types().get(&type_name) else {
+        return render_not_found();
+    };
+    let Some(field) = content_type
+        .fields
+        .iter()
+        .find(|f| f.field_name == field_name)
+    else {
+        return render_not_found();
+    };
+    let path = format!("/admin/structure/types/{type_name}/search/{field_name}/delete");
+    let form = crate::form::Form::new(SEARCH_WEIGHT_DELETE_FORM_ID)
+        .action(path.clone())
+        .element(
+            "op",
+            FormElement::submit("Remove weight")
+                .attribute("class", "button--danger")
+                .weight(10),
+        );
+    let form_html = match admin_form::render(&state, &session, &user, form, &[]).await {
+        Ok(html) => html,
+        Err(response) => return response,
+    };
+    let viewer = super::helpers::user_context_for(&state, &user).await;
+    let mut context = tera::Context::new();
+    context.insert("type_name", &type_name);
+    context.insert("field", field);
+    context.insert("form", &form_html);
+    context.insert("path", &path);
+    render_admin_template(&state, &viewer, "admin/search-weight-delete.html", context).await
+}
+
 /// Remove a search field configuration.
 ///
 /// POST /admin/structure/types/{type}/search/{field}/delete
@@ -1381,15 +2169,30 @@ async fn remove_search_config(
     State(state): State<AppState>,
     session: Session,
     Path((type_name, field_name)): Path<(String, String)>,
-    Form(form): Form<CsrfOnlyForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &user,
+        &posted,
+        SEARCH_WEIGHT_DELETE_FORM_ID,
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(_)) => {
+            return render_error("The form has expired. Reload the page and try again.");
+        }
+        Err(Err(response)) => return response,
+    };
 
     let Some(_content_type) = state.content_types().get(&type_name) else {
         return render_not_found();
@@ -1401,6 +2204,7 @@ async fn remove_search_config(
         .await
     {
         Ok(_) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(
                 content_type = %type_name,
                 field = %field_name,
@@ -1422,15 +2226,30 @@ async fn reindex_content_type(
     State(state): State<AppState>,
     session: Session,
     Path(type_name): Path<String>,
-    Form(form): Form<CsrfOnlyForm>,
+    Form(pairs): Form<Vec<(String, String)>>,
 ) -> Response {
-    if let Err(redirect) = require_permission(&state, &session, "administer site").await {
-        return redirect;
-    }
+    let posted = PostedForm(pairs);
+    let user = match require_permission(&state, &session, "administer site").await {
+        Ok(user) => user,
+        Err(redirect) => return redirect,
+    };
 
-    if let Err(resp) = require_csrf(&session, &form.token).await {
-        return resp;
-    }
+    let form_state = match admin_form::check(
+        &state,
+        &session,
+        &user,
+        &posted,
+        SEARCH_REINDEX_FORM_ID,
+        Vec::new(),
+    )
+    .await
+    {
+        Ok(form_state) => form_state,
+        Err(Ok(_)) => {
+            return render_error("The form has expired. Reload the page and try again.");
+        }
+        Err(Err(response)) => return response,
+    };
 
     let Some(_content_type) = state.content_types().get(&type_name) else {
         return render_not_found();
@@ -1438,6 +2257,7 @@ async fn reindex_content_type(
 
     match state.search().reindex_bundle(&type_name).await {
         Ok(count) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(
                 content_type = %type_name,
                 count = %count,
@@ -1619,7 +2439,7 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/admin/structure/types/{type}/fields/{field}/delete",
-            post(delete_field_submit),
+            get(delete_field_form).post(delete_field_submit),
         )
         .route(
             "/admin/structure/types/{type}/search",
@@ -1631,7 +2451,7 @@ pub fn router() -> Router<AppState> {
         )
         .route(
             "/admin/structure/types/{type}/search/{field}/delete",
-            post(remove_search_config),
+            get(remove_search_config_form).post(remove_search_config),
         )
         .route(
             "/admin/structure/types/{type}/search/reindex",

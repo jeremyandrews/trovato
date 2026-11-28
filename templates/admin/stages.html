@@ -38,11 +38,7 @@
                 <td class="operations">
                     <a href="/admin/structure/stages/{{ stage.id }}/edit">{{ t(s="Edit {name}", name=stage.label) }}</a>
                     {% if stage.deletable %}
-                    {% if stage.references.items > 0 or stage.references.url_aliases > 0 or stage.references.menu_links > 0 or stage.references.tiles > 0 %}
-                    {{ list::delete_button(action="/admin/structure/stages/" ~ stage.id ~ "/delete", label=t(s="Delete {name}", name=stage.label), confirm_text=t(s="This stage is still used by {uses}. Deleting it will be refused until that content is moved. Try anyway?", uses=stage.references_summary), csrf_token=csrf_token) }}
-                    {% else %}
-                    {{ list::delete_button(action="/admin/structure/stages/" ~ stage.id ~ "/delete", label=t(s="Delete {name}", name=stage.label), confirm_text=t(s="Delete the {name} stage?", name=stage.label), csrf_token=csrf_token) }}
-                    {% endif %}
+                    <a class="link-button link-button--danger" href="/admin/structure/stages/{{ stage.id }}/delete">{{ t(s="Delete {name}", name=stage.label) }}</a>
                     {% else %}
                     <span>{{ t(s="Not deletable: the Live stage, the default stage and the public stage stay.") }}</span>
                     {% endif %}

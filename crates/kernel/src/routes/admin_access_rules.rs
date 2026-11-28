@@ -276,25 +276,27 @@ async fn check_submit(
     if value.is_empty() {
         errors.push(ValidationError::field("value", "Enter a value to check."));
     }
-    match admin_form::check(&state, &session, &user, &posted, CHECK_FORM_ID, errors).await {
-        Ok(()) => {}
-        Err(Ok(errors)) => {
-            return render_list(
-                &state,
-                &session,
-                &user,
-                None,
-                (&rule_type_raw, &value),
-                &errors,
-            )
-            .await;
-        }
-        Err(Err(response)) => return response,
-    }
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, CHECK_FORM_ID, errors).await {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => {
+                return render_list(
+                    &state,
+                    &session,
+                    &user,
+                    None,
+                    (&rule_type_raw, &value),
+                    &errors,
+                )
+                .await;
+            }
+            Err(Err(response)) => return response,
+        };
     let Some(rule_type) = rule_type else {
         return render_not_found();
     };
     let blocked = access_rule::is_blocked(state.db(), rule_type, &value).await;
+    admin_form::submitted(&state, &user, &form_state, &posted).await;
     let result = CheckResult {
         rule_type: rule_type.label(),
         value: value.clone(),
@@ -419,21 +421,22 @@ async fn save(state: AppState, session: Session, posted: PostedForm, id: Option<
     };
     let (parsed, values) = read_rule(&posted);
     let errors = parsed.as_ref().err().cloned().unwrap_or_default();
-    match admin_form::check(&state, &session, &user, &posted, RULE_FORM_ID, errors).await {
-        Ok(()) => {}
-        Err(Ok(errors)) => {
-            return render_rule_form(
-                &state,
-                &session,
-                &user,
-                id,
-                [&values[0], &values[1], &values[2]],
-                &errors,
-            )
-            .await;
-        }
-        Err(Err(response)) => return response,
-    }
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, RULE_FORM_ID, errors).await {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => {
+                return render_rule_form(
+                    &state,
+                    &session,
+                    &user,
+                    id,
+                    [&values[0], &values[1], &values[2]],
+                    &errors,
+                )
+                .await;
+            }
+            Err(Err(response)) => return response,
+        };
     let Ok((rule_type, pattern, status)) = parsed else {
         return render_not_found();
     };
@@ -447,6 +450,7 @@ async fn save(state: AppState, session: Session, posted: PostedForm, id: Option<
     };
     match saved {
         Ok(Some(_)) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(
                 log_type = "config",
                 user_id = %user.id,
@@ -522,17 +526,20 @@ async fn delete_submit(
         Ok(user) => user,
         Err(refusal) => return refusal,
     };
-    match admin_form::check(&state, &session, &user, &posted, DELETE_FORM_ID, Vec::new()).await {
-        Ok(()) => {}
-        Err(Ok(_)) => {
-            return super::helpers::render_error(
-                "The form has expired. Reload the page and try again.",
-            );
-        }
-        Err(Err(response)) => return response,
-    }
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, DELETE_FORM_ID, Vec::new()).await
+        {
+            Ok(form_state) => form_state,
+            Err(Ok(_)) => {
+                return super::helpers::render_error(
+                    "The form has expired. Reload the page and try again.",
+                );
+            }
+            Err(Err(response)) => return response,
+        };
     match access_rule::delete(state.db(), id).await {
         Ok(true) => {
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(log_type = "config", user_id = %user.id, rule_id = %id, "access rule deleted");
             let _ = session
                 .insert(FLASH_KEY, "The access rule was deleted.")

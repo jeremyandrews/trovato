@@ -1,5 +1,4 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
 {% block page_title %}{{ t(s="File: {name}", name=file.filename) }}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="An uploaded file: its details, its alternative text if it is an image, and where it is served from.") }}</p>{% endblock page_intro %}
@@ -15,13 +14,7 @@
     </div>
     {% endif %}
 
-    <form class="alt-text-form" method="post" action="/admin/content/files/{{ file.id }}/alt-text" novalidate>
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
-        {%- set alt_help = t(s="What the image shows, for readers who cannot see it. Leave empty only if the image is decorative and carries no information.") -%}
-        {%- if file.alt_text is undefined %}{% set alt_hint = t(s="Not set.") ~ " " ~ alt_help %}{% else %}{% set alt_hint = alt_help %}{% endif %}
-        {{ form::field(name="alt_text", label=t(s="Alternative text"), value=file.alt_text | default(value=""), hint=alt_hint, attrs='maxlength="1024"') }}
-        {{ form::actions(submit_label=t(s="Save")) }}
-    </form>
+    {{ alt_text_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 
 <section class="admin-card" aria-labelledby="file-info-heading">
@@ -63,12 +56,7 @@
     </dl>
 
     <div class="form-actions">
-        <form method="post" action="/admin/content/files/{{ file.id }}/delete?confirm" class="inline-form" novalidate>
-            <input type="hidden" name="_token" value="{{ csrf_token }}">
-            <input type="hidden" name="_confirm" value="{{ t(s='Delete the file {name}? This cannot be undone.', name=file.filename) }}">
-            <input type="hidden" name="_confirm_label" value="{{ t(s="Delete {name}", name=file.filename) }}">
-            <button type="submit" class="button button--danger">{{ t(s="Delete file") }}</button>
-        </form>
+        <a href="/admin/content/files/{{ file.id }}/delete" class="button button--danger">{{ t(s="Delete file") }}</a>
         <a href="/admin/content/files" class="button button--secondary">{{ t(s="Back to list") }}</a>
     </div>
 </section>

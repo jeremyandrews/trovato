@@ -1,14 +1,15 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 {% import "admin/macros/tabs.html" as tabs %}
 
 {#- One language's translation of an item, beside the original, with a form to
-    write it. The original is shown per row rather than on a separate screen
+    write it. The original is shown per field rather than on a separate screen
     because a translator needs the source in front of them.
 
     Context: item, language, default_language, translation (absent when the item
-    has none in this language), item_id, content_type (absent if the type went
-    away), csrf_token, form_build_id, flash (rendered by the shell). -#}
+    has none in this language), item_id, form (the translation form, built by
+    routes::admin_translation::translation_form), delete_form (the form that
+    removes the translation, when there is one), flash (rendered by the
+    shell). -#}
 
 {% block page_title %}{{ t(s="Translation ({language}): {title}", language=language, title=item.title) }}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="Write this item's title and text fields in {language}, with the original beside each one.", language=language) }}</p>{% endblock page_intro %}
@@ -21,56 +22,13 @@
     {#- One column: each field is labelled with its name, and its original
         text is the field's hint, so a translator hears or reads the source
         on the field itself. -#}
-    <form method="post" action="/admin/content/{{ item_id }}/translate/{{ language }}" novalidate>
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
-        <input type="hidden" name="_form_build_id" value="{{ form_build_id }}">
-        {% set errs = errors | default(value=[]) %}
-        {{ form::error_summary(errors=errs) }}
-
-        <p>{{ t(s="Each field shows its original, in {original}, under its name. Write it in {language}.", original=item.language, language=language) }}</p>
-
-        {% if translation %}{% set title_value = translation.title %}{% else %}{% set title_value = "" %}{% endif %}
-        {{ form::field(name="title", id="translation-title", label=t(s="Title"), value=title_value, hint=t(s="Original: {text}", text=item.title), required=true, errors=errs) }}
-
-        {#- The translatable fields are the content type's own text fields, so
-            the form is built from the type rather than from a fixed list. Only
-            `Text` and `TextLong` appear: a boolean, a date, a file reference
-            or a record reference is the same value in every language, and
-            offering a second copy of one per language invites them to drift
-            apart with nothing to reconcile them. A type that has gone away
-            leaves the title, which is always translatable because it is a
-            column. -#}
-        {% if content_type %}
-        {% for field in content_type.fields %}
-        {% if field.field_type.Text or field.field_type == "TextLong" %}
-        {%- set existing = "" -%}
-        {%- if translation -%}
-        {%- set existing = translation.fields[field.field_name] | default(value="") -%}
-        {%- endif -%}
-        {%- set original = item.fields[field.field_name] | default(value="") -%}
-        {%- if original %}{% set hint = t(s="Original: {text}", text=original) %}{% else %}{% set hint = t(s="The original is empty.") %}{% endif -%}
-        {% if field.field_type == "TextLong" %}
-        {{ form::textarea(name=field.field_name, id="translation-" ~ field.field_name, label=field.label, value=existing, hint=hint, rows=6, errors=errs) }}
-        {% else %}
-        {{ form::field(name=field.field_name, id="translation-" ~ field.field_name, label=field.label, value=existing, hint=hint, errors=errs) }}
-        {% endif %}
-        {% endif %}
-        {% endfor %}
-        {% endif %}
-
-        {{ form::actions(submit_label=t(s="Save translation")) }}
-    </form>
+    <p>{{ t(s="Each field shows its original, in {original}, under its name. Write it in {language}.", original=item.language, language=language) }}</p>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 
-{% if translation %}
+{% if delete_form %}
 <div class="admin-card">
-    <form method="post"
-          action="/admin/content/{{ item_id }}/translate/{{ language }}/delete?confirm" novalidate>
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
-        <input type="hidden" name="_confirm" value="{{ t(s='Remove the {language} translation? This cannot be undone.', language=language) }}">
-        <input type="hidden" name="_confirm_label" value="{{ t(s='Remove the {language} translation', language=language) }}">
-        <button type="submit" class="button button--danger">{{ t(s="Remove this translation") }}</button>
-    </form>
+    {{ delete_form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 {% else %}
 <div class="admin-card">

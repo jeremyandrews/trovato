@@ -1,72 +1,10 @@
 {% extends "page--admin.html" %}
-{% import "admin/macros/form.html" as form %}
 
-{% block page_title %}{% if editing %}{{ t(s="Edit tile {name}", name=values.label | default(value="")) }}{% else %}{{ t(s="Add tile") }}{% endif %}{% endblock page_title %}
+{% block page_title %}{% if editing %}{{ t(s="Edit tile {name}", name=label) }}{% else %}{{ t(s="Add tile") }}{% endif %}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="A tile is a piece of a page shown in one region of the site, such as the sidebar or the footer.") }}</p>{% endblock page_intro %}
 
 {% block content %}
-{% set errs = errors | default(value=[]) %}
 <div class="admin-card">
-    <form id="tile-form" method="post" action="{{ action }}" novalidate>
-        {{ form::csrf(csrf_token=csrf_token) }}
-
-        {{ form::error_summary(errors=errs) }}
-
-        {{ form::field(name="machine_name", label=t(s="Machine name"), value=values.machine_name | default(value=""), hint=t(s="Lowercase letters, numbers, and underscores only"), required=true, errors=errs, width="30", readonly=editing, attrs='pattern="[a-z0-9_]+" spellcheck="false" autocapitalize="none"') }}
-
-        {{ form::field(name="label", label=t(s="Label"), value=values.label | default(value=""), required=true, errors=errs, width="30") }}
-
-        {% if values.region is defined and values.region %}{% set region = values.region %}{% else %}{% set region = "sidebar" %}{% endif %}
-        {{ form::select(name="region", label=t(s="Region"), options=region_options, value=region, translate_options=true, errors=errs) }}
-
-        {% if values.tile_type is defined and values.tile_type %}{% set tile_type = values.tile_type %}{% else %}{% set tile_type = "custom_html" %}{% endif %}
-        {{ form::select(name="tile_type", label=t(s="Type"), options=tile_type_options, value=tile_type, translate_options=true, errors=errs) }}
-
-        {#- The settings of each type. admin-helpers.js shows only the chosen
-            type's group; without JavaScript every group is shown. -#}
-        <div id="fields-custom_html" class="tile-type-fields">
-            {{ form::textarea(name="body", label=t(s="Body"), value=values.body | default(value=""), rows=8, errors=errs) }}
-
-            {% if values.format is defined and values.format %}{% set format = values.format %}{% else %}{% set format = "filtered_html" %}{% endif %}
-            {{ form::select(name="format", label=t(s="Text format"), options=format_options, value=format, translate_options=true, errors=errs) }}
-        </div>
-
-        <div id="fields-menu" class="tile-type-fields">
-            {% if values.menu_name is defined and values.menu_name %}{% set menu_name = values.menu_name %}{% else %}{% set menu_name = "main" %}{% endif %}
-            {{ form::field(name="menu_name", label=t(s="Menu"), value=menu_name, hint=t(s="The machine name of the menu to show, such as {example}.", example="main"), errors=errs, width="20", attrs='spellcheck="false" autocapitalize="none"') }}
-        </div>
-
-        <div id="fields-gather_query" class="tile-type-fields">
-            {{ form::field(name="query_id", label=t(s="Query ID"), value=values.query_id | default(value=""), hint=t(s="The ID of the gather query to list, such as {example}.", example="blog_listing"), errors=errs, width="30", attrs='spellcheck="false" autocapitalize="none"') }}
-
-            {% if values.items is defined and values.items %}{% set items = values.items ~ "" %}{% else %}{% set items = "5" %}{% endif %}
-            {{ form::field(name="items", type="number", label=t(s="Items"), value=items, hint=t(s="How many of the gather's rows the tile lists, from 1 to 50."), errors=errs, width="4", attrs='min="1" max="50" step="1"') }}
-        </div>
-
-        <div id="fields-chat" class="tile-type-fields">
-            <p class="description">{{ t(s="The chat widget will be rendered in this region. Its settings are on the AI chat page.") }} <a href="/admin/system/ai-chat">{{ t(s="Configure AI chat") }}</a></p>
-        </div>
-
-        <div id="fields-language_switcher" class="tile-type-fields">
-            <p class="description">{{ t(s="One link per enabled language, to this same page in that language. Hidden automatically on a site with only one language.") }}</p>
-        </div>
-
-        <div id="fields-user_login" class="tile-type-fields">
-            <p class="description">{{ t(s="The login form, for visitors who are not signed in. It signs in through the login page and returns to the page the visitor was on. Not shown to signed-in users or on the login page.") }}</p>
-        </div>
-
-        {% if values.audience is defined and values.audience %}{% set audience = values.audience %}{% else %}{% set audience = "" %}{% endif %}
-        {{ form::select(name="audience", label=t(s="Show to"), options=audience_options, value=audience, translate_options=true, hint=t(s="Who may see this tile, regardless of its other visibility rules."), errors=errs) }}
-
-        {{ form::field(name="item_types", label=t(s="Content types"), value=values.item_types | default(value=""), hint=t(s="Show only on a page showing an item of one of these types, such as {example}. Blank for every page.", example="article, recipe"), errors=errs, width="30", attrs='spellcheck="false" autocapitalize="none"') }}
-
-        {% if values.weight is defined and values.weight %}{% set weight = values.weight ~ "" %}{% else %}{% set weight = "0" %}{% endif %}
-        {{ form::field(name="weight", type="number", label=t(s="Weight"), value=weight, errors=errs, width="10") }}
-
-        {% set active = not editing or (values.status is defined and values.status) %}
-        {{ form::checkbox(name="status", label=t(s="Active"), checked=active, errors=errs) }}
-
-        {{ form::actions(submit_label=t(s="Save"), cancel_url="/admin/structure/tiles") }}
-    </form>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 {% endblock content %}
