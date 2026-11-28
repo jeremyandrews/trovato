@@ -6,6 +6,11 @@ set a timer for a Unix second, optionally repeating at a fixed interval, and
 the kernel calls its handler at that second, once, however many servers run
 the site.
 
+`trovato_scheduled_publishing` is the worked example used throughout this
+page: an item's publish and unpublish dates, each its own one-shot timer. See
+[`docs/scheduled-publishing.md`](scheduled-publishing.md) for the editor's
+side of it, the item form's "Publishing schedule" group.
+
 Use cron for routine sweeps that run on an interval whatever is due (cleanup,
 reindexing, a digest). Use a timer when something is due at a time you know
 in advance and should happen at that time, not up to five minutes later.
