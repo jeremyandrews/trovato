@@ -64,10 +64,7 @@
             {{ menu::items(links=user_tree, prefix="site-nav") }}
             {% if user_authenticated %}
             <li class="site-nav__item">
-            <form method="post" action="/user/logout" class="site-nav__logout-form">
-                <input type="hidden" name="_token" value="{{ csrf_token }}">
-                <button type="submit" class="site-nav__link site-nav__logout">Logout</button>
-            </form>
+            {{ logout_form | default(value="") | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form (routes::helpers::inject_site_context_for); its one markup element is a fixed button #}
             </li>
             {% endif %}
             </ul>

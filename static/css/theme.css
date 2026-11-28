@@ -1606,6 +1606,12 @@ html {
     display: inline;
 }
 
+/* The form renderer wraps the button in a markup element's form item. */
+.site-nav__logout-form > .form-item {
+    display: inline;
+    margin: 0;
+}
+
 .site-nav__logout {
     appearance: none;
     margin: 0;

@@ -1,7 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! The stock header's Logout control looks like the header links around it.
 //!
-//! Logout is a POST form with a CSRF token, so `templates/page.html` renders
+//! Logout is a POST form with a CSRF token, so the header in `templates/page.html` draws
 //! it as a `<button>` carrying `site-nav__link site-nav__logout`. The reset
 //! rule for `.site-nav__logout` sat later in `static/css/theme.css` than
 //! `.site-nav__link`, at the same specificity, and declared `font: inherit`,
@@ -91,16 +91,25 @@ fn logout_reset_leaves_the_link_style_alone() {
 }
 
 /// Logout stays a button in a POST form with its CSRF token, styled by class
-/// and not by an inline style.
+/// and not by an inline style. The form is built by `FormService`
+/// (`site_logout_form`, B83c), which gives it the token; the button is its one
+/// markup element.
 #[test]
 fn logout_stays_a_post_button_with_the_link_class() {
     let page = repo_file("templates/page.html");
-    let form = page
-        .find(r#"<form method="post" action="/user/logout" class="site-nav__logout-form">"#)
-        .expect("logout form in page.html");
-    let end = form + page[form..].find("</form>").expect("form closes");
-    let form = &page[form..end];
-    assert!(form.contains(r#"name="_token" value="{{ csrf_token }}""#));
-    assert!(form.contains(r#"<button type="submit" class="site-nav__link site-nav__logout">"#));
-    assert!(!form.contains("style="));
+    assert!(page.contains("{{ logout_form | default(value=\"\") | safe }}"));
+    assert!(!page.contains(r#"action="/user/logout""#));
+    let helpers = repo_file("crates/kernel/src/routes/helpers.rs");
+    let at = helpers
+        .find(r#"Form::new("site_logout_form")"#)
+        .expect("the logout form is built in routes/helpers.rs");
+    let build = &helpers[at..at + 600];
+    assert!(build.contains(r#".action("/user/logout")"#));
+    assert!(build.contains(r#".attribute("class", "site-nav__logout-form")"#));
+    assert!(build.contains(r#"<button type="submit" class="site-nav__link site-nav__logout">"#));
+    assert!(!build.contains("style="));
+    // The renderer's form item around the button stays inline in the header.
+    let css = repo_file("static/css/theme.css");
+    let item = properties(rule_body(&css, ".site-nav__logout-form > .form-item"));
+    assert!(item.iter().any(|p| p == "display"), "{item:?}");
 }

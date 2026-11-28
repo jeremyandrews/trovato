@@ -187,6 +187,7 @@ async fn crawl(
     admin: bool,
     seen: &mut BTreeSet<String>,
     pages: &mut usize,
+    forms: &mut usize,
 ) -> Vec<String> {
     let mut queue: VecDeque<(String, usize)> = start.into_iter().map(|p| (p, 0)).collect();
     let mut found = Vec::new();
@@ -195,12 +196,13 @@ async fn crawl(
         if skip(&bare) || !seen.insert(format!("{cookies}:{}", shape(patterns, &bare))) {
             continue;
         }
-        *pages += 1;
-        assert!(*pages < 900, "the crawl ran away");
+        assert!(seen.len() < 1500, "the crawl ran away");
         let (status, content_type, html) = get(app, cookies, &path).await;
-        if !content_type.starts_with("text/html") || status.is_redirection() {
+        if !content_type.starts_with("text/html") || status != StatusCode::OK {
             continue;
         }
+        *pages += 1;
+        *forms += html.matches("data-form-pipeline").count();
         for form in unmarked_forms(&drop_blocks(&html)) {
             found.push(format!("{path} ({status}): {form}"));
         }
@@ -276,6 +278,7 @@ fn every_form_served_is_built_by_the_form_pipeline() {
             .collect();
         let mut seen = BTreeSet::new();
         let mut pages = 0;
+        let mut forms = 0;
         let mut found = crawl(
             app,
             &patterns,
@@ -284,6 +287,7 @@ fn every_form_served_is_built_by_the_form_pipeline() {
             true,
             &mut seen,
             &mut pages,
+            &mut forms,
         )
         .await;
         found.extend(
@@ -295,6 +299,7 @@ fn every_form_served_is_built_by_the_form_pipeline() {
                 false,
                 &mut seen,
                 &mut pages,
+                &mut forms,
             )
             .await,
         );
@@ -307,11 +312,16 @@ fn every_form_served_is_built_by_the_form_pipeline() {
                 false,
                 &mut seen,
                 &mut pages,
+                &mut forms,
             )
             .await,
         );
 
-        assert!(pages > 80, "the crawl reached only {pages} pages");
+        // Signed in as an administrator, the crawl reads about a hundred and ten
+        // pages; were the sign-in lost, it would read only the front end's.
+        eprintln!("read {pages} pages, met {forms} pipeline forms");
+        assert!(pages > 90, "the crawl read only {pages} pages");
+        assert!(forms > 200, "the crawl met only {forms} pipeline forms");
         found.sort();
         found.dedup();
         assert!(
