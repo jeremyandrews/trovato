@@ -588,21 +588,22 @@ async fn save(
             format!("A text format named {} already exists.", values.format),
         ));
     }
-    match admin_form::check(&state, &session, &user, &posted, FORMAT_FORM_ID, errors).await {
-        Ok(()) => {}
-        Err(Ok(errors)) => {
-            return render_format_form(
-                &state,
-                &session,
-                &user,
-                existing.as_ref(),
-                &values,
-                &errors,
-            )
-            .await;
-        }
-        Err(Err(response)) => return response,
-    }
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, FORMAT_FORM_ID, errors).await {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => {
+                return render_format_form(
+                    &state,
+                    &session,
+                    &user,
+                    existing.as_ref(),
+                    &values,
+                    &errors,
+                )
+                .await;
+            }
+            Err(Err(response)) => return response,
+        };
     let Ok(format) = parsed else {
         return render_not_found();
     };
@@ -638,6 +639,7 @@ async fn save(
     }
 
     text_format::changed(state.db()).await;
+    admin_form::submitted(&state, &user, &form_state, &posted).await;
     tracing::info!(
         log_type = "config",
         user_id = %user.id,
@@ -718,19 +720,22 @@ async fn delete_submit(
         Ok(stored) => stored,
         Err(response) => return response,
     };
-    match admin_form::check(&state, &session, &user, &posted, DELETE_FORM_ID, Vec::new()).await {
-        Ok(()) => {}
-        Err(Ok(_)) => {
-            return super::helpers::render_error(
-                "The form has expired. Reload the page and try again.",
-            );
-        }
-        Err(Err(response)) => return response,
-    }
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, DELETE_FORM_ID, Vec::new()).await
+        {
+            Ok(form_state) => form_state,
+            Err(Ok(_)) => {
+                return super::helpers::render_error(
+                    "The form has expired. Reload the page and try again.",
+                );
+            }
+            Err(Err(response)) => return response,
+        };
     match text_format::delete(state.db(), &stored.format).await {
         Ok(_) => {
             state.permissions().invalidate_all();
             text_format::changed(state.db()).await;
+            admin_form::submitted(&state, &user, &form_state, &posted).await;
             tracing::info!(log_type = "config", user_id = %user.id, format = %stored.format, "text format deleted");
             let _ = session
                 .insert(

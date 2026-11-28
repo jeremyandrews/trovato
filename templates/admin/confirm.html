@@ -2,8 +2,9 @@
 
 {#- The confirmation page for a destructive action (routes::admin_confirm).
     `pending.question` and `pending.label` are either text the original form
-    already translated (`kind` "text") or a message translated here. The form
-    posts the original fields back to the original address. -#}
+    already translated (`kind` "text") or a message translated here. The form,
+    built through the form pipeline, posts the original fields back to the
+    original address. -#}
 
 {% block page_title %}{% if pending.label.kind == "text" %}{{ pending.label.value }}{% else %}{{ t_message(m=pending.label.value) }}{% endif %}{% endblock page_title %}
 {% block page_intro %}<p class="page-intro">{{ t(s="Check what will happen before going on.") }}</p>{% endblock page_intro %}
@@ -11,15 +12,6 @@
 {% block content %}
 <div class="admin-card confirm">
     <p class="confirm__question" id="confirm-question">{% if pending.question.kind == "text" %}{{ pending.question.value }}{% else %}{{ t_message(m=pending.question.value) }}{% endif %}</p>
-    <form method="post" action="{{ pending.action }}" novalidate aria-describedby="confirm-question">
-        <input type="hidden" name="_token" value="{{ csrf_token }}">
-        {% for pair in pending.fields %}
-        <input type="hidden" name="{{ pair.0 }}" value="{{ pair.1 }}">
-        {% endfor %}
-        <div class="form-actions">
-            <button type="submit" class="button button--danger">{% if pending.label.kind == "text" %}{{ pending.label.value }}{% else %}{{ t_message(m=pending.label.value) }}{% endif %}</button>
-            <a href="{{ pending.cancel }}" class="button button--secondary">{{ t(s="Cancel") }}</a>
-        </div>
-    </form>
+    {{ form | safe }} {# SAFE: rendered by the theme engine from a kernel-built Form; every value is escaped by the form templates #}
 </div>
 {% endblock content %}

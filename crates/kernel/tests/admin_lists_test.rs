@@ -283,7 +283,7 @@ fn a_delete_asks_on_its_own_page_before_it_deletes() {
         );
         assert!(
             confirm.contains(&format!(
-                r#"class="button button--danger">Delete {title}</button>"#
+                r#"button button--danger">Delete {title}</button>"#
             )),
             "the button names what it deletes"
         );

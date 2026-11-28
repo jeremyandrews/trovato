@@ -195,15 +195,17 @@ async fn appearance_submit(
             ));
         }
     }
-    match admin_form::check(&state, &session, &user, &posted, FORM_ID, errors).await {
-        Ok(()) => {}
-        Err(Ok(errors)) => return render(&state, &session, &user, &wanted, &errors).await,
-        Err(Err(response)) => return response,
-    }
+    let form_state =
+        match admin_form::check(&state, &session, &user, &posted, FORM_ID, errors).await {
+            Ok(form_state) => form_state,
+            Err(Ok(errors)) => return render(&state, &session, &user, &wanted, &errors).await,
+            Err(Err(response)) => return response,
+        };
     if let Err(e) = registry::save_active(state.db(), state.theme(), &wanted).await {
         tracing::error!(error = %e, "failed to save the theme setting");
         return render_server_error("The appearance settings could not be saved.");
     }
+    admin_form::submitted(&state, &user, &form_state, &posted).await;
     tracing::info!(
         log_type = "config",
         user_id = %user.id,

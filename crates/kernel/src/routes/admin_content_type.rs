@@ -1265,7 +1265,7 @@ async fn save_search_switches(
         include: posted.contains("include"),
         comments: posted.contains("comments"),
     };
-    match super::admin_form::check(
+    let form_state = match super::admin_form::check(
         &state,
         &session,
         &user,
@@ -1275,13 +1275,13 @@ async fn save_search_switches(
     )
     .await
     {
-        Ok(()) => {}
+        Ok(form_state) => form_state,
         Err(Ok(errors)) => {
             return render_search_config(&state, &session, &user, &type_name, wanted, &errors)
                 .await;
         }
         Err(Err(response)) => return response,
-    }
+    };
 
     let patch = serde_json::json!({ SearchSwitches::SETTINGS_KEY: wanted });
     if let Err(e) = state
@@ -1297,6 +1297,7 @@ async fn save_search_switches(
         tracing::error!(error = %e, content_type = %type_name, "failed to save search switches");
         return render_server_error("The search settings could not be saved.");
     }
+    super::admin_form::submitted(&state, &user, &form_state, &posted).await;
     if let Err(e) = state.search().reindex_bundle(&type_name).await {
         tracing::error!(error = %e, content_type = %type_name, "failed to reindex after search switches");
     }
