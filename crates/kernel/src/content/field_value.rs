@@ -212,7 +212,7 @@ const MAX_LINK_TITLE_LENGTH: usize = 255;
 const MAX_TELEPHONE_LENGTH: usize = 32;
 
 /// Whether `uri` is a Link field's allowed shape: an absolute `http` or
-/// `https` URL with a host, or a local path ([`crate::routes::front::is_local_path`],
+/// `https` URL with a host, or a local path (`routes::front::is_local_path`,
 /// which covers an item reference written as `/item/<uuid>`).
 ///
 /// Refused outright: `javascript:`, `data:`, `mailto:` and any other scheme,
@@ -313,7 +313,7 @@ pub fn telephone_e164(entered: &str) -> Option<String> {
 
 /// The value-shape rule for a Link, List or Telephone field: the one place it
 /// is judged, called from the form parser ([`parse`] builds its own value, but
-/// uses the same predicates), the JSON check ([`check_one`]) and the one write
+/// uses the same predicates), the JSON check (`check_one`) and the one write
 /// check every path reaches
 /// ([`crate::content::field_values::check_field_values`]).
 ///

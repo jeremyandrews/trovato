@@ -1207,7 +1207,7 @@ fn is_text_format_key(
 }
 
 /// The HTML one stored Link value renders as: an `<a>` tag when its `uri`
-/// still passes [`field_value::is_valid_link_uri`] (a value written straight
+/// still passes [`crate::content::field_value::is_valid_link_uri`] (a value written straight
 /// to the database, bypassing the check, renders as escaped text instead,
 /// never as an `href`), an item reference shown at its Live alias when it has
 /// one, and `target="_blank" rel="noopener noreferrer"` only when `new_tab`.
