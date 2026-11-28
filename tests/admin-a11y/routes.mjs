@@ -45,7 +45,6 @@ export const EXPECTED_UNSEEDED = new Map([
   ['/admin/people/rules/{id}/delete', 'no access rule is defined'],
   ['/admin/system/ai-providers/{id}/edit', 'no AI provider is configured'],
   ['/admin/system/ai-providers/{id}/delete', 'no AI provider is configured'],
-  ['/admin/people/roles/{id}/delete', 'the site has only the built-in roles, which cannot be deleted'],
   ['/admin/config/formats/{format}/delete', 'the built-in text formats cannot be deleted'],
   ['/admin/config/redirects/{id}/edit', 'no redirect is defined'],
   ['/admin/config/redirects/{id}/delete', 'no redirect is defined'],

@@ -2235,3 +2235,21 @@ form select:focus {
     margin-top: 2rem;
     font-size: 0.875rem;
 }
+
+/* The search page's box: the field and its button on one row, as before the
+   form renderer drew them in a form item and an actions row (B83c). */
+.search-form.form {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+}
+
+.search-form.form > .form-item {
+    flex: 1 1 16rem;
+    margin: 0;
+}
+
+.search-form.form > .form-actions {
+    margin: 0;
+}
